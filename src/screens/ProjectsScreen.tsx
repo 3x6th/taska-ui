@@ -123,7 +123,7 @@ function ProjectCard({ project, summary, onOpen }: { project: Project; summary?:
           {members.slice(0, 4).map((member) => (
             <Avatar key={member.userId} user={member.user ? { displayName: member.user.displayName, color: member.user.color } : null} size="sm" />
           ))}
-          <span>{members.length} members</span>
+          <span className="member-count">{members.length} members</span>
         </div>
         <span className="issue-count">
           <strong>{summary?.count ?? 0}</strong> issues
