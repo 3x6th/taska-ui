@@ -69,9 +69,10 @@ For a custom domain such as `tasks.example.com`, set this repository variable in
 
 ```text
 VITE_BASE_PATH=/
+VITE_SITE_URL=https://tasks.example.com/
 ```
 
-Keep `VITE_ROUTER_MODE=hash` unless you add a separate SPA fallback strategy. With the default GitHub Pages hosting, hash routing keeps routes reload-safe on both `github.io` and custom domains.
+`VITE_SITE_URL` is used for Open Graph previews in Telegram and other messengers. Keep `VITE_ROUTER_MODE=hash` unless you add a separate SPA fallback strategy. With the default GitHub Pages hosting, hash routing keeps routes reload-safe on both `github.io` and custom domains.
 
 ## MVP Plan
 
