@@ -21,6 +21,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import type {
   Issue,
   IssueHistoryEvent,
+  Page,
   IssuePriority,
   IssueStatus,
   IssueType,
@@ -118,6 +119,34 @@ export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
   const transitionIssue = useMutation({
     mutationFn: ({ nextStatus, movedIssueId }: { movedIssueId: string; nextStatus: IssueStatus }) =>
       taskaApi.transitionIssue(projectId, movedIssueId, nextStatus),
+    onMutate: async ({ nextStatus, movedIssueId }) => {
+      await queryClient.cancelQueries({ queryKey: ["issues", projectId] });
+      const previousIssues = queryClient.getQueryData<Page<Issue>>(["issues", projectId]);
+
+      queryClient.setQueryData<Page<Issue>>(["issues", projectId], (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          items: current.items.map((item) =>
+            item.id === movedIssueId
+              ? {
+                  ...item,
+                  status: nextStatus,
+                  updatedAt: new Date().toISOString(),
+                  version: item.version + 1,
+                }
+              : item,
+          ),
+        };
+      });
+
+      return { previousIssues };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previousIssues) {
+        queryClient.setQueryData(["issues", projectId], context.previousIssues);
+      }
+    },
     onSuccess: async (_, variables) => {
       await invalidateBoard(queryClient, projectId, variables.movedIssueId);
     },
@@ -137,14 +166,20 @@ export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
-    setActiveIssueId(null);
     const overId = event.over?.id;
     const activeId = String(event.active.id);
-    if (!overId) return;
+    if (!overId) {
+      setActiveIssueId(null);
+      return;
+    }
     const nextStatus = String(overId) as IssueStatus;
     const issue = issues.find((item) => item.id === activeId);
-    if (!issue || issue.status === nextStatus) return;
+    if (!issue || issue.status === nextStatus) {
+      setActiveIssueId(null);
+      return;
+    }
     transitionIssue.mutate({ movedIssueId: issue.id, nextStatus });
+    setActiveIssueId(null);
   };
 
   return (
