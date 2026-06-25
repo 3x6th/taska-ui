@@ -470,6 +470,7 @@ textarea:disabled {
   flex: 1;
   overflow: auto;
   padding: 34px 22px;
+  background: radial-gradient(780px 460px at 50% 140px, color-mix(in oklab, var(--accent) 14%, transparent), transparent 72%);
 }
 
 .projects-page > * {
