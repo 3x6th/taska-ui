@@ -1,4 +1,14 @@
-import { DndContext, DragOverlay, useDraggable, useDroppable, type DragEndEvent, type DragStartEvent } from "@dnd-kit/core";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronLeft, Plus, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -46,6 +56,13 @@ export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
+  );
 
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
@@ -226,7 +243,7 @@ export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
         </span>
       </section>
 
-      <DndContext onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
+      <DndContext sensors={sensors} onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
         <section className="columns-area">
           {workflowQuery.isLoading || issuesQuery.isLoading
             ? statuses.map((status) => <ColumnSkeleton key={status.statusKey} status={status} />)
