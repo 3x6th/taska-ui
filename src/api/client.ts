@@ -3,10 +3,11 @@ import { HybridTaskaApi } from "./HybridTaskaApi";
 import { MockTaskaApi } from "./mock/MockTaskaApi";
 import { RestTaskaApi } from "./rest/RestTaskaApi";
 
-const mode = import.meta.env.VITE_TASKA_API_MODE ?? "hybrid";
+// `||` instead of `??`: CI may pass unset repository variables as empty strings.
+const mode = import.meta.env.VITE_TASKA_API_MODE || "hybrid";
 // In dev "/api/v1" goes through the Vite proxy to the gateway (see vite.config.ts);
-// deployments on taska.ozero.dev can point directly at the gateway via env.
-const baseUrl = import.meta.env.VITE_TASKA_API_BASE_URL ?? "/api/v1";
+// deployed builds point directly at the gateway via VITE_TASKA_API_BASE_URL.
+const baseUrl = import.meta.env.VITE_TASKA_API_BASE_URL || "/api/v1";
 
 function createApi(): TaskaApi {
   switch (mode) {

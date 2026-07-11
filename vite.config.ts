@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const base = env.VITE_BASE_PATH ?? "/";
   const publicUrl = withTrailingSlash(env.VITE_SITE_URL || getGitHubPagesUrl(process.env.GITHUB_REPOSITORY) || base);
+  const apiProxyTarget = env.VITE_TASKA_API_PROXY_TARGET;
 
   return {
     base,
@@ -26,21 +27,24 @@ export default defineConfig(({ mode }) => {
     ],
     server: {
       port: 5173,
-      // Gateway CORS only allows https://taska.ozero.dev, so local dev
-      // reaches it through a same-origin proxy.
-      proxy: {
-        "/api": {
-          target: env.VITE_TASKA_API_PROXY_TARGET || "https://api.taska.ozero.dev",
-          changeOrigin: true,
-          configure: (proxy) => {
-            // The gateway rejects foreign origins with 403; without the
-            // Origin header the proxied request is not a CORS request.
-            proxy.on("proxyReq", (proxyReq) => {
-              proxyReq.removeHeader("origin");
-            });
-          },
-        },
-      },
+      // Gateway CORS only allows its own frontend origin, so local dev
+      // reaches it through a same-origin proxy. The target comes from
+      // VITE_TASKA_API_PROXY_TARGET (see .env.example); no proxy otherwise.
+      proxy: apiProxyTarget
+        ? {
+            "/api": {
+              target: apiProxyTarget,
+              changeOrigin: true,
+              configure: (proxy) => {
+                // The gateway rejects foreign origins with 403; without the
+                // Origin header the proxied request is not a CORS request.
+                proxy.on("proxyReq", (proxyReq) => {
+                  proxyReq.removeHeader("origin");
+                });
+              },
+            },
+          }
+        : undefined,
     },
   };
 });
