@@ -22,7 +22,11 @@ import type {
   IssueStatus,
 } from "../../domain/types";
 
+// Gateway contract: RestErrorResponse is a flat { code, message };
+// the nested `error` shape is kept for older service responses.
 interface ApiErrorBody {
+  code?: string;
+  message?: string;
   error?: {
     code: string;
     message: string;
@@ -30,9 +34,22 @@ interface ApiErrorBody {
   };
 }
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly status: number,
+    public readonly requestId?: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export class RestTaskaApi implements TaskaApi {
   private accessToken = window.localStorage.getItem("taska.accessToken");
   private refreshTokenValue = window.localStorage.getItem("taska.refreshToken");
+  private refreshInFlight: Promise<boolean> | null = null;
 
   constructor(private readonly baseUrl = "/api/v1") {}
 
@@ -177,6 +194,26 @@ export class RestTaskaApi implements TaskaApi {
     window.localStorage.setItem("taska.refreshToken", tokens.refreshToken);
   }
 
+  private clearTokens() {
+    this.accessToken = null;
+    this.refreshTokenValue = null;
+    window.localStorage.removeItem("taska.accessToken");
+    window.localStorage.removeItem("taska.refreshToken");
+  }
+
+  private tryRefresh(): Promise<boolean> {
+    this.refreshInFlight ??= this.refresh()
+      .then(() => true)
+      .catch(() => {
+        this.clearTokens();
+        return false;
+      })
+      .finally(() => {
+        this.refreshInFlight = null;
+      });
+    return this.refreshInFlight;
+  }
+
   private query(search: URLSearchParams) {
     const value = search.toString();
     return value ? `?${value}` : "";
@@ -189,6 +226,7 @@ export class RestTaskaApi implements TaskaApi {
       body?: unknown;
       skipAuth?: boolean;
     } = {},
+    isRetry = false,
   ): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: options.method ?? "GET",
@@ -200,6 +238,12 @@ export class RestTaskaApi implements TaskaApi {
       body: options.body ? JSON.stringify(options.body) : undefined,
     });
 
+    if (response.status === 401 && !options.skipAuth && !isRetry && this.refreshTokenValue) {
+      if (await this.tryRefresh()) {
+        return this.request<T>(path, options, true);
+      }
+    }
+
     if (response.status === 204) {
       return undefined as T;
     }
@@ -207,8 +251,10 @@ export class RestTaskaApi implements TaskaApi {
     const data = (await response.json().catch(() => undefined)) as T | ApiErrorBody | undefined;
     if (!response.ok) {
       const body = data as ApiErrorBody | undefined;
-      const message = body?.error?.message ?? `Request failed with ${response.status}`;
-      throw new Error(message);
+      const message = body?.message ?? body?.error?.message ?? `Request failed with ${response.status}`;
+      const code = body?.code ?? body?.error?.code ?? "UNKNOWN";
+      const requestId = response.headers.get("X-Request-Id") ?? body?.error?.requestId;
+      throw new ApiError(message, code, response.status, requestId ?? undefined);
     }
     return data as T;
   }
