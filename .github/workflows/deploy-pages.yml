@@ -38,6 +38,8 @@ jobs:
         env:
           VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || format('/{0}/', github.event.repository.name) }}
           VITE_ROUTER_MODE: ${{ vars.VITE_ROUTER_MODE || 'hash' }}
+          VITE_TASKA_API_MODE: ${{ vars.VITE_TASKA_API_MODE }}
+          VITE_TASKA_API_BASE_URL: ${{ vars.VITE_TASKA_API_BASE_URL }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v6
