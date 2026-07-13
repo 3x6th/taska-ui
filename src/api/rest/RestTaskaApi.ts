@@ -50,16 +50,20 @@ export class RestTaskaApi implements TaskaApi {
   private accessToken = window.localStorage.getItem("taska.accessToken");
   private refreshTokenValue = window.localStorage.getItem("taska.refreshToken");
   private refreshInFlight: Promise<boolean> | null = null;
+  private authVersion = 0;
 
   constructor(private readonly baseUrl = "/api/v1") {}
 
   async login(input: LoginInput): Promise<AuthTokens> {
+    const authVersion = ++this.authVersion;
     const tokens = await this.request<AuthTokens>("/auth/login", {
       method: "POST",
       body: input,
       skipAuth: true,
     });
-    this.setTokens(tokens);
+    if (authVersion === this.authVersion) {
+      this.setTokens(tokens);
+    }
     return tokens;
   }
 
@@ -72,13 +76,21 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async refresh(refreshToken = this.refreshTokenValue ?? ""): Promise<AuthTokens> {
+    const authVersion = this.authVersion;
     const tokens = await this.request<AuthTokens>("/auth/refresh", {
       method: "POST",
       body: { refreshToken },
       skipAuth: true,
     });
-    this.setTokens(tokens);
+    if (authVersion === this.authVersion) {
+      this.setTokens(tokens);
+    }
     return tokens;
+  }
+
+  async logout(): Promise<void> {
+    this.authVersion += 1;
+    this.clearTokens();
   }
 
   getCurrentUser(): Promise<User> {

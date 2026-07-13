@@ -1,10 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { LogOut } from "lucide-react";
 import type { User, UserStatus } from "../domain/types";
 import { Avatar } from "./Avatar";
 
 interface UserProfileMenuProps {
   user?: User;
   loading?: boolean;
+  loggingOut?: boolean;
+  onLogout: () => void;
 }
 
 const statusLabels: Record<UserStatus, string> = {
@@ -13,7 +16,7 @@ const statusLabels: Record<UserStatus, string> = {
   INVITED: "Invited",
 };
 
-export function UserProfileMenu({ user, loading = false }: UserProfileMenuProps) {
+export function UserProfileMenu({ user, loading = false, loggingOut = false, onLogout }: UserProfileMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const popoverId = useId();
@@ -76,6 +79,12 @@ export function UserProfileMenu({ user, loading = false }: UserProfileMenuProps)
               </dd>
             </div>
           </dl>
+          <div className="user-profile-actions">
+            <button className="user-profile-logout" disabled={loggingOut} onClick={onLogout} type="button">
+              <LogOut aria-hidden="true" size={15} />
+              {loggingOut ? "Logging out…" : "Log out"}
+            </button>
+          </div>
         </section>
       ) : null}
     </div>

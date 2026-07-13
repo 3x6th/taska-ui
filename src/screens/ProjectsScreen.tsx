@@ -16,7 +16,7 @@ interface ProjectSummary {
   members: ProjectMember[];
 }
 
-export function ProjectsScreen({ theme, toggleTheme }: ScreenProps) {
+export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
@@ -46,7 +46,13 @@ export function ProjectsScreen({ theme, toggleTheme }: ScreenProps) {
 
   return (
     <main className="page-shell">
-      <TopBar right={<ThemeToggle theme={theme} onToggle={toggleTheme} />} user={meQuery.data} userLoading={meQuery.isPending} />
+      <TopBar
+        right={<ThemeToggle theme={theme} onToggle={toggleTheme} />}
+        user={meQuery.data}
+        userLoading={meQuery.isPending}
+        loggingOut={logoutPending}
+        onLogout={onLogout}
+      />
       <section className="projects-page">
         <div className="projects-heading">
           <div>
@@ -89,17 +95,21 @@ function TopBar({
   right,
   user,
   userLoading,
+  loggingOut,
+  onLogout,
 }: {
   right: React.ReactNode;
   user?: User;
   userLoading: boolean;
+  loggingOut: boolean;
+  onLogout: () => void;
 }) {
   return (
     <header className="topbar">
       <TaskaLogo compact />
       <div className="topbar-spacer" />
       {right}
-      <UserProfileMenu user={user} loading={userLoading} />
+      <UserProfileMenu user={user} loading={userLoading} loggingOut={loggingOut} onLogout={onLogout} />
     </header>
   );
 }

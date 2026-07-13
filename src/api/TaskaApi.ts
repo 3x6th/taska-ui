@@ -59,6 +59,7 @@ export interface TaskaApi {
   login(input: LoginInput): Promise<AuthTokens>;
   acceptInvitation(input: AcceptInvitationInput): Promise<void>;
   refresh(refreshToken: string): Promise<AuthTokens>;
+  logout(): Promise<void>;
   getCurrentUser(): Promise<User>;
 
   listProjects(): Promise<Project[]>;

@@ -737,6 +737,10 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.refresh());
   }
 
+  async logout(): Promise<void> {
+    await wait(null);
+  }
+
   async getCurrentUser(): Promise<User> {
     return wait(this.store.currentUser());
   }
