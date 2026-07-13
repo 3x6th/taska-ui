@@ -16,10 +16,10 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<AuthMode>(initialMode);
-  const [email, setEmail] = useState("anna@example.com");
-  const [password, setPassword] = useState("CorrectHorse123!");
-  const [inviteToken, setInviteToken] = useState("invite-token-from-email");
-  const [newPassword, setNewPassword] = useState("CorrectHorse123!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [inviteToken, setInviteToken] = useState("");
+  const [newPassword, setNewPassword] = useState("");
 
   const submit = useMutation({
     mutationFn: async () => {
