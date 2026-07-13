@@ -6,6 +6,7 @@ interface AvatarProps {
   label?: string;
   size?: "sm" | "md" | "lg";
   className?: string;
+  loading?: boolean;
 }
 
 const sizeClass = {
@@ -14,16 +15,17 @@ const sizeClass = {
   lg: "avatar-lg",
 };
 
-export function Avatar({ user, label, size = "md", className = "" }: AvatarProps) {
-  const name = user?.displayName ?? label ?? "Unassigned";
+export function Avatar({ user, label, size = "md", className = "", loading = false }: AvatarProps) {
+  const name = loading ? "Loading user" : (user?.displayName ?? label ?? "Unassigned");
   return (
     <span
-      className={`avatar ${sizeClass[size]} ${!user ? "avatar-empty" : ""} ${className}`}
+      className={`avatar ${sizeClass[size]} ${!user && !loading ? "avatar-empty" : ""} ${loading ? "avatar-loading" : ""} ${className}`}
       style={user?.color ? { backgroundColor: user.color } : undefined}
       title={name}
       aria-label={name}
+      aria-busy={loading || undefined}
     >
-      {user ? initials(name) : ""}
+      {user && !loading ? initials(name) : ""}
     </span>
   );
 }

@@ -94,6 +94,10 @@ export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
     queryKey: ["notifications"],
     queryFn: () => taskaApi.listNotifications(),
   });
+  const meQuery = useQuery({
+    queryKey: ["me"],
+    queryFn: () => taskaApi.getCurrentUser(),
+  });
 
   const project = projectQuery.data;
   const members = membersQuery.data ?? [];
@@ -227,6 +231,7 @@ export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
           <Plus size={15} />
           New
         </button>
+        <Avatar user={meQuery.data} label="Current user" loading={meQuery.isPending} size="md" />
       </header>
 
       <section className="filterbar">

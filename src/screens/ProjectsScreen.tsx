@@ -7,7 +7,7 @@ import { Avatar } from "../components/Avatar";
 import { Modal } from "../components/Modal";
 import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
-import type { Project, ProjectMember } from "../domain/types";
+import type { Project, ProjectMember, User } from "../domain/types";
 import type { ScreenProps } from "./App";
 
 interface ProjectSummary {
@@ -45,7 +45,7 @@ export function ProjectsScreen({ theme, toggleTheme }: ScreenProps) {
 
   return (
     <main className="page-shell">
-      <TopBar right={<ThemeToggle theme={theme} onToggle={toggleTheme} />} user={meQuery.data} />
+      <TopBar right={<ThemeToggle theme={theme} onToggle={toggleTheme} />} user={meQuery.data} userLoading={meQuery.isPending} />
       <section className="projects-page">
         <div className="projects-heading">
           <div>
@@ -87,16 +87,18 @@ export function ProjectsScreen({ theme, toggleTheme }: ScreenProps) {
 function TopBar({
   right,
   user,
+  userLoading,
 }: {
   right: React.ReactNode;
-  user?: { displayName: string; color?: string };
+  user?: Pick<User, "displayName" | "color">;
+  userLoading: boolean;
 }) {
   return (
     <header className="topbar">
       <TaskaLogo compact />
       <div className="topbar-spacer" />
       {right}
-      <Avatar user={user} size="md" />
+      <Avatar user={user} label="Current user" loading={userLoading} size="md" />
     </header>
   );
 }
