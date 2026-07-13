@@ -7,6 +7,7 @@ import { Avatar } from "../components/Avatar";
 import { Modal } from "../components/Modal";
 import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { UserProfileMenu } from "../components/UserProfileMenu";
 import type { Project, ProjectMember, User } from "../domain/types";
 import type { ScreenProps } from "./App";
 
@@ -90,7 +91,7 @@ function TopBar({
   userLoading,
 }: {
   right: React.ReactNode;
-  user?: Pick<User, "displayName" | "color">;
+  user?: User;
   userLoading: boolean;
 }) {
   return (
@@ -98,7 +99,7 @@ function TopBar({
       <TaskaLogo compact />
       <div className="topbar-spacer" />
       {right}
-      <Avatar user={user} label="Current user" loading={userLoading} size="md" />
+      <UserProfileMenu user={user} loading={userLoading} />
     </header>
   );
 }

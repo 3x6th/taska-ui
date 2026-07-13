@@ -18,6 +18,7 @@ import { Avatar } from "../components/Avatar";
 import { PriorityBars, TypeChip } from "../components/IssueBits";
 import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { UserProfileMenu } from "../components/UserProfileMenu";
 import type {
   Issue,
   IssueHistoryEvent,
@@ -231,7 +232,7 @@ export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
           <Plus size={15} />
           New
         </button>
-        <Avatar user={meQuery.data} label="Current user" loading={meQuery.isPending} size="md" />
+        <UserProfileMenu user={meQuery.data} loading={meQuery.isPending} />
       </header>
 
       <section className="filterbar">
