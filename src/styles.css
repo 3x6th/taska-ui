@@ -436,6 +436,7 @@ textarea:disabled {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
+  background: var(--accent);
   color: #fff;
   font-weight: 650;
   line-height: 1;
@@ -464,6 +465,11 @@ textarea:disabled {
   border: 1.5px dashed var(--border-strong);
   background: transparent;
   color: var(--fg-3);
+}
+
+.avatar-loading {
+  background: var(--surface-3);
+  animation: tk-fade 0.8s ease-in-out infinite alternate;
 }
 
 .projects-page {
