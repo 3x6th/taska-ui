@@ -44,6 +44,10 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.refresh(refreshToken);
   }
 
+  logout(): Promise<void> {
+    return this.live.logout();
+  }
+
   getCurrentUser(): Promise<User> {
     return this.live.getCurrentUser();
   }

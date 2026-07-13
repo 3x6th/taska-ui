@@ -48,7 +48,7 @@ const transitionLabels: Record<IssueStatus, Array<{ to: IssueStatus; label: stri
   DONE: [{ to: "IN_PROGRESS", label: "Reopen" }],
 };
 
-export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
+export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const { projectId = "", issueId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -232,7 +232,12 @@ export function BoardScreen({ theme, toggleTheme }: ScreenProps) {
           <Plus size={15} />
           New
         </button>
-        <UserProfileMenu user={meQuery.data} loading={meQuery.isPending} />
+        <UserProfileMenu
+          user={meQuery.data}
+          loading={meQuery.isPending}
+          loggingOut={logoutPending}
+          onLogout={onLogout}
+        />
       </header>
 
       <section className="filterbar">
