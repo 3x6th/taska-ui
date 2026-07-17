@@ -10,7 +10,6 @@ import type {
 } from "./TaskaApi";
 import type {
   Issue,
-  IssueStatus,
   IssueType,
   IssueWithHistory,
   Notification,
@@ -23,8 +22,8 @@ import type {
 } from "../domain/types";
 
 /**
- * Auth endpoints are served by the real gateway; the rest of the contract
- * is not implemented on the backend yet and stays on the mock.
+ * Auth and issue endpoints are served by the real gateway. Projects, members,
+ * workflow and notifications stay on the mock until their REST APIs land.
  */
 export class HybridTaskaApi implements TaskaApi {
   constructor(
@@ -77,31 +76,31 @@ export class HybridTaskaApi implements TaskaApi {
   }
 
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
-    return this.mock.listIssues(projectId, params);
+    return this.live.listIssues(projectId, params);
   }
 
   getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {
-    return this.mock.getIssue(projectId, issueId);
+    return this.live.getIssue(projectId, issueId);
   }
 
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
-    return this.mock.createIssue(projectId, input);
+    return this.live.createIssue(projectId, input);
   }
 
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
-    return this.mock.updateIssue(projectId, issueId, input);
+    return this.live.updateIssue(projectId, issueId, input);
   }
 
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue> {
-    return this.mock.assignIssue(projectId, issueId, assigneeId);
+    return this.live.assignIssue(projectId, issueId, assigneeId);
   }
 
-  transitionIssue(projectId: string, issueId: string, toStatus: IssueStatus): Promise<Issue> {
-    return this.mock.transitionIssue(projectId, issueId, toStatus);
+  transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue> {
+    return this.live.transitionIssue(projectId, issueId, transitionId);
   }
 
   deleteIssue(projectId: string, issueId: string): Promise<void> {
-    return this.mock.deleteIssue(projectId, issueId);
+    return this.live.deleteIssue(projectId, issueId);
   }
 
   listNotifications(): Promise<Page<Notification>> {

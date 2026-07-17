@@ -28,16 +28,16 @@ npm run build
 
 ## API Mode
 
-The app uses the in-memory mock API by default. It is stateful, so creating issues, moving cards, editing issue fields, assigning users, and marking notifications read all update the demo state during the session.
+The default `hybrid` mode sends auth and issue requests to API Gateway. Projects, project membership, workflow and notifications remain on the stateful in-memory mock until those REST endpoints are available.
 
-To point the same UI at API Gateway later:
+To opt into REST-only mode once the remaining gateway endpoints are available:
 
 ```bash
 VITE_TASKA_API_MODE=rest
 VITE_TASKA_API_BASE_URL=/api/v1
 ```
 
-The switch happens in `src/api/client.ts`. The shared UI contract is `src/api/TaskaApi.ts`; mock behavior is in `src/api/mock/MockTaskaApi.ts`, and the future REST client is in `src/api/rest/RestTaskaApi.ts`.
+Use `VITE_TASKA_API_MODE=mock` for the fully in-memory demo. The switch happens in `src/api/client.ts`; the shared UI contract is `src/api/TaskaApi.ts`, mock behavior is in `src/api/mock/MockTaskaApi.ts`, and the gateway adapter is in `src/api/rest/RestTaskaApi.ts`.
 
 ## GitHub Pages
 

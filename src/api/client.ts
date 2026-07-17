@@ -16,8 +16,8 @@ function createApi(): TaskaApi {
     case "rest":
       return new RestTaskaApi(baseUrl);
     default:
-      // "hybrid": auth goes to the real gateway, the rest of the contract
-      // is not implemented on the backend yet and is served by the mock.
+      // "hybrid": auth and issues use the gateway; API groups that are not
+      // present in OpenAPI yet continue to use the in-memory mock.
       return new HybridTaskaApi(new RestTaskaApi(baseUrl), new MockTaskaApi());
   }
 }

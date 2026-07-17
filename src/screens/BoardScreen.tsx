@@ -29,6 +29,7 @@ import type {
   ProjectMember,
   User,
   WorkflowStatus,
+  WorkflowTransition,
 } from "../domain/types";
 import { formatDateTime, formatDay, priorityMeta, relativeTime, statusColors, statusLabels, typeMeta } from "../lib/format";
 import type { ScreenProps } from "./App";
@@ -38,15 +39,6 @@ type AssigneeFilter = string | "ALL";
 
 const issueTypes: IssueTypeFilter[] = ["ALL", "TASK", "BUG", "STORY"];
 const priorities: IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
-
-const transitionLabels: Record<IssueStatus, Array<{ to: IssueStatus; label: string }>> = {
-  TODO: [{ to: "IN_PROGRESS", label: "Start progress" }],
-  IN_PROGRESS: [
-    { to: "DONE", label: "Mark done" },
-    { to: "TODO", label: "Move to To Do" },
-  ],
-  DONE: [{ to: "IN_PROGRESS", label: "Reopen" }],
-};
 
 export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const { projectId = "", issueId } = useParams();
@@ -110,6 +102,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     () => [...(workflowQuery.data?.statuses ?? fallbackStatuses)].sort((a, b) => a.sortOrder - b.sortOrder),
     [workflowQuery.data],
   );
+  const transitions = useMemo(
+    () => [...(workflowQuery.data?.transitions ?? fallbackTransitions)].sort((a, b) => a.sortOrder - b.sortOrder),
+    [workflowQuery.data],
+  );
 
   const filteredIssues = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -122,8 +118,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   }, [assigneeFilter, issues, query, typeFilter]);
 
   const transitionIssue = useMutation({
-    mutationFn: ({ nextStatus, movedIssueId }: { movedIssueId: string; nextStatus: IssueStatus }) =>
-      taskaApi.transitionIssue(projectId, movedIssueId, nextStatus),
+    mutationFn: ({ movedIssueId, transitionId }: { movedIssueId: string; nextStatus: IssueStatus; transitionId: string }) =>
+      taskaApi.transitionIssue(projectId, movedIssueId, transitionId),
     onMutate: async ({ nextStatus, movedIssueId }) => {
       await queryClient.cancelQueries({ queryKey: ["issues", projectId] });
       const previousIssues = queryClient.getQueryData<Page<Issue>>(["issues", projectId]);
@@ -183,7 +179,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       setActiveIssueId(null);
       return;
     }
-    transitionIssue.mutate({ movedIssueId: issue.id, nextStatus });
+    const transition = findTransition(issue.status, nextStatus, statuses, transitions);
+    if (transition) {
+      transitionIssue.mutate({ movedIssueId: issue.id, nextStatus, transitionId: transition.id });
+    }
     setActiveIssueId(null);
   };
 
@@ -289,6 +288,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         </span>
       </section>
 
+      {issuesQuery.isError ? <div className="form-error board-api-error">{issuesQuery.error.message}</div> : null}
+
       <DndContext sensors={sensors} onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
         <section className="columns-area">
           {workflowQuery.isLoading || issuesQuery.isLoading
@@ -321,6 +322,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           members={members}
           userById={userById}
           canEdit={canEdit}
+          statuses={statuses}
+          transitions={transitions}
           onClose={() => navigate(`/projects/${projectId}/board`)}
         />
       ) : null}
@@ -344,6 +347,30 @@ const fallbackStatuses: WorkflowStatus[] = [
   { id: "fallback-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
   { id: "fallback-progress", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
   { id: "fallback-done", statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30 },
+];
+
+const fallbackTransitions: WorkflowTransition[] = [
+  {
+    id: "55555555-5555-5555-5555-555555555555",
+    fromStatusId: "fallback-todo",
+    toStatusId: "fallback-progress",
+    name: "Start Progress",
+    sortOrder: 10,
+  },
+  {
+    id: "66666666-6666-6666-6666-666666666666",
+    fromStatusId: "fallback-progress",
+    toStatusId: "fallback-done",
+    name: "Complete",
+    sortOrder: 20,
+  },
+  {
+    id: "77777777-7777-7777-7777-777777777777",
+    fromStatusId: "fallback-done",
+    toStatusId: "fallback-progress",
+    name: "Reopen",
+    sortOrder: 30,
+  },
 ];
 
 function BoardColumn({
@@ -495,6 +522,8 @@ function IssuePanel({
   members,
   userById,
   canEdit,
+  statuses,
+  transitions,
   onClose,
 }: {
   projectId: string;
@@ -502,6 +531,8 @@ function IssuePanel({
   members: ProjectMember[];
   userById: Map<string, Pick<User, "displayName" | "color">>;
   canEdit: boolean;
+  statuses: WorkflowStatus[];
+  transitions: WorkflowTransition[];
   onClose: () => void;
 }) {
   const navigate = useNavigate();
@@ -514,6 +545,7 @@ function IssuePanel({
   const history = issueQuery.data?.history ?? [];
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
+  const availableTransitions = issue ? resolveTransitions(issue.status, statuses, transitions) : [];
 
   useEffect(() => {
     setSummary(issue?.summary ?? "");
@@ -529,7 +561,7 @@ function IssuePanel({
     onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
   });
   const transitionIssue = useMutation({
-    mutationFn: (nextStatus: IssueStatus) => taskaApi.transitionIssue(projectId, issueId, nextStatus),
+    mutationFn: (transitionId: string) => taskaApi.transitionIssue(projectId, issueId, transitionId),
     onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
   });
   const deleteIssue = useMutation({
@@ -545,14 +577,15 @@ function IssuePanel({
       <div className="panel-layer">
         <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" type="button" />
         <aside className="issue-panel">
-          <div className="panel-loading">Loading issue</div>
+          <div className={`panel-loading ${issueQuery.isError ? "form-error" : ""}`}>
+            {issueQuery.isError ? issueQuery.error.message : "Loading issue"}
+          </div>
         </aside>
       </div>
     );
   }
 
   const reporter = userById.get(issue.reporterId);
-  const selectedAssignee = issue.assigneeId ? userById.get(issue.assigneeId) : null;
 
   return (
     <div className="panel-layer">
@@ -587,15 +620,15 @@ function IssuePanel({
               {statusLabels[issue.status]}
             </span>
             <span className="arrow">→</span>
-            {transitionLabels[issue.status].map((transition) => (
+            {availableTransitions.map((transition) => (
               <button
                 className="secondary-button compact-button"
                 disabled={!canEdit || transitionIssue.isPending}
-                key={transition.to}
-                onClick={() => transitionIssue.mutate(transition.to)}
+                key={transition.id}
+                onClick={() => transitionIssue.mutate(transition.id)}
                 type="button"
               >
-                {transition.label}
+                {transition.name}
               </button>
             ))}
           </div>
@@ -603,7 +636,7 @@ function IssuePanel({
           <div className="meta-grid">
             <span>Assignee</span>
             <div className="chip-row">
-              <AssigneeChip active={!selectedAssignee} label="None" onClick={() => assignIssue.mutate(null)} user={null} disabled={!canEdit} />
+              <AssigneeChip active={!issue.assigneeId} label="None" onClick={() => undefined} user={null} disabled />
               {members.map((member) => (
                 <AssigneeChip
                   active={issue.assigneeId === member.userId}
@@ -637,6 +670,12 @@ function IssuePanel({
             <span>Created</span>
             <strong className="soft-strong">{formatDateTime(issue.createdAt)}</strong>
           </div>
+
+          {updateIssue.isError || assignIssue.isError || transitionIssue.isError || deleteIssue.isError ? (
+            <div className="form-error">
+              {(updateIssue.error ?? assignIssue.error ?? transitionIssue.error ?? deleteIssue.error)?.message}
+            </div>
+          ) : null}
 
           <label className="description-field">
             <span>Description</span>
@@ -813,18 +852,25 @@ function toUserMap(members: ProjectMember[]) {
 function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, "displayName" | "color">>) {
   if (event.eventType === "CREATED") return "created this issue";
   if (event.eventType === "TRANSITIONED") {
-    const from = event.payload.from ? statusLabels[event.payload.from] : "another status";
-    const to = event.payload.to && isIssueStatus(event.payload.to) ? statusLabels[event.payload.to] : event.payload.to;
+    const fromStatus = event.payload.from ?? event.payload.fromStatus;
+    const toStatus = event.payload.to ?? event.payload.toStatus;
+    const from = fromStatus ? statusLabels[fromStatus] : "another status";
+    const to = toStatus && isIssueStatus(toStatus) ? statusLabels[toStatus] : toStatus;
     return `moved ${from} to ${to}`;
   }
   if (event.eventType === "ASSIGNED") {
-    if (!event.payload.to || typeof event.payload.to !== "string") return "cleared the assignee";
-    return `assigned ${userById.get(event.payload.to)?.displayName ?? "someone"}`;
+    const assigneeId = event.payload.to ?? event.payload.assigneeId;
+    if (!assigneeId || typeof assigneeId !== "string") return "cleared the assignee";
+    return `assigned ${userById.get(assigneeId)?.displayName ?? "someone"}`;
   }
   if (event.eventType === "PRIORITY") {
     const priority = event.payload.to && isPriority(event.payload.to) ? priorityMeta[event.payload.to].label : "priority";
     return `set priority to ${priority}`;
   }
+  if (event.eventType === "UPDATED" && event.payload.newPriority) {
+    return `set priority to ${priorityMeta[event.payload.newPriority].label}`;
+  }
+  if (event.eventType === "DELETED") return "deleted this issue";
   return "updated this issue";
 }
 
@@ -834,6 +880,31 @@ function isIssueStatus(value: string): value is IssueStatus {
 
 function isPriority(value: string): value is IssuePriority {
   return value === "LOW" || value === "MEDIUM" || value === "HIGH";
+}
+
+function resolveTransitions(
+  fromStatus: IssueStatus,
+  statuses: WorkflowStatus[],
+  transitions: WorkflowTransition[],
+) {
+  const fromStatusId = statuses.find((status) => status.statusKey === fromStatus)?.id;
+  const statusById = new Map(statuses.map((status) => [status.id, status.statusKey]));
+
+  return transitions.flatMap((transition) => {
+    const toStatus = statusById.get(transition.toStatusId);
+    return transition.fromStatusId === fromStatusId && toStatus
+      ? [{ ...transition, toStatus }]
+      : [];
+  });
+}
+
+function findTransition(
+  fromStatus: IssueStatus,
+  toStatus: IssueStatus,
+  statuses: WorkflowStatus[],
+  transitions: WorkflowTransition[],
+) {
+  return resolveTransitions(fromStatus, statuses, transitions).find((transition) => transition.toStatus === toStatus);
 }
 
 async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, projectId: string, issueId?: string) {
