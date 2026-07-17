@@ -190,22 +190,15 @@ export class MockTaskaStore {
           id: "66666666-6666-6666-6666-666666666666",
           fromStatusId: IN_PROGRESS_STATUS_ID,
           toStatusId: DONE_STATUS_ID,
-          name: "Mark Done",
+          name: "Complete",
           sortOrder: 20,
         },
         {
           id: "77777777-7777-7777-7777-777777777777",
-          fromStatusId: IN_PROGRESS_STATUS_ID,
-          toStatusId: TODO_STATUS_ID,
-          name: "Move to To Do",
-          sortOrder: 30,
-        },
-        {
-          id: "88888888-8888-8888-8888-888888888888",
           fromStatusId: DONE_STATUS_ID,
           toStatusId: IN_PROGRESS_STATUS_ID,
           name: "Reopen",
-          sortOrder: 40,
+          sortOrder: 30,
         },
       ],
     };
@@ -582,10 +575,15 @@ export class MockTaskaStore {
     return issue;
   }
 
-  transitionIssue(projectId: string, issueId: string, toStatus: IssueStatus): Issue {
+  transitionIssue(projectId: string, issueId: string, transitionId: string): Issue {
     const issue = this.findIssue(projectId, issueId);
-    if (issue.status === toStatus) {
-      return issue;
+    const fromStatus = this.workflow.statuses.find((status) => status.statusKey === issue.status);
+    const transition = this.workflow.transitions.find(
+      (item) => item.id === transitionId && item.fromStatusId === fromStatus?.id,
+    );
+    const toStatus = this.workflow.statuses.find((status) => status.id === transition?.toStatusId)?.statusKey;
+    if (!transition || !toStatus) {
+      throw new MockApiError("FAILED_PRECONDITION", "Transition is not available for the current issue status");
     }
     const from = issue.status;
     issue.status = toStatus;
@@ -791,8 +789,8 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.assignIssue(projectId, issueId, assigneeId));
   }
 
-  async transitionIssue(projectId: string, issueId: string, toStatus: IssueStatus): Promise<Issue> {
-    return wait(this.store.transitionIssue(projectId, issueId, toStatus));
+  async transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue> {
+    return wait(this.store.transitionIssue(projectId, issueId, transitionId));
   }
 
   async deleteIssue(projectId: string, issueId: string): Promise<void> {

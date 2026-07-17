@@ -74,7 +74,7 @@ export interface TaskaApi {
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue>;
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue>;
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue>;
-  transitionIssue(projectId: string, issueId: string, toStatus: IssueStatus): Promise<Issue>;
+  transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue>;
   deleteIssue(projectId: string, issueId: string): Promise<void>;
 
   listNotifications(): Promise<Page<Notification>>;
