@@ -55,6 +55,12 @@ export interface UpdateIssueInput {
   priority?: IssuePriority;
 }
 
+export interface ListNotificationsParams {
+  unreadOnly?: boolean;
+  pageSize?: number;
+  offset?: number;
+}
+
 export interface TaskaApi {
   login(input: LoginInput): Promise<AuthTokens>;
   acceptInvitation(input: AcceptInvitationInput): Promise<void>;
@@ -77,7 +83,7 @@ export interface TaskaApi {
   transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue>;
   deleteIssue(projectId: string, issueId: string): Promise<void>;
 
-  listNotifications(): Promise<Page<Notification>>;
+  listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>>;
   markNotificationRead(notificationId: string): Promise<Notification>;
   markAllNotificationsRead(): Promise<{ updatedCount: number }>;
 }

@@ -4,6 +4,7 @@ import type {
   CreateIssueInput,
   CreateProjectInput,
   ListIssuesParams,
+  ListNotificationsParams,
   LoginInput,
   TaskaApi,
   UpdateIssueInput,
@@ -65,6 +66,15 @@ interface RestUpdateIssueResponse {
   summary: string;
   description: string;
   priority: Issue["priority"];
+}
+
+type RestNotification = Omit<Notification, "userId" | "link"> & {
+  userId?: string;
+  link?: string | null;
+};
+
+interface RestNotificationListResponse {
+  items: RestNotification[];
 }
 
 export class ApiError extends Error {
@@ -135,8 +145,17 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async listProjects(): Promise<Project[]> {
-    const response = await this.request<{ items: Project[] }>("/projects");
-    return response.items;
+    try {
+      const response = await this.request<{ items: Project[] }>("/projects");
+      return response.items;
+    } catch (error) {
+      // project-service currently reports an empty collection as NOT_FOUND.
+      // Keep the UI onboarding flow usable until the backend returns 200 [].
+      if (error instanceof ApiError && error.status === 404) {
+        return [];
+      }
+      throw error;
+    }
   }
 
   createProject(input: CreateProjectInput): Promise<Project> {
@@ -164,10 +183,8 @@ export class RestTaskaApi implements TaskaApi {
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
     const search = new URLSearchParams();
-    if (issueType) {
-      search.set("issueType", issueType);
-    }
-    return this.request<Workflow>(`/projects/${projectId}/workflow${this.query(search)}`);
+    search.set("issueType", issueType ?? "TASK");
+    return this.request<Workflow>(`/projects/${this.segment(projectId)}/workflow${this.query(search)}`);
   }
 
   async listIssues(projectId: string, params: ListIssuesParams = {}): Promise<Page<Issue>> {
@@ -255,20 +272,44 @@ export class RestTaskaApi implements TaskaApi {
     });
   }
 
-  listNotifications(): Promise<Page<Notification>> {
-    return this.request<Page<Notification>>("/notifications");
+  async listNotifications(params: ListNotificationsParams = {}): Promise<Page<Notification>> {
+    const search = new URLSearchParams();
+    if (params.unreadOnly !== undefined) search.set("unreadOnly", String(params.unreadOnly));
+    if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
+    if (params.offset !== undefined) search.set("offset", String(params.offset));
+
+    const response = await this.request<RestNotificationListResponse>(`/notifications${this.query(search)}`);
+    return {
+      items: response.items.map((notification) => this.toNotification(notification)),
+      pageSize: params.pageSize ?? 20,
+      offset: params.offset ?? 0,
+    };
   }
 
-  markNotificationRead(notificationId: string): Promise<Notification> {
-    return this.request<Notification>(`/notifications/${notificationId}/read`, {
-      method: "PATCH",
-    });
+  async markNotificationRead(notificationId: string): Promise<Notification> {
+    const response = await this.request<RestNotification>(
+      `/notifications/${this.segment(notificationId)}/read`,
+      {
+        method: "PATCH",
+      },
+    );
+    return this.toNotification(response);
   }
 
-  markAllNotificationsRead(): Promise<{ updatedCount: number }> {
-    return this.request<{ updatedCount: number }>("/notifications/read-all", {
-      method: "PATCH",
-    });
+  async markAllNotificationsRead(): Promise<{ updatedCount: number }> {
+    let updatedCount = 0;
+
+    while (true) {
+      const page = await this.listNotifications({ unreadOnly: true, pageSize: 100, offset: 0 });
+      if (page.items.length === 0) break;
+
+      await mapWithConcurrency(page.items, 6, (notification) => this.markNotificationRead(notification.id));
+      updatedCount += page.items.length;
+
+      if (page.items.length < 100) break;
+    }
+
+    return { updatedCount };
   }
 
   private setTokens(tokens: AuthTokens) {
@@ -327,6 +368,14 @@ export class RestTaskaApi implements TaskaApi {
         ...event,
         issueId: issue.id,
       })),
+    };
+  }
+
+  private toNotification(notification: RestNotification): Notification {
+    return {
+      ...notification,
+      userId: notification.userId ?? "",
+      link: notification.link ?? "",
     };
   }
 

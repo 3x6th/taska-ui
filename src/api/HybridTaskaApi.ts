@@ -4,6 +4,7 @@ import type {
   CreateIssueInput,
   CreateProjectInput,
   ListIssuesParams,
+  ListNotificationsParams,
   LoginInput,
   TaskaApi,
   UpdateIssueInput,
@@ -22,13 +23,14 @@ import type {
 } from "../domain/types";
 
 /**
- * Auth and issue endpoints are served by the real gateway. Projects, members,
- * workflow and notifications stay on the mock until their REST APIs land.
+ * API groups with gateway contracts are served by the real backend.
+ * Project membership and member reads use a temporary single-admin
+ * compatibility view until TAS-137 lands.
  */
 export class HybridTaskaApi implements TaskaApi {
   constructor(
     private readonly live: TaskaApi,
-    private readonly mock: TaskaApi,
+    private readonly assumeProjectAdmin = false,
   ) {}
 
   login(input: LoginInput): Promise<AuthTokens> {
@@ -52,27 +54,53 @@ export class HybridTaskaApi implements TaskaApi {
   }
 
   listProjects(): Promise<Project[]> {
-    return this.mock.listProjects();
+    return this.live.listProjects();
   }
 
   createProject(input: CreateProjectInput): Promise<Project> {
-    return this.mock.createProject(input);
+    return this.live.createProject(input);
   }
 
   getProject(projectId: string): Promise<Project> {
-    return this.mock.getProject(projectId);
+    return this.live.getProject(projectId);
   }
 
-  getMembership(projectId: string): Promise<ProjectMembership> {
-    return this.mock.getMembership(projectId);
+  async getMembership(projectId: string): Promise<ProjectMembership> {
+    const [project, currentUser] = await Promise.all([
+      this.live.getProject(projectId),
+      this.live.getCurrentUser(),
+    ]);
+
+    return {
+      role: this.assumeProjectAdmin || project.createdBy === currentUser.id ? "ADMIN" : "VIEWER",
+      isMember: true,
+      projectExists: true,
+    };
   }
 
-  listMembers(projectId: string): Promise<ProjectMember[]> {
-    return this.mock.listMembers(projectId);
+  async listMembers(projectId: string): Promise<ProjectMember[]> {
+    const [project, currentUser] = await Promise.all([
+      this.live.getProject(projectId),
+      this.live.getCurrentUser(),
+    ]);
+
+    return [
+      {
+        userId: currentUser.id,
+        role: this.assumeProjectAdmin || project.createdBy === currentUser.id ? "ADMIN" : "VIEWER",
+        addedAt: project.createdAt,
+        addedBy: project.createdBy,
+        user: {
+          displayName: currentUser.displayName,
+          email: currentUser.email,
+          color: currentUser.color,
+        },
+      },
+    ];
   }
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
-    return this.mock.getWorkflow(projectId, issueType);
+    return this.live.getWorkflow(projectId, issueType);
   }
 
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
@@ -103,15 +131,15 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.deleteIssue(projectId, issueId);
   }
 
-  listNotifications(): Promise<Page<Notification>> {
-    return this.mock.listNotifications();
+  listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>> {
+    return this.live.listNotifications(params);
   }
 
   markNotificationRead(notificationId: string): Promise<Notification> {
-    return this.mock.markNotificationRead(notificationId);
+    return this.live.markNotificationRead(notificationId);
   }
 
   markAllNotificationsRead(): Promise<{ updatedCount: number }> {
-    return this.mock.markAllNotificationsRead();
+    return this.live.markAllNotificationsRead();
   }
 }

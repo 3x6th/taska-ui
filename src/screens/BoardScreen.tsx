@@ -28,6 +28,7 @@ import type {
   IssueType,
   ProjectMember,
   User,
+  Workflow,
   WorkflowStatus,
   WorkflowTransition,
 } from "../domain/types";
@@ -36,8 +37,10 @@ import type { ScreenProps } from "./App";
 
 type IssueTypeFilter = IssueType | "ALL";
 type AssigneeFilter = string | "ALL";
+type WorkflowsByIssueType = Partial<Record<IssueType, Workflow>>;
 
-const issueTypes: IssueTypeFilter[] = ["ALL", "TASK", "BUG", "STORY"];
+const concreteIssueTypes: IssueType[] = ["TASK", "BUG", "STORY"];
+const issueTypes: IssueTypeFilter[] = ["ALL", ...concreteIssueTypes];
 const priorities: IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
 
 export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
@@ -74,9 +77,17 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryFn: () => taskaApi.listMembers(projectId),
   });
   const workflowQuery = useQuery({
-    queryKey: ["workflow", projectId],
+    queryKey: ["workflows", projectId],
     enabled: Boolean(projectId),
-    queryFn: () => taskaApi.getWorkflow(projectId),
+    queryFn: async () => {
+      const entries = await Promise.all(
+        concreteIssueTypes.map(async (issueType) => [
+          issueType,
+          await taskaApi.getWorkflow(projectId, issueType),
+        ] as const),
+      );
+      return Object.fromEntries(entries) as WorkflowsByIssueType;
+    },
   });
   const issuesQuery = useQuery({
     queryKey: ["issues", projectId],
@@ -95,15 +106,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const project = projectQuery.data;
   const members = membersQuery.data ?? [];
   const issues = issuesQuery.data?.items ?? [];
-  const canEdit = membershipQuery.data?.role !== "VIEWER";
+  const canEdit = membershipQuery.data?.role === "ADMIN" || membershipQuery.data?.role === "MEMBER";
 
   const userById = useMemo(() => toUserMap(members), [members]);
   const statuses = useMemo(
-    () => [...(workflowQuery.data?.statuses ?? fallbackStatuses)].sort((a, b) => a.sortOrder - b.sortOrder),
-    [workflowQuery.data],
-  );
-  const transitions = useMemo(
-    () => [...(workflowQuery.data?.transitions ?? fallbackTransitions)].sort((a, b) => a.sortOrder - b.sortOrder),
+    () => mergeWorkflowStatuses(workflowQuery.data),
     [workflowQuery.data],
   );
 
@@ -179,7 +186,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       setActiveIssueId(null);
       return;
     }
-    const transition = findTransition(issue.status, nextStatus, statuses, transitions);
+    const workflow = workflowQuery.data?.[issue.issueType];
+    const transition = findTransition(
+      issue.status,
+      nextStatus,
+      workflow?.statuses ?? fallbackStatuses,
+      workflow?.transitions ?? fallbackTransitions,
+    );
     if (transition) {
       transitionIssue.mutate({ movedIssueId: issue.id, nextStatus, transitionId: transition.id });
     }
@@ -322,8 +335,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           members={members}
           userById={userById}
           canEdit={canEdit}
-          statuses={statuses}
-          transitions={transitions}
+          workflows={workflowQuery.data}
           onClose={() => navigate(`/projects/${projectId}/board`)}
         />
       ) : null}
@@ -522,8 +534,7 @@ function IssuePanel({
   members,
   userById,
   canEdit,
-  statuses,
-  transitions,
+  workflows,
   onClose,
 }: {
   projectId: string;
@@ -531,8 +542,7 @@ function IssuePanel({
   members: ProjectMember[];
   userById: Map<string, Pick<User, "displayName" | "color">>;
   canEdit: boolean;
-  statuses: WorkflowStatus[];
-  transitions: WorkflowTransition[];
+  workflows?: WorkflowsByIssueType;
   onClose: () => void;
 }) {
   const navigate = useNavigate();
@@ -545,7 +555,14 @@ function IssuePanel({
   const history = issueQuery.data?.history ?? [];
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
-  const availableTransitions = issue ? resolveTransitions(issue.status, statuses, transitions) : [];
+  const workflow = issue ? workflows?.[issue.issueType] : undefined;
+  const availableTransitions = issue
+    ? resolveTransitions(
+        issue.status,
+        workflow?.statuses ?? fallbackStatuses,
+        workflow?.transitions ?? fallbackTransitions,
+      )
+    : [];
 
   useEffect(() => {
     setSummary(issue?.summary ?? "");
@@ -905,6 +922,22 @@ function findTransition(
   transitions: WorkflowTransition[],
 ) {
   return resolveTransitions(fromStatus, statuses, transitions).find((transition) => transition.toStatus === toStatus);
+}
+
+function mergeWorkflowStatuses(workflows?: WorkflowsByIssueType) {
+  if (!workflows) return fallbackStatuses;
+
+  const statusByKey = new Map<IssueStatus, WorkflowStatus>();
+  concreteIssueTypes.forEach((issueType) => {
+    workflows[issueType]?.statuses.forEach((status) => {
+      const current = statusByKey.get(status.statusKey);
+      if (!current || status.sortOrder < current.sortOrder) {
+        statusByKey.set(status.statusKey, status);
+      }
+    });
+  });
+
+  return [...statusByKey.values()].sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
 async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, projectId: string, issueId?: string) {

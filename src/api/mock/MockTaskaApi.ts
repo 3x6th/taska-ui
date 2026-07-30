@@ -4,6 +4,7 @@ import type {
   CreateIssueInput,
   CreateProjectInput,
   ListIssuesParams,
+  ListNotificationsParams,
   LoginInput,
   TaskaApi,
   UpdateIssueInput,
@@ -604,11 +605,17 @@ export class MockTaskaStore {
     this.pushHistory(issue.id, "UPDATED", this.currentUserId, { field: "deleted" });
   }
 
-  listNotifications(): Page<Notification> {
+  listNotifications(params: ListNotificationsParams = {}): Page<Notification> {
+    const offset = params.offset ?? 0;
+    const pageSize = params.pageSize ?? 20;
+    const notifications = [...this.notifications]
+      .filter((notification) => !params.unreadOnly || !notification.readAt)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
     return {
-      items: [...this.notifications].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-      pageSize: 20,
-      offset: 0,
+      items: notifications.slice(offset, offset + pageSize),
+      pageSize,
+      offset,
     };
   }
 
@@ -798,8 +805,8 @@ export class MockTaskaApi implements TaskaApi {
     await wait(null);
   }
 
-  async listNotifications(): Promise<Page<Notification>> {
-    return wait(this.store.listNotifications());
+  async listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>> {
+    return wait(this.store.listNotifications(params));
   }
 
   async markNotificationRead(notificationId: string): Promise<Notification> {

@@ -28,7 +28,15 @@ npm run build
 
 ## API Mode
 
-The default `hybrid` mode sends auth and issue requests to API Gateway. Projects, project membership, workflow and notifications remain on the stateful in-memory mock until those REST endpoints are available.
+The default `hybrid` mode sends auth, projects, issues, workflow and notifications to API Gateway. Until TAS-137 provides project membership and member read endpoints, hybrid mode exposes the current user as the project's only visible member.
+
+For the temporary admin-only test environment:
+
+```bash
+VITE_TASKA_ASSUME_PROJECT_ADMIN=true
+```
+
+Remove this flag after TAS-137 is deployed. It is a UI compatibility switch; backend authorization remains authoritative.
 
 To opt into REST-only mode once the remaining gateway endpoints are available:
 
