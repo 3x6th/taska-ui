@@ -9,7 +9,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronLeft, Plus, Search, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -21,6 +21,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import type {
   Issue,
+  IssueComment,
   IssueHistoryEvent,
   Page,
   IssuePriority,
@@ -42,6 +43,8 @@ type WorkflowsByIssueType = Partial<Record<IssueType, Workflow>>;
 const concreteIssueTypes: IssueType[] = ["TASK", "BUG", "STORY"];
 const issueTypes: IssueTypeFilter[] = ["ALL", ...concreteIssueTypes];
 const priorities: IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
+// The gateway caps `pageSize` for comments at 50.
+const commentsPageSize = 50;
 
 export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const { projectId = "", issueId } = useParams();
@@ -335,6 +338,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           members={members}
           userById={userById}
           canEdit={canEdit}
+          currentUserId={meQuery.data?.id}
           workflows={workflowQuery.data}
           onClose={() => navigate(`/projects/${projectId}/board`)}
         />
@@ -534,6 +538,7 @@ function IssuePanel({
   members,
   userById,
   canEdit,
+  currentUserId,
   workflows,
   onClose,
 }: {
@@ -542,6 +547,7 @@ function IssuePanel({
   members: ProjectMember[];
   userById: Map<string, Pick<User, "displayName" | "color">>;
   canEdit: boolean;
+  currentUserId?: string;
   workflows?: WorkflowsByIssueType;
   onClose: () => void;
 }) {
@@ -707,6 +713,14 @@ function IssuePanel({
             />
           </label>
 
+          <CommentsSection
+            projectId={projectId}
+            issueId={issueId}
+            canComment={canEdit}
+            currentUserId={currentUserId}
+            userById={userById}
+          />
+
           <section className="activity">
             <h3>Activity</h3>
             {history
@@ -725,6 +739,202 @@ function IssuePanel({
         </div>
       </aside>
     </div>
+  );
+}
+
+function CommentsSection({
+  projectId,
+  issueId,
+  canComment,
+  currentUserId,
+  userById,
+}: {
+  projectId: string;
+  issueId: string;
+  canComment: boolean;
+  currentUserId?: string;
+  userById: Map<string, Pick<User, "displayName" | "color">>;
+}) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const commentsQuery = useInfiniteQuery({
+    queryKey: ["comments", projectId, issueId],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => taskaApi.listComments(projectId, issueId, { page: pageParam, pageSize: commentsPageSize }),
+    getNextPageParam: (lastPage, pages) => {
+      const loaded = pages.reduce((total, page) => total + page.items.length, 0);
+      return lastPage.items.length > 0 && loaded < (lastPage.totalCount ?? loaded) ? pages.length : undefined;
+    },
+  });
+
+  // Comment mutations also append to the issue history, so the activity feed has to refetch.
+  const refresh = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["comments", projectId, issueId] }),
+      queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }),
+    ]);
+
+  const addComment = useMutation({
+    mutationFn: (body: string) => taskaApi.addComment(projectId, issueId, body),
+    onSuccess: async () => {
+      setDraft("");
+      await refresh();
+    },
+  });
+  const updateComment = useMutation({
+    mutationFn: ({ commentId, body }: { commentId: string; body: string }) =>
+      taskaApi.updateComment(projectId, issueId, commentId, body),
+    onSuccess: async () => {
+      setEditingId(null);
+      await refresh();
+    },
+  });
+  const deleteComment = useMutation({
+    mutationFn: (commentId: string) => taskaApi.deleteComment(projectId, issueId, commentId),
+    onSuccess: refresh,
+  });
+
+  const comments = commentsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const totalCount = commentsQuery.data?.pages[0]?.totalCount ?? comments.length;
+  const mutationError = addComment.error ?? updateComment.error ?? deleteComment.error;
+
+  return (
+    <section className="comments">
+      <h3>
+        Comments
+        {totalCount ? <span className="count-pill">{totalCount}</span> : null}
+      </h3>
+
+      {canComment ? (
+        <form
+          className="comment-composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (draft.trim()) addComment.mutate(draft.trim());
+          }}
+        >
+          <textarea
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="Leave a comment"
+            rows={3}
+            value={draft}
+          />
+          <div className="comment-composer-actions">
+            <button className="primary-button compact-button" disabled={!draft.trim() || addComment.isPending} type="submit">
+              Comment
+            </button>
+          </div>
+        </form>
+      ) : null}
+
+      {commentsQuery.isError ? <div className="form-error">{commentsQuery.error.message}</div> : null}
+      {mutationError ? <div className="form-error">{mutationError.message}</div> : null}
+
+      {commentsQuery.isPending ? <p className="comments-empty">Loading comments</p> : null}
+      {!commentsQuery.isPending && comments.length === 0 ? <p className="comments-empty">No comments yet</p> : null}
+
+      {comments.map((comment) => (
+        <CommentItem
+          key={comment.id}
+          comment={comment}
+          author={userById.get(comment.authorUserId)}
+          canManage={canComment && comment.authorUserId === currentUserId}
+          editing={editingId === comment.id}
+          pending={updateComment.isPending || deleteComment.isPending}
+          onStartEdit={() => setEditingId(comment.id)}
+          onCancelEdit={() => setEditingId(null)}
+          onSave={(body) => updateComment.mutate({ commentId: comment.id, body })}
+          onDelete={() => deleteComment.mutate(comment.id)}
+        />
+      ))}
+
+      {commentsQuery.hasNextPage ? (
+        <button
+          className="secondary-button compact-button"
+          disabled={commentsQuery.isFetchingNextPage}
+          onClick={() => commentsQuery.fetchNextPage()}
+          type="button"
+        >
+          {commentsQuery.isFetchingNextPage ? "Loading" : "Load older comments"}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+function CommentItem({
+  comment,
+  author,
+  canManage,
+  editing,
+  pending,
+  onStartEdit,
+  onCancelEdit,
+  onSave,
+  onDelete,
+}: {
+  comment: IssueComment;
+  author?: Pick<User, "displayName" | "color">;
+  canManage: boolean;
+  editing: boolean;
+  pending: boolean;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: (body: string) => void;
+  onDelete: () => void;
+}) {
+  const [body, setBody] = useState(comment.body);
+
+  useEffect(() => {
+    if (editing) setBody(comment.body);
+  }, [comment.body, editing]);
+
+  return (
+    <article className="comment-item">
+      <Avatar user={author} size="sm" />
+      <div className="comment-main">
+        <p className="comment-head">
+          <strong>{author?.displayName ?? "Unknown"}</strong>
+          <time>{formatDateTime(comment.createdAt)}</time>
+          {comment.updatedAt ? <em>edited</em> : null}
+        </p>
+
+        {editing ? (
+          <>
+            <textarea onChange={(event) => setBody(event.target.value)} rows={3} value={body} autoFocus />
+            <div className="comment-actions">
+              <button
+                className="primary-button compact-button"
+                disabled={!body.trim() || body.trim() === comment.body || pending}
+                onClick={() => onSave(body.trim())}
+                type="button"
+              >
+                Save
+              </button>
+              <button className="secondary-button compact-button" onClick={onCancelEdit} type="button">
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="comment-text">{comment.body}</p>
+            {canManage ? (
+              <div className="comment-actions">
+                <button className="link-button" onClick={onStartEdit} type="button">
+                  Edit
+                </button>
+                <button className="link-button" disabled={pending} onClick={onDelete} type="button">
+                  Delete
+                </button>
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -888,6 +1098,9 @@ function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, 
     return `set priority to ${priorityMeta[event.payload.newPriority].label}`;
   }
   if (event.eventType === "DELETED") return "deleted this issue";
+  if (event.eventType === "COMMENT_CREATED") return "commented on this issue";
+  if (event.eventType === "COMMENT_UPDATED") return "edited a comment";
+  if (event.eventType === "COMMENT_DELETED") return "deleted a comment";
   return "updated this issue";
 }
 

@@ -97,7 +97,16 @@ export interface Issue {
   deletedAt: string | null;
 }
 
-export type IssueEventType = "CREATED" | "TRANSITIONED" | "ASSIGNED" | "PRIORITY" | "UPDATED" | "DELETED";
+export type IssueEventType =
+  | "CREATED"
+  | "TRANSITIONED"
+  | "ASSIGNED"
+  | "PRIORITY"
+  | "UPDATED"
+  | "DELETED"
+  | "COMMENT_CREATED"
+  | "COMMENT_UPDATED"
+  | "COMMENT_DELETED";
 
 export interface IssueHistoryEvent {
   id: string;
@@ -122,6 +131,17 @@ export interface IssueHistoryEvent {
 export interface IssueWithHistory {
   issue: Issue;
   history: IssueHistoryEvent[];
+}
+
+export interface IssueComment {
+  id: string;
+  issueId: string;
+  projectId: string;
+  authorUserId: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string | null;
+  version: number;
 }
 
 export interface Notification {

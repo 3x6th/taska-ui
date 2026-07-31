@@ -1,5 +1,6 @@
 import type {
   Issue,
+  IssueComment,
   IssuePriority,
   IssueStatus,
   IssueType,
@@ -55,6 +56,11 @@ export interface UpdateIssueInput {
   priority?: IssuePriority;
 }
 
+export interface ListCommentsParams {
+  page?: number;
+  pageSize?: number;
+}
+
 export interface ListNotificationsParams {
   unreadOnly?: boolean;
   pageSize?: number;
@@ -82,6 +88,11 @@ export interface TaskaApi {
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue>;
   transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue>;
   deleteIssue(projectId: string, issueId: string): Promise<void>;
+
+  listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
+  addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;
+  updateComment(projectId: string, issueId: string, commentId: string, body: string): Promise<IssueComment>;
+  deleteComment(projectId: string, issueId: string, commentId: string): Promise<void>;
 
   listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>>;
   markNotificationRead(notificationId: string): Promise<Notification>;

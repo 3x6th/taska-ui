@@ -3,6 +3,7 @@ import type {
   AuthTokens,
   CreateIssueInput,
   CreateProjectInput,
+  ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
@@ -11,6 +12,7 @@ import type {
 } from "../TaskaApi";
 import type {
   Issue,
+  IssueComment,
   IssueHistoryEvent,
   IssuePriority,
   IssueStatus,
@@ -75,6 +77,7 @@ export class MockTaskaStore {
   private membersByProject: Record<string, ProjectMember[]>;
   private issues: Issue[];
   private historyByIssue: Record<string, IssueHistoryEvent[]>;
+  private commentsByIssue: Record<string, IssueComment[]>;
   private notifications: Notification[];
   private workflow: Workflow;
   private currentUserId = ANNA_ID;
@@ -392,13 +395,17 @@ export class MockTaskaStore {
 
     const tas107 = this.issues.find((item) => item.issueKey === "TAS-107");
     const tas101 = this.issues.find((item) => item.issueKey === "TAS-101");
+    this.commentsByIssue = {};
     if (tas107) {
       this.pushHistory(tas107.id, "ASSIGNED", ANNA_ID, { to: SOFIA_ID }, ts(16, 43));
       this.pushHistory(tas107.id, "TRANSITIONED", SOFIA_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(17, 14));
+      this.comment(tas107, SOFIA_ID, "Picked this up — the token refresh path needs a retry guard first.", ts(17, 20));
+      this.comment(tas107, ANNA_ID, "Agreed. Ping me once the guard is in and I will review.", ts(18, 5));
     }
     if (tas101) {
       this.pushHistory(tas101.id, "TRANSITIONED", MARK_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(13, 31));
       this.pushHistory(tas101.id, "PRIORITY", MARK_ID, { to: "HIGH" }, ts(13, 44));
+      this.comment(tas101, MARK_ID, "Bumped to high — this blocks the release checklist.", ts(13, 52));
     }
 
     this.notifications = [
@@ -605,6 +612,44 @@ export class MockTaskaStore {
     this.pushHistory(issue.id, "UPDATED", this.currentUserId, { field: "deleted" });
   }
 
+  listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Page<IssueComment> {
+    const issue = this.findIssue(projectId, issueId);
+    const page = params.page ?? 0;
+    const pageSize = params.pageSize ?? 20;
+    // The gateway returns the newest comment first, so "load more" walks backwards in time.
+    const comments = [...(this.commentsByIssue[issue.id] ?? [])].sort((a, b) => byCreatedAt(b, a));
+    return {
+      items: comments.slice(page * pageSize, page * pageSize + pageSize),
+      page,
+      pageSize,
+      totalCount: comments.length,
+    };
+  }
+
+  addComment(projectId: string, issueId: string, body: string): IssueComment {
+    const issue = this.findIssue(projectId, issueId);
+    const comment = this.comment(issue, this.currentUserId, this.commentBody(body), now());
+    this.pushHistory(issue.id, "COMMENT_CREATED", this.currentUserId, { commentId: comment.id });
+    return comment;
+  }
+
+  updateComment(projectId: string, issueId: string, commentId: string, body: string): IssueComment {
+    const comment = this.findOwnComment(projectId, issueId, commentId);
+    comment.body = this.commentBody(body);
+    comment.updatedAt = now();
+    comment.version += 1;
+    this.pushHistory(comment.issueId, "COMMENT_UPDATED", this.currentUserId, { commentId: comment.id });
+    return comment;
+  }
+
+  deleteComment(projectId: string, issueId: string, commentId: string): void {
+    const comment = this.findOwnComment(projectId, issueId, commentId);
+    this.commentsByIssue[comment.issueId] = (this.commentsByIssue[comment.issueId] ?? []).filter(
+      (item) => item.id !== comment.id,
+    );
+    this.pushHistory(comment.issueId, "COMMENT_DELETED", this.currentUserId, { commentId: comment.id });
+  }
+
   listNotifications(params: ListNotificationsParams = {}): Page<Notification> {
     const offset = params.offset ?? 0;
     const pageSize = params.pageSize ?? 20;
@@ -707,6 +752,42 @@ export class MockTaskaStore {
     return issue;
   }
 
+  // The gateway rejects edits and deletes from anyone but the comment author.
+  private findOwnComment(projectId: string, issueId: string, commentId: string): IssueComment {
+    const issue = this.findIssue(projectId, issueId);
+    const comment = this.commentsByIssue[issue.id]?.find((item) => item.id === commentId);
+    if (!comment) {
+      throw new MockApiError("NOT_FOUND", "Comment not found");
+    }
+    if (comment.authorUserId !== this.currentUserId) {
+      throw new MockApiError("PERMISSION_DENIED", "Only the author can modify this comment");
+    }
+    return comment;
+  }
+
+  private commentBody(body: string): string {
+    const trimmed = body.trim();
+    if (!trimmed || trimmed.length > 10000) {
+      throw new MockApiError("INVALID_ARGUMENT", "Comment body must be between 1 and 10000 characters");
+    }
+    return trimmed;
+  }
+
+  private comment(issue: Issue, authorUserId: string, body: string, createdAt: string): IssueComment {
+    const comment: IssueComment = {
+      id: makeId("comment"),
+      issueId: issue.id,
+      projectId: issue.projectId,
+      authorUserId,
+      body,
+      createdAt,
+      updatedAt: null,
+      version: 1,
+    };
+    this.commentsByIssue[issue.id] = [...(this.commentsByIssue[issue.id] ?? []), comment];
+    return comment;
+  }
+
   private pushHistory(
     issueId: string,
     eventType: IssueHistoryEvent["eventType"],
@@ -802,6 +883,23 @@ export class MockTaskaApi implements TaskaApi {
 
   async deleteIssue(projectId: string, issueId: string): Promise<void> {
     this.store.deleteIssue(projectId, issueId);
+    await wait(null);
+  }
+
+  async listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {
+    return wait(this.store.listComments(projectId, issueId, params));
+  }
+
+  async addComment(projectId: string, issueId: string, body: string): Promise<IssueComment> {
+    return wait(this.store.addComment(projectId, issueId, body));
+  }
+
+  async updateComment(projectId: string, issueId: string, commentId: string, body: string): Promise<IssueComment> {
+    return wait(this.store.updateComment(projectId, issueId, commentId, body));
+  }
+
+  async deleteComment(projectId: string, issueId: string, commentId: string): Promise<void> {
+    this.store.deleteComment(projectId, issueId, commentId);
     await wait(null);
   }
 

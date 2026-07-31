@@ -3,6 +3,7 @@ import type {
   AuthTokens,
   CreateIssueInput,
   CreateProjectInput,
+  ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
@@ -11,6 +12,7 @@ import type {
 } from "./TaskaApi";
 import type {
   Issue,
+  IssueComment,
   IssueType,
   IssueWithHistory,
   Notification,
@@ -129,6 +131,22 @@ export class HybridTaskaApi implements TaskaApi {
 
   deleteIssue(projectId: string, issueId: string): Promise<void> {
     return this.live.deleteIssue(projectId, issueId);
+  }
+
+  listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {
+    return this.live.listComments(projectId, issueId, params);
+  }
+
+  addComment(projectId: string, issueId: string, body: string): Promise<IssueComment> {
+    return this.live.addComment(projectId, issueId, body);
+  }
+
+  updateComment(projectId: string, issueId: string, commentId: string, body: string): Promise<IssueComment> {
+    return this.live.updateComment(projectId, issueId, commentId, body);
+  }
+
+  deleteComment(projectId: string, issueId: string, commentId: string): Promise<void> {
+    return this.live.deleteComment(projectId, issueId, commentId);
   }
 
   listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>> {

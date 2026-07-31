@@ -3,6 +3,7 @@ import type {
   AuthTokens,
   CreateIssueInput,
   CreateProjectInput,
+  ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
@@ -11,6 +12,7 @@ import type {
 } from "../TaskaApi";
 import type {
   Issue,
+  IssueComment,
   IssueType,
   IssueWithHistory,
   Notification,
@@ -66,6 +68,15 @@ interface RestUpdateIssueResponse {
   summary: string;
   description: string;
   priority: Issue["priority"];
+}
+
+type RestComment = Omit<IssueComment, "updatedAt"> & {
+  updatedAt?: string | null;
+};
+
+interface RestCommentsListResponse {
+  items: RestComment[];
+  totalCount: number;
 }
 
 type RestNotification = Omit<Notification, "userId" | "link"> & {
@@ -272,6 +283,47 @@ export class RestTaskaApi implements TaskaApi {
     });
   }
 
+  async listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Promise<Page<IssueComment>> {
+    const search = new URLSearchParams();
+    if (params.page !== undefined) search.set("page", String(params.page));
+    if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
+
+    const response = await this.request<RestCommentsListResponse>(
+      `${this.commentsPath(projectId, issueId)}${this.query(search)}`,
+    );
+    return {
+      items: response.items.map((comment) => this.toComment(comment)),
+      page: params.page ?? 0,
+      pageSize: params.pageSize ?? response.items.length,
+      totalCount: response.totalCount,
+    };
+  }
+
+  async addComment(projectId: string, issueId: string, body: string): Promise<IssueComment> {
+    const response = await this.request<RestComment>(this.commentsPath(projectId, issueId), {
+      method: "POST",
+      body: { body },
+    });
+    return this.toComment(response);
+  }
+
+  async updateComment(projectId: string, issueId: string, commentId: string, body: string): Promise<IssueComment> {
+    const response = await this.request<RestComment>(
+      `${this.commentsPath(projectId, issueId)}/${this.segment(commentId)}`,
+      {
+        method: "PUT",
+        body: { body },
+      },
+    );
+    return this.toComment(response);
+  }
+
+  async deleteComment(projectId: string, issueId: string, commentId: string): Promise<void> {
+    await this.request<void>(`${this.commentsPath(projectId, issueId)}/${this.segment(commentId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async listNotifications(params: ListNotificationsParams = {}): Promise<Page<Notification>> {
     const search = new URLSearchParams();
     if (params.unreadOnly !== undefined) search.set("unreadOnly", String(params.unreadOnly));
@@ -348,6 +400,10 @@ export class RestTaskaApi implements TaskaApi {
     return encodeURIComponent(value);
   }
 
+  private commentsPath(projectId: string, issueId: string) {
+    return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/comments`;
+  }
+
   private createIdempotencyKey() {
     return globalThis.crypto?.randomUUID?.() ?? `taska-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
@@ -368,6 +424,13 @@ export class RestTaskaApi implements TaskaApi {
         ...event,
         issueId: issue.id,
       })),
+    };
+  }
+
+  private toComment(comment: RestComment): IssueComment {
+    return {
+      ...comment,
+      updatedAt: comment.updatedAt ?? null,
     };
   }
 
