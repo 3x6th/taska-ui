@@ -95,17 +95,27 @@ describe("MockTaskaApi", () => {
 
     it("refuses to edit or delete a comment the current user does not own", async () => {
       const { items } = await api.listIssues(project.id);
-      const issue = items[0];
       const me = await api.getCurrentUser();
 
-      const page = await api.listComments(project.id, issue.id);
-      const foreign = page.items.find((comment) => comment.authorUserId !== me.id);
+      // Walk the seed until an issue with a foreign comment turns up, so this
+      // test cannot silently pass by picking an uncommented issue. The first
+      // shipped version did exactly that — see docs/ai/HARNESS.md.
+      let issueId: string | undefined;
+      let foreignId: string | undefined;
+      for (const issue of items) {
+        const page = await api.listComments(project.id, issue.id);
+        const foreign = page.items.find((comment) => comment.authorUserId !== me.id);
+        if (foreign) {
+          issueId = issue.id;
+          foreignId = foreign.id;
+          break;
+        }
+      }
+      expect(issueId).toBeDefined();
+      expect(foreignId).toBeDefined();
 
-      // Seeded issues may have no foreign comment; only assert when one exists.
-      if (!foreign) return;
-
-      await expect(api.updateComment(project.id, issue.id, foreign.id, "hijack")).rejects.toThrow();
-      await expect(api.deleteComment(project.id, issue.id, foreign.id)).rejects.toThrow();
+      await expect(api.updateComment(project.id, issueId!, foreignId!, "hijack")).rejects.toThrow();
+      await expect(api.deleteComment(project.id, issueId!, foreignId!)).rejects.toThrow();
     });
   });
 
