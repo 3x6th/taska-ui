@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-03T00:00:00+08:00",
+  "title": "Design System: Taska",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Indigo",
+        "canonical": "#4f46e5",
+        "tonalRamp": ["#312c8f", "#4f46e5", "#7a73ec", "#c7c3f7"]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#08080b", "#141418", "#f0f0f3", "#ffffff"]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Foreground",
+        "canonical": "#17171b",
+        "tonalRamp": ["#17171b", "#56565f", "#9090a0", "#ededf1"]
+      },
+      "danger": {
+        "role": "destructive",
+        "displayName": "Danger",
+        "canonical": "#e5544b",
+        "tonalRamp": ["#5c1f1a", "#b03a33", "#e5544b", "#f5a29c"]
+      },
+      "type-task": {
+        "role": "semantic",
+        "displayName": "Task",
+        "canonical": "#4f7cf0",
+        "tonalRamp": ["#4f7cf0"]
+      },
+      "type-story": {
+        "role": "semantic",
+        "displayName": "Story",
+        "canonical": "#3fa863",
+        "tonalRamp": ["#3fa863"]
+      },
+      "type-bug": {
+        "role": "semantic",
+        "displayName": "Bug",
+        "canonical": "#e5544b",
+        "tonalRamp": ["#e5544b"]
+      },
+      "prio-medium": {
+        "role": "semantic",
+        "displayName": "Medium priority",
+        "canonical": "#e3a008",
+        "tonalRamp": ["#e3a008"]
+      },
+      "muted": {
+        "role": "semantic",
+        "displayName": "Muted (low priority, To Do)",
+        "canonical": "#9aa0aa",
+        "tonalRamp": ["#9aa0aa"]
+      }
+    },
+    "typographyMeta": {
+      "ui": {
+        "displayName": "Hanken Grotesk",
+        "purpose": "All interface text. Base 13px / 1.45 / -0.005em. Weights 400-700."
+      },
+      "mono": {
+        "displayName": "IBM Plex Mono",
+        "purpose": "issueKey and invite tokens only. Weights 400/500."
+      }
+    },
+    "shadows": [
+      {
+        "name": "shadow",
+        "value": "0 1px 2px rgba(20,20,40,.05), 0 4px 14px rgba(20,20,40,.05)",
+        "purpose": "Cards and top bar."
+      },
+      {
+        "name": "shadow-hover",
+        "value": "0 2px 10px rgba(20,20,40,.07)",
+        "purpose": "Card hover only."
+      },
+      {
+        "name": "shadow-pop",
+        "value": "0 12px 40px rgba(10,10,30,.18)",
+        "purpose": "Notification popover."
+      },
+      {
+        "name": "shadow-modal",
+        "value": "0 24px 70px rgba(10,10,30,.30)",
+        "purpose": "Create-issue modal and slide-over."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(.2,.7,.3,1)",
+        "purpose": "Every transition and entrance in the product."
+      },
+      {
+        "name": "hover",
+        "value": "120ms",
+        "purpose": "border-color, box-shadow, opacity, transform on hover."
+      },
+      {
+        "name": "enter",
+        "value": "160ms",
+        "purpose": "Popovers and modals."
+      },
+      {
+        "name": "panel",
+        "value": "220ms",
+        "purpose": "Issue slide-over."
+      }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "390px" },
+      { "name": "tablet", "value": "768px" },
+      { "name": "laptop", "value": "1280px" },
+      { "name": "desktop", "value": "1440px" }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "A quiet tracker you can keep open all day",
+    "rules": [
+      "Chrome is pale, content is contrasty. Colour carries meaning — type, priority, status — never decoration. At most one accent per screen.",
+      "Separate with space and very faint borders, not heavy rules or card shadows.",
+      "Dense without crowding: 13px base and compact controls, but generous outer padding.",
+      "Every user action lands in the UI immediately and optimistically; the network catches up. A spinner only where there is nothing to show.",
+      "No decorative illustration, emoji, or gradient fill. The login radial glow is the one exception in the entire product.",
+      "The keyboard is first class. Everything clickable is operable from the keyboard and has a focus style.",
+      "Never introduce a colour by eye. New shades come from color-mix(in oklab, <token> N%, transparent).",
+      "At most two background levels in one plane.",
+      "Text nodes set their colour explicitly; nothing inherits it by accident.",
+      "Entrance animations never hide content: no opacity:0 first frame, no fill-mode that leaves an element invisible.",
+      "Nothing bounces, springs, or runs longer than 250ms."
+    ]
+  }
+}
