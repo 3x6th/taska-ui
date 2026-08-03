@@ -40,6 +40,7 @@ jobs:
           VITE_ROUTER_MODE: ${{ vars.VITE_ROUTER_MODE || 'hash' }}
           VITE_TASKA_API_MODE: ${{ vars.VITE_TASKA_API_MODE }}
           VITE_TASKA_API_BASE_URL: ${{ vars.VITE_TASKA_API_BASE_URL }}
+          VITE_TASKA_ASSUME_PROJECT_ADMIN: ${{ vars.VITE_TASKA_ASSUME_PROJECT_ADMIN }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

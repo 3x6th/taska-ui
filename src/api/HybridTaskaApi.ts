@@ -3,14 +3,16 @@ import type {
   AuthTokens,
   CreateIssueInput,
   CreateProjectInput,
+  ListCommentsParams,
   ListIssuesParams,
+  ListNotificationsParams,
   LoginInput,
   TaskaApi,
   UpdateIssueInput,
 } from "./TaskaApi";
 import type {
   Issue,
-  IssueStatus,
+  IssueComment,
   IssueType,
   IssueWithHistory,
   Notification,
@@ -23,13 +25,14 @@ import type {
 } from "../domain/types";
 
 /**
- * Auth endpoints are served by the real gateway; the rest of the contract
- * is not implemented on the backend yet and stays on the mock.
+ * API groups with gateway contracts are served by the real backend.
+ * Project membership and member reads use a temporary single-admin
+ * compatibility view until TAS-137 lands.
  */
 export class HybridTaskaApi implements TaskaApi {
   constructor(
     private readonly live: TaskaApi,
-    private readonly mock: TaskaApi,
+    private readonly assumeProjectAdmin = false,
   ) {}
 
   login(input: LoginInput): Promise<AuthTokens> {
@@ -53,66 +56,108 @@ export class HybridTaskaApi implements TaskaApi {
   }
 
   listProjects(): Promise<Project[]> {
-    return this.mock.listProjects();
+    return this.live.listProjects();
   }
 
   createProject(input: CreateProjectInput): Promise<Project> {
-    return this.mock.createProject(input);
+    return this.live.createProject(input);
   }
 
   getProject(projectId: string): Promise<Project> {
-    return this.mock.getProject(projectId);
+    return this.live.getProject(projectId);
   }
 
-  getMembership(projectId: string): Promise<ProjectMembership> {
-    return this.mock.getMembership(projectId);
+  async getMembership(projectId: string): Promise<ProjectMembership> {
+    const [project, currentUser] = await Promise.all([
+      this.live.getProject(projectId),
+      this.live.getCurrentUser(),
+    ]);
+
+    return {
+      role: this.assumeProjectAdmin || project.createdBy === currentUser.id ? "ADMIN" : "VIEWER",
+      isMember: true,
+      projectExists: true,
+    };
   }
 
-  listMembers(projectId: string): Promise<ProjectMember[]> {
-    return this.mock.listMembers(projectId);
+  async listMembers(projectId: string): Promise<ProjectMember[]> {
+    const [project, currentUser] = await Promise.all([
+      this.live.getProject(projectId),
+      this.live.getCurrentUser(),
+    ]);
+
+    return [
+      {
+        userId: currentUser.id,
+        role: this.assumeProjectAdmin || project.createdBy === currentUser.id ? "ADMIN" : "VIEWER",
+        addedAt: project.createdAt,
+        addedBy: project.createdBy,
+        user: {
+          displayName: currentUser.displayName,
+          email: currentUser.email,
+          color: currentUser.color,
+        },
+      },
+    ];
   }
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
-    return this.mock.getWorkflow(projectId, issueType);
+    return this.live.getWorkflow(projectId, issueType);
   }
 
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
-    return this.mock.listIssues(projectId, params);
+    return this.live.listIssues(projectId, params);
   }
 
   getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {
-    return this.mock.getIssue(projectId, issueId);
+    return this.live.getIssue(projectId, issueId);
   }
 
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
-    return this.mock.createIssue(projectId, input);
+    return this.live.createIssue(projectId, input);
   }
 
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
-    return this.mock.updateIssue(projectId, issueId, input);
+    return this.live.updateIssue(projectId, issueId, input);
   }
 
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue> {
-    return this.mock.assignIssue(projectId, issueId, assigneeId);
+    return this.live.assignIssue(projectId, issueId, assigneeId);
   }
 
-  transitionIssue(projectId: string, issueId: string, toStatus: IssueStatus): Promise<Issue> {
-    return this.mock.transitionIssue(projectId, issueId, toStatus);
+  transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue> {
+    return this.live.transitionIssue(projectId, issueId, transitionId);
   }
 
   deleteIssue(projectId: string, issueId: string): Promise<void> {
-    return this.mock.deleteIssue(projectId, issueId);
+    return this.live.deleteIssue(projectId, issueId);
   }
 
-  listNotifications(): Promise<Page<Notification>> {
-    return this.mock.listNotifications();
+  listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {
+    return this.live.listComments(projectId, issueId, params);
+  }
+
+  addComment(projectId: string, issueId: string, body: string): Promise<IssueComment> {
+    return this.live.addComment(projectId, issueId, body);
+  }
+
+  updateComment(projectId: string, issueId: string, commentId: string, body: string): Promise<IssueComment> {
+    return this.live.updateComment(projectId, issueId, commentId, body);
+  }
+
+  deleteComment(projectId: string, issueId: string, commentId: string): Promise<void> {
+    return this.live.deleteComment(projectId, issueId, commentId);
+  }
+
+  listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>> {
+    return this.live.listNotifications(params);
   }
 
   markNotificationRead(notificationId: string): Promise<Notification> {
-    return this.mock.markNotificationRead(notificationId);
+    return this.live.markNotificationRead(notificationId);
   }
 
   markAllNotificationsRead(): Promise<{ updatedCount: number }> {
-    return this.mock.markAllNotificationsRead();
+    return this.live.markAllNotificationsRead();
   }
 }

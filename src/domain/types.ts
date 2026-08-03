@@ -13,6 +13,7 @@ export type NotificationType =
   | "USER_ACTIVATED"
   | "PROJECT_CREATED"
   | "MEMBER_ADDED"
+  | "MEMBER_UPDATED"
   | "MEMBER_REMOVED"
   | "MEMBER_ROLE_CHANGED";
 
@@ -96,7 +97,16 @@ export interface Issue {
   deletedAt: string | null;
 }
 
-export type IssueEventType = "CREATED" | "TRANSITIONED" | "ASSIGNED" | "PRIORITY" | "UPDATED";
+export type IssueEventType =
+  | "CREATED"
+  | "TRANSITIONED"
+  | "ASSIGNED"
+  | "PRIORITY"
+  | "UPDATED"
+  | "DELETED"
+  | "COMMENT_CREATED"
+  | "COMMENT_UPDATED"
+  | "COMMENT_DELETED";
 
 export interface IssueHistoryEvent {
   id: string;
@@ -108,12 +118,30 @@ export interface IssueHistoryEvent {
     from?: IssueStatus;
     to?: IssueStatus | IssuePriority | string | null;
     field?: string;
+    fromStatus?: IssueStatus;
+    toStatus?: IssueStatus;
+    assigneeId?: string | null;
+    previousAssigneeId?: string | null;
+    oldPriority?: IssuePriority;
+    newPriority?: IssuePriority;
+    [key: string]: unknown;
   };
 }
 
 export interface IssueWithHistory {
   issue: Issue;
   history: IssueHistoryEvent[];
+}
+
+export interface IssueComment {
+  id: string;
+  issueId: string;
+  projectId: string;
+  authorUserId: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string | null;
+  version: number;
 }
 
 export interface Notification {

@@ -28,16 +28,24 @@ npm run build
 
 ## API Mode
 
-The app uses the in-memory mock API by default. It is stateful, so creating issues, moving cards, editing issue fields, assigning users, and marking notifications read all update the demo state during the session.
+The default `hybrid` mode sends auth, projects, issues, workflow and notifications to API Gateway. Until TAS-137 provides project membership and member read endpoints, hybrid mode exposes the current user as the project's only visible member.
 
-To point the same UI at API Gateway later:
+For the temporary admin-only test environment:
+
+```bash
+VITE_TASKA_ASSUME_PROJECT_ADMIN=true
+```
+
+Remove this flag after TAS-137 is deployed. It is a UI compatibility switch; backend authorization remains authoritative.
+
+To opt into REST-only mode once the remaining gateway endpoints are available:
 
 ```bash
 VITE_TASKA_API_MODE=rest
 VITE_TASKA_API_BASE_URL=/api/v1
 ```
 
-The switch happens in `src/api/client.ts`. The shared UI contract is `src/api/TaskaApi.ts`; mock behavior is in `src/api/mock/MockTaskaApi.ts`, and the future REST client is in `src/api/rest/RestTaskaApi.ts`.
+Use `VITE_TASKA_API_MODE=mock` for the fully in-memory demo. The switch happens in `src/api/client.ts`; the shared UI contract is `src/api/TaskaApi.ts`, mock behavior is in `src/api/mock/MockTaskaApi.ts`, and the gateway adapter is in `src/api/rest/RestTaskaApi.ts`.
 
 ## GitHub Pages
 
