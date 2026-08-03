@@ -11,7 +11,7 @@ import {
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronLeft, Plus, Search, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { Avatar } from "../components/Avatar";
@@ -107,8 +107,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   });
 
   const project = projectQuery.data;
-  const members = membersQuery.data ?? [];
-  const issues = issuesQuery.data?.items ?? [];
+  // Memoized so the `?? []` fallback does not produce a new array identity on
+  // every render and invalidate the memos below.
+  const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
+  const issues = useMemo(() => issuesQuery.data?.items ?? [], [issuesQuery.data]);
   const canEdit = membershipQuery.data?.role === "ADMIN" || membershipQuery.data?.role === "MEMBER";
 
   const userById = useMemo(() => toUserMap(members), [members]);
@@ -561,6 +563,20 @@ function IssuePanel({
   const history = issueQuery.data?.history ?? [];
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
+
+  // Reseed the drafts whenever the server copy changes. Done during render
+  // rather than from an effect: the effect version cost an extra render pass
+  // on every refetch. A key-based remount would reset focus mid-edit, which
+  // this does not.
+  const serverSummary = issue?.summary ?? "";
+  const serverDescription = issue?.description ?? "";
+  const [synced, setSynced] = useState<{ summary: string; description: string } | null>(null);
+  if (!synced || synced.summary !== serverSummary || synced.description !== serverDescription) {
+    setSynced({ summary: serverSummary, description: serverDescription });
+    setSummary(serverSummary);
+    setDescription(serverDescription);
+  }
+
   const workflow = issue ? workflows?.[issue.issueType] : undefined;
   const availableTransitions = issue
     ? resolveTransitions(
@@ -569,11 +585,6 @@ function IssuePanel({
         workflow?.transitions ?? fallbackTransitions,
       )
     : [];
-
-  useEffect(() => {
-    setSummary(issue?.summary ?? "");
-    setDescription(issue?.description ?? "");
-  }, [issue?.description, issue?.summary]);
 
   const updateIssue = useMutation({
     mutationFn: (patch: { summary?: string; description?: string; priority?: IssuePriority }) => taskaApi.updateIssue(projectId, issueId, patch),
@@ -837,7 +848,10 @@ function CommentsSection({
 
       {comments.map((comment) => (
         <CommentItem
-          key={comment.id}
+          // Entering or leaving edit mode remounts the row, which reseeds the
+          // draft from the current comment body. Same reset the component used
+          // to do from an effect, without the cascading render.
+          key={`${comment.id}:${editingId === comment.id}`}
           comment={comment}
           author={userById.get(comment.authorUserId)}
           canManage={canComment && comment.authorUserId === currentUserId}
@@ -885,11 +899,9 @@ function CommentItem({
   onSave: (body: string) => void;
   onDelete: () => void;
 }) {
+  // Seeded once per mount. The parent's key includes the editing flag, so
+  // toggling edit mode remounts this row with a fresh draft.
   const [body, setBody] = useState(comment.body);
-
-  useEffect(() => {
-    if (editing) setBody(comment.body);
-  }, [comment.body, editing]);
 
   return (
     <article className="comment-item">

@@ -47,6 +47,34 @@ VITE_TASKA_API_BASE_URL=/api/v1
 
 Use `VITE_TASKA_API_MODE=mock` for the fully in-memory demo. The switch happens in `src/api/client.ts`; the shared UI contract is `src/api/TaskaApi.ts`, mock behavior is in `src/api/mock/MockTaskaApi.ts`, and the gateway adapter is in `src/api/rest/RestTaskaApi.ts`.
 
+## AI harness
+
+This repository is built with an explicit agent harness. [AGENTS.md](AGENTS.md) is
+the single authority for roles, source ranking, frontend constraints, evidence, and
+safety; [CLAUDE.md](CLAUDE.md) only points at it.
+
+Four subagents live in `.claude/agents/`. `frontend-builder` is the only one that may
+edit production code; `art-director`, `api-contract-guard`, and `release-reviewer` are
+read-only, enforced through their tool lists.
+
+Supporting records are in [docs/ai/](docs/ai/) — notably
+[API-DIVERGENCE.md](docs/ai/API-DIVERGENCE.md), which tracks every place the UI
+compensates for gateway behaviour that differs from the REST draft.
+
+Third-party skills are pinned in `skills-lock.json` and restored on demand:
+
+```bash
+npx skills experimental_install
+```
+
+They land in `.agents/skills/` (git-ignored, like `node_modules`) and are reachable
+through the tracked symlinks in `.claude/skills/`.
+
+`art-director` can use the Refero design-reference MCP declared in `.mcp.json`,
+constrained by [docs/ai/REFERENCE-LOCK.md](docs/ai/REFERENCE-LOCK.md). It reads the
+token from `REFERO_API_KEY` in your environment — the committed config never contains
+the literal value. Without the variable set, that agent just has no reference tools.
+
 ## GitHub Pages
 
 The repository includes `.github/workflows/deploy-pages.yml`. It builds the Vite app, uploads `dist`, and deploys it through GitHub Pages.

@@ -36,3 +36,14 @@ coverage/
 
 # OS / IDE
 .DS_Store
+
+# Third-party skills, vendored on disk but restorable from skills-lock.json the
+# same way node_modules is restorable from package-lock.json. They are upstream
+# tooling, not this project's source, and do not belong in its history.
+/.agents/skills/
+
+# Machine-local permission allowlist, not project configuration.
+.claude/settings.local.json
+
+# Agent worktrees are scratch checkouts of this same repository.
+.claude/worktrees/

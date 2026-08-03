@@ -17,7 +17,17 @@
   --accent-fg: #ffffff;
   --danger: #e5544b;
   --shadow: 0 1px 2px rgba(20, 20, 40, 0.05), 0 4px 14px rgba(20, 20, 40, 0.05);
-  --shadow-strong: 0 12px 40px rgba(10, 10, 30, 0.16);
+  --shadow-hover: 0 2px 10px rgba(20, 20, 40, 0.07);
+  --shadow-pop: 0 12px 40px rgba(10, 10, 30, 0.16);
+  --shadow-modal: 0 24px 70px rgba(10, 10, 30, 0.3);
+  --shadow-panel: -12px 0 40px rgba(10, 10, 30, 0.16);
+  --scrim: rgba(12, 12, 22, 0.32);
+
+  /* DESIGN.md §3. One easing for the whole product. */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --dur-hover: 120ms;
+  --dur-enter: 160ms;
+  --dur-panel: 220ms;
 }
 
 :root[data-theme="dark"] {
@@ -34,7 +44,11 @@
   --accent: color-mix(in oklab, #4f46e5, white 22%);
   --accent-fg: #ffffff;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 18px rgba(0, 0, 0, 0.4);
-  --shadow-strong: 0 12px 42px rgba(0, 0, 0, 0.42);
+  --shadow-hover: 0 2px 12px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 12px 42px rgba(0, 0, 0, 0.42);
+  --shadow-modal: 0 24px 70px rgba(0, 0, 0, 0.65);
+  --shadow-panel: -12px 0 40px rgba(0, 0, 0, 0.6);
+  --scrim: rgba(4, 4, 8, 0.55);
 }
 
 html,
@@ -51,7 +65,8 @@ body {
   font-family: "Hanken Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
   line-height: 1.45;
-  letter-spacing: 0;
+  /* DESIGN.md §2.3 and the handoff prototype both specify -0.005em. */
+  letter-spacing: -0.005em;
 }
 
 button,
@@ -61,7 +76,9 @@ textarea {
   margin: 0;
   color: inherit;
   font: inherit;
-  letter-spacing: 0;
+  /* The `font` shorthand does not carry letter-spacing, so controls have to
+     inherit it explicitly or they drift from body text. */
+  letter-spacing: inherit;
 }
 
 button {
@@ -512,8 +529,8 @@ textarea:disabled {
   border: 1px solid var(--border);
   border-radius: 13px;
   background: var(--surface);
-  box-shadow: var(--shadow-strong);
-  animation: tk-pop 0.14s ease forwards;
+  box-shadow: var(--shadow-pop);
+  animation: tk-pop var(--dur-enter) var(--ease) forwards;
 }
 
 .user-profile-head {
@@ -680,14 +697,14 @@ textarea:disabled {
   cursor: pointer;
   text-align: left;
   transition:
-    transform 0.12s ease,
-    border-color 0.12s ease,
-    box-shadow 0.12s ease;
+    transform var(--dur-hover) var(--ease),
+    border-color var(--dur-hover) var(--ease),
+    box-shadow var(--dur-hover) var(--ease);
 }
 
 .project-card:hover {
   border-color: var(--border-strong);
-  box-shadow: 0 2px 10px rgba(20, 20, 40, 0.07);
+  box-shadow: var(--shadow-hover);
   transform: translateY(-2px);
 }
 
@@ -836,8 +853,8 @@ textarea:disabled {
   border: 1px solid var(--border);
   border-radius: 13px;
   background: var(--surface);
-  box-shadow: var(--shadow-strong);
-  animation: tk-pop 0.14s ease forwards;
+  box-shadow: var(--shadow-pop);
+  animation: tk-pop var(--dur-enter) var(--ease) forwards;
 }
 
 .notifications-popover header {
@@ -1001,8 +1018,8 @@ textarea:disabled {
   padding: 11px 9px 4px;
   background: var(--surface-2);
   transition:
-    background 0.12s ease,
-    box-shadow 0.12s ease;
+    background var(--dur-hover) var(--ease),
+    box-shadow var(--dur-hover) var(--ease);
 }
 
 .board-column.is-over {
@@ -1066,14 +1083,14 @@ textarea:disabled {
   cursor: grab;
   text-align: left;
   transition:
-    border-color 0.12s ease,
-    box-shadow 0.12s ease,
-    opacity 0.12s ease;
+    border-color var(--dur-hover) var(--ease),
+    box-shadow var(--dur-hover) var(--ease),
+    opacity var(--dur-hover) var(--ease);
 }
 
 .issue-card:hover {
   border-color: var(--border-strong);
-  box-shadow: 0 2px 10px rgba(20, 20, 40, 0.07);
+  box-shadow: var(--shadow-hover);
 }
 
 .issue-card.is-dragging {
@@ -1173,9 +1190,9 @@ textarea:disabled {
   inset: 0;
   width: 100%;
   height: 100%;
-  background: rgba(12, 12, 22, 0.32);
+  background: var(--scrim);
   cursor: default;
-  animation: tk-fade 0.16s ease forwards;
+  animation: tk-fade var(--dur-enter) var(--ease) forwards;
 }
 
 .issue-panel {
@@ -1189,8 +1206,8 @@ textarea:disabled {
   flex-direction: column;
   border-left: 1px solid var(--border);
   background: var(--surface);
-  box-shadow: -12px 0 40px rgba(10, 10, 30, 0.16);
-  animation: tk-slide 0.22s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  box-shadow: var(--shadow-panel);
+  animation: tk-slide var(--dur-panel) var(--ease) forwards;
 }
 
 .issue-panel-head {
@@ -1492,8 +1509,8 @@ textarea:disabled {
   border: 1px solid var(--border);
   border-radius: 15px;
   background: var(--surface);
-  box-shadow: var(--shadow-strong);
-  animation: tk-pop 0.16s ease forwards;
+  box-shadow: var(--shadow-modal);
+  animation: tk-pop var(--dur-enter) var(--ease) forwards;
 }
 
 .modal-header {
@@ -1598,5 +1615,27 @@ textarea:disabled {
 
   .form-two {
     grid-template-columns: 1fr;
+  }
+}
+
+/* DESIGN.md §3 and §7: motion is an enhancement, never the carrier of meaning.
+   Because every duration is a token, reduced motion is mostly a matter of
+   collapsing them — no !important and no specificity fight (§1 hard rules).
+   The three literal animations below predate the tokens and are named
+   explicitly. Entrance keyframes all start at partial opacity rather than 0,
+   so collapsing them leaves content readable rather than invisible. */
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  :root[data-theme="dark"] {
+    --dur-hover: 1ms;
+    --dur-enter: 1ms;
+    --dur-panel: 1ms;
+  }
+
+  .auth-card-wrap,
+  .skeleton-card,
+  .avatar-loading {
+    animation-duration: 1ms;
+    animation-iteration-count: 1;
   }
 }
