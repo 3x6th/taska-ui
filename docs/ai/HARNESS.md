@@ -91,6 +91,23 @@ the defect, exactly as `AGENTS.md` warns; and the symptom that led to it
 (a UI action doing nothing) looked at first like a bug in the feature code
 under review rather than in the tooling.
 
+**2026-08-03 — an owner decision merged a known-broken board to production.**
+`TAS-136` and `TAS-140` were merged into `main` while `TAS-139` was still open,
+against the explicit warning in PR #6's own description ("Не вливать до фикса
+TAS-139"). What was known at the moment of decision: the deployed gateway 500s
+on `GET /issues/{issueId}` for any issue with a comment; the board hydrates
+every listed issue through that endpoint; therefore one comment in a project
+makes that project's board fail to load on production, and push to `main`
+deploys. The orchestrator surfaced all of this and recommended waiting for the
+gateway fix; the owner chose to merge anyway. Recorded as an owner decision —
+not softened into agreement — and reversible: the fix is `TAS-139` on the
+backend, no frontend change is required to recover.
+
+The merge also happened while the first three reviewer verdicts were still in
+flight, so the "independent verdict before merge" rule was not exercised on
+the very PRs that introduced it. Verdicts will be recorded when they land,
+and their findings addressed in follow-up stories.
+
 **2026-08-03 — a reported theme-toggle bug was not one.** The toggle appeared
 dead across three attempted clicks. Two used a selector matching an
 `aria-label` the button did not have, and the third read `data-theme` in the
