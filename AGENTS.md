@@ -7,30 +7,36 @@ which source wins a conflict, and what counts as evidence.
 
 ## Authority
 
-1. `design_handoff_taska/api-gateway-rest-draft.md` — the REST contract: enums,
-   endpoint shapes, pagination, error codes.
+1. The API Gateway contract: `openapi.yml` in the backend repository,
+   [`VladislavYurin/taska-backend`](https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml)
+   on `develop`. A snapshot is vendored at `docs/contract/openapi.yml` with the
+   backend commit recorded in its header; when the two differ, the backend
+   wins and the snapshot must be refreshed.
 2. `DESIGN.md` — the visual and behavioural system.
 3. The assigned Jira `TAS` story — delivery scope and acceptance criteria.
 4. `docs/ai/REFERENCE-LOCK.md` — how external design references may influence
    the work.
 5. This file — ownership, verification, and safety.
 
+The frontend adapts to the backend, never the other way around. The REST draft
+in `design_handoff_taska/api-gateway-rest-draft.md` predates the gateway's
+existence and is a historical design document, not an authority — do not audit
+code against it.
+
 When two sources conflict, stop the conflicting work and follow the
 higher-ranked source.
 
 ### The contract has two truths
 
-The draft is *intended* truth. The deployed gateway at `api.taska.ozero.dev` is
-*runtime* truth. They are not the same thing today and pretending otherwise is
-how a frontend accumulates silent workarounds.
-
-When the gateway disagrees with the draft, stop and record the divergence in
+The contract states *intended* truth. The deployed gateway at
+`api.taska.ozero.dev` is *runtime* truth. When they disagree — or when the
+contract is silent on something the UI needs — stop and record it in
 `docs/ai/API-DIVERGENCE.md` with the endpoint, the observed behaviour, the
 compensating UI behaviour, and the Jira key that will remove it. Do not absorb
 the difference into a component and move on.
 
-This has already happened once: `VITE_TASKA_ASSUME_PROJECT_ADMIN` exists purely
-because `TAS-137` has not shipped project membership reads.
+This has already happened: `VITE_TASKA_ASSUME_PROJECT_ADMIN` exists purely
+because the contract has no membership or member-read endpoints (`TAS-137`).
 
 ## Roles
 

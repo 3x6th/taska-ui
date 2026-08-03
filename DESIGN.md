@@ -579,13 +579,15 @@ slide-over задачи, тред комментариев, модалка со�
 ## 9. Reference
 
 Порядок приоритета источников задан в `AGENTS.md`:
-`api-gateway-rest-draft.md` → `DESIGN.md` → задача в Jira → `docs/ai/REFERENCE-LOCK.md`
-→ `AGENTS.md`.
+`openapi.yml` бэкенда → `DESIGN.md` → задача в Jira → `docs/ai/REFERENCE-LOCK.md`
+→ `AGENTS.md`. Фронт подстраивается под бэк, не наоборот.
 
 - REST-контракт (источник enum'ов, ручек и кодов ошибок), верхний источник:
-  `design_handoff_taska/api-gateway-rest-draft.md`. Черновик описывает намерение;
-  поведение задеплоенного гейтвея может отличаться — расхождения ведутся в
-  `docs/ai/API-DIVERGENCE.md`.
+  `openapi.yml` из репозитория бэкенда, снапшот — `docs/contract/openapi.yml`.
+  Поведение задеплоенного гейтвея может отличаться и от него — расхождения и
+  молчания контракта ведутся в `docs/ai/API-DIVERGENCE.md`.
+  Черновик `design_handoff_taska/api-gateway-rest-draft.md` написан до появления
+  гейтвея и остаётся только историческим документом.
 - Живой hi-fi прототип всех экранов (светлая/тёмная тема, dnd, фильтры, slide-over, create,
   notifications): `design_handoff_taska/Taska.dc.html` — открывается в браузере как есть.
 - Пошаговое описание экранов и привязка к ручкам API: `design_handoff_taska/README.md`.

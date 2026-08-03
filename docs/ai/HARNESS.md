@@ -108,6 +108,26 @@ flight, so the "independent verdict before merge" rule was not exercised on
 the very PRs that introduced it. Verdicts will be recorded when they land,
 and their findings addressed in follow-up stories.
 
+**2026-08-03 — the harness shipped with the wrong contract at the top of its
+authority order.** `AGENTS.md` ranked `design_handoff_taska/api-gateway-rest-draft.md`
+as authority #1. The owner corrected this within hours: that draft was written
+before the gateway existed, and the real contract is the backend repository's
+`openapi.yml` (now vendored at `docs/contract/openapi.yml` with the backend
+commit pinned). The consequences were immediate and instructive:
+`api-contract-guard`'s first verdict measured the code against the stale draft
+and reported the deployed issue routes, the full-object `PUT`, the transition
+path, the flat error body and the entire comments surface as ten undocumented
+divergences — on the correct baseline, all of those **are the contract** and
+`RestTaskaApi` conforms to it. `API-DIVERGENCE.md` was rewritten on the new
+baseline (the entries that survived: TAS-139, the 404-on-empty-projects bug,
+and the contract's genuine gaps — membership reads, board-capable list DTO,
+read-all, unassignment, comment ordering, `X-Request-Id` exposure). TAS-141
+was refiled from "align the gateway with the draft" to "close the contract's
+gaps". Lesson recorded: an authority document needs its provenance checked
+before anything is audited against it — the reviewer did its job correctly
+against the wrong truth, which is exactly why authority order is worth
+writing down.
+
 **2026-08-03 — a reported theme-toggle bug was not one.** The toggle appeared
 dead across three attempted clicks. Two used a selector matching an
 `aria-label` the button did not have, and the third read `data-theme` in the

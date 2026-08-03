@@ -11,8 +11,8 @@ changes, do not revert unrelated work, and adapt to files that changed while
 you were working. This repository frequently has work-in-progress in the tree
 belonging to a different story — leave it alone.
 
-Before editing, read `AGENTS.md`, `DESIGN.md`, the REST contract in
-`design_handoff_taska/api-gateway-rest-draft.md`, and the assigned Jira story.
+Before editing, read `AGENTS.md`, `DESIGN.md`, the API Gateway contract in
+`docs/contract/openapi.yml`, and the assigned Jira story.
 Obey the story boundary and report scope drift instead of silently broadening
 it.
 

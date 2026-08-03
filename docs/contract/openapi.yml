@@ -1,0 +1,1336 @@
+# Vendored snapshot of the API Gateway contract.
+# Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
+# Backend commit: 74ae3aff1dd5 (develop, 2026-07-31)
+# Fetched: 2026-08-03
+#
+# The backend repository is the single source of truth for this contract.
+# This copy exists so read-only reviewers without network access can audit
+# against it and so the audited version is pinned in history. When it drifts
+# from develop, develop wins - refresh this file and update the commit above.
+
+openapi: 3.0.3
+info:
+  title: Taska API Gateway Contract
+  version: 1.0.0
+
+servers:
+  - url: /
+    description: Current host
+
+paths:
+  /api/v1/auth/login:
+    post:
+      summary: Аутентификация пользователя
+      operationId: login
+      tags:
+        - auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequestDto'
+      responses:
+        '200':
+          description: Успешный вход
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/auth/refresh:
+    post:
+      summary: Обновление токенов (access/refresh)
+      operationId: refresh
+      tags:
+        - auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequestDto'
+      responses:
+        '200':
+          description: Токены успешно обновлены
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/auth/invitations/accept:
+    post:
+      summary: Принятие инвайта и установка пароля
+      operationId: setPasswordByToken
+      tags:
+        - auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordByTokenRequestDto'
+      responses:
+        '204':
+          description: Пароль успешно изменен (No Content)
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/users/me:
+    get:
+      summary: Получение данных текущего пользователя
+      operationId: getMyInfo
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Данные успешно получены
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateAccessTokenResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/notifications:
+    get:
+      summary: Получение inbox уведомлений текущего пользователя
+      operationId: listNotifications
+      tags:
+        - notifications
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: unreadOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Уведомления успешно получены
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationListResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/notifications/{notificationId}/read:
+    patch:
+      summary: Отметка уведомления текущего пользователя как прочитанного
+      operationId: markNotificationAsRead
+      tags:
+        - notifications
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Уведомление успешно отмечено как прочитанное
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects:
+    post:
+      summary: Создание проекта
+      operationId: createProject
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequestDto'
+      responses:
+        '201':
+          description: Проект успешно создан
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    get:
+      summary: Возвращает проекты текущего пользователя
+      operationId: listMyProjects
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список проектов успешно получен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListMyProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}:
+    get:
+      summary: Возвращает проект по идентификатору
+      operationId: getProject
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Проект успешно найден
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/members:
+    post:
+      summary: Добавляет участника в проект
+      operationId: addProjectMember
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddProjectMemberRequestDto'
+      responses:
+        '201':
+          description: Участник успешно добавлен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMemberResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/members/{userId}:
+    patch:
+      summary: Меняет роль участника
+      operationId: changeProjectMemberRole
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeProjectMemberRoleRequestDto'
+      responses:
+        '200':
+          description: Роль участника успешно изменена
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMemberResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    delete:
+      summary: Удаляет участника из проекта
+      operationId: removeProjectMember
+      tags:
+        - project
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Участник успешно удален
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/issues:
+    post:
+      summary: Создание задачи
+      operationId: createIssue
+      tags:
+        - issue
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIssueRequestDto'
+
+      responses:
+        '201':
+          description: Создана новая задача
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    get:
+      summary: Возвращает задачи проекта с фильтрами и пагинацией
+      operationId: listIssues
+      tags:
+        - issue
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+
+        - name: assigneeId
+          in: query
+          required: false
+          schema:
+            type: string
+
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+
+      responses:
+        '200':
+          description: Список задач успешно найден
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListIssuesResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/issues/{issueId}:
+    get:
+      summary: Возвращает задачу с историей
+      operationId: getIssue
+      tags:
+        - issue
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+
+      responses:
+        '200':
+          description: Задача с историей успешно найдена
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueWithHistoryResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    put:
+      summary: Обновляет основные поля задачи
+      operationId: updateIssue
+      tags:
+        - issue
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIssueRequestDto'
+
+      responses:
+        '200':
+          description: Данные задачи успешно обновлены
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateIssueResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    delete:
+      summary: Выполняет мягкое удаление задачи
+      operationId: deleteIssue
+      tags:
+        - issue
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+
+      responses:
+        '204':
+          description: Задача успешно удалена (No Content)
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/issues/{issueId}/assignee:
+    put:
+      summary: Назначает исполнителя задачи
+      operationId: assignIssue
+      tags:
+        - issue
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignIssueRequestDto'
+
+      responses:
+        '200':
+          description: Исполнитель задачи успешно назначен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/issues/{issueId}/transition/{transitionId}:
+    put:
+      summary: Выполняет переход задачи по workflow (меняет статус задачи)
+      operationId: transitionIssue
+      tags:
+        - issue
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+
+        - name: transitionId
+          in: path
+          required: true
+          schema:
+            type: string
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionIssueRequestDto'
+
+      responses:
+        '200':
+          description: Статус задачи успешно изменен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueWithHistoryResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  ########################## API для issue комментариев ##################
+  /api/v1/projects/{projectId}/issues/{issueId}/comments:
+    get:
+      summary: Получение списка комментариев к задаче
+      operationId: listComments
+      tags:
+        - comments
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Список комментариев успешно получен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentsListResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    post:
+      summary: Добавление комментария к задаче
+      operationId: addComment
+      tags:
+        - comments
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentRequestDto'
+      responses:
+        '200':
+          description: Комментарий успешно добавлен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    ########################## Окончание API для issue комментариев ##################
+
+  /api/v1/projects/{projectId}/issues/{issueId}/comments/{commentId}:
+    put:
+      summary: Обновление комментария
+      operationId: updateComment
+      tags:
+        - comments
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: commentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentRequestDto'
+      responses:
+        '200':
+          description: Комментарий успешно обновлен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    delete:
+      summary: Удаление комментария
+      operationId: deleteComment
+      tags:
+        - comments
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: commentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Комментарий успешно удален
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/workflow:
+    get:
+      summary: Получение workflow проекта и типа задачи
+      operationId: getWorkflowForProject
+      tags:
+        - workflow
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          description: Уникальный идентификатор проекта (UUID)
+          schema:
+            type: string
+            format: uuid
+        - name: issueType
+          in: query
+          required: true
+          description: Тип задачи, для которой запрашивается workflow
+          schema:
+            $ref: '#/components/schemas/IssueTypeDto'
+      responses:
+        '200':
+          description: Workflow успешно получен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  headers:
+    X-RequestId-Header:
+      schema:
+        type: string
+      description: Возвращаемый клиенту сквозной ID запроса
+
+  responses:
+    ErrorResponse:
+      description: Единая схема ошибки гейтвея
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-RequestId-Header'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RestErrorResponse'
+
+  schemas:
+    LoginRequestDto:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+
+    LoginResponseDto:
+      type: object
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+          format: int64
+
+    RefreshRequestDto:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+
+    RefreshResponseDto:
+      type: object
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+          format: int64
+
+    PasswordByTokenRequestDto:
+      type: object
+      required: [token, newPassword]
+      properties:
+        token:
+          type: string
+        newPassword:
+          type: string
+
+    ValidateAccessTokenResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+        login:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        status:
+          type: string
+
+    CreateIssueRequestDto:
+      type: object
+      required: [issueType, summary, description, priority]
+      properties:
+        issueType:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+
+    IssueResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        issueNumber:
+          type: integer
+        issueKey:
+          type: string
+        issueType:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        assigneeId:
+          type: string
+        reporterId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+
+    IssueHistoryResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+        eventType:
+          type: string
+        actorUserId:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        payload:
+          type: object
+
+    IssueWithHistoryResponseDto:
+      type: object
+      properties:
+        issue:
+          $ref: '#/components/schemas/IssueResponseDto'
+        history:
+          type: array
+          items:
+           $ref: '#/components/schemas/IssueHistoryResponseDto'
+
+    IssueShortResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+        issueKey:
+          type: string
+        summary:
+          type: string
+        issueType:
+          type: string
+        priority:
+          type: string
+        assigneeId:
+          type: string
+
+    ListIssuesResponseDto:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueShortResponseDto'
+        totalCount:
+          type: integer
+
+    UpdateIssueRequestDto:
+      type: object
+      required: [summary, description, priority]
+      properties:
+        summary:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+
+    UpdateIssueResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+
+    AssignIssueRequestDto:
+      type: object
+      required: [assigneeId]
+      properties:
+        assigneeId:
+          type: string
+
+    TransitionIssueRequestDto:
+      type: object
+      properties:
+        payload:
+          type: object
+
+    NotificationListResponseDto:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotificationResponseDto'
+
+    NotificationResponseDto:
+      type: object
+      required:
+        - id
+        - notificationType
+        - title
+        - body
+        - createdAt
+        - sourceEventId
+      properties:
+        id:
+          type: string
+          format: uuid
+        notificationType:
+          $ref: '#/components/schemas/NotificationTypeDto'
+        title:
+          type: string
+        body:
+          type: string
+        link:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        readAt:
+          type: string
+          format: date-time
+          nullable: true
+        sourceEventId:
+          type: string
+          format: uuid
+
+    NotificationTypeDto:
+      type: string
+      enum:
+        - ISSUE_ASSIGNED
+        - ISSUE_TRANSITIONED
+        - ISSUE_CREATED
+        - ISSUE_UPDATED
+        - ISSUE_DELETED
+        - USER_INVITED
+        - USER_ACTIVATED
+        - PROJECT_CREATED
+        - MEMBER_ADDED
+        - MEMBER_UPDATED
+        - MEMBER_REMOVED
+
+    CreateProjectRequestDto:
+      type: object
+      required: [projectKey,name]
+      properties:
+        projectKey:
+          type: string
+          minLength: 1
+          pattern: '^[\x21-\x7E]+$'
+        name:
+          type: string
+          minLength: 1
+
+    ProjectResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+        projectKey:
+          type: string
+        name:
+          type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    ListMyProjectResponseDto:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectResponseDto'
+
+    AddProjectMemberRequestDto:
+      type: object
+      required: [userId,role]
+      properties:
+        userId:
+          type: string
+        role:
+          type: string
+          enum: [ADMIN, MEMBER, VIEWER]
+
+    ChangeProjectMemberRoleRequestDto:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [ ADMIN, MEMBER, VIEWER ]
+
+    ProjectMemberResponseDto:
+      type: object
+      properties:
+        projectId:
+          type: string
+        userId:
+          type: string
+        role:
+          type: string
+
+    RestErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    IssueTypeDto:
+      type: string
+      enum:
+        - TASK
+        - BUG
+        - STORY
+
+    # ==================== КОММЕНТАРИИ к issue ====================
+    CommentRequestDto:
+      type: object
+      required:
+        - body
+      properties:
+        body:
+          type: string
+          description: Содержимое комментария
+          minLength: 1
+          maxLength: 10000
+          example: "Это комментарий к задаче"
+
+    CommentResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор комментария
+        issueId:
+          type: string
+          format: uuid
+          description: Идентификатор задачи
+        projectId:
+          type: string
+          format: uuid
+          description: Идентификатор проекта
+        authorUserId:
+          type: string
+          format: uuid
+          description: Идентификатор автора комментария
+        body:
+          type: string
+          description: Текст комментария
+        createdAt:
+          type: string
+          format: date-time
+          description: Дата и время создания
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Дата и время последнего обновления
+        version:
+          type: integer
+          description: Версия комментария (для оптимистической блокировки)
+
+    CommentsListResponseDto:
+      type: object
+      required:
+        - items
+        - totalCount
+      properties:
+        items:
+          type: array
+          description: Список комментариев
+          items:
+            $ref: '#/components/schemas/CommentResponseDto'
+        totalCount:
+          type: integer
+          description: Общее количество комментариев (без учёта пагинации)
+    # ==================== Окончание КОММЕНТАРИИ к issue ====================
+
+    WorkflowResponseDto:
+      type: object
+      required: [ id, name, version, createdAt, updatedAt, statuses, transitions ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        version:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowStatusDto'
+        transitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowTransitionDto'
+
+    WorkflowStatusDto:
+      type: object
+      required: [ id, statusKey, name, category, sortOrder, createdAt, updatedAt ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        statusKey:
+          type: string
+          description: Уникальный строковый ключ статуса (например, TODO, IN_PROGRESS)
+        name:
+          type: string
+          description: Отображаемое имя статуса для UI
+        category:
+          type: string
+          description: Категория жизненного цикла статуса (без жесткого ограничения enum в схеме для расширяемости)
+        sortOrder:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    WorkflowTransitionDto:
+      type: object
+      required: [ id, fromStatusId, toStatusId, name, sortOrder, createdAt, updatedAt ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fromStatusId:
+          type: string
+          format: uuid
+        toStatusId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        sortOrder:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
