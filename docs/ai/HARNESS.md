@@ -64,9 +64,40 @@ belong here — recorded as what they were, not softened into agreement.
 
 **2026-08-03 — the harness was installed, and has not yet reviewed anything.**
 The four agents, the pinned skills, the verification gate, and the documents
-above all landed under `TAS-140`. At the time of writing no subagent has
-returned a verdict on production work, so this section contains no findings.
-It is empty because nothing has run, not because nothing went wrong.
+above all landed under `TAS-140`. No subagent has returned a verdict on
+production work. This is not because the reviews were skipped: `.claude/agents/`
+and `.mcp.json` are both read when a Claude Code session starts, so agents and
+MCP servers created *during* a session are not registered until the next one.
+The self-test was attempted, failed with `Agent type 'art-director' not found`,
+and is recorded here rather than described as passing. First real verdicts are
+owed on the next session, and `TAS-140` cannot be called done until they exist.
+
+The same applies to Refero: the tools are declared but were unreachable this
+session, so the claim in `REFERENCE-LOCK.md` that only `art-director` can reach
+them is written down but unproven.
+
+**2026-08-03 — a null byte shipped into `BoardScreen.tsx` and the typecheck did
+not care.** While removing a `set-state-in-effect` finding, the replacement
+used `\0` as a string separator and wrote a literal NUL into the source. The
+file became binary: `grep` silently returned nothing for every query against
+it, and Vite's transform broke badly enough that posting a comment did nothing
+in the browser. `tsc`, `eslint` and `vitest` all passed throughout — a NUL is
+valid inside a TypeScript template literal, so nothing in `npm run check` had
+any reason to object.
+
+It was caught by trying to use the app, then noticing that `grep` had gone
+quiet. Worth recording for two reasons: the green gate proved nothing about
+the defect, exactly as `AGENTS.md` warns; and the symptom that led to it
+(a UI action doing nothing) looked at first like a bug in the feature code
+under review rather than in the tooling.
+
+**2026-08-03 — a reported theme-toggle bug was not one.** The toggle appeared
+dead across three attempted clicks. Two used a selector matching an
+`aria-label` the button did not have, and the third read `data-theme` in the
+same tick as the click, before React's effect had run. Re-tested with a delay,
+it worked. The finding was dropped instead of filed. The button did turn out
+to be missing the `aria-label` that `DESIGN.md` §7 requires, which is what the
+bad selector had accidentally demonstrated, and that was fixed.
 
 **2026-08-03 — Jira status lags the code by two stories.** `TAS-134` (current
 user profile) and `TAS-136` (issue endpoints) are both `To Do` in Jira while

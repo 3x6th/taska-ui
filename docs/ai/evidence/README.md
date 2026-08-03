@@ -33,6 +33,19 @@ When a check was skipped, name it and say why. `lake-landing` shipped three
 defects past a complete evidence matrix, and each was found by a human opening
 the running site — a full matrix is a floor, not a ceiling.
 
+## A note on capture tooling
+
+The browser tools return screenshots to the agent, not to disk. An agent can
+therefore *look* at a viewport but cannot commit what it saw. Until that gap is
+closed, captures here are taken by a human, and an agent's visual verification
+survives only as prose in its verdict.
+
+`TAS-140` was verified this way: login, projects, board and the issue slide-over
+were inspected at 1440×900, 1280×800 and 390×844 in both themes, and token
+values were read out of `getComputedStyle` rather than eyeballed — but this
+directory holds no images from that pass, and the verdict should be read
+accordingly.
+
 ## Naming and size
 
 Keep captures under roughly 300KB each; JPEG at quality 80 is enough to audit
