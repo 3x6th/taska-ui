@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;450;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+button,input,textarea{font:inherit;color:inherit;background:none;border:none;outline:none}
+input::placeholder,textarea::placeholder{color:var(--fg-3)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:6px;border:3px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:var(--fg-3);background-clip:padding-box}
+@keyframes tk-fade{from{opacity:.35}to{opacity:1}}
+@keyframes tk-slide{from{transform:translateX(22px)}to{transform:translateX(0)}}
+@keyframes tk-pop{from{transform:translateY(7px);opacity:.55}to{transform:translateY(0);opacity:1}}
+</style>
+</helmet>
+
+<div style="height:100vh;width:100%;display:flex;flex-direction:column;overflow:hidden;font-family:'Hanken Grotesk',system-ui,-apple-system,sans-serif;font-size:13px;line-height:1.45;letter-spacing:-0.005em;color:var(--fg);background:var(--bg);--bg:#f6f6f8;--surface:#ffffff;--surface-2:#f0f0f3;--surface-3:#e9e9ee;--border:rgba(22,22,32,.09);--border-strong:rgba(22,22,32,.15);--fg:#17171b;--fg-2:#56565f;--fg-3:#9090a0;--accent:#4f46e5;--accent-fg:#ffffff;--shadow:0 1px 2px rgba(20,20,40,.05),0 4px 14px rgba(20,20,40,.05);--radius:10px;{{ overrideVars }}">
+
+<!-- ============ LOGIN ============ -->
+<sc-if value="{{ isLogin }}" hint-placeholder-val="{{ true }}">
+<div data-screen-label="Login" style="flex:1;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden">
+  <div style="position:absolute;inset:0;background:radial-gradient(620px 440px at 50% 32%, color-mix(in oklab, var(--accent) 16%, transparent), transparent 70%)"></div>
+  <div style="position:relative;width:392px;max-width:90vw;animation:tk-pop .5s ease forwards">
+    <div style="display:flex;align-items:center;gap:9px;justify-content:center;margin-bottom:26px">
+      <div style="width:26px;height:26px;border-radius:7px;background:var(--accent);display:flex;align-items:center;justify-content:center">
+        <div style="width:10px;height:10px;border-radius:3px;background:var(--accent-fg)"></div>
+      </div>
+      <span style="font-size:19px;font-weight:700;letter-spacing:-0.02em">Taska</span>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:26px 26px 24px">
+      <div style="display:flex;gap:3px;padding:3px;background:var(--surface-2);border-radius:9px;margin-bottom:20px">
+        <button onClick="{{ setAuthSignin }}" style="{{ signinTabStyle }}">Sign in</button>
+        <button onClick="{{ setAuthInvite }}" style="{{ inviteTabStyle }}">Accept invite</button>
+      </div>
+
+      <sc-if value="{{ authIsSignin }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;flex-direction:column;gap:13px">
+          <label style="display:flex;flex-direction:column;gap:6px"><span style="font-size:11.5px;font-weight:550;color:var(--fg-2)">Email</span>
+            <input type="email" placeholder="anna@example.com" style="height:38px;padding:0 12px;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface)"></label>
+          <label style="display:flex;flex-direction:column;gap:6px"><span style="font-size:11.5px;font-weight:550;color:var(--fg-2)">Password</span>
+            <input type="password" placeholder="••••••••••" style="height:38px;padding:0 12px;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface)"></label>
+          <button onClick="{{ signIn }}" style="height:39px;margin-top:5px;border-radius:9px;background:var(--accent);color:var(--accent-fg);font-weight:600;font-size:13.5px;cursor:pointer">Sign in</button>
+          <div style="text-align:center;font-size:11.5px;color:var(--fg-3);margin-top:2px">Forgot password? Contact your project admin.</div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ authIsInvite }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:13px">
+          <div style="font-size:12px;color:var(--fg-2);background:var(--surface-2);padding:9px 11px;border-radius:9px">You were invited to <b style="color:var(--fg)">Taska Platform</b>. Set a password to activate your account.</div>
+          <label style="display:flex;flex-direction:column;gap:6px"><span style="font-size:11.5px;font-weight:550;color:var(--fg-2)">Invite token</span>
+            <input placeholder="invite-token-from-email" style="height:38px;padding:0 12px;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface);font-family:'IBM Plex Mono',monospace;font-size:12px"></label>
+          <label style="display:flex;flex-direction:column;gap:6px"><span style="font-size:11.5px;font-weight:550;color:var(--fg-2)">New password</span>
+            <input type="password" placeholder="At least 12 characters" style="height:38px;padding:0 12px;border:1px solid var(--border-strong);border-radius:9px;background:var(--surface)"></label>
+          <button onClick="{{ signIn }}" style="height:39px;margin-top:5px;border-radius:9px;background:var(--accent);color:var(--accent-fg);font-weight:600;font-size:13.5px;cursor:pointer">Activate account</button>
+        </div>
+      </sc-if>
+    </div>
+    <div style="text-align:center;margin-top:16px;font-size:11px;color:var(--fg-3)">Taska — issue tracking, minus the clutter.</div>
+  </div>
+  <button onClick="{{ toggleTheme }}" title="Toggle theme" style="position:absolute;top:18px;right:20px;width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fg-2)">
+    <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2 a6 6 0 0 0 0 12 z" fill="currentColor"/></svg>
+  </button>
+</div>
+</sc-if>
+
+<!-- ============ PROJECTS ============ -->
+<sc-if value="{{ isProjects }}" hint-placeholder-val="{{ false }}">
+<div data-screen-label="Projects" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+  <div style="height:52px;flex:none;display:flex;align-items:center;padding:0 22px;border-bottom:1px solid var(--border);background:var(--surface)">
+    <div style="display:flex;align-items:center;gap:8px">
+      <div style="width:21px;height:21px;border-radius:6px;background:var(--accent);display:flex;align-items:center;justify-content:center"><div style="width:8px;height:8px;border-radius:2.5px;background:var(--accent-fg)"></div></div>
+      <span style="font-size:14.5px;font-weight:700;letter-spacing:-0.02em">Taska</span>
+    </div>
+    <div style="flex:1"></div>
+    <button onClick="{{ toggleTheme }}" style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fg-2)"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2 a6 6 0 0 0 0 12 z" fill="currentColor"/></svg></button>
+    <div style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;margin-left:6px;{{ currentUser.style }}">{{ currentUser.initials }}</div>
+  </div>
+  <div style="flex:1;overflow:auto;padding:34px 22px">
+    <div style="max-width:980px;margin:0 auto">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:22px">
+        <div><h1 style="margin:0;font-size:22px;font-weight:700;letter-spacing:-0.025em">Projects</h1><div style="font-size:12.5px;color:var(--fg-3);margin-top:3px">{{ projectsCount }} projects · you're a member</div></div>
+        <button style="height:34px;padding:0 14px;border-radius:9px;background:var(--accent);color:var(--accent-fg);font-weight:600;font-size:12.5px;cursor:pointer;display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 14 14"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>New project</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px">
+        <sc-for list="{{ projects }}" as="p" hint-placeholder-count="4">
+          <div onClick="{{ p.onOpen }}" style="background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:17px 17px 15px;cursor:pointer;box-shadow:var(--shadow);transition:transform .12s ease,border-color .12s ease" style-hover="border-color:var(--border-strong);transform:translateY(-2px)">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:13px">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;padding:4px 8px;border-radius:7px;letter-spacing:0.02em;{{ p.badgeStyle }}">{{ p.key }}</div>
+              <div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:600;letter-spacing:-0.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.name }}</div></div>
+            </div>
+            <div style="font-size:12px;color:var(--fg-2);margin-bottom:16px;min-height:17px">{{ p.desc }}</div>
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div style="display:flex;align-items:center">
+                <sc-for list="{{ p.avatars }}" as="a" hint-placeholder-count="3"><div style="width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;border:2px solid var(--surface);margin-right:-7px;{{ a.style }}">{{ a.initials }}</div></sc-for>
+                <span style="margin-left:14px;font-size:11.5px;color:var(--fg-3)">{{ p.memberLabel }}</span>
+              </div>
+              <div style="font-size:11.5px;color:var(--fg-3);display:flex;align-items:center;gap:5px"><span style="font-weight:600;color:var(--fg-2)">{{ p.count }}</span> issues</div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+</div>
+</sc-if>
+
+<!-- ============ BOARD ============ -->
+<sc-if value="{{ isBoard }}" hint-placeholder-val="{{ false }}">
+<div data-screen-label="Board" style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative">
+  <!-- top bar -->
+  <div style="height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--surface);z-index:3">
+    <button onClick="{{ board.onBack }}" style="width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fg-2)" style-hover="background:var(--surface-2)"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M10 3.5 5.5 8 10 12.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;padding:4px 8px;border-radius:7px;{{ board.badgeStyle }}">{{ board.key }}</div>
+    <span style="font-size:14px;font-weight:650;letter-spacing:-0.015em">{{ board.name }}</span>
+    <span style="font-size:12px;color:var(--fg-3);padding-left:2px">Board</span>
+    <div style="flex:1"></div>
+    <div style="display:flex;align-items:center;gap:7px;height:32px;padding:0 10px;border:1px solid var(--border-strong);border-radius:9px;width:220px;background:var(--surface)">
+      <svg width="14" height="14" viewBox="0 0 16 16" style="color:var(--fg-3);flex:none"><circle cx="7" cy="7" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      <input value="{{ board.q }}" onInput="{{ board.onSearch }}" placeholder="Search issues" style="flex:1;min-width:0;font-size:12.5px">
+    </div>
+    <div style="position:relative">
+      <button onClick="{{ toggleNotif }}" style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fg-2);position:relative" style-hover="background:var(--surface-2)"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M4 6.5a4 4 0 0 1 8 0c0 3 1 4 1 4H3s1-1 1-4Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6.5 13a1.6 1.6 0 0 0 3 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><div style="{{ board.notifDotStyle }}"></div></button>
+      <sc-if value="{{ notifOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="position:absolute;top:38px;right:0;width:312px;background:var(--surface);border:1px solid var(--border);border-radius:13px;box-shadow:0 12px 40px rgba(10,10,30,.18);overflow:hidden;animation:tk-pop .14s ease forwards;z-index:20">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px;font-weight:650">Notifications</span><button onClick="{{ markAllRead }}" style="font-size:11.5px;color:var(--accent);font-weight:550;cursor:pointer">Mark all read</button></div>
+          <div style="max-height:340px;overflow:auto">
+            <sc-for list="{{ notifications }}" as="n" hint-placeholder-count="3">
+              <div style="display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border)">
+                <div style="{{ n.dotStyle }}"></div>
+                <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:550;color:var(--fg)">{{ n.title }}</div><div style="font-size:11.5px;color:var(--fg-2);margin-top:1px">{{ n.body }}</div><div style="font-size:10.5px;color:var(--fg-3);margin-top:3px">{{ n.time }}</div></div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+    <button onClick="{{ toggleTheme }}" style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fg-2)" style-hover="background:var(--surface-2)"><svg width="15" height="15" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2 a6 6 0 0 0 0 12 z" fill="currentColor"/></svg></button>
+    <button onClick="{{ openCreate }}" style="height:32px;padding:0 13px;border-radius:9px;background:var(--accent);color:var(--accent-fg);font-weight:600;font-size:12.5px;cursor:pointer;display:flex;align-items:center;gap:6px;margin-left:2px"><svg width="13" height="13" viewBox="0 0 14 14"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>New</button>
+  </div>
+
+  <!-- filter bar -->
+  <div style="height:46px;flex:none;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--surface)">
+    <div style="display:flex;gap:2px;padding:2px;background:var(--surface-2);border-radius:8px">
+      <sc-for list="{{ board.typeFilters }}" as="t" hint-placeholder-count="4"><button onClick="{{ t.onClick }}" style="{{ t.style }}">{{ t.label }}</button></sc-for>
+    </div>
+    <div style="width:1px;height:18px;background:var(--border)"></div>
+    <span style="font-size:11.5px;color:var(--fg-3);font-weight:500">Assignee</span>
+    <div style="display:flex;align-items:center;gap:5px">
+      <button onClick="{{ board.assigneeAll.onClick }}" style="{{ board.assigneeAll.style }}">All</button>
+      <sc-for list="{{ board.assigneeFilters }}" as="a" hint-placeholder-count="4"><button onClick="{{ a.onClick }}" title="{{ a.name }}" style="width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;cursor:pointer;{{ a.style }}">{{ a.initials }}</button></sc-for>
+    </div>
+    <div style="flex:1"></div>
+    <sc-if value="{{ board.hasFilter }}" hint-placeholder-val="{{ false }}"><button onClick="{{ board.clearFilters }}" style="font-size:11.5px;color:var(--fg-2);cursor:pointer;display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:7px" style-hover="background:var(--surface-2)"><svg width="11" height="11" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Clear</button></sc-if>
+    <span style="font-size:11.5px;color:var(--fg-3)">{{ board.visibleCount }} of {{ board.totalCount }}</span>
+  </div>
+
+  <!-- columns -->
+  <div style="flex:1;overflow-x:auto;overflow-y:hidden;display:flex;gap:14px;padding:16px 18px;align-items:flex-start;background:var(--bg)">
+    <sc-for list="{{ board.columns }}" as="col" hint-placeholder-count="3">
+      <div onDragOver="{{ col.onDragOver }}" onDrop="{{ col.onDrop }}" onDragLeave="{{ col.onDragLeave }}" style="{{ col.wrapStyle }}">
+        <div style="display:flex;align-items:center;gap:8px;padding:2px 4px 11px">
+          <div style="{{ col.dotStyle }}"></div>
+          <span style="font-size:12.5px;font-weight:650;letter-spacing:-0.01em;color:var(--fg)">{{ col.name }}</span>
+          <span style="font-size:11px;font-weight:600;color:var(--fg-3);background:var(--surface-2);padding:1px 7px;border-radius:20px">{{ col.count }}</span>
+          <div style="flex:1"></div>
+          <button onClick="{{ col.onAdd }}" style="width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--fg-3);cursor:pointer" style-hover="background:var(--surface-2);color:var(--fg)"><svg width="12" height="12" viewBox="0 0 14 14"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+        </div>
+        <div style="flex:1;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:8px;padding:1px 2px 8px">
+          <sc-for list="{{ col.issues }}" as="iss" hint-placeholder-count="2">
+            <div draggable="true" onDragStart="{{ iss.onDragStart }}" onDragEnd="{{ iss.onDragEnd }}" onClick="{{ iss.onOpen }}" style="{{ iss.cardStyle }}" style-hover="border-color:var(--border-strong);box-shadow:0 2px 10px rgba(20,20,40,.07)">
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:8px">
+                <div style="{{ iss.typeChipStyle }}"></div>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--fg-3);font-weight:500">{{ iss.key }}</span>
+                <span style="font-size:10.5px;color:var(--fg-3);text-transform:uppercase;letter-spacing:0.04em">{{ iss.typeLabel }}</span>
+                <div style="flex:1"></div>
+                <div style="display:flex;align-items:flex-end;gap:2px;height:11px" title="{{ iss.prioLabel }}"><sc-for list="{{ iss.prioBars }}" as="b" hint-placeholder-count="3"><div style="{{ b.style }}"></div></sc-for></div>
+              </div>
+              <div style="font-size:13px;font-weight:500;color:var(--fg);letter-spacing:-0.01em;line-height:1.4">{{ iss.summary }}</div>
+              <sc-if value="{{ iss.showDesc }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px;color:var(--fg-2);margin-top:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ iss.descPreview }}</div></sc-if>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-top:11px">
+                <span style="font-size:11px;color:var(--fg-3)">{{ iss.dateLabel }}</span>
+                <div style="width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;{{ iss.assignee.style }}" title="{{ iss.assignee.name }}">{{ iss.assignee.initials }}</div>
+              </div>
+            </div>
+          </sc-for>
+          <sc-if value="{{ col.empty }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px;color:var(--fg-3);text-align:center;padding:18px 0;border:1px dashed var(--border-strong);border-radius:10px">Drop issues here</div></sc-if>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+
+  <!-- ===== ISSUE SLIDE-OVER ===== -->
+  <sc-if value="{{ panelOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ panel.onClose }}" style="position:absolute;inset:0;background:rgba(12,12,22,.32);z-index:30;animation:tk-fade .16s ease forwards"></div>
+    <div data-screen-label="Issue card" style="position:absolute;top:0;right:0;bottom:0;width:480px;max-width:92vw;background:var(--surface);border-left:1px solid var(--border);z-index:31;display:flex;flex-direction:column;box-shadow:-12px 0 40px rgba(10,10,30,.16);animation:tk-slide .22s cubic-bezier(.2,.7,.3,1) forwards">
+      <div style="height:52px;flex:none;display:flex;align-items:center;gap:9px;padding:0 16px;border-bottom:1px solid var(--border)">
+        <div style="{{ panel.typeChipStyle }}"></div>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--fg-2);font-weight:500">{{ panel.key }}</span>
+        <span style="font-size:11px;color:var(--fg-3);text-transform:uppercase;letter-spacing:0.04em">{{ panel.typeLabel }}</span>
+        <div style="flex:1"></div>
+        <button onClick="{{ panel.onDelete }}" title="Delete" style="width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--fg-3);cursor:pointer" style-hover="background:var(--surface-2);color:#e5544b"><svg width="14" height="14" viewBox="0 0 16 16"><path d="M3.5 4.5h9M6 4.5V3.2c0-.4.3-.7.7-.7h2.6c.4 0 .7.3.7.7v1.3M5 4.5l.5 8c0 .4.3.7.7.7h3.6c.4 0 .7-.3.7-.7l.5-8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button>
+        <button onClick="{{ panel.onClose }}" style="width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--fg-2);cursor:pointer" style-hover="background:var(--surface-2)"><svg width="15" height="15" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:20px 22px 30px">
+        <textarea value="{{ panel.summary }}" onInput="{{ panel.onSummaryInput }}" rows="1" style="width:100%;font-size:19px;font-weight:650;letter-spacing:-0.02em;line-height:1.3;resize:none;border:1px solid transparent;border-radius:8px;padding:5px 7px;margin:-5px -7px 6px;background:transparent" style-focus="border-color:var(--border-strong);background:var(--surface)"></textarea>
+
+        <!-- status + transitions -->
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:14px 0 22px">
+          <div style="{{ panel.statusPillStyle }}">{{ panel.statusName }}</div>
+          <span style="font-size:11.5px;color:var(--fg-3)">→</span>
+          <sc-for list="{{ panel.transitions }}" as="tr" hint-placeholder-count="2"><button onClick="{{ tr.onClick }}" style="height:29px;padding:0 12px;border-radius:8px;border:1px solid var(--border-strong);background:var(--surface);font-size:12px;font-weight:550;cursor:pointer;display:flex;align-items:center;gap:5px" style-hover="border-color:var(--accent);color:var(--accent)">{{ tr.label }}</button></sc-for>
+        </div>
+
+        <!-- meta grid -->
+        <div style="display:grid;grid-template-columns:88px 1fr;gap:14px 12px;align-items:center;padding:16px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+          <span style="font-size:12px;color:var(--fg-3)">Assignee</span>
+          <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">
+            <sc-for list="{{ panel.assigneePick }}" as="a" hint-placeholder-count="4"><button onClick="{{ a.onClick }}" title="{{ a.name }}" style="display:flex;align-items:center;gap:6px;height:28px;padding:0 9px 0 3px;border-radius:20px;cursor:pointer;{{ a.style }}"><span style="width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600;{{ a.avStyle }}">{{ a.initials }}</span><span style="font-size:11.5px;font-weight:550">{{ a.short }}</span></button></sc-for>
+          </div>
+          <span style="font-size:12px;color:var(--fg-3)">Priority</span>
+          <div style="display:flex;gap:3px;padding:3px;background:var(--surface-2);border-radius:9px;width:fit-content">
+            <sc-for list="{{ panel.priorityControls }}" as="p" hint-placeholder-count="3"><button onClick="{{ p.onClick }}" style="{{ p.style }}">{{ p.label }}</button></sc-for>
+          </div>
+          <span style="font-size:12px;color:var(--fg-3)">Reporter</span>
+          <div style="display:flex;align-items:center;gap:7px"><span style="width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600;{{ panel.reporter.style }}">{{ panel.reporter.initials }}</span><span style="font-size:12.5px">{{ panel.reporter.name }}</span></div>
+          <span style="font-size:12px;color:var(--fg-3)">Created</span>
+          <span style="font-size:12.5px;color:var(--fg-2)">{{ panel.createdAt }}</span>
+        </div>
+
+        <!-- description -->
+        <div style="margin-top:20px">
+          <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:8px">Description</div>
+          <textarea value="{{ panel.description }}" onInput="{{ panel.onDescInput }}" placeholder="Add a description…" rows="4" style="width:100%;font-size:13px;line-height:1.55;color:var(--fg);resize:vertical;min-height:84px;border:1px solid var(--border-strong);border-radius:10px;padding:11px 12px;background:var(--surface-2)" style-focus="background:var(--surface);border-color:var(--accent)"></textarea>
+        </div>
+
+        <!-- activity -->
+        <div style="margin-top:24px">
+          <div style="font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:12px">Activity</div>
+          <div style="display:flex;flex-direction:column;gap:0">
+            <sc-for list="{{ panel.history }}" as="h" hint-placeholder-count="2">
+              <div style="display:flex;gap:11px;position:relative;padding-bottom:15px">
+                <div style="{{ h.lineStyle }}"></div>
+                <span style="width:24px;height:24px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600;z-index:1;{{ h.avStyle }}">{{ h.initials }}</span>
+                <div style="padding-top:2px"><div style="font-size:12.5px;color:var(--fg)"><b style="font-weight:600">{{ h.actor }}</b> {{ h.text }}</div><div style="font-size:11px;color:var(--fg-3);margin-top:1px">{{ h.time }}</div></div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ===== CREATE MODAL ===== -->
+  <sc-if value="{{ creating }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ cancelCreate }}" style="position:absolute;inset:0;background:rgba(12,12,22,.36);z-index:40;display:flex;align-items:flex-start;justify-content:center;padding-top:11vh;animation:tk-fade .15s ease forwards">
+      <div onClick="{{ stop }}" style="width:480px;max-width:92vw;background:var(--surface);border:1px solid var(--border);border-radius:15px;box-shadow:0 24px 70px rgba(10,10,30,.3);overflow:hidden;animation:tk-pop .16s ease forwards">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:8px"><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 7px;border-radius:6px;{{ board.badgeStyle }}">{{ board.key }}</div><span style="font-size:14px;font-weight:650">New issue</span></div>
+          <button onClick="{{ cancelCreate }}" style="width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;color:var(--fg-2);cursor:pointer" style-hover="background:var(--surface-2)"><svg width="14" height="14" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+        </div>
+        <div style="padding:18px">
+          <input value="{{ draft.summary }}" onInput="{{ onDraftSummary }}" placeholder="Issue summary" autofocus style="width:100%;font-size:15px;font-weight:550;border:1px solid var(--border-strong);border-radius:9px;height:42px;padding:0 12px;background:var(--surface-2);margin-bottom:13px" style-focus="background:var(--surface);border-color:var(--accent)">
+          <textarea value="{{ draft.description }}" onInput="{{ onDraftDesc }}" placeholder="Description (optional)" rows="3" style="width:100%;font-size:12.5px;line-height:1.5;border:1px solid var(--border-strong);border-radius:9px;padding:10px 12px;background:var(--surface-2);resize:vertical;min-height:66px;margin-bottom:16px" style-focus="background:var(--surface);border-color:var(--accent)"></textarea>
+          <div style="display:flex;gap:18px">
+            <div><div style="font-size:11px;color:var(--fg-3);margin-bottom:6px;font-weight:550">Type</div><div style="display:flex;gap:3px;padding:3px;background:var(--surface-2);border-radius:9px"><sc-for list="{{ draftTypeOptions }}" as="t" hint-placeholder-count="3"><button onClick="{{ t.onClick }}" style="{{ t.style }}">{{ t.label }}</button></sc-for></div></div>
+            <div><div style="font-size:11px;color:var(--fg-3);margin-bottom:6px;font-weight:550">Priority</div><div style="display:flex;gap:3px;padding:3px;background:var(--surface-2);border-radius:9px"><sc-for list="{{ draftPrioOptions }}" as="p" hint-placeholder-count="3"><button onClick="{{ p.onClick }}" style="{{ p.style }}">{{ p.label }}</button></sc-for></div></div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;padding:13px 18px;border-top:1px solid var(--border);background:var(--surface-2)">
+          <button onClick="{{ cancelCreate }}" style="height:34px;padding:0 14px;border-radius:9px;border:1px solid var(--border-strong);font-size:12.5px;font-weight:550;cursor:pointer;color:var(--fg-2)" style-hover="background:var(--surface)">Cancel</button>
+          <button onClick="{{ submitCreate }}" style="height:34px;padding:0 16px;border-radius:9px;background:var(--accent);color:var(--accent-fg);font-size:12.5px;font-weight:600;cursor:pointer">Create issue</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#4f46e5&quot;,&quot;options&quot;:[&quot;#4f46e5&quot;,&quot;#2563eb&quot;,&quot;#0d9488&quot;,&quot;#7c3aed&quot;,&quot;#ea580c&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;cardStyle&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;standard&quot;,&quot;options&quot;:[&quot;standard&quot;,&quot;minimal&quot;,&quot;detailed&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;columnFill&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;subtle&quot;,&quot;options&quot;:[&quot;subtle&quot;,&quot;plain&quot;],&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  constructor(props){
+    super(props);
+    this.state = {
+      theme:'light', screen:'login', authMode:'signin',
+      currentProjectId:null, selectedIssueId:null,
+      dragIssueId:null, dragOverStatus:null,
+      notifOpen:false, creating:false,
+      draft:{summary:'',description:'',type:'TASK',priority:'MEDIUM'},
+      filters:{q:'',type:'ALL',assignee:'ALL'},
+      data:this.seed(),
+    };
+  }
+
+  // ---------- seed ----------
+  seed(){
+    const users=[
+      {id:'u1',name:'Anna Ivanova',color:'#6366f1'},
+      {id:'u2',name:'Mark Lee',color:'#0ea5e9'},
+      {id:'u3',name:'Sofia Reyes',color:'#10b981'},
+      {id:'u4',name:'Tom Becker',color:'#f59e0b'},
+      {id:'u5',name:'Priya Nair',color:'#ec4899'},
+    ];
+    const projects=[
+      {id:'p1',key:'TAS',name:'Taska Platform',desc:'Core gateway, auth & issue services',color:'#6366f1',members:['u1','u2','u3','u4']},
+      {id:'p2',key:'WEB',name:'Web App',desc:'Customer-facing web client',color:'#0ea5e9',members:['u1','u3','u5']},
+      {id:'p3',key:'MOB',name:'Mobile',desc:'iOS & Android applications',color:'#8b5cf6',members:['u2','u4','u5']},
+      {id:'p4',key:'OPS',name:'Infra & Ops',desc:'CI/CD, observability, on-call',color:'#0d9488',members:['u1','u4']},
+    ];
+    let n=0; const ts=(d)=>`2026-06-${String(d).padStart(2,'0')}T09:${(10+ (n++)%48).toString().padStart(2,'0')}:00Z`;
+    const mk=(pid,key,num,type,summary,description,status,priority,assignee,reporter,day)=>({
+      id:key+'-'+num, projectId:pid, issueKey:key+'-'+num, number:num, type, summary, description,
+      status, priority, assigneeId:assignee, reporterId:reporter, createdAt:ts(day), updatedAt:ts(day),
+      history:[{type:'CREATED',actor:reporter,at:ts(day)}],
+    });
+    const issues=[
+      mk('p1','TAS',101,'BUG','Login form validation fails on empty email','Submitting the sign-in form with an empty email returns a 500 instead of a 400 validation error.','IN_PROGRESS','HIGH','u2','u1',12),
+      mk('p1','TAS',102,'TASK','Prepare onboarding checklist for invited users','Checklist surfaced after an invited user activates their account.','TODO','MEDIUM','u1','u1',13),
+      mk('p1','TAS',103,'STORY','Project members list endpoint','Add GET /projects/{id}/members so the assignee picker and member settings can render real people.','TODO','HIGH','u3','u3',14),
+      mk('p1','TAS',104,'TASK','Propagate X-Request-Id through the gateway','Generate a request id when missing and forward it into gRPC Header.request_id.','DONE','LOW','u4','u1',9),
+      mk('p1','TAS',105,'BUG','Refresh token rotation drops the session','Rotating the refresh token occasionally invalidates the active access token early.','IN_PROGRESS','MEDIUM','u1','u2',15),
+      mk('p1','TAS',106,'STORY','Kanban drag-and-drop transitions','Wire POST /issues/{id}/transitions to board drag-and-drop and card buttons.','TODO','MEDIUM','u2','u3',16),
+      mk('p1','TAS',107,'TASK','Define a shared JSON error schema','One error envelope { code, message, requestId } across every service.','IN_PROGRESS','HIGH','u3','u1',16),
+      mk('p1','TAS',108,'TASK','Assignee picker user search','GET /users?query= for the assignee and member pickers.','TODO','MEDIUM','u5','u3',17),
+      mk('p1','TAS',109,'STORY','Notifications inbox: mark all as read','PATCH /notifications/read-all plus an inbox affordance.','DONE','LOW','u1','u1',8),
+      mk('p1','TAS',110,'BUG','Board column count is off by one','Soft-deleted issues are still counted in the column badge.','TODO','LOW','u4','u2',18),
+      mk('p2','WEB',12,'STORY','Responsive board layout','Board columns should collapse gracefully under 900px.','TODO','MEDIUM','u3','u1',11),
+      mk('p2','WEB',13,'BUG','Dark theme contrast on chips','Type chips fail AA contrast on the dark surface.','IN_PROGRESS','HIGH','u5','u3',12),
+      mk('p2','WEB',14,'TASK','Persist last opened project','Remember the user’s last project on reload.','DONE','LOW','u1','u1',7),
+      mk('p3','MOB',5,'TASK','Push notification permission flow','Ask for permission after the first assignment, not on launch.','TODO','MEDIUM','u4','u2',10),
+      mk('p3','MOB',6,'BUG','Pull-to-refresh duplicates issues','List occasionally renders duplicates after refresh.','IN_PROGRESS','MEDIUM','u2','u4',11),
+      mk('p4','OPS',3,'TASK','Add board endpoint dashboards','Grafana panels for /board latency.','TODO','LOW','u4','u1',9),
+    ];
+    // a little richer history
+    const t107=issues.find(i=>i.id==='TAS-107');
+    t107.history.push({type:'ASSIGNED',actor:'u1',at:ts(16),to:'u3'});
+    t107.history.push({type:'TRANSITIONED',actor:'u3',at:ts(17),from:'TODO',to:'IN_PROGRESS'});
+    const t101=issues.find(i=>i.id==='TAS-101');
+    t101.history.push({type:'TRANSITIONED',actor:'u2',at:ts(13),from:'TODO',to:'IN_PROGRESS'});
+    t101.history.push({type:'PRIORITY',actor:'u2',at:ts(13),to:'HIGH'});
+    return {users,projects,issues};
+  }
+
+  // ---------- helpers ----------
+  now(){return new Date().toISOString();}
+  user(id){return this.state.data.users.find(u=>u.id===id);}
+  initials(name){return (name||'').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();}
+  fmt(iso){try{return new Date(iso).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});}catch(e){return '';}}
+  fmtDay(iso){try{return new Date(iso).toLocaleDateString('en-US',{month:'short',day:'numeric'});}catch(e){return '';}}
+  av(id){
+    const u=this.user(id);
+    if(!u) return {initials:'',style:'background:transparent;border:1.5px dashed var(--border-strong);color:var(--fg-3)',name:'Unassigned',short:'Unassign',id:null};
+    return {initials:this.initials(u.name),style:`background:${u.color};color:#fff`,name:u.name,short:u.name.split(' ')[0],id:u.id};
+  }
+  statusName(k){return ({TODO:'To Do',IN_PROGRESS:'In Progress',DONE:'Done'})[k]||k;}
+  typeMeta(t){return ({TASK:{label:'Task',color:'#4f7cf0',round:'4px'},STORY:{label:'Story',color:'#3fa863',round:'4px'},BUG:{label:'Bug',color:'#e5544b',round:'50%'}})[t]||{label:t,color:'#888',round:'4px'};}
+  prioMeta(p){return ({LOW:{level:1,color:'#9aa0aa',label:'Low'},MEDIUM:{level:2,color:'#e3a008',label:'Medium'},HIGH:{level:3,color:'#e5544b',label:'High'}})[p]||{level:1,color:'#888',label:p};}
+  chipStyle(t){const m=this.typeMeta(t);return `width:14px;height:14px;flex:none;border-radius:${m.round};background:${m.color}`;}
+  prioBars(p){const m=this.prioMeta(p);const hs=[5,8,11];return hs.map((h,i)=>({style:`width:3px;height:${h}px;border-radius:1px;background:${i<m.level?m.color:'var(--border-strong)'}`}));}
+
+  // ---------- actions ----------
+  toggleTheme=()=>this.setState(s=>({theme:s.theme==='light'?'dark':'light'}));
+  setAuthSignin=()=>this.setState({authMode:'signin'});
+  setAuthInvite=()=>this.setState({authMode:'invite'});
+  signIn=()=>this.setState({screen:'projects'});
+  openProject=(id)=>this.setState({screen:'board',currentProjectId:id,filters:{q:'',type:'ALL',assignee:'ALL'}});
+  backToProjects=()=>this.setState({screen:'projects',selectedIssueId:null,notifOpen:false});
+  openIssue=(id)=>this.setState({selectedIssueId:id,notifOpen:false});
+  closeIssue=()=>this.setState({selectedIssueId:null});
+  toggleNotif=()=>this.setState(s=>({notifOpen:!s.notifOpen}));
+  markAllRead=()=>this.setState(s=>({data:{...s.data,_notifRead:true}}));
+  setFilter=(k,v)=>this.setState(s=>({filters:{...s.filters,[k]:v}}));
+  clearFilters=()=>this.setState({filters:{q:'',type:'ALL',assignee:'ALL'}});
+  openCreate=()=>this.setState({creating:true,draft:{summary:'',description:'',type:'TASK',priority:'MEDIUM'}});
+  cancelCreate=()=>this.setState({creating:false});
+  stop=(e)=>{e.stopPropagation();};
+  setDraft=(patch)=>this.setState(s=>({draft:{...s.draft,...patch}}));
+
+  patchIssue(id, fn){
+    this.setState(s=>{
+      const issues=s.data.issues.map(it=> it.id===id? fn(it) : it);
+      return {data:{...s.data,issues}};
+    });
+  }
+  updateField=(id,patch)=>this.patchIssue(id,it=>({...it,...patch,updatedAt:this.now()}));
+  transition=(id,to)=>this.patchIssue(id,it=> it.status===to? it : ({...it,status:to,updatedAt:this.now(),history:[...it.history,{type:'TRANSITIONED',actor:'u1',at:this.now(),from:it.status,to}]}));
+  setAssignee=(id,uid)=>this.patchIssue(id,it=> it.assigneeId===uid? it : ({...it,assigneeId:uid,updatedAt:this.now(),history:[...it.history,{type:'ASSIGNED',actor:'u1',at:this.now(),to:uid}]}));
+  setPriority=(id,p)=>this.patchIssue(id,it=> it.priority===p? it : ({...it,priority:p,updatedAt:this.now(),history:[...it.history,{type:'PRIORITY',actor:'u1',at:this.now(),to:p}]}));
+  deleteIssue=(id)=>this.setState(s=>({selectedIssueId:null,data:{...s.data,issues:s.data.issues.filter(i=>i.id!==id)}}));
+
+  dropOn=(status)=>{
+    const id=this.state.dragIssueId;
+    if(!id){this.setState({dragOverStatus:null});return;}
+    this.transition(id,status);
+    this.setState({dragIssueId:null,dragOverStatus:null});
+  };
+  submitCreate=()=>{
+    const d=this.state.draft; if(!d.summary.trim()) return;
+    const pid=this.state.currentProjectId;
+    const proj=this.state.data.projects.find(p=>p.id===pid);
+    const nums=this.state.data.issues.filter(i=>i.projectId===pid).map(i=>i.number);
+    const num=(nums.length?Math.max(...nums):0)+1;
+    const iss={id:proj.key+'-'+num,projectId:pid,issueKey:proj.key+'-'+num,number:num,type:d.type,summary:d.summary.trim(),description:d.description.trim(),status:'TODO',priority:d.priority,assigneeId:null,reporterId:'u1',createdAt:this.now(),updatedAt:this.now(),history:[{type:'CREATED',actor:'u1',at:this.now()}]};
+    this.setState(s=>({creating:false,selectedIssueId:iss.id,data:{...s.data,issues:[...s.data.issues,iss]}}));
+  };
+
+  // ---------- props / theme vars ----------
+  overrideVars(){
+    const accent=this.props.accent||'#4f46e5';
+    let v='';
+    if(accent!=='#4f46e5') v+=`--accent:${accent};`;
+    if(this.state.theme==='dark'){
+      v+='--bg:#08080b;--surface:#141418;--surface-2:#0f0f13;--surface-3:#1c1c22;--border:rgba(255,255,255,.08);--border-strong:rgba(255,255,255,.15);--fg:#ededf1;--fg-2:#9c9ca6;--fg-3:#62626d;--accent-fg:#fff;--shadow:0 1px 2px rgba(0,0,0,.5),0 6px 18px rgba(0,0,0,.4);';
+      v+=`--accent:color-mix(in oklab, ${accent}, white 22%);`;
+    }
+    return v;
+  }
+
+  // ---------- filters ----------
+  matches(it){
+    const f=this.state.filters;
+    if(f.type!=='ALL' && it.type!==f.type) return false;
+    if(f.assignee!=='ALL' && it.assigneeId!==f.assignee) return false;
+    if(f.q){const q=f.q.toLowerCase(); if(!(it.summary.toLowerCase().includes(q)||it.issueKey.toLowerCase().includes(q))) return false;}
+    return true;
+  }
+
+  renderVals(){
+    const s=this.state;
+    const cardStyle=this.props.cardStyle||'standard';
+    const columnFill=this.props.columnFill||'subtle';
+    const out={
+      overrideVars:this.overrideVars(),
+      isLogin:s.screen==='login', isProjects:s.screen==='projects', isBoard:s.screen==='board',
+      authIsSignin:s.authMode==='signin', authIsInvite:s.authMode==='invite',
+      setAuthSignin:this.setAuthSignin, setAuthInvite:this.setAuthInvite,
+      signIn:this.signIn, toggleTheme:this.toggleTheme,
+      currentUser:this.av('u1'),
+      stop:this.stop,
+    };
+    const tab=(on)=>`flex:1;height:30px;border-radius:7px;font-size:12.5px;font-weight:600;cursor:pointer;${on?'background:var(--surface);color:var(--fg);box-shadow:var(--shadow)':'color:var(--fg-3)'}`;
+    out.signinTabStyle=tab(s.authMode==='signin');
+    out.inviteTabStyle=tab(s.authMode==='invite');
+
+    // projects
+    out.projectsCount=this.state.data.projects.length;
+    out.projects=this.state.data.projects.map(p=>{
+      const av=p.members.slice(0,4).map(id=>this.av(id));
+      const count=this.state.data.issues.filter(i=>i.projectId===p.id).length;
+      return {key:p.key,name:p.name,desc:p.desc,count,avatars:av,
+        memberLabel:p.members.length+' members',
+        badgeStyle:`background:color-mix(in oklab, ${p.color} 16%, transparent);color:${p.color}`,
+        onOpen:()=>this.openProject(p.id)};
+    });
+
+    if(s.screen==='board' && s.currentProjectId){
+      const proj=this.state.data.projects.find(p=>p.id===s.currentProjectId);
+      const all=this.state.data.issues.filter(i=>i.projectId===s.currentProjectId);
+      const vis=all.filter(i=>this.matches(i));
+      const f=s.filters;
+      const segBtn=(on)=>`height:24px;padding:0 11px;border-radius:6px;font-size:12px;font-weight:550;cursor:pointer;${on?'background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(20,20,40,.08)':'color:var(--fg-2)'}`;
+      const typeFilters=[['ALL','All'],['TASK','Task'],['BUG','Bug'],['STORY','Story']].map(([k,l])=>({label:l,onClick:()=>this.setFilter('type',k),style:segBtn(f.type===k)}));
+      const assigneeAll={onClick:()=>this.setFilter('assignee','ALL'),style:`height:26px;padding:0 10px;border-radius:7px;font-size:12px;font-weight:550;cursor:pointer;${f.assignee==='ALL'?'background:var(--surface-2);color:var(--fg)':'color:var(--fg-2)'}`};
+      const assigneeFilters=proj.members.map(id=>{const a=this.av(id);const on=f.assignee===id;return {initials:a.initials,name:a.name,onClick:()=>this.setFilter('assignee',id),style:`${a.style};${on?'outline:2px solid var(--accent);outline-offset:1.5px':'opacity:.85'}`};});
+
+      const colWrap=(on)=>`width:312px;flex:none;height:100%;display:flex;flex-direction:column;border-radius:13px;padding:11px 9px 4px;transition:background .12s ease,box-shadow .12s ease;${columnFill==='subtle'?'background:var(--surface-2)':'background:transparent'};${on?'box-shadow:inset 0 0 0 2px var(--accent)':''}`;
+      const dot=(c)=>`width:8px;height:8px;border-radius:50%;background:${c}`;
+      const statuses=[['TODO','#9aa0aa'],['IN_PROGRESS','var(--accent)'],['DONE','#3fa863']];
+      out.board={
+        key:proj.key,name:proj.name,
+        badgeStyle:`background:color-mix(in oklab, ${proj.color} 16%, transparent);color:${proj.color}`,
+        onBack:this.backToProjects,
+        q:f.q, onSearch:(e)=>this.setFilter('q',e.target.value),
+        typeFilters, assigneeAll, assigneeFilters,
+        hasFilter:(f.q||f.type!=='ALL'||f.assignee!=='ALL')?true:false,
+        clearFilters:this.clearFilters,
+        visibleCount:vis.length, totalCount:all.length,
+        notifDotStyle:`position:absolute;top:6px;right:7px;width:6px;height:6px;border-radius:50%;background:var(--accent);border:1.5px solid var(--surface)`,
+        columns:statuses.map(([st,c])=>{
+          const items=vis.filter(i=>i.status===st);
+          const on=s.dragOverStatus===st;
+          return {
+            name:this.statusName(st), count:items.length, empty:items.length===0,
+            dotStyle:dot(c), wrapStyle:colWrap(on),
+            onAdd:this.openCreate,
+            onDragOver:(e)=>{e.preventDefault(); if(s.dragOverStatus!==st) this.setState({dragOverStatus:st});},
+            onDragLeave:()=>{ if(s.dragOverStatus===st) this.setState({dragOverStatus:null}); },
+            onDrop:(e)=>{e.preventDefault(); this.dropOn(st);},
+            issues:items.map(it=>{
+              const dragging=s.dragIssueId===it.id;
+              return {
+                id:it.id, key:it.issueKey, summary:it.summary, typeLabel:this.typeMeta(it.type).label,
+                typeChipStyle:this.chipStyle(it.type), prioBars:this.prioBars(it.priority), prioLabel:this.prioMeta(it.priority).label+' priority',
+                assignee:this.av(it.assigneeId),
+                showDesc:cardStyle==='detailed' && !!it.description,
+                descPreview:it.description,
+                dateLabel:this.fmtDay(it.createdAt),
+                cardStyle:`background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:${cardStyle==='minimal'?'10px 12px':'12px 13px'};cursor:grab;box-shadow:var(--shadow);transition:border-color .12s ease,box-shadow .12s ease,opacity .12s ease;${dragging?'opacity:.4':''}`,
+                onOpen:()=>this.openIssue(it.id),
+                onDragStart:(e)=>{this.setState({dragIssueId:it.id}); try{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',it.id);}catch(_){}},
+                onDragEnd:()=>this.setState({dragIssueId:null,dragOverStatus:null}),
+              };
+            }),
+          };
+        }),
+      };
+
+      // notifications
+      const read=this.state.data._notifRead;
+      out.notifOpen=s.notifOpen; out.toggleNotif=this.toggleNotif; out.markAllRead=this.markAllRead;
+      out.openCreate=this.openCreate;
+      const ndot=(unread)=>`width:7px;height:7px;border-radius:50%;margin-top:5px;flex:none;background:${unread?'var(--accent)':'transparent'};border:${unread?'none':'1px solid var(--border-strong)'}`;
+      out.notifications=[
+        {title:'Issue assigned',body:'TAS-107 was assigned to you',time:'2h ago',dotStyle:ndot(!read)},
+        {title:'Status changed',body:'TAS-101 moved to In Progress',time:'5h ago',dotStyle:ndot(!read)},
+        {title:'New comment',body:'Sofia mentioned you on TAS-103',time:'Yesterday',dotStyle:ndot(false)},
+      ];
+
+      // create modal
+      out.creating=s.creating; out.cancelCreate=this.cancelCreate; out.submitCreate=this.submitCreate;
+      out.draft=s.draft;
+      out.onDraftSummary=(e)=>this.setDraft({summary:e.target.value});
+      out.onDraftDesc=(e)=>this.setDraft({description:e.target.value});
+      const dseg=(on)=>`height:26px;padding:0 11px;border-radius:6px;font-size:12px;font-weight:550;cursor:pointer;${on?'background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(20,20,40,.1)':'color:var(--fg-2)'}`;
+      out.draftTypeOptions=[['TASK','Task'],['BUG','Bug'],['STORY','Story']].map(([k,l])=>({label:l,onClick:()=>this.setDraft({type:k}),style:dseg(s.draft.type===k)}));
+      out.draftPrioOptions=[['LOW','Low'],['MEDIUM','Med'],['HIGH','High']].map(([k,l])=>({label:l,onClick:()=>this.setDraft({priority:k}),style:dseg(s.draft.priority===k)}));
+
+      // issue panel
+      const it=this.state.data.issues.find(i=>i.id===s.selectedIssueId);
+      out.panelOpen=!!it;
+      if(it){
+        const trMap={TODO:[['IN_PROGRESS','Start progress']],IN_PROGRESS:[['DONE','Mark done'],['TODO','Move to To Do']],DONE:[['IN_PROGRESS','Reopen']]};
+        const pillC={TODO:'#9aa0aa',IN_PROGRESS:'var(--accent)',DONE:'#3fa863'}[it.status];
+        const pseg=(on)=>`height:26px;padding:0 12px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;${on?'background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(20,20,40,.12)':'color:var(--fg-2)'}`;
+        const pickStyle=(on)=>`border:1px solid ${on?'var(--accent)':'var(--border-strong)'};background:${on?'color-mix(in oklab, var(--accent) 12%, transparent)':'var(--surface)'}`;
+        const histText=(h)=>{
+          if(h.type==='CREATED') return 'created this issue';
+          if(h.type==='TRANSITIONED') return `moved ${this.statusName(h.from)} → ${this.statusName(h.to)}`;
+          if(h.type==='ASSIGNED') return h.to? `assigned ${this.av(h.to).name}` : 'cleared the assignee';
+          if(h.type==='PRIORITY') return `set priority to ${this.prioMeta(h.to).label}`;
+          return 'updated the issue';
+        };
+        const hist=[...it.history].reverse();
+        out.panel={
+          id:it.id, key:it.issueKey, typeLabel:this.typeMeta(it.type).label, typeChipStyle:this.chipStyle(it.type),
+          summary:it.summary, description:it.description,
+          onSummaryInput:(e)=>this.updateField(it.id,{summary:e.target.value}),
+          onDescInput:(e)=>this.updateField(it.id,{description:e.target.value}),
+          statusName:this.statusName(it.status),
+          statusPillStyle:`height:28px;padding:0 12px;border-radius:8px;display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;background:color-mix(in oklab, ${pillC} 14%, transparent);color:${pillC}`,
+          transitions:(trMap[it.status]||[]).map(([to,l])=>({label:l,onClick:()=>this.transition(it.id,to)})),
+          assigneePick:[null,...this.state.data.projects.find(p=>p.id===it.projectId).members].map(uid=>{
+            const a=this.av(uid); const on=(it.assigneeId||null)===(uid||null);
+            return {initials:a.initials,name:a.name,short:uid?a.short:'None',avStyle:a.style,onClick:()=>this.setAssignee(it.id,uid),style:pickStyle(on)};
+          }),
+          priorityControls:[['LOW','Low'],['MEDIUM','Medium'],['HIGH','High']].map(([k,l])=>({label:l,onClick:()=>this.setPriority(it.id,k),style:pseg(it.priority===k)})),
+          reporter:this.av(it.reporterId),
+          createdAt:this.fmt(it.createdAt),
+          onClose:this.closeIssue, onDelete:()=>this.deleteIssue(it.id),
+          history:hist.map((h,i)=>{const a=this.av(h.actor);return {
+            initials:a.initials, avStyle:a.style, actor:a.name||'Someone', text:histText(h), time:this.fmt(h.at),
+            lineStyle:i<hist.length-1?'position:absolute;left:11.5px;top:24px;bottom:-3px;width:1px;background:var(--border)':'display:none',
+          };}),
+        };
+      }
+    }
+    return out;
+  }
+}
+</script>
+</body>
+</html>
