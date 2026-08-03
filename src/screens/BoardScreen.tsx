@@ -568,12 +568,13 @@ function IssuePanel({
   // rather than from an effect: the effect version cost an extra render pass
   // on every refetch. A key-based remount would reset focus mid-edit, which
   // this does not.
-  const serverText = `${issue?.summary ?? ""} ${issue?.description ?? ""}`;
-  const [syncedText, setSyncedText] = useState<string | null>(null);
-  if (syncedText !== serverText) {
-    setSyncedText(serverText);
-    setSummary(issue?.summary ?? "");
-    setDescription(issue?.description ?? "");
+  const serverSummary = issue?.summary ?? "";
+  const serverDescription = issue?.description ?? "";
+  const [synced, setSynced] = useState<{ summary: string; description: string } | null>(null);
+  if (!synced || synced.summary !== serverSummary || synced.description !== serverDescription) {
+    setSynced({ summary: serverSummary, description: serverDescription });
+    setSummary(serverSummary);
+    setDescription(serverDescription);
   }
 
   const workflow = issue ? workflows?.[issue.issueType] : undefined;

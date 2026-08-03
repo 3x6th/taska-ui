@@ -59,6 +59,7 @@
   --shadow-hover:  0 2px 10px rgba(20,20,40,.07);
   --shadow-pop:    0 12px 40px rgba(10,10,30,.18);
   --shadow-modal:  0 24px 70px rgba(10,10,30,.30);
+  --shadow-panel:  -12px 0 40px rgba(10,10,30,.16);
   --scrim:         rgba(12,12,22,.32);
 }
 
@@ -78,6 +79,7 @@
   --shadow-hover:  0 2px 12px rgba(0,0,0,.5);
   --shadow-pop:    0 12px 40px rgba(0,0,0,.55);
   --shadow-modal:  0 24px 70px rgba(0,0,0,.65);
+  --shadow-panel:  -12px 0 40px rgba(0,0,0,.6);
   --scrim:         rgba(4,4,8,.55);
 }
 ```
@@ -186,8 +188,11 @@ text-overflow:ellipsis`; многострочная обрезка — `-webkit-
 ### 2.6 Elevation
 
 Только 4 уровня: `--shadow` (карточки, топбар) → `--shadow-hover` (hover карточки) →
-`--shadow-pop` (поповер) → `--shadow-modal` (модалка). Slide-over использует
-`-12px 0 40px rgba(10,10,30,.16)` (dark: `rgba(0,0,0,.6)`). Больше уровней не вводить.
+`--shadow-pop` (поповер) → `--shadow-modal` (модалка). Больше уровней не вводить.
+
+Slide-over — единственная поверхность с горизонтальной тенью, поэтому у неё отдельный
+токен `--shadow-panel` (`-12px 0 40px rgba(10,10,30,.16)`, dark `rgba(0,0,0,.6)`).
+Это не пятый уровень, а другая ось; в общую шкалу он не встраивается.
 
 ### 2.7 Sizing
 
@@ -228,7 +233,11 @@ text-overflow:ellipsis`; многострочная обрезка — `-webkit-
 - 0%-кадр **никогда** не `opacity:0` и не `display:none` — иначе контент пропадает при
   паузе анимации (offscreen-рендер, скриншот-тесты, `prefers-reduced-motion`).
 - Hover-переходы: `transition: border-color .12s ease, box-shadow .12s ease, transform .12s ease`.
-- Уважать `@media (prefers-reduced-motion: reduce)` — обнулять `animation-duration`/`transition`.
+- Уважать `@media (prefers-reduced-motion: reduce)`. Реализовано через сами токены: в
+  медиа-запросе `--dur-*` схлопываются в `1ms`, поэтому не нужен ни `!important`, ни
+  борьба со специфичностью (см. §1, hard rules). Анимации с литеральной длительностью
+  (`.auth-card-wrap`, `.skeleton-card`, `.avatar-loading`) перечислены там же поимённо —
+  при добавлении новой литеральной анимации её надо добавить в этот список.
 - Никаких bounce/spring и анимаций дольше 250ms.
 
 ---
@@ -345,7 +354,38 @@ Filter bar: height 46, тот же фон/бордер, `gap:14`: сегмент
 height 32, width 220, radius 9, `border:1px var(--border-strong)`, фон `--surface`,
 иконка-лупа 14 `--fg-3`, инпут 12.5px. Debounce ввода 200ms.
 
-### 4.15 Theme toggle
+### 4.15 Comment thread
+Живёт в нижней части slide-over, над лентой активности (§4.10).
+
+- **Заголовок секции** 13/650 `--fg`, отступ сверху 20.
+- **Composer:** `textarea` `min-height:64`, `background:var(--surface-2)`, `radius:10`,
+  `padding:11 12`; focus → `background:var(--surface)` + `border-color:var(--accent)`.
+  Под ним ряд действий справа: «Cancel» (текстовая) + primary «Comment»,
+  `disabled` при пустом теле.
+- **Строка комментария:** аватар 24 слева, справа колонка. Шапка: имя 12.5/600 `--fg` +
+  время `MMM d, HH:mm` 11px `--fg-3` + пометка «edited» 11px `--fg-3` курсивом, если
+  `updatedAt` не пуст. Тело 12.5px `--fg`, `line-height:1.55`, `white-space:pre-wrap`.
+- **Действия** («Edit», «Delete») — текстовые 11.5px `--fg-3`, показывать только автору
+  комментария; «Delete» на hover → `--danger`.
+- **Редактирование** — тот же `textarea` на месте тела; сохранение по кнопке, не по blur.
+- **Пусто:** одна строка 11.5px `--fg-3` («No comments yet»), без иллюстрации.
+- **Порядок:** новые сверху (как отдаёт гейтвей), пагинация — кнопка «Load more».
+
+Права: комментировать может `ADMIN`/`MEMBER`; редактировать и удалять — только автор
+(см. §5.7). `VIEWER` видит тред, но не видит composer.
+
+### 4.16 User profile menu
+Поповер под аватаром в правой части топбара, width 276, `radius:13`,
+`box-shadow:var(--shadow-pop)`, `tk-pop` — те же правила, что у §4.12.
+
+- Шапка: аватар 34 + имя 13/600 `--fg` + email 11.5px `--fg-3` (эллипсис).
+- Разделитель `1px --border`.
+- Пункты меню — строки height 34, `gap:9`, иконка 14 `--fg-2` + подпись 12.5px;
+  hover → `background:var(--surface-2)`.
+- «Log out» — последний пункт, на hover текст и иконка `--danger`.
+- Закрытие: `Esc`, клик вне, выбор пункта.
+
+### 4.17 Theme toggle
 Иконка-кнопка (half-filled circle): круг r=6 `stroke:currentColor`, залитая левая половина.
 Хранить выбор в `localStorage` (ключ `taska.theme`), инициализировать до первой отрисовки
 (инлайн-скрипт в `<head>`), уважать `prefers-color-scheme` при первом визите.
@@ -391,10 +431,27 @@ case-insensitive). «Clear» показывается только когда ч
   radius:11; box-shadow:var(--shadow-pop)`, текст 12.5px, акцент-полоса/иконка `--danger`.
   Показывать `error.message`, `error.requestId` — мелким `--fg-3` (копируемым).
 
+> **Пробел (TAS-140).** Тост-компонента в коде нет. Ошибки показываются только инлайном
+> (`.form-error` на формах логина и создания задачи), а `requestId` не доходит до
+> пользователя вообще. Это значит, что откаты оптимистичных мутаций (§5.3, §5.5) сейчас
+> происходят молча: карточка возвращается в исходную колонку без единого объяснения.
+> Требование выше — правильное, поэтому оно оставлено как есть, а не подогнано под код.
+> Спецификация тоста — контракт для будущей реализации, а не описание текущего состояния.
+
 ### 5.7 Permissions
 Роль берём из `GET /projects/{id}/membership`. `VIEWER` — только чтение: скрывать «New»,
-transition-кнопки, Delete, drag (`draggable=false`), инлайн-редактирование (readOnly).
+transition-кнопки, Delete, drag (`draggable=false`), инлайн-редактирование (readOnly),
+composer комментариев.
 Не полагаться только на скрытие — сервер всё равно проверяет.
+
+Комментарии гейтятся **двумя** правилами, не одним: создание — по роли
+(`ADMIN`/`MEMBER`), редактирование и удаление — по авторству (`comment.authorUserId ===
+currentUser.id`). Роль `ADMIN` не даёт права править чужой комментарий.
+
+> **Внимание при проверке прав.** В режиме `hybrid` с
+> `VITE_TASKA_ASSUME_PROJECT_ADMIN=true` роль синтезируется на клиенте и всегда `ADMIN`
+> (см. §6, «Режимы API» и `docs/ai/API-DIVERGENCE.md`). Прошедшая в этом режиме проверка
+> ролевого гейтинга не доказывает ничего: `VIEWER` в нём просто недостижим.
 
 ---
 
@@ -407,7 +464,13 @@ type ProjectRole   = 'ADMIN' | 'MEMBER' | 'VIEWER';
 type IssueType     = 'TASK' | 'BUG' | 'STORY';
 type IssuePriority = 'LOW' | 'MEDIUM' | 'HIGH';
 type IssueStatus   = 'TODO' | 'IN_PROGRESS' | 'DONE';
+type IssueEventType =
+  | 'CREATED' | 'TRANSITIONED' | 'ASSIGNED' | 'PRIORITY' | 'UPDATED' | 'DELETED'
+  | 'COMMENT_CREATED' | 'COMMENT_UPDATED' | 'COMMENT_DELETED';
 ```
+Комментарий (`IssueComment`): `id`, `issueId`, `projectId`, `authorUserId`, `body`,
+`createdAt`, `updatedAt` (`null`, пока не редактировали — по нему и рисуется пометка
+«edited»), `version`.
 Отображаемые названия статусов: `TODO → "To Do"`, `IN_PROGRESS → "In Progress"`, `DONE → "Done"`.
 Названия типов: `Task` / `Bug` / `Story`. Приоритеты: `Low` / `Medium` / `High`
 (в узких сегментах — `Med`).
@@ -423,11 +486,32 @@ type IssueStatus   = 'TODO' | 'IN_PROGRESS' | 'DONE';
 | --- | --- | --- |
 | session | currentUser, accessToken/refresh | auth-контекст + `GET /users/me` |
 | route | projectId, issueId | URL (§7 handoff README) |
-| server | projects, membership, workflow, issues, issue+history, notifications | react-query, мутации оптимистичные + инвалидация |
+| server | projects, membership, workflow, issues, issue+history, comments, notifications | react-query, мутации оптимистичные + инвалидация |
 | board ui | `{ q, type, assignee }`, dragIssueId, dragOverStatus | локальный стейт экрана |
-| app ui | theme, notifOpen, creating, draft | локальный стейт / контекст, theme persist |
+| app ui | theme, notifOpen, creating, draft, editingCommentId | локальный стейт / контекст, theme persist |
 
 Правило: **никогда** не дублировать серверные данные в локальном стейте — только id и ui-флаги.
+
+Исключение — черновики инлайн-редактирования (summary/description задачи, тело
+комментария). Их приходится держать локально, потому что пользователь печатает быстрее,
+чем отвечает сеть. Пересев с серверного значения делается **на рендере**, а не в
+`useEffect`: эффект стоит лишний проход рендера на каждом рефетче, а сброс через `key`
+сбивает фокус посреди набора текста. Для строки комментария `key` наоборот уместен — там
+переключение в режим правки и должно пересоздавать черновик.
+
+### Режимы API
+`VITE_TASKA_API_MODE`: `mock` (полностью в памяти) · `rest` (только гейтвей) ·
+`hybrid` (по умолчанию). Переключение — в `src/api/client.ts`, общий контракт —
+`src/api/TaskaApi.ts`.
+
+`hybrid` существует только потому, что `TAS-137` ещё не задеплоен: membership и список
+участников синтезируются на клиенте из `GET /projects/{id}` и `GET /users/me`. Следствие
+для UI — **в проекте виден ровно один участник**, текущий пользователь, независимо от
+того, сколько их на самом деле. Фильтр по исполнителю и чипы assignee в этом режиме не
+могут предложить никого другого.
+
+Полный разбор — `docs/ai/API-DIVERGENCE.md`. Когда `TAS-137` выедет, `HybridTaskaApi`
+удаляется целиком, а режим по умолчанию становится `rest`.
 
 ---
 
@@ -450,11 +534,38 @@ type IssueStatus   = 'TODO' | 'IN_PROGRESS' | 'DONE';
 
 ## 8. Code conventions for UI
 
-- **Один компонент — один файл**, имя = имя компонента. Общие примитивы (`Button`, `Avatar`,
-  `Badge`, `SegmentedControl`, `Input`, `Modal`, `Popover`, `SlideOver`) — в `components/ui/`,
-  доменные (`IssueCard`, `BoardColumn`, `IssuePanel`, `ProjectCard`) — в `features/<domain>/`.
+### Фактическая структура
+
+Раздел описывает то, что есть в репозитории, а не то, к чему стоило бы прийти.
+Если появляется новый файл — он встаёт в одну из этих папок.
+
+```
+src/
+  screens/      App, LoginScreen, ProjectsScreen, BoardScreen — экраны и их состояние
+  components/   переиспользуемые куски UI: Avatar, Modal, ThemeToggle,
+                UserProfileMenu, TaskaLogo, IssueBits (type-chip, priority-bars)
+  api/          TaskaApi (контракт) + mock/ · rest/ · HybridTaskaApi + client.ts
+  domain/       types.ts — enum'ы и модели ровно по REST-контракту
+  hooks/        useTheme
+  lib/          format.ts — форматирование дат и семантические константы §2.2
+  test/         setup.ts для vitest
+  styles.css    один глобальный файл со всеми классами
+```
+
+Стили — **один глобальный `src/styles.css`** с плоскими именами классов
+(`.issue-card`, `.comment-item`, `.board-column`). Не CSS Modules, не Tailwind,
+не styled-components. Токены §2 объявлены на `:root` там же.
+
+**Известный долг.** `BoardScreen.tsx` — около 1200 строк: доска, фильтр-бар,
+slide-over задачи, тред комментариев, модалка создания и поповер уведомлений живут
+в одном файле. Разносить по одному компоненту в файл имеет смысл при следующей
+крупной правке доски; специально под это отдельную задачу пока не заводили.
+Записано как долг, а не выдано за архитектуру.
+
+- **Один компонент — один файл** для всего нового кода; имя файла = имя компонента.
 - **Токены только через переменные.** Хардкод hex в компонентах запрещён, кроме семантических
-  констант из §2.2, объявленных в одном месте (`tokens.css` / `theme.ts`).
+  констант из §2.2 — они объявлены в одном месте, `src/lib/format.ts`
+  (`statusColors`, `typeMeta`, `priorityMeta`).
 - Тема — атрибут `data-theme` на `<html>`; не использовать классы `.dark` вперемешку с media-query.
 - Не создавать вариант компонента ради одного отличия — прокидывать проп (`size`, `tone`, `variant`).
 - Иконки — один набор (`lucide-react` или локальные inline-SVG), `stroke-width` 1.2–1.7,
@@ -467,10 +578,22 @@ type IssueStatus   = 'TODO' | 'IN_PROGRESS' | 'DONE';
 
 ## 9. Reference
 
+Порядок приоритета источников задан в `AGENTS.md`:
+`api-gateway-rest-draft.md` → `DESIGN.md` → задача в Jira → `docs/ai/REFERENCE-LOCK.md`
+→ `AGENTS.md`.
+
+- REST-контракт (источник enum'ов, ручек и кодов ошибок), верхний источник:
+  `design_handoff_taska/api-gateway-rest-draft.md`. Черновик описывает намерение;
+  поведение задеплоенного гейтвея может отличаться — расхождения ведутся в
+  `docs/ai/API-DIVERGENCE.md`.
 - Живой hi-fi прототип всех экранов (светлая/тёмная тема, dnd, фильтры, slide-over, create,
   notifications): `design_handoff_taska/Taska.dc.html` — открывается в браузере как есть.
 - Пошаговое описание экранов и привязка к ручкам API: `design_handoff_taska/README.md`.
-- REST-контракт (источник enum'ов, ручек и кодов ошибок): API Gateway REST draft.
+  Бандл **заморожен** на момент передачи в разработку: комментариев, меню профиля и
+  режимов API там нет. При расхождении с этим файлом прав этот файл.
+- Внешние дизайн-референсы (Refero MCP) ограничены `docs/ai/REFERENCE-LOCK.md` и стоят
+  **ниже** этого документа: референс может обострить критику, но не может ввести токен
+  или паттерн, противоречащий §2.
 
 ### Варианты, зафиксированные в прототипе
 | Вариант | Значения | По умолчанию |
