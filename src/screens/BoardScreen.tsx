@@ -56,6 +56,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
+  // A drop with no legal transition must say so — the board has no toast, so
+  // silence here means the card just snaps back unexplained.
+  const [dragNotice, setDragNotice] = useState<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -175,6 +178,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const activeIssue = activeIssueId ? issues.find((item) => item.id === activeIssueId) : undefined;
 
   const handleDragStart = (event: DragStartEvent) => {
+    setDragNotice(null);
     setActiveIssueId(String(event.active.id));
   };
 
@@ -200,6 +204,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     );
     if (transition) {
       transitionIssue.mutate({ movedIssueId: issue.id, nextStatus, transitionId: transition.id });
+    } else {
+      setDragNotice(
+        `${issue.issueKey}: no transition from ${statusLabels[issue.status]} to ${statusLabels[nextStatus]} in this workflow`,
+      );
     }
     setActiveIssueId(null);
   };
@@ -307,6 +315,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       </section>
 
       {issuesQuery.isError ? <div className="form-error board-api-error">{issuesQuery.error.message}</div> : null}
+      {transitionIssue.isError ? <div className="form-error board-api-error">{transitionIssue.error.message}</div> : null}
+      {dragNotice ? <div className="form-error board-api-error">{dragNotice}</div> : null}
 
       <DndContext sensors={sensors} onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
         <section className="columns-area">
@@ -381,6 +391,13 @@ const fallbackTransitions: WorkflowTransition[] = [
     toStatusId: "fallback-done",
     name: "Complete",
     sortOrder: 20,
+  },
+  {
+    id: "88888888-8888-8888-8888-888888888888",
+    fromStatusId: "fallback-progress",
+    toStatusId: "fallback-todo",
+    name: "Move to To Do",
+    sortOrder: 25,
   },
   {
     id: "77777777-7777-7777-7777-777777777777",
@@ -1106,7 +1123,7 @@ function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, 
     const priority = event.payload.to && isPriority(event.payload.to) ? priorityMeta[event.payload.to].label : "priority";
     return `set priority to ${priority}`;
   }
-  if (event.eventType === "UPDATED" && event.payload.newPriority) {
+  if (event.eventType === "UPDATED" && event.payload.newPriority && isPriority(event.payload.newPriority)) {
     return `set priority to ${priorityMeta[event.payload.newPriority].label}`;
   }
   if (event.eventType === "DELETED") return "deleted this issue";
