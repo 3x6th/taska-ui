@@ -288,6 +288,81 @@ textarea:disabled {
   text-align: center;
 }
 
+/* DESIGN.md §4.18. The second full-screen route outside the app shell, so it
+   lives next to the login screen rather than with the board. */
+.notfound-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 26px;
+  background: var(--bg);
+}
+
+.notfound-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  /* Token duration only: reduced motion collapses --dur-enter to 1ms, so this
+     needs no separate rule and no entry in the literal-animation list (§3). */
+  animation: tk-pop var(--dur-enter) var(--ease);
+}
+
+/* The <img> carries its intrinsic 720x346 as attributes so the box is reserved
+   before the file arrives; these override the rendered size, and `height:auto`
+   is what keeps the ratio instead of squashing it to 346px. */
+.notfound-mascot {
+  width: 260px;
+  max-width: 78vw;
+  height: auto;
+  /* 26 (§2.4), not the 14 the text→CTA rhythm suggests: at 14 the gap to the
+     title equalled the gap below the text, and the large saturated mascot read
+     as owning the h1 — the title looked like a caption. */
+  margin-bottom: 26px;
+}
+
+.notfound-title {
+  margin: 0;
+  color: var(--fg);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.notfound-text {
+  max-width: 340px;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 13px;
+  font-weight: 400;
+  text-wrap: pretty;
+}
+
+/* .primary-button already sets inline-flex and the 34px height, which an <a>
+   picks up unchanged; only the link underline has to go. */
+.notfound-action {
+  margin-top: 14px;
+  text-decoration: none;
+}
+
+/* §4.1 asks every primary button for these; `.primary-button` has neither, and
+   fixing that globally is its own change with its own visual check (backlog).
+   Here it is not cosmetic: this link is the screen's only control. */
+.notfound-action:hover {
+  filter: brightness(1.06);
+}
+
+.notfound-action:active {
+  filter: brightness(0.96);
+}
+
+.notfound-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .segmented {
   display: flex;
   gap: 3px;
