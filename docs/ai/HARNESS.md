@@ -161,14 +161,20 @@ the drift this file exists to catch.
 
 ## Verification
 
-`npm run check` is typecheck, lint at zero warnings, and unit tests.
-`npm run build` is the production build.
+`npm run check` is typecheck, lint at zero warnings, unit tests, and the
+Playwright end-to-end suite. `npm run build` is the production build.
 
 Neither proves visual, content, or deployment correctness, and the harness says
-so in as many words. The test suite is new as of `TAS-140` and covers the API
-boundary, not the screens — treat a green `check` as evidence that the contract
-layer holds, and nothing more.
+so in as many words. The unit suite is new as of `TAS-140` and covers the API
+boundary, not the screens. The e2e suite is new as of `TAS-143`: mock-backed
+smoke flows on its own Vite server, which is the dev server with browser
+routing at base `/` — not the hash-routed, base-prefixed build that GitHub
+Pages actually serves, so deploy-shaped regressions stay outside its reach.
+Treat a green `check` as evidence that the contract layer holds and the smoke
+flows still run, and nothing more.
 
 CI runs `npm run check` on pull requests and pushes to `main`
-(`.github/workflows/frontend.yml`). Deployment to GitHub Pages fires separately
-on push to `main`.
+(`.github/workflows/frontend.yml`), installing Chromium first and uploading
+Playwright traces and the HTML report when the gate fails. Deployment to
+GitHub Pages fires separately on push to `main` and runs only `typecheck` and
+`build`, never `check`.

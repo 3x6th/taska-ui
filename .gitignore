@@ -29,6 +29,10 @@ dist/
 coverage/
 .vite/
 
+# Playwright working output
+test-results/
+playwright-report/
+
 # Local env
 .env
 .env.local

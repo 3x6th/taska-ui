@@ -31,7 +31,8 @@ Implementation principles:
   clickable; drag-and-drop always has a button equivalent
 - `prefers-reduced-motion` respected; entrance animations never start at
   `opacity: 0` and never leave content hidden when animation is disabled
-- no Playwright, no component kits, no unnecessary abstractions
+- Playwright end-to-end specs live in `e2e/` and run as part of `npm run check`;
+  no component kits, no unnecessary abstractions
 - no secrets, build output, IDE state, or unrelated edits
 
 When the deployed gateway disagrees with the REST draft, stop. Report it for

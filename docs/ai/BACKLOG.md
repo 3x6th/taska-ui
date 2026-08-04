@@ -48,8 +48,14 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   returns a `Page` without `totalCount`. Minor contract-silence items.
 - **BoardScreen.tsx split** (~1200 lines) — recorded as debt in `DESIGN.md` §8;
   do it with the next large board change.
-- **Playwright e2e** — explicitly wanted by the owner. When it lands it joins
-  `npm run check` as part of the gate.
+- **Duplicate accessible name on the login screen** — the segmented mode toggle
+  and the submit button are both named "Sign in", so a role locator matches two
+  elements. `e2e/smoke.spec.ts` works around it with a CSS locator; the fix
+  belongs in `LoginScreen.tsx`.
+- **e2e cannot see deploy-shaped regressions** — the suite runs the dev server
+  with browser routing at base `/`, while Pages serves a hash-routed,
+  base-prefixed build. Running one project against `vite preview` with the
+  Pages env would close the gap.
 - **TAS-142 execution** — the a11y/contrast/gap list already agreed and filed.
 
 ## Backend asks already filed
