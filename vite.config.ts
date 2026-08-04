@@ -1,5 +1,5 @@
 import { loadEnv } from "vite";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 function withTrailingSlash(value: string) {
@@ -23,6 +23,12 @@ export default defineConfig(({ mode }) => {
       environment: "jsdom",
       globals: true,
       setupFiles: "./src/test/setup.ts",
+      // e2e/ belongs to Playwright; Vitest must not pick up its specs — it
+      // throws outright on a Playwright test(). The globs need a `**/` prefix
+      // because Vitest also scans .claude/worktrees, which holds scratch
+      // checkouts of this same repository (see eslint.config.js globalIgnores,
+      // which ignores them for the same reason).
+      exclude: [...configDefaults.exclude, "**/e2e/**", "**/.claude/worktrees/**"],
     },
     plugins: [
       react(),

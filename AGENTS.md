@@ -86,9 +86,15 @@ identical role bodies and keep the two definitions in sync.
   element invisible when animation is paused or disabled.
 - Verify desktop 16:9, laptop 16:10, and phone portrait layouts, in both
   themes.
-- Playwright end-to-end tests are welcome. When they exist they join
-  `npm run check` as part of the gate; until then, browser verification stays
-  manual through the preview tools.
+- Playwright end-to-end tests live in `e2e/` and run as part of
+  `npm run check` (`npm run test:e2e` runs them alone). The suite starts its
+  own Vite server on port 5183 with `VITE_TASKA_API_MODE=mock`, so it never
+  reuses a developer's dev server and never reaches the live gateway. Its
+  three projects mirror the viewport matrix above. A green suite proves the
+  flows it exercises, not visual or content correctness — browser
+  verification through the preview tools still applies to UI work. It runs the
+  dev server with browser routing at base `/`, so it cannot catch the
+  hash-routing and base-path regressions specific to the Pages build.
 - Never commit secrets, build output, or IDE state.
 
 ### Skills rank below the design system
@@ -149,10 +155,10 @@ bold headers and the result is unreadable.
 
 ## Verification evidence
 
-`npm run check` is typecheck, lint at zero warnings, and unit tests.
-`npm run build` is the production build. Neither proves visual, content, or
-deployment correctness — say so rather than implying a green build is a
-verdict.
+`npm run check` is typecheck, lint at zero warnings, unit tests, and the
+mock-backed Playwright end-to-end suite. `npm run build` is the production
+build. Neither proves visual, content, or deployment correctness — say so
+rather than implying a green build is a verdict.
 
 Evidence proportional to risk:
 

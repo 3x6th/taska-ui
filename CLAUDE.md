@@ -14,5 +14,6 @@ to the backend, never the other way around.
 Subagents live in `.claude/agents/`. `frontend-builder` is the only one that
 may edit production frontend code.
 
-Verification: `npm run check` (typecheck + lint + test), then `npm run build`.
-A green build does not prove visual, content, or deployment correctness.
+Verification: `npm run check` (typecheck + lint + unit tests + mock-backed
+Playwright e2e), then `npm run build`. A green build does not prove visual,
+content, or deployment correctness.
