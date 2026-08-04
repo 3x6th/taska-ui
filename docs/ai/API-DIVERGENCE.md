@@ -93,8 +93,9 @@ it. Entries are deleted only when the compensating code is deleted.
   screen, and this is the multiplier that turns TAS-139 into a board-wide
   failure.
 - **Removal:** [TAS-124](https://jira.ozero.dev/browse/TAS-124) /
-  [TAS-125](https://jira.ozero.dev/browse/TAS-125) (Board API), or `status` +
-  `createdAt` added to the short DTO ([TAS-141](https://jira.ozero.dev/browse/TAS-141)).
+  [TAS-125](https://jira.ozero.dev/browse/TAS-125) (Board API — already in
+  review on the backend). Dropped from TAS-141 as a duplicate at the
+  2026-08-04 dedup pass.
 
 ### No `read-all` for notifications
 
