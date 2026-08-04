@@ -10,6 +10,7 @@ import type {
   TaskaApi,
   UpdateIssueInput,
 } from "../TaskaApi";
+import { SessionExpiredSignal } from "../session";
 import type {
   Issue,
   IssueComment,
@@ -105,6 +106,7 @@ export class RestTaskaApi implements TaskaApi {
   private refreshTokenValue = window.localStorage.getItem("taska.refreshToken");
   private refreshInFlight: Promise<boolean> | null = null;
   private authVersion = 0;
+  private readonly sessionExpired = new SessionExpiredSignal();
 
   private readonly baseUrl: string;
 
@@ -148,11 +150,24 @@ export class RestTaskaApi implements TaskaApi {
 
   async logout(): Promise<void> {
     this.authVersion += 1;
+    // Deliberately clearTokens() and not expireSession(): signing out is the
+    // user's own doing and already navigates. Announcing "your session expired"
+    // here would put a false explanation on the login screen.
     this.clearTokens();
   }
 
   getCurrentUser(): Promise<User> {
     return this.request<User>("/users/me");
+  }
+
+  hasSession(): boolean {
+    // `||`, not `??`: an empty-string access token is not a credential, and with
+    // `??` it would hide a refresh token that could still revive the session.
+    return Boolean(this.accessToken || this.refreshTokenValue);
+  }
+
+  onSessionExpired(listener: () => void): () => void {
+    return this.sessionExpired.subscribe(listener);
   }
 
   async listProjects(): Promise<Project[]> {
@@ -378,11 +393,30 @@ export class RestTaskaApi implements TaskaApi {
     window.localStorage.removeItem("taska.refreshToken");
   }
 
+  /**
+   * Idempotent on purpose. A board screen fires six queries in parallel and each
+   * one can come back 401, so the session dies once and the listeners hear about
+   * it once. With nothing left to lose there is nothing to announce either.
+   *
+   * `authVersion` is the session the caller was talking about, the same guard
+   * `login`/`refresh` put on `setTokens`: a 401 that arrives after the user has
+   * signed out and signed back in belongs to a session that is already gone, and
+   * killing the fresh one on its behalf would throw the user back to the login
+   * form reading "your session expired" about a session that just worked.
+   */
+  private expireSession(authVersion = this.authVersion) {
+    if (authVersion !== this.authVersion) return;
+    if (!this.accessToken && !this.refreshTokenValue) return;
+    this.clearTokens();
+    this.sessionExpired.emit();
+  }
+
   private tryRefresh(): Promise<boolean> {
+    const authVersion = this.authVersion;
     this.refreshInFlight ??= this.refresh()
       .then(() => true)
       .catch(() => {
-        this.clearTokens();
+        this.expireSession(authVersion);
         return false;
       })
       .finally(() => {
@@ -452,6 +486,9 @@ export class RestTaskaApi implements TaskaApi {
     } = {},
     isRetry = false,
   ): Promise<T> {
+    // Captured before the request leaves: whatever comes back answers *this*
+    // session, not whichever one is current when the response finally lands.
+    const authVersion = this.authVersion;
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: options.method ?? "GET",
       headers: {
@@ -463,10 +500,15 @@ export class RestTaskaApi implements TaskaApi {
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
 
-    if (response.status === 401 && !options.skipAuth && !isRetry && this.refreshTokenValue) {
-      if (await this.tryRefresh()) {
+    // Every way a 401 can end without a usable session goes through
+    // expireSession(): no refresh token at all, a refresh that failed, and a
+    // retry that came back 401 again. Each of those used to fall through
+    // silently and leave the UI signed out with no way to say so.
+    if (response.status === 401 && !options.skipAuth) {
+      if (!isRetry && this.refreshTokenValue && (await this.tryRefresh())) {
         return this.request<T>(path, options, true);
       }
+      this.expireSession(authVersion);
     }
 
     if (response.status === 204) {

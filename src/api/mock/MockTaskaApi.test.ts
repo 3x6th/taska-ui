@@ -13,8 +13,57 @@ describe("MockTaskaApi", () => {
   let project: Project;
 
   beforeEach(async () => {
+    // The mock session lives in localStorage so it survives a reload; clearing
+    // it here keeps every case independent of the one before it.
+    window.localStorage.clear();
     api = new MockTaskaApi();
     [project] = await api.listProjects();
+  });
+
+  describe("session", () => {
+    it("holds no session until someone signs in", () => {
+      expect(api.hasSession()).toBe(false);
+    });
+
+    it("holds a session after a successful sign-in and drops it on sign-out", async () => {
+      await api.login({ email: "anna@example.com", password: "mock-accepts-anything" });
+      expect(api.hasSession()).toBe(true);
+
+      await api.logout();
+      expect(api.hasSession()).toBe(false);
+    });
+
+    it("does not open a session for a rejected sign-in", async () => {
+      await expect(api.login({ email: "nobody@example.com", password: "x" })).rejects.toThrow();
+      expect(api.hasSession()).toBe(false);
+    });
+
+    it("does not open a session for an accepted invitation", async () => {
+      // `POST /auth/invitations/accept` answers 204 with no tokens, so `rest`
+      // cannot produce a session here and neither may the mock — otherwise an
+      // empty token and an empty password would walk straight past the route
+      // guard in mock mode. The gap is recorded in docs/ai/API-DIVERGENCE.md.
+      await api.acceptInvitation({ token: "", newPassword: "" });
+
+      expect(api.hasSession()).toBe(false);
+    });
+
+    it("restores the signed-in user on the next page load", async () => {
+      await api.login({ email: "mark@example.com", password: "mock-accepts-anything" });
+
+      // A fresh instance is what a reload produces: same storage, new store.
+      const reloaded = new MockTaskaApi();
+
+      expect(reloaded.hasSession()).toBe(true);
+      await expect(reloaded.getCurrentUser()).resolves.toMatchObject({ email: "mark@example.com" });
+    });
+
+    it("drops a stored id that no longer names an active user", () => {
+      window.localStorage.setItem("taska.mockSession", "00000000-0000-4000-8000-000000000000");
+
+      expect(new MockTaskaApi().hasSession()).toBe(false);
+      expect(window.localStorage.getItem("taska.mockSession")).toBeNull();
+    });
   });
 
   describe("workflow transitions", () => {

@@ -491,6 +491,26 @@ h1 {
   font-size: 12px;
 }
 
+/* Plain text, not a filled block: sharing the --surface-2 fill and 9px radius
+   with .segmented made the notice read as one more row of the segmented
+   control (§4.2), and in invite mode the card became three identical bars.
+   It sits above the control, outside the form's gap stack, so it carries its
+   own bottom spacing from the §2.4 scale. */
+.auth-notice {
+  margin: 0 0 16px;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* §7: the redirect moves focus here to announce itself, so the ring is not
+   decoration — it is the only thing showing where focus landed. */
+.auth-notice:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .form-error {
   border-radius: 9px;
   padding: 8px 10px;
@@ -707,6 +727,16 @@ h1 {
   font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Degraded state: the profile request failed but the session tokens are still
+   here, so the menu keeps Log out reachable and says only what it knows. */
+.user-profile-unknown {
+  margin: 0;
+  padding: 13px 14px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .user-profile-actions {

@@ -80,6 +80,52 @@ it. Entries are deleted only when the compensating code is deleted.
   the UI; role gating is unverifiable in this mode and a passing permission
   check proves nothing.
 
+### Accepting an invitation does not produce a session
+
+- **Endpoint:** `POST /api/v1/auth/invitations/accept` (`setPasswordByToken`).
+- **Contract:** `204 No Content` — no body, no tokens. Nothing anywhere states
+  how a user who has just activated their account gets a session, and the
+  invite form never collects the email that `POST /auth/login` would need to
+  sign them in afterwards.
+- **Compensation:** none, deliberately. `MockTaskaApi.acceptInvitation` briefly
+  persisted a session of its own during TAS-150; that was removed, because
+  `rest` cannot do the same from a 204 and the two modes would have disagreed
+  about whether an activated user is signed in. The mock now leaves the visitor
+  signed out, so the route guard returns them to `/login` — where "Sign in to
+  open that page." is the only explanation offered. In `rest` the screen calls
+  `GET /users/me` right after the 204, with no bearer token, and the gateway's
+  raw 401 message lands in `.form-error`.
+- **User-visible effect:** activation appears to fail, or at best to end
+  nowhere: in both modes the user is left at a sign-in form with no statement
+  that their password was in fact set.
+- **Removal:** [TAS-141](https://jira.ozero.dev/browse/TAS-141) — either return
+  tokens from the accept call, or state in the contract that the client must
+  sign in afterwards (in which case the UI should collect the email and do it).
+
+### The mock has a session flag but no session enforcement
+
+- **Where:** `src/api/mock/MockTaskaApi.ts`.
+- **What exists since TAS-150:** `hasSession()` / `login()` / `logout()` keep a
+  user id in `localStorage`, which is enough for the route guard and for a
+  reload to behave as it does against the gateway.
+- **What does not:** `MockTaskaStore`'s data methods still answer without a
+  session — the mock doubles as the unit-test fixture and as the seed the UI is
+  developed against, so making them throw is a larger change than the guard
+  needed. `logout()` clears the flag but leaves `currentUserId` pointing at the
+  last user, and `onSessionExpired` is implemented as a no-op subscription: the
+  mock has no server, so nothing can ever reject a token.
+- **Consequence:** the expiry half of TAS-150 — a 401 the refresh cannot
+  repair, the cleared query cache, the redirect to `/login` with "Your session
+  expired." — is structurally unreachable from the mock-backed Playwright
+  suite, which is the only e2e suite this repository has. It is covered instead
+  by `src/api/rest/RestTaskaApi.test.ts` (the announcement) and
+  `src/screens/App.test.tsx` (the redirect, the cache clear, the notice and its
+  focus) against a fake `TaskaApi`. That closes the behaviour, not the gap: no
+  test in this repository drives the real path end to end.
+- **Removal:** nothing schedules it. It disappears when `rest` becomes the
+  default mode (after [TAS-137](https://jira.ozero.dev/browse/TAS-137)) and the
+  e2e suite can run against a gateway that rejects tokens.
+
 ### The issue list DTO cannot render a board
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/issues`
@@ -171,6 +217,18 @@ it. Entries are deleted only when the compensating code is deleted.
   `VITE_TASKA_ASSUME_PROJECT_ADMIN` entry above), and project-service has no
   membership concept until TAS-137. If it answers `200` for someone else's
   project, the screen never appears and no current test notices.
+- **Since TAS-150, 401 is no longer just another error.** The client now treats
+  **every** 401 on a bearer route as a dead session: the tokens are cleared, the
+  query cache is dropped, and the user is returned to `/login`.
+  `isMissingOrForbidden` (`src/api/errors.ts`) still covers 403/404 only, so the
+  two answers do not overlap — but the contract's `code` is a free-form string
+  with nothing else to key on, so if the gateway ever answers 401 for "not
+  yours" rather than "not authenticated", a member browsing somebody else's
+  project would be signed out instead of shown the Not-found screen. This must
+  be re-checked when `rest` becomes the default mode, including the two
+  endpoints that have no contract at all —
+  `GET /projects/{id}/membership` and `GET /projects/{id}/members` (see the
+  first entry in this section) — whose 401 would now sign the user out.
 - **Removal:** [TAS-137](https://jira.ozero.dev/browse/TAS-137) makes the
   no-access case reachable; [TAS-141](https://jira.ozero.dev/browse/TAS-141)
   is where the contract should name the error codes.

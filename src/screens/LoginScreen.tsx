@@ -1,7 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
+import type { LoginRedirectState } from "../components/RequireSession";
+import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
 import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
 import type { ScreenProps } from "./App";
@@ -14,12 +16,35 @@ interface LoginScreenProps extends ScreenProps {
 
 export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
+  const redirect = (location.state ?? null) as LoginRedirectState | null;
+  const from = inAppPath(redirect?.from);
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [inviteToken, setInviteToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const noticeRef = useRef<HTMLParagraphElement>(null);
+
+  // The notice explains a navigation nobody asked for, so it only belongs over
+  // the sign-in form: "Your session expired. Sign in to continue." above a form
+  // headed "Activate account" describes neither.
+  const reason = redirect?.expired
+    ? "Your session expired. Sign in to continue."
+    : from
+      ? "Sign in to open that page."
+      : null;
+  const notice = mode === "signin" ? reason : null;
+
+  useEffect(() => {
+    // The redirect happened without the user asking, and focus would otherwise
+    // stay on <body> with nothing announced (§7). A live region would not help:
+    // this node mounts with its text already in it, so there is no change to
+    // announce — moving focus is what reads the sentence out. Mount-only is
+    // correct because the text never changes after the first paint.
+    noticeRef.current?.focus();
+  }, []);
 
   const submit = useMutation({
     mutationFn: async () => {
@@ -33,7 +58,9 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     onSuccess: async (user) => {
       queryClient.setQueryData(["me"], user);
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      navigate("/projects");
+      // Back to whatever the guard interrupted, and `replace` so Back does not
+      // land on the login form of a session that already exists.
+      navigate(from ?? DEFAULT_SIGNED_IN_ROUTE, { replace: true });
     },
   });
 
@@ -43,6 +70,11 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       <div className="auth-card-wrap">
         <TaskaLogo />
         <section className="auth-card">
+          {notice ? (
+            <p className="auth-notice" ref={noticeRef} tabIndex={-1}>
+              {notice}
+            </p>
+          ) : null}
           <div className="segmented">
             <button className={mode === "signin" ? "is-active" : ""} onClick={() => setMode("signin")} type="button">
               Sign in
@@ -124,4 +156,20 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
       </div>
     </main>
   );
+}
+
+/**
+ * The redirect target comes from our own router state, but an unchecked one is
+ * not a habit worth forming: only a path on this origin is accepted. Comparing
+ * resolved origins rather than pattern-matching the string catches the
+ * protocol-relative forms — "//host" and "/\host", which browsers normalise to
+ * the same thing — without a list of prefixes to keep complete.
+ */
+function inAppPath(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.startsWith("/")) return undefined;
+  try {
+    return new URL(value, window.location.origin).origin === window.location.origin ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
