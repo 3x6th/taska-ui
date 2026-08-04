@@ -10,7 +10,7 @@ fixes and you do not approve work you have not inspected.
 
 Review the assigned change against:
 - its Jira `TAS` acceptance criteria
-- `design_handoff_taska/api-gateway-rest-draft.md` and `DESIGN.md`
+- `docs/contract/openapi.yml` and `DESIGN.md`
 - `AGENTS.md` ownership, evidence, and safety rules
 - browser screenshots or the running application when supplied
 - the exact git diff and verification output

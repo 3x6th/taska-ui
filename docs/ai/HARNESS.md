@@ -26,32 +26,17 @@ asking politely.
 
 ## Authority
 
-`design_handoff_taska/api-gateway-rest-draft.md` → `DESIGN.md` → the Jira story
-→ `docs/ai/REFERENCE-LOCK.md` → `AGENTS.md`. A conflict stops the conflicting
-work and defers upward.
+The backend's `openapi.yml` (vendored at `docs/contract/openapi.yml`) →
+`DESIGN.md` → the Jira story → `docs/ai/REFERENCE-LOCK.md` → `AGENTS.md`.
+A conflict stops the conflicting work and defers upward.
 
 The contract sits at the top because Taska's product truth is its data model,
 not its positioning. The ranking's one nuance is that the contract itself has
-two truths — the draft states intent, the deployed gateway states behaviour —
-and `docs/ai/API-DIVERGENCE.md` exists to keep the gap visible instead of
-letting it dissolve into component code.
-
-## Adapted, not copied
-
-The harness shape comes from the `lake-landing` repository, where it was built
-for a bilingual marketing site. Two roles did not survive the move intact:
-
-- `product-strategist` guarded positioning claims and EN/RU content parity.
-  Taska has no marketing claims to overstate, so the slot went to
-  `api-contract-guard`, which guards the thing that can actually be wrong here:
-  the UI's model of the backend.
-- `art-director` guarded a cinematic art direction. Here it guards a quiet
-  product interface — the same read-only shape, an inverted aesthetic brief.
-
-`lake-landing` also defines every subagent twice, once for Codex and once for
-Claude Code. This repository does not: all work here runs in Claude Code, and
-`AGENTS.md` records what adding the mirror would take rather than leaving an
-empty directory implying it exists.
+two truths — the contract states intent, the deployed gateway states
+behaviour — and `docs/ai/API-DIVERGENCE.md` exists to keep the gap visible
+instead of letting it dissolve into component code. Mock-first delivery is
+the repository's normal mode: features ship against the mock so the team can
+use them before the gateway catches up.
 
 ## What this record is for
 
@@ -171,8 +156,8 @@ user profile) and `TAS-136` (issue endpoints) are both `To Do` in Jira while
 their code is written and, in TAS-136's case, committed across three commits.
 A reviewer auditing either story against its acceptance criteria would be
 auditing a story the board says has not started. Recorded rather than corrected
-silently, because it is the same failure mode `lake-landing` hit with `LOD-9`:
-work outrunning the issue that is supposed to define it.
+silently: work outrunning the issue that is supposed to define it is exactly
+the drift this file exists to catch.
 
 ## Verification
 

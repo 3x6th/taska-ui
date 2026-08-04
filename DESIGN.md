@@ -417,9 +417,21 @@ height 32, width 220, radius 9, `border:1px var(--border-strong)`, фон `--sur
 
 ## 5. Patterns
 
-### 5.1 App shell
+### 5.1 App shell и маршруты
 Фиксированный топбар (+ фильтр-бар на доске) → прокручиваемая область контента.
 `height:100vh; display:flex; flex-direction:column; overflow:hidden`; скроллит только контент.
+
+| Экран | Route |
+| --- | --- |
+| Login / Accept invite | `/login`, `/invite?token=…` |
+| Projects | `/projects` |
+| Board | `/projects/:projectId/board` |
+| Issue card | `/projects/:projectId/issues/:issueId` |
+| Notifications | поповер, без маршрута |
+
+Issue card — **slide-over поверх доски**, а не отдельная страница: URL меняется,
+доска остаётся под затемнением, закрытие панели возвращает на `…/board`.
+Ручки для каждого экрана — в контракте `docs/contract/openapi.yml`.
 
 ### 5.2 Board layout
 Полотно `flex; gap:14; overflow-x:auto; align-items:flex-start`, колонки во всю высоту,
@@ -626,13 +638,10 @@ slide-over задачи, тред комментариев, модалка со�
   `openapi.yml` из репозитория бэкенда, снапшот — `docs/contract/openapi.yml`.
   Поведение задеплоенного гейтвея может отличаться и от него — расхождения и
   молчания контракта ведутся в `docs/ai/API-DIVERGENCE.md`.
-  Черновик `design_handoff_taska/api-gateway-rest-draft.md` написан до появления
-  гейтвея и остаётся только историческим документом.
-- Живой hi-fi прототип всех экранов (светлая/тёмная тема, dnd, фильтры, slide-over, create,
-  notifications): `design_handoff_taska/Taska.dc.html` — открывается в браузере как есть.
-- Пошаговое описание экранов и привязка к ручкам API: `design_handoff_taska/README.md`.
-  Бандл **заморожен** на момент передачи в разработку: комментариев, меню профиля и
-  режимов API там нет. При расхождении с этим файлом прав этот файл.
+- Исходный дизайн-хендофф (hi-fi прототип `Taska.dc.html`, его README и REST-черновик,
+  написанный до появления гейтвея) **поглощён этим документом** и удалён из рабочего
+  дерева; при необходимости он доступен в истории git. Всё, что в нём было
+  нормативного — токены, компоненты, поведение, маршруты, — живёт здесь.
 - Внешние дизайн-референсы (Refero MCP) ограничены `docs/ai/REFERENCE-LOCK.md` и стоят
   **ниже** этого документа: референс может обострить критику, но не может ввести токен
   или паттерн, противоречащий §2.

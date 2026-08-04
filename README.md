@@ -10,7 +10,7 @@ MVP frontend for Taska, a lightweight issue tracker with project list, kanban bo
 - TanStack Query
 - dnd-kit for board drag-and-drop
 - lucide-react icons
-- CSS custom properties for the design tokens from `design_handoff_taska`
+- CSS custom properties for the design tokens from `DESIGN.md`
 
 ## Run
 

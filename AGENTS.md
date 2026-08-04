@@ -18,10 +18,13 @@ which source wins a conflict, and what counts as evidence.
    the work.
 5. This file — ownership, verification, and safety.
 
-The frontend adapts to the backend, never the other way around. The REST draft
-in `design_handoff_taska/api-gateway-rest-draft.md` predates the gateway's
-existence and is a historical design document, not an authority — do not audit
-code against it.
+The frontend adapts to the backend, never the other way around — but the
+backend moves slower than the frontend needs to, and that is expected, not an
+exception. When a feature needs an endpoint the gateway does not have yet, the
+frontend ships it against the mock (or a hybrid compensation) so the team can
+click through it, and the gap is recorded in `docs/ai/API-DIVERGENCE.md` with
+what removes it. Mock-first delivery is the normal mode of this repository,
+not a violation of the contract.
 
 When two sources conflict, stop the conflicting work and follow the
 higher-ranked source.
@@ -56,11 +59,9 @@ quietly fix; a builder that can approve cannot be trusted to sign off on its own
 work. Read-only is expressed as a restricted `tools` list in each agent's
 frontmatter — that restriction is the mechanism, not a request.
 
-Subagents live in `.claude/agents/`. There is no Codex mirror in this
-repository: all work here runs in Claude Code. If Codex is ever used, add
-`.codex/agents/*.toml` with identical role bodies and only the frontmatter
-differing, and keep the two in sync — that is the arrangement `lake-landing`
-uses.
+Subagents live in `.claude/agents/`. All work here runs in Claude Code; if a
+second agent runtime is ever added, define the same roles for it with
+identical role bodies and keep the two definitions in sync.
 
 ## Frontend constraints
 
@@ -85,7 +86,9 @@ uses.
   element invisible when animation is paused or disabled.
 - Verify desktop 16:9, laptop 16:10, and phone portrait layouts, in both
   themes.
-- Do not install or use Playwright.
+- Playwright end-to-end tests are welcome. When they exist they join
+  `npm run check` as part of the gate; until then, browser verification stays
+  manual through the preview tools.
 - Never commit secrets, build output, or IDE state.
 
 ### Skills rank below the design system
@@ -112,11 +115,29 @@ Before a PR:
 4. fix all blocking findings
 5. rerun checks
 6. push and open the PR
-7. merge only when available checks are green and the reviewer verdict has no
-   blockers
+7. the orchestrator may merge once available checks are green and the
+   reviewer verdicts have no unresolved blockers — the owner has delegated
+   the merge itself; the verdict requirement is what is not delegated
 
-Do not fake a same-account GitHub approval. Record the reviewer verdict in the
-PR instead.
+Do not fake a same-account GitHub approval. The written reviewer verdict is
+the independent evidence.
+
+There is one environment. The deployed site is the team's own working stand —
+no external users yet — so shipping mock-backed features there for the team
+to click through is the point, not a risk to be escalated. Note what is
+mocked, and move on.
+
+### Jira discipline
+
+Jira stories are created by the owner, or by the orchestrator only after
+proposing it to the owner and getting a yes. The one exception: a genuine
+contract-design problem (not a temporary mock-era gap) may be filed directly.
+Everything else that is worth remembering goes to `docs/ai/BACKLOG.md` first —
+that file is the working memory; Jira is for agreed work.
+
+When writing Jira descriptions, use plain text and simple lists. Do not use
+`#` headings inside list items — the Jira converter renders them as giant
+bold headers and the result is unreadable.
 
 ## Verification evidence
 
@@ -129,12 +150,16 @@ Evidence proportional to risk:
 
 - exact commands and their outcomes
 - changed files and commit SHAs
-- browser screenshots per viewport for visual work, stored under
-  `docs/ai/evidence/<story>/`
+- browser verification per viewport for visual work
 - accessibility, responsive, and reduced-motion checks
 - contract conformance for anything touching `src/api/`
 - an independent reviewer verdict
 - PR and deployment URLs at release
+
+Reviewer verdicts are summarized as comments on the Jira story. Screenshots
+and full verdict texts stay local under `docs/ai/evidence/` and
+`docs/ai/reviews/` — both are git-ignored working material for the agents,
+not repository content.
 
 Report limitations directly. If a check was skipped, say which and why.
 

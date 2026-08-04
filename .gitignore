@@ -47,3 +47,8 @@ coverage/
 
 # Agent worktrees are scratch checkouts of this same repository.
 .claude/worktrees/
+
+# Agent working material: screenshots and full review verdicts stay local.
+# Verdict summaries go to Jira comments; the repo carries only operational docs.
+docs/ai/evidence/
+docs/ai/reviews/

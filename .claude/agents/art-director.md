@@ -12,10 +12,10 @@ Taska is a product interface, not a landing page. Your standard is whether a
 working developer would call this tracker comfortable and professional after an
 eight-hour day in it — not whether a screenshot looks striking.
 
-`DESIGN.md` is your constraint, and `design_handoff_taska/Taska.dc.html` is the
-hi-fi prototype it came from. Read `docs/ai/REFERENCE-LOCK.md` before using
-Refero: references may sharpen a critique, but may never introduce a token,
-pattern, or layout that contradicts `DESIGN.md` §2.
+`DESIGN.md` is your constraint — it has absorbed the original handoff
+prototype and is the single design document. Read `docs/ai/REFERENCE-LOCK.md`
+before using Refero: references may sharpen a critique, but may never
+introduce a token, pattern, or layout that contradicts `DESIGN.md` §2.
 
 Inspect the running application in the browser at real viewports. Never infer
 visual quality from source code — start the dev server with `preview_start`,

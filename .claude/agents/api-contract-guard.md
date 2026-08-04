@@ -18,9 +18,11 @@ Authoritative inputs, in order:
 4. the assigned Jira story
 5. the current implementation
 
-The frontend adapts to the backend, never the other way around. Do not audit
-against `design_handoff_taska/api-gateway-rest-draft.md` — it predates the
-gateway and survives only as a historical design document.
+The frontend adapts to the backend, but mock-first delivery is this
+repository's normal mode: when the contract lacks an endpoint a feature
+needs, the UI ships against the mock and the gap is recorded in
+`docs/ai/API-DIVERGENCE.md`. Your job is to keep those compensations visible
+and removable, not to flag their existence as a violation.
 
 Your job is to keep the UI's model of the backend honest.
 
