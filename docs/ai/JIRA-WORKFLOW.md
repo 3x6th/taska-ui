@@ -29,7 +29,8 @@ the story has drifted and should be transitioned rather than the table edited.
 | --- | --- | --- |
 | [TAS-137](https://jira.ozero.dev/browse/TAS-137) | full `rest` mode | No project membership or member reads. `hybrid` mode plus `VITE_TASKA_ASSUME_PROJECT_ADMIN` compensates. See `API-DIVERGENCE.md`. |
 | [TAS-139](https://jira.ozero.dev/browse/TAS-139) | verifying `TAS-136` | `GET /api/v1/issues/{issueId}` returns 500 once an issue has a comment; via the list hydration this makes the whole board fail against live data. |
-| [TAS-141](https://jira.ozero.dev/browse/TAS-141) | several UI affordances | Contract gaps: read-all, nullable assignee, comment ordering, board-capable list DTO, CORS-exposed `X-Request-Id`, 404-on-empty-projects bug. |
+| [TAS-141](https://jira.ozero.dev/browse/TAS-141) | several UI affordances | Contract gaps: read-all, nullable assignee, comment ordering, CORS-exposed `X-Request-Id`, 404-on-empty-projects bug. |
+| [TAS-124](https://jira.ozero.dev/browse/TAS-124) / [TAS-125](https://jira.ozero.dev/browse/TAS-125) | removing the N+1 board hydration | Board API (TAS-125 in review). Covers the list-DTO gap that was dropped from TAS-141 as a duplicate. |
 
 ## Branch and commit policy
 

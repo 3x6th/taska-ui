@@ -59,8 +59,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 - [TAS-137](https://jira.ozero.dev/browse/TAS-137) — membership/member reads;
   removes `HybridTaskaApi` and the admin flag.
 - [TAS-141](https://jira.ozero.dev/browse/TAS-141) — contract gaps: read-all,
-  nullable assignee, comment ordering, board-capable list DTO, CORS-exposed
-  `X-Request-Id`, 404-on-empty-projects bug.
+  nullable assignee, comment ordering, CORS-exposed `X-Request-Id`,
+  404-on-empty-projects bug. (The board-capable list DTO was dropped from it
+  as a duplicate of TAS-124/125.)
 - [TAS-124](https://jira.ozero.dev/browse/TAS-124) /
   [TAS-125](https://jira.ozero.dev/browse/TAS-125) — Board API; removes the
   N+1 hydration.

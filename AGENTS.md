@@ -135,6 +135,14 @@ contract-design problem (not a temporary mock-era gap) may be filed directly.
 Everything else that is worth remembering goes to `docs/ai/BACKLOG.md` first —
 that file is the working memory; Jira is for agreed work.
 
+Before proposing or filing anything, search the existing `TAS` backlog for it.
+Two checks, both mandatory: is there already a story that covers this or that
+this duplicates (search by endpoint, service name, and the Russian and English
+keywords); and does the problem even survive — a pain caused by a temporary
+mock or compensation disappears with the story that removes the mock, and does
+not deserve its own ticket. A duplicate found after filing gets closed with a
+link, not left to drift.
+
 When writing Jira descriptions, use plain text and simple lists. Do not use
 `#` headings inside list items — the Jira converter renders them as giant
 bold headers and the result is unreadable.
