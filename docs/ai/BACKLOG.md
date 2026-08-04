@@ -56,6 +56,21 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   with browser routing at base `/`, while Pages serves a hash-routed,
   base-prefixed build. Running one project against `vite preview` with the
   Pages env would close the gap.
+- **`.primary-button` has no `:hover` or `:active` anywhere in the product**,
+  though `DESIGN.md` §4.1 specifies `brightness(1.06)` / `brightness(.96)` for
+  it. Found reviewing TAS-144, which fixed it only for its own CTA
+  (`.notfound-action`) rather than changing every primary button in a PR about
+  a 404 screen. Two lines on `.primary-button` closes it product-wide; the
+  local override then goes away.
+- **Issue-panel errors print the gateway's wording verbatim**
+  (`BoardScreen.tsx` — the panel's "Issue not found" and the board error
+  strip). TAS-144 made the *project* case deliberately indistinguishable
+  between "missing" and "forbidden"; the issue case right next to it still
+  leaks whichever phrasing the gateway chose. Same treatment, one screen over.
+- **Pages serves its own 404 for a non-hash URL.** The `*` route only covers
+  unknown *hash* routes; `https://…/taska-ui/nope` is answered by GitHub
+  before the app loads. A `public/404.html` that redirects into the hash
+  router would close it.
 - **TAS-142 execution** — the a11y/contrast/gap list already agreed and filed.
 
 ## Backend asks already filed

@@ -5,6 +5,7 @@ import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
 import { BoardScreen } from "./BoardScreen";
 import { LoginScreen } from "./LoginScreen";
+import { NotFoundScreen } from "./NotFoundScreen";
 import { ProjectsScreen } from "./ProjectsScreen";
 
 export interface ScreenProps {
@@ -40,7 +41,9 @@ export function App() {
       <Route path="/projects" element={<ProjectsScreen {...screenProps} />} />
       <Route path="/projects/:projectId/board" element={<BoardScreen {...screenProps} />} />
       <Route path="/projects/:projectId/issues/:issueId" element={<BoardScreen {...screenProps} />} />
-      <Route path="*" element={<Navigate to="/projects" replace />} />
+      {/* An unknown URL is an answer, not a redirect: bouncing to /projects
+          hid the typo and pretended the address was fine (DESIGN.md §4.18). */}
+      <Route path="*" element={<NotFoundScreen />} />
     </Routes>
   );
 }

@@ -14,6 +14,7 @@ import { Bell, ChevronLeft, Plus, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { taskaApi } from "../api/client";
+import { isMissingOrForbidden } from "../api/errors";
 import { Avatar } from "../components/Avatar";
 import { PriorityBars, TypeChip } from "../components/IssueBits";
 import { Modal } from "../components/Modal";
@@ -35,6 +36,7 @@ import type {
 } from "../domain/types";
 import { formatDateTime, formatDay, priorityMeta, relativeTime, statusColors, statusLabels, typeMeta } from "../lib/format";
 import type { ScreenProps } from "./App";
+import { NotFoundScreen } from "./NotFoundScreen";
 
 type IssueTypeFilter = IssueType | "ALL";
 type AssigneeFilter = string | "ALL";
@@ -42,6 +44,16 @@ type WorkflowsByIssueType = Partial<Record<IssueType, Workflow>>;
 
 const concreteIssueTypes: IssueType[] = ["TASK", "BUG", "STORY"];
 const issueTypes: IssueTypeFilter[] = ["ALL", ...concreteIssueTypes];
+// "Missing or not yours" is an answer, not a transient failure. Without this,
+// the app-wide `retry: 1` (src/main.tsx) spends a full retryDelay re-asking a
+// question already answered, and the board shows a second of plausible chrome —
+// project name, filters, empty columns — for a project the viewer must not see,
+// before §4.18 replaces it. `failureCount < 1` reproduces the global budget, so
+// genuine failures (network, 5xx) still get their one retry.
+// `error: Error` is not decoration: react-query infers each query's TError from
+// this signature, and `unknown` here would make every `query.error` unknown.
+const retryUnlessMissing = (failureCount: number, error: Error) =>
+  !isMissingOrForbidden(error) && failureCount < 1;
 const priorities: IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
 // The gateway caps `pageSize` for comments at 50.
 const commentsPageSize = 50;
@@ -71,20 +83,24 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryKey: ["project", projectId],
     enabled: Boolean(projectId),
     queryFn: () => taskaApi.getProject(projectId),
+    retry: retryUnlessMissing,
   });
   const membershipQuery = useQuery({
     queryKey: ["membership", projectId],
     enabled: Boolean(projectId),
     queryFn: () => taskaApi.getMembership(projectId),
+    retry: retryUnlessMissing,
   });
   const membersQuery = useQuery({
     queryKey: ["members", projectId],
     enabled: Boolean(projectId),
     queryFn: () => taskaApi.listMembers(projectId),
+    retry: retryUnlessMissing,
   });
   const workflowQuery = useQuery({
     queryKey: ["workflows", projectId],
     enabled: Boolean(projectId),
+    retry: retryUnlessMissing,
     queryFn: async () => {
       const entries = await Promise.all(
         concreteIssueTypes.map(async (issueType) => [
@@ -99,6 +115,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryKey: ["issues", projectId],
     enabled: Boolean(projectId),
     queryFn: () => taskaApi.listIssues(projectId, { pageSize: 100 }),
+    retry: retryUnlessMissing,
   });
   const notificationsQuery = useQuery({
     queryKey: ["notifications"],
@@ -211,6 +228,14 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     }
     setActiveIssueId(null);
   };
+
+  // A board URL can point at a project that does not exist or is not ours; the
+  // `*` fallback route never sees it, because the path itself is valid.
+  // DESIGN.md §4.18 answers both with the same screen. This sits below every
+  // hook on purpose — returning earlier would make the hook order conditional.
+  if (projectQuery.isError && isMissingOrForbidden(projectQuery.error)) {
+    return <NotFoundScreen />;
+  }
 
   return (
     <main className="board-shell">

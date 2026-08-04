@@ -156,6 +156,25 @@ it. Entries are deleted only when the compensating code is deleted.
   [TAS-141](https://jira.ozero.dev/browse/TAS-141) adds the field to the
   contract.
 
+### `GET /projects/{id}` never says what "not yours" looks like
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}`
+- **Contract:** declares only `200` and a `default` error whose `code` is a
+  free-form string — no enum, no 403/404 semantics. So nothing states what a
+  non-member or a deleted project actually gets back.
+- **Compensation:** `isMissingOrForbidden` (`src/api/errors.ts`) treats
+  `NOT_FOUND` / `PERMISSION_DENIED` / 404 / 403 as one answer and
+  `BoardScreen` renders the Not found screen (`DESIGN.md` §4.18).
+- **Unverified:** only the "missing" half is exercised, and only against the
+  mock. The "no access" half was never observed on the running gateway: the
+  default `hybrid` mode hardcodes a healthy membership (see the
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN` entry above), and project-service has no
+  membership concept until TAS-137. If it answers `200` for someone else's
+  project, the screen never appears and no current test notices.
+- **Removal:** [TAS-137](https://jira.ozero.dev/browse/TAS-137) makes the
+  no-access case reachable; [TAS-141](https://jira.ozero.dev/browse/TAS-141)
+  is where the contract should name the error codes.
+
 ---
 
 ## Closed
