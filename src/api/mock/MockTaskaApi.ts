@@ -198,6 +198,13 @@ export class MockTaskaStore {
           sortOrder: 20,
         },
         {
+          id: "88888888-8888-8888-8888-888888888888",
+          fromStatusId: IN_PROGRESS_STATUS_ID,
+          toStatusId: TODO_STATUS_ID,
+          name: "Move to To Do",
+          sortOrder: 25,
+        },
+        {
           id: "77777777-7777-7777-7777-777777777777",
           fromStatusId: DONE_STATUS_ID,
           toStatusId: IN_PROGRESS_STATUS_ID,

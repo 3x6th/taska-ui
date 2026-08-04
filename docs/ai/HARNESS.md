@@ -26,32 +26,17 @@ asking politely.
 
 ## Authority
 
-`design_handoff_taska/api-gateway-rest-draft.md` → `DESIGN.md` → the Jira story
-→ `docs/ai/REFERENCE-LOCK.md` → `AGENTS.md`. A conflict stops the conflicting
-work and defers upward.
+The backend's `openapi.yml` (vendored at `docs/contract/openapi.yml`) →
+`DESIGN.md` → the Jira story → `docs/ai/REFERENCE-LOCK.md` → `AGENTS.md`.
+A conflict stops the conflicting work and defers upward.
 
 The contract sits at the top because Taska's product truth is its data model,
 not its positioning. The ranking's one nuance is that the contract itself has
-two truths — the draft states intent, the deployed gateway states behaviour —
-and `docs/ai/API-DIVERGENCE.md` exists to keep the gap visible instead of
-letting it dissolve into component code.
-
-## Adapted, not copied
-
-The harness shape comes from the `lake-landing` repository, where it was built
-for a bilingual marketing site. Two roles did not survive the move intact:
-
-- `product-strategist` guarded positioning claims and EN/RU content parity.
-  Taska has no marketing claims to overstate, so the slot went to
-  `api-contract-guard`, which guards the thing that can actually be wrong here:
-  the UI's model of the backend.
-- `art-director` guarded a cinematic art direction. Here it guards a quiet
-  product interface — the same read-only shape, an inverted aesthetic brief.
-
-`lake-landing` also defines every subagent twice, once for Codex and once for
-Claude Code. This repository does not: all work here runs in Claude Code, and
-`AGENTS.md` records what adding the mirror would take rather than leaving an
-empty directory implying it exists.
+two truths — the contract states intent, the deployed gateway states
+behaviour — and `docs/ai/API-DIVERGENCE.md` exists to keep the gap visible
+instead of letting it dissolve into component code. Mock-first delivery is
+the repository's normal mode: features ship against the mock so the team can
+use them before the gateway catches up.
 
 ## What this record is for
 
@@ -128,6 +113,36 @@ before anything is audited against it — the reviewer did its job correctly
 against the wrong truth, which is exactly why authority order is worth
 writing down.
 
+**2026-08-03 — the first three verdicts landed, and both reviewers returned
+REQUEST CHANGES.** `api-contract-guard` passed its self-test (it reached the
+documented TAS-137 divergence independently and found two consequences the
+record had missed) and exposed that ten gateway claims lived only in code
+comments — though on a stale baseline, see the authority-order entry above.
+`release-reviewer` reproduced the full gate on a clean worktree, verified no
+credential leaks, empirically proved that one of the fourteen "green" tests
+never reached its assertions, and found the board silently discarding drags
+with no legal transition — including the `IN_PROGRESS → TODO` path that
+TAS-136 had deleted from the mock seed, which removed "Move to To Do" from the
+product entirely. `art-director` measured every claim it made (computed styles,
+not screenshots), found the two new DESIGN.md component sections describing
+components that did not ship, caught a per-role letter-spacing regression the
+orchestrator's own token pass introduced, and flagged an accent-on-accent
+hover that made two button labels disappear. All blockers were fixed
+in-branch; the non-blocking gaps are recorded in `DESIGN.md` under `TAS-142`
+instead of being silently absorbed. The independent-review mechanism did, on
+its first run, exactly what it was installed to do — including catching the
+orchestrator's own work.
+
+**2026-08-03 — two reviewers collided in one browser pane.** The Browser pane
+is shared per session, and `release-reviewer` and `art-director` ran
+concurrently: the art-director watched a comment appear that it did not write
+("Reviewer probe"), text typed into an editor under its cursor, and its
+viewport resized underneath it. It moved to its own tab and re-verified
+everything there — correctly treating the observed content as data, not
+instructions — but the orchestrator should not schedule two browser-driving
+reviewers concurrently again. Read-only agents may run in parallel only when
+their *instruments* do not overlap either.
+
 **2026-08-03 — a reported theme-toggle bug was not one.** The toggle appeared
 dead across three attempted clicks. Two used a selector matching an
 `aria-label` the button did not have, and the third read `data-theme` in the
@@ -141,8 +156,8 @@ user profile) and `TAS-136` (issue endpoints) are both `To Do` in Jira while
 their code is written and, in TAS-136's case, committed across three commits.
 A reviewer auditing either story against its acceptance criteria would be
 auditing a story the board says has not started. Recorded rather than corrected
-silently, because it is the same failure mode `lake-landing` hit with `LOD-9`:
-work outrunning the issue that is supposed to define it.
+silently: work outrunning the issue that is supposed to define it is exactly
+the drift this file exists to catch.
 
 ## Verification
 

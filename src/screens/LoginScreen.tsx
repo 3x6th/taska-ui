@@ -63,7 +63,13 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
               <>
                 <label className="field">
                   <span>Email</span>
-                  <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" />
+                  <input
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    type="email"
+                    autoComplete="email"
+                    placeholder="you@company.com"
+                  />
                 </label>
                 <label className="field">
                   <span>Password</span>
@@ -72,11 +78,13 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                     onChange={(event) => setPassword(event.target.value)}
                     type="password"
                     autoComplete="current-password"
+                    placeholder="••••••••••"
                   />
                 </label>
                 <button className="primary-button auth-submit" disabled={submit.isPending} type="submit">
                   {submit.isPending ? "Signing in" : "Sign in"}
                 </button>
+                <div className="auth-hint">Forgot password? Contact your project admin.</div>
               </>
             ) : (
               <>
@@ -88,6 +96,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                     value={inviteToken}
                     onChange={(event) => setInviteToken(event.target.value)}
                     autoComplete="one-time-code"
+                    placeholder="invite-token-from-email"
                   />
                 </label>
                 <label className="field">
@@ -97,6 +106,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                     onChange={(event) => setNewPassword(event.target.value)}
                     type="password"
                     autoComplete="new-password"
+                    placeholder="At least 12 characters"
                   />
                 </label>
                 <button className="primary-button auth-submit" disabled={submit.isPending} type="submit">
@@ -107,6 +117,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
             {submit.isError ? <div className="form-error">{submit.error.message}</div> : null}
           </form>
         </section>
+        <div className="auth-footnote">Taska — issue tracking, minus the clutter.</div>
       </div>
       <div className="auth-theme">
         <ThemeToggle theme={theme} onToggle={toggleTheme} />

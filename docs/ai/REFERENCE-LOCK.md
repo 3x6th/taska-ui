@@ -10,9 +10,9 @@ It is a constraint, not a moodboard.
 
 ## The system is already locked
 
-`DESIGN.md` is the system. `design_handoff_taska/Taska.dc.html` is the hi-fi
-prototype it was derived from — every colour, type step, spacing value, radius,
-and animation in it is final and was signed off at handoff.
+`DESIGN.md` is the system — it has absorbed the original hi-fi handoff
+prototype, and every colour, type step, spacing value, radius, and animation
+in it is signed off.
 
 References rank **below both**, and below the Jira story. A reference may
 sharpen a critique. It may never introduce a token, a component pattern, or a
