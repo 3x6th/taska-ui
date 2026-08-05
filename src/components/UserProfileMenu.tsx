@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { LogOut } from "lucide-react";
+import { LogOut, ShieldCheck } from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
 import type { GlobalRole, User, UserStatus } from "../domain/types";
 import { Avatar } from "./Avatar";
 
@@ -25,7 +26,13 @@ const globalRoleLabels: Record<GlobalRole, string> = {
 export function UserProfileMenu({ user, loading = false, loggingOut = false, onLogout }: UserProfileMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
+  const location = useLocation();
+  // The entry exists only for an account the server called GLOBAL_ADMIN. A
+  // gateway that states no role counts as not an admin, which is lossy in the
+  // safe direction (docs/ai/API-DIVERGENCE.md).
+  const isGlobalAdmin = user?.globalRole === "GLOBAL_ADMIN";
 
   useEffect(() => {
     if (!open) return;
@@ -64,6 +71,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
         // holding tokens the only way out was to clear site data.
         disabled={loading}
         onClick={() => setOpen((value) => !value)}
+        ref={triggerRef}
         type="button"
       >
         <Avatar user={user} label="Current user" loading={loading} size="md" />
@@ -108,6 +116,39 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
             <p className="user-profile-unknown">Your profile could not be loaded.</p>
           )}
           <div className="user-profile-actions">
+            {isGlobalAdmin ? (
+              // A real link, not a button: it navigates, so it has to be
+              // middle-clickable and copyable, same reasoning as the not-found
+              // screen's way out. Absent — not disabled, not hidden — for
+              // everyone else; hiding it is not the permission control, the
+              // server is (`/api/v1/readonly/*` is GLOBAL_ADMIN-only and
+              // enumerates 401/403).
+              <Link
+                // Opened from /admin itself, the entry leads nowhere new, and
+                // saying so is one attribute.
+                aria-current={location.pathname === "/admin" ? "page" : undefined}
+                className="user-profile-admin"
+                onClick={(event) => {
+                  // A modified click opens /admin in a new tab and leaves this
+                  // page as it is, so the menu it was opened from stays open.
+                  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  setOpen(false);
+                  // Closing the popover unmounts the item that had focus, so it
+                  // goes back to the trigger (§7). What this actually covers is
+                  // the case where no route change follows — opening the menu
+                  // while already on /admin and choosing Administration. On a
+                  // real navigation the route swap unmounts this trigger a tick
+                  // later and focus ends up on <body> anyway; that is true of
+                  // every in-app link, not of this entry, and is recorded in
+                  // docs/ai/BACKLOG.md rather than patched here.
+                  triggerRef.current?.focus();
+                }}
+                to="/admin"
+              >
+                <ShieldCheck aria-hidden="true" size={15} />
+                Administration
+              </Link>
+            ) : null}
             <button className="user-profile-logout" disabled={loggingOut} onClick={onLogout} type="button">
               <LogOut aria-hidden="true" size={15} />
               {loggingOut ? "Logging out…" : "Log out"}

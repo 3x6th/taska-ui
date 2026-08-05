@@ -7,6 +7,7 @@ import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE, RequireSession } from "../components/RequireSession";
 import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
+import { AdminScreen } from "./AdminScreen";
 import { BoardScreen } from "./BoardScreen";
 import { LoginScreen } from "./LoginScreen";
 import { NotFoundScreen } from "./NotFoundScreen";
@@ -89,6 +90,17 @@ export function App() {
         element={
           <RequireSession>
             <BoardScreen {...screenProps} />
+          </RequireSession>
+        }
+      />
+      {/* Behind the session guard like any other private page; who may actually
+          see it is decided inside the screen, which answers a non-admin with
+          the not-found screen rather than confirming the section exists. */}
+      <Route
+        path="/admin"
+        element={
+          <RequireSession>
+            <AdminScreen {...screenProps} />
           </RequireSession>
         }
       />
