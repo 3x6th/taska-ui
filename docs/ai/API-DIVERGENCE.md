@@ -53,6 +53,37 @@ it. Entries are deleted only when the compensating code is deleted.
 - **Removal:** [TAS-141](https://jira.ozero.dev/browse/TAS-141). Until then
   the catch should at least be narrowed to the specific error `code`.
 
+### `globalRole` is in the contract but has not been seen on the wire
+
+- **Endpoint:** `GET /api/v1/users/me`
+- **Contract:** since backend `25d0cf7000e5` (TAS-147), the response carries
+  `globalRole` as `enum [GLOBAL_ADMIN, USER, UNSPECIFIED]`. The DTO has no
+  `required` block, so the field is formally optional.
+- **Observed:** nothing. No request in this repository has been made against a
+  gateway known to be at or past that commit — every assertion about the field
+  is against the mock or a stubbed `fetch`.
+- **Compensation:** `RestTaskaApi.getCurrentUser` normalises a missing field,
+  `UNSPECIFIED`, and any unrecognised value to `undefined`, and the UI reads
+  that as "no role stated". Confirmed against the gateway's own `AuthMapper`,
+  where `UNSPECIFIED` is the sink for the proto zero value — so this is a
+  faithful reading, not a guess.
+- **User-visible effect while the deployment lags:** the Role row is simply
+  absent, and — from TAS-152 — the Administration entry is absent with it. A
+  real `GLOBAL_ADMIN` on an older gateway sees the app exactly as a plain user
+  does, with nothing anywhere saying why.
+- **The part that matters:** "the server said UNSPECIFIED" and "this gateway is
+  too old to say" are deliberately indistinguishable in the UI. That is the
+  right call for a display-only row and a knowingly lossy one once the value
+  decides whether a menu entry exists. Hiding the entry is safe in the
+  direction that counts: `/api/v1/readonly/*` is `GLOBAL_ADMIN`-only and
+  enumerates `401`/`403`, so the server refuses regardless of what the menu
+  shows. The `/admin` screen must therefore still render a real 403 rather
+  than treat it as unreachable.
+- **Removal:** deploy a gateway at or past `25d0cf7000e5`, then confirm the
+  field on a live response. [TAS-147](https://jira.ozero.dev/browse/TAS-147) is
+  Done at contract level; this entry closes when the runtime is observed, not
+  when the story closed.
+
 ---
 
 ## Open — the contract is silent or lacks what the UI needs
