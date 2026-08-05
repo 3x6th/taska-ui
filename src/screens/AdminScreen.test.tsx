@@ -17,7 +17,8 @@ import { App } from "./App";
 /** The secret the console must never print, in any state. */
 const SECRET = "$2b$10$never-render-me";
 
-const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe, holdRows, releaseRows, failCatalog } = vi.hoisted(() => {
+const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe, holdRows, releaseRows, failCatalog, setMetaMismatch } =
+  vi.hoisted(() => {
   const SECRET_VALUE = "$2b$10$never-render-me";
   const state: {
     user?: User;
@@ -27,6 +28,7 @@ const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe, holdRows, releaseRow
     rowsGate?: Promise<void>;
     rowsRelease?: () => void;
     catalogFailure?: Error;
+    metaMismatch?: boolean;
   } = {};
 
   // Two tables that differ in exactly the way that matters: one has a column
@@ -88,6 +90,22 @@ const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe, holdRows, releaseRow
       if (state.rowsGate) await state.rowsGate;
       const key = `${query.service}.${query.table}`;
       const table = rowsByTable[key] ?? { columns: [], rows: [] };
+      if (state.metaMismatch) {
+        // A response whose meta names a table the catalog does not describe.
+        // Nothing in the contract obliges the two endpoints to spell a service
+        // the same way, and this is the join the masking depends on.
+        return {
+          rows: rowsByTable["auth.users"].rows,
+          pagination: { currentPage: 1, pageSize: 20, totalRows: 1, totalPages: 1, hasNext: false, hasPrev: false },
+          meta: {
+            service: "auth-service",
+            table: "users",
+            columns: rowsByTable["auth.users"].columns,
+            sortableColumns: [],
+            filterableColumns: [],
+          },
+        };
+      }
       return {
         rows: table.rows,
         pagination: {
@@ -127,6 +145,9 @@ const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe, holdRows, releaseRow
     },
     failCatalog: (failure?: Error) => {
       state.catalogFailure = failure;
+    },
+    setMetaMismatch: (on: boolean) => {
+      state.metaMismatch = on;
     },
     // `GET /users/me` failing with something that is not a 401: a 5xx, a
     // network drop, a CORS refusal — none of which end the session, so the
@@ -335,6 +356,38 @@ describe("/admin console", () => {
     renderAdmin();
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reached|would not serve/i);
+    // The section still frames itself and still offers the way out.
+    expect(screen.getByRole("heading", { name: "Administration" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Back to projects" })).toBeVisible();
+  });
+});
+
+/**
+ * Masking is a *join*: the rows response says which table it is, the catalog
+ * says which of that table's columns are secret. Nothing in the contract
+ * obliges the two endpoints to spell a service the same way, and neither has
+ * ever answered this repository. If that join misses, "no columns are
+ * sensitive" is indistinguishable on screen from a genuinely harmless table —
+ * so it must fail closed rather than guess.
+ */
+describe("/admin console, when the catalog and the rows disagree", () => {
+  beforeEach(() => {
+    releaseMe();
+    releaseRows();
+    failCatalog(undefined);
+    setMetaMismatch(false);
+    setCurrentUser(admin);
+    window.localStorage.clear();
+  });
+
+  it("refuses to render rows it cannot check for sensitive columns", async () => {
+    setMetaMismatch(true);
+    renderAdmin();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/catalog does not describe/i);
+    // The whole point: the secret is not on screen, and no table is either.
+    expect(document.body.textContent).not.toContain(SECRET);
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
     // The section still frames itself and still offers the way out.
     expect(screen.getByRole("heading", { name: "Administration" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Back to projects" })).toBeVisible();

@@ -399,10 +399,11 @@ describe("RestTaskaApi read-only admin", () => {
     expect(url.searchParams.has("email.contains")).toBe(false);
   });
 
-  it("refuses to let a filter overwrite the paging and sorting keys", async () => {
+  it("spells a filter around the paging keys instead of overwriting or dropping it", async () => {
     // The server owns the column names, so a table with a column called `page`
-    // is the server's prerogative — and filtering on it must not silently ask
-    // for a different page than the one requested.
+    // is its prerogative. The bare key would be eaten as paging, so the
+    // explicit `.eq` spelling the contract documents is used instead — the
+    // filter still reaches the server, and the requested page survives.
     const url = await urlFor({
       service: "admin",
       table: "audit_log",
@@ -416,6 +417,49 @@ describe("RestTaskaApi read-only admin", () => {
 
     expect(url.searchParams.get("page")).toBe("3");
     expect(url.searchParams.get("sort")).toBe("created_at");
+    expect(url.searchParams.get("page.eq")).toBe("99");
+    expect(url.searchParams.get("sort.eq")).toBe("nonsense");
+  });
+
+  it("fills in a pagination block the server did not send rather than letting the pager crash", async () => {
+    const fetchStub = vi.fn(async () => answer({ data: [{ id: "1" }], meta: { service: "auth", table: "users" } }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().listAdminRows({ service: "auth", table: "users", page: 2 });
+
+    expect(result.pagination.currentPage).toBe(2);
+    expect(result.pagination.totalPages).toBe(1);
+    expect(result.pagination.hasNext).toBe(false);
+  });
+
+  it("names the table we asked for when the server does not echo it back", async () => {
+    const fetchStub = vi.fn(async () => answer({ data: [], pagination: rowsBody.pagination, meta: {} }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().listAdminRows({ service: "auth", table: "users" });
+
+    // Without this the response cannot be matched against the catalog, and the
+    // console refuses to render rows it cannot check for sensitive columns.
+    expect(result.meta.service).toBe("auth");
+    expect(result.meta.table).toBe("users");
+  });
+
+  it("gives back a walkable catalog even when the server omits every list", async () => {
+    const fetchStub = vi.fn(async () => answer({ services: [{ name: "auth" }] }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const catalog = await new RestTaskaApi().getAdminCatalog();
+
+    // The screen walks these; a missing list is a render crash, and with no
+    // error boundary that is a blank page rather than a blank console.
+    expect(catalog.services[0].tables).toEqual([]);
+    await expect(
+      (async () => {
+        const empty = vi.fn(async () => answer({}));
+        vi.stubGlobal("fetch", empty);
+        return new RestTaskaApi().getAdminCatalog();
+      })(),
+    ).resolves.toEqual({ services: [] });
   });
 
   it("escapes a service or table name rather than letting it reshape the path", async () => {

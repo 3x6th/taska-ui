@@ -264,37 +264,114 @@ it. Entries are deleted only when the compensating code is deleted.
   no-access case reachable; [TAS-141](https://jira.ozero.dev/browse/TAS-141)
   is where the contract should name the error codes.
 
-### The read-only admin endpoints exist in the contract, not yet on the gateway
+### `sortableColumns` and `filterableColumns` are always empty
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Contract:** `MetaInfoDto` carries `columns`, `sortableColumns` and
+  `filterableColumns`, and the console is meant to read the latter two rather
+  than assume every column can be ordered or filtered.
+- **Observed** (found by `api-contract-guard`, 2026-08-05, by reading the
+  backend at `25d0cf7000e5`): `admin-service`'s `ListTableRowsMapper` builds
+  `MetaInfo` with both lists left as literal `//TODO:` lines. It is the only
+  code path that builds `MetaInfo`, and the pinned commit *is* `develop` HEAD,
+  so no deployed build can populate them.
+- **Compensation:** `AdminScreen` falls back to `meta.columns` when a list comes
+  back empty. Without it, the filter form would never render and no column would
+  ever be sortable against a real gateway — while both work fully against the
+  mock, which advertises every column. The fallback is safe: the gateway does
+  not validate `sort` against any catalog, and accepts a filter on any column it
+  has. When it starts stating the lists, they win and the fallback stops
+  applying on its own.
+- **User-visible effect while open:** none, by design — that is the point of the
+  fallback. Without it the console would silently lose two of its three
+  controls in production only.
+- **Removal:** the backend TODOs. Worth its own backend story;
+  [TAS-103](https://jira.ozero.dev/browse/TAS-103) is the umbrella.
+
+### The read-only admin endpoints are deployed but have never answered us
 
 - **Endpoints:** `GET /api/v1/readonly/metadata` and
   `GET /api/v1/readonly/{service}/{table}`.
 - **Contract:** both arrived with backend `25d0cf7000e5`. `GLOBAL_ADMIN` only,
-  and notably the first endpoints here to enumerate `401`, `403` and `404`
-  separately instead of collapsing everything into `default`.
-- **Observed:** nothing. [TAS-103](https://jira.ozero.dev/browse/TAS-103), the
-  gateway story that implements them, is still In Progress, so a deployed
-  gateway may answer 404 for both paths.
+  and the first endpoints here to enumerate `401`, `403` and `404` separately
+  instead of collapsing everything into `default`.
+- **Observed:** both routes exist on `api.taska.ozero.dev` and answer `401`
+  unauthenticated — not `404`, which an unknown route does return. So they are
+  deployed and authenticating. What has *not* happened is a successful `200`:
+  every response shape below is read from backend source, never from the wire,
+  because no one here has held a `GLOBAL_ADMIN` token.
+  > An earlier version of this entry claimed the endpoints were probably not
+  > deployed and had the UI say so. That was wrong, and the error copy said
+  > "not deployed yet" when the real cause would be a 403 or a 5xx.
 - **Compensation:** none that alters behaviour. `MockTaskaStore` seeds a catalog
   and rows so the console is clickable without a gateway — this repository's
   normal mock-first mode, not a workaround — and `rest` calls the real endpoints
-  and surfaces whatever they answer. The console renders an error state, naming
-  the gateway's own wording, rather than an empty one, so "not deployed yet"
-  cannot read as "no data".
-- **User-visible effect:** in `hybrid` and `rest` against today's gateway the
-  console shows that error. In `mock` it works fully.
-- **Unverified, and the part most likely to bite:** the filter syntax
-  (`column`, `column.contains`, `column.from`, `column.to`) is specified in
-  prose and a free-form `additionalProperties` object — no schema constrains it,
-  so a mismatch returns the *wrong rows* rather than an error. It is pinned in
-  `RestTaskaApi.test.ts` against the contract's own examples, which is a test of
-  our reading, not of the server's behaviour. Re-check against the running
-  service the moment TAS-103 ships.
-- **Also unverified:** whether the gateway rejects or ignores a `sort` column
-  outside `sortableColumns`, and whether `sensitive` columns are withheld
-  server-side or merely flagged. The console masks flagged columns on the
-  client; if the server sends the value, it is on the wire regardless of what
-  is drawn (TAS-104 is the backend half).
-- **Removal:** [TAS-103](https://jira.ozero.dev/browse/TAS-103).
+  and surfaces whatever they answer, request id included.
+- **Verified since, and no longer open:** the filter spelling (`column`,
+  `column.contains`, `column.from`, `column.to`) matches the gateway's own
+  parser, and `style: form, explode: true` genuinely means top-level query keys,
+  so flattening them is the contract's reading rather than a guess. A bare key
+  is treated as `equals`. Note the gateway *silently skips* an unrecognised
+  operator, so a misspelling would return unfiltered rows rather than an error —
+  which is why the spelling is pinned in `RestTaskaApi.test.ts`.
+- **Still unverified:** how a timestamp value is spelled in JSON (the backend
+  encodes dates as epoch **seconds**, losing sub-second precision, and whether
+  Jackson emits ISO or a bare number is unconfirmed); whether `X-Request-Id` is
+  present on 5xx as well as the 401 we observed; and whether `meta.service` /
+  `meta.table` echo the catalog's own spelling — see the fail-closed entry
+  below.
+- **Removal:** one authenticated `curl` of
+  `/api/v1/readonly/auth/users?email.contains=@` settles most of it.
+
+### Masking depends on a join the contract does not guarantee
+
+- **Endpoints:** the two above, together.
+- **The problem:** which columns are secret comes from the *catalog*, while the
+  rows come from the *table* endpoint. Joining them needs `meta.service` and
+  `meta.table` to spell the service and table exactly as the catalog does, and
+  the two response schemas are independent free-form strings that constrain each
+  other in no way.
+- **Compensation:** `AdminScreen` fails closed. If a rows response names a table
+  the catalog does not describe, the console refuses to render the table at all
+  and says why, rather than defaulting to "nothing here is sensitive" — which on
+  screen is indistinguishable from a genuinely harmless table. Pinned by a test
+  that fails when the guard is removed.
+- **Removal:** an observed `200` from both endpoints showing the names agree.
+
+### Client-side masking is cosmetic, and the allow-list is the real control
+
+- **Good news, established from backend source** (2026-08-05): sensitive values
+  are withheld *server-side*. `admin-service`'s `SensitiveColumnMaskService`
+  replaces the value with `"***"` before it leaves the service, driven by the
+  same `application.yml` config that sets `sensitive` in the catalog — so the
+  flag and the masking cannot disagree, and the console's own masking is defence
+  in depth rather than the only protection. The earlier open question here is
+  answered favourably and closed.
+- **The part that remains true anyway:** masking is a config allow-list,
+  currently `users.password_hash`, `users.token_hash`, `users.secret_hash`,
+  `users.refresh_token`, `users.access_token`. A secret column not on that list
+  is neither flagged nor masked, and the UI cannot do better than the flag it is
+  given. A `jsonb` column with a secret nested inside it is likewise beyond what
+  a column-level flag can express, and the console prints such a cell whole.
+- **And:** whatever the server does send is in the response body, the
+  react-query cache and devtools regardless of what is drawn. The console
+  drawing "hidden" is not a security boundary.
+- **Removal:** [TAS-104](https://jira.ozero.dev/browse/TAS-104) is the backend
+  half of masking.
+
+### The range filters are timestamp-only, server-side
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Contract:** documents `.from` / `.to` as generic bounds, with the examples
+  using timestamps but nothing restricting them.
+- **Observed** (backend source): the gateway emits
+  `"col" >= $n::timestamptz`, so a range filter on a text column, or a
+  non-ISO value, is a Postgres cast failure — a 5xx, never a 400 the UI could
+  explain.
+- **Compensation:** the console offers `from`/`to` only when the catalog states
+  a date- or time-like `type` for the selected column, and resets the operator
+  when the column changes to one that cannot take it.
+- **Removal:** the contract naming the constraint, or the gateway answering 400.
 
 ---
 

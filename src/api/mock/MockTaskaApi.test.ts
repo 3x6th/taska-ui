@@ -224,10 +224,36 @@ describe("MockTaskaApi", () => {
       expect(sensitive.length).toBeGreaterThan(0);
     });
 
-    it("answers an unknown table the way the gateway does, rather than with an empty page", async () => {
-      await expect(api.listAdminRows({ service: "auth", table: "no_such_table" })).rejects.toMatchObject({
+    it("answers an unknown service and an unserved table the way the gateway does", async () => {
+      // Unknown service is a 404 there; a table it will not serve is a refusal,
+      // not an absence. Both reach the UI through `isMissingOrForbidden`, but
+      // the mock is the reference implementation and should not teach the wrong
+      // shape to whoever reads it next.
+      await expect(api.listAdminRows({ service: "no_such_service", table: "users" })).rejects.toMatchObject({
         code: "NOT_FOUND",
       });
+      await expect(api.listAdminRows({ service: "auth", table: "no_such_table" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+    });
+
+    it("matches case the way the gateway does: exactly, except for contains", async () => {
+      // The gateway's `contains` is ILIKE and its equality is not. A mock that
+      // lowercased both accepted `global_admin`, so a filter that passed every
+      // test found nothing against a real database.
+      const exact = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        filters: [{ column: "global_role", operator: "eq", value: "global_admin" }],
+      });
+      expect(exact.rows).toHaveLength(0);
+
+      const insensitive = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        filters: [{ column: "email", operator: "contains", value: "ANNA@" }],
+      });
+      expect(insensitive.rows).toHaveLength(1);
     });
 
     it("pages, and reports the totals the pager is drawn from", async () => {

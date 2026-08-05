@@ -810,10 +810,16 @@ export class MockTaskaStore {
   listAdminRows(query: AdminRowsQuery): AdminRows {
     const service = this.adminCatalog().services.find((item) => item.name === query.service);
     const table = service?.tables.find((item) => item.name === query.table);
-    if (!service || !table) {
-      // The same answer the gateway gives for a service or table its catalog
-      // does not list.
-      throw new MockApiError("NOT_FOUND", `Unknown table ${query.service}.${query.table}`);
+    if (!service) {
+      throw new MockApiError("NOT_FOUND", `Unknown service ${query.service}`);
+    }
+    if (!table) {
+      // Not NOT_FOUND: the gateway permits or denies a table by config, so a
+      // table it will not serve comes back as PERMISSION_DENIED. Unreachable
+      // from the console, which only offers catalog tables, and
+      // `isMissingOrForbidden` treats both the same — but the mock is the
+      // reference implementation, so it should not teach the wrong shape.
+      throw new MockApiError("PERMISSION_DENIED", `Table ${query.service}.${query.table} is not served`);
     }
 
     const columns = table.columns.map((column) => column.name);
@@ -821,19 +827,23 @@ export class MockTaskaStore {
 
     for (const filter of query.filters ?? []) {
       if (filter.value === "") continue;
-      const needle = filter.value.toLowerCase();
       rows = rows.filter((row) => {
         const raw = row[filter.column];
-        const value = raw === null || raw === undefined ? "" : String(raw).toLowerCase();
+        const value = raw === null || raw === undefined ? "" : String(raw);
         switch (filter.operator) {
+          // Case-insensitive only here, matching the gateway: `contains` is
+          // ILIKE, everything else compares exactly. Lowercasing all of them
+          // made the mock accept `global_admin` where the gateway wants
+          // `GLOBAL_ADMIN`, so a filter that worked in every test found nothing
+          // in production.
           case "contains":
-            return value.includes(needle);
+            return value.toLowerCase().includes(filter.value.toLowerCase());
           case "from":
-            return value >= needle;
+            return value >= filter.value;
           case "to":
-            return value <= needle;
+            return value <= filter.value;
           default:
-            return value === needle;
+            return value === filter.value;
         }
       });
     }

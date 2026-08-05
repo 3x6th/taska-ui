@@ -41,9 +41,12 @@ test("never renders the value of a column the catalog marked sensitive", async (
   await expect(page.getByText("hidden").first()).toBeVisible();
   await expect(page.locator("body")).not.toContainText("$2b$10$");
 
-  // And it stays hidden across a switch to a table that has no sensitive
-  // column, which is where the masking rules and the rows on screen can most
-  // easily fall out of step.
+  // Settled state after a table switch. Note what this does NOT prove: the
+  // transient leak that used to happen mid-switch is invisible to Playwright,
+  // because `not.toContainText` polls until it holds and a leak lasting one
+  // render passes trivially. That case is pinned in
+  // src/screens/AdminScreen.test.tsx, which can hold the request open and look
+  // at the frame in between. Do not treat this assertion as covering it.
   await page.getByRole("button", { name: "audit_log", exact: true }).click();
   await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText("$2b$10$");
@@ -101,9 +104,9 @@ test("filters a table down and back", async ({ page }) => {
   const before = await rows.count();
   expect(before).toBeGreaterThan(1);
 
-  await page.getByLabel("Column").selectOption("email");
-  await page.getByLabel("Match").selectOption("contains");
-  await page.getByLabel("Value").fill("anna@");
+  await page.getByLabel("Column", { exact: true }).selectOption("email");
+  await page.getByLabel("Match", { exact: true }).selectOption("contains");
+  await page.getByLabel("Value", { exact: true }).fill("anna@");
   await page.getByRole("button", { name: "Apply" }).click();
 
   await expect(rows).toHaveCount(1);
@@ -118,9 +121,9 @@ test("a filter that matches nothing says so instead of looking broken", async ({
 
   await expect(page.getByRole("heading", { name: "auth.users" })).toBeVisible();
 
-  await page.getByLabel("Column").selectOption("email");
-  await page.getByLabel("Match").selectOption("contains");
-  await page.getByLabel("Value").fill("nobody-here-at-all");
+  await page.getByLabel("Column", { exact: true }).selectOption("email");
+  await page.getByLabel("Match", { exact: true }).selectOption("contains");
+  await page.getByLabel("Value", { exact: true }).fill("nobody-here-at-all");
   await page.getByRole("button", { name: "Apply" }).click();
 
   await expect(page.getByText("No rows match this filter.")).toBeVisible();

@@ -1220,6 +1220,9 @@ h1 {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11.5px;
   letter-spacing: 0.02em;
+  /* Gateway wording is not ours to keep short, and a long unbroken token would
+     otherwise push the admin plane sideways on a phone. */
+  overflow-wrap: anywhere;
 }
 
 /* .secondary-button already carries the shape; an <a> only needs the underline

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { isMissingOrForbidden } from "../api/errors";
@@ -29,7 +29,10 @@ const operatorLabels: Record<AdminFilterOperator, string> = {
  * refusal cannot arrive.
  */
 export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
-  const meQuery = useQuery({ queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser() });
+  const meQuery = useQuery({
+    queryKey: ["me"],
+    queryFn: () => taskaApi.getCurrentUser(),
+  });
 
   // Deciding before `me` settles would flash Page not found on every single
   // load of this screen, admins included. Nothing is drawn until the answer is
@@ -86,12 +89,23 @@ export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 }
 
 function AdminConsole() {
-  const catalogQuery = useQuery({ queryKey: ["admin", "catalog"], queryFn: () => taskaApi.getAdminCatalog() });
-  const [selection, setSelection] = useState<{ service: string; table: string } | null>(null);
+  const filterId = useId();
+  const catalogQuery = useQuery({
+    queryKey: ["admin", "catalog"],
+    queryFn: () => taskaApi.getAdminCatalog(),
+  });
+  const [selection, setSelection] = useState<{
+    service: string;
+    table: string;
+  } | null>(null);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<string | null>(null);
   const [order, setOrder] = useState<AdminSortOrder>("asc");
-  const [draftFilter, setDraftFilter] = useState({ column: "", operator: "eq" as AdminFilterOperator, value: "" });
+  const [draftFilter, setDraftFilter] = useState({
+    column: "",
+    operator: "eq" as AdminFilterOperator,
+    value: "",
+  });
   const [filter, setFilter] = useState<typeof draftFilter | null>(null);
 
   const catalog = catalogQuery.data;
@@ -127,9 +141,22 @@ function AdminConsole() {
   // drawn and how it is masked have to come from the same place.
   const shown = rowsQuery.data;
   const shownTable = useMemo(
-    () => (shown ? findTable(catalog, { service: shown.meta.service, table: shown.meta.table }) : undefined),
+    () =>
+      shown
+        ? findTable(catalog, {
+            service: shown.meta.service,
+            table: shown.meta.table,
+          })
+        : undefined,
     [catalog, shown],
   );
+  // Fail closed. The sensitive set is a *join* between the rows response and
+  // the catalog, and nothing in the contract obliges the two endpoints to spell
+  // a service or table identically. If the join misses we do not know which
+  // columns hold secrets — and "no columns are sensitive" is the one answer we
+  // must not default to, because it is indistinguishable on screen from a
+  // genuinely harmless table. No catalog entry, no values.
+  const maskingIsKnown = !shown || shownTable !== undefined;
   const sensitiveColumns = useMemo(
     () => new Set(shownTable?.columns.filter((column) => column.sensitive).map((column) => column.name) ?? []),
     [shownTable],
@@ -161,7 +188,11 @@ function AdminConsole() {
     return <p className="admin-note">Loading the catalog…</p>;
   }
 
-  if (catalogQuery.isError) {
+  // Only when there is nothing to fall back on. react-query keeps `data` when a
+  // *background* refetch fails, and replacing a working console with an alert
+  // because a window-focus refresh lost the network is a worse answer than the
+  // slightly stale table already on screen.
+  if (catalogQuery.isError && catalog === undefined) {
     return <AdminError error={catalogQuery.error} onRetry={() => void catalogQuery.refetch()} />;
   }
 
@@ -169,11 +200,41 @@ function AdminConsole() {
   if (services.length === 0) {
     return <p className="admin-note">This gateway lists no services to read.</p>;
   }
+  if (services.every((service) => (service.tables ?? []).length === 0)) {
+    return <p className="admin-note">This gateway lists no tables to read.</p>;
+  }
 
   const rows = shown;
   const columns = rows?.meta.columns ?? [];
-  const sortable = new Set(rows?.meta.sortableColumns ?? []);
-  const filterable = rows?.meta.filterableColumns ?? [];
+  // The gateway does not populate `sortableColumns`/`filterableColumns` yet —
+  // they are unfinished on the backend (docs/ai/API-DIVERGENCE.md), and taking
+  // the empty lists literally would mean no sorting and no filtering at all
+  // against a real gateway while both work fully against the mock. Falling back
+  // to every column is safe: the server validates the sort column itself and
+  // accepts a filter on any column it has. When it starts stating the lists,
+  // they win and this fallback stops applying on its own.
+  const stated = (list: string[] | undefined) => (list && list.length > 0 ? list : columns);
+  // A column whose values we refuse to show must not be sortable or filterable
+  // either: ordering by it leaks its order, and filtering on it turns the table
+  // into a match oracle for the value we just hid.
+  const sortable = new Set(stated(rows?.meta.sortableColumns).filter((column) => !sensitiveColumns.has(column)));
+  const filterable = stated(rows?.meta.filterableColumns).filter((column) => !sensitiveColumns.has(column));
+  // `from`/`to` are cast to a timestamp server-side, so offering them on a text
+  // column produces a database error the UI cannot explain rather than an empty
+  // result. The catalog states each column's type, so only offer the range
+  // operators where they can actually work.
+  const draftColumnType = shownTable?.columns.find((column) => column.name === draftFilter.column)?.type;
+  const operators = (Object.keys(operatorLabels) as AdminFilterOperator[]).filter(
+    (operator) => !isRangeOperator(operator) || isTemporal(draftColumnType),
+  );
+  const busy = rowsQuery.isFetching;
+  // Specifically "the rows on screen are from a different table than the one
+  // selected", not "a request is in flight". Filtering and paging refetch
+  // constantly and must stay usable; only a table *switch* leaves the filter
+  // form describing columns the incoming rows will not have.
+  const switchingTable = Boolean(
+    shown && current && (shown.meta.service !== current.service || shown.meta.table !== current.table),
+  );
 
   return (
     <>
@@ -182,7 +243,7 @@ function AdminConsole() {
           <div key={service.name} className="admin-service">
             <h2>{service.name}</h2>
             <ul>
-              {service.tables.map((serviceTable) => {
+              {(service.tables ?? []).map((serviceTable) => {
                 const active = current?.service === service.name && current.table === serviceTable.name;
                 return (
                   <li key={serviceTable.name}>
@@ -203,7 +264,10 @@ function AdminConsole() {
       </nav>
 
       {current ? (
-        <div className="admin-result">
+        // `isFetching`, not `isPending`: after the first load `placeholderData`
+        // keeps the previous rows, so the query is never "pending" again and
+        // nothing would otherwise say the table on screen is out of date.
+        <div className="admin-result" aria-busy={busy}>
           <div className="admin-result-head">
             {/* The table that is actually on screen, which during a switch is
                 still the previous one. Naming the selection here would caption
@@ -224,43 +288,65 @@ function AdminConsole() {
                 setFilter(draftFilter.column ? draftFilter : null);
                 setPage(1);
               }}
+              // Mid-switch the form still describes the table on screen while
+              // the selection has already moved on, so applying it would send
+              // one table's column against another's rows.
+              inert={switchingTable || undefined}
             >
-              <label>
+              {/* Explicitly associated rather than wrapping: a <label> that
+                  wraps a <select> takes every option's text into its accessible
+                  name, so the control announces "Column None id email …". */}
+              <label htmlFor={`${filterId}-column`}>
                 <span>Column</span>
-                <select
-                  onChange={(event) => setDraftFilter({ ...draftFilter, column: event.target.value })}
-                  value={draftFilter.column}
-                >
-                  <option value="">None</option>
-                  {filterable.map((column) => (
-                    <option key={column} value={column}>
-                      {column}
-                    </option>
-                  ))}
-                </select>
               </label>
-              <label>
+              <select
+                id={`${filterId}-column`}
+                onChange={(event) => {
+                  const column = event.target.value;
+                  const type = shownTable?.columns.find((item) => item.name === column)?.type;
+                  // Moving from a timestamp column to a text one strands the
+                  // operator on a value the new column cannot take, and the
+                  // select would show a blank because the option is gone.
+                  const operator =
+                    isRangeOperator(draftFilter.operator) && !isTemporal(type) ? "eq" : draftFilter.operator;
+                  setDraftFilter({ ...draftFilter, column, operator });
+                }}
+                value={draftFilter.column}
+              >
+                <option value="">None</option>
+                {filterable.map((column) => (
+                  <option key={column} value={column}>
+                    {column}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor={`${filterId}-match`}>
                 <span>Match</span>
-                <select
-                  onChange={(event) =>
-                    setDraftFilter({ ...draftFilter, operator: event.target.value as AdminFilterOperator })
-                  }
-                  value={draftFilter.operator}
-                >
-                  {(Object.keys(operatorLabels) as AdminFilterOperator[]).map((operator) => (
-                    <option key={operator} value={operator}>
-                      {operatorLabels[operator]}
-                    </option>
-                  ))}
-                </select>
               </label>
-              <label>
+              <select
+                id={`${filterId}-match`}
+                onChange={(event) =>
+                  setDraftFilter({
+                    ...draftFilter,
+                    operator: event.target.value as AdminFilterOperator,
+                  })
+                }
+                value={draftFilter.operator}
+              >
+                {operators.map((operator) => (
+                  <option key={operator} value={operator}>
+                    {operatorLabels[operator]}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor={`${filterId}-value`}>
                 <span>Value</span>
-                <input
-                  onChange={(event) => setDraftFilter({ ...draftFilter, value: event.target.value })}
-                  value={draftFilter.value}
-                />
               </label>
+              <input
+                id={`${filterId}-value`}
+                onChange={(event) => setDraftFilter({ ...draftFilter, value: event.target.value })}
+                value={draftFilter.value}
+              />
               <button className="secondary-button" type="submit">
                 Apply
               </button>
@@ -280,24 +366,45 @@ function AdminConsole() {
             </form>
           ) : null}
 
-          {rowsQuery.isError ? (
+          {rowsQuery.isError && rows === undefined ? (
             <AdminError error={rowsQuery.error} onRetry={() => void rowsQuery.refetch()} />
           ) : rowsQuery.isPending ? (
-            <p className="admin-note">Loading rows…</p>
+            <p className="admin-note" role="status">
+              Loading rows…
+            </p>
+          ) : !maskingIsKnown ? (
+            // Fail closed: the rows arrived, but the catalog has no entry for
+            // the table they claim to be from, so nothing here knows which
+            // columns hold secrets. Showing the rows anyway would be a guess in
+            // the one direction that cannot be taken back.
+            <div className="admin-note" role="alert">
+              <p>
+                The catalog does not describe {rows?.meta.service}.{rows?.meta.table}, so this table cannot be shown
+                without risking a column that should have stayed hidden.
+              </p>
+            </div>
           ) : rows && rows.rows.length === 0 ? (
-            <p className="admin-note">
+            <p className="admin-note" role="status">
               {filter ? "No rows match this filter." : "This table is empty."}
             </p>
           ) : (
             <div className="admin-table-scroll">
-              <table className="admin-table">
+              <table className="admin-table" aria-label={rows ? `${rows.meta.service}.${rows.meta.table}` : undefined}>
                 <thead>
                   <tr>
                     {columns.map((column) => {
                       const isSorted = sort === column;
+                      const canSort = sortable.has(column);
                       return (
-                        <th aria-sort={isSorted ? (order === "asc" ? "ascending" : "descending") : "none"} key={column}>
-                          {sortable.has(column) ? (
+                        <th
+                          // Only a sortable column has a sort state; "none" on a
+                          // column that can never be sorted claims otherwise.
+                          aria-sort={
+                            !canSort ? undefined : isSorted ? (order === "asc" ? "ascending" : "descending") : "none"
+                          }
+                          key={column}
+                        >
+                          {canSort ? (
                             <button className="admin-sort" onClick={() => toggleSort(column)} type="button">
                               {column}
                               <span aria-hidden="true">{isSorted ? (order === "asc" ? " ↑" : " ↓") : ""}</span>
@@ -318,8 +425,14 @@ function AdminConsole() {
                           {sensitiveColumns.has(column) ? (
                             // The catalog says this column holds secrets. Say
                             // that it exists and stop there — not a masked
-                            // length, which leaks one.
-                            <span className="admin-hidden-cell">hidden</span>
+                            // length, which leaks one. The label distinguishes a
+                            // withheld cell from one whose content happens to be
+                            // the word "hidden", and deliberately avoids the
+                            // word "value" so it cannot collide with the filter
+                            // form's own labels.
+                            <span aria-label="hidden by the catalog" className="admin-hidden-cell">
+                              hidden
+                            </span>
                           ) : (
                             formatCell(row[column])
                           )}
@@ -369,14 +482,21 @@ function AdminConsole() {
  */
 function AdminError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   const refused = isMissingOrForbidden(error);
+  // Every error response carries X-Request-Id, and the gateway exposes it
+  // cross-origin. This screen's audience is the one person who will go and read
+  // the gateway log, so it is the one screen where showing it earns its space.
+  const requestId = error instanceof Error ? (error as { requestId?: unknown }).requestId : undefined;
   return (
     <div className="admin-note" role="alert">
       <p>
         {refused
-          ? "The server would not serve this. Either the read-only admin API is not deployed on this gateway yet, or it refused this account."
+          ? "The server refused this. Either this account is not a global admin as far as the gateway is concerned, or the table is not one it will serve."
           : "The read-only admin API could not be reached."}
       </p>
       {error instanceof Error && error.message ? <p className="admin-error-detail">{error.message}</p> : null}
+      {typeof requestId === "string" && requestId ? (
+        <p className="admin-error-detail">Request ID: {requestId}</p>
+      ) : null}
       <button className="secondary-button" onClick={onRetry} type="button">
         Try again
       </button>
@@ -384,17 +504,32 @@ function AdminError({ error, onRetry }: { error: unknown; onRetry: () => void })
   );
 }
 
+/** `from`/`to` become a timestamp comparison server-side; the others do not. */
+function isRangeOperator(operator: AdminFilterOperator) {
+  return operator === "from" || operator === "to";
+}
+
+/** Whether the catalog's column type is one a timestamp comparison can be made against. */
+function isTemporal(type?: string) {
+  if (!type) return false;
+  const normalized = type.toLowerCase();
+  return normalized.includes("timestamp") || normalized.includes("date") || normalized.includes("time");
+}
+
 function defaultSelection(catalog?: AdminCatalog) {
-  const service = catalog?.services.find((item) => item.tables.length > 0);
-  const table = service?.tables[0];
+  const service = catalog?.services?.find((item) => (item.tables ?? []).length > 0);
+  const table = service?.tables?.[0];
   return service && table ? { service: service.name, table: table.name } : null;
 }
 
-function findTable(catalog?: AdminCatalog, current?: { service: string; table: string } | null): AdminTable | undefined {
+function findTable(
+  catalog?: AdminCatalog,
+  current?: { service: string; table: string } | null,
+): AdminTable | undefined {
   if (!current) return undefined;
   return catalog?.services
-    .find((service) => service.name === current.service)
-    ?.tables.find((table) => table.name === current.table);
+    ?.find((service) => service.name === current.service)
+    ?.tables?.find((table) => table.name === current.table);
 }
 
 /**
