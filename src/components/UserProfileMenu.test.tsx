@@ -55,4 +55,36 @@ describe("UserProfileMenu", () => {
     expect(screen.getByText("anna@example.com")).toBeVisible();
     expect(screen.queryByText("Your profile could not be loaded.")).not.toBeInTheDocument();
   });
+
+  it("names the global role of an admin", () => {
+    render(<UserProfileMenu user={{ ...anna, globalRole: "GLOBAL_ADMIN" }} loading={false} onLogout={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+    expect(screen.getByText("Role")).toBeVisible();
+    expect(screen.getByText("Global admin")).toBeVisible();
+  });
+
+  it("names the global role of a plain user", () => {
+    render(<UserProfileMenu user={{ ...anna, globalRole: "USER" }} loading={false} onLogout={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+    expect(screen.getByText("Role")).toBeVisible();
+    expect(screen.getByText("User")).toBeVisible();
+  });
+
+  // A gateway that predates the field, or one answering UNSPECIFIED, arrives
+  // here as no role at all. The menu says nothing rather than inventing an
+  // "Unknown" role for an account that certainly has one.
+  it("omits the role row entirely when the server did not state one", () => {
+    render(<UserProfileMenu user={anna} loading={false} onLogout={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+    expect(screen.getByText("Status")).toBeVisible();
+    expect(screen.queryByText("Role")).not.toBeInTheDocument();
+    expect(screen.queryByText("User")).not.toBeInTheDocument();
+    expect(screen.queryByText("Global admin")).not.toBeInTheDocument();
+  });
 });

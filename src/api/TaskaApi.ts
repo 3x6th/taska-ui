@@ -72,6 +72,12 @@ export interface TaskaApi {
   acceptInvitation(input: AcceptInvitationInput): Promise<void>;
   refresh(refreshToken: string): Promise<AuthTokens>;
   logout(): Promise<void>;
+  /**
+   * The signed-in account as the server describes it. `globalRole` may be
+   * absent — an older gateway, or the contract's UNSPECIFIED — and callers must
+   * treat that as "not stated" rather than as a role. It is descriptive only:
+   * the server, not this field, decides what the account may do.
+   */
   getCurrentUser(): Promise<User>;
 
   /**

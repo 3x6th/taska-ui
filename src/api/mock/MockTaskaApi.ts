@@ -90,6 +90,8 @@ export class MockTaskaStore {
     const ts = (day: number, minute: number) =>
       `2026-06-${String(day).padStart(2, "0")}T09:${String(minute).padStart(2, "0")}:00Z`;
 
+    // Mark is the seed's only GLOBAL_ADMIN so both role displays can be reached
+    // by signing in; everyone else, Anna included, is a plain USER.
     this.users = [
       {
         id: ANNA_ID,
@@ -98,6 +100,7 @@ export class MockTaskaStore {
         displayName: "Anna Ivanova",
         status: "ACTIVE",
         color: "#6366f1",
+        globalRole: "USER",
       },
       {
         id: MARK_ID,
@@ -106,6 +109,7 @@ export class MockTaskaStore {
         displayName: "Mark Lee",
         status: "ACTIVE",
         color: "#0ea5e9",
+        globalRole: "GLOBAL_ADMIN",
       },
       {
         id: SOFIA_ID,
@@ -114,6 +118,7 @@ export class MockTaskaStore {
         displayName: "Sofia Reyes",
         status: "ACTIVE",
         color: "#10b981",
+        globalRole: "USER",
       },
       {
         id: TOM_ID,
@@ -122,6 +127,7 @@ export class MockTaskaStore {
         displayName: "Tom Becker",
         status: "ACTIVE",
         color: "#f59e0b",
+        globalRole: "USER",
       },
       {
         id: PRIYA_ID,
@@ -130,6 +136,7 @@ export class MockTaskaStore {
         displayName: "Priya Nair",
         status: "ACTIVE",
         color: "#ec4899",
+        globalRole: "USER",
       },
     ];
 

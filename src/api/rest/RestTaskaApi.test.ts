@@ -201,3 +201,83 @@ describe("RestTaskaApi session expiry", () => {
     expect(expired).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * `globalRole` is the first field the UI reads that the deployed gateway may
+ * simply not send, and whose contract carries a value — UNSPECIFIED — that is
+ * not a role. These cases pin the narrowing: two roles pass through, everything
+ * else becomes "not stated", and the rest of the profile survives either way.
+ */
+describe("RestTaskaApi current user", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const me = (extra: Record<string, unknown>) => ({
+    id: "user-1",
+    login: "anna",
+    email: "anna@example.com",
+    displayName: "Anna Ivanova",
+    status: "ACTIVE",
+    ...extra,
+  });
+
+  const getCurrentUserWith = async (body: unknown) => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => answer(200, body)),
+    );
+    return new RestTaskaApi().getCurrentUser();
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("maps GLOBAL_ADMIN", async () => {
+    await expect(getCurrentUserWith(me({ globalRole: "GLOBAL_ADMIN" }))).resolves.toEqual({
+      id: "user-1",
+      login: "anna",
+      email: "anna@example.com",
+      displayName: "Anna Ivanova",
+      status: "ACTIVE",
+      color: undefined,
+      globalRole: "GLOBAL_ADMIN",
+    });
+  });
+
+  it("maps USER", async () => {
+    await expect(getCurrentUserWith(me({ globalRole: "USER" }))).resolves.toMatchObject({
+      email: "anna@example.com",
+      globalRole: "USER",
+    });
+  });
+
+  it.each([
+    ["the field is missing", {}],
+    ["the value is the UNSPECIFIED zero value", { globalRole: "UNSPECIFIED" }],
+    ["the value is a role this build has never heard of", { globalRole: "SUPER_ADMIN" }],
+    ["the value is not a string at all", { globalRole: 3 }],
+    ["the value is explicitly null", { globalRole: null }],
+  ])("reports no role when %s, and still maps the rest of the profile", async (_case, extra) => {
+    const user = await getCurrentUserWith(me(extra));
+
+    expect(user.globalRole).toBeUndefined();
+    expect(user).toMatchObject({
+      id: "user-1",
+      login: "anna",
+      email: "anna@example.com",
+      displayName: "Anna Ivanova",
+      status: "ACTIVE",
+    });
+  });
+});

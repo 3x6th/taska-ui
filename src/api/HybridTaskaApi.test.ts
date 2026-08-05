@@ -61,6 +61,22 @@ describe("HybridTaskaApi", () => {
     expect(members[0].userId).toBe(me.id);
   });
 
+  // The hybrid invents a project role; the global role is not its business. It
+  // has to arrive from the wrapped implementation exactly as that one produced
+  // it, or the three implementations stop being interchangeable.
+  it("passes the global role through untouched", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+
+    await expect(hybrid.getCurrentUser()).resolves.toEqual(await live.getCurrentUser());
+    await expect(hybrid.getCurrentUser()).resolves.toMatchObject({ globalRole: "USER" });
+
+    await live.login({ email: "mark@example.com", password: "correct" });
+
+    await expect(hybrid.getCurrentUser()).resolves.toEqual(await live.getCurrentUser());
+    await expect(hybrid.getCurrentUser()).resolves.toMatchObject({ globalRole: "GLOBAL_ADMIN" });
+  });
+
   it("falls back to VIEWER when the admin assumption is off and the user did not create the project", async () => {
     const live = liveApi();
     const hybrid = new HybridTaskaApi(live, false);
