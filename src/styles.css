@@ -740,8 +740,37 @@ h1 {
 }
 
 .user-profile-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   border-top: 1px solid var(--border);
   padding: 8px;
+}
+
+/* The Administration entry (GLOBAL_ADMIN only). Same row shape as Log out, but
+   neutral in rest: it is a way to another page, not a destructive action. */
+.user-profile-admin {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 8px 9px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: none;
+}
+
+.user-profile-admin:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.user-profile-admin:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .user-profile-logout {
@@ -930,6 +959,51 @@ h1 {
   color: var(--accent);
   font-size: 11px;
   font-weight: 500;
+}
+
+/* The /admin body. Deliberately thin: TAS-155 replaces the placeholder it
+   dresses, and the shell around it is the shared page shell, not this block. */
+.admin-page {
+  display: flex;
+  /* 1024 = the project list's 980 content column plus its 22 side padding, so
+     moving between the two screens does not shift the heading sideways. */
+  width: 100%;
+  max-width: 1024px;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  overflow: auto;
+  margin: 0 auto;
+  padding: 34px 22px;
+}
+
+.admin-page h1 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.admin-page p {
+  max-width: 560px;
+  margin: 11px 0 0;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* .secondary-button already carries the shape; an <a> only needs the underline
+   gone and the focus ring §7 asks for. */
+.admin-back {
+  margin-top: 18px;
+  text-decoration: none;
+}
+
+.admin-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .board-project-name {

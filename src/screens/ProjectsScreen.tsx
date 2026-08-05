@@ -5,10 +5,9 @@ import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { Avatar } from "../components/Avatar";
 import { Modal } from "../components/Modal";
-import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { UserProfileMenu } from "../components/UserProfileMenu";
-import type { Project, ProjectMember, User } from "../domain/types";
+import { TopBar } from "../components/TopBar";
+import type { Project, ProjectMember } from "../domain/types";
 import type { ScreenProps } from "./App";
 
 interface ProjectSummary {
@@ -88,29 +87,6 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
       </section>
       {creating ? <NewProjectModal onClose={() => setCreating(false)} onCreated={() => queryClient.invalidateQueries({ queryKey: ["projects"] })} /> : null}
     </main>
-  );
-}
-
-function TopBar({
-  right,
-  user,
-  userLoading,
-  loggingOut,
-  onLogout,
-}: {
-  right: React.ReactNode;
-  user?: User;
-  userLoading: boolean;
-  loggingOut: boolean;
-  onLogout: () => void;
-}) {
-  return (
-    <header className="topbar">
-      <TaskaLogo compact />
-      <div className="topbar-spacer" />
-      {right}
-      <UserProfileMenu user={user} loading={userLoading} loggingOut={loggingOut} onLogout={onLogout} />
-    </header>
   );
 }
 

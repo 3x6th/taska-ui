@@ -405,6 +405,12 @@ height 32, width 220, radius 9, `border:1px var(--border-strong)`, фон `--sur
   «Unknown» читалось бы как факт об аккаунте, а не об ответе. Оформляется
   обычным `dd`, а не pill: pill рядом со статусом читался бы как значок
   привилегии, тогда как роль здесь ничего не разрешает (§5.7).
+- «Administration» — пункт над «Log out», только при `globalRole =
+  GLOBAL_ADMIN`. У остальных его нет в разметке вообще, не спрятан стилями.
+  Это ссылка, а не кнопка: он ведёт на `/admin` (§5.1), значит должен
+  открываться в новой вкладке и копироваться. Скрытый пункт — не ограничение
+  прав: сервер остаётся авторитетом (§5.7), `/api/v1/readonly/*` доступен
+  только `GLOBAL_ADMIN` и отвечает 401/403 независимо от того, что показано.
 - «Log out» — нижний пункт, `--danger` в покое, hover — danger-tinted фон.
 - Закрытие: `Esc`, клик вне, выбор пункта.
 
@@ -474,6 +480,7 @@ height 32, width 220, radius 9, `border:1px var(--border-strong)`, фон `--sur
 | Projects | `/projects` | по сессии |
 | Board | `/projects/:projectId/board` | по сессии |
 | Issue card | `/projects/:projectId/issues/:issueId` | по сессии |
+| Admin | `/admin` | по сессии **и** `globalRole = GLOBAL_ADMIN`; иначе §4.18 |
 | Not found / no access | `*` (fallback); также борд при NOT_FOUND / PERMISSION_DENIED (§4.18) | публичный |
 | Notifications | поповер, без маршрута | — |
 
