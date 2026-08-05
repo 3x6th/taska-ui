@@ -92,9 +92,9 @@ it. Entries are deleted only when the compensating code is deleted.
   `rest` cannot do the same from a 204 and the two modes would have disagreed
   about whether an activated user is signed in. The mock now leaves the visitor
   signed out, so the route guard returns them to `/login` — which says nothing
-  at all about what just happened. In `rest` the screen calls
-  `GET /users/me` right after the 204, with no bearer token, and the gateway's
-  raw 401 message lands in `.form-error`.
+  at all about what just happened. In `rest` the screen calls `GET /users/me`
+  right after the 204, with no bearer token, and the gateway's raw 401 message
+  lands in `.form-error`.
 - **User-visible effect:** activation appears to fail, or at best to end
   nowhere: in both modes the user is left at a sign-in form with no statement
   that their password was in fact set.
