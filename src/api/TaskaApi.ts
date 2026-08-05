@@ -1,4 +1,7 @@
 import type {
+  AdminCatalog,
+  AdminRows,
+  AdminRowsQuery,
   Issue,
   IssueComment,
   IssuePriority,
@@ -115,4 +118,19 @@ export interface TaskaApi {
   listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>>;
   markNotificationRead(notificationId: string): Promise<Notification>;
   markAllNotificationsRead(): Promise<{ updatedCount: number }>;
+
+  /**
+   * The catalog of services and tables the read-only admin API will serve
+   * (`GET /readonly/metadata`). `GLOBAL_ADMIN` only — every other caller gets a
+   * 403 from the server, which is the actual permission control; the UI hiding
+   * the section is not.
+   */
+  getAdminCatalog(): Promise<AdminCatalog>;
+
+  /**
+   * One page of one table (`GET /readonly/{service}/{table}`). The service and
+   * table names are not validated here: the catalog above is the only source of
+   * legitimate values, and the gateway validates them again regardless.
+   */
+  listAdminRows(query: AdminRowsQuery): Promise<AdminRows>;
 }

@@ -12,6 +12,13 @@ import type {
 } from "../TaskaApi";
 import { SessionExpiredSignal } from "../session";
 import type {
+  AdminCatalog,
+  AdminPagination,
+  AdminRows,
+  AdminRowsMeta,
+  AdminRowsQuery,
+  AdminService,
+  AdminTable,
   GlobalRole,
   Issue,
   IssueComment,
@@ -53,6 +60,26 @@ interface RestUser {
   status: UserStatus;
   color?: string;
   globalRole?: unknown;
+}
+
+/** Paging and sorting own these keys; a filter may not take them. */
+const RESERVED_QUERY_KEYS = new Set(["page", "pageSize", "sort", "order"]);
+
+/**
+ * `GET /readonly/{service}/{table}` — `data` on the wire, `rows` in the domain.
+ * Every field is optional because the contract marks none of them required, and
+ * this is the one endpoint family in the codebase that has never returned a
+ * byte to us: typing it as guaranteed would be a claim, not a fact.
+ */
+interface RestAdminRows {
+  data?: Record<string, unknown>[];
+  pagination?: AdminPagination;
+  meta?: Partial<AdminRowsMeta>;
+}
+
+/** `GET /readonly/metadata`, with the same caveat. */
+interface RestAdminCatalog {
+  services?: (Partial<Omit<AdminService, "tables">> & { tables?: AdminTable[] })[];
 }
 
 type RestIssue = Omit<Issue, "assigneeId" | "deletedAt"> & {
@@ -395,6 +422,80 @@ export class RestTaskaApi implements TaskaApi {
     }
 
     return { updatedCount };
+  }
+
+  async getAdminCatalog(): Promise<AdminCatalog> {
+    const response = await this.request<RestAdminCatalog>("/readonly/metadata");
+    // The contract marks nothing in this response required, and the gateway's
+    // own mapper emits an empty object when it has no catalog. Screens read
+    // these lists by walking them, so a missing one is a render crash — and
+    // with no error boundary in this app that is a blank page, not a blank
+    // console.
+    return {
+      services: (response.services ?? []).map((service) => ({
+        ...service,
+        name: service.name ?? "",
+        databaseAlias: service.databaseAlias ?? "",
+        tables: (service.tables ?? []).map((table) => ({ ...table, columns: table.columns ?? [] })),
+      })),
+    };
+  }
+
+  listAdminRows(query: AdminRowsQuery): Promise<AdminRows> {
+    const search = new URLSearchParams();
+    if (query.page !== undefined) search.set("page", String(query.page));
+    if (query.pageSize !== undefined) search.set("pageSize", String(query.pageSize));
+    if (query.sort) search.set("sort", query.sort);
+    if (query.order) search.set("order", query.order);
+
+    for (const filter of query.filters ?? []) {
+      // Empty means "no filter", not "match the empty string" — an input the
+      // user cleared must not narrow the table to nothing.
+      if (filter.value === "") continue;
+      // Filters share the query string with the paging and sorting keys, so a
+      // column genuinely called `page` or `sort` would otherwise overwrite them
+      // and the table would answer a question nobody asked. The contract's own
+      // prose gives the way out — `.eq` is the explicit spelling of the bare
+      // equality key — so the collision is renamed rather than dropped.
+      // Dropping it would silently return unfiltered rows while the form still
+      // read as applied, which is the failure this guard exists to prevent.
+      const bare = filter.operator === "eq" ? filter.column : `${filter.column}.${filter.operator}`;
+      const key = RESERVED_QUERY_KEYS.has(bare) ? `${filter.column}.eq` : bare;
+      search.set(key, filter.value);
+    }
+
+    return this.request<RestAdminRows>(
+      `/readonly/${this.segment(query.service)}/${this.segment(query.table)}${this.query(search)}`,
+    ).then((response) => ({
+      // `data` on the wire, `rows` in the domain: "data" says nothing at the
+      // call site, and every field of this response is data.
+      rows: response.data ?? [],
+      // Nothing in this response is contractually required, pagination
+      // included, and the pager dereferences it. One page holding whatever
+      // arrived is a truthful fallback and, unlike a crash, leaves the rows
+      // readable.
+      pagination: response.pagination ?? {
+        currentPage: query.page ?? 1,
+        pageSize: query.pageSize ?? (response.data?.length ?? 0),
+        totalRows: response.data?.length ?? 0,
+        totalPages: 1,
+        hasNext: false,
+        hasPrev: false,
+      },
+      meta: {
+        // A server that does not echo which table this is leaves us with what
+        // we asked for, which is the only honest answer available and keeps the
+        // response joinable against the catalog.
+        service: response.meta?.service ?? query.service,
+        table: response.meta?.table ?? query.table,
+        // The contract declares none of these as required, and the table cannot
+        // render a header from a missing list. An empty one is honest — no
+        // columns stated — and the screen already handles it.
+        columns: response.meta?.columns ?? [],
+        sortableColumns: response.meta?.sortableColumns ?? [],
+        filterableColumns: response.meta?.filterableColumns ?? [],
+      },
+    }));
   }
 
   private setTokens(tokens: AuthTokens) {

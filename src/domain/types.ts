@@ -177,3 +177,90 @@ export interface Page<T> {
   totalCount?: number;
   offset?: number;
 }
+
+/* ==================== Read-only admin console (TAS-155) ====================
+ *
+ * `/api/v1/readonly/*` is a generic window onto the services' own tables, so
+ * unlike the rest of this file these types describe *shapes the server
+ * declares at runtime* rather than a schema known at build time. A row is
+ * therefore `unknown` per column, not `string` — the console renders whatever
+ * it is handed and never assumes a type it was not told about.
+ */
+
+export interface AdminColumn {
+  name: string;
+  type: string;
+  /** Column the catalog marks as holding secrets. Its values are never rendered. */
+  sensitive: boolean;
+}
+
+export interface AdminTable {
+  name: string;
+  columns: AdminColumn[];
+  primaryKey: string;
+}
+
+export interface AdminService {
+  name: string;
+  databaseAlias: string;
+  tables: AdminTable[];
+}
+
+export interface AdminCatalog {
+  services: AdminService[];
+}
+
+/**
+ * The contract spells filters as query keys: `column` for equality and
+ * `column.contains` / `column.from` / `column.to` otherwise. Kept structured
+ * here so the UI never hand-builds a key, and so the API layer is the only
+ * place that knows the wire spelling.
+ */
+export type AdminFilterOperator = "eq" | "contains" | "from" | "to";
+
+export interface AdminFilter {
+  column: string;
+  operator: AdminFilterOperator;
+  value: string;
+}
+
+export type AdminSortOrder = "asc" | "desc";
+
+export interface AdminRowsQuery {
+  service: string;
+  table: string;
+  page?: number;
+  pageSize?: number;
+  sort?: string;
+  order?: AdminSortOrder;
+  filters?: AdminFilter[];
+}
+
+export interface AdminPagination {
+  currentPage: number;
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+/**
+ * What the server says about the table it just returned. `columns` is the
+ * authority on which columns exist and in what order — the rows themselves are
+ * bags of keys and cannot be trusted to agree with each other, least of all
+ * when a value is null.
+ */
+export interface AdminRowsMeta {
+  service: string;
+  table: string;
+  columns: string[];
+  sortableColumns: string[];
+  filterableColumns: string[];
+}
+
+export interface AdminRows {
+  rows: Record<string, unknown>[];
+  pagination: AdminPagination;
+  meta: AdminRowsMeta;
+}

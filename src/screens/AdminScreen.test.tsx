@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
@@ -14,8 +14,62 @@ import { App } from "./App";
  * demand, so this runs the real routes against a fake `TaskaApi` rather than
  * rendering the screen in isolation.
  */
-const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe } = vi.hoisted(() => {
-  const state: { user?: User; failure?: Error; gate?: Promise<void>; release?: () => void } = {};
+/** The secret the console must never print, in any state. */
+const SECRET = "$2b$10$never-render-me";
+
+const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe, holdRows, releaseRows, failCatalog, setMetaMismatch } =
+  vi.hoisted(() => {
+  const SECRET_VALUE = "$2b$10$never-render-me";
+  const state: {
+    user?: User;
+    failure?: Error;
+    gate?: Promise<void>;
+    release?: () => void;
+    rowsGate?: Promise<void>;
+    rowsRelease?: () => void;
+    catalogFailure?: Error;
+    metaMismatch?: boolean;
+  } = {};
+
+  // Two tables that differ in exactly the way that matters: one has a column
+  // the catalog marks sensitive, the other has none.
+  const catalog = {
+    services: [
+      {
+        name: "auth",
+        databaseAlias: "taska_auth",
+        tables: [
+          {
+            name: "users",
+            primaryKey: "id",
+            columns: [
+              { name: "id", type: "uuid", sensitive: false },
+              { name: "password_hash", type: "varchar", sensitive: true },
+            ],
+          },
+        ],
+      },
+      {
+        name: "admin",
+        databaseAlias: "taska_admin",
+        tables: [
+          {
+            name: "audit_log",
+            primaryKey: "id",
+            columns: [
+              { name: "id", type: "uuid", sensitive: false },
+              { name: "action", type: "varchar", sensitive: false },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const rowsByTable: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {
+    "auth.users": { columns: ["id", "password_hash"], rows: [{ id: "u1", password_hash: SECRET_VALUE }] },
+    "admin.audit_log": { columns: ["id", "action"], rows: [{ id: "a1", action: "TABLE_READ" }] },
+  };
 
   const api = {
     hasSession: () => true,
@@ -28,6 +82,49 @@ const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe } = vi.hoisted(() => 
     },
     listProjects: async () => [],
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
+    getAdminCatalog: async () => {
+      if (state.catalogFailure) throw state.catalogFailure;
+      return catalog;
+    },
+    listAdminRows: async (query: { service: string; table: string }) => {
+      if (state.rowsGate) await state.rowsGate;
+      const key = `${query.service}.${query.table}`;
+      const table = rowsByTable[key] ?? { columns: [], rows: [] };
+      if (state.metaMismatch) {
+        // A response whose meta names a table the catalog does not describe.
+        // Nothing in the contract obliges the two endpoints to spell a service
+        // the same way, and this is the join the masking depends on.
+        return {
+          rows: rowsByTable["auth.users"].rows,
+          pagination: { currentPage: 1, pageSize: 20, totalRows: 1, totalPages: 1, hasNext: false, hasPrev: false },
+          meta: {
+            service: "auth-service",
+            table: "users",
+            columns: rowsByTable["auth.users"].columns,
+            sortableColumns: [],
+            filterableColumns: [],
+          },
+        };
+      }
+      return {
+        rows: table.rows,
+        pagination: {
+          currentPage: 1,
+          pageSize: 20,
+          totalRows: table.rows.length,
+          totalPages: 1,
+          hasNext: false,
+          hasPrev: false,
+        },
+        meta: {
+          service: query.service,
+          table: query.table,
+          columns: table.columns,
+          sortableColumns: table.columns,
+          filterableColumns: table.columns,
+        },
+      };
+    },
   };
 
   return {
@@ -35,6 +132,22 @@ const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe } = vi.hoisted(() => 
     setCurrentUser: (user: User) => {
       state.user = user;
       state.failure = undefined;
+    },
+    holdRows: () => {
+      state.rowsGate = new Promise<void>((resolve) => {
+        state.rowsRelease = resolve;
+      });
+    },
+    releaseRows: () => {
+      state.rowsRelease?.();
+      state.rowsGate = undefined;
+      state.rowsRelease = undefined;
+    },
+    failCatalog: (failure?: Error) => {
+      state.catalogFailure = failure;
+    },
+    setMetaMismatch: (on: boolean) => {
+      state.metaMismatch = on;
     },
     // `GET /users/me` failing with something that is not a 401: a 5xx, a
     // network drop, a CORS refusal — none of which end the session, so the
@@ -79,9 +192,13 @@ function renderAdmin() {
   );
 }
 
+const admin: User = { ...anna, globalRole: "GLOBAL_ADMIN" };
+
 describe("/admin", () => {
   beforeEach(() => {
     releaseMe();
+    releaseRows();
+    failCatalog(undefined);
     setCurrentUser(anna);
     window.localStorage.clear();
   });
@@ -162,5 +279,117 @@ describe("/admin", () => {
     });
 
     expect(await screen.findByRole("heading", { name: "Page not found" })).toBeVisible();
+  });
+});
+
+/**
+ * The console itself (TAS-155). Read-only in the strong sense: the one thing it
+ * must never do is print a value the catalog marked sensitive, in any state —
+ * including the moment between one table and the next.
+ */
+describe("/admin console", () => {
+  beforeEach(() => {
+    releaseMe();
+    releaseRows();
+    failCatalog(undefined);
+    setCurrentUser(admin);
+    window.localStorage.clear();
+  });
+
+  it("opens on the first table in the catalog rather than an empty frame", async () => {
+    renderAdmin();
+
+    expect(await screen.findByRole("heading", { name: "auth.users" })).toBeVisible();
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+  });
+
+  it("never prints a column the catalog marked sensitive", async () => {
+    renderAdmin();
+
+    // The column exists and is named; only its values are withheld.
+    expect(await screen.findByRole("columnheader", { name: /password_hash/ })).toBeVisible();
+    expect(screen.getByText("hidden")).toBeVisible();
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(SECRET);
+  });
+
+  /**
+   * The regression this pins was real and browser-confirmed: while a new table
+   * loaded, react-query's `placeholderData` still held the previous table's
+   * rows, but the masking rules were being read from the newly *selected*
+   * table. Switching from a table with a secret column to one without therefore
+   * rendered the old rows under the new rules and printed the hash in clear.
+   * Everything drawn now comes from the response's own `meta`, so the rows and
+   * the rules can never disagree.
+   */
+  it("keeps the previous table's rows masked while the next table loads", async () => {
+    renderAdmin();
+    // Wait for the rows themselves, not just the caption: the caption renders
+    // from the selection before any data has arrived.
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+    expect(screen.getByText("hidden")).toBeVisible();
+
+    holdRows();
+    fireEvent.click(screen.getByRole("button", { name: "audit_log" }));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Mid-switch: the old rows are still on screen, still masked, and still
+    // captioned with the table they actually belong to.
+    expect(document.body.textContent).not.toContain(SECRET);
+    expect(screen.getByText("hidden")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "auth.users" })).toBeVisible();
+
+    await act(async () => {
+      releaseRows();
+    });
+
+    expect(await screen.findByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+    expect(document.body.textContent).not.toContain(SECRET);
+  });
+
+  it("says the admin API could not be reached instead of showing an empty console", async () => {
+    failCatalog(new Error("readonly is not deployed here"));
+    renderAdmin();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reached|would not serve/i);
+    // The section still frames itself and still offers the way out.
+    expect(screen.getByRole("heading", { name: "Administration" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Back to projects" })).toBeVisible();
+  });
+});
+
+/**
+ * Masking is a *join*: the rows response says which table it is, the catalog
+ * says which of that table's columns are secret. Nothing in the contract
+ * obliges the two endpoints to spell a service the same way, and neither has
+ * ever answered this repository. If that join misses, "no columns are
+ * sensitive" is indistinguishable on screen from a genuinely harmless table —
+ * so it must fail closed rather than guess.
+ */
+describe("/admin console, when the catalog and the rows disagree", () => {
+  beforeEach(() => {
+    releaseMe();
+    releaseRows();
+    failCatalog(undefined);
+    setMetaMismatch(false);
+    setCurrentUser(admin);
+    window.localStorage.clear();
+  });
+
+  it("refuses to render rows it cannot check for sensitive columns", async () => {
+    setMetaMismatch(true);
+    renderAdmin();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/catalog does not describe/i);
+    // The whole point: the secret is not on screen, and no table is either.
+    expect(document.body.textContent).not.toContain(SECRET);
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    // The section still frames itself and still offers the way out.
+    expect(screen.getByRole("heading", { name: "Administration" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Back to projects" })).toBeVisible();
   });
 });

@@ -11,6 +11,9 @@ import type {
   UpdateIssueInput,
 } from "../TaskaApi";
 import type {
+  AdminCatalog,
+  AdminRows,
+  AdminRowsQuery,
   Issue,
   IssueComment,
   IssueHistoryEvent,
@@ -713,6 +716,235 @@ export class MockTaskaStore {
     return { updatedCount };
   }
 
+  /**
+   * The read-only admin API looks at the *services' own tables*, not at the
+   * product model, so this is deliberately a separate shape rather than a view
+   * over `this.projects` and friends: snake_case columns, database ids, and one
+   * `sensitive` column so the masking path is reachable without a gateway.
+   * Rows are derived from the same seed where it is cheap, so a table the
+   * console shows agrees with the app around it.
+   */
+  adminCatalog(): AdminCatalog {
+    return {
+      services: [
+        {
+          name: "auth",
+          databaseAlias: "taska_auth",
+          tables: [
+            {
+              name: "users",
+              primaryKey: "id",
+              columns: [
+                { name: "id", type: "uuid", sensitive: false },
+                { name: "login", type: "varchar", sensitive: false },
+                { name: "email", type: "varchar", sensitive: false },
+                { name: "display_name", type: "varchar", sensitive: false },
+                { name: "status", type: "varchar", sensitive: false },
+                { name: "global_role", type: "varchar", sensitive: false },
+                { name: "password_hash", type: "varchar", sensitive: true },
+                { name: "created_at", type: "timestamptz", sensitive: false },
+              ],
+            },
+          ],
+        },
+        {
+          name: "project",
+          databaseAlias: "taska_project",
+          tables: [
+            {
+              name: "projects",
+              primaryKey: "id",
+              columns: [
+                { name: "id", type: "uuid", sensitive: false },
+                { name: "project_key", type: "varchar", sensitive: false },
+                { name: "name", type: "varchar", sensitive: false },
+                { name: "created_by", type: "uuid", sensitive: false },
+                { name: "archived_at", type: "timestamptz", sensitive: false },
+                { name: "created_at", type: "timestamptz", sensitive: false },
+              ],
+            },
+          ],
+        },
+        {
+          name: "issue",
+          databaseAlias: "taska_issue",
+          tables: [
+            {
+              name: "issues",
+              primaryKey: "id",
+              columns: [
+                { name: "id", type: "uuid", sensitive: false },
+                { name: "issue_key", type: "varchar", sensitive: false },
+                { name: "project_id", type: "uuid", sensitive: false },
+                { name: "summary", type: "varchar", sensitive: false },
+                { name: "issue_type", type: "varchar", sensitive: false },
+                { name: "status", type: "varchar", sensitive: false },
+                { name: "priority", type: "varchar", sensitive: false },
+                { name: "assignee_id", type: "uuid", sensitive: false },
+                { name: "created_at", type: "timestamptz", sensitive: false },
+              ],
+            },
+          ],
+        },
+        {
+          name: "admin",
+          databaseAlias: "taska_admin",
+          tables: [
+            {
+              name: "audit_log",
+              primaryKey: "id",
+              columns: [
+                { name: "id", type: "uuid", sensitive: false },
+                { name: "actor_id", type: "uuid", sensitive: false },
+                { name: "action", type: "varchar", sensitive: false },
+                { name: "target", type: "varchar", sensitive: false },
+                { name: "created_at", type: "timestamptz", sensitive: false },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  listAdminRows(query: AdminRowsQuery): AdminRows {
+    const service = this.adminCatalog().services.find((item) => item.name === query.service);
+    const table = service?.tables.find((item) => item.name === query.table);
+    if (!service) {
+      throw new MockApiError("NOT_FOUND", `Unknown service ${query.service}`);
+    }
+    if (!table) {
+      // Not NOT_FOUND: the gateway permits or denies a table by config, so a
+      // table it will not serve comes back as PERMISSION_DENIED. Unreachable
+      // from the console, which only offers catalog tables, and
+      // `isMissingOrForbidden` treats both the same — but the mock is the
+      // reference implementation, so it should not teach the wrong shape.
+      throw new MockApiError("PERMISSION_DENIED", `Table ${query.service}.${query.table} is not served`);
+    }
+
+    const columns = table.columns.map((column) => column.name);
+    let rows = this.adminRowsFor(query.service, query.table);
+
+    for (const filter of query.filters ?? []) {
+      if (filter.value === "") continue;
+      rows = rows.filter((row) => {
+        const raw = row[filter.column];
+        const value = raw === null || raw === undefined ? "" : String(raw);
+        switch (filter.operator) {
+          // Case-insensitive only here, matching the gateway: `contains` is
+          // ILIKE, everything else compares exactly. Lowercasing all of them
+          // made the mock accept `global_admin` where the gateway wants
+          // `GLOBAL_ADMIN`, so a filter that worked in every test found nothing
+          // in production.
+          case "contains":
+            return value.toLowerCase().includes(filter.value.toLowerCase());
+          case "from":
+            return value >= filter.value;
+          case "to":
+            return value <= filter.value;
+          default:
+            return value === filter.value;
+        }
+      });
+    }
+
+    if (query.sort && columns.includes(query.sort)) {
+      const direction = query.order === "desc" ? -1 : 1;
+      const sortColumn = query.sort;
+      rows = [...rows].sort((left, right) => {
+        const a = left[sortColumn];
+        const b = right[sortColumn];
+        // Nulls last whichever way the sort runs: a column full of them at the
+        // top is never what the person asking to sort by it wanted.
+        if (a === null || a === undefined) return 1;
+        if (b === null || b === undefined) return -1;
+        return String(a).localeCompare(String(b)) * direction;
+      });
+    }
+
+    const pageSize = query.pageSize ?? 20;
+    const currentPage = query.page ?? 1;
+    const totalRows = rows.length;
+    const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+    const start = (currentPage - 1) * pageSize;
+
+    return {
+      rows: rows.slice(start, start + pageSize),
+      pagination: {
+        currentPage,
+        pageSize,
+        totalRows,
+        totalPages,
+        hasNext: currentPage < totalPages,
+        hasPrev: currentPage > 1,
+      },
+      meta: {
+        service: query.service,
+        table: query.table,
+        columns,
+        // Everything is sortable and filterable here. A real service will say
+        // less, and the screen reads these lists rather than assuming.
+        sortableColumns: columns,
+        filterableColumns: columns,
+      },
+    };
+  }
+
+  private adminRowsFor(service: string, table: string): Record<string, unknown>[] {
+    if (service === "auth" && table === "users") {
+      return this.users.map((user, index) => ({
+        id: user.id,
+        login: user.login,
+        email: user.email,
+        display_name: user.displayName,
+        status: user.status,
+        global_role: user.globalRole ?? null,
+        // Never rendered — the catalog marks the column sensitive. Present so
+        // that masking is exercised against a value rather than against a gap.
+        password_hash: `$2b$10$mock${index}`,
+        created_at: `2026-06-0${index + 1}T09:00:00Z`,
+      }));
+    }
+
+    if (service === "project" && table === "projects") {
+      return this.projects.map((project) => ({
+        id: project.id,
+        project_key: project.projectKey,
+        name: project.name,
+        created_by: project.createdBy,
+        archived_at: project.archivedAt,
+        created_at: project.createdAt,
+      }));
+    }
+
+    if (service === "issue" && table === "issues") {
+      return this.issues.map((issue) => ({
+        id: issue.id,
+        issue_key: issue.issueKey,
+        project_id: issue.projectId,
+        summary: issue.summary,
+        issue_type: issue.issueType,
+        status: issue.status,
+        priority: issue.priority,
+        assignee_id: issue.assigneeId,
+        created_at: issue.createdAt,
+      }));
+    }
+
+    if (service === "admin" && table === "audit_log") {
+      // Enough rows that paging is a real control rather than a decoration.
+      return Array.from({ length: 47 }, (_, index) => ({
+        id: `audit-${String(index + 1).padStart(3, "0")}`,
+        actor_id: index % 2 === 0 ? ANNA_ID : MARK_ID,
+        action: ["TABLE_READ", "CATALOG_READ", "LOGIN", "ROLE_CHANGED"][index % 4],
+        target: ["auth.users", "project.projects", "issue.issues", "admin.audit_log"][index % 4],
+        created_at: `2026-07-${String((index % 28) + 1).padStart(2, "0")}T10:${String(index % 60).padStart(2, "0")}:00Z`,
+      }));
+    }
+
+    return [];
+  }
+
   private project(
     id: string,
     projectKey: string,
@@ -975,5 +1207,13 @@ export class MockTaskaApi implements TaskaApi {
 
   async markAllNotificationsRead(): Promise<{ updatedCount: number }> {
     return wait(this.store.markAllNotificationsRead());
+  }
+
+  async getAdminCatalog(): Promise<AdminCatalog> {
+    return wait(this.store.adminCatalog());
+  }
+
+  async listAdminRows(query: AdminRowsQuery): Promise<AdminRows> {
+    return wait(this.store.listAdminRows(query));
   }
 }

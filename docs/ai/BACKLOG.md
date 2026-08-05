@@ -22,9 +22,6 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 - **Toast component** (`DESIGN.md` §5.6 is the contract). Unlocks two things
   at once: optimistic rollbacks stop failing silently, and `requestId` gets a
   place to appear once the gateway exposes it over CORS (TAS-141).
-- **Auth lifecycle:** a dead session (failed refresh) clears tokens but
-  nothing navigates to `/login` — the user is left on a board of bare errors.
-  Needs an `onAuthLost` hook from `RestTaskaApi` wired in `client.ts`.
 - **Invite flow:** after a successful accept (204, no tokens) the screen calls
   `getCurrentUser` unauthenticated and reports failure — or, with stale tokens
   in localStorage, logs in as the previous user. Fix: on success, switch to
@@ -40,14 +37,53 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   been observed. Seed one of each so gating is exercisable.
 - **`markAllNotificationsRead` loop needs an iteration cap** (unbounded if the
   gateway ever ignores `unreadOnly`).
-- **Create-project Description textarea** sends a field the contract does not
-  have — remove it, or keep only if TAS-141 adds the field.
 - **Comment row polish:** caret lands at position 0 when entering edit;
   a shared `isPending` disables Save/Delete on every row at once.
 - **`getWorkflow` silently defaults `issueType` to `TASK`**; `listNotifications`
   returns a `Page` without `totalCount`. Minor contract-silence items.
+- **Union members the contract does not back** (found by `api-contract-guard`,
+  2026-08-05). `NotificationType` in `src/domain/types.ts` declares
+  `MEMBER_ROLE_CHANGED`, which `NotificationTypeDto` does not have; nothing
+  constructs it, so nothing renders it today. More broadly `IssuePriority`,
+  `IssueStatus` and `UserStatus` are unions the contract types as bare
+  `string`. `UserStatus` is the one with teeth: the gateway emits
+  `"UNSPECIFIED"` as its zero value, and `RestTaskaApi` asserts the union
+  rather than narrowing it, so that value would render an empty status pill
+  with a class no stylesheet has a rule for. Fix at the mapper, the way
+  TAS-151 did for `globalRole`.
 - **BoardScreen.tsx split** (~1200 lines) — recorded as debt in `DESIGN.md` §8;
   do it with the next large board change.
+- **A horizontally scrolling table is not keyboard-scrollable in Safari and
+  Firefox** (found by `release-reviewer`, 2026-08-05). `.admin-table-scroll` has
+  focusable children, so Chrome declines to make the container focusable
+  itself; the other two engines never do. A table whose columns all happen to
+  be non-sortable therefore cannot be scrolled sideways from the keyboard at
+  all. `tabindex="0"` plus an accessible name on the scroll container is the
+  usual fix, and it applies to any future wide table, not just this one.
+- **Nothing moves focus on a route change** (found by `release-reviewer`,
+  2026-08-05). Every in-app `<Link>` that swaps a route — "Go to projects",
+  "Back to projects", the new Administration entry — leaves
+  `document.activeElement` on `<body>`, so a keyboard user re-tabs from the top
+  of the document on every navigation. It is consistent rather than a
+  regression, which is exactly why it needs fixing in one place (focus the new
+  screen's `<h1>`, or a skip-target) instead of per link. Note the trap this
+  hid: a unit test asserting focus return passes because the component is never
+  unmounted in the test, while the real app destroys the trigger a tick later.
+- **The e2e suite flakes under CPU contention.** Observed 2026-08-05 at 45
+  tests: a run with other dev servers alive took 2m and failed all three
+  `[mobile] smoke` specs; the same specs passed in 4.4s alone, and the whole
+  suite passed in 13.4s once the machine was quiet. Nothing was wrong with the
+  code. Playwright's default is `workers: 7` here with three viewport projects
+  starting their own Vite server, so CI on a small runner is one slow box away
+  from a red build nobody can reproduce. Worth an explicit `workers` cap or
+  per-test timeout rather than leaving it to luck.
+- **The mock seed has no test of its own** (found by `release-reviewer`,
+  2026-08-05). The only assertion that Mark is `GLOBAL_ADMIN` and Anna is
+  `USER` lives in `HybridTaskaApi.test.ts` — a file about a different class, so
+  a future seed change fails somewhere that does not explain itself. Related:
+  two assertions there compare `toEqual` against a value the mock returns *by
+  reference*, so both sides are the same object and only the neighbouring
+  `toMatchObject` lines actually pin anything.
 - **Duplicate accessible name on the login screen** — the segmented mode toggle
   and the submit button are both named "Sign in", so a role locator matches two
   elements. `e2e/smoke.spec.ts` works around it with a CSS locator; the fix
@@ -73,6 +109,52 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   router would close it.
 - **TAS-142 execution** — the a11y/contrast/gap list already agreed and filed.
 
+## Frontend stories already filed
+
+Filed 2026-08-04 from the owner's own list, not from a review verdict. Each
+frontend story is blocked by its backend half and ships mock-first meanwhile.
+
+- [TAS-148](https://jira.ozero.dev/browse/TAS-148) — edit a project (name,
+  description) with the key shown read-only. Blocked by TAS-145. Takes over
+  the Description-textarea item that used to sit above: the field stops being
+  a silent no-op once the backend has somewhere to put it.
+- [TAS-149](https://jira.ozero.dev/browse/TAS-149) — archive a project from
+  the UI, plus the read-only board state for an archived one. Blocked by
+  TAS-146.
+- [TAS-150](https://jira.ozero.dev/browse/TAS-150) — filed as a bug: no route
+  guard exists, so a signed-out deep link lands on an empty projects screen
+  with no way back to `/login`. Carries the auth-lifecycle item that used to
+  sit above (`onAuthLost` from `RestTaskaApi` wired in `client.ts`) — the dead
+  session ends in the same dead end.
+- [TAS-151](https://jira.ozero.dev/browse/TAS-151) — show the global role in
+  the profile menu. Blocked by TAS-147. Also wants a mock seed with both a
+  plain user and a `GLOBAL_ADMIN`, which is the global-role twin of the
+  VIEWER/MEMBER seed gap listed above.
+- [TAS-152](https://jira.ozero.dev/browse/TAS-152) — admin entry in the
+  profile menu for `GLOBAL_ADMIN` plus the `/admin` screen. Blocked by
+  TAS-151. Filed when the console had nothing to show; the contract refresh
+  below gave it content, so the screen it delivers is the shell TAS-155 fills
+  rather than a permanent placeholder.
+- [TAS-155](https://jira.ozero.dev/browse/TAS-155) — the read-only admin
+  console itself, over the two `/readonly` endpoints the 2026-08-05 contract
+  refresh brought in. Blocked by TAS-152 (the way in) and TAS-103 (the
+  gateway half, still In Progress), so it ships mock-first.
+
+## New contract surface not yet claimed by a story
+
+The 2026-08-05 refresh of `docs/contract/openapi.yml` (backend develop
+`25d0cf7000e5`) added three things. Two are spoken for — `globalRole` by
+TAS-151, the `/readonly` endpoints by TAS-155. The third is not:
+
+- **Issue links.** `GET`/`POST /issues/{issueId}/links` and
+  `DELETE /issues/{issueId}/links/{linkId}`, with `IssueLinkTypeDto` of
+  `BLOCKS` / `RELATES_TO` / `DUPLICATES`. Nothing in the UI models a relation
+  between two issues, so this is a feature, not a gap — worth proposing to the
+  owner rather than filing unasked. Note the response field is `viewLinkType`,
+  not `linkType`, while the request sends `linkType`: whoever picks this up
+  should check that asymmetry against the gateway rather than assume it is a
+  typo in the contract.
+
 ## Backend asks already filed
 
 - [TAS-139](https://jira.ozero.dev/browse/TAS-139) — 500 on commented issues;
@@ -86,3 +168,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 - [TAS-124](https://jira.ozero.dev/browse/TAS-124) /
   [TAS-125](https://jira.ozero.dev/browse/TAS-125) — Board API; removes the
   N+1 hydration.
+- [TAS-145](https://jira.ozero.dev/browse/TAS-145) — `PATCH /projects/{id}`;
+  `UpdateProject` does not exist and `taska.projects` has no `description`
+  column, so the field the create form shows has nowhere to land yet. The
+  project key stays immutable — it is part of every `issueKey`.
+- [TAS-146](https://jira.ozero.dev/browse/TAS-146) — archive a project
+  (`DELETE /projects/{id}` as a soft delete) and refuse writes to an archived
+  one. `archived_at` already exists in the table and in `ProjectResponse`;
+  nothing sets or filters on it. Restore is deliberately out of scope.
+- [TAS-147](https://jira.ozero.dev/browse/TAS-147) — **Done.** `globalRole` is
+  on `GET /users/me` in the 2026-08-05 contract, as
+  `enum [GLOBAL_ADMIN, USER, UNSPECIFIED]`, which unblocked TAS-151. This is
+  the *global* role, not the per-project role of TAS-137. The login response
+  deliberately stays tokens-only. Contract-level only so far: the field has not
+  been observed on the deployed gateway, which is why the frontend treats its
+  absence as "not stated" rather than as an error.
