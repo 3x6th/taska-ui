@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { LogOut, ShieldCheck } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import type { GlobalRole, User, UserStatus } from "../domain/types";
 import { Avatar } from "./Avatar";
 
@@ -28,6 +28,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
+  const location = useLocation();
   // The entry exists only for an account the server called GLOBAL_ADMIN. A
   // gateway that states no role counts as not an admin, which is lossy in the
   // safe direction (docs/ai/API-DIVERGENCE.md).
@@ -123,6 +124,9 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
               // server is (`/api/v1/readonly/*` is GLOBAL_ADMIN-only and
               // enumerates 401/403).
               <Link
+                // Opened from /admin itself, the entry leads nowhere new, and
+                // saying so is one attribute.
+                aria-current={location.pathname === "/admin" ? "page" : undefined}
                 className="user-profile-admin"
                 onClick={(event) => {
                   // A modified click opens /admin in a new tab and leaves this

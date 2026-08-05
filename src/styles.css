@@ -162,6 +162,20 @@ textarea:disabled {
   background: var(--bg);
 }
 
+/* Reaches a screen reader, never a sighted user. For the case where the right
+   thing to draw is nothing at all but silence would be wrong. */
+.visually-hidden {
+  position: absolute;
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  margin: -1px;
+  padding: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .topbar,
 .board-topbar {
   display: flex;
@@ -963,18 +977,21 @@ h1 {
 
 /* The /admin body. Deliberately thin: TAS-155 replaces the placeholder it
    dresses, and the shell around it is the shared page shell, not this block. */
+/* Same shape as .projects-page, so the heading lands on the same x without
+   arithmetic — and, unlike a flex column, this actually scrolls. A flex column
+   shrinks its children instead: a table taller than the viewport rendered
+   squashed and fixed-height controls collapsed, which TAS-155 would have
+   inherited. */
 .admin-page {
-  display: flex;
-  /* 1024 = the project list's 980 content column plus its 22 side padding, so
-     moving between the two screens does not shift the heading sideways. */
-  width: 100%;
-  max-width: 1024px;
   flex: 1;
-  flex-direction: column;
-  align-items: flex-start;
   overflow: auto;
-  margin: 0 auto;
   padding: 34px 22px;
+}
+
+.admin-page > * {
+  max-width: 980px;
+  margin-right: auto;
+  margin-left: auto;
 }
 
 .admin-page h1 {
@@ -986,7 +1003,8 @@ h1 {
 }
 
 .admin-page p {
-  max-width: 560px;
+  /* §4.18's measure, not a new number: the same 13px explanatory paragraph. */
+  max-width: 340px;
   margin: 11px 0 0;
   color: var(--fg-2);
   font-size: 13px;
