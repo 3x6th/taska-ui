@@ -14,15 +14,6 @@ export interface LoginRedirectState {
 export const DEFAULT_SIGNED_IN_ROUTE = "/projects";
 
 /**
- * Marks the redirect that `/` performs into the default route, so the guard can
- * tell "the visitor opened the app" from "the visitor asked for the project
- * list". The two arrive at the same URL and only the source knows which is which.
- */
-export interface RootRedirectState {
-  bare?: boolean;
-}
-
-/**
  * The private-route guard (DESIGN.md §5.1). Wraps every screen that needs a
  * session; `*` (Page not found) and `/invite` stay outside it on purpose.
  *
@@ -36,14 +27,11 @@ export function RequireSession({ children }: { children: ReactNode }) {
   const location = useLocation();
 
   if (!taskaApi.hasSession()) {
-    // A bare visit to the app root lands here too, and sending `from` for it
-    // would make "/" claim the user asked for a particular page. Only the root
-    // redirect knows it is one, so it says so in `state` — a typed or linked
-    // /projects keeps its explanation, which matters because /projects is where
-    // the Not-found screen's own primary action points.
-    const bare = (location.state as RootRedirectState | null)?.bare === true;
-    const requested = location.pathname + location.search;
-    const from = bare ? undefined : requested;
+    // A bare visit to "/" lands here too, as the /projects it redirects into,
+    // and needs no special case: /projects is where a visitor with nothing
+    // specific in mind goes anyway, so returning them there is the same
+    // destination under a different name.
+    const from = location.pathname + location.search;
     return <Navigate to="/login" replace state={{ from } satisfies LoginRedirectState} />;
   }
 

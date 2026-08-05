@@ -27,15 +27,12 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const [newPassword, setNewPassword] = useState("");
   const noticeRef = useRef<HTMLParagraphElement>(null);
 
-  // The notice explains a navigation nobody asked for, so it only belongs over
-  // the sign-in form: "Your session expired. Sign in to continue." above a form
-  // headed "Activate account" describes neither.
-  const reason = redirect?.expired
-    ? "Your session expired. Sign in to continue."
-    : from
-      ? "Sign in to open that page."
-      : null;
-  const notice = mode === "signin" ? reason : null;
+  // Only the session that died without being asked needs explaining: a login
+  // form after clicking a private link surprises nobody, and a sentence there
+  // is one more thing to read on a screen that already asks for two. And the
+  // explanation only belongs over the sign-in form: "Your session expired. Sign
+  // in to continue." above a form headed "Activate account" describes neither.
+  const notice = mode === "signin" && redirect?.expired ? "Your session expired. Sign in to continue." : null;
 
   useEffect(() => {
     // The redirect happened without the user asking, and focus would otherwise

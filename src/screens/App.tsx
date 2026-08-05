@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { RedirectSignedIn } from "../components/RedirectSignedIn";
-import type { LoginRedirectState, RootRedirectState } from "../components/RequireSession";
+import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE, RequireSession } from "../components/RequireSession";
 import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
@@ -56,14 +56,7 @@ export function App() {
 
   return (
     <Routes>
-      {/* `bare` marks this as "opened the app", not "asked for the project
-          list": both end up at /projects and only this redirect can tell them
-          apart, so the guard reads the marker instead of guessing from the URL
-          (RequireSession). */}
-      <Route
-        path="/"
-        element={<Navigate to={DEFAULT_SIGNED_IN_ROUTE} replace state={{ bare: true } satisfies RootRedirectState} />}
-      />
+      <Route path="/" element={<Navigate to={DEFAULT_SIGNED_IN_ROUTE} replace />} />
       <Route
         path="/login"
         element={
