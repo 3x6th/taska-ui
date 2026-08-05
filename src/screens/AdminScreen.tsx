@@ -475,23 +475,29 @@ function AdminConsole() {
 }
 
 /**
- * The read-only endpoints may simply not be on this gateway yet — TAS-103 is
- * still in progress — so a failure here is a normal state of the world rather
- * than a broken screen, and saying which failure it was is more useful than a
- * generic apology.
+ * These three cases read very differently to the person looking at them, and
+ * conflating them wastes the one reader who can act: a refusal is about this
+ * account or this table, a server error is the gateway's own problem and worth
+ * reporting with its request id, and only a genuine transport failure is
+ * "could not be reached".
  */
 function AdminError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   const refused = isMissingOrForbidden(error);
+  const status = error instanceof Error ? (error as { status?: unknown }).status : undefined;
+  const serverBroke = typeof status === "number" && status >= 500;
   // Every error response carries X-Request-Id, and the gateway exposes it
-  // cross-origin. This screen's audience is the one person who will go and read
-  // the gateway log, so it is the one screen where showing it earns its space.
+  // cross-origin — confirmed on a live 500. This screen's audience is the one
+  // person who will go and read the gateway log, so it is the one screen where
+  // showing it earns its space.
   const requestId = error instanceof Error ? (error as { requestId?: unknown }).requestId : undefined;
   return (
     <div className="admin-note" role="alert">
       <p>
         {refused
           ? "The server refused this. Either this account is not a global admin as far as the gateway is concerned, or the table is not one it will serve."
-          : "The read-only admin API could not be reached."}
+          : serverBroke
+            ? "The gateway failed while reading this table. Nothing is wrong with what was asked for — this is a fault on the server, and the request id below is what identifies it in the gateway log."
+            : "The read-only admin API could not be reached."}
       </p>
       {error instanceof Error && error.message ? <p className="admin-error-detail">{error.message}</p> : null}
       {typeof requestId === "string" && requestId ? (

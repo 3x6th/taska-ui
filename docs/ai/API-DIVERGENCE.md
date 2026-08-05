@@ -288,21 +288,32 @@ it. Entries are deleted only when the compensating code is deleted.
 - **Removal:** the backend TODOs. Worth its own backend story;
   [TAS-103](https://jira.ozero.dev/browse/TAS-103) is the umbrella.
 
-### The read-only admin endpoints are deployed but have never answered us
+### The read-only rows endpoint 500s on a plain first-page read
 
 - **Endpoints:** `GET /api/v1/readonly/metadata` and
   `GET /api/v1/readonly/{service}/{table}`.
 - **Contract:** both arrived with backend `25d0cf7000e5`. `GLOBAL_ADMIN` only,
   and the first endpoints here to enumerate `401`, `403` and `404` separately
   instead of collapsing everything into `default`.
-- **Observed:** both routes exist on `api.taska.ozero.dev` and answer `401`
-  unauthenticated — not `404`, which an unknown route does return. So they are
-  deployed and authenticating. What has *not* happened is a successful `200`:
-  every response shape below is read from backend source, never from the wire,
-  because no one here has held a `GLOBAL_ADMIN` token.
+- **Observed 2026-08-06, signed in as a real `GLOBAL_ADMIN`** — the first time
+  either endpoint has answered this frontend:
+  - `GET /readonly/metadata` → **200**, and a much richer catalog than the mock
+    seeds: `workflow` (statuses, transitions, validator_rules,
+    workflow_bindings, workflows), `project` (outbox_events, project_members,
+    project_settings, projects), `notification` (email_delivery_attempts,
+    notification_preferences, notifications, processed_events), `issue`
+    (idempotency_keys, issue_attachments, issue_comments, issue_history,
+    issue_links, issues, outbox_events, project_counters), `admin`
+    (admin_audit_log), `auth` (credentials, invite_tokens, outbox_events,
+    refresh_tokens, user_avatars, users). It parses and renders correctly.
+  - `GET /readonly/workflow/statuses?page=1&pageSize=20` → **500**
+    `"Internal error"`, request id `c85c0694-7909-4a8a-b9be-a8c603cea2da`.
+    No sort, no filter, no unusual parameter — the simplest read the console can
+    issue.
   > An earlier version of this entry claimed the endpoints were probably not
-  > deployed and had the UI say so. That was wrong, and the error copy said
-  > "not deployed yet" when the real cause would be a 403 or a 5xx.
+  > deployed and had the UI say so. That was wrong twice over: they are
+  > deployed, and the failure that actually arrives is a 5xx, which the copy
+  > was calling "could not be reached".
 - **Compensation:** none that alters behaviour. `MockTaskaStore` seeds a catalog
   and rows so the console is clickable without a gateway — this repository's
   normal mock-first mode, not a workaround — and `rest` calls the real endpoints
@@ -314,14 +325,22 @@ it. Entries are deleted only when the compensating code is deleted.
   is treated as `equals`. Note the gateway *silently skips* an unrecognised
   operator, so a misspelling would return unfiltered rows rather than an error —
   which is why the spelling is pinned in `RestTaskaApi.test.ts`.
-- **Still unverified:** how a timestamp value is spelled in JSON (the backend
-  encodes dates as epoch **seconds**, losing sub-second precision, and whether
-  Jackson emits ISO or a bare number is unconfirmed); whether `X-Request-Id` is
-  present on 5xx as well as the 401 we observed; and whether `meta.service` /
-  `meta.table` echo the catalog's own spelling — see the fail-closed entry
-  below.
-- **Removal:** one authenticated `curl` of
-  `/api/v1/readonly/auth/users?email.contains=@` settles most of it.
+- **Settled by that observation:** `X-Request-Id` **is** exposed cross-origin on
+  a 5xx, not only on the 401 — the console displays it, which is how the id
+  above was captured. And the catalog's shape matches what the code expects.
+- **Still unverified**, because no table has yet returned rows: how a timestamp
+  is spelled in JSON (the backend encodes dates as epoch **seconds**, losing
+  sub-second precision, and whether Jackson emits ISO or a bare number is
+  unconfirmed); whether `meta.service` / `meta.table` echo the catalog's own
+  spelling — see the fail-closed entry below; and whether the 500 is specific to
+  `workflow.statuses` or hits every table.
+- **Compensation for the 500:** none, and none is appropriate — the frontend
+  does not work around a server fault. The console scopes the error to the
+  result area, so the table picker stays usable and another table can be tried,
+  and the copy now says plainly that this is the gateway's fault and not the
+  reader's network, with the request id to quote.
+- **Removal:** a backend fix. The request id above identifies the failure in the
+  gateway log.
 
 ### Masking depends on a join the contract does not guarantee
 

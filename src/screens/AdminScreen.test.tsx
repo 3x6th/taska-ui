@@ -393,3 +393,45 @@ describe("/admin console, when the catalog and the rows disagree", () => {
     expect(screen.getByRole("link", { name: "Back to projects" })).toBeVisible();
   });
 });
+
+/**
+ * Observed on the deployed gateway, 2026-08-06: the catalog loads and the rows
+ * call answers 500 with a request id. Those three cases read very differently
+ * to the person looking at them, so the copy has to tell them apart — calling a
+ * server fault "could not be reached" sends the one reader who can act looking
+ * at their own network.
+ */
+describe("/admin console error copy", () => {
+  beforeEach(() => {
+    releaseMe();
+    releaseRows();
+    setMetaMismatch(false);
+    setCurrentUser(admin);
+    window.localStorage.clear();
+  });
+
+  it("names a server fault as the server's, and shows the id that identifies it", async () => {
+    const boom = Object.assign(new Error("Internal error"), { status: 500, requestId: "c85c0694-7909-4a8a" });
+    failCatalog(boom);
+    renderAdmin();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/fault on the server/i);
+    expect(alert).toHaveTextContent("c85c0694-7909-4a8a");
+    expect(alert).not.toHaveTextContent(/could not be reached/i);
+  });
+
+  it("keeps 'could not be reached' for a failure that never got a response", async () => {
+    failCatalog(new Error("Failed to fetch"));
+    renderAdmin();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reached/i);
+  });
+
+  it("names a refusal as being about the account or the table", async () => {
+    failCatalog(Object.assign(new Error("Forbidden"), { status: 403 }));
+    renderAdmin();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/refused this/i);
+  });
+});
