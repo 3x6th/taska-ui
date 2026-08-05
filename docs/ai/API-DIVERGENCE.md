@@ -306,10 +306,23 @@ it. Entries are deleted only when the compensating code is deleted.
     issue_links, issues, outbox_events, project_counters), `admin`
     (admin_audit_log), `auth` (credentials, invite_tokens, outbox_events,
     refresh_tokens, user_avatars, users). It parses and renders correctly.
-  - `GET /readonly/workflow/statuses?page=1&pageSize=20` → **500**
-    `"Internal error"`, request id `c85c0694-7909-4a8a-b9be-a8c603cea2da`.
-    No sort, no filter, no unusual parameter — the simplest read the console can
-    issue.
+  - `GET /readonly/{service}/{table}?page=1&pageSize=20` → **500**
+    `"Internal error"` for **every table tried**, across services. First
+    captured on `workflow.statuses`, request id
+    `c85c0694-7909-4a8a-b9be-a8c603cea2da`. No sort, no filter, no unusual
+    parameter — the simplest read the console can issue.
+  - **So the console can list the catalog and never read a row.** Against the
+    deployed gateway the feature TAS-155 delivers is, today, non-functional
+    beyond its table picker. It works fully in `mock`.
+  - Probed directly with an admin token (2026-08-06): the 500 is
+    parameter-independent — no query at all, `page=1`, `pageSize=1`,
+    `pageSize=100` and `sort=id&order=asc` all give the identical body. Validation
+    upstream of it works (`page=0` → `400 INVALID_ARGUMENT`) and so does the
+    service lookup (`nosuchsvc/users` → `404 NOT_FOUND: Service not found`). But
+    a **valid** table and a **nonexistent** one fail identically
+    (`auth/no_such_table` → the same 500), which places the fault after the
+    service is resolved and before any table-specific work — the admin-service
+    call or the per-service datasource, not query building or column mapping.
   > An earlier version of this entry claimed the endpoints were probably not
   > deployed and had the UI say so. That was wrong twice over: they are
   > deployed, and the failure that actually arrives is a 5xx, which the copy
@@ -332,8 +345,8 @@ it. Entries are deleted only when the compensating code is deleted.
   is spelled in JSON (the backend encodes dates as epoch **seconds**, losing
   sub-second precision, and whether Jackson emits ISO or a bare number is
   unconfirmed); whether `meta.service` / `meta.table` echo the catalog's own
-  spelling — see the fail-closed entry below; and whether the 500 is specific to
-  `workflow.statuses` or hits every table.
+  spelling — see the fail-closed entry below. Every one of those needs a table
+  that actually returns rows, so they stay open until the 500 is fixed.
 - **Compensation for the 500:** none, and none is appropriate — the frontend
   does not work around a server fault. The console scopes the error to the
   result area, so the table picker stays usable and another table can be tried,
@@ -341,6 +354,49 @@ it. Entries are deleted only when the compensating code is deleted.
   reader's network, with the request id to quote.
 - **Removal:** a backend fix. The request id above identifies the failure in the
   gateway log.
+
+### Nothing in the real catalog is marked sensitive, and the columns that hold secrets are not the ones the masking config names
+
+- **Endpoint:** `GET /api/v1/readonly/metadata`
+- **Observed 2026-08-06** against the deployed gateway, with an admin token:
+  **zero** of the 28 tables' columns come back `sensitive: true`. Not one, in
+  any service.
+- **Why that is not merely cosmetic:** `admin-service`'s masking is driven by
+  the same config that sets this flag, and that config (read from backend source
+  at `25d0cf7000e5`) names `users.password_hash`, `users.token_hash`,
+  `users.secret_hash`, `users.refresh_token`, `users.access_token`. The real
+  schema has none of those: `users` holds no secret column at all, and the
+  secrets live one table over —
+  - `auth.credentials.secret_hash`
+  - `auth.invite_tokens.token_hash`
+  - `auth.refresh_tokens.token_hash`
+
+  So the allow-list points at columns that do not exist, and the columns that do
+  hold hashes are named nowhere.
+- **User-visible effect:** none *today*, only because every table read 500s
+  (entry above). The moment that 500 is fixed, the console will render those
+  hashes in clear, because it masks exactly what the catalog flags and the
+  catalog flags nothing.
+- **Compensation:** none is possible from the frontend. The UI cannot know a
+  column is a secret if the server does not say so, and guessing from column
+  names is exactly the kind of hidden rule this file exists to prevent. The
+  console's masking is correct and inert.
+- **Removal:** [TAS-104](https://jira.ozero.dev/browse/TAS-104), which owns
+  masking and is still To Do. This entry is the concrete column list it needs.
+- **Order of operations matters:** TAS-104 should land *before or with*
+  [TAS-156](https://jira.ozero.dev/browse/TAS-156). Fixing the 500 first opens
+  the tables while nothing is flagged.
+
+### `primaryKey` is null on every table
+
+- **Endpoint:** `GET /api/v1/readonly/metadata`
+- **Contract:** `TableMetadataDto.primaryKey` is a plain `string`.
+- **Observed:** null on all 28 tables.
+- **Compensation:** the console falls back to an `id` column and then to the row
+  index for React keys, so it renders correctly either way. Harmless here; it
+  would stop being harmless for anything that needs to address a row.
+- **Removal:** the backend populating it, or the contract admitting it is
+  optional.
 
 ### Masking depends on a join the contract does not guarantee
 
