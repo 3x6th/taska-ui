@@ -14,14 +14,15 @@ import { App } from "./App";
  * demand, so this runs the real routes against a fake `TaskaApi` rather than
  * rendering the screen in isolation.
  */
-const { fakeApi, setCurrentUser, holdMe, releaseMe } = vi.hoisted(() => {
-  const state: { user?: User; gate?: Promise<void>; release?: () => void } = {};
+const { fakeApi, setCurrentUser, failMe, holdMe, releaseMe } = vi.hoisted(() => {
+  const state: { user?: User; failure?: Error; gate?: Promise<void>; release?: () => void } = {};
 
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
     getCurrentUser: async () => {
       if (state.gate) await state.gate;
+      if (state.failure) throw state.failure;
       if (!state.user) throw new Error("the test did not say who is signed in");
       return state.user;
     },
@@ -33,6 +34,14 @@ const { fakeApi, setCurrentUser, holdMe, releaseMe } = vi.hoisted(() => {
     fakeApi: api as unknown as TaskaApi,
     setCurrentUser: (user: User) => {
       state.user = user;
+      state.failure = undefined;
+    },
+    // `GET /users/me` failing with something that is not a 401: a 5xx, a
+    // network drop, a CORS refusal — none of which end the session, so the
+    // screen is left deciding with no role in hand.
+    failMe: () => {
+      state.user = undefined;
+      state.failure = new Error("the profile request failed");
     },
     // Keeps `me` pending until `releaseMe()`, which is the only way to observe
     // what the screen renders before it settles.
@@ -101,6 +110,19 @@ describe("/admin", () => {
     renderAdmin();
 
     expect(await screen.findByRole("heading", { name: "Page not found" })).toBeVisible();
+  });
+
+  // A failed `me` reaches the screen as no data, exactly like a plain user, and
+  // is answered the same way on purpose: the screen never learned that this
+  // account is an admin, and an error state here would confirm the section
+  // exists to someone who may not be allowed to know (§4.18). The server stays
+  // the authority either way.
+  it("answers a profile that failed to load as not an admin", async () => {
+    failMe();
+    renderAdmin();
+
+    expect(await screen.findByRole("heading", { name: "Page not found" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Administration" })).not.toBeInTheDocument();
   });
 
   it("shows nothing at all until the profile answers, rather than flashing not found", async () => {

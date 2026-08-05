@@ -129,9 +129,14 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                   // page as it is, so the menu it was opened from stays open.
                   if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
                   setOpen(false);
-                  // Selecting an item closes the popover, which takes the
-                  // focused element with it; hand focus back to the trigger
-                  // rather than dropping it on <body> (§7).
+                  // Closing the popover unmounts the item that had focus, so it
+                  // goes back to the trigger (§7). What this actually covers is
+                  // the case where no route change follows — opening the menu
+                  // while already on /admin and choosing Administration. On a
+                  // real navigation the route swap unmounts this trigger a tick
+                  // later and focus ends up on <body> anyway; that is true of
+                  // every in-app link, not of this entry, and is recorded in
+                  // docs/ai/BACKLOG.md rather than patched here.
                   triggerRef.current?.focus();
                 }}
                 to="/admin"

@@ -27,7 +27,10 @@ test("a global admin finds the administration entry in the profile menu and it o
 
   await expect(page).toHaveURL(/\/admin$/);
   await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();
-  // Selecting an item closes the popover (§4.16).
+  // The route changed, so this proves the previous screen — popover and all —
+  // was replaced, not that selecting an item closes the popover (§4.16). That
+  // behaviour is pinned in src/components/UserProfileMenu.test.tsx, where
+  // nothing navigates away from under it.
   await expect(page.getByRole("dialog")).toHaveCount(0);
   // The same shell as the project list, and a way back out of it.
   await expect(page.getByRole("button", { name: "Open profile for Mark Lee" })).toBeVisible();

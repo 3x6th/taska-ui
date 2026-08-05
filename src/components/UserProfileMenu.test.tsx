@@ -113,7 +113,12 @@ describe("UserProfileMenu", () => {
     expect(entry.nextElementSibling).toBe(screen.getByRole("button", { name: "Log out" }));
   });
 
-  it("closes the menu and returns focus to the trigger when the entry is chosen", () => {
+  // Nothing unmounts the trigger here, and that is the case being pinned: the
+  // real app reaches it by choosing Administration while already on /admin, so
+  // the popover closes without a route change. When the route does change,
+  // focus lands on <body> a tick later no matter what this component does —
+  // app-wide behaviour, recorded in docs/ai/BACKLOG.md.
+  it("closes the popover on selection, keeping focus on the trigger when no navigation follows", () => {
     renderMenu({ user: { ...anna, globalRole: "GLOBAL_ADMIN" }, loading: false, onLogout: vi.fn() });
 
     const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
@@ -121,8 +126,8 @@ describe("UserProfileMenu", () => {
     fireEvent.click(screen.getByRole("link", { name: "Administration" }));
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    // The element that had focus has just been unmounted with the popover, so
-    // without this the keyboard would be left on <body> (§7).
+    // The element that had focus went with the popover, so without the handoff
+    // the keyboard would be left on <body> (§7).
     expect(trigger).toHaveFocus();
   });
 
