@@ -38,6 +38,10 @@ const WEB_PROJECT_ID = "58e93598-ea1a-460d-9d72-f1f201c310e2";
 const MOB_PROJECT_ID = "f315c5cf-3333-47d1-8d22-79f07c2ec99b";
 const OPS_PROJECT_ID = "64d70a2b-72b0-4866-bdbf-4f71a416f9e4";
 
+// Mirrors how RestTaskaApi keeps its tokens in localStorage, so a reload behaves
+// the same in both modes: the id of the signed-in user, nothing secret.
+const SESSION_KEY = "taska.mockSession";
+
 const WORKFLOW_ID = "11111111-1111-1111-1111-111111111111";
 const TODO_STATUS_ID = "22222222-2222-2222-2222-222222222222";
 const IN_PROGRESS_STATUS_ID = "33333333-3333-3333-3333-333333333333";
@@ -439,6 +443,17 @@ export class MockTaskaStore {
     this.currentUserId = ANNA_ID;
   }
 
+  /**
+   * Adopt a session persisted by a previous page load. A stored id that no
+   * longer names an active user is not trusted — the caller drops it.
+   */
+  restoreSession(userId: string): boolean {
+    const user = this.users.find((item) => item.id === userId);
+    if (!user || user.status !== "ACTIVE") return false;
+    this.currentUserId = user.id;
+    return true;
+  }
+
   currentUser(): User {
     return this.getUser(this.currentUserId);
   }
@@ -814,13 +829,34 @@ export class MockTaskaStore {
   }
 }
 
+/**
+ * Deliberate limitation: only the session is gated here. The store's data
+ * methods stay readable without one, because the mock doubles as the unit-test
+ * fixture (MockTaskaApi.test.ts reads projects and issues without signing in)
+ * and as the seed the UI is developed against. The route guard is what this
+ * story is about; making the store throw would be a different, larger change.
+ */
 export class MockTaskaApi implements TaskaApi {
-  constructor(private readonly store = new MockTaskaStore()) {}
-
-  async login(input: LoginInput): Promise<AuthTokens> {
-    return wait(this.store.login(input));
+  constructor(private readonly store = new MockTaskaStore()) {
+    // The session has to survive a reload the way the REST tokens do, or the
+    // route guard would bounce every full page load back to the login form.
+    const userId = window.localStorage.getItem(SESSION_KEY);
+    if (userId && !this.store.restoreSession(userId)) {
+      window.localStorage.removeItem(SESSION_KEY);
+    }
   }
 
+  async login(input: LoginInput): Promise<AuthTokens> {
+    const tokens = this.store.login(input);
+    window.localStorage.setItem(SESSION_KEY, this.store.currentUser().id);
+    return wait(tokens);
+  }
+
+  // No session is opened here, on purpose: `POST /auth/invitations/accept`
+  // answers 204 with no tokens, so `rest` cannot produce one either and the two
+  // modes would disagree about whether an activated user is signed in. How an
+  // activated user *does* get a session is a hole in the contract — recorded in
+  // docs/ai/API-DIVERGENCE.md.
   async acceptInvitation(input: AcceptInvitationInput): Promise<void> {
     this.store.acceptInvitation(input);
     await wait(null);
@@ -831,11 +867,23 @@ export class MockTaskaApi implements TaskaApi {
   }
 
   async logout(): Promise<void> {
+    window.localStorage.removeItem(SESSION_KEY);
     await wait(null);
   }
 
   async getCurrentUser(): Promise<User> {
     return wait(this.store.currentUser());
+  }
+
+  hasSession(): boolean {
+    return window.localStorage.getItem(SESSION_KEY) !== null;
+  }
+
+  // Implemented, never fired: the mock hands out tokens that never expire and
+  // has no server to reject them, so there is no moment at which a session dies
+  // on its own. Signing out is not an expiry and does not belong here either.
+  onSessionExpired(_listener: () => void): () => void {
+    return () => {};
   }
 
   async listProjects(): Promise<Project[]> {

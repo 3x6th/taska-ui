@@ -74,6 +74,18 @@ export interface TaskaApi {
   logout(): Promise<void>;
   getCurrentUser(): Promise<User>;
 
+  /**
+   * Synchronous by design: the route guard reads it during render, so it cannot
+   * wait on a promise. It answers "does this client hold credentials", not "is
+   * the server still willing to accept them" — the server stays authoritative.
+   */
+  hasSession(): boolean;
+  /**
+   * Fires when the server rejected the session and it could not be refreshed.
+   * Returns an unsubscribe.
+   */
+  onSessionExpired(listener: () => void): () => void;
+
   listProjects(): Promise<Project[]>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;

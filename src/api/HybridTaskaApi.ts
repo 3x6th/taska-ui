@@ -55,6 +55,14 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.getCurrentUser();
   }
 
+  hasSession(): boolean {
+    return this.live.hasSession();
+  }
+
+  onSessionExpired(listener: () => void): () => void {
+    return this.live.onSessionExpired(listener);
+  }
+
   listProjects(): Promise<Project[]> {
     return this.live.listProjects();
   }

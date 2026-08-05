@@ -51,34 +51,47 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
         aria-haspopup="dialog"
         aria-label={user ? `Open profile for ${user.displayName}` : "Open profile"}
         className="user-profile-trigger"
-        disabled={loading || !user}
+        // Enabled as soon as the query settles, whether or not it produced a
+        // user. Requiring `user` meant that a profile which failed to load —
+        // a 5xx, a network drop, a CORS refusal, none of which clear the
+        // tokens — took Log out down with it, and with /login bouncing anyone
+        // holding tokens the only way out was to clear site data.
+        disabled={loading}
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
         <Avatar user={user} label="Current user" loading={loading} size="md" />
       </button>
 
-      {open && user ? (
+      {open ? (
         <section aria-label="Current user profile" className="user-profile-popover" id={popoverId} role="dialog">
-          <header className="user-profile-head">
-            <Avatar user={user} size="lg" />
-            <div>
-              <strong>{user.displayName}</strong>
-              <span>@{user.login}</span>
-            </div>
-          </header>
-          <dl className="user-profile-details">
-            <div>
-              <dt>Email</dt>
-              <dd>{user.email}</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd>
-                <span className={`user-status is-${user.status.toLowerCase()}`}>{statusLabels[user.status]}</span>
-              </dd>
-            </div>
-          </dl>
+          {user ? (
+            <>
+              <header className="user-profile-head">
+                <Avatar user={user} size="lg" />
+                <div>
+                  <strong>{user.displayName}</strong>
+                  <span>@{user.login}</span>
+                </div>
+              </header>
+              <dl className="user-profile-details">
+                <div>
+                  <dt>Email</dt>
+                  <dd>{user.email}</dd>
+                </div>
+                <div>
+                  <dt>Status</dt>
+                  <dd>
+                    <span className={`user-status is-${user.status.toLowerCase()}`}>{statusLabels[user.status]}</span>
+                  </dd>
+                </div>
+              </dl>
+            </>
+          ) : (
+            // Nothing invented about who this is — only that we could not find
+            // out, and that leaving is still possible.
+            <p className="user-profile-unknown">Your profile could not be loaded.</p>
+          )}
           <div className="user-profile-actions">
             <button className="user-profile-logout" disabled={loggingOut} onClick={onLogout} type="button">
               <LogOut aria-hidden="true" size={15} />

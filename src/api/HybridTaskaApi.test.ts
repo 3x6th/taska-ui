@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HybridTaskaApi } from "./HybridTaskaApi";
 import { MockTaskaApi } from "./mock/MockTaskaApi";
 
@@ -10,6 +10,13 @@ import { MockTaskaApi } from "./mock/MockTaskaApi";
  */
 describe("HybridTaskaApi", () => {
   const liveApi = () => new MockTaskaApi();
+
+  // Since TAS-150 the mock reads a persisted session out of localStorage in its
+  // constructor, so the fixture is no longer stateless: a session left behind by
+  // another file would decide which user these cases run as.
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
 
   it("delegates everything except membership and member reads", async () => {
     const live = liveApi();
