@@ -119,7 +119,8 @@ Before a PR:
 2. capture browser evidence when UI changed
 3. give the exact diff and evidence to `release-reviewer`
 4. fix all blocking findings
-5. rerun checks
+5. rerun checks, then get a fresh verdict from every role whose blocking
+   findings were fixed
 6. push and open the PR
 7. the orchestrator may merge once available checks are green and the
    reviewer verdicts have no unresolved blockers — the owner has delegated
@@ -127,6 +128,31 @@ Before a PR:
 
 Do not fake a same-account GitHub approval. The written reviewer verdict is
 the independent evidence.
+
+### A fix is not reviewed by the agent that ordered it
+
+The second half of step 5 is the one that gets skipped, because by then the
+orchestrator has read the findings, directed the fixes, and looked at the
+result — and that feels like review. It is not: the orchestrator and the
+builder are the two parties the finding was about. The role that raised a
+blocker re-reads its own findings against the fix diff and says whether they
+are closed. That pass is narrow by construction — one small diff and a list of
+specific questions, not a second audit — so its cost is nothing like the first
+one, and cost is not a reason to skip it.
+
+How much verdict a change needs is decided by its class, never by how small
+the diff in front of you looks:
+
+| Change | Verdict before merge |
+| --- | --- |
+| First submission of a story | Full pass by every role whose zone it touches |
+| Fixes to blocking findings | Re-verdict from the role that raised them, scoped to those findings |
+| Deletion, documentation, configuration | `release-reviewer` in narrow scope |
+
+Skipping is allowed and is sometimes right. Skipping silently is not: a PR
+carrying no verdict says so in its own body, in words, so the owner is
+choosing rather than assuming. An orchestrator judging its own work too small
+to review is the failure this table exists to prevent.
 
 There is one environment. The deployed site is the team's own working stand —
 no external users yet — so shipping mock-backed features there for the team
