@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { LogOut } from "lucide-react";
-import type { User, UserStatus } from "../domain/types";
+import type { GlobalRole, User, UserStatus } from "../domain/types";
 import { Avatar } from "./Avatar";
 
 interface UserProfileMenuProps {
@@ -14,6 +14,12 @@ const statusLabels: Record<UserStatus, string> = {
   ACTIVE: "Active",
   BLOCKED: "Blocked",
   INVITED: "Invited",
+};
+
+// The account-wide role, not the project one. It is shown, never acted on.
+const globalRoleLabels: Record<GlobalRole, string> = {
+  USER: "User",
+  GLOBAL_ADMIN: "Global admin",
 };
 
 export function UserProfileMenu({ user, loading = false, loggingOut = false, onLogout }: UserProfileMenuProps) {
@@ -85,6 +91,15 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                     <span className={`user-status is-${user.status.toLowerCase()}`}>{statusLabels[user.status]}</span>
                   </dd>
                 </div>
+                {/* A gateway that does not state the role gets no row at all:
+                    "Unknown" would read as a fact about the account rather than
+                    about the response. */}
+                {user.globalRole ? (
+                  <div>
+                    <dt>Role</dt>
+                    <dd>{globalRoleLabels[user.globalRole]}</dd>
+                  </div>
+                ) : null}
               </dl>
             </>
           ) : (

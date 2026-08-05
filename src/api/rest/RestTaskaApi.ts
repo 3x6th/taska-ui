@@ -12,6 +12,7 @@ import type {
 } from "../TaskaApi";
 import { SessionExpiredSignal } from "../session";
 import type {
+  GlobalRole,
   Issue,
   IssueComment,
   IssueType,
@@ -22,6 +23,7 @@ import type {
   ProjectMember,
   ProjectMembership,
   User,
+  UserStatus,
   Workflow,
   IssueHistoryEvent,
 } from "../../domain/types";
@@ -36,6 +38,21 @@ interface ApiErrorBody {
     message: string;
     requestId?: string;
   };
+}
+
+// GET /users/me answers with ValidateAccessTokenResponseDto. `globalRole` is
+// read as `unknown` rather than as the enum: the field is optional on older
+// deployments, its contract includes the proto zero value UNSPECIFIED, and a
+// backend is free to grow values this build has never heard of. Narrowing it
+// here is what keeps an unrecognised string out of the UI.
+interface RestUser {
+  id: string;
+  login: string;
+  email: string;
+  displayName: string;
+  status: UserStatus;
+  color?: string;
+  globalRole?: unknown;
 }
 
 type RestIssue = Omit<Issue, "assigneeId" | "deletedAt"> & {
@@ -156,8 +173,9 @@ export class RestTaskaApi implements TaskaApi {
     this.clearTokens();
   }
 
-  getCurrentUser(): Promise<User> {
-    return this.request<User>("/users/me");
+  async getCurrentUser(): Promise<User> {
+    const response = await this.request<RestUser>("/users/me");
+    return this.toUser(response);
   }
 
   hasSession(): boolean {
@@ -442,6 +460,18 @@ export class RestTaskaApi implements TaskaApi {
     return globalThis.crypto?.randomUUID?.() ?? `taska-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
+  private toUser(user: RestUser): User {
+    return {
+      id: user.id,
+      login: user.login,
+      email: user.email,
+      displayName: user.displayName,
+      status: user.status,
+      color: user.color,
+      globalRole: toGlobalRole(user.globalRole),
+    };
+  }
+
   private toIssue(issue: RestIssue): Issue {
     return {
       ...issue,
@@ -525,6 +555,17 @@ export class RestTaskaApi implements TaskaApi {
     }
     return data as T;
   }
+}
+
+/**
+ * The only two roles the domain knows. Everything else — the field missing, the
+ * contract's UNSPECIFIED zero value, a role added after this build, a number
+ * where a string was promised — means the same thing: the server did not state
+ * a role we can act on, so we say we do not know instead of passing the raw
+ * value up for a component to render or compare against.
+ */
+function toGlobalRole(value: unknown): GlobalRole | undefined {
+  return value === "USER" || value === "GLOBAL_ADMIN" ? value : undefined;
 }
 
 async function mapWithConcurrency<T, R>(

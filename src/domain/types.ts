@@ -1,4 +1,14 @@
 export type UserStatus = "INVITED" | "ACTIVE" | "BLOCKED";
+/**
+ * The account-wide role from `GET /users/me`, not a project role — `ProjectRole`
+ * below is the per-project one and the two never substitute for each other.
+ *
+ * The contract's third value, `UNSPECIFIED`, is deliberately not modelled: it is
+ * a proto-style zero value meaning "not stated", so it is normalised away in the
+ * API layer and reaches the domain as a missing `globalRole`, exactly like a
+ * gateway that does not send the field at all.
+ */
+export type GlobalRole = "USER" | "GLOBAL_ADMIN";
 export type ProjectRole = "ADMIN" | "MEMBER" | "VIEWER";
 export type IssueType = "TASK" | "BUG" | "STORY";
 export type IssuePriority = "LOW" | "MEDIUM" | "HIGH";
@@ -24,6 +34,10 @@ export interface User {
   displayName: string;
   status: UserStatus;
   color?: string;
+  // Optional because the deployed gateway may not carry the field yet, and
+  // because UNSPECIFIED collapses to the same absence. Never inferred from the
+  // JWT, and it grants nothing on its own — the server stays authoritative.
+  globalRole?: GlobalRole;
 }
 
 export interface Project {
