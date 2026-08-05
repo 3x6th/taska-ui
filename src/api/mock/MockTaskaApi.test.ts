@@ -198,4 +198,89 @@ describe("MockTaskaApi", () => {
       expect(after.items).toHaveLength(0);
     });
   });
+  describe("read-only admin", () => {
+    it("seeds a catalog whose tables are all readable", async () => {
+      const catalog = await api.getAdminCatalog();
+
+      expect(catalog.services.length).toBeGreaterThan(1);
+      for (const service of catalog.services) {
+        for (const table of service.tables) {
+          const result = await api.listAdminRows({ service: service.name, table: table.name });
+          // The seed exists so the console is clickable without a gateway; an
+          // advertised table that answers nothing would defeat that.
+          expect(result.rows.length).toBeGreaterThan(0);
+          expect(result.meta.columns).toEqual(table.columns.map((column) => column.name));
+        }
+      }
+    });
+
+    it("marks at least one column sensitive, so masking is reachable without a gateway", async () => {
+      const catalog = await api.getAdminCatalog();
+      const sensitive = catalog.services
+        .flatMap((service) => service.tables)
+        .flatMap((table) => table.columns)
+        .filter((column) => column.sensitive);
+
+      expect(sensitive.length).toBeGreaterThan(0);
+    });
+
+    it("answers an unknown table the way the gateway does, rather than with an empty page", async () => {
+      await expect(api.listAdminRows({ service: "auth", table: "no_such_table" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("pages, and reports the totals the pager is drawn from", async () => {
+      const first = await api.listAdminRows({ service: "admin", table: "audit_log", page: 1, pageSize: 20 });
+
+      expect(first.rows).toHaveLength(20);
+      expect(first.pagination.totalRows).toBeGreaterThan(20);
+      expect(first.pagination.hasPrev).toBe(false);
+      expect(first.pagination.hasNext).toBe(true);
+
+      const last = await api.listAdminRows({
+        service: "admin",
+        table: "audit_log",
+        page: first.pagination.totalPages,
+        pageSize: 20,
+      });
+
+      expect(last.pagination.hasNext).toBe(false);
+      expect(last.rows[0]).not.toEqual(first.rows[0]);
+    });
+
+    it("sorts both ways", async () => {
+      const query = { service: "admin" as const, table: "audit_log", sort: "id", pageSize: 100 };
+      const asc = await api.listAdminRows({ ...query, order: "asc" });
+      const desc = await api.listAdminRows({ ...query, order: "desc" });
+
+      expect(asc.rows[0]).not.toEqual(desc.rows[0]);
+      expect(asc.rows[0]).toEqual(desc.rows[desc.rows.length - 1]);
+    });
+
+    it("applies each filter operator", async () => {
+      const contains = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        filters: [{ column: "email", operator: "contains", value: "anna@" }],
+      });
+      expect(contains.rows).toHaveLength(1);
+
+      const equals = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        filters: [{ column: "global_role", operator: "eq", value: "GLOBAL_ADMIN" }],
+      });
+      expect(equals.rows).toHaveLength(1);
+
+      const none = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        filters: [{ column: "email", operator: "contains", value: "nobody-here" }],
+      });
+      // An empty result is a real answer, not an error.
+      expect(none.rows).toHaveLength(0);
+      expect(none.pagination.totalRows).toBe(0);
+    });
+  });
 });

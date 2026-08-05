@@ -264,6 +264,38 @@ it. Entries are deleted only when the compensating code is deleted.
   no-access case reachable; [TAS-141](https://jira.ozero.dev/browse/TAS-141)
   is where the contract should name the error codes.
 
+### The read-only admin endpoints exist in the contract, not yet on the gateway
+
+- **Endpoints:** `GET /api/v1/readonly/metadata` and
+  `GET /api/v1/readonly/{service}/{table}`.
+- **Contract:** both arrived with backend `25d0cf7000e5`. `GLOBAL_ADMIN` only,
+  and notably the first endpoints here to enumerate `401`, `403` and `404`
+  separately instead of collapsing everything into `default`.
+- **Observed:** nothing. [TAS-103](https://jira.ozero.dev/browse/TAS-103), the
+  gateway story that implements them, is still In Progress, so a deployed
+  gateway may answer 404 for both paths.
+- **Compensation:** none that alters behaviour. `MockTaskaStore` seeds a catalog
+  and rows so the console is clickable without a gateway — this repository's
+  normal mock-first mode, not a workaround — and `rest` calls the real endpoints
+  and surfaces whatever they answer. The console renders an error state, naming
+  the gateway's own wording, rather than an empty one, so "not deployed yet"
+  cannot read as "no data".
+- **User-visible effect:** in `hybrid` and `rest` against today's gateway the
+  console shows that error. In `mock` it works fully.
+- **Unverified, and the part most likely to bite:** the filter syntax
+  (`column`, `column.contains`, `column.from`, `column.to`) is specified in
+  prose and a free-form `additionalProperties` object — no schema constrains it,
+  so a mismatch returns the *wrong rows* rather than an error. It is pinned in
+  `RestTaskaApi.test.ts` against the contract's own examples, which is a test of
+  our reading, not of the server's behaviour. Re-check against the running
+  service the moment TAS-103 ships.
+- **Also unverified:** whether the gateway rejects or ignores a `sort` column
+  outside `sortableColumns`, and whether `sensitive` columns are withheld
+  server-side or merely flagged. The console masks flagged columns on the
+  client; if the server sends the value, it is on the wire regardless of what
+  is drawn (TAS-104 is the backend half).
+- **Removal:** [TAS-103](https://jira.ozero.dev/browse/TAS-103).
+
 ---
 
 ## Closed

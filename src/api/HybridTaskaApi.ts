@@ -11,6 +11,9 @@ import type {
   UpdateIssueInput,
 } from "./TaskaApi";
 import type {
+  AdminCatalog,
+  AdminRows,
+  AdminRowsQuery,
   Issue,
   IssueComment,
   IssueType,
@@ -167,5 +170,17 @@ export class HybridTaskaApi implements TaskaApi {
 
   markAllNotificationsRead(): Promise<{ updatedCount: number }> {
     return this.live.markAllNotificationsRead();
+  }
+
+  // Nothing to synthesise: the admin endpoints exist in the contract, and the
+  // compensation this class carries is about project membership, not about
+  // these. If the gateway has not deployed them yet the caller sees that,
+  // which is the honest answer (docs/ai/API-DIVERGENCE.md).
+  getAdminCatalog(): Promise<AdminCatalog> {
+    return this.live.getAdminCatalog();
+  }
+
+  listAdminRows(query: AdminRowsQuery): Promise<AdminRows> {
+    return this.live.listAdminRows(query);
   }
 }

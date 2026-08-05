@@ -281,3 +281,146 @@ describe("RestTaskaApi current user", () => {
     });
   });
 });
+
+/**
+ * The read-only admin endpoints (TAS-155). The filter syntax is the part worth
+ * pinning: the contract specifies it in prose and a free-form
+ * `additionalProperties` object, so nothing validates it and a drift would
+ * silently return the wrong rows rather than fail.
+ */
+describe("RestTaskaApi read-only admin", () => {
+  // `_input` exists only so the stubs below declare the parameter they are
+  // asserted on; without it `mock.calls[0][0]` is not typed.
+  const answer = (body: unknown, _input?: string) =>
+    ({
+      status: 200,
+      ok: true,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const rowsBody = {
+    data: [{ id: "1", email: "a@example.com" }],
+    pagination: { currentPage: 2, pageSize: 20, totalRows: 41, totalPages: 3, hasNext: true, hasPrev: true },
+    meta: { service: "auth", table: "users", columns: ["id", "email"], sortableColumns: ["id"], filterableColumns: [] },
+  };
+
+  /** Runs a query and hands back the URL that actually went out. */
+  const urlFor = async (query: Parameters<RestTaskaApi["listAdminRows"]>[0], body: unknown = rowsBody) => {
+    const fetchStub = vi.fn(async (input: string) => answer(body, input));
+    vi.stubGlobal("fetch", fetchStub);
+    await new RestTaskaApi().listAdminRows(query);
+    return new URL(fetchStub.mock.calls[0][0], "http://localhost");
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("asks for the catalog at the contract's path", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer({ services: [] }, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await expect(new RestTaskaApi().getAdminCatalog()).resolves.toEqual({ services: [] });
+    expect(fetchStub.mock.calls[0][0]).toContain("/readonly/metadata");
+  });
+
+  it("renames the wire's `data` to `rows` and passes pagination and meta through", async () => {
+    const fetchStub = vi.fn(async () => answer(rowsBody));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().listAdminRows({ service: "auth", table: "users" });
+
+    expect(result.rows).toEqual([{ id: "1", email: "a@example.com" }]);
+    expect(result.pagination.totalRows).toBe(41);
+    expect(result.meta.columns).toEqual(["id", "email"]);
+  });
+
+  it("survives a response that omits data and the meta lists", async () => {
+    const result = await (async () => {
+      const fetchStub = vi.fn(async () =>
+        answer({ pagination: rowsBody.pagination, meta: { service: "auth", table: "users" } }),
+      );
+      vi.stubGlobal("fetch", fetchStub);
+      return new RestTaskaApi().listAdminRows({ service: "auth", table: "users" });
+    })();
+
+    // Nothing declares these required in the contract, and a table cannot draw
+    // a header from `undefined`.
+    expect(result.rows).toEqual([]);
+    expect(result.meta.columns).toEqual([]);
+    expect(result.meta.sortableColumns).toEqual([]);
+    expect(result.meta.filterableColumns).toEqual([]);
+  });
+
+  it("puts the service and table in the path and the paging in the query", async () => {
+    const url = await urlFor({ service: "auth", table: "users", page: 2, pageSize: 20 });
+
+    expect(url.pathname).toContain("/readonly/auth/users");
+    expect(url.searchParams.get("page")).toBe("2");
+    expect(url.searchParams.get("pageSize")).toBe("20");
+  });
+
+  it("sends order only alongside a sort column", async () => {
+    const sorted = await urlFor({ service: "auth", table: "users", sort: "email", order: "desc" });
+    expect(sorted.searchParams.get("sort")).toBe("email");
+    expect(sorted.searchParams.get("order")).toBe("desc");
+
+    const unsorted = await urlFor({ service: "auth", table: "users", order: "desc" });
+    expect(unsorted.searchParams.has("sort")).toBe(false);
+  });
+
+  it.each([
+    ["eq", "status", "status", "active"],
+    ["contains", "email", "email.contains", "@gmail.com"],
+    ["from", "created_at", "created_at.from", "2026-01-01T00:00:00Z"],
+    ["to", "created_at", "created_at.to", "2026-12-31T23:59:59Z"],
+  ] as const)("spells the %s filter as %s -> %s", async (operator, column, expectedKey, value) => {
+    const url = await urlFor({
+      service: "auth",
+      table: "users",
+      filters: [{ column, operator, value }],
+    });
+
+    expect(url.searchParams.get(expectedKey)).toBe(value);
+  });
+
+  it("treats an empty filter value as no filter rather than as matching empty", async () => {
+    const url = await urlFor({
+      service: "auth",
+      table: "users",
+      filters: [{ column: "email", operator: "contains", value: "" }],
+    });
+
+    expect(url.searchParams.has("email.contains")).toBe(false);
+  });
+
+  it("refuses to let a filter overwrite the paging and sorting keys", async () => {
+    // The server owns the column names, so a table with a column called `page`
+    // is the server's prerogative — and filtering on it must not silently ask
+    // for a different page than the one requested.
+    const url = await urlFor({
+      service: "admin",
+      table: "audit_log",
+      page: 3,
+      sort: "created_at",
+      filters: [
+        { column: "page", operator: "eq", value: "99" },
+        { column: "sort", operator: "eq", value: "nonsense" },
+      ],
+    });
+
+    expect(url.searchParams.get("page")).toBe("3");
+    expect(url.searchParams.get("sort")).toBe("created_at");
+  });
+
+  it("escapes a service or table name rather than letting it reshape the path", async () => {
+    const url = await urlFor({ service: "auth", table: "../../users" });
+
+    expect(url.pathname).not.toContain("/../");
+  });
+});

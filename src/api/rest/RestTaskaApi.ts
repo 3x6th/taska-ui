@@ -12,6 +12,11 @@ import type {
 } from "../TaskaApi";
 import { SessionExpiredSignal } from "../session";
 import type {
+  AdminCatalog,
+  AdminPagination,
+  AdminRows,
+  AdminRowsMeta,
+  AdminRowsQuery,
   GlobalRole,
   Issue,
   IssueComment,
@@ -53,6 +58,16 @@ interface RestUser {
   status: UserStatus;
   color?: string;
   globalRole?: unknown;
+}
+
+/** Paging and sorting own these keys; a filter may not take them. */
+const RESERVED_QUERY_KEYS = new Set(["page", "pageSize", "sort", "order"]);
+
+/** `GET /readonly/{service}/{table}` — `data` on the wire, `rows` in the domain. */
+interface RestAdminRows {
+  data?: Record<string, unknown>[];
+  pagination: AdminPagination;
+  meta: AdminRowsMeta;
 }
 
 type RestIssue = Omit<Issue, "assigneeId" | "deletedAt"> & {
@@ -395,6 +410,50 @@ export class RestTaskaApi implements TaskaApi {
     }
 
     return { updatedCount };
+  }
+
+  getAdminCatalog(): Promise<AdminCatalog> {
+    return this.request<AdminCatalog>("/readonly/metadata");
+  }
+
+  listAdminRows(query: AdminRowsQuery): Promise<AdminRows> {
+    const search = new URLSearchParams();
+    if (query.page !== undefined) search.set("page", String(query.page));
+    if (query.pageSize !== undefined) search.set("pageSize", String(query.pageSize));
+    if (query.sort) search.set("sort", query.sort);
+    if (query.order) search.set("order", query.order);
+
+    for (const filter of query.filters ?? []) {
+      // Empty means "no filter", not "match the empty string" — an input the
+      // user cleared must not narrow the table to nothing.
+      if (filter.value === "") continue;
+      const key = filter.operator === "eq" ? filter.column : `${filter.column}.${filter.operator}`;
+      // Filters share the query string with the paging and sorting keys, so a
+      // column genuinely called `page` or `sort` would silently overwrite them
+      // and the table would answer a question nobody asked. The server owns the
+      // column names, so this is not hypothetical — drop the collision instead
+      // of corrupting the request.
+      if (RESERVED_QUERY_KEYS.has(key)) continue;
+      search.set(key, filter.value);
+    }
+
+    return this.request<RestAdminRows>(
+      `/readonly/${this.segment(query.service)}/${this.segment(query.table)}${this.query(search)}`,
+    ).then((response) => ({
+      // `data` on the wire, `rows` in the domain: "data" says nothing at the
+      // call site, and every field of this response is data.
+      rows: response.data ?? [],
+      pagination: response.pagination,
+      meta: {
+        ...response.meta,
+        // The contract declares none of these as required, and the table cannot
+        // render a header from a missing list. An empty one is honest — no
+        // columns stated — and the screen already handles it.
+        columns: response.meta?.columns ?? [],
+        sortableColumns: response.meta?.sortableColumns ?? [],
+        filterableColumns: response.meta?.filterableColumns ?? [],
+      },
+    }));
   }
 
   private setTokens(tokens: AuthTokens) {
