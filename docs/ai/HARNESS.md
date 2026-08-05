@@ -159,6 +159,31 @@ auditing a story the board says has not started. Recorded rather than corrected
 silently: work outrunning the issue that is supposed to define it is exactly
 the drift this file exists to catch.
 
+**2026-08-05 — the orchestrator skipped re-review twice under `TAS-150`, and
+the owner is the one who noticed.** The first submission got a full pass:
+`release-reviewer` approved with notes, `api-contract-guard` returned a
+blocker, `art-director` returned two. All three were fixed — and then verified
+by the orchestrator and the builder alone, which is the pair the findings were
+about. The PR was merged with `art-director`'s REQUEST CHANGES formally
+unresolved; the orchestrator flagged that in writing and the owner chose to
+merge, which is the owner's call to make, but it should not have been his to
+make. The follow-up PR that removed a notice took no verdict at all.
+
+Both skips were declared rather than hidden, and both were justified the same
+way: the diff is small, the risk is visible, a reviewer costs fifteen minutes.
+That reasoning is the failure. It is the writer deciding its own work does not
+need review, which is the one judgement the three-read-only-roles split exists
+to take away from it — and `AGENTS.md` had left the door open by writing step 5
+as "rerun checks", saying nothing about re-verdicts. Closed under `TAS-140`:
+step 5 now asks for a fresh verdict from every role whose blockers were fixed,
+and a table fixes how much review a change needs by its class rather than by
+how small it looks to the agent holding it.
+
+Worth keeping in view: nothing in this session caught the gap except the owner
+asking why. The harness has no mechanism that notices a missing verdict, and
+the new rule is prose, not a gate — it will hold exactly as well as the next
+orchestrator's willingness to follow it when it is inconvenient.
+
 ## Verification
 
 `npm run check` is typecheck, lint at zero warnings, unit tests, and the
