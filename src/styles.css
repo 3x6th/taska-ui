@@ -1103,9 +1103,36 @@ h1 {
   min-height: 0;
 }
 
+/* The crumb sits on its own line above the title; the read-only marker rides on
+   the title's baseline at the far end of the same row. */
 .admin-section-head {
+  display: grid;
   flex: none;
+  align-items: baseline;
+  grid-template-areas:
+    "crumb ."
+    "title marker";
+  grid-template-columns: 1fr auto;
   padding: 22px 22px 13px;
+}
+
+.admin-crumb {
+  margin: 0 0 1px;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-weight: 550;
+  grid-area: crumb;
+}
+
+.admin-readonly {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0;
+  padding: 2px 7px;
+  color: var(--fg-3);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  grid-area: marker;
 }
 
 .admin-section-title {
@@ -1113,6 +1140,7 @@ h1 {
   color: var(--fg);
   font-size: 22px;
   font-weight: 700;
+  grid-area: title;
   letter-spacing: -0.025em;
 }
 
@@ -1557,6 +1585,28 @@ h1 {
 /* The request id is on its way somewhere else — a gateway log, a message to
    the backend — so it is copied by clicking it (§5.8) rather than selected by
    hand. It stays plain readable text either way. */
+/* The shortened primary key. Reads as text until it is hovered — it is a value
+   first and a control second, and the whole point of the column is that the eye
+   runs down it. */
+.admin-key {
+  border-radius: 5px;
+  padding: 1px 4px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+.admin-key:hover {
+  background: var(--surface-3);
+  color: var(--fg);
+}
+
+.admin-key:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .admin-request-id-line {
   display: flex;
   flex-wrap: wrap;
@@ -1691,6 +1741,15 @@ h1 {
     width: auto;
     max-height: 172px;
     padding: 0 14px 11px;
+  }
+
+  /* Stacked, the list is a short scroll box, and its bottom edge used to slice
+     a group heading in half — which reads as a rendering fault rather than as
+     "there is more below". The fade says the same thing without the broken
+     look; `-webkit-` first because Safari still needs the prefix. */
+  .admin-catalog-list {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
   }
 
   .admin-section-head {

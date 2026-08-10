@@ -1,6 +1,6 @@
 import { Copy } from "lucide-react";
-import { useEffect, useState } from "react";
 import { isMissingOrForbidden } from "../../api/errors";
+import { useCopied } from "./useCopied";
 
 /**
  * These three cases read very differently to the person looking at them, and
@@ -43,13 +43,7 @@ export function AdminError({ error, onRetry }: { error: unknown; onRetry: () => 
  * without clipboard permission loses the convenience, not the value.
  */
 function RequestId({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 2000);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
+  const [copied, copy] = useCopied();
 
   return (
     <p className="admin-error-detail admin-request-id-line">
@@ -57,15 +51,7 @@ function RequestId({ value }: { value: string }) {
       <button
         aria-label={`Copy request id ${value}`}
         className="admin-request-id"
-        onClick={() => {
-          // Only a successful write says "Copied". A refused clipboard
-          // permission or an insecure origin must not claim the id is on the
-          // clipboard when it is not.
-          void navigator.clipboard
-            ?.writeText(value)
-            .then(() => setCopied(true))
-            .catch(() => setCopied(false));
-        }}
+        onClick={() => copy(value)}
         type="button"
       >
         {value}

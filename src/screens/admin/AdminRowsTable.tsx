@@ -2,6 +2,7 @@ import { Lock } from "lucide-react";
 import { useMemo } from "react";
 import type { AdminRows, AdminSortOrder, AdminTable } from "../../domain/types";
 import { formatCell, isAlignedType } from "./columns";
+import { useCopied } from "./useCopied";
 
 interface AdminRowsTableProps {
   rows: AdminRows;
@@ -90,7 +91,9 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
             <tr key={String(row[table.primaryKey] ?? index)}>
               {columns.map((column) => (
                 <td className={cellClass(column) || undefined} key={column}>
-                  {sensitiveColumns.has(column) ? (
+                  {column === frozenColumn && !sensitiveColumns.has(column) ? (
+                    <PrimaryKeyCell value={formatCell(row[column])} />
+                  ) : sensitiveColumns.has(column) ? (
                     // The catalog says this column holds secrets. Say that it
                     // exists and stop there — not a masked length, which leaks
                     // one. The label distinguishes a withheld cell from one
@@ -111,31 +114,70 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
         </tbody>
       </table>
 
-      {rows.pagination.totalPages > 1 ? (
-        // Inside the scroll container and stuck to its bottom edge (§5.8), so
-        // paging does not require scrolling to the end of the rows first.
-        <div className="admin-pager">
-          <button
-            className="secondary-button"
-            disabled={!rows.pagination.hasPrev}
-            onClick={() => onPage(Math.max(1, rows.pagination.currentPage - 1))}
-            type="button"
-          >
-            Previous
-          </button>
-          <span aria-live="polite">
-            Page {rows.pagination.currentPage} of {rows.pagination.totalPages}
-          </span>
-          <button
-            className="secondary-button"
-            disabled={!rows.pagination.hasNext}
-            onClick={() => onPage(rows.pagination.currentPage + 1)}
-            type="button"
-          >
-            Next
-          </button>
-        </div>
-      ) : null}
+      {/* Always, even on a single page (§5.8): "Page 1 of 1" answers "am I
+          seeing all of it?", and a footer that comes and goes changes the
+          height of the working area every time a filter narrows the result.
+          Inside the scroll container and stuck to its bottom edge, so paging
+          does not require scrolling to the end of the rows first. */}
+      <div className="admin-pager">
+        <button
+          className="secondary-button"
+          disabled={!rows.pagination.hasPrev}
+          onClick={() => onPage(Math.max(1, rows.pagination.currentPage - 1))}
+          type="button"
+        >
+          Previous
+        </button>
+        <span aria-live="polite">
+          Page {rows.pagination.currentPage} of {rows.pagination.totalPages}
+        </span>
+        <button
+          className="secondary-button"
+          disabled={!rows.pagination.hasNext}
+          onClick={() => onPage(rows.pagination.currentPage + 1)}
+          type="button"
+        >
+          Next
+        </button>
+      </div>
     </div>
+  );
+}
+
+/** Longer than this and the frozen column stops being narrow enough to freeze. */
+const KEY_LIMIT = 12;
+const KEY_SHOWN = 8;
+
+/**
+ * The primary key, shortened (§5.8). A 36-character uuid made the frozen column
+ * the widest in the table and pushed the real content off the right edge — the
+ * exact complaint this section was rebuilt to fix.
+ *
+ * Shortening a value the reader may need in full is only acceptable if the full
+ * one stays reachable: it is in `title` for a pointer, in the accessible name
+ * for a screen reader, and on the clipboard in one click for the case that
+ * actually happens — pasting it into a query somewhere else.
+ */
+function PrimaryKeyCell({ value }: { value: string }) {
+  const [copied, copy] = useCopied();
+  const short = value.length > KEY_LIMIT ? `${value.slice(0, KEY_SHOWN)}…` : value;
+
+  if (short === value) return <>{value}</>;
+
+  return (
+    <>
+      <button
+        aria-label={`Copy ${value}`}
+        className="admin-key"
+        onClick={() => copy(value)}
+        title={value}
+        type="button"
+      >
+        {short}
+      </button>
+      <span className="admin-copied" role="status">
+        {copied ? "Copied" : ""}
+      </span>
+    </>
   );
 }
