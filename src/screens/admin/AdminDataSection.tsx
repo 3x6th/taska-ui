@@ -155,10 +155,19 @@ export function AdminDataSection() {
     rows && current && (rows.meta.service !== current.service || rows.meta.table !== current.table),
   );
   // A page past the end — a stale link, a hand-edited address, a table that has
-  // shrunk since — otherwise renders "This table is empty", which is a lie
-  // about the table, and takes the pager with it, so there is no way back.
-  // Land on the last real page instead and say nothing: the address was wrong,
-  // not the reader.
+  // shrunk since — otherwise leaves the reader on "Page 999 of 3". Nothing is
+  // broken there any more (the empty result keeps the header, the frame and a
+  // working Previous), so this is about the address telling the truth, not
+  // about rescuing anyone.
+  //
+  // `totalPages >= 1` is load-bearing, not defensive. The contract types it as
+  // a bare integer with no minimum, and `ceil(0 / pageSize)` is the obvious
+  // answer for an empty table; at 0 every page number exceeds it, the redirect
+  // resolves to page 0, `writeViewState` omits it, and the target becomes the
+  // address we are already on — so this returned <Navigate> on every render and
+  // left the whole plane blank, silently, because nothing errored. The mock
+  // clamps to 1 and the test fake used to copy it, which is exactly why no test
+  // could produce the shape.
   //
   // Only while the rows on screen belong to the table being asked about. During
   // a switch `placeholderData` still holds the *previous* table's pagination,
@@ -166,7 +175,7 @@ export function AdminDataSection() {
   // that exists — back to the single-page table the reader was leaving, named
   // from the wrong `meta`. A pasted link silently discarded, which is the one
   // thing the URL state exists to prevent.
-  if (rows && !switchingTable && view.page > rows.pagination.totalPages) {
+  if (rows && !switchingTable && rows.pagination.totalPages >= 1 && view.page > rows.pagination.totalPages) {
     const query = writeViewState({ ...view, page: rows.pagination.totalPages }).toString();
     const path = `/admin/data/${current!.service}/${current!.table}`;
     return <Navigate replace to={query ? `${path}?${query}` : path} />;

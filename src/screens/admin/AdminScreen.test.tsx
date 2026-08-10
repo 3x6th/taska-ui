@@ -70,6 +70,12 @@ const {
         ],
       },
       {
+        name: "issue",
+        databaseAlias: "taska_issue",
+        // Empty, so the fake answers `totalPages: 0` for it.
+        tables: [{ name: "empty_table", primaryKey: "id", columns: [{ name: "id", type: "uuid", sensitive: false }] }],
+      },
+      {
         name: "admin",
         databaseAlias: "taska_admin",
         tables: [
@@ -101,6 +107,7 @@ const {
     // Three rows against a page size of 2, so this table genuinely has a second
     // page — the tests about paging and about a page past the end both need one
     // that exists.
+    "issue.empty_table": { columns: ["id"], rows: [] },
     "admin.audit_log": {
       columns: ["id", "action"],
       rows: [
@@ -153,9 +160,15 @@ const {
       // difference between a page that exists and one past the end, which is
       // exactly the case the screen has to handle. `pageSize` is small so a
       // seed of a few rows still produces more than one page.
+      // No `Math.max(1, …)` here, deliberately. The mock clamps an empty table
+      // to one page, and this fake used to copy that — which made
+      // `totalPages: 0` unreachable in the tests even though the contract types
+      // the field as a bare integer with no minimum and `ceil(0 / pageSize)` is
+      // what a server would answer. A blank admin plane shipped through that
+      // gap once; the fake now speaks the contract's shape, not the mock's.
       const pageSize = 2;
-      const totalPages = Math.max(1, Math.ceil(table.rows.length / pageSize));
-      const currentPage = Math.min(Math.max(1, query.page ?? 1), totalPages);
+      const totalPages = Math.ceil(table.rows.length / pageSize);
+      const currentPage = Math.min(Math.max(1, query.page ?? 1), Math.max(1, totalPages));
       const start = (currentPage - 1) * pageSize;
       return {
         rows: table.rows.slice(start, start + pageSize),
@@ -653,6 +666,20 @@ describe("/admin console selection in the URL", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reached|refused/i);
     expect(screen.queryByRole("cell", { name: "u1" })).toBeNull();
+  });
+
+  // `totalPages: 0` is what a gateway answers for an empty table — the contract
+  // types the field as a bare integer with no minimum. Every page number
+  // exceeds 0, so a clamp that does not exclude it redirects to page 0, which
+  // `writeViewState` omits, which makes the target the address already open:
+  // <Navigate> on every render and a blank plane that never errors, so nothing
+  // reports it.
+  it("still draws the console when the server says the table has no pages", async () => {
+    renderAdmin("/admin/data/issue/empty_table");
+
+    expect(await screen.findByRole("heading", { name: "issue.empty_table" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "users" })).toBeVisible();
+    expect(screen.getByText("This table is empty.")).toBeVisible();
   });
 
   it("lands on the last page when the address names one past the end", async () => {
