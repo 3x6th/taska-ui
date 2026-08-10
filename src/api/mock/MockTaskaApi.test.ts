@@ -168,6 +168,128 @@ describe("MockTaskaApi", () => {
     });
   });
 
+  describe("issue links", () => {
+    const issueByKey = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id);
+      const issue = items.find((item) => item.issueKey === issueKey);
+      expect(issue, `seed is missing ${issueKey}`).toBeDefined();
+      return issue!;
+    };
+
+    it("seeds links so the panel has something to show on first load", async () => {
+      const source = await issueByKey("TAS-101");
+      const links = await api.listIssueLinks(project.id, source.id);
+
+      expect(links.length).toBeGreaterThan(0);
+      expect(links.every((link) => link.id && link.createdAt)).toBe(true);
+    });
+
+    it("answers each end with the relation as that end sees it", async () => {
+      const source = await issueByKey("TAS-101");
+      const target = await issueByKey("TAS-102");
+
+      const fromSource = (await api.listIssueLinks(project.id, source.id)).find(
+        (link) => link.targetIssueId === target.id,
+      );
+      const fromTarget = (await api.listIssueLinks(project.id, target.id)).find(
+        (link) => link.sourceIssueId === source.id,
+      );
+
+      // Same link, same id, two views — this is what `viewLinkType` means, and
+      // the receiving end's value is not one the request enum can express.
+      expect(fromSource!.id).toBe(fromTarget!.id);
+      expect(fromSource!.viewLinkType).toBe("BLOCKS");
+      expect(fromTarget!.viewLinkType).toBe("IS_BLOCKED_BY");
+    });
+
+    it("creates a link and returns it as the asking issue sees it", async () => {
+      const issue = await issueByKey("TAS-104");
+      const target = await issueByKey("TAS-105");
+
+      const link = await api.createIssueLink(project.id, issue.id, {
+        targetIssueId: target.id,
+        linkType: "RELATES_TO",
+      });
+
+      expect(link).toMatchObject({
+        projectId: project.id,
+        sourceIssueId: issue.id,
+        targetIssueId: target.id,
+        viewLinkType: "RELATES_TO",
+      });
+      await expect(api.listIssueLinks(project.id, issue.id)).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: link.id })]),
+      );
+    });
+
+    it("refuses to link an issue to itself", async () => {
+      const issue = await issueByKey("TAS-104");
+
+      await expect(
+        api.createIssueLink(project.id, issue.id, { targetIssueId: issue.id, linkType: "BLOCKS" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("refuses a duplicate link in either direction", async () => {
+      const source = await issueByKey("TAS-101");
+      const target = await issueByKey("TAS-102");
+
+      await expect(
+        api.createIssueLink(project.id, source.id, { targetIssueId: target.id, linkType: "RELATES_TO" }),
+      ).rejects.toMatchObject({ code: "ALREADY_EXISTS" });
+      // The seeded link runs source -> target; asking from the other end is the
+      // same relation, not a second one.
+      await expect(
+        api.createIssueLink(project.id, target.id, { targetIssueId: source.id, linkType: "RELATES_TO" }),
+      ).rejects.toMatchObject({ code: "ALREADY_EXISTS" });
+    });
+
+    it("refuses an issue or a target it does not know", async () => {
+      const issue = await issueByKey("TAS-104");
+      const missing = "00000000-0000-4000-8000-000000000000";
+
+      await expect(
+        api.createIssueLink(project.id, issue.id, { targetIssueId: missing, linkType: "BLOCKS" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(
+        api.createIssueLink(project.id, missing, { targetIssueId: issue.id, linkType: "BLOCKS" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(api.listIssueLinks(project.id, missing)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("deletes a link from either of its ends", async () => {
+      const source = await issueByKey("TAS-101");
+      const target = await issueByKey("TAS-102");
+      const [link] = (await api.listIssueLinks(project.id, source.id)).filter(
+        (item) => item.targetIssueId === target.id,
+      );
+
+      // Removed from the receiving end: the route is issue-scoped and that end
+      // sees the link just as much.
+      await api.deleteIssueLink(project.id, target.id, link.id);
+
+      await expect(api.listIssueLinks(project.id, source.id)).resolves.toEqual(
+        expect.not.arrayContaining([expect.objectContaining({ id: link.id })]),
+      );
+      await expect(api.listIssueLinks(project.id, target.id)).resolves.toEqual(
+        expect.not.arrayContaining([expect.objectContaining({ id: link.id })]),
+      );
+    });
+
+    it("refuses to delete a link that does not belong to the issue", async () => {
+      const unrelated = await issueByKey("TAS-104");
+      const source = await issueByKey("TAS-101");
+      const [link] = await api.listIssueLinks(project.id, source.id);
+
+      await expect(api.deleteIssueLink(project.id, unrelated.id, link.id)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+      await expect(api.deleteIssueLink(project.id, source.id, "no-such-link")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+  });
+
   describe("issue listing", () => {
     it("filters by status without leaking other statuses", async () => {
       const { items } = await api.listIssues(project.id, { status: "DONE" });

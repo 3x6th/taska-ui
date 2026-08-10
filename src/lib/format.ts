@@ -1,4 +1,4 @@
-import type { IssuePriority, IssueStatus, IssueType } from "../domain/types";
+import type { IssueLinkType, IssuePriority, IssueStatus, IssueType } from "../domain/types";
 
 export const statusLabels: Record<IssueStatus, string> = {
   TODO: "To Do",
@@ -22,6 +22,39 @@ export const priorityMeta: Record<IssuePriority, { label: string; color: string;
   LOW: { label: "Low", color: "#9aa0aa", level: 1 },
   MEDIUM: { label: "Medium", color: "#e3a008", level: 2 },
   HIGH: { label: "High", color: "#e5544b", level: 3 },
+};
+
+/** The three relations a *request* may ask for, in the order the picker shows them. */
+export const issueLinkTypes: IssueLinkType[] = ["BLOCKS", "RELATES_TO", "DUPLICATES"];
+
+/**
+ * Written labels for the values we know. The response field (`viewLinkType`) is
+ * an open string by contract, so this is a lookup with a fallback rather than a
+ * `Record<IssueLinkType, string>`: the inverses are values the request enum
+ * cannot express but the response can carry.
+ */
+const issueLinkTypeLabels: Record<string, string> = {
+  BLOCKS: "Blocks",
+  IS_BLOCKED_BY: "Is blocked by",
+  RELATES_TO: "Relates to",
+  DUPLICATES: "Duplicates",
+  IS_DUPLICATED_BY: "Is duplicated by",
+};
+
+/**
+ * A relation the UI can print, whatever the server said. A known value gets its
+ * written label; anything else is humanised verbatim (`SUPERSEDES` →
+ * "Supersedes") rather than dropped or coerced into a relation it is not — the
+ * link is real either way, and a row with no label would hide it. An unstated
+ * relation reads "Linked", which claims only what the response proves.
+ */
+export const issueLinkTypeLabel = (viewLinkType: string) => {
+  const value = viewLinkType.trim();
+  if (!value) return "Linked";
+  const known = issueLinkTypeLabels[value.toUpperCase()];
+  if (known) return known;
+  const words = value.replace(/[_-]+/g, " ").trim().toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Linked";
 };
 
 export const initials = (name = "") =>

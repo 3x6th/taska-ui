@@ -4,6 +4,8 @@ import type {
   AdminRowsQuery,
   Issue,
   IssueComment,
+  IssueLink,
+  IssueLinkType,
   IssuePriority,
   IssueStatus,
   IssueType,
@@ -59,6 +61,12 @@ export interface UpdateIssueInput {
   priority?: IssuePriority;
 }
 
+export interface CreateIssueLinkInput {
+  targetIssueId: string;
+  /** The request half of the contract's asymmetry — closed, unlike the response. */
+  linkType: IssueLinkType;
+}
+
 export interface ListCommentsParams {
   page?: number;
   pageSize?: number;
@@ -109,6 +117,17 @@ export interface TaskaApi {
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue>;
   transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue>;
   deleteIssue(projectId: string, issueId: string): Promise<void>;
+
+  /**
+   * The three link routes are issue-scoped on the wire
+   * (`/issues/{issueId}/links`) and need no `projectId`, but it stays first in
+   * the signature like `getIssue`/`updateIssue`: the mock resolves an issue
+   * within a project, and a caller that has one issue id but not its project is
+   * not a case this app has.
+   */
+  listIssueLinks(projectId: string, issueId: string): Promise<IssueLink[]>;
+  createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): Promise<IssueLink>;
+  deleteIssueLink(projectId: string, issueId: string, linkId: string): Promise<void>;
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
   addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;

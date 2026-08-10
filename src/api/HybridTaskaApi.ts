@@ -2,6 +2,7 @@ import type {
   AcceptInvitationInput,
   AuthTokens,
   CreateIssueInput,
+  CreateIssueLinkInput,
   CreateProjectInput,
   ListCommentsParams,
   ListIssuesParams,
@@ -16,6 +17,7 @@ import type {
   AdminRowsQuery,
   Issue,
   IssueComment,
+  IssueLink,
   IssueType,
   IssueWithHistory,
   Notification,
@@ -142,6 +144,21 @@ export class HybridTaskaApi implements TaskaApi {
 
   deleteIssue(projectId: string, issueId: string): Promise<void> {
     return this.live.deleteIssue(projectId, issueId);
+  }
+
+  // Straight delegation: the link routes exist in the contract and there is
+  // nothing about them for this class to synthesise. Its compensation is about
+  // project membership only.
+  listIssueLinks(projectId: string, issueId: string): Promise<IssueLink[]> {
+    return this.live.listIssueLinks(projectId, issueId);
+  }
+
+  createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): Promise<IssueLink> {
+    return this.live.createIssueLink(projectId, issueId, input);
+  }
+
+  deleteIssueLink(projectId: string, issueId: string, linkId: string): Promise<void> {
+    return this.live.deleteIssueLink(projectId, issueId, linkId);
   }
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

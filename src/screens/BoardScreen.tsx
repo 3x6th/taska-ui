@@ -11,8 +11,9 @@ import {
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronLeft, Plus, Search, Trash2, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import type { CreateIssueLinkInput } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
 import { isMissingOrForbidden } from "../api/errors";
 import { Avatar } from "../components/Avatar";
@@ -24,6 +25,8 @@ import type {
   Issue,
   IssueComment,
   IssueHistoryEvent,
+  IssueLink,
+  IssueLinkType,
   Page,
   IssuePriority,
   IssueStatus,
@@ -34,7 +37,17 @@ import type {
   WorkflowStatus,
   WorkflowTransition,
 } from "../domain/types";
-import { formatDateTime, formatDay, priorityMeta, relativeTime, statusColors, statusLabels, typeMeta } from "../lib/format";
+import {
+  formatDateTime,
+  formatDay,
+  issueLinkTypeLabel,
+  issueLinkTypes,
+  priorityMeta,
+  relativeTime,
+  statusColors,
+  statusLabels,
+  typeMeta,
+} from "../lib/format";
 import type { ScreenProps } from "./App";
 import { NotFoundScreen } from "./NotFoundScreen";
 
@@ -370,8 +383,17 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
       {issueId ? (
         <IssuePanel
+          // Remount when the panel changes issue. Since TAS-157 a link row can
+          // swap `issueId` while this instance stays mounted, and without the
+          // key every piece of per-issue state — the comment draft above all,
+          // which would be posted onto the issue it was not written for —
+          // survives the navigation. This is not the reseed the drafts inside
+          // the panel avoid: those must not remount on a *refetch*, and
+          // `issueId` cannot change mid-edit.
+          key={issueId}
           issueId={issueId}
           projectId={projectId}
+          issues={issues}
           members={members}
           userById={userById}
           canEdit={canEdit}
@@ -579,6 +601,7 @@ function NotificationsPopover({
 function IssuePanel({
   projectId,
   issueId,
+  issues,
   members,
   userById,
   canEdit,
@@ -588,6 +611,9 @@ function IssuePanel({
 }: {
   projectId: string;
   issueId: string;
+  /** The board's `["issues", projectId]` page — the links section resolves its
+   *  targets from it rather than fetching each linked issue again. */
+  issues: Issue[];
   members: ProjectMember[];
   userById: Map<string, Pick<User, "displayName" | "color">>;
   canEdit: boolean;
@@ -766,6 +792,8 @@ function IssuePanel({
             />
           </label>
 
+          <IssueLinksSection projectId={projectId} issueId={issueId} issues={issues} canEdit={canEdit} />
+
           <CommentsSection
             projectId={projectId}
             issueId={issueId}
@@ -793,6 +821,259 @@ function IssuePanel({
       </aside>
     </div>
   );
+}
+
+/**
+ * `GET/POST/DELETE /issues/{issueId}/links`. Two things are worth knowing here:
+ *
+ * 1. Which issue a row points at is decided by comparing both ends against the
+ *    issue on screen, never by trusting `targetIssueId` — the response is the
+ *    link as *this* issue sees it, and the issue on the receiving side of a
+ *    `BLOCKS` is the link's `targetIssueId`, not its own.
+ * 2. `viewLinkType` is an open string (see `IssueLink`), so it is only ever
+ *    passed to `issueLinkTypeLabel`, which prints an unknown relation instead
+ *    of dropping the row.
+ */
+/**
+ * Id of the row an optimistic create puts in the cache before the server has
+ * answered. No link on the server can carry it, and it is deliberately not the
+ * empty string: that is what a response omitting `id` produces, and "not real
+ * yet" and "real but unaddressable" are different states.
+ */
+const optimisticLinkId = "tk-optimistic-link";
+
+function IssueLinksSection({
+  projectId,
+  issueId,
+  issues,
+  canEdit,
+}: {
+  projectId: string;
+  issueId: string;
+  issues: Issue[];
+  canEdit: boolean;
+}) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const relationLabelId = useId();
+  const [linkType, setLinkType] = useState<IssueLinkType>("BLOCKS");
+  const [targetIssueId, setTargetIssueId] = useState("");
+  // Refused before the request goes out; the server stays the authority.
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const linksKey = ["issue-links", projectId, issueId];
+  const linksQuery = useQuery({
+    queryKey: linksKey,
+    queryFn: () => taskaApi.listIssueLinks(projectId, issueId),
+    // Same predicate as every other board query. It matters more here than it
+    // looks: this gateway has already been seen answering an empty collection
+    // with NOT_FOUND (`GET /projects`, docs/ai/API-DIVERGENCE.md), and if the
+    // link routes share the habit, an issue with no links would spend a retry
+    // delay before showing a red error where a quiet line belongs.
+    retry: retryUnlessMissing,
+  });
+  const links = useMemo(() => linksQuery.data ?? [], [linksQuery.data]);
+
+  // Both ends of a link change when one is written, and the user can walk
+  // straight to the other end — so the whole project's links are refetched, not
+  // just this issue's.
+  const invalidateLinks = () => queryClient.invalidateQueries({ queryKey: ["issue-links", projectId] });
+
+  const createLink = useMutation({
+    mutationFn: (input: CreateIssueLinkInput) => taskaApi.createIssueLink(projectId, issueId, input),
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: linksKey });
+      const previousLinks = queryClient.getQueryData<IssueLink[]>(linksKey);
+      queryClient.setQueryData<IssueLink[]>(linksKey, (current) => [
+        ...(current ?? []),
+        {
+          // A marker of its own rather than an empty id: an empty id is what a
+          // server that omitted the field gives us, and the two states mean
+          // different things — this row has no link behind it *yet*, that one
+          // has a link nobody can address.
+          id: optimisticLinkId,
+          projectId,
+          sourceIssueId: issueId,
+          targetIssueId: input.targetIssueId,
+          viewLinkType: input.linkType,
+          createdBy: "",
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+      return { previousLinks };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.previousLinks) {
+        queryClient.setQueryData(linksKey, context.previousLinks);
+      }
+    },
+    onSuccess: () => setTargetIssueId(""),
+    onSettled: invalidateLinks,
+  });
+
+  const deleteLink = useMutation({
+    mutationFn: (linkId: string) => taskaApi.deleteIssueLink(projectId, issueId, linkId),
+    onMutate: async (linkId) => {
+      await queryClient.cancelQueries({ queryKey: linksKey });
+      const previousLinks = queryClient.getQueryData<IssueLink[]>(linksKey);
+      queryClient.setQueryData<IssueLink[]>(linksKey, (current) =>
+        (current ?? []).filter((link) => link.id !== linkId),
+      );
+      return { previousLinks };
+    },
+    onError: (_error, _linkId, context) => {
+      if (context?.previousLinks) {
+        queryClient.setQueryData(linksKey, context.previousLinks);
+      }
+    },
+    onSettled: invalidateLinks,
+  });
+
+  const issueById = useMemo(() => new Map(issues.map((item) => [item.id, item])), [issues]);
+  const linkedIssueIds = useMemo(
+    () => new Set(links.map((link) => otherEndOf(link, issueId))),
+    [links, issueId],
+  );
+  const linkable = issues.filter((item) => item.id !== issueId && !linkedIssueIds.has(item.id));
+  const error = localError ?? (linksQuery.error ?? createLink.error ?? deleteLink.error)?.message;
+
+  return (
+    <section className="issue-links">
+      <h3>
+        Links
+        {links.length ? <span className="count-pill">{links.length}</span> : null}
+      </h3>
+
+      {canEdit ? (
+        <form
+          className="issue-link-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setLocalError(null);
+            if (!targetIssueId) return;
+            if (targetIssueId === issueId) {
+              setLocalError("An issue cannot be linked to itself.");
+              return;
+            }
+            createLink.mutate({ targetIssueId, linkType });
+          }}
+        >
+          <div className="issue-link-field">
+            <span id={relationLabelId}>Relation</span>
+            <div aria-labelledby={relationLabelId} className="segmented compact fit" role="group">
+              {issueLinkTypes.map((type) => (
+                <button
+                  aria-pressed={linkType === type}
+                  className={linkType === type ? "is-active" : ""}
+                  key={type}
+                  onClick={() => setLinkType(type)}
+                  type="button"
+                >
+                  {issueLinkTypeLabel(type)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="issue-link-field issue-link-target">
+            <span>Issue</span>
+            <select onChange={(event) => setTargetIssueId(event.target.value)} value={targetIssueId}>
+              <option value="">Select an issue</option>
+              {linkable.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.issueKey} — {item.summary}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="secondary-button compact-button"
+            disabled={!targetIssueId || createLink.isPending}
+            type="submit"
+          >
+            Link
+          </button>
+        </form>
+      ) : null}
+
+      {error ? <div className="form-error">{error}</div> : null}
+
+      {linksQuery.isPending ? <p className="issue-links-empty">Loading links</p> : null}
+      {/* Only a *successful* empty answer may say this. An errored query also
+          has no data, and "nothing is linked here" is a claim a failed request
+          never made — one a reader would act on. */}
+      {linksQuery.isSuccess && links.length === 0 ? <p className="issue-links-empty">No links yet</p> : null}
+
+      <ul className="issue-link-list">
+        {links.map((link) => {
+          const otherId = otherEndOf(link, issueId);
+          const other = issueById.get(otherId);
+          const pending = link.id === optimisticLinkId;
+          return (
+            <li className="issue-link-row" key={link.id || `${link.sourceIssueId}:${link.targetIssueId}`}>
+              {otherId ? (
+                <button
+                  className="issue-link-open"
+                  // The link states its own project, and these routes are
+                  // issue-scoped on the wire, so a link may point outside the
+                  // board being viewed. The mock cannot produce one, which is
+                  // exactly why this must not be assumed away.
+                  onClick={() => navigate(`/projects/${link.projectId || projectId}/issues/${otherId}`)}
+                  type="button"
+                >
+                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType)}</span>
+                  {/* The key is what a person recognises; an issue outside the
+                      loaded page has none, and its raw id is still truer than a
+                      blank row — it just has to be allowed to ellipsize. */}
+                  <span className={`issue-key ${other ? "" : "is-unresolved"}`}>
+                    {other?.issueKey ?? otherId}
+                  </span>
+                  {other ? <span className="issue-link-summary">{other.summary}</span> : null}
+                </button>
+              ) : (
+                // `IssueLinkResponseDto` marks nothing required, so a link can
+                // arrive naming neither of its ends. There is nowhere to go:
+                // the row says what it knows rather than offering a click that
+                // resolves to no issue.
+                <span className="issue-link-open is-inert">
+                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType)}</span>
+                  <span className="issue-link-summary">Unknown issue</span>
+                </span>
+              )}
+              {canEdit ? (
+                <button
+                  aria-label={`Remove link to ${other?.issueKey ?? (otherId || "an unknown issue")}`}
+                  className="icon-button"
+                  // Scoped to this row: one delete in flight is no reason for
+                  // every other row to stop answering. `isPending` has to be in
+                  // the test — `variables` holds the last mutation's argument
+                  // after it settles, so a failed delete would otherwise leave
+                  // its restored row disabled for good.
+                  disabled={pending || !link.id || (deleteLink.isPending && deleteLink.variables === link.id)}
+                  onClick={() => {
+                    setLocalError(null);
+                    deleteLink.mutate(link.id);
+                  }}
+                  type="button"
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The end of the link that is not the issue being looked at. `sourceIssueId`
+ * and `targetIssueId` name the ends the link was *created* with, so on the
+ * receiving side of a `BLOCKS` the issue on screen is the target and the row
+ * must point at the source.
+ */
+function otherEndOf(link: IssueLink, issueId: string) {
+  return link.targetIssueId === issueId ? link.sourceIssueId : link.targetIssueId;
 }
 
 function CommentsSection({
@@ -1211,6 +1492,11 @@ async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, p
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
     issueId ? queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }) : Promise.resolve(),
+    // Every link names two issues, so anything that creates or removes one
+    // changes what the other end's panel should show. Deleting an issue is the
+    // case that bites: without this, its rows survive in a cached list and
+    // point at a panel that no longer opens.
+    queryClient.invalidateQueries({ queryKey: ["issue-links", projectId] }),
     queryClient.invalidateQueries({ queryKey: ["notifications"] }),
   ]);
 }

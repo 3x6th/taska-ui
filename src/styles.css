@@ -1801,10 +1801,168 @@ h1 {
   color: var(--fg);
 }
 
+.issue-links {
+  margin-top: 24px;
+}
+
+.issue-link-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.issue-link-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Relation takes the whole first row so the picker and its button always share
+   the second one; letting all three compete for 480px puts the button alone on
+   a line of its own. */
+.issue-link-form > .issue-link-field:first-child {
+  flex-basis: 100%;
+}
+
+.issue-link-field > span {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+/* The picker carries a summary as well as a key, so it takes the row's slack
+   while the segmented control keeps its own width. */
+.issue-link-target {
+  flex: 1;
+  min-width: 160px;
+}
+
+/* DESIGN.md §2.5 gives a select radius 9, and §4.3 the recessed `--surface-2`
+   fill for a field at rest inside a panel, lifting to `--surface` on focus.
+   Height stays 29 to sit level with the compact button beside it. */
+.issue-link-target select {
+  width: 100%;
+  height: 29px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 0 8px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.issue-link-target select:focus {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.issue-links-empty {
+  margin: 0 0 12px;
+  color: var(--fg-3);
+  font-size: 12.5px;
+}
+
+.issue-link-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.issue-link-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.issue-link-open {
+  display: flex;
+  align-items: baseline;
+  flex: 1;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-hover) var(--ease), background-color var(--dur-hover) var(--ease);
+}
+
+button.issue-link-open:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+/* A link that names neither of its ends has nowhere to go, so it is rendered as
+   a span. Nothing but the pointer needs saying — it inherits the rest. */
+.issue-link-open.is-inert {
+  cursor: default;
+}
+
+/* Scoped rather than global: neither `.icon-button` nor `.segmented button` has
+   a focus style anywhere in the app, and both still ride the browser default
+   (DESIGN.md §7 records that gap). Changing them product-wide is its own visual
+   check, so this story covers only the controls it adds — but it covers all
+   five of them, because a form whose ring changes shape halfway through a tab
+   run is worse than one that never had it. */
+.issue-link-open:focus-visible,
+.issue-link-form .segmented button:focus-visible,
+.issue-link-form .secondary-button:focus-visible,
+.issue-link-target select:focus-visible,
+.issue-link-row .icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Fixed width for the relation so the key column does not jump between "Blocks"
+   and "Is duplicated by" from one row to the next. */
+.issue-link-relation {
+  flex: none;
+  min-width: 82px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* A real key never shrinks: "TAS-102" abbreviated to "TAS-1…" identifies
+   nothing, and the summary beside it is the part that can afford to give. */
+.issue-link-open .issue-key {
+  flex: none;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+/* The exception is the target that is not on the loaded board, which has no key
+   and no summary — only a raw UUID, which at 390px overruns the row and
+   collides with the remove control unless it may ellipsize. Nothing is lost:
+   the id is not readable at either length. */
+.issue-link-open .issue-key.is-unresolved {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-link-summary {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .comments {
   margin-top: 24px;
 }
 
+.issue-links h3,
 .comments h3,
 .activity h3 {
   display: flex;
