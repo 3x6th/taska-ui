@@ -143,8 +143,13 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
         >
           Previous
         </button>
+        {/* `Math.max(1, …)`: the gateway answers `totalPages: 0` for an empty
+            table, and "Page 1 of 0" reads as a rendering fault rather than as
+            an answer to "am I seeing all of it?", which is what §5.8 keeps this
+            footer for. An empty table is one page of nothing — the row count
+            beside the table name already says which. */}
         <span aria-live="polite">
-          Page {rows.pagination.currentPage} of {rows.pagination.totalPages}
+          Page {rows.pagination.currentPage} of {Math.max(1, rows.pagination.totalPages)}
         </span>
         <button
           className="secondary-button"

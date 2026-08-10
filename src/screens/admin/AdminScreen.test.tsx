@@ -680,6 +680,8 @@ describe("/admin console selection in the URL", () => {
     expect(await screen.findByRole("heading", { name: "issue.empty_table" })).toBeVisible();
     expect(screen.getByRole("link", { name: "users" })).toBeVisible();
     expect(screen.getByText("This table is empty.")).toBeVisible();
+    // Not "Page 1 of 0", which reads as a fault rather than as an answer.
+    expect(screen.getByText("Page 1 of 1")).toBeVisible();
   });
 
   it("lands on the last page when the address names one past the end", async () => {
