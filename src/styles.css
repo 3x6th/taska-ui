@@ -324,13 +324,60 @@ textarea:disabled {
   animation: tk-pop var(--dur-enter) var(--ease);
 }
 
-/* The <img> carries its intrinsic 720x346 as attributes so the box is reserved
-   before the file arrives; these override the rendered size, and `height:auto`
-   is what keeps the ratio instead of squashing it to 346px. */
+/* ---------- Taska mascot, composited from channels (§4.18, §4.19) ---------- */
+
+/* accent × shade + light, clipped to alpha. `isolation` is the load-bearing
+   line: without it the blend modes would reach past the mascot and multiply
+   the page behind it. */
+.mascot {
+  position: relative;
+  display: block;
+  isolation: isolate;
+  /* The frames are 3:2 with the figure inset, so the box is wider than the
+     drawing looks — the display widths below are chosen for the figure, not
+     for the frame. */
+  aspect-ratio: 3 / 2;
+}
+
+.mascot > span {
+  position: absolute;
+  inset: 0;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.mascot-fill {
+  background-color: var(--accent);
+  -webkit-mask-image: var(--mascot-alpha);
+  mask-image: var(--mascot-alpha);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.mascot-shade {
+  background-image: var(--mascot-shade);
+  mix-blend-mode: multiply;
+}
+
+.mascot-light {
+  background-image: var(--mascot-light);
+  mix-blend-mode: screen;
+}
+
+/* The parts that must not follow the accent: beacon, eraser, pencil tip. No
+   blend mode — they are drawn as they are. */
+.mascot-static {
+  background-image: var(--mascot-static);
+}
+
 .notfound-mascot {
-  width: 260px;
+  width: 360px;
   max-width: 78vw;
-  height: auto;
   /* 26 (§2.4), not the 14 the text→CTA rhythm suggests: at 14 the gap to the
      title equalled the gap below the text, and the large saturated mascot read
      as owning the h1 — the title looked like a caption. */
@@ -473,7 +520,10 @@ textarea:disabled {
 
 .mono-input,
 .key-badge,
-.issue-key {
+.issue-key,
+.admin-catalog-item,
+.admin-table-name,
+.admin-cell-mono {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   /* DESIGN.md §2.3: mono keys carry positive tracking so ABC-123 reads as a
      key, not a word. Must override the inherited negative body tracking. */
@@ -975,26 +1025,123 @@ h1 {
   font-weight: 500;
 }
 
-/* The /admin body. Deliberately thin: TAS-155 replaces the placeholder it
-   dresses, and the shell around it is the shared page shell, not this block. */
-/* Same shape as .projects-page, so the heading lands on the same x without
-   arithmetic — and, unlike a flex column, this actually scrolls. A flex column
-   shrinks its children instead: a table taller than the viewport rendered
-   squashed and fixed-height controls collapsed, which TAS-155 would have
-   inherited. */
-.admin-page {
+/* ---------- Administration area (DESIGN.md §5.8, TAS-159) ----------
+
+   /admin is an area with sections, not a screen: the app shell's top bar stays,
+   the rail owns the moves between sections and the way out, and only the body
+   under the heading changes. Nothing here scrolls the page — every plane owns
+   its own scroll, which is what gives the table's sticky header and sticky
+   pagination something to stick to. */
+
+.admin-area {
+  display: flex;
   flex: 1;
-  overflow: auto;
-  padding: 34px 22px;
+  min-height: 0;
 }
 
-.admin-page > * {
-  max-width: 980px;
-  margin-right: auto;
-  margin-left: auto;
+.admin-rail {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 168px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  padding: 13px 9px;
 }
 
-.admin-page h1 {
+.admin-rail ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-rail-link {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 6px 9px;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.admin-rail-link:hover,
+.admin-rail-link[aria-current="page"] {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.admin-rail-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The exit sits at the bottom behind a divider: leaving the area is not one of
+   its sections, and it belongs to the area rather than to whichever section
+   happens to be open. */
+.admin-rail-foot {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.admin-rail-exit {
+  color: var(--fg-3);
+}
+
+.admin-section {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The crumb sits on its own line above the title; the read-only marker rides on
+   the title's baseline at the far end of the same row. */
+.admin-section-head {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 22px 22px 13px;
+}
+
+/* Inside the h1 but on its own line above the section name, so the heading
+   reads as one thing to a screen reader and as two to the eye. */
+.admin-crumb {
+  display: block;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  letter-spacing: -0.005em;
+}
+
+.admin-section-name {
+  display: block;
+}
+
+.admin-readonly {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0 0 4px;
+  padding: 2px 7px;
+  /* Not --fg-3: it measures 2.8:1 on this plane, and this is a statement about
+     what the section can do, not decoration (§7). */
+  color: var(--fg-2);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+}
+
+.admin-section-title {
   margin: 0;
   color: var(--fg);
   font-size: 22px;
@@ -1002,27 +1149,73 @@ h1 {
   letter-spacing: -0.025em;
 }
 
-.admin-page p {
-  /* §4.18's measure, not a new number: the same 13px explanatory paragraph. */
-  max-width: 340px;
-  margin: 11px 0 0;
-  color: var(--fg-2);
-  font-size: 13px;
-  line-height: 1.55;
-  text-wrap: pretty;
+/* Focused programmatically when the section changes, which is a hand-off and
+   not a control: the ring is for the keyboard, so :focus alone must not draw
+   one. */
+.admin-section-title:focus {
+  outline: 0;
 }
 
-/* ---------- Read-only admin console (TAS-155) ---------- */
+.admin-section-title:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
 
-.admin-tables {
+/* A note is the whole body of the section when the catalog itself failed, and
+   a line inside the table plane otherwise. The outer case takes its inset from
+   the section, not from the note. */
+.admin-section > .admin-note {
+  padding: 0 22px;
+}
+
+/* ---------- Data section ---------- */
+
+.admin-data {
   display: flex;
-  flex-wrap: wrap;
-  gap: 22px;
-  margin-top: 22px;
+  flex: 1;
+  min-height: 0;
 }
 
-.admin-service h2 {
-  margin: 0 0 7px;
+/* The catalog column. A flat row of chips lived here until TAS-159; it held
+   four tables and broke at ten, and six service databases give three or four
+   dozen. */
+.admin-catalog {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 200px;
+  min-height: 0;
+  gap: 9px;
+  background: var(--bg);
+  padding: 0 13px 18px 22px;
+}
+
+/* The board's narrow-screen rule sends .search-box to the end of its flex row;
+   in this column that would drop the field under the list. */
+.admin-catalog .search-box {
+  order: 0;
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+}
+
+.admin-catalog .search-box input {
+  font-size: 12px;
+}
+
+.admin-catalog-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.admin-catalog-list > div + div {
+  margin-top: 13px;
+}
+
+.admin-catalog-group {
+  margin: 0 0 4px;
   color: var(--fg-3);
   font-size: 10.5px;
   font-weight: 600;
@@ -1030,59 +1223,77 @@ h1 {
   text-transform: uppercase;
 }
 
-.admin-service ul {
+.admin-catalog-list ul {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 1px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.admin-table-button {
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  padding: 0 10px;
-  cursor: pointer;
+/* Block rather than flex so a long table name actually ellipses — in a flex box
+   the text is an anonymous item and gets clipped without the ellipsis. The
+   line-height plus the padding is the 28px minimum click target (§1). */
+.admin-catalog-item {
+  display: block;
+  overflow: hidden;
+  border-radius: 7px;
+  padding: 5px 7px;
   color: var(--fg-2);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11.5px;
+  line-height: 18px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.admin-table-button:hover {
-  border-color: var(--border-strong);
+.admin-catalog-item:hover {
   color: var(--fg);
 }
 
-/* Selection is carried by the accent border and the foreground colour, not by
-   a filled chip: this is a navigation state, not an alert (§1). */
-.admin-table-button.is-active {
-  border-color: var(--accent);
+.admin-catalog-item[aria-current="page"] {
+  background: var(--surface-2);
   color: var(--fg);
 }
 
-.admin-table-button:focus-visible {
+.admin-catalog-item:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.admin-result {
-  margin-top: 26px;
+.admin-catalog-empty {
+  margin: 4px 0 0;
+  color: var(--fg-3);
+  font-size: 11.5px;
 }
 
-.admin-result-head {
+.admin-plane {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 22px 18px;
 }
 
-.admin-result-head h2 {
+.admin-plane-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 9px;
+}
+
+.admin-plane-spacer {
+  flex: 1;
+}
+
+.admin-table-name {
   margin: 0;
   color: var(--fg);
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .admin-count {
@@ -1091,28 +1302,115 @@ h1 {
   font-size: 11.5px;
 }
 
+/* ---------- Data section: the filter chip and its popover ---------- */
+
 .admin-filter {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 8px;
-  margin-top: 12px;
+  flex: none;
+  align-items: center;
+  gap: 2px;
 }
 
-.admin-filter label {
+.admin-filter-add,
+.admin-filter-chip-open,
+.admin-filter-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.admin-filter-add {
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  background: var(--surface);
+  padding: 0 11px;
+  color: var(--fg-2);
+}
+
+.admin-filter-add:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+/* An applied filter is the one accent on this plane (§2.1: accent marks the
+   active filter), so the chip is tinted rather than outlined. */
+.admin-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 20px;
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.admin-filter-chip-open {
+  padding: 0 4px 0 11px;
+  color: var(--accent);
+}
+
+/* A filter value is whatever was typed, so the chip truncates rather than
+   pushing the head sideways; the button's accessible name keeps all of it. */
+.admin-filter-chip-text {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-filter-chip-remove {
+  width: 28px;
+  color: var(--accent);
+}
+
+.admin-filter-add:focus-visible,
+.admin-filter-chip-open:focus-visible,
+.admin-filter-chip-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* §4.12's popover box, anchored to the chip that opened it. */
+.admin-filter-popover {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 20;
+  width: 268px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface);
+  padding: 13px;
+  box-shadow: var(--shadow-pop);
+  animation: tk-pop var(--dur-enter) var(--ease);
+}
+
+.admin-filter-popover form {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
-.admin-filter label span {
-  color: var(--fg-3);
-  font-size: 10.5px;
+.admin-filter-popover label + select,
+.admin-filter-popover label + input {
+  margin-bottom: 4px;
 }
 
-.admin-filter select,
-.admin-filter input {
-  height: 34px;
+.admin-filter-popover label span {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.admin-filter-popover select,
+.admin-filter-popover input {
+  width: 100%;
+  height: 32px;
   border: 1px solid var(--border-strong);
   border-radius: 9px;
   background: var(--surface);
@@ -1121,32 +1419,59 @@ h1 {
   font-size: 12.5px;
 }
 
-.admin-filter select:focus-visible,
-.admin-filter input:focus-visible {
+.admin-filter-popover select:focus-visible,
+.admin-filter-popover input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* The one thing on this screen that may exceed the content column: a table has
-   as many columns as the service gave it. It scrolls inside its own box so the
-   page itself never scrolls sideways. */
-.admin-table-scroll {
-  overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  margin-top: 12px;
+.admin-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
 }
 
+/* ---------- Data section: the rows ---------- */
+
+/* The one thing here that may exceed its column: a table has as many columns as
+   the service gave it. It scrolls inside its own box, in both directions, so
+   the page itself never scrolls — and it is focusable (§5.8) so the keyboard
+   can scroll it even when no cell inside is tabbable. */
+/* Hugs its rows rather than filling the plane. At `flex: 1` a five-row table
+   drew a bordered box three quarters empty, and a frame that large around that
+   little content reads as a load that failed rather than as air (§1 rule 2).
+   `min-height: 0` still lets it shrink and scroll when the rows outgrow the
+   viewport, which is what keeps the sticky header and footer meaningful. */
+.admin-table-scroll {
+  position: relative;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.admin-table-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* `separate` rather than `collapse`: a collapsed border belongs to the table,
+   not to the cell, so it stays behind while a sticky header or a frozen column
+   scrolls out from under it. */
 .admin-table {
-  border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 11.5px;
 }
 
 .admin-table th,
 .admin-table td {
+  height: 30px;
   border-bottom: 1px solid var(--border);
-  padding: 8px 11px;
+  padding: 6px 10px;
   text-align: left;
   white-space: nowrap;
 }
@@ -1155,18 +1480,50 @@ h1 {
   border-bottom: 0;
 }
 
-.admin-table th {
+.admin-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   background: var(--surface-2);
-  color: var(--fg-3);
-  font-size: 10.5px;
+  color: var(--fg-2);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
 }
 
+/* The payload is the contrasting thing and the chrome is pale (§1 rule 1); the
+   header keeps `--fg-2` from the rule above. */
 .admin-table td {
-  color: var(--fg-2);
+  color: var(--fg);
+}
+
+.admin-empty-cell {
+  color: var(--fg-3);
+  font-size: 11.5px;
+}
+
+/* Monospace only where values are read down the column — ids, timestamps,
+   numbers, JSON (§5.8). `email` and `display_name` are prose and keep the UI
+   font; mono on the whole table would be atmosphere, which
+   docs/ai/REFERENCE-LOCK.md rules out by name. */
+.admin-cell-mono {
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
+}
+
+/* The primary key stays put while the row scrolls sideways: a row nobody can
+   identify is not a row. The background has to be opaque or the scrolled
+   columns show through it. */
+.admin-table .admin-cell-frozen {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.admin-table thead .admin-cell-frozen {
+  z-index: 3;
+  background: var(--surface-2);
 }
 
 .admin-sort {
@@ -1174,7 +1531,6 @@ h1 {
   color: inherit;
   font: inherit;
   letter-spacing: inherit;
-  text-transform: inherit;
 }
 
 .admin-sort:hover {
@@ -1188,21 +1544,39 @@ h1 {
 
 /* Reads as a stated absence, not as a value. */
 .admin-hidden-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--fg-3);
   font-style: italic;
 }
 
+/* In the table's own footer rather than under it (§5.8), and stuck to both
+   edges: `left` as well as `bottom`, or a wide table would scroll the pager
+   out of sight sideways. */
 .admin-pager {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 7px 10px;
   color: var(--fg-3);
   font-size: 11.5px;
 }
 
+.admin-pager .secondary-button {
+  height: 26px;
+  padding: 0 11px;
+  font-size: 11.5px;
+}
+
 .admin-note {
-  margin-top: 14px;
+  margin: 0;
   color: var(--fg-2);
   font-size: 12.5px;
   line-height: 1.55;
@@ -1225,17 +1599,200 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-/* .secondary-button already carries the shape; an <a> only needs the underline
-   gone and the focus ring §7 asks for. */
-.admin-back {
-  display: inline-flex;
-  margin-top: 26px;
-  text-decoration: none;
+/* The request id is on its way somewhere else — a gateway log, a message to
+   the backend — so it is copied by clicking it (§5.8) rather than selected by
+   hand. It stays plain readable text either way. */
+/* The shortened primary key. Reads as text until it is hovered — it is a value
+   first and a control second, and the whole point of the column is that the eye
+   runs down it. */
+.admin-key {
+  border-radius: 5px;
+  padding: 1px 4px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
 }
 
-.admin-back:focus-visible {
+/* --surface-2, not --surface-3: the table body is `--surface`, not a recessed
+   plane, and §2.1 reserves -3 for hover on recessed ones. */
+.admin-key:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.admin-key:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Two seconds of accent tint instead of two seconds of reflow. */
+.admin-key.is-copied {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--fg);
+}
+
+/* Same width, different answer. The word goes to the live region — colour
+   alone would leave a colour-blind reader with a click that did nothing. */
+.admin-key.is-failed {
+  background: color-mix(in oklab, var(--danger) 14%, transparent);
+  color: var(--fg);
+}
+
+.admin-request-id-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-request-id {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  gap: 5px;
+  border-radius: 6px;
+  padding: 0 6px;
+  cursor: pointer;
+  color: var(--fg-2);
+  font: inherit;
+  letter-spacing: inherit;
+  overflow-wrap: anywhere;
+}
+
+.admin-request-id:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.admin-request-id:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.admin-copied {
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+/* ---------- Section under construction (§4.19) ---------- */
+
+.admin-placeholder {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 22px;
+  text-align: center;
+  /* Token duration only, so reduced motion collapses it through §3 and the
+     0% frame stays readable. */
+  animation: tk-pop var(--dur-enter) var(--ease);
+}
+
+/* §4.19. Sized for the figure, not for the 3:2 frame it sits in — the drawing
+   reads at roughly 220 inside a 256 box. */
+.admin-placeholder-mascot {
+  width: 256px;
+  max-width: 70vw;
+  margin-bottom: 22px;
+}
+
+.admin-placeholder-title {
+  margin: 0;
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.admin-placeholder-text {
+  max-width: 360px;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  text-wrap: pretty;
+}
+
+.admin-placeholder-link {
+  border-radius: 3px;
+  color: var(--fg-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.admin-placeholder-link:hover {
+  color: var(--accent);
+}
+
+.admin-placeholder-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The rail folds into a strip above the content (§5.8), and below that the
+   catalog stops being a column of its own — at phone width two columns leave
+   neither of them usable. */
+@media (max-width: 900px) {
+  .admin-area {
+    flex-direction: column;
+  }
+
+  .admin-rail {
+    flex-direction: row;
+    align-items: center;
+    width: auto;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 7px 12px;
+  }
+
+  .admin-rail ul {
+    flex-direction: row;
+    gap: 4px;
+  }
+
+  .admin-rail-foot {
+    margin: 0 0 0 auto;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+    padding: 0 0 0 8px;
+  }
+}
+
+@media (max-width: 720px) {
+  .admin-data {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .admin-catalog {
+    width: auto;
+    max-height: 172px;
+    padding: 0 14px 11px;
+  }
+
+  /* Stacked, the list is a short scroll box, and its bottom edge used to slice
+     a group heading in half — which reads as a rendering fault rather than as
+     "there is more below". The fade says the same thing without the broken
+     look; `-webkit-` first because Safari still needs the prefix. */
+  .admin-catalog-list {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+  }
+
+  .admin-section-head {
+    padding: 16px 14px 11px;
+  }
+
+  .admin-plane {
+    padding: 0 14px 14px;
+  }
+
+  .admin-section > .admin-note {
+    padding: 0 14px;
+  }
 }
 
 .board-project-name {
@@ -1265,6 +1822,16 @@ h1 {
   padding: 0 10px;
   background: var(--surface);
   color: var(--fg-3);
+}
+
+/* The input inside clears the browser default and nothing replaced it, so this
+   field had no focus indicator at all (§7). The ring goes on the box because
+   the box is what looks like the control. Product-wide, not only in /admin:
+   the same component is the board's search. */
+.search-box:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .search-box input {

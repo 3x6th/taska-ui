@@ -16,20 +16,35 @@ async function openConsole(page: Page) {
   await expect(page).toHaveURL(/\/projects$/);
 
   await page.goto("/admin");
-  await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();
+  // /admin is an area with sections now (DESIGN.md §5.8): it redirects into
+  // Data, and the heading is the section's.
+  await expect(page.getByRole("heading", { level: 1, name: "Data" })).toBeVisible();
 }
 
 test("walks the catalog from a service down to a table's rows", async ({ page }) => {
   await openConsole(page);
 
-  // Opens on something rather than an empty frame.
+  // Opens on something rather than an empty frame — and says so in the address.
+  await expect(page).toHaveURL(/\/admin\/data\/auth\/users$/);
   await expect(page.getByRole("heading", { name: "auth.users" })).toBeVisible();
   await expect(page.getByRole("cell", { name: "anna@example.com" })).toBeVisible();
 
-  await page.getByRole("button", { name: "audit_log", exact: true }).click();
+  await page.getByRole("link", { name: "audit_log", exact: true }).click();
 
+  await expect(page).toHaveURL(/\/admin\/data\/admin\/audit_log$/);
   await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: /action/i })).toBeVisible();
+});
+
+test("a copied link opens the same table, page and filter", async ({ page }) => {
+  await openConsole(page);
+
+  await page.goto("/admin/data/auth/users?filter=email:contains:anna@");
+
+  await expect(page.getByRole("heading", { name: "auth.users" })).toBeVisible();
+  await expect(page.locator(".admin-table tbody tr")).toHaveCount(1);
+  await expect(page.getByRole("cell", { name: "anna@example.com" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove filter on email" })).toBeVisible();
 });
 
 test("never renders the value of a column the catalog marked sensitive", async ({ page }) => {
@@ -45,9 +60,9 @@ test("never renders the value of a column the catalog marked sensitive", async (
   // transient leak that used to happen mid-switch is invisible to Playwright,
   // because `not.toContainText` polls until it holds and a leak lasting one
   // render passes trivially. That case is pinned in
-  // src/screens/AdminScreen.test.tsx, which can hold the request open and look
-  // at the frame in between. Do not treat this assertion as covering it.
-  await page.getByRole("button", { name: "audit_log", exact: true }).click();
+  // src/screens/admin/AdminScreen.test.tsx, which can hold the request open and
+  // look at the frame in between. Do not treat this assertion as covering it.
+  await page.getByRole("link", { name: "audit_log", exact: true }).click();
   await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText("$2b$10$");
 });
@@ -55,7 +70,7 @@ test("never renders the value of a column the catalog marked sensitive", async (
 test("pages through a table and says where it is", async ({ page }) => {
   await openConsole(page);
 
-  await page.getByRole("button", { name: "audit_log", exact: true }).click();
+  await page.getByRole("link", { name: "audit_log", exact: true }).click();
   await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
 
   const firstCell = page.locator(".admin-table tbody tr td").first();
@@ -68,6 +83,8 @@ test("pages through a table and says where it is", async ({ page }) => {
   await page.getByRole("button", { name: "Next" }).click();
 
   await expect(page.getByText(/Page 2 of \d+/)).toBeVisible();
+  // The page is in the address, so this view is linkable like any other.
+  await expect(page).toHaveURL(/page=2/);
   await expect(page.getByRole("button", { name: "Previous" })).toBeEnabled();
   expect(await firstCell.innerText()).not.toBe(onPageOne);
 });
@@ -75,14 +92,14 @@ test("pages through a table and says where it is", async ({ page }) => {
 test("sorts by a column and reverses on a second press", async ({ page }) => {
   await openConsole(page);
 
-  await page.getByRole("button", { name: "audit_log", exact: true }).click();
+  await page.getByRole("link", { name: "audit_log", exact: true }).click();
   await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
 
   const firstCell = page.locator(".admin-table tbody tr td").first();
   const sortById = page.getByRole("button", { name: /^id/i });
 
   // Concrete ids rather than "the value changed": the header's aria-sort flips
-  // from local state the instant it is clicked, while the rows come back from
+  // from the address the instant it is clicked, while the rows come back from
   // the server a moment later, so comparing before/after can pass on stale
   // rows. The seed's audit_log runs audit-001..audit-047.
   await sortById.click();
@@ -104,6 +121,7 @@ test("filters a table down and back", async ({ page }) => {
   const before = await rows.count();
   expect(before).toBeGreaterThan(1);
 
+  await page.getByRole("button", { name: "Filter" }).click();
   await page.getByLabel("Column", { exact: true }).selectOption("email");
   await page.getByLabel("Match", { exact: true }).selectOption("contains");
   await page.getByLabel("Value", { exact: true }).fill("anna@");
@@ -112,7 +130,9 @@ test("filters a table down and back", async ({ page }) => {
   await expect(rows).toHaveCount(1);
   await expect(page.getByRole("cell", { name: "anna@example.com" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Clear" }).click();
+  // The applied filter is a chip, and its cross is what removes it — there is
+  // no separate Clear row any more (§5.8).
+  await page.getByRole("button", { name: "Remove filter on email" }).click();
   await expect(rows).toHaveCount(before);
 });
 
@@ -121,12 +141,39 @@ test("a filter that matches nothing says so instead of looking broken", async ({
 
   await expect(page.getByRole("heading", { name: "auth.users" })).toBeVisible();
 
+  await page.getByRole("button", { name: "Filter" }).click();
   await page.getByLabel("Column", { exact: true }).selectOption("email");
   await page.getByLabel("Match", { exact: true }).selectOption("contains");
   await page.getByLabel("Value", { exact: true }).fill("nobody-here-at-all");
   await page.getByRole("button", { name: "Apply" }).click();
 
   await expect(page.getByText("No rows match this filter.")).toBeVisible();
+});
+
+test("finds a table through the catalog search", async ({ page }) => {
+  await openConsole(page);
+
+  const catalog = page.getByRole("navigation", { name: "Tables" });
+  await page.getByLabel("Search tables").fill("audit");
+
+  await expect(catalog.getByRole("link", { name: "audit_log", exact: true })).toBeVisible();
+  await expect(catalog.getByRole("link", { name: "users", exact: true })).toHaveCount(0);
+
+  await page.getByLabel("Search tables").fill("nothing like this");
+  await expect(page.getByText("Nothing matches")).toBeVisible();
+});
+
+test("stands in for a section that has no endpoints yet", async ({ page }) => {
+  await openConsole(page);
+
+  await page.getByRole("navigation", { name: "Administration" }).getByRole("link", { name: "Events" }).click();
+
+  await expect(page).toHaveURL(/\/admin\/events$/);
+  await expect(page.getByRole("heading", { name: "Events — under construction" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "TAS-105" })).toHaveAttribute(
+    "href",
+    "https://jira.ozero.dev/browse/TAS-105",
+  );
 });
 
 test("a plain user cannot reach the console at all", async ({ page }) => {
