@@ -116,6 +116,49 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   router would close it.
 - **TAS-142 execution** — the a11y/contrast/gap list already agreed and filed.
 
+### Left open by TAS-159 (from `art-director` and `release-reviewer`, 2026-08-10)
+
+Non-blocking findings from the two verdicts on the admin area. The blocking
+ones were fixed in the branch; these were not, and each says why.
+
+- **`--fg-3` is 2.76:1 on `--surface-2` and 2.91:1 on `--bg` in light** —
+  under the 3:1 floor §7 sets even for non-critical meta. It lands on the
+  pager readout, the row count and other statements, not just decoration.
+  Dark measures 3.2–3.3:1 and is fine. The token pair is product-wide and
+  older than TAS-159, so changing it belongs with TAS-142 rather than inside
+  an admin story; TAS-159 moved the `read-only` marker to `--fg-2` locally.
+- **`.secondary-button` has no `:focus-visible` rule** — Apply, Try again and
+  the pager fall back to Chrome's `auto 1px` instead of §7's `2px --accent`.
+  Product-wide, now on the admin keyboard path.
+- **Lucide icons ship at `stroke-width: 2`** against §8's 1.2–1.7. Only
+  `ThemeToggle` sets it today; TAS-159 added ten more usages. One prop in one
+  place if the icons are ever wrapped.
+- **The admin area is desktop-first and now says so** (§5.8), but the phone
+  layout it still renders has 26–29px targets against §7's 44. The real fix
+  `art-director` proposed: below 720 make the catalog a disclosure whose
+  trigger is the table name already in the plane head, so the rows get the
+  whole screen. The fade mask on the list's bottom edge is a patch and goes
+  away with it.
+- **A paused react-query never renders "could not be reached"** — offline, the
+  Data section sits on "Loading rows…" indefinitely. §5.8 promises the
+  unreachable case as one of three distinguishable answers, and `fetchStatus:
+  "paused"` is that case.
+- **`/admin/data/:service` alone silently redirects to the first table of the
+  first service**, discarding the service that was asked for.
+- **Long values in ordinary columns are not clamped.** TAS-159 shortened the
+  frozen primary key because its width is a permanent tax; an ordinary column
+  can still print a 425px `actor_id`. `max-width` + ellipsis + `title` is the
+  same treatment without the copy affordance.
+- **A failed clipboard write says nothing** (`useCopied`). It correctly never
+  claims a false success, but silence makes the click indistinguishable from
+  a dead control.
+- **`.notfound-mascot`'s comment reasons about a 26px gap** that the 3:2 inset
+  frame turned into a measured ~92px. Re-tune the spacing or drop the
+  reasoning; do not leave the number that no longer describes anything.
+- **The channel PNGs are stored as full RGB** (`docs/design/mascot-channels/`,
+  2.7 MB). They are single-channel maps; a greyscale pass would remove most of
+  that with no loss of source fidelity.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each

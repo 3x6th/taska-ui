@@ -20,13 +20,28 @@ export interface AdminSection {
    * "no placeholder here".
    */
   stories: string[];
+  /**
+   * Whether the section only reads (§5.8). Per section, not per area, because
+   * that is how it will stop being true: TAS-106 brings a retry to Events and
+   * TAS-107/TAS-108 bring block and unblock to Users, and each flips its own
+   * flag. Owning it at the area level would mean rewriting the shell under
+   * whichever story lands first.
+   */
+  readOnly: boolean;
 }
 
 export const adminSections: AdminSection[] = [
-  { id: "data", label: "Data", path: "/admin/data", icon: Database, stories: [] },
-  { id: "events", label: "Events", path: "/admin/events", icon: Radio, stories: ["TAS-105"] },
-  { id: "users", label: "Users", path: "/admin/users", icon: Users, stories: ["TAS-107", "TAS-108"] },
-  { id: "audit", label: "Audit", path: "/admin/audit", icon: ScrollText, stories: ["TAS-160"] },
+  { id: "data", label: "Data", path: "/admin/data", icon: Database, stories: [], readOnly: true },
+  { id: "events", label: "Events", path: "/admin/events", icon: Radio, stories: ["TAS-105"], readOnly: true },
+  {
+    id: "users",
+    label: "Users",
+    path: "/admin/users",
+    icon: Users,
+    stories: ["TAS-107", "TAS-108"],
+    readOnly: true,
+  },
+  { id: "audit", label: "Audit", path: "/admin/audit", icon: ScrollText, stories: ["TAS-160"], readOnly: true },
 ];
 
 /** The section a path inside `/admin` belongs to, or `undefined` for `/admin` itself. */

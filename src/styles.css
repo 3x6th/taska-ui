@@ -1106,33 +1106,39 @@ h1 {
 /* The crumb sits on its own line above the title; the read-only marker rides on
    the title's baseline at the far end of the same row. */
 .admin-section-head {
-  display: grid;
+  display: flex;
   flex: none;
-  align-items: baseline;
-  grid-template-areas:
-    "crumb ."
-    "title marker";
-  grid-template-columns: 1fr auto;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
   padding: 22px 22px 13px;
 }
 
+/* Inside the h1 but on its own line above the section name, so the heading
+   reads as one thing to a screen reader and as two to the eye. */
 .admin-crumb {
-  margin: 0 0 1px;
-  color: var(--fg-3);
+  display: block;
+  color: var(--fg-2);
   font-size: 11.5px;
   font-weight: 550;
-  grid-area: crumb;
+  letter-spacing: -0.005em;
+}
+
+.admin-section-name {
+  display: block;
 }
 
 .admin-readonly {
+  flex: none;
   border: 1px solid var(--border);
   border-radius: 6px;
-  margin: 0;
+  margin: 0 0 4px;
   padding: 2px 7px;
-  color: var(--fg-3);
+  /* Not --fg-3: it measures 2.8:1 on this plane, and this is a statement about
+     what the section can do, not decoration (§7). */
+  color: var(--fg-2);
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 10.5px;
-  grid-area: marker;
 }
 
 .admin-section-title {
@@ -1140,7 +1146,6 @@ h1 {
   color: var(--fg);
   font-size: 22px;
   font-weight: 700;
-  grid-area: title;
   letter-spacing: -0.025em;
 }
 
@@ -1432,9 +1437,14 @@ h1 {
    the service gave it. It scrolls inside its own box, in both directions, so
    the page itself never scrolls — and it is focusable (§5.8) so the keyboard
    can scroll it even when no cell inside is tabbable. */
+/* Hugs its rows rather than filling the plane. At `flex: 1` a five-row table
+   drew a bordered box three quarters empty, and a frame that large around that
+   little content reads as a load that failed rather than as air (§1 rule 2).
+   `min-height: 0` still lets it shrink and scroll when the rows outgrow the
+   viewport, which is what keeps the sticky header and footer meaningful. */
 .admin-table-scroll {
   position: relative;
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--border);
@@ -1480,8 +1490,15 @@ h1 {
   font-weight: 600;
 }
 
+/* The payload is the contrasting thing and the chrome is pale (§1 rule 1); the
+   header keeps `--fg-2` from the rule above. */
 .admin-table td {
-  color: var(--fg-2);
+  color: var(--fg);
+}
+
+.admin-empty-cell {
+  color: var(--fg-3);
+  font-size: 11.5px;
 }
 
 /* Monospace only where values are read down the column — ids, timestamps,
@@ -1597,14 +1614,22 @@ h1 {
   letter-spacing: inherit;
 }
 
+/* --surface-2, not --surface-3: the table body is `--surface`, not a recessed
+   plane, and §2.1 reserves -3 for hover on recessed ones. */
 .admin-key:hover {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--fg);
 }
 
 .admin-key:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* Two seconds of accent tint instead of two seconds of reflow. */
+.admin-key.is-copied {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--fg);
 }
 
 .admin-request-id-line {
@@ -1790,6 +1815,16 @@ h1 {
   padding: 0 10px;
   background: var(--surface);
   color: var(--fg-3);
+}
+
+/* The input inside clears the browser default and nothing replaced it, so this
+   field had no focus indicator at all (§7). The ring goes on the box because
+   the box is what looks like the control. Product-wide, not only in /admin:
+   the same component is the board's search. */
+.search-box:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .search-box input {

@@ -212,7 +212,15 @@ export function AdminDataSection() {
           ) : null}
         </div>
 
-        {rowsQuery.isError && rows === undefined ? (
+        {/* `rows === undefined` alone made this unreachable after the first
+            successful load: `placeholderData` keeps the previous table's rows
+            forever, so a failed request left those rows on screen and said
+            nothing — the reader clicks a table and simply never gets it. That
+            is the path that fails in production today, since the live gateway
+            500s on every table (TAS-156). `switchingTable` is the honest test:
+            the rows on screen belong to a different table than the one asked
+            for, so they are not an answer to this request. */}
+        {rowsQuery.isError && (rows === undefined || switchingTable) ? (
           <AdminError error={rowsQuery.error} onRetry={() => void rowsQuery.refetch()} />
         ) : rowsQuery.isPending ? (
           <p className="admin-note" role="status">
@@ -229,12 +237,13 @@ export function AdminDataSection() {
               without risking a column that should have stayed hidden.
             </p>
           </div>
-        ) : rows && shownTable && rows.rows.length === 0 ? (
-          <p className="admin-note" role="status">
-            {view.filter ? "No rows match this filter." : "This table is empty."}
-          </p>
         ) : rows && shownTable ? (
+          // An empty result empties the table; it does not destroy it. Removing
+          // the header took away the column names the reader had just filtered
+          // on, and removing the footer moved everything on the page — the same
+          // reason §5.8 gives for keeping the footer on a single page.
           <AdminRowsTable
+            empty={view.filter ? "No rows match this filter." : "This table is empty."}
             onPage={(page) => update({ page })}
             onSort={toggleSort}
             order={view.order}

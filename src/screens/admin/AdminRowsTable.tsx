@@ -17,6 +17,8 @@ interface AdminRowsTableProps {
   order: AdminSortOrder;
   onSort: (column: string) => void;
   onPage: (page: number) => void;
+  /** Said in the body when there are no rows, with the table itself kept. */
+  empty: string;
 }
 
 /**
@@ -25,7 +27,7 @@ interface AdminRowsTableProps {
  * rows, a sticky header, the primary key frozen against the horizontal scroll,
  * and the pagination in the table's own sticky footer.
  */
-export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onPage }: AdminRowsTableProps) {
+export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onPage, empty }: AdminRowsTableProps) {
   const columns = rows.meta.columns;
   const name = `${rows.meta.service}.${rows.meta.table}`;
 
@@ -90,6 +92,13 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
           </tr>
         </thead>
         <tbody>
+          {rows.rows.length === 0 ? (
+            <tr>
+              <td className="admin-empty-cell" colSpan={columns.length || 1} role="status">
+                {empty}
+              </td>
+            </tr>
+          ) : null}
           {rows.rows.map((row, index) => (
             <tr key={String(row[table.primaryKey] ?? index)}>
               {columns.map((column) => (
@@ -171,14 +180,18 @@ function PrimaryKeyCell({ value }: { value: string }) {
     <>
       <button
         aria-label={`Copy ${value}`}
-        className="admin-key"
+        className={copied ? "admin-key is-copied" : "admin-key"}
         onClick={() => copy(value)}
         title={value}
         type="button"
       >
         {short}
       </button>
-      <span className="admin-copied" role="status">
+      {/* The confirmation takes no width. An inline "Copied" widened the frozen
+          column by 45px for two seconds and shifted every column twice, in a
+          table whose whole point is that the eye runs down a column — so the
+          eye gets a tint on the key itself and the screen reader gets this. */}
+      <span className="visually-hidden" role="status">
         {copied ? "Copied" : ""}
       </span>
     </>

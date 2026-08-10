@@ -120,21 +120,28 @@ export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <section aria-labelledby={headingId} className="admin-section">
           <header className="admin-section-head">
             {/* The area names itself, not only the section: «Data» on its own
-                reads as one more product screen (§5.8). The crumb is text, not
-                a link — `/admin` only redirects here. */}
-            <p className="admin-crumb">
-              Administration <span aria-hidden="true">›</span>
-            </p>
-            {/* tabIndex -1 so the effect above can put focus here; it is not in
+                reads as one more product screen (§5.8). Both parts live inside
+                the h1 — the reason the crumb exists is just as true in the
+                accessibility tree, and a sibling <p> would leave the heading
+                announced as the bare section name. The grid places the two
+                spans; the crumb is text, not a link, because `/admin` only
+                redirects here.
+
+                tabIndex -1 so the effect above can put focus here; it is not in
                 the tab order and never takes focus from a pointer. */}
             <h1 className="admin-section-title" id={headingId} ref={headingRef} tabIndex={-1}>
-              {section.label}
+              <span className="admin-crumb">
+                Administration
+                <span aria-hidden="true"> ›</span>
+              </span>
+              <span className="admin-section-name">{section.label}</span>
             </h1>
-            {/* Not a request state and not decoration: everything reachable
-                from this area today only reads, and TAS-106/107/108 bring
-                writing to Users and Events. The marker draws that line before
-                the two get mixed, and leaves the section that gains writes. */}
-            <p className="admin-readonly">read-only</p>
+            {/* Not a request state and not decoration: this section only reads,
+                and TAS-106/107/108 bring writing to Events and Users. The
+                marker draws that line before the two get mixed, and leaves the
+                section that gains writes — which is why it is a field on the
+                section rather than a fixture of the shell. */}
+            {section.readOnly ? <p className="admin-readonly">read-only</p> : null}
           </header>
           <Outlet />
         </section>

@@ -268,7 +268,7 @@ describe("/admin", () => {
 
     // The heading is the section's, because /admin is an area rather than a
     // screen (§5.8) — and a bare /admin resolves into a real address.
-    expect(await screen.findByRole("heading", { level: 1, name: "Data" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Data/ })).toBeVisible();
     // The substitution of the catalog's first table is visible in the address
     // rather than silent, which is why it can only be asserted once the catalog
     // has answered.
@@ -341,13 +341,13 @@ describe("/admin", () => {
     });
 
     expect(screen.queryByRole("heading", { name: "Page not found" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Data" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Administration.*Data/ })).not.toBeInTheDocument();
 
     await act(async () => {
       releaseMe();
     });
 
-    expect(await screen.findByRole("heading", { name: "Data" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /Administration.*Data/ })).toBeVisible();
   });
 
   it("does not flash not found on the way to answering a plain user", async () => {
@@ -397,7 +397,7 @@ describe("/admin sections under construction", () => {
   it("stands in for Events with the story that will open it", async () => {
     renderAdmin("/admin/events");
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Events" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Events/ })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Events — under construction" })).toBeVisible();
     const story = screen.getByRole("link", { name: "TAS-105" });
     expect(story).toHaveAttribute("href", "https://jira.ozero.dev/browse/TAS-105");
@@ -410,7 +410,7 @@ describe("/admin sections under construction", () => {
   it("names both stories for Users", async () => {
     renderAdmin("/admin/users");
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Users" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Users/ })).toBeVisible();
     expect(screen.getByRole("link", { name: "TAS-107" })).toBeVisible();
     expect(screen.getByRole("link", { name: "TAS-108" })).toBeVisible();
   });
@@ -430,7 +430,7 @@ describe("/admin sections under construction", () => {
 
     fireEvent.click(within(rail).getByRole("link", { name: "Audit" }));
 
-    const heading = await screen.findByRole("heading", { level: 1, name: "Audit" });
+    const heading = await screen.findByRole("heading", { level: 1, name: /Administration.*Audit/ });
     expect(heading).toHaveFocus();
   });
 });
@@ -520,7 +520,7 @@ describe("/admin console", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reached|would not serve/i);
     // The area still frames itself and still offers the way out.
-    expect(screen.getByRole("heading", { level: 1, name: "Data" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: /Administration.*Data/ })).toBeVisible();
     expect(screen.getByRole("link", { name: "Back to projects" })).toBeVisible();
   });
 });
@@ -666,7 +666,7 @@ describe("/admin console, when the catalog and the rows disagree", () => {
     expect(document.body.textContent).not.toContain(SECRET);
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     // The area still frames itself and still offers the way out.
-    expect(screen.getByRole("heading", { level: 1, name: "Data" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: /Administration.*Data/ })).toBeVisible();
     expect(screen.getByRole("link", { name: "Back to projects" })).toBeVisible();
   });
 });
