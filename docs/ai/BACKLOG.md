@@ -149,9 +149,27 @@ ones were fixed in the branch; these were not, and each says why.
   frozen primary key because its width is a permanent tax; an ordinary column
   can still print a 425px `actor_id`. `max-width` + ellipsis + `title` is the
   same treatment without the copy affordance.
-- **A failed clipboard write says nothing** (`useCopied`). It correctly never
-  claims a false success, but silence makes the click indistinguishable from
-  a dead control.
+- **No test anywhere renders `sortableColumns: []` / `filterableColumns: []`**,
+  which is what the live gateway always sends (`API-DIVERGENCE.md`). The
+  `stated()` fallback in `AdminDataSection` is the single thing keeping sorting
+  and filtering alive against a real gateway, and if it regressed all 135 unit
+  tests and 93 Playwright runs would stay green while every real table lost
+  both. One screen test with both lists empty covers it. Found by
+  `release-reviewer` and the more valuable half of the same lesson as the two
+  bugs below: the fake agreeing with the mock is not the same as agreeing with
+  the contract.
+- **The page clamp has two narrow holes left** (`AdminDataSection`). An empty
+  table plus a stale page is not clamped at all, because `totalPages >= 1` is a
+  precondition rather than a floor — against a gateway that echoes
+  `currentPage` the footer would read "Page 5 of 1". And `switchingTable`
+  catches only a *table* mismatch, so a same-table transition where the filter
+  changed can still compare against the previous filter's pagination;
+  unreachable from the UI today because every filter change resets the page,
+  reachable through history after the cache entry is gc'd. `!rowsQuery.isPlaceholderData`
+  subsumes both.
+- **`RestTaskaApi.listAdminRows` defaults the `pagination` object but not its
+  fields**, all of which are optional in `PaginationInfoDto`. A present-but-
+  partial object renders "Page 1 of NaN". Pre-existing and untested.
 - **`.notfound-mascot`'s comment reasons about a 26px gap** that the 3:2 inset
   frame turned into a measured ~92px. Re-tune the spacing or drop the
   reasoning; do not leave the number that no longer describes anything.
