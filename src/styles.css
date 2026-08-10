@@ -1659,10 +1659,8 @@ h1 {
   animation: tk-pop var(--dur-enter) var(--ease);
 }
 
-/* Waiting for the asset (§4.19): the mascot in the hard hat is supplied by the
-   owner and wired in a second pass — see the slot comment in
-   AdminSectionPlaceholder.tsx. The box is specified here so that landing the
-   file is one import and one <img>. */
+/* §4.19. Sized for the figure, not for the 3:2 frame it sits in — the drawing
+   reads at roughly 220 inside a 256 box. */
 .admin-placeholder-mascot {
   width: 256px;
   max-width: 70vw;

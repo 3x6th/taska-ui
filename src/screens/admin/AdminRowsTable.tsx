@@ -57,7 +57,10 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
     // no sortable column has nothing tabbable inside it, and without this it
     // cannot be scrolled sideways from the keyboard at all in Safari or Firefox.
     <div aria-label={`${name} rows`} className="admin-table-scroll" role="region" tabIndex={0}>
-      <table className="admin-table">
+      {/* Named as well as the region around it: table-navigation mode announces
+          the table itself, and an anonymous one tells the reader nothing about
+          which table they have landed in. */}
+      <table aria-label={name} className="admin-table">
         <thead>
           <tr>
             {columns.map((column) => {

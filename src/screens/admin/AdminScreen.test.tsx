@@ -95,7 +95,17 @@ const {
         },
       ],
     },
-    "admin.audit_log": { columns: ["id", "action"], rows: [{ id: "a1", action: "TABLE_READ" }] },
+    // Three rows against a page size of 2, so this table genuinely has a second
+    // page — the tests about paging and about a page past the end both need one
+    // that exists.
+    "admin.audit_log": {
+      columns: ["id", "action"],
+      rows: [
+        { id: "a1", action: "TABLE_READ" },
+        { id: "a2", action: "TABLE_READ" },
+        { id: "a3", action: "TABLE_READ" },
+      ],
+    },
   };
 
   const api = {
@@ -134,15 +144,24 @@ const {
           },
         };
       }
+      // Paginated for real rather than always claiming a single page. A fake
+      // that reports `totalPages: 1` whatever it was asked for cannot show the
+      // difference between a page that exists and one past the end, which is
+      // exactly the case the screen has to handle. `pageSize` is small so a
+      // seed of a few rows still produces more than one page.
+      const pageSize = 2;
+      const totalPages = Math.max(1, Math.ceil(table.rows.length / pageSize));
+      const currentPage = Math.min(Math.max(1, query.page ?? 1), totalPages);
+      const start = (currentPage - 1) * pageSize;
       return {
-        rows: table.rows,
+        rows: table.rows.slice(start, start + pageSize),
         pagination: {
-          currentPage: query.page ?? 1,
-          pageSize: 20,
+          currentPage,
+          pageSize,
           totalRows: table.rows.length,
-          totalPages: 1,
-          hasNext: false,
-          hasPrev: false,
+          totalPages,
+          hasNext: currentPage < totalPages,
+          hasPrev: currentPage > 1,
         },
         meta: {
           service: query.service,
@@ -536,6 +555,38 @@ describe("/admin console selection in the URL", () => {
     });
     // And the applied filter is stated on screen, not only in the address.
     expect(screen.getByRole("button", { name: "Remove filter on action" })).toBeVisible();
+  });
+
+  // Hiding the sort button and leaving the column out of the filter list only
+  // binds people who use the controls. The address bar is the other door, and
+  // it went straight to the gateway: ordering by a hidden column leaks its
+  // order, and filtering on it turns the table into a match oracle for the
+  // value the console just refused to print.
+  it("refuses a sort the address asks for on a column the catalog hides", async () => {
+    renderAdmin("/admin/data/auth/users?sort=password_hash&order=desc");
+
+    expect(await screen.findByRole("heading", { name: "auth.users" })).toBeVisible();
+    expect(lastRowsQuery()?.sort).toBeUndefined();
+    expect(lastRowsQuery()?.order).toBeUndefined();
+  });
+
+  it("refuses a filter the address asks for on a column the catalog hides", async () => {
+    renderAdmin("/admin/data/auth/users?filter=password_hash:contains:mock3");
+
+    expect(await screen.findByRole("heading", { name: "auth.users" })).toBeVisible();
+    expect(lastRowsQuery()?.filters).toBeUndefined();
+    // And the chip does not claim a filter is applied when none was sent.
+    expect(screen.queryByRole("button", { name: /Remove filter/ })).toBeNull();
+  });
+
+  it("lands on the last page when the address names one past the end", async () => {
+    renderAdmin("/admin/data/admin/audit_log?page=999");
+
+    expect(await screen.findByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+    // The rows are the last page's, and the pager is still there to move with —
+    // not "This table is empty" and no way back.
+    expect(lastRowsQuery()?.page).toBe(2);
+    expect(screen.getByRole("button", { name: "Previous" })).toBeEnabled();
   });
 
   it("writes the chosen table into the address, without the previous table's query", async () => {

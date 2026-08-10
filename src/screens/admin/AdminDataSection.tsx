@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import { taskaApi } from "../../api/client";
+import type { AdminTable } from "../../domain/types";
 import { AdminCatalogColumn } from "./AdminCatalogColumn";
 import { AdminError } from "./AdminError";
 import { AdminFilterControl } from "./AdminFilterControl";
@@ -38,7 +39,22 @@ export function AdminDataSection() {
   // something. It is redirected into the URL below rather than held in state.
   const fallback = defaultSelection(catalog);
   const current = selection ?? fallback;
-  const view = readViewState(searchParams);
+  // What the URL *says*. Not what we act on: it is user input, and on this
+  // screen one of its fields decides which column the server is asked to order
+  // or match on.
+  const asked = readViewState(searchParams);
+  // The catalog entry for the *selected* table, which is the right source here
+  // even though rendering uses the shown one: this decides the request, and the
+  // request is about the selection.
+  const selectedTable = useMemo(() => findTable(catalog, current), [catalog, current]);
+  // A column whose values we refuse to show must not be sortable or filterable
+  // either — ordering by it leaks its order, and filtering on it turns the
+  // table into a match oracle for the value we just hid. Hiding the controls
+  // enforced that only for people who use the controls; `?sort=password_hash`
+  // in the address bar went straight through to the gateway. Fail closed: until
+  // the catalog says which columns are sensitive, none of them may be sorted or
+  // filtered on.
+  const view = useMemo(() => withoutSensitive(asked, selectedTable), [asked, selectedTable]);
 
   const rowsQuery = useQuery({
     queryKey: [
@@ -131,6 +147,16 @@ export function AdminDataSection() {
   }
 
   const rows = shown;
+  // A page past the end — a stale link, a hand-edited address, a table that has
+  // shrunk since — otherwise renders "This table is empty", which is a lie
+  // about the table, and takes the pager with it, so there is no way back.
+  // Land on the last real page instead and say nothing: the address was wrong,
+  // not the reader.
+  if (rows && rows.pagination.totalPages >= 1 && view.page > rows.pagination.totalPages) {
+    const query = writeViewState({ ...view, page: rows.pagination.totalPages }).toString();
+    const path = `/admin/data/${rows.meta.service}/${rows.meta.table}`;
+    return <Navigate replace to={query ? `${path}?${query}` : path} />;
+  }
   const columns = rows?.meta.columns ?? [];
   // The gateway does not populate `sortableColumns`/`filterableColumns` yet —
   // they are unfinished on the backend (docs/ai/API-DIVERGENCE.md), and taking
@@ -221,4 +247,28 @@ export function AdminDataSection() {
       </div>
     </div>
   );
+}
+
+/**
+ * Strip a sort or a filter that names a `sensitive` column, so neither can
+ * reach the gateway however it got into the address.
+ *
+ * `table` undefined means the catalog has not answered yet, or has no entry for
+ * this table — in both cases we do not know which columns hold secrets, and the
+ * answer is to ask for neither rather than to assume none. Once the catalog
+ * lands, a legitimate sort or filter comes back on its own, because this reads
+ * the URL rather than replacing it: the address a person copied stays what they
+ * copied, and only what we *ask for* is narrowed.
+ */
+function withoutSensitive(view: AdminViewState, table: AdminTable | undefined): AdminViewState {
+  const sensitive = new Set(table?.columns.filter((column) => column.sensitive).map((column) => column.name) ?? []);
+  const known = table !== undefined;
+  const sortAllowed = view.sort !== null && known && !sensitive.has(view.sort);
+  const filterAllowed = view.filter !== null && known && !sensitive.has(view.filter.column);
+  if (sortAllowed && filterAllowed) return view;
+  return {
+    ...view,
+    sort: sortAllowed ? view.sort : null,
+    filter: filterAllowed ? view.filter : null,
+  };
 }
