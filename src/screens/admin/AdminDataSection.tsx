@@ -147,14 +147,28 @@ export function AdminDataSection() {
   }
 
   const rows = shown;
+  // Specifically "the rows on screen are from a different table than the one
+  // selected", not "a request is in flight". Filtering and paging refetch
+  // constantly and must stay usable; only a table *switch* leaves the filter
+  // form describing columns the incoming rows will not have.
+  const switchingTable = Boolean(
+    rows && current && (rows.meta.service !== current.service || rows.meta.table !== current.table),
+  );
   // A page past the end — a stale link, a hand-edited address, a table that has
   // shrunk since — otherwise renders "This table is empty", which is a lie
   // about the table, and takes the pager with it, so there is no way back.
   // Land on the last real page instead and say nothing: the address was wrong,
   // not the reader.
-  if (rows && rows.pagination.totalPages >= 1 && view.page > rows.pagination.totalPages) {
+  //
+  // Only while the rows on screen belong to the table being asked about. During
+  // a switch `placeholderData` still holds the *previous* table's pagination,
+  // and comparing against it sent `/admin/data/admin/audit_log?page=2` — a page
+  // that exists — back to the single-page table the reader was leaving, named
+  // from the wrong `meta`. A pasted link silently discarded, which is the one
+  // thing the URL state exists to prevent.
+  if (rows && !switchingTable && view.page > rows.pagination.totalPages) {
     const query = writeViewState({ ...view, page: rows.pagination.totalPages }).toString();
-    const path = `/admin/data/${rows.meta.service}/${rows.meta.table}`;
+    const path = `/admin/data/${current!.service}/${current!.table}`;
     return <Navigate replace to={query ? `${path}?${query}` : path} />;
   }
   const columns = rows?.meta.columns ?? [];
@@ -175,13 +189,6 @@ export function AdminDataSection() {
   // the previous rows, so the query is never "pending" again and nothing would
   // otherwise say the table on screen is out of date.
   const busy = rowsQuery.isFetching;
-  // Specifically "the rows on screen are from a different table than the one
-  // selected", not "a request is in flight". Filtering and paging refetch
-  // constantly and must stay usable; only a table *switch* leaves the filter
-  // form describing columns the incoming rows will not have.
-  const switchingTable = Boolean(
-    rows && current && (rows.meta.service !== current.service || rows.meta.table !== current.table),
-  );
 
   return (
     <div className="admin-data">

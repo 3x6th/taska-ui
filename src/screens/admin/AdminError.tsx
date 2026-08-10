@@ -43,7 +43,7 @@ export function AdminError({ error, onRetry }: { error: unknown; onRetry: () => 
  * without clipboard permission loses the convenience, not the value.
  */
 function RequestId({ value }: { value: string }) {
-  const [copied, copy] = useCopied();
+  const [copyState, copy] = useCopied();
 
   return (
     <p className="admin-error-detail admin-request-id-line">
@@ -57,11 +57,13 @@ function RequestId({ value }: { value: string }) {
         {value}
         <Copy aria-hidden="true" size={14} />
       </button>
-      {/* A live region rather than a tooltip: the confirmation is the only
-          evidence the click did anything, and it has to reach a screen reader
-          as well as an eye. */}
+      {/* A live region rather than a tooltip: the answer is the only evidence
+          the click did anything, and it has to reach a screen reader as well as
+          an eye. A refused clipboard says so instead of saying nothing —
+          silence here is indistinguishable from a dead button, and the id
+          itself is still on screen to select by hand. */}
       <span className="admin-copied" role="status">
-        {copied ? "Copied" : ""}
+        {copyState === "copied" ? "Copied" : copyState === "failed" ? "Couldn’t copy" : ""}
       </span>
     </p>
   );

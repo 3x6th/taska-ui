@@ -94,7 +94,10 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
         <tbody>
           {rows.rows.length === 0 ? (
             <tr>
-              <td className="admin-empty-cell" colSpan={columns.length || 1} role="status">
+              {/* `aria-live`, not `role="status"`: the role would replace the
+                  cell role, and in table-navigation mode the message would
+                  stop being part of the grid it is explaining. */}
+              <td aria-live="polite" className="admin-empty-cell" colSpan={columns.length || 1}>
                 {empty}
               </td>
             </tr>
@@ -171,7 +174,7 @@ const KEY_SHOWN = 8;
  * actually happens — pasting it into a query somewhere else.
  */
 function PrimaryKeyCell({ value }: { value: string }) {
-  const [copied, copy] = useCopied();
+  const [copyState, copy] = useCopied();
   const short = value.length > KEY_LIMIT ? `${value.slice(0, KEY_SHOWN)}…` : value;
 
   if (short === value) return <>{value}</>;
@@ -180,7 +183,7 @@ function PrimaryKeyCell({ value }: { value: string }) {
     <>
       <button
         aria-label={`Copy ${value}`}
-        className={copied ? "admin-key is-copied" : "admin-key"}
+        className={copyState === "idle" ? "admin-key" : `admin-key is-${copyState}`}
         onClick={() => copy(value)}
         title={value}
         type="button"
@@ -190,9 +193,11 @@ function PrimaryKeyCell({ value }: { value: string }) {
       {/* The confirmation takes no width. An inline "Copied" widened the frozen
           column by 45px for two seconds and shifted every column twice, in a
           table whose whole point is that the eye runs down a column — so the
-          eye gets a tint on the key itself and the screen reader gets this. */}
+          eye gets a tint on the key itself and the screen reader gets this.
+          A failure is announced in words either way: a red tint alone would
+          leave a colour-blind reader with a click that did nothing. */}
       <span className="visually-hidden" role="status">
-        {copied ? "Copied" : ""}
+        {copyState === "copied" ? "Copied" : copyState === "failed" ? "Couldn’t copy" : ""}
       </span>
     </>
   );

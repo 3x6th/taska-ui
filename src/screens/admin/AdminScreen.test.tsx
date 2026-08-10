@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import type { TaskaApi } from "../../api/TaskaApi";
 import type { AdminRowsQuery, User } from "../../domain/types";
 import { App } from "../App";
@@ -30,6 +31,7 @@ const {
   holdRows,
   releaseRows,
   failCatalog,
+  failRows,
   setMetaMismatch,
   lastRowsQuery,
 } = vi.hoisted(() => {
@@ -42,6 +44,7 @@ const {
     rowsGate?: Promise<void>;
     rowsRelease?: () => void;
     catalogFailure?: Error;
+    rowsFailure?: Error;
     metaMismatch?: boolean;
     rowsQuery?: AdminRowsQuery;
   } = {};
@@ -126,6 +129,7 @@ const {
     listAdminRows: async (query: AdminRowsQuery) => {
       state.rowsQuery = query;
       if (state.rowsGate) await state.rowsGate;
+      if (state.rowsFailure) throw state.rowsFailure;
       const key = `${query.service}.${query.table}`;
       const table = rowsByTable[key] ?? { columns: [], rows: [] };
       if (state.metaMismatch) {
@@ -193,6 +197,15 @@ const {
     failCatalog: (failure?: Error) => {
       state.catalogFailure = failure;
     },
+    /**
+     * Fail the *rows* request, which every error test used to leave untested —
+     * they all failed the catalog instead. That gap is what let the rows error
+     * path rot: `placeholderData` keeps the previous table's rows forever, so
+     * the guard could never fire again and a failed table said nothing at all.
+     */
+    failRows: (failure?: Error) => {
+      state.rowsFailure = failure;
+    },
     setMetaMismatch: (on: boolean) => {
       state.metaMismatch = on;
     },
@@ -236,6 +249,26 @@ function LocationProbe() {
   return <span data-testid="location">{location.pathname + location.search}</span>;
 }
 
+/**
+ * A router-level navigation the test can trigger after the app has settled —
+ * the equivalent of pasting a link into the address bar of a tab that is
+ * already on another table. `history.pushState` would not do: the router would
+ * not hear it, and the bug this exists for only appears when the previous
+ * table's rows are still in the query cache as placeholder data.
+ */
+function Jump() {
+  const navigate = useNavigate();
+  const [to, setTo] = useState("");
+  return (
+    <>
+      <input aria-label="jump target" onChange={(event) => setTo(event.target.value)} value={to} />
+      <button onClick={() => navigate(to)} type="button">
+        jump
+      </button>
+    </>
+  );
+}
+
 function renderAdmin(at = "/admin") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -243,6 +276,7 @@ function renderAdmin(at = "/admin") {
       <MemoryRouter initialEntries={[at]}>
         <App />
         <LocationProbe />
+        <Jump />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -257,6 +291,7 @@ describe("/admin", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(anna);
     window.localStorage.clear();
@@ -389,6 +424,7 @@ describe("/admin sections under construction", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
     window.localStorage.clear();
@@ -446,6 +482,7 @@ describe("/admin console", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
     window.localStorage.clear();
@@ -535,6 +572,7 @@ describe("/admin console selection in the URL", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
     window.localStorage.clear();
@@ -577,6 +615,44 @@ describe("/admin console selection in the URL", () => {
     expect(lastRowsQuery()?.filters).toBeUndefined();
     // And the chip does not claim a filter is applied when none was sent.
     expect(screen.queryByRole("button", { name: /Remove filter/ })).toBeNull();
+  });
+
+  // The clamp above reads the pagination of the rows *on screen*, and during a
+  // switch those are still the previous table's — kept there by
+  // `placeholderData`. Comparing against them sent a link to a page that
+  // genuinely exists back to the single-page table the reader was leaving,
+  // named from the wrong meta. A cold mount cannot catch it: the placeholder
+  // has to be warm, so this test opens one table first.
+  it("opens a deep link to another table's real page instead of bouncing back", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("heading", { name: "auth.users" })).toBeVisible();
+
+    // The link the reader was sent carries a page that exists in the table it
+    // names, and nothing about the table they happened to be on.
+    fireEvent.change(screen.getByLabelText("jump target"), {
+      target: { value: "/admin/data/admin/audit_log?page=2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "jump" }));
+
+    expect(await screen.findByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+    // The address is left exactly as it was pasted — page 2 exists in this
+    // table — and the request went to that table's second page, not back to
+    // the single-page table the reader was on.
+    expect(screen.getByTestId("location").textContent).toBe("/admin/data/admin/audit_log?page=2");
+    expect(lastRowsQuery()).toMatchObject({ service: "admin", table: "audit_log", page: 2 });
+  });
+
+  it("says so when the rows fail after another table has already loaded", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("heading", { name: "auth.users" })).toBeVisible();
+
+    // `placeholderData` keeps the loaded rows, so this is the state where the
+    // screen used to leave the previous table on screen and say nothing.
+    failRows(new Error("the gateway refused this table"));
+    fireEvent.click(screen.getByRole("link", { name: "audit_log" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reached|refused/i);
+    expect(screen.queryByRole("cell", { name: "u1" })).toBeNull();
   });
 
   it("lands on the last page when the address names one past the end", async () => {
@@ -652,6 +728,7 @@ describe("/admin console, when the catalog and the rows disagree", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
     window.localStorage.clear();
