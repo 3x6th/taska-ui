@@ -25,16 +25,22 @@ test("a global admin finds the administration entry in the profile menu and it o
 
   await entry.click();
 
-  await expect(page).toHaveURL(/\/admin$/);
-  await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();
+  // /admin is an area, and a bare visit resolves into its first section
+  // (DESIGN.md §5.8) — visibly, in the address bar.
+  await expect(page).toHaveURL(/\/admin\/data/);
+  await expect(page.getByRole("heading", { level: 1, name: "Data" })).toBeVisible();
   // The route changed, so this proves the previous screen — popover and all —
   // was replaced, not that selecting an item closes the popover (§4.16). That
   // behaviour is pinned in src/components/UserProfileMenu.test.tsx, where
   // nothing navigates away from under it.
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  // The same shell as the project list, and a way back out of it.
+  // The same shell as the project list, and a way back out of it — which now
+  // lives in the section rail, not under the content.
   await expect(page.getByRole("button", { name: "Open profile for Mark Lee" })).toBeVisible();
-  await page.getByRole("link", { name: "Back to projects" }).click();
+  await page
+    .getByRole("navigation", { name: "Administration" })
+    .getByRole("link", { name: "Back to projects" })
+    .click();
   await expect(page).toHaveURL(/\/projects$/);
 });
 
@@ -56,9 +62,10 @@ test("a plain user who types /admin gets the same answer as an unknown URL", asy
   await page.goto("/admin");
 
   // Not "no access": the section's existence is not confirmed to someone who
-  // cannot use it (DESIGN.md §4.18).
+  // cannot use it (DESIGN.md §4.18). The gate answers before anything of the
+  // area renders, so the address does not even resolve into a section.
   await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Administration" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Administration" })).toHaveCount(0);
   await expect(page).toHaveURL(/\/admin$/);
 });
 
@@ -71,6 +78,6 @@ test("a signed-out visitor to /admin is asked to sign in and lands where they as
   await page.getByLabel("Password").fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
-  await expect(page).toHaveURL(/\/admin$/);
-  await expect(page.getByRole("heading", { name: "Administration" })).toBeVisible();
+  await expect(page).toHaveURL(/\/admin/);
+  await expect(page.getByRole("heading", { level: 1, name: "Data" })).toBeVisible();
 });

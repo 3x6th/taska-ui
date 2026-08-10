@@ -125,8 +125,12 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
               // enumerates 401/403).
               <Link
                 // Opened from /admin itself, the entry leads nowhere new, and
-                // saying so is one attribute.
-                aria-current={location.pathname === "/admin" ? "page" : undefined}
+                // saying so is one attribute. Any section counts: /admin is an
+                // area that redirects into /admin/data (§5.8), so an exact
+                // match would be true for a single tick and never again.
+                aria-current={
+                  location.pathname === "/admin" || location.pathname.startsWith("/admin/") ? "page" : undefined
+                }
                 className="user-profile-admin"
                 onClick={(event) => {
                   // A modified click opens /admin in a new tab and leaves this

@@ -1,0 +1,141 @@
+import { Lock } from "lucide-react";
+import { useMemo } from "react";
+import type { AdminRows, AdminSortOrder, AdminTable } from "../../domain/types";
+import { formatCell, isAlignedType } from "./columns";
+
+interface AdminRowsTableProps {
+  rows: AdminRows;
+  /**
+   * The catalog entry for the table the *rows* say they came from, never for
+   * the current selection. The two differ while a table switch is in flight,
+   * and the masking rules have to come from the same place as the values.
+   */
+  table: AdminTable;
+  sortable: Set<string>;
+  sort: string | null;
+  order: AdminSortOrder;
+  onSort: (column: string) => void;
+  onPage: (page: number) => void;
+}
+
+/**
+ * The rows themselves (DESIGN.md §5.8). Denser than anything else in the
+ * product because this is reading raw records, not working with issues: 30px
+ * rows, a sticky header, the primary key frozen against the horizontal scroll,
+ * and the pagination in the table's own sticky footer.
+ */
+export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onPage }: AdminRowsTableProps) {
+  const columns = rows.meta.columns;
+  const name = `${rows.meta.service}.${rows.meta.table}`;
+
+  const sensitiveColumns = useMemo(
+    () => new Set(table.columns.filter((column) => column.sensitive).map((column) => column.name)),
+    [table],
+  );
+  // Monospace is per column and comes from the catalog's type: ids, timestamps,
+  // numbers and JSON are compared down the column and want tabular figures;
+  // `email` and `display_name` are prose and stay in the UI font (§5.8). An
+  // unknown or missing type falls back to prose.
+  const alignedColumns = useMemo(
+    () => new Set(table.columns.filter((column) => isAlignedType(column.type)).map((column) => column.name)),
+    [table],
+  );
+  // Only the first column can be frozen against a horizontal scroll: sticking a
+  // later one to `left: 0` would park it on top of the columns before it. In
+  // every catalog seen so far the primary key is first, which is the case the
+  // rule is about — when it is not, the table simply scrolls whole.
+  const frozenColumn = columns[0] === table.primaryKey ? table.primaryKey : undefined;
+
+  const cellClass = (column: string) =>
+    [alignedColumns.has(column) ? "admin-cell-mono" : "", column === frozenColumn ? "admin-cell-frozen" : ""]
+      .filter(Boolean)
+      .join(" ");
+
+  return (
+    // The scroll container is focusable and named on purpose (§7): a table with
+    // no sortable column has nothing tabbable inside it, and without this it
+    // cannot be scrolled sideways from the keyboard at all in Safari or Firefox.
+    <div aria-label={`${name} rows`} className="admin-table-scroll" role="region" tabIndex={0}>
+      <table className="admin-table">
+        <thead>
+          <tr>
+            {columns.map((column) => {
+              const isSorted = sort === column;
+              const canSort = sortable.has(column);
+              return (
+                <th
+                  className={column === frozenColumn ? "admin-cell-frozen" : undefined}
+                  // Only a sortable column has a sort state; "none" on a column
+                  // that can never be sorted claims otherwise.
+                  aria-sort={
+                    !canSort ? undefined : isSorted ? (order === "asc" ? "ascending" : "descending") : "none"
+                  }
+                  key={column}
+                >
+                  {canSort ? (
+                    <button className="admin-sort" onClick={() => onSort(column)} type="button">
+                      {column}
+                      <span aria-hidden="true">{isSorted ? (order === "asc" ? " ↑" : " ↓") : ""}</span>
+                    </button>
+                  ) : (
+                    column
+                  )}
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.rows.map((row, index) => (
+            <tr key={String(row[table.primaryKey] ?? index)}>
+              {columns.map((column) => (
+                <td className={cellClass(column) || undefined} key={column}>
+                  {sensitiveColumns.has(column) ? (
+                    // The catalog says this column holds secrets. Say that it
+                    // exists and stop there — not a masked length, which leaks
+                    // one. The label distinguishes a withheld cell from one
+                    // whose content happens to be the word "hidden", and
+                    // deliberately avoids the word "value" so it cannot collide
+                    // with the filter form's own labels.
+                    <span aria-label="hidden by the catalog" className="admin-hidden-cell">
+                      <Lock aria-hidden="true" size={11} />
+                      hidden
+                    </span>
+                  ) : (
+                    formatCell(row[column])
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {rows.pagination.totalPages > 1 ? (
+        // Inside the scroll container and stuck to its bottom edge (§5.8), so
+        // paging does not require scrolling to the end of the rows first.
+        <div className="admin-pager">
+          <button
+            className="secondary-button"
+            disabled={!rows.pagination.hasPrev}
+            onClick={() => onPage(Math.max(1, rows.pagination.currentPage - 1))}
+            type="button"
+          >
+            Previous
+          </button>
+          <span aria-live="polite">
+            Page {rows.pagination.currentPage} of {rows.pagination.totalPages}
+          </span>
+          <button
+            className="secondary-button"
+            disabled={!rows.pagination.hasNext}
+            onClick={() => onPage(rows.pagination.currentPage + 1)}
+            type="button"
+          >
+            Next
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
