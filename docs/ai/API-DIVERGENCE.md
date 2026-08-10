@@ -448,6 +448,100 @@ it. Entries are deleted only when the compensating code is deleted.
   when the column changes to one that cannot take it.
 - **Removal:** the contract naming the constraint, or the gateway answering 400.
 
+### Issue links answer with a different field than they are asked with, and nothing states what it can hold
+
+- **Endpoints:** `GET`/`POST` `/api/v1/issues/{issueId}/links`,
+  `DELETE …/links/{linkId}`.
+- **Contract:** the request carries `linkType`, typed as `IssueLinkTypeDto` —
+  a closed enum, `BLOCKS | RELATES_TO | DUPLICATES`. The response carries
+  `viewLinkType`, typed as a bare `string` with **no** enum. Different name,
+  different type, no statement anywhere that they are the same value set.
+  `IssueLinkResponseDto` also declares no `required` block, so formally every
+  field of it is optional.
+- **Reading taken (TAS-157):** the asymmetry is deliberate, not a typo. "View"
+  is read as *the relation as seen from the issue that was asked about*, which
+  makes the response able to carry values the request enum has no name for —
+  the inverse of a `BLOCKS` seen from the blocked issue. Renaming it to
+  `linkType` on the way in, or narrowing it to the request enum, would throw
+  away exactly the values that justify the field.
+- **Compensation:** `IssueLinkType` (request) is a closed union;
+  `IssueLink.viewLinkType` (response) is an open `string`.
+  `RestTaskaApi.toIssueLink` passes any string through untouched — including
+  values this build has never heard of — and turns an absent or non-string one
+  into `""`. Presentation narrows instead of the mapper
+  (`issueLinkTypeLabel`, `src/lib/format.ts`): a known value gets a written
+  label, an unknown one is humanised verbatim (`IS_BLOCKED_BY` → "Is blocked
+  by"), and an unstated one reads "Linked". Same shape as the `globalRole`
+  narrowing above, one level later.
+  **The scope of that claim, precisely:** no value of `viewLinkType` can drop a
+  row, be coerced into another relation, or crash the panel. It says nothing
+  about the *other* optional fields. A link that arrives naming neither of its
+  ends leaves `sourceIssueId` and `targetIssueId` as `""`, `otherEndOf` returns
+  `""`, and there is no issue to navigate to — such a row renders inert: the
+  relation and the words "Unknown issue", with no click target and no route. It
+  is still listed, and still removable if it carried an `id`, because a link the
+  server reports does exist even when it will not say what it joins.
+- **Second consequence in the UI:** because the response is the link as *this*
+  issue sees it, `targetIssueId` is not reliably "the other issue" — on the
+  receiving end of a `BLOCKS` the issue on screen *is* the target. The panel
+  therefore picks the other end by comparing both ids against the issue it is
+  showing, and never assumes either field.
+- **What the mock asserts, and on what authority:** `MockTaskaStore` stores a
+  link once and inverts the view for the far end (`BLOCKS` ↔ `IS_BLOCKED_BY`,
+  `DUPLICATES` ↔ `IS_DUPLICATED_BY`, `RELATES_TO` unchanged), so the
+  open-string path is reachable without a gateway. That inversion is this
+  repository's *reading* of the field name, not something the contract or the
+  gateway has confirmed. It also refuses a self-link (`INVALID_ARGUMENT`), a
+  duplicate pair in either direction (`ALREADY_EXISTS`) and an unknown issue
+  (`NOT_FOUND`) — plausible, but likewise unconfirmed: the contract enumerates
+  no error codes for these routes.
+- **Unverified:** no request in this repository has ever reached these
+  endpoints. Whether the gateway inverts anything, what strings it uses if it
+  does, whether it rejects a self-link, and whether `POST` is idempotent are
+  all unknown.
+- **What it costs if the reading is wrong.** If the gateway turns out to echo
+  the *stored* type from both ends, the mock's inversion map is **not** the only
+  thing that changes — the UI is wrong on screen, not merely differently
+  seeded. `IssueLinksSection` prints `issueLinkTypeLabel(link.viewLinkType)`
+  directly (`src/screens/BoardScreen.tsx`), so the blocked issue would read
+  "Blocks TAS-101" — the relation stated backwards, with nothing failing. The
+  fix would be to derive the label from the *pair* (the value, plus whether the
+  viewer is this link's `sourceIssueId`), which means:
+  - `issueLinkTypeLabel` gains a second argument and an inverse table, in
+    `src/lib/format.ts` — the file's only such signature today;
+  - the row in `IssueLinksSection` passes `link.sourceIssueId === issueId`;
+  - `MockTaskaStore.linkView` stops inverting, and the `answers each end with
+    the relation as that end sees it` case in `src/api/mock/MockTaskaApi.test.ts`
+    inverts its expectation;
+  - the "Is blocked by" assertions in `e2e/issue-links.spec.ts` and the
+    `IS_BLOCKED_BY` cases in `src/lib/format.test.ts` and
+    `src/api/rest/RestTaskaApi.test.ts` change with it.
+
+  Three source files and four test files. Not large — but not "nothing in the UI
+  has to change", which is what an earlier version of this entry claimed and
+  which would have priced the wrong reading at zero.
+- **Order is unspecified, exactly as it is for comments.** `ListIssueLinksResponseDto`
+  says nothing about sorting. `MockTaskaStore` returns links oldest-first by
+  `createdAt`; `RestTaskaApi` passes the gateway's order through untouched. So
+  the two modes can render the same links in different orders with nothing
+  failing — the same gap as the comment-ordering entry above, and it should be
+  closed in the same place ([TAS-141](https://jira.ozero.dev/browse/TAS-141)).
+- **The role gating here is a UI courtesy only.** A `VIEWER` is shown no add
+  form and no remove control, but the contract states no permissions for these
+  three routes at all — no roles, no error codes. Nothing has confirmed the
+  gateway refuses a `VIEWER`'s `POST`, and the frontend must not be read as
+  evidence that it does.
+- **Project scoping is the mock's invention.** `MockTaskaStore` resolves both
+  ends within one project, so it cannot produce a cross-project link and no
+  test exercises one. The contract scopes these routes to an issue and never
+  mentions a project, so a link across projects may well be legal. The UI is
+  built for it — a row navigates to `link.projectId || projectId` rather than
+  assuming the board it is on — but that path has never run.
+- **Removal:** [TAS-157](https://jira.ozero.dev/browse/TAS-157) carries the
+  verification against the deployed gateway. This entry closes when a live
+  response has been observed and the contract names the value set of
+  `viewLinkType` (or states that it is the request enum after all).
+
 ---
 
 ## Closed

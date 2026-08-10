@@ -2,6 +2,7 @@ import type {
   AcceptInvitationInput,
   AuthTokens,
   CreateIssueInput,
+  CreateIssueLinkInput,
   CreateProjectInput,
   ListCommentsParams,
   ListIssuesParams,
@@ -22,6 +23,7 @@ import type {
   GlobalRole,
   Issue,
   IssueComment,
+  IssueLink,
   IssueType,
   IssueWithHistory,
   Notification,
@@ -113,6 +115,28 @@ interface RestUpdateIssueResponse {
   summary: string;
   description: string;
   priority: Issue["priority"];
+}
+
+/**
+ * `IssueLinkResponseDto`. Every field is read as optional because the schema
+ * declares no `required` block, and `viewLinkType` is read as `unknown` for the
+ * same reason `globalRole` is: the contract types it as a bare string with no
+ * enum, so this build cannot know the value set. Unlike `globalRole` it is not
+ * narrowed to a domain enum — see `IssueLink` in src/domain/types.ts — only
+ * proved to be a string before it reaches a component.
+ */
+interface RestIssueLink {
+  id?: string;
+  projectId?: string;
+  sourceIssueId?: string;
+  targetIssueId?: string;
+  viewLinkType?: unknown;
+  createdBy?: string;
+  createdAt?: string;
+}
+
+interface RestListIssueLinksResponse {
+  items?: RestIssueLink[];
 }
 
 type RestComment = Omit<IssueComment, "updatedAt"> & {
@@ -343,6 +367,27 @@ export class RestTaskaApi implements TaskaApi {
     });
   }
 
+  async listIssueLinks(_projectId: string, issueId: string): Promise<IssueLink[]> {
+    const response = await this.request<RestListIssueLinksResponse>(this.linksPath(issueId));
+    return (response.items ?? []).map((link) => this.toIssueLink(link));
+  }
+
+  async createIssueLink(_projectId: string, issueId: string, input: CreateIssueLinkInput): Promise<IssueLink> {
+    const response = await this.request<RestIssueLink>(this.linksPath(issueId), {
+      method: "POST",
+      // `linkType`, not `viewLinkType`: the request enum and the response field
+      // are different fields by the contract's own spelling.
+      body: { targetIssueId: input.targetIssueId, linkType: input.linkType },
+    });
+    return this.toIssueLink(response);
+  }
+
+  async deleteIssueLink(_projectId: string, issueId: string, linkId: string): Promise<void> {
+    await this.request<void>(`${this.linksPath(issueId)}/${this.segment(linkId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Promise<Page<IssueComment>> {
     const search = new URLSearchParams();
     if (params.page !== undefined) search.set("page", String(params.page));
@@ -553,6 +598,10 @@ export class RestTaskaApi implements TaskaApi {
     return encodeURIComponent(value);
   }
 
+  private linksPath(issueId: string) {
+    return `/issues/${this.segment(issueId)}/links`;
+  }
+
   private commentsPath(projectId: string, issueId: string) {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/comments`;
   }
@@ -589,6 +638,24 @@ export class RestTaskaApi implements TaskaApi {
         ...event,
         issueId: issue.id,
       })),
+    };
+  }
+
+  /**
+   * Passes `viewLinkType` through untouched whenever it is a string, including
+   * values this build has never heard of — that is the whole point of the
+   * field. A non-string (or an absent one) becomes the empty string, which the
+   * label helper renders as "Linked" rather than inventing a relation.
+   */
+  private toIssueLink(link: RestIssueLink): IssueLink {
+    return {
+      id: link.id ?? "",
+      projectId: link.projectId ?? "",
+      sourceIssueId: link.sourceIssueId ?? "",
+      targetIssueId: link.targetIssueId ?? "",
+      viewLinkType: typeof link.viewLinkType === "string" ? link.viewLinkType : "",
+      createdBy: link.createdBy ?? "",
+      createdAt: link.createdAt ?? "",
     };
   }
 

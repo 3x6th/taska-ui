@@ -37,6 +37,13 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   been observed. Seed one of each so gating is exercisable.
 - **`markAllNotificationsRead` loop needs an iteration cap** (unbounded if the
   gateway ever ignores `unreadOnly`).
+- **The board's 100-issue page is now a functional ceiling, not just a paging
+  detail** (from TAS-157). `BoardScreen` asks for `pageSize: 100` and the links
+  section resolves its targets out of that one page: past 100 issues, a target
+  cannot be offered in the picker at all, and an existing link to an issue
+  outside the page renders as a raw UUID instead of a key and summary. It
+  degrades honestly rather than breaking, but the fix is real paging or a
+  server-side issue lookup, not a bigger number.
 - **Comment row polish:** caret lands at position 0 when entering edit;
   a shared `isPending` disables Save/Delete on every row at once.
 - **`getWorkflow` silently defaults `issueType` to `TASK`**; `listNotifications`
@@ -143,17 +150,17 @@ frontend story is blocked by its backend half and ships mock-first meanwhile.
 ## New contract surface not yet claimed by a story
 
 The 2026-08-05 refresh of `docs/contract/openapi.yml` (backend develop
-`25d0cf7000e5`) added three things. Two are spoken for — `globalRole` by
-TAS-151, the `/readonly` endpoints by TAS-155. The third is not:
+`25d0cf7000e5`) added three things, and all three are now spoken for —
+`globalRole` by TAS-151, the `/readonly` endpoints by TAS-155, issue links by
+TAS-157.
 
-- **Issue links.** `GET`/`POST /issues/{issueId}/links` and
-  `DELETE /issues/{issueId}/links/{linkId}`, with `IssueLinkTypeDto` of
-  `BLOCKS` / `RELATES_TO` / `DUPLICATES`. Nothing in the UI models a relation
-  between two issues, so this is a feature, not a gap — worth proposing to the
-  owner rather than filing unasked. Note the response field is `viewLinkType`,
-  not `linkType`, while the request sends `linkType`: whoever picks this up
-  should check that asymmetry against the gateway rather than assume it is a
-  typo in the contract.
+- ~~**Issue links.** `GET`/`POST /issues/{issueId}/links` and
+  `DELETE /issues/{issueId}/links/{linkId}`.~~ Delivered by
+  [TAS-157](https://jira.ozero.dev/browse/TAS-157). The `viewLinkType` /
+  `linkType` asymmetry this item flagged was not treated as a typo: it is
+  modelled as an open string and written up in `docs/ai/API-DIVERGENCE.md`. The
+  half this item asked for that is **still outstanding** is the check against
+  the running gateway — no request has yet reached these endpoints.
 
 ## Backend asks already filed
 

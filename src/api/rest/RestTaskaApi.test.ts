@@ -283,6 +283,133 @@ describe("RestTaskaApi current user", () => {
 });
 
 /**
+ * Issue links (TAS-157). The contract asks for `linkType` (a closed enum) and
+ * answers with `viewLinkType` (a bare string, no enum). These cases pin that
+ * asymmetry in place — the request must not drift to the response's spelling,
+ * and the response must survive a value this build has never heard of, because
+ * the inverse of a `BLOCKS` seen from the other end is exactly such a value.
+ */
+describe("RestTaskaApi issue links", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const link = (extra: Record<string, unknown> = {}) => ({
+    id: "link-1",
+    projectId: "project-1",
+    sourceIssueId: "issue-1",
+    targetIssueId: "issue-2",
+    viewLinkType: "BLOCKS",
+    createdBy: "user-1",
+    createdAt: "2026-06-19T09:10:00Z",
+    ...extra,
+  });
+
+  // The parameters exist so `mock.calls[0]` is typed: the path and the init are
+  // what these cases assert on.
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: { method?: string; body?: string }) =>
+      answer(status, body),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the list from the issue-scoped path", async () => {
+    const fetchStub = stubFetch({ items: [link()] });
+
+    const links = await new RestTaskaApi().listIssueLinks("project-1", "issue-1");
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/issues/issue-1/links");
+    expect(fetchStub.mock.calls[0][1]).toMatchObject({ method: "GET" });
+    expect(links).toEqual([
+      {
+        id: "link-1",
+        projectId: "project-1",
+        sourceIssueId: "issue-1",
+        targetIssueId: "issue-2",
+        viewLinkType: "BLOCKS",
+        createdBy: "user-1",
+        createdAt: "2026-06-19T09:10:00Z",
+      },
+    ]);
+  });
+
+  it("passes an unknown viewLinkType through instead of dropping or coercing the link", async () => {
+    stubFetch({ items: [link({ viewLinkType: "IS_BLOCKED_BY" }), link({ id: "link-2", viewLinkType: "SUPERSEDES" })] });
+
+    const links = await new RestTaskaApi().listIssueLinks("project-1", "issue-2");
+
+    // The response field is not the request enum, and narrowing it to one would
+    // throw away the values that make it worth having.
+    expect(links.map((item) => item.viewLinkType)).toEqual(["IS_BLOCKED_BY", "SUPERSEDES"]);
+  });
+
+  it("survives a link that states no relation at all", async () => {
+    stubFetch({ items: [link({ viewLinkType: undefined }), link({ id: "link-2", viewLinkType: 7 })] });
+
+    const links = await new RestTaskaApi().listIssueLinks("project-1", "issue-1");
+
+    // Nothing in `IssueLinkResponseDto` is `required`, so an absent or
+    // non-string value is a shape the contract permits. It becomes "no relation
+    // stated", never a relation we made up.
+    expect(links.map((item) => item.viewLinkType)).toEqual(["", ""]);
+    expect(links).toHaveLength(2);
+  });
+
+  it("treats a response with no items as an empty list", async () => {
+    stubFetch({});
+
+    await expect(new RestTaskaApi().listIssueLinks("project-1", "issue-1")).resolves.toEqual([]);
+  });
+
+  it("posts targetIssueId and linkType — the request spelling, not the response one", async () => {
+    const fetchStub = stubFetch(link({ viewLinkType: "DUPLICATES" }), 201);
+
+    const created = await new RestTaskaApi().createIssueLink("project-1", "issue-1", {
+      targetIssueId: "issue-2",
+      linkType: "DUPLICATES",
+    });
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/issues/issue-1/links");
+    const request = fetchStub.mock.calls[0][1];
+    expect(request?.method).toBe("POST");
+    expect(JSON.parse(String(request?.body))).toEqual({ targetIssueId: "issue-2", linkType: "DUPLICATES" });
+    expect(created.viewLinkType).toBe("DUPLICATES");
+  });
+
+  it("deletes a link at the contract's path and expects no body", async () => {
+    const fetchStub = stubFetch(undefined, 204);
+
+    await expect(new RestTaskaApi().deleteIssueLink("project-1", "issue-1", "link-1")).resolves.toBeUndefined();
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/issues/issue-1/links/link-1");
+    expect(fetchStub.mock.calls[0][1]).toMatchObject({ method: "DELETE" });
+  });
+
+  it("escapes the issue and link ids rather than letting them reshape the path", async () => {
+    const fetchStub = stubFetch(undefined, 204);
+
+    await new RestTaskaApi().deleteIssueLink("project-1", "../../issues", "../links");
+
+    expect(String(fetchStub.mock.calls[0][0])).not.toContain("/../");
+  });
+});
+
+/**
  * The read-only admin endpoints (TAS-155). The filter syntax is the part worth
  * pinning: the contract specifies it in prose and a free-form
  * `additionalProperties` object, so nothing validates it and a drift would

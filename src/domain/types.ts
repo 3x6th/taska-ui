@@ -147,6 +147,36 @@ export interface IssueWithHistory {
   history: IssueHistoryEvent[];
 }
 
+/**
+ * The link type a *request* may ask for — the contract's `IssueLinkTypeDto`,
+ * a closed enum. Deliberately not reused for the response: see `IssueLink`.
+ */
+export type IssueLinkType = "BLOCKS" | "RELATES_TO" | "DUPLICATES";
+
+export interface IssueLink {
+  id: string;
+  projectId: string;
+  sourceIssueId: string;
+  targetIssueId: string;
+  /**
+   * Open on purpose. The contract asks for `linkType` (the closed enum above)
+   * and answers with `viewLinkType`, typed as a bare `string` with no enum —
+   * the asymmetry is the contract's, not a typo to be corrected here. Read
+   * literally, "view" means the relation *as seen from the issue that was
+   * asked about*, so the response may legitimately carry the inverse of a
+   * request value (`IS_BLOCKED_BY` for a `BLOCKS` link) which the request enum
+   * has no name for. Narrowing this to `IssueLinkType` would therefore drop
+   * exactly the values that make the field worth having.
+   *
+   * Presentation narrows it instead (`issueLinkTypeLabel`): a known value gets
+   * a written label, anything else is humanised verbatim. Recorded in
+   * docs/ai/API-DIVERGENCE.md and unverified against the deployed gateway.
+   */
+  viewLinkType: string;
+  createdBy: string;
+  createdAt: string;
+}
+
 export interface IssueComment {
   id: string;
   issueId: string;

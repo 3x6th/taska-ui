@@ -2,6 +2,7 @@ import type {
   AcceptInvitationInput,
   AuthTokens,
   CreateIssueInput,
+  CreateIssueLinkInput,
   CreateProjectInput,
   ListCommentsParams,
   ListIssuesParams,
@@ -17,6 +18,8 @@ import type {
   Issue,
   IssueComment,
   IssueHistoryEvent,
+  IssueLink,
+  IssueLinkType,
   IssuePriority,
   IssueStatus,
   IssueType,
@@ -78,6 +81,32 @@ const makeId = (prefix: string) => {
 const byCreatedAt = <T extends { createdAt: string }>(a: T, b: T) =>
   new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
 
+/**
+ * A link is stored once, the way it was created, and read from both ends. What
+ * each end sees is `viewLinkType` — hence the name — so the issue on the
+ * receiving side of a `BLOCKS` reads `IS_BLOCKED_BY`, a value the *request*
+ * enum has no name for. That is the reading of the contract's asymmetry this
+ * repository works to (docs/ai/API-DIVERGENCE.md); seeding it here is what
+ * keeps the UI's open-string handling reachable without a gateway. If the
+ * deployed gateway turns out to echo the stored type from both ends instead,
+ * this map is the one place that changes.
+ */
+const inverseViewLinkType: Record<IssueLinkType, string> = {
+  BLOCKS: "IS_BLOCKED_BY",
+  RELATES_TO: "RELATES_TO",
+  DUPLICATES: "IS_DUPLICATED_BY",
+};
+
+interface StoredIssueLink {
+  id: string;
+  projectId: string;
+  sourceIssueId: string;
+  targetIssueId: string;
+  linkType: IssueLinkType;
+  createdBy: string;
+  createdAt: string;
+}
+
 export class MockTaskaStore {
   private users: User[];
   private projects: Project[];
@@ -85,6 +114,7 @@ export class MockTaskaStore {
   private issues: Issue[];
   private historyByIssue: Record<string, IssueHistoryEvent[]>;
   private commentsByIssue: Record<string, IssueComment[]>;
+  private links: StoredIssueLink[] = [];
   private notifications: Notification[];
   private workflow: Workflow;
   private currentUserId = ANNA_ID;
@@ -429,6 +459,32 @@ export class MockTaskaStore {
       this.comment(tas101, MARK_ID, "Bumped to high — this blocks the release checklist.", ts(13, 52));
     }
 
+    // Seeded links so the panel has something to show on first load, and so
+    // both directions of the view are reachable: TAS-101 reads "Blocks
+    // TAS-102", TAS-102 reads "Is blocked by TAS-101".
+    const linkSeed: [string, IssueLinkType, string][] = [
+      ["TAS-101", "BLOCKS", "TAS-102"],
+      ["TAS-103", "RELATES_TO", "TAS-106"],
+      ["TAS-110", "DUPLICATES", "TAS-101"],
+      // In a project Anna is not a member of, so the read-only view of this
+      // section has something to be read-only about.
+      ["MOB-5", "BLOCKS", "MOB-6"],
+    ];
+    linkSeed.forEach(([sourceKey, linkType, targetKey], index) => {
+      const source = this.issues.find((item) => item.issueKey === sourceKey);
+      const target = this.issues.find((item) => item.issueKey === targetKey);
+      if (!source || !target) return;
+      this.links.push({
+        id: makeId("link"),
+        projectId: source.projectId,
+        sourceIssueId: source.id,
+        targetIssueId: target.id,
+        linkType,
+        createdBy: source.reporterId,
+        createdAt: ts(19, 10 + index),
+      });
+    });
+
     this.notifications = [
       this.notification("ISSUE_ASSIGNED", "Issue assigned", "TAS-107 was assigned to you", `/projects/${TASKA_PROJECT_ID}/issues/${tas107?.id ?? ""}`, ts(25, 10), null),
       this.notification("ISSUE_TRANSITIONED", "Status changed", "TAS-101 moved to In Progress", `/projects/${TASKA_PROJECT_ID}/issues/${tas101?.id ?? ""}`, ts(25, 7), null),
@@ -642,6 +698,57 @@ export class MockTaskaStore {
     issue.updatedAt = now();
     issue.version += 1;
     this.pushHistory(issue.id, "UPDATED", this.currentUserId, { field: "deleted" });
+  }
+
+  listIssueLinks(projectId: string, issueId: string): IssueLink[] {
+    const issue = this.findIssue(projectId, issueId);
+    return this.links
+      .filter((link) => link.sourceIssueId === issue.id || link.targetIssueId === issue.id)
+      .sort(byCreatedAt)
+      .map((link) => this.linkView(link, issue.id));
+  }
+
+  createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): IssueLink {
+    const issue = this.findIssue(projectId, issueId);
+    if (input.targetIssueId === issue.id) {
+      throw new MockApiError("INVALID_ARGUMENT", "An issue cannot be linked to itself");
+    }
+    // Unknown target, a target in another project, and a deleted target all
+    // answer the same way here, because findIssue is scoped to the project.
+    const target = this.findIssue(projectId, input.targetIssueId);
+    const existing = this.links.find(
+      (link) =>
+        (link.sourceIssueId === issue.id && link.targetIssueId === target.id) ||
+        (link.sourceIssueId === target.id && link.targetIssueId === issue.id),
+    );
+    if (existing) {
+      throw new MockApiError("ALREADY_EXISTS", `${issue.issueKey} is already linked to ${target.issueKey}`);
+    }
+
+    const link: StoredIssueLink = {
+      id: makeId("link"),
+      projectId,
+      sourceIssueId: issue.id,
+      targetIssueId: target.id,
+      linkType: input.linkType,
+      createdBy: this.currentUserId,
+      createdAt: now(),
+    };
+    this.links.push(link);
+    return this.linkView(link, issue.id);
+  }
+
+  deleteIssueLink(projectId: string, issueId: string, linkId: string): void {
+    const issue = this.findIssue(projectId, issueId);
+    // Either end may remove the link: the route is issue-scoped, and the issue
+    // on the receiving side of a BLOCKS sees the link just as much.
+    const link = this.links.find(
+      (item) => item.id === linkId && (item.sourceIssueId === issue.id || item.targetIssueId === issue.id),
+    );
+    if (!link) {
+      throw new MockApiError("NOT_FOUND", "Issue link not found");
+    }
+    this.links = this.links.filter((item) => item.id !== link.id);
   }
 
   listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Page<IssueComment> {
@@ -1013,6 +1120,24 @@ export class MockTaskaStore {
     return issue;
   }
 
+  /**
+   * The stored link as the given issue sees it. Only `viewLinkType` depends on
+   * the viewer: `sourceIssueId` and `targetIssueId` keep naming the ends the
+   * link was created with, so the caller finds "the other issue" by comparing
+   * against the issue it asked about rather than by trusting either field.
+   */
+  private linkView(link: StoredIssueLink, viewerIssueId: string): IssueLink {
+    return {
+      id: link.id,
+      projectId: link.projectId,
+      sourceIssueId: link.sourceIssueId,
+      targetIssueId: link.targetIssueId,
+      viewLinkType: link.sourceIssueId === viewerIssueId ? link.linkType : inverseViewLinkType[link.linkType],
+      createdBy: link.createdBy,
+      createdAt: link.createdAt,
+    };
+  }
+
   // The gateway rejects edits and deletes from anyone but the comment author.
   private findOwnComment(projectId: string, issueId: string, commentId: string): IssueComment {
     const issue = this.findIssue(projectId, issueId);
@@ -1177,6 +1302,19 @@ export class MockTaskaApi implements TaskaApi {
 
   async deleteIssue(projectId: string, issueId: string): Promise<void> {
     this.store.deleteIssue(projectId, issueId);
+    await wait(null);
+  }
+
+  async listIssueLinks(projectId: string, issueId: string): Promise<IssueLink[]> {
+    return wait(this.store.listIssueLinks(projectId, issueId));
+  }
+
+  async createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): Promise<IssueLink> {
+    return wait(this.store.createIssueLink(projectId, issueId, input));
+  }
+
+  async deleteIssueLink(projectId: string, issueId: string, linkId: string): Promise<void> {
+    this.store.deleteIssueLink(projectId, issueId, linkId);
     await wait(null);
   }
 
