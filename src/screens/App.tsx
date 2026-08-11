@@ -118,6 +118,11 @@ export function App() {
             real address: it resolves to the catalog's first table and redirects
             into it, in the bar rather than silently. */}
         <Route path="/admin/data/:service?/:table?" element={<AdminDataSection />} />
+        {/* One row of that table, by its primary key (§5.8). The same section:
+            the card replaces the table in the body while the rail and the
+            catalog column stay, so this is a deeper address rather than another
+            screen. */}
+        <Route path="/admin/data/:service/:table/:id" element={<AdminDataSection />} />
         {/* Every section is drawn, including the ones with no endpoints yet
             (§4.19) — the shape of the area is itself information. */}
         {adminSections

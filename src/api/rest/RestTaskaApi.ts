@@ -15,6 +15,8 @@ import { SessionExpiredSignal } from "../session";
 import type {
   AdminCatalog,
   AdminPagination,
+  AdminRow,
+  AdminRowQuery,
   AdminRows,
   AdminRowsMeta,
   AdminRowsQuery,
@@ -64,9 +66,6 @@ interface RestUser {
   globalRole?: unknown;
 }
 
-/** Paging and sorting own these keys; a filter may not take them. */
-const RESERVED_QUERY_KEYS = new Set(["page", "pageSize", "sort", "order"]);
-
 /**
  * `GET /readonly/{service}/{table}` — `data` on the wire, `rows` in the domain.
  * Every field is optional because the contract marks none of them required, and
@@ -74,12 +73,17 @@ const RESERVED_QUERY_KEYS = new Set(["page", "pageSize", "sort", "order"]);
  * byte to us: typing it as guaranteed would be a claim, not a fact.
  */
 interface RestAdminRows {
-  data?: Record<string, unknown>[];
-  pagination?: AdminPagination;
+  data?: AdminRow[];
+  pagination?: Partial<AdminPagination>;
   meta?: Partial<AdminRowsMeta>;
 }
 
-/** `GET /readonly/metadata`, with the same caveat. */
+/** `GET /readonly/{service}/{table}/{id}` — one row under the same `data` key. */
+interface RestAdminRow {
+  data?: AdminRow;
+}
+
+/** `GET /readonly/catalog`, with the same caveat. */
 interface RestAdminCatalog {
   services?: (Partial<Omit<AdminService, "tables">> & { tables?: AdminTable[] })[];
 }
@@ -470,7 +474,7 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async getAdminCatalog(): Promise<AdminCatalog> {
-    const response = await this.request<RestAdminCatalog>("/readonly/metadata");
+    const response = await this.request<RestAdminCatalog>("/readonly/catalog");
     // The contract marks nothing in this response required, and the gateway's
     // own mapper emits an empty object when it has no catalog. Screens read
     // these lists by walking them, so a missing one is a render crash — and
@@ -488,25 +492,28 @@ export class RestTaskaApi implements TaskaApi {
 
   listAdminRows(query: AdminRowsQuery): Promise<AdminRows> {
     const search = new URLSearchParams();
-    if (query.page !== undefined) search.set("page", String(query.page));
+    // The one place in the app where the page basis changes. The wire is
+    // 0-based (`minimum: 0, default: 0`) and so is `pagination.currentPage`;
+    // the domain, the URL, the pager and the mock are all 1-based, because
+    // `/admin/data/x/y?page=2` links are already shared and have to keep
+    // meaning the second page. Converting here rather than at every caller
+    // makes the mismatch one fact in one file — this `- 1` is the conversion,
+    // not an off-by-one.
+    if (query.page !== undefined) search.set("page", String(Math.max(0, query.page - 1)));
     if (query.pageSize !== undefined) search.set("pageSize", String(query.pageSize));
     if (query.sort) search.set("sort", query.sort);
     if (query.order) search.set("order", query.order);
 
     for (const filter of query.filters ?? []) {
       // Empty means "no filter", not "match the empty string" — an input the
-      // user cleared must not narrow the table to nothing.
+      // user cleared must not narrow the table to nothing. The gateway agrees
+      // in the strongest way available to it: a blank value is a 400.
       if (filter.value === "") continue;
-      // Filters share the query string with the paging and sorting keys, so a
-      // column genuinely called `page` or `sort` would otherwise overwrite them
-      // and the table would answer a question nobody asked. The contract's own
-      // prose gives the way out — `.eq` is the explicit spelling of the bare
-      // equality key — so the collision is renamed rather than dropped.
-      // Dropping it would silently return unfiltered rows while the form still
-      // read as applied, which is the failure this guard exists to prevent.
-      const bare = filter.operator === "eq" ? filter.column : `${filter.column}.${filter.operator}`;
-      const key = RESERVED_QUERY_KEYS.has(bare) ? `${filter.column}.eq` : bare;
-      search.set(key, filter.value);
+      // Always `column.operator`. The gateway splits on the last dot and
+      // rejects both a key with no operator and an operator it does not know,
+      // so there is exactly one spelling — and a column called `page` becomes
+      // `page.equals`, which can no longer collide with the paging keys.
+      search.set(`${filter.column}.${filter.operator}`, filter.value);
     }
 
     return this.request<RestAdminRows>(
@@ -515,18 +522,7 @@ export class RestTaskaApi implements TaskaApi {
       // `data` on the wire, `rows` in the domain: "data" says nothing at the
       // call site, and every field of this response is data.
       rows: response.data ?? [],
-      // Nothing in this response is contractually required, pagination
-      // included, and the pager dereferences it. One page holding whatever
-      // arrived is a truthful fallback and, unlike a crash, leaves the rows
-      // readable.
-      pagination: response.pagination ?? {
-        currentPage: query.page ?? 1,
-        pageSize: query.pageSize ?? (response.data?.length ?? 0),
-        totalRows: response.data?.length ?? 0,
-        totalPages: 1,
-        hasNext: false,
-        hasPrev: false,
-      },
+      pagination: this.toPagination(response.pagination, query, response.data?.length ?? 0),
       meta: {
         // A server that does not echo which table this is leaves us with what
         // we asked for, which is the only honest answer available and keeps the
@@ -541,6 +537,40 @@ export class RestTaskaApi implements TaskaApi {
         filterableColumns: response.meta?.filterableColumns ?? [],
       },
     }));
+  }
+
+  async getAdminRow(query: AdminRowQuery): Promise<AdminRow> {
+    const response = await this.request<RestAdminRow>(
+      `/readonly/${this.segment(query.service)}/${this.segment(query.table)}/${this.segment(query.id)}`,
+    );
+    // A 200 with no `data` is not "no such row" — the server would have said
+    // 404 for that, and the card has its own words for it. An empty row renders
+    // as a card of dashes, which is what "the server returned nothing about
+    // this row" honestly looks like.
+    return response.data ?? {};
+  }
+
+  /**
+   * The wire's pagination on the domain's 1-based page, field by field: the
+   * contract marks none of them required, and an all-or-nothing fallback would
+   * turn one missing field into a fabricated single page.
+   */
+  private toPagination(
+    wire: Partial<AdminPagination> | undefined,
+    query: AdminRowsQuery,
+    rowCount: number,
+  ): AdminPagination {
+    return {
+      // The `+ 1` half of the conversion above. Where the server said nothing,
+      // the caller's own page is already 1-based and needs no move.
+      currentPage: wire?.currentPage !== undefined ? wire.currentPage + 1 : (query.page ?? 1),
+      pageSize: wire?.pageSize ?? query.pageSize ?? rowCount,
+      totalRows: wire?.totalRows ?? rowCount,
+      totalPages: wire?.totalPages ?? 1,
+      // Basis-independent, so they pass through as stated.
+      hasNext: wire?.hasNext ?? false,
+      hasPrev: wire?.hasPrev ?? false,
+    };
   }
 
   private setTokens(tokens: AuthTokens) {

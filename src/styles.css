@@ -1542,6 +1542,51 @@ h1 {
   outline-offset: 2px;
 }
 
+/* A row that can be opened says so before it is clicked: the pointer changes
+   and the row lifts to --surface-2 under it. Rows of a table the gateway cannot
+   address by key carry neither, because they do not open (§5.8). */
+.admin-row-opens {
+  cursor: pointer;
+}
+
+.admin-row-opens:hover td {
+  background: var(--surface-2);
+}
+
+.admin-table .admin-row-opens:hover .admin-cell-frozen {
+  background: var(--surface-2);
+}
+
+/* The last column is the row's own link, and it holds only a chevron: a wider
+   target here would take width from the values, which are what the table is
+   for. */
+.admin-table .admin-open-head,
+.admin-table .admin-open-cell {
+  width: 30px;
+  padding: 0 6px 0 0;
+  text-align: right;
+}
+
+.admin-open-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--fg-3);
+}
+
+.admin-open-row:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.admin-open-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* Reads as a stated absence, not as a value. */
 .admin-hidden-cell {
   display: inline-flex;
@@ -1573,6 +1618,119 @@ h1 {
   height: 26px;
   padding: 0 11px;
   font-size: 11.5px;
+}
+
+/* ---------- Data section: one row (§5.8) ---------- */
+
+/* The way back to the table, above the card. It carries the table's own query,
+   so it is a link and not a history step: a reader who arrived from a pasted
+   row address still gets a way back into the table. */
+.admin-back-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  gap: 3px;
+  border-radius: 6px;
+  padding: 0 6px 0 2px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.admin-back-link:hover {
+  color: var(--fg);
+}
+
+.admin-back-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Scrolls on its own like the table does, so the section never scrolls whole. */
+.admin-card {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.admin-card-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 9px 12px;
+}
+
+.admin-card-table {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The key in full: the table's frozen cell shortens it for width, and this card
+   is where the whole value is meant to be found. */
+.admin-card-key {
+  margin: 2px 0 0;
+  font-size: 11.5px;
+}
+
+.admin-card-key .admin-key {
+  margin-left: -4px;
+  color: var(--fg-2);
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
+
+.admin-card-fields {
+  margin: 0;
+  padding: 4px 0;
+}
+
+/* Label left in a fixed column, value right: the eye runs down the names to
+   find a field, which only works if they start at the same x. */
+.admin-card-field {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 5px 12px;
+}
+
+.admin-card-field + .admin-card-field {
+  border-top: 1px solid color-mix(in oklab, var(--border) 55%, transparent);
+}
+
+.admin-card-field dt {
+  flex: none;
+  width: 200px;
+  color: var(--fg-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Wraps rather than truncates: there is no neighbouring column here for a
+   truncation to protect, and the card is where a reader comes for the value in
+   full. */
+.admin-card-value {
+  min-width: 0;
+  margin: 0;
+  color: var(--fg);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* An absent value is not a quiet value: the dash is chrome, so it is pale. */
+.admin-card-null {
+  color: var(--fg-3);
 }
 
 .admin-note {
@@ -1788,6 +1946,18 @@ h1 {
 
   .admin-plane {
     padding: 0 14px 14px;
+  }
+
+  /* A 200px label column plus a value leaves neither readable at phone width,
+     so the pair stacks. The label still comes first and still reads as the
+     name of what follows. */
+  .admin-card-field {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .admin-card-field dt {
+    width: auto;
   }
 
   .admin-section > .admin-note {

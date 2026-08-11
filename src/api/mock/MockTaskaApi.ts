@@ -13,8 +13,11 @@ import type {
 } from "../TaskaApi";
 import type {
   AdminCatalog,
+  AdminRow,
+  AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
+  AdminTable,
   Issue,
   IssueComment,
   IssueHistoryEvent,
@@ -830,6 +833,18 @@ export class MockTaskaStore {
    * `sensitive` column so the masking path is reachable without a gateway.
    * Rows are derived from the same seed where it is cheap, so a table the
    * console shows agrees with the app around it.
+   *
+   * `type` is spelled the way `information_schema.columns.data_type` spells it —
+   * `character varying`, not `varchar`; `timestamp with time zone`, not
+   * `timestamptz` — because that is what the gateway forwards and what the
+   * console classifies a column by. A mock that used the short aliases would
+   * offer operators the real gateway then answers 400 for, and no test could
+   * see it.
+   *
+   * The seed deliberately covers what the screen branches on: `auth.users` has
+   * a `uuid` primary key (its rows open a card) and a column of every class,
+   * while `admin.audit_log` is keyed by text (the gateway takes a `UUID` in the
+   * path, so those rows are not addressable and must not pretend to be).
    */
   adminCatalog(): AdminCatalog {
     return {
@@ -843,13 +858,30 @@ export class MockTaskaStore {
               primaryKey: "id",
               columns: [
                 { name: "id", type: "uuid", sensitive: false },
-                { name: "login", type: "varchar", sensitive: false },
-                { name: "email", type: "varchar", sensitive: false },
-                { name: "display_name", type: "varchar", sensitive: false },
-                { name: "status", type: "varchar", sensitive: false },
-                { name: "global_role", type: "varchar", sensitive: false },
-                { name: "password_hash", type: "varchar", sensitive: true },
-                { name: "created_at", type: "timestamptz", sensitive: false },
+                { name: "login", type: "character varying", sensitive: false },
+                { name: "email", type: "character varying", sensitive: false },
+                { name: "display_name", type: "character varying", sensitive: false },
+                { name: "status", type: "character varying", sensitive: false },
+                { name: "global_role", type: "character varying", sensitive: false },
+                { name: "password_hash", type: "character varying", sensitive: true },
+                { name: "failed_logins", type: "integer", sensitive: false },
+                { name: "email_verified", type: "boolean", sensitive: false },
+                { name: "created_at", type: "timestamp with time zone", sensitive: false },
+              ],
+            },
+            {
+              // Keyed by a uuid *and* long enough to page through, which is the
+              // combination the row card needs to be exercised properly: the
+              // product tables are all one page, and the only long table in the
+              // seed is keyed by a code.
+              name: "sessions",
+              primaryKey: "id",
+              columns: [
+                { name: "id", type: "uuid", sensitive: false },
+                { name: "user_id", type: "uuid", sensitive: false },
+                { name: "ip_address", type: "inet", sensitive: false },
+                { name: "revoked", type: "boolean", sensitive: false },
+                { name: "expires_at", type: "timestamp with time zone", sensitive: false },
               ],
             },
           ],
@@ -863,11 +895,12 @@ export class MockTaskaStore {
               primaryKey: "id",
               columns: [
                 { name: "id", type: "uuid", sensitive: false },
-                { name: "project_key", type: "varchar", sensitive: false },
-                { name: "name", type: "varchar", sensitive: false },
+                { name: "project_key", type: "character varying", sensitive: false },
+                { name: "name", type: "character varying", sensitive: false },
                 { name: "created_by", type: "uuid", sensitive: false },
-                { name: "archived_at", type: "timestamptz", sensitive: false },
-                { name: "created_at", type: "timestamptz", sensitive: false },
+                { name: "settings", type: "jsonb", sensitive: false },
+                { name: "archived_at", type: "timestamp with time zone", sensitive: false },
+                { name: "created_at", type: "timestamp with time zone", sensitive: false },
               ],
             },
           ],
@@ -881,14 +914,14 @@ export class MockTaskaStore {
               primaryKey: "id",
               columns: [
                 { name: "id", type: "uuid", sensitive: false },
-                { name: "issue_key", type: "varchar", sensitive: false },
+                { name: "issue_key", type: "character varying", sensitive: false },
                 { name: "project_id", type: "uuid", sensitive: false },
-                { name: "summary", type: "varchar", sensitive: false },
-                { name: "issue_type", type: "varchar", sensitive: false },
-                { name: "status", type: "varchar", sensitive: false },
-                { name: "priority", type: "varchar", sensitive: false },
+                { name: "summary", type: "character varying", sensitive: false },
+                { name: "issue_type", type: "character varying", sensitive: false },
+                { name: "status", type: "character varying", sensitive: false },
+                { name: "priority", type: "character varying", sensitive: false },
                 { name: "assignee_id", type: "uuid", sensitive: false },
-                { name: "created_at", type: "timestamptz", sensitive: false },
+                { name: "created_at", type: "timestamp with time zone", sensitive: false },
               ],
             },
           ],
@@ -898,14 +931,19 @@ export class MockTaskaStore {
           databaseAlias: "taska_admin",
           tables: [
             {
+              // Keyed by a readable code rather than a uuid, which is the case
+              // the gateway cannot address: `GET /readonly/{s}/{t}/{id}` parses
+              // `id` as a UUID and refuses everything else before admin-service
+              // ever sees it. The console must not offer those rows a link.
               name: "audit_log",
               primaryKey: "id",
               columns: [
-                { name: "id", type: "uuid", sensitive: false },
+                { name: "id", type: "character varying", sensitive: false },
                 { name: "actor_id", type: "uuid", sensitive: false },
-                { name: "action", type: "varchar", sensitive: false },
-                { name: "target", type: "varchar", sensitive: false },
-                { name: "created_at", type: "timestamptz", sensitive: false },
+                { name: "action", type: "character varying", sensitive: false },
+                { name: "target", type: "character varying", sensitive: false },
+                { name: "duration_ms", type: "integer", sensitive: false },
+                { name: "created_at", type: "timestamp with time zone", sensitive: false },
               ],
             },
           ],
@@ -915,20 +953,7 @@ export class MockTaskaStore {
   }
 
   listAdminRows(query: AdminRowsQuery): AdminRows {
-    const service = this.adminCatalog().services.find((item) => item.name === query.service);
-    const table = service?.tables.find((item) => item.name === query.table);
-    if (!service) {
-      throw new MockApiError("NOT_FOUND", `Unknown service ${query.service}`);
-    }
-    if (!table) {
-      // Not NOT_FOUND: the gateway permits or denies a table by config, so a
-      // table it will not serve comes back as PERMISSION_DENIED. Unreachable
-      // from the console, which only offers catalog tables, and
-      // `isMissingOrForbidden` treats both the same — but the mock is the
-      // reference implementation, so it should not teach the wrong shape.
-      throw new MockApiError("PERMISSION_DENIED", `Table ${query.service}.${query.table} is not served`);
-    }
-
+    const table = this.adminTable(query.service, query.table);
     const columns = table.columns.map((column) => column.name);
     let rows = this.adminRowsFor(query.service, query.table);
 
@@ -997,7 +1022,46 @@ export class MockTaskaStore {
     };
   }
 
-  private adminRowsFor(service: string, table: string): Record<string, unknown>[] {
+  /**
+   * One row by its primary key. A key nobody has fails exactly the way the
+   * gateway's 404 reaches the UI, so the card's missing-row state is reachable
+   * in mock mode — that state is otherwise unreachable without a database.
+   *
+   * The id is compared as text, which is what admin-service does (`"pk"::text
+   * = $1`). The gateway is stricter — it parses the path parameter as a UUID
+   * and refuses anything else — but that refusal belongs to the gateway, and
+   * the console never builds such a link in the first place.
+   */
+  adminRow(query: AdminRowQuery): AdminRow {
+    const table = this.adminTable(query.service, query.table);
+    const row = this.adminRowsFor(query.service, query.table).find(
+      (candidate) => String(candidate[table.primaryKey] ?? "") === query.id,
+    );
+    if (!row) {
+      throw new MockApiError("NOT_FOUND", `No row ${query.id} in ${query.service}.${query.table}`);
+    }
+    return row;
+  }
+
+  /** The catalog entry both admin reads start from, refusing the same two ways. */
+  private adminTable(serviceName: string, tableName: string): AdminTable {
+    const service = this.adminCatalog().services.find((item) => item.name === serviceName);
+    if (!service) {
+      throw new MockApiError("NOT_FOUND", `Unknown service ${serviceName}`);
+    }
+    const table = service.tables.find((item) => item.name === tableName);
+    if (!table) {
+      // Not NOT_FOUND: the gateway permits or denies a table by config, so a
+      // table it will not serve comes back as PERMISSION_DENIED. Unreachable
+      // from the console, which only offers catalog tables, and
+      // `isMissingOrForbidden` treats both the same — but the mock is the
+      // reference implementation, so it should not teach the wrong shape.
+      throw new MockApiError("PERMISSION_DENIED", `Table ${serviceName}.${tableName} is not served`);
+    }
+    return table;
+  }
+
+  private adminRowsFor(service: string, table: string): AdminRow[] {
     if (service === "auth" && table === "users") {
       return this.users.map((user, index) => ({
         id: user.id,
@@ -1009,16 +1073,33 @@ export class MockTaskaStore {
         // Never rendered — the catalog marks the column sensitive. Present so
         // that masking is exercised against a value rather than against a gap.
         password_hash: `$2b$10$mock${index}`,
+        failed_logins: index,
+        email_verified: index % 2 === 0,
         created_at: `2026-06-0${index + 1}T09:00:00Z`,
       }));
     }
 
+    if (service === "auth" && table === "sessions") {
+      // Deterministic uuids: a row address has to survive a reload and a
+      // copied link, so the ids cannot be regenerated per call.
+      return Array.from({ length: 45 }, (_, index) => ({
+        id: `9c1f${String(index + 1).padStart(4, "0")}-0000-4000-8000-0000000${String(index + 1).padStart(5, "0")}`,
+        user_id: [ANNA_ID, MARK_ID, SOFIA_ID][index % 3],
+        ip_address: `10.0.${index % 8}.${index % 251}`,
+        revoked: index % 3 === 0,
+        expires_at: `2026-09-${String((index % 28) + 1).padStart(2, "0")}T08:00:00Z`,
+      }));
+    }
+
     if (service === "project" && table === "projects") {
-      return this.projects.map((project) => ({
+      return this.projects.map((project, index) => ({
         id: project.id,
         project_key: project.projectKey,
         name: project.name,
         created_by: project.createdBy,
+        // A column the console renders as JSON, and one more type the catalog
+        // classifies as neither text nor a number.
+        settings: index === 0 ? { board: "kanban", wipLimit: 3 } : null,
         archived_at: project.archivedAt,
         created_at: project.createdAt,
       }));
@@ -1045,6 +1126,7 @@ export class MockTaskaStore {
         actor_id: index % 2 === 0 ? ANNA_ID : MARK_ID,
         action: ["TABLE_READ", "CATALOG_READ", "LOGIN", "ROLE_CHANGED"][index % 4],
         target: ["auth.users", "project.projects", "issue.issues", "admin.audit_log"][index % 4],
+        duration_ms: (index % 7) * 11,
         created_at: `2026-07-${String((index % 28) + 1).padStart(2, "0")}T10:${String(index % 60).padStart(2, "0")}:00Z`,
       }));
     }
@@ -1353,5 +1435,9 @@ export class MockTaskaApi implements TaskaApi {
 
   async listAdminRows(query: AdminRowsQuery): Promise<AdminRows> {
     return wait(this.store.listAdminRows(query));
+  }
+
+  async getAdminRow(query: AdminRowQuery): Promise<AdminRow> {
+    return wait(this.store.adminRow(query));
   }
 }

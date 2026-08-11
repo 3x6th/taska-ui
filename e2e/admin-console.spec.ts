@@ -150,6 +150,60 @@ test("a filter that matches nothing says so instead of looking broken", async ({
   await expect(page.getByText("No rows match this filter.")).toBeVisible();
 });
 
+test("opens one row and comes back to the page and filter it was opened from", async ({ page }) => {
+  await openConsole(page);
+
+  // A filtered second page, so the way back has something to lose: without the
+  // table's query travelling with the row address, Back lands on page 1 of an
+  // unfiltered table and the reader has to find their place again.
+  await page.goto("/admin/data/auth/sessions?filter=revoked:equals:false&page=2");
+  await expect(page.getByText("Page 2 of 2")).toBeVisible();
+  const key = await page.locator(".admin-table tbody tr td").first().innerText();
+
+  await page.getByRole("link", { name: /^Open row / }).first().click();
+
+  await expect(page).toHaveURL(/\/admin\/data\/auth\/sessions\/[0-9a-f-]{36}\?/);
+  // The card is the section body: the table is gone, the rail and the catalog
+  // are not.
+  await expect(page.locator(".admin-table")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Tables" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Administration" })).toBeVisible();
+  // The key in full, and copyable — the table shortens it, the card does not.
+  await expect(page.getByRole("button", { name: /^Copy [0-9a-f-]{36}$/ })).toBeVisible();
+  await expect(page.getByText("ip_address", { exact: true })).toBeVisible();
+
+  await page.getByRole("link", { name: "auth.sessions" }).click();
+
+  await expect(page).toHaveURL(/page=2/);
+  await expect(page).toHaveURL(/filter=revoked%3Aequals%3Afalse/);
+  await expect(page.getByText("Page 2 of 2")).toBeVisible();
+  await expect(page.locator(".admin-table tbody tr td").first()).toHaveText(key);
+});
+
+test("does not offer a row link where the gateway could not take one", async ({ page }) => {
+  await openConsole(page);
+
+  // audit_log is keyed by a code rather than a uuid, and the gateway parses the
+  // row id as a UUID — so those rows have no address, and the console says so
+  // by not linking them.
+  await page.getByRole("link", { name: "audit_log", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+
+  await expect(page.getByRole("link", { name: /^Open row / })).toHaveCount(0);
+});
+
+test("says a row is missing instead of showing the not-found screen", async ({ page }) => {
+  await openConsole(page);
+
+  await page.goto("/admin/data/auth/sessions/0f3d5cb0-0000-0000-0000-000000000000");
+
+  await expect(page.getByText("No row with this key in auth.sessions.")).toBeVisible();
+  // The address is a real one, so this is not §4.18 — and the section keeps
+  // working around the message.
+  await expect(page.getByRole("heading", { name: "Page not found" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Tables" })).toBeVisible();
+});
+
 test("finds a table through the catalog search", async ({ page }) => {
   await openConsole(page);
 

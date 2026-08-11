@@ -1,5 +1,7 @@
 import type {
   AdminCatalog,
+  AdminRow,
+  AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
   Issue,
@@ -140,7 +142,7 @@ export interface TaskaApi {
 
   /**
    * The catalog of services and tables the read-only admin API will serve
-   * (`GET /readonly/metadata`). `GLOBAL_ADMIN` only — every other caller gets a
+   * (`GET /readonly/catalog`). `GLOBAL_ADMIN` only — every other caller gets a
    * 403 from the server, which is the actual permission control; the UI hiding
    * the section is not.
    */
@@ -152,4 +154,12 @@ export interface TaskaApi {
    * legitimate values, and the gateway validates them again regardless.
    */
   listAdminRows(query: AdminRowsQuery): Promise<AdminRows>;
+
+  /**
+   * One row by its primary key (`GET /readonly/{service}/{table}/{id}`), for
+   * the row card in §5.8. A row that is not there is a missing row, not a
+   * missing address: the caller distinguishes it from a refusal and says so
+   * inside the card.
+   */
+  getAdminRow(query: AdminRowQuery): Promise<AdminRow>;
 }

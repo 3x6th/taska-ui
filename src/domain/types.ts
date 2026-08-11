@@ -241,12 +241,16 @@ export interface AdminCatalog {
 }
 
 /**
- * The contract spells filters as query keys: `column` for equality and
- * `column.contains` / `column.from` / `column.to` otherwise. Kept structured
- * here so the UI never hand-builds a key, and so the API layer is the only
- * place that knows the wire spelling.
+ * The contract spells filters as query keys `column.operator`, with the
+ * operator always present: `column.equals`, `column.contains`, `column.from`,
+ * `column.to`. Kept structured here so the UI never hand-builds a key, and so
+ * the API layer is the only place that knows the wire spelling.
+ *
+ * The gateway also decides which operator a column may take from that column's
+ * type and answers 400 for the rest, which is why the catalog's `type` is not
+ * decoration — see `src/screens/admin/columns.ts`.
  */
-export type AdminFilterOperator = "eq" | "contains" | "from" | "to";
+export type AdminFilterOperator = "equals" | "contains" | "from" | "to";
 
 export interface AdminFilter {
   column: string;
@@ -289,8 +293,25 @@ export interface AdminRowsMeta {
   filterableColumns: string[];
 }
 
+/** One record of a service table: a bag of columns whose types are runtime news. */
+export type AdminRow = Record<string, unknown>;
+
 export interface AdminRows {
-  rows: Record<string, unknown>[];
+  rows: AdminRow[];
   pagination: AdminPagination;
   meta: AdminRowsMeta;
+}
+
+/**
+ * One row by its primary key (`GET /readonly/{service}/{table}/{id}`).
+ *
+ * `id` is a string here because a primary key is whatever the table says it is,
+ * but the gateway types the path parameter as a `UUID` — a table keyed by
+ * anything else cannot be addressed at all, which is why §5.8 only makes a row
+ * clickable when the catalog says its key column is `uuid`.
+ */
+export interface AdminRowQuery {
+  service: string;
+  table: string;
+  id: string;
 }

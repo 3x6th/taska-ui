@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import type { TaskaApi } from "../../api/TaskaApi";
-import type { AdminRowsQuery, User } from "../../domain/types";
+import type { AdminRowQuery, AdminRowsQuery, User } from "../../domain/types";
 import { App } from "../App";
 
 /**
@@ -32,6 +32,7 @@ const {
   releaseRows,
   failCatalog,
   failRows,
+  failRow,
   setMetaMismatch,
   lastRowsQuery,
 } = vi.hoisted(() => {
@@ -45,12 +46,18 @@ const {
     rowsRelease?: () => void;
     catalogFailure?: Error;
     rowsFailure?: Error;
+    rowFailure?: Error;
     metaMismatch?: boolean;
     rowsQuery?: AdminRowsQuery;
   } = {};
 
   // Two tables that differ in exactly the way that matters: one has a column
   // the catalog marks sensitive, the other has none.
+  //
+  // The types are spelled the way `information_schema` spells them, because
+  // that is what the gateway forwards and what the console classifies columns
+  // by — and the two primary keys differ on purpose: `auth.users` is keyed by a
+  // uuid, which the gateway can address, and `admin.audit_log` is not.
   const catalog = {
     services: [
       {
@@ -62,9 +69,10 @@ const {
             primaryKey: "id",
             columns: [
               { name: "id", type: "uuid", sensitive: false },
-              { name: "email", type: "varchar", sensitive: false },
-              { name: "password_hash", type: "varchar", sensitive: true },
-              { name: "created_at", type: "timestamptz", sensitive: false },
+              { name: "email", type: "character varying", sensitive: false },
+              { name: "password_hash", type: "character varying", sensitive: true },
+              { name: "failed_logins", type: "integer", sensitive: false },
+              { name: "created_at", type: "timestamp with time zone", sensitive: false },
             ],
           },
         ],
@@ -83,8 +91,10 @@ const {
             name: "audit_log",
             primaryKey: "id",
             columns: [
-              { name: "id", type: "uuid", sensitive: false },
-              { name: "action", type: "varchar", sensitive: false },
+              // A readable code, not a uuid: the gateway parses the row id in
+              // the path as a UUID, so these rows cannot be opened at all.
+              { name: "id", type: "character varying", sensitive: false },
+              { name: "action", type: "character varying", sensitive: false },
             ],
           },
         ],
@@ -94,13 +104,14 @@ const {
 
   const rowsByTable: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {
     "auth.users": {
-      columns: ["id", "email", "password_hash", "created_at"],
+      columns: ["id", "email", "password_hash", "failed_logins", "created_at"],
       rows: [
         {
           id: "u1",
           email: "anna@example.com",
           password_hash: SECRET_VALUE,
-          created_at: "2026-08-01T10:00:00Z",
+          failed_logins: 2,
+          created_at: null,
         },
       ],
     },
@@ -189,6 +200,17 @@ const {
         },
       };
     },
+    getAdminRow: async (query: AdminRowQuery) => {
+      if (state.rowFailure) throw state.rowFailure;
+      const table = rowsByTable[`${query.service}.${query.table}`];
+      const row = table?.rows.find((candidate) => String(candidate.id) === query.id);
+      if (!row) {
+        // The shape a missing row arrives in from both implementations: a 404
+        // from REST, a NOT_FOUND code from the mock.
+        throw Object.assign(new Error("Row not found"), { status: 404, code: "NOT_FOUND" });
+      }
+      return row;
+    },
   };
 
   return {
@@ -218,6 +240,10 @@ const {
      */
     failRows: (failure?: Error) => {
       state.rowsFailure = failure;
+    },
+    /** Fail the *single row* request, which is a different endpoint and a different card state. */
+    failRow: (failure?: Error) => {
+      state.rowFailure = failure;
     },
     setMetaMismatch: (on: boolean) => {
       state.metaMismatch = on;
@@ -728,19 +754,190 @@ describe("/admin console selection in the URL", () => {
     expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
   });
 
-  // `from`/`to` become a timestamp comparison server-side, so a text column
-  // must not be able to ask for one: the gateway answers with a database error
-  // the UI cannot explain.
-  it("offers the range operators only for a temporal column", async () => {
+  // The gateway validates the operator against the column's type and answers
+  // 400, so an operator offered on the wrong column is not a bad suggestion —
+  // it is a request that cannot succeed, and the reader cannot tell why.
+  it("offers the operators the column's type allows, and no others", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+
+    // Text: equality and substring, no range.
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
+    expect(screen.getByRole("option", { name: "contains" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "from" })).not.toBeInTheDocument();
+
+    // Temporal: equality and range, no substring.
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "created_at" } });
+    expect(screen.getByRole("option", { name: "from" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "to" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "contains" })).not.toBeInTheDocument();
+
+    // Numeric: range too — `from`/`to` are not a timestamp-only pair any more.
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "failed_logins" } });
+    expect(screen.getByRole("option", { name: "from" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "contains" })).not.toBeInTheDocument();
+
+    // Unknown to the gateway's type list: equality alone, failing towards the
+    // filter that cannot be refused.
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "id" } });
+    expect(screen.getAllByRole("option", { name: "is" })).toHaveLength(1);
+    expect(screen.queryByRole("option", { name: "from" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "contains" })).not.toBeInTheDocument();
+  });
+
+  // A stranded operator leaves the select showing a blank — its option is gone
+  // — and applies a filter the gateway refuses.
+  it("resets an operator the newly chosen column cannot take", async () => {
     renderAdmin("/admin/data/auth/users");
     expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
-    expect(screen.queryByRole("option", { name: "from" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Match"), { target: { value: "contains" } });
+    expect(screen.getByLabelText("Match")).toHaveValue("contains");
 
+    // `contains` is text-only, and a uuid column is not text.
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "id" } });
+    expect(screen.getByLabelText("Match")).toHaveValue("equals");
+
+    // The same in the other direction: a range operator on a text column.
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "created_at" } });
-    expect(screen.getByRole("option", { name: "from" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Match"), { target: { value: "from" } });
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
+    expect(screen.getByLabelText("Match")).toHaveValue("equals");
+  });
+
+  // A timestamp is parsed strictly server-side, so the form owns the format
+  // (§5.8): the field is a picker and what leaves it is a full ISO-8601 moment.
+  it("sends a temporal filter as a full ISO-8601 value from a date picker", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "created_at" } });
+    fireEvent.change(screen.getByLabelText("Match"), { target: { value: "from" } });
+    expect(screen.getByLabelText("Value")).toHaveAttribute("type", "datetime-local");
+
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "2026-01-01T00:00" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    const sent = lastRowsQuery()?.filters?.[0];
+    expect(sent?.column).toBe("created_at");
+    expect(sent?.operator).toBe("from");
+    // Whatever the runner's timezone, what goes out is an instant with an
+    // offset — `2026-01-01` and `2026-01-01T00:00` are both 400s.
+    expect(sent?.value).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+    expect(new Date(sent!.value).getTime()).toBe(new Date("2026-01-01T00:00").getTime());
+  });
+
+  it("keeps a text filter's plain field", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
+
+    expect(screen.getByLabelText("Value")).toHaveAttribute("type", "text");
+  });
+});
+
+/**
+ * A row is an address of its own (§5.8) — but only where the gateway can
+ * actually take it: `GET /readonly/{service}/{table}/{id}` types the id as a
+ * UUID, so a table keyed by a code has no addressable rows at all and must not
+ * offer a link that is certain to be refused.
+ */
+describe("/admin console, opening one row", () => {
+  beforeEach(() => {
+    releaseMe();
+    releaseRows();
+    failCatalog(undefined);
+    failRows(undefined);
+    failRow(undefined);
+    setMetaMismatch(false);
+    setCurrentUser(admin);
+    window.localStorage.clear();
+  });
+
+  it("links a row when the catalog says the key is a uuid", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    expect(screen.getByRole("link", { name: "Open row u1" })).toHaveAttribute("href", "/admin/data/auth/users/u1");
+  });
+
+  it("does not link a row the gateway could not address", async () => {
+    renderAdmin("/admin/data/admin/audit_log");
+    expect(await screen.findByRole("cell", { name: "a1" })).toBeVisible();
+
+    // Not styled-as-disabled, not a link that 400s: no link at all.
+    expect(screen.queryByRole("link", { name: /Open row/ })).toBeNull();
+  });
+
+  it("carries the table's page and filter into the row address and back out again", async () => {
+    renderAdmin("/admin/data/auth/users?filter=email:contains:anna");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("link", { name: "Open row u1" }));
+
+    expect(currentLocation()).toBe("/admin/data/auth/users/u1?filter=email%3Acontains%3Aanna");
+    // Back from a row read on page 7 of a filtered table has to be page 7 of
+    // that filter, not the top of an unfiltered one.
+    const back = await screen.findByRole("link", { name: "auth.users" });
+    fireEvent.click(back);
+    expect(currentLocation()).toBe("/admin/data/auth/users?filter=email%3Acontains%3Aanna");
+  });
+
+  it("shows the row's fields, in full, with the section around it intact", async () => {
+    renderAdmin("/admin/data/auth/users/u1");
+
+    expect(await screen.findByRole("heading", { level: 2, name: "auth.users" })).toBeVisible();
+    // Label and value as a pair, and the value is not shortened.
+    const email = screen.getByText("email");
+    expect(email.tagName).toBe("DT");
+    expect(email.nextElementSibling).toHaveTextContent("anna@example.com");
+    // A null column is a dash, not the word "null" and not an empty gap.
+    expect(screen.getByText("created_at").nextElementSibling).toHaveTextContent("—");
+    // The key in full, and copyable — this is where a reader comes for it.
+    expect(screen.getByRole("button", { name: "Copy u1" })).toBeVisible();
+    // The rail and the catalog column stay: the reader has not left the table.
+    expect(screen.getByRole("navigation", { name: "Administration" })).toBeVisible();
+    expect(screen.getByRole("navigation", { name: "Tables" })).toBeVisible();
+    // And the table itself is gone, rather than sitting under the card.
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("never prints a sensitive column on the card either", async () => {
+    renderAdmin("/admin/data/auth/users/u1");
+
+    // The column is named — the card must not misrepresent the row's shape —
+    // and only its value is withheld.
+    expect(await screen.findByText("password_hash")).toBeVisible();
+    expect(screen.getByText("hidden")).toBeVisible();
+    expect(document.body.textContent).not.toContain(SECRET);
+  });
+
+  it("says the row is missing rather than answering with the not-found screen", async () => {
+    renderAdmin("/admin/data/auth/users/nobody");
+
+    // §4.18 is for an address that does not exist. This one does — the section,
+    // the service and the table are all real — and only the row is absent.
+    expect(await screen.findByText(/No row with this key in auth.users/)).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
+    expect(screen.getByRole("navigation", { name: "Tables" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "auth.users" })).toBeVisible();
+  });
+
+  it("tells a server fault on the row apart from a missing row", async () => {
+    failRow(Object.assign(new Error("Internal error"), { status: 500, requestId: "c85c0694" }));
+    renderAdmin("/admin/data/auth/users/u1");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/fault on the server/i);
+    expect(alert).toHaveTextContent("c85c0694");
+    expect(screen.queryByText(/No row with this key/)).toBeNull();
   });
 });
 

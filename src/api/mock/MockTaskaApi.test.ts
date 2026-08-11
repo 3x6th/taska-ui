@@ -336,6 +336,52 @@ describe("MockTaskaApi", () => {
       }
     });
 
+    // The console branches on the catalog's column types — which operators a
+    // filter offers, and whether a row can be opened at all — so a seed that
+    // does not carry those cases proves nothing about the screen above it.
+    it("spells column types the way information_schema does", async () => {
+      const catalog = await api.getAdminCatalog();
+      const types = new Set(
+        catalog.services.flatMap((service) => service.tables).flatMap((table) => table.columns.map((c) => c.type)),
+      );
+
+      // Every class the gateway distinguishes is present.
+      expect(types).toContain("character varying");
+      expect(types).toContain("timestamp with time zone");
+      expect(types).toContain("integer");
+      expect(types).toContain("boolean");
+      expect(types).toContain("uuid");
+      // And none of the short aliases, which the gateway matches exactly and
+      // would therefore classify as "unknown" — offering operators it refuses.
+      expect(types).not.toContain("varchar");
+      expect(types).not.toContain("timestamptz");
+    });
+
+    it("seeds both a table whose rows can be opened and one whose rows cannot", async () => {
+      const catalog = await api.getAdminCatalog();
+      const keyTypes = catalog.services
+        .flatMap((service) => service.tables)
+        .map((table) => table.columns.find((column) => column.name === table.primaryKey)?.type);
+
+      // A uuid key is addressable by the gateway; anything else is not, and
+      // §5.8 refuses to link it. Both cases have to exist in mock mode or the
+      // screen's decision is never exercised.
+      expect(keyTypes).toContain("uuid");
+      expect(keyTypes.some((type) => type !== "uuid")).toBe(true);
+    });
+
+    it("reads one row by its key and refuses a key nobody has", async () => {
+      const page = await api.listAdminRows({ service: "auth", table: "users" });
+      const id = String(page.rows[0].id);
+
+      await expect(api.getAdminRow({ service: "auth", table: "users", id })).resolves.toMatchObject({ id });
+      // The way the REST implementation's 404 reaches the card, so the
+      // missing-row state is reachable without a gateway.
+      await expect(
+        api.getAdminRow({ service: "auth", table: "users", id: "0f3d5cb0-0000-0000-0000-000000000000" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
     it("marks at least one column sensitive, so masking is reachable without a gateway", async () => {
       const catalog = await api.getAdminCatalog();
       const sensitive = catalog.services
@@ -366,7 +412,7 @@ describe("MockTaskaApi", () => {
       const exact = await api.listAdminRows({
         service: "auth",
         table: "users",
-        filters: [{ column: "global_role", operator: "eq", value: "global_admin" }],
+        filters: [{ column: "global_role", operator: "equals", value: "global_admin" }],
       });
       expect(exact.rows).toHaveLength(0);
 
@@ -417,7 +463,7 @@ describe("MockTaskaApi", () => {
       const equals = await api.listAdminRows({
         service: "auth",
         table: "users",
-        filters: [{ column: "global_role", operator: "eq", value: "GLOBAL_ADMIN" }],
+        filters: [{ column: "global_role", operator: "equals", value: "GLOBAL_ADMIN" }],
       });
       expect(equals.rows).toHaveLength(1);
 

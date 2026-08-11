@@ -18,13 +18,25 @@ export interface AdminViewState {
   filter: AdminFilter | null;
 }
 
-export const filterOperators: AdminFilterOperator[] = ["eq", "contains", "from", "to"];
+export const filterOperators: AdminFilterOperator[] = ["equals", "contains", "from", "to"];
 
 export const operatorLabels: Record<AdminFilterOperator, string> = {
-  eq: "is",
+  equals: "is",
   contains: "contains",
   from: "from",
   to: "to",
+};
+
+/**
+ * Spellings this app has used for an operator but no longer writes. The admin
+ * URL is shareable by design (§5.8), so a link sent last week must keep
+ * filtering: dropping the filter would show unfiltered rows under a chip that
+ * still read as applied, which is exactly the silent-wrong-answer case the URL
+ * state exists to avoid. Only reading accepts these — `writeViewState` emits
+ * the current spelling, so an old link that is opened and re-shared heals.
+ */
+const legacyOperators: Record<string, AdminFilterOperator> = {
+  eq: "equals",
 };
 
 /**
@@ -38,11 +50,14 @@ function decodeFilter(raw: string | null): AdminFilter | null {
   if (first <= 0) return null;
   const second = raw.indexOf(":", first + 1);
   if (second < 0) return null;
-  const operator = raw.slice(first + 1, second);
-  if (!filterOperators.includes(operator as AdminFilterOperator)) return null;
+  const spelled = raw.slice(first + 1, second);
+  const operator = filterOperators.includes(spelled as AdminFilterOperator)
+    ? (spelled as AdminFilterOperator)
+    : legacyOperators[spelled];
+  if (!operator) return null;
   return {
     column: raw.slice(0, first),
-    operator: operator as AdminFilterOperator,
+    operator,
     value: raw.slice(second + 1),
   };
 }
