@@ -687,21 +687,25 @@ it. Entries are deleted only when the compensating code is deleted.
   sends `page - 1` and returns `currentPage + 1`. The domain, the URL, the pager
   and the mock stay 1-based, so `/admin/data/x/y?page=2` keeps meaning the
   second page for links already shared.
-- **The risk this leaves:** the `+ 1` rests on backend source, not on an
-  observed response. If `currentPage` turns out to echo a 1-based value, the
-  footer reads one page high and `RestTaskaApi.toPagination` is the single line
-  to change.
-- **Attempted live 2026-08-11 with an admin token, and still unsettled** — for a
-  new reason. `?page=0&pageSize=3` no longer 500s; it 400s, because the gateway
-  reads `page` as a filter key (entry above). No request returns a `pagination`
-  object at all, so the basis of the response field remains unobserved. Check it
-  first when either of the two entries above is fixed; it is the last assumption
-  in this feature that has never met a real answer.
-- **A partial confirmation did arrive, though.** `release-reviewer` established
-  the request side three ways in backend source — `offset = page * pageSize`,
-  `default-page: 0` in `application.yml`, and `hasPrev = page > 0`, which is
-  only coherent on a 0-based counter. The unobserved half is narrower than it
-  was: it is the echo, not the basis.
+- **Confirmed by the backend, 2026-08-11: the page counter is 0-based, full
+  stop.** Stated directly by the team that owns the service, which is a better
+  source than either of the two this entry had before it. The `- 1` out and
+  `+ 1` back in `RestTaskaApi` are correct as written, and no code changes.
+- **How it stood before that,** because the reasoning is worth keeping: the
+  request side was established three ways in backend source — `offset = page *
+  pageSize`, `default-page: 0` in `application.yml`, and `hasPrev = page > 0`,
+  which is only coherent on a 0-based counter. The response echo was the
+  unobserved half, and it could not be observed: `?page=0&pageSize=3` no longer
+  500s but 400s, because the gateway reads `page` as a filter key (entry above),
+  so no request has ever returned a `pagination` object at all.
+- **What is left is a sanity check, not an open assumption.** When the endpoint
+  starts answering, read `currentPage` on a request for page 2 once. If it ever
+  disagrees with the statement above, `RestTaskaApi.toPagination` is the single
+  line to change — but the expectation now is that it will not.
+- **The contract should still say it.** `PaginationInfoDto.currentPage` is a
+  bare `integer` with no minimum and no prose, and a fact that has to be
+  established by asking the team is a fact the next client will get wrong. One
+  sentence in the schema removes a whole class of off-by-one.
 - **Removal:** the contract stating the basis of `currentPage`, which costs one
   sentence and removes a class of off-by-one nobody can test for today.
 
