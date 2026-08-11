@@ -108,6 +108,19 @@ const compareAsText = (left: unknown, right: unknown) => {
  * every test and would not on the wire, and at a timestamp boundary
  * `"…08:00:00Z" <= "…08:00:00.000Z"` is false, so the mock dropped a row the
  * gateway keeps.
+ *
+ * What this models is how the gateway *orders and matches* values — not how it
+ * *validates* them, and it is uniformly the more permissive of the two.
+ * `new Date("2026-01-01")` parses here where `OffsetDateTime.parse` is a 400;
+ * `Number("Infinity")` and `Number("0x10")` succeed where `new BigDecimal`
+ * throws; and `Number` is float64, so a `bigint` past 2^53 that Postgres
+ * compares exactly is compared approximately here. None of that is reachable
+ * through the filter form, which picks the value control from the column's type
+ * — only through a hand-edited URL. Going further would mean re-implementing
+ * `ReadOnlyQueryValidator` in TypeScript and keeping two copies of the
+ * backend's parsing rules in sync, which is a worse failure than this one: it
+ * stops at ordering deliberately, so do not read it as a promise that anything
+ * this function accepts the gateway would accept too.
  */
 const compareAsColumn = (columnClass: AdminColumnClass, left: unknown, right: unknown): number | null => {
   if (left === null || left === undefined || right === null || right === undefined) return null;

@@ -236,8 +236,12 @@ export function AdminFilterControl({ columns, typeOf, filter, onChange, switchin
                 </select>
               </>
             ) : (
+              // The explicit space is the same trap as the "Value UTC" label
+              // below: JSX drops the whitespace between two elements, so the
+              // flex `gap` separates these for the eye and nothing else — a
+              // screen reader would read the sentence as "Matchis".
               <p className="admin-filter-fixed">
-                <span>Match</span>
+                <span>Match</span>{" "}
                 <span className="admin-filter-fixed-value">{operatorLabels[draft.operator]}</span>
               </p>
             )}

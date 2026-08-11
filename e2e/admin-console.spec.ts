@@ -209,6 +209,98 @@ test("refuses a row address the gateway could not parse, instead of serving a ca
   await expect(page.locator(".admin-card")).toHaveCount(0);
 });
 
+// Nothing in this block is chrome. The sentence sends the reader to the
+// gateway's own line for what to change, and the request id beside it is how
+// the fault gets filed — so neither may sit at --fg-3, which measures 2.91:1 on
+// --bg in light and is under §7's 3:1 floor even for the meta it is meant for.
+// Colours are compared to each other and to the theme's own --fg-3 rather than
+// to a hex, so this holds in both themes and survives a change of palette: what
+// is pinned is the ranking, not the value.
+test("keeps every line of a gateway failure above the meta colour", async ({ page }) => {
+  await openConsole(page);
+
+  await page.goto("/admin/data/admin/audit_log/audit-001");
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("would not accept this request");
+  const message = alert.locator(".admin-error-detail");
+  await expect(message).toBeVisible();
+
+  const sentenceColour = await alert.locator("p").first().evaluate((node) => getComputedStyle(node).color);
+  const messageColour = await message.evaluate((node) => getComputedStyle(node).color);
+  // Mock mode cannot produce the three-line version of this block at all: only
+  // the REST client reads X-Request-Id off a response, so there is no seeded
+  // failure and no URL that will render a request id here. Do not go looking
+  // for one and conclude the code is broken — the line is put on the live
+  // document to read the rule that will paint it against the deployed gateway,
+  // and taken off again.
+  const paleAndRequestId = await message.evaluate((node) => {
+    const requestIdLine = document.createElement("p");
+    requestIdLine.className = "admin-error-detail admin-request-id-line";
+    node.after(requestIdLine);
+    // The theme's own --fg-3, resolved by the live document rather than written
+    // out as a hex, so the assertion below reads the same in dark.
+    const pale = document.createElement("span");
+    pale.style.color = "var(--fg-3)";
+    node.append(pale);
+    const read = { requestId: getComputedStyle(requestIdLine).color, pale: getComputedStyle(pale).color };
+    requestIdLine.remove();
+    pale.remove();
+    return read;
+  });
+
+  expect(messageColour).toBe(sentenceColour);
+  expect(paleAndRequestId.requestId).toBe(messageColour);
+  expect(messageColour).not.toBe(paleAndRequestId.pale);
+});
+
+// The copy button on a key sits inside a row whose own hover already lifts the
+// cells under it, so an opaque hover token suits at most one of the planes this
+// one rule lands on: --surface-3 matches the lifted row exactly and leaves no
+// delta at all on the rows whose key is most worth copying, and --surface-2
+// inverts against it in dark. A translucent mix of --fg composites the right
+// way over each of them, and the request id under a gateway failure carries the
+// same rule on a different plane again. Values are compared to the planes they
+// land on and to each other, never to a hex, so this reads the same in dark.
+test("keeps a hover visible on whichever plane it lands on", async ({ page }) => {
+  await openConsole(page);
+
+  const cell = page.locator(".admin-table tbody .admin-cell-frozen").first();
+  const key = cell.locator(".admin-key");
+  await key.hover();
+
+  const keyHover = await key.evaluate((node) => getComputedStyle(node).backgroundColor);
+  // The row lifts under its own hover while the pointer is on the key, so this
+  // is the pair that was identical — a hover that changed nothing.
+  expect(keyHover).not.toBe(await cell.evaluate((node) => getComputedStyle(node).backgroundColor));
+  // Translucent, which is the whole point: an opaque colour can only be a step
+  // in the right direction on one plane, and this rule serves three.
+  expect(keyHover).not.toMatch(/^rgb\(/);
+
+  await page.goto("/admin/data/admin/audit_log/audit-001");
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("would not accept this request");
+  // Mock mode cannot produce a request id (see the test above), so the line is
+  // built on the live document to hover the rule that will carry it against the
+  // deployed gateway.
+  await alert.locator(".admin-error-detail").evaluate((node) => {
+    const line = document.createElement("p");
+    line.className = "admin-error-detail admin-request-id-line";
+    const button = document.createElement("button");
+    button.className = "admin-request-id";
+    button.type = "button";
+    button.textContent = "c85c0694-7909-4a8a";
+    line.append(button);
+    node.after(line);
+  });
+  const requestId = page.locator(".admin-request-id");
+  await requestId.hover();
+
+  // One hover for the section: the id sits on the page plane rather than on a
+  // lifted row, and the rule does not have to know which.
+  expect(await requestId.evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(keyHover);
+});
+
 // The value is entered with the control the column's type calls for (§5.8), and
 // a timestamp is read as UTC — the same clock the column beside it prints in.
 test("filters a timestamp with the picker, in the digits the column shows", async ({ page }) => {
@@ -236,6 +328,10 @@ test("filters a timestamp with the picker, in the digits the column shows", asyn
   await page.getByLabel("Column", { exact: true }).selectOption("revoked");
   await expect(page.getByLabel("Match", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Value", { exact: true }).locator("option")).toHaveText(["true", "false"]);
+  // Read as one sentence, not two boxes: the flex gap between the label and the
+  // answer is invisible to anything reading the text, so without an explicit
+  // space in the markup this line reaches a screen reader as "Matchis".
+  expect(await page.locator(".admin-filter-fixed").textContent()).toBe("Match is");
 });
 
 test("says a row is missing instead of showing the not-found screen", async ({ page }) => {

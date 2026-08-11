@@ -226,6 +226,42 @@ TAS-157.
   half this item asked for that is **still outstanding** is the check against
   the running gateway — no request has yet reached these endpoints.
 
+The 2026-08-11 refresh (backend `b22a2e020574`, TAS-103) moved the `/readonly`
+surface under the admin area and added the row-by-id endpoint;
+[TAS-161](https://jira.ozero.dev/browse/TAS-161) followed it. Two asks it
+raised and did not close:
+
+- **The row card cannot tell `null` from "the server did not return this
+  column".** It renders the catalog's columns and reads each one out of the
+  row payload, so a column the response omitted shows the same `—` as a column
+  that is genuinely empty. In a raw-data console those are different facts, and
+  one of them is a bug report about the gateway. This needs a contract answer
+  before a visual one: `ReadOnlySingleRowResponseDto` states nothing about
+  which columns a row is guaranteed to carry. File against the contract, not
+  against the console.
+- **`primaryKey` is null on every real table**, so no row is clickable against
+  the deployed gateway and the row card is mock-only. Recorded in
+  `API-DIVERGENCE.md`; worth a backend story of its own, since the card is
+  finished frontend work that nothing but this can switch on.
+
+### `--fg-3` on `--bg` is below the contrast floor, in two places TAS-161 did not touch
+
+Found while fixing the same defect on the admin error block (art-director,
+2026-08-11). `--fg-3` measures **2.91:1** on `--bg` and **3.10:1** on
+`--surface`, so most of the product clears §7's 3:1 meta floor and anything
+sitting on the page plane does not:
+
+- `.admin-copied` — the "Copied" / "Couldn't copy" confirmation at 11px. It is
+  the visible half of an action's result, not meta at all; `role="status"`
+  covers a screen reader and nothing covers a sighted reader.
+- `.admin-count` — the "27 rows" caption in the plane head.
+
+Both are one-token changes to `--fg-2`. Left out of TAS-161 deliberately: both
+predate it, neither is in its diff, and widening a story at merge time to sweep
+adjacent instances is how a reviewable diff stops being one. Worth doing as a
+pass over every `--fg-3` on `--bg` rather than two spot fixes, since the pattern
+is what recurs.
+
 ## Backend asks already filed
 
 - [TAS-139](https://jira.ozero.dev/browse/TAS-139) — 500 on commented issues;

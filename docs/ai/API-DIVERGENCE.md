@@ -479,10 +479,14 @@ it. Entries are deleted only when the compensating code is deleted.
     columns want a number and boolean columns want exactly `true`/`false`,
     both 400 otherwise.
 - **What replaced the compensation:** `classifyColumnType` in
-  `src/screens/admin/columns.ts` mirrors the backend's `DbColumnType` map
-  exactly, and the filter popover offers only the operators the server will
-  accept. This is no longer a workaround for a missing 400 — it is the client
-  half of a rule both sides now state.
+  `src/lib/adminColumnTypes.ts` mirrors the backend's `DbColumnType` map
+  exactly, and the filter popover uses it twice — to offer only the operators
+  the server will accept, **and** to pick a value control the server's parser
+  will accept: a number field for numeric, a `true`/`false` choice for boolean,
+  a date picker for temporal, free text only where the server really does take
+  an arbitrary string. Both halves are compensation and both come out together.
+  This is no longer a workaround for a missing 400 — it is the client half of a
+  rule both sides now state.
 - **The part that is still a divergence:** the mapping is an *exact* match on
   `information_schema.columns.data_type`, and nothing in the contract publishes
   that list. It was copied from backend source, so a type added on the backend
@@ -524,10 +528,12 @@ it. Entries are deleted only when the compensating code is deleted.
   Neither side tests it: the backend's `shouldAllowEqualsOnAnyColumnType`
   asserts only the SQL text, and its integration test for `equals` uses a text
   column.
-- **And even where it works it cannot match.** The picker this frontend uses has
-  minute resolution and serialises to `…:00Z`, while a real `created_at` carries
-  seconds and fractions. Exact equality against a timestamp is close to never
-  the question a person means.
+- **And on a timestamp column, even where it works it cannot match.** The picker
+  this frontend uses has minute resolution and serialises to `…:00Z`, while a
+  real `created_at` carries seconds and fractions. Exact equality against a
+  timestamp is close to never the question a person means. A `date` column is
+  the exception — it is TEMPORAL too, it has day resolution, and there
+  `…T00:00:00Z` could genuinely match.
 - **Not compensated, deliberately.** Dropping `equals` for temporal columns
   would be this file's usual "fewer operators is the safe direction" move, but
   here it would contradict the contract rather than follow the backend, and the
@@ -570,6 +576,100 @@ it. Entries are deleted only when the compensating code is deleted.
   anyway, because they are now guarding against a 400 rather than against a
   silent lie.
 
+### The gateway reads `page`, `pageSize`, `sort` and `order` as filter keys, so every declared parameter is a 400
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Observed 2026-08-11** against `api.taska.ozero.dev` with a real
+  `GLOBAL_ADMIN` token, on backend `b22a2e020574`:
+
+  | Request | Answer |
+  | --- | --- |
+  | `?page=0&pageSize=3` | **400** `Filter key must contain operator (e.g. 'column.equals'), got: page` |
+  | `?sort=id&order=asc` | **400** `… got: sort` |
+  | no query string at all | **404** `No primary key found for table: statuses` |
+  | `?status_key.equals=todo` | 404 — past the filter parser, dies on the same missing key |
+
+- **What this means:** the `filter` catch-all is capturing **every** query
+  parameter, including the four the contract declares as parameters in their own
+  right. There is no request this endpoint currently answers with rows. Paging,
+  sorting and the plain default read are each a 400, and the one shape that gets
+  past the parser then hits the entry below.
+- **The 500 that TAS-156 was filed for is gone.** That bug reported a
+  parameter-independent `Internal error` on every table; the failure has moved,
+  not persisted. The ticket needs re-pointing rather than closing — the endpoint
+  is still unusable, for two new and much more specific reasons.
+- **Effect on this frontend:** `RestTaskaApi.listAdminRows` always sends `page`
+  and `pageSize`, so against the deployed gateway every read is a 400. TAS-161's
+  4xx branch renders it correctly — "The gateway would not accept this request",
+  the server's own sentence naming `page`, and the request id — which is the
+  first time this screen has shown a *useful* failure. Before that fix it would
+  have said the API could not be reached.
+- **Compensation:** none, and none is appropriate. The frontend cannot stop
+  sending the parameters the contract requires it to send.
+- **Removal:** a backend fix — the filter map must exclude the declared
+  parameters. Note the contract itself is not wrong here; `style: form,
+  explode: true` on a free-form object beside four named parameters is a normal
+  OpenAPI construction, and the binding is what mis-implements it.
+- **A fix is in flight** (backend, confirmed 2026-08-11). When it lands, this
+  entry and the `primaryKey` one below should close together — and the **first**
+  thing to do with the first `200` this endpoint ever returns is read
+  `pagination.currentPage` on a request for page 2. That is the one assumption in
+  this feature that has never met a real answer; everything else here has either
+  been observed or read from source. Do it before celebrating that rows appeared,
+  because rows appearing is exactly the moment an off-by-one page number stops
+  being noticeable.
+
+### `primaryKey: null` also breaks the default read, not just the row card
+
+- **Endpoints:** `GET /api/v1/readonly/catalog` and
+  `GET /api/v1/readonly/{service}/{table}`
+- **Observed 2026-08-11** with an admin token: `primaryKey` is `null` on **all
+  28** tables across all 6 services — unchanged from 2026-08-06, and unchanged
+  by TAS-103.
+- **Why it is worse than the earlier entry said:** `ReadOnlyQueryBuilder`
+  `buildSelectSql` falls back to `ORDER BY "<primaryKey>"` whenever no `sort` is
+  given, because Postgres does not guarantee row order without it and pagination
+  would otherwise duplicate and drop rows. With no primary key resolvable, that
+  fallback cannot be built and the request 404s with
+  `No primary key found for table: <table>`. So the missing key does not merely
+  disable the row card — it makes the **unsorted** read impossible, which is the
+  read the console issues first.
+- **Root cause is one query.** `MetadataSchemaRepository.findPrimaryKeys` selects
+  from `information_schema.table_constraints` joined to `key_column_usage`
+  filtered by `tc.table_schema = :schema`. It returns nothing for any of the six
+  schemas, while `findColumns` against the same schemas returns every column —
+  so the schema value is right and the constraint lookup is what comes back
+  empty.
+- **Removal:** the backend. This is now the highest-value fix in the area: it
+  unblocks the default read, sorting-free paging, and the row card at once.
+
+### Still no sensitive column, now confirmed twice
+
+- **Endpoint:** `GET /api/v1/readonly/catalog`
+- **Observed 2026-08-11:** **zero** of 28 tables flag a single column
+  `sensitive`, exactly as on 2026-08-06. TAS-104 is still To Do, and the entry
+  above about `auth.credentials.secret_hash` and the two `token_hash` columns
+  stands unchanged.
+- **Worth restating because the risk got closer:** the console masks exactly
+  what the catalog flags. The moment rows start arriving, hashes render in
+  clear.
+
+### The catalog's real column types are all covered by the client's classifier
+
+- **Endpoint:** `GET /api/v1/readonly/catalog`
+- **Observed 2026-08-11:** the 28 tables use exactly eight distinct
+  `data_type` values — `bigint`, `boolean`, `character varying`, `integer`,
+  `jsonb`, `text`, `timestamp with time zone`, `uuid`.
+- **Checked against `src/lib/adminColumnTypes.ts`:** six map to a class
+  (`bigint`/`integer` → NUMERIC, `boolean` → BOOLEAN, `character varying`/`text`
+  → TEXT, `timestamp with time zone` → TEMPORAL) and two fall to `OTHER`
+  (`jsonb`, `uuid`), which is what the gateway does with them too. So the
+  copied-map divergence recorded above, while still real in principle, has **no
+  live instance today**: every type the real catalog contains is classified the
+  same way on both sides.
+- **Keep watching it anyway.** This is a snapshot of one deployment, and the
+  drift risk was never about the types that exist now.
+
 ### The page basis flipped, and the contract states it for the request only
 
 - **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
@@ -588,10 +688,20 @@ it. Entries are deleted only when the compensating code is deleted.
   and the mock stay 1-based, so `/admin/data/x/y?page=2` keeps meaning the
   second page for links already shared.
 - **The risk this leaves:** the `+ 1` rests on backend source, not on an
-  observed response, and cannot be confirmed while every table 500s. If
-  `currentPage` turns out to echo a 1-based value, the footer reads one page
-  high and `RestTaskaApi.toPagination` is the single line to change. Check this
-  first when the 500 is fixed.
+  observed response. If `currentPage` turns out to echo a 1-based value, the
+  footer reads one page high and `RestTaskaApi.toPagination` is the single line
+  to change.
+- **Attempted live 2026-08-11 with an admin token, and still unsettled** — for a
+  new reason. `?page=0&pageSize=3` no longer 500s; it 400s, because the gateway
+  reads `page` as a filter key (entry above). No request returns a `pagination`
+  object at all, so the basis of the response field remains unobserved. Check it
+  first when either of the two entries above is fixed; it is the last assumption
+  in this feature that has never met a real answer.
+- **A partial confirmation did arrive, though.** `release-reviewer` established
+  the request side three ways in backend source — `offset = page * pageSize`,
+  `default-page: 0` in `application.yml`, and `hasPrev = page > 0`, which is
+  only coherent on a 0-based counter. The unobserved half is narrower than it
+  was: it is the echo, not the basis.
 - **Removal:** the contract stating the basis of `currentPage`, which costs one
   sentence and removes a class of off-by-one nobody can test for today.
 

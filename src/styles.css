@@ -1433,8 +1433,13 @@ h1 {
   margin: 0 0 8px;
 }
 
+/* The value, not more chrome: "Match" is the label and "is" is the answer, so
+   the answer takes --fg (§1 rule 1 — pale chrome, contrasty content) the way
+   the row card's `dd` does against its `dt`. At --fg-2 beside an --fg-2 label
+   the two ran together as one four-word label. Weight carries the other half of
+   the split: 550 for the label, 400 here. */
 .admin-filter-fixed .admin-filter-fixed-value {
-  color: var(--fg-2);
+  color: var(--fg);
   font-size: 11.5px;
   font-weight: 400;
 }
@@ -1802,9 +1807,17 @@ h1 {
 }
 
 /* The gateway's own wording, so it is set in mono like every other verbatim
-   machine string in this interface (§2.3). */
+   machine string in this interface (§2.3).
+
+   --fg-2, not --fg-3: since the copy above points at this line as the part that
+   says what to change, it is the sentence that does the work, not meta beside
+   one. --fg-3 measures 2.91:1 on --bg in light — under §7's 3:1 floor for meta
+   itself, and far under the 4.5:1 the wording actually needs — while the
+   sentence pointing at it sits at 6.73:1. This colour carries the request id
+   line below as well, which shares the class: nothing in a failure block is
+   chrome. */
 .admin-error-detail {
-  color: var(--fg-3);
+  color: var(--fg-2);
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11.5px;
   letter-spacing: 0.02em;
@@ -1813,9 +1826,6 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-/* The request id is on its way somewhere else — a gateway log, a message to
-   the backend — so it is copied by clicking it (§5.8) rather than selected by
-   hand. It stays plain readable text either way. */
 /* The shortened primary key. Reads as text until it is hovered — it is a value
    first and a control second, and the whole point of the column is that the eye
    runs down it. */
@@ -1828,18 +1838,24 @@ h1 {
   letter-spacing: inherit;
 }
 
-/* --surface-2, not --surface-3: the table body is `--surface`, not a recessed
-   plane, and §2.1 reserves -3 for hover on recessed ones. */
-.admin-key:hover {
-  background: var(--surface-2);
-  color: var(--fg);
-}
+/* An overlay, not a plane token, because this one pill lands on three different
+   planes: --surface in a table whose rows do not open, --surface-3 the instant
+   the row under it lifts, and --surface-2 on the card head. No opaque token is
+   right for more than one of them. --surface-2 inverted in dark against a
+   lifted row — a dark pill punched into a raised row — while pointing the right
+   way in light, and --surface-3 matched the lifted row exactly, which is a
+   hover with no delta at all on precisely the rows whose key is most worth
+   copying (the colour half is a no-op there too: table cells are already --fg).
 
-/* The card head *is* a recessed plane — it is --surface-2 itself — so the rule
-   above painted the hover in the colour it was already sitting on, leaving the
-   interactive key flatter than the plain value below it. */
-.admin-card-key .admin-key:hover {
-  background: var(--surface-3);
+   A translucent mix of --fg darkens in light and lightens in dark, so it
+   composites the correct direction over every one of those planes without
+   knowing which it is on, and §2.1 names color-mix as the way to reach a shade
+   the palette does not carry. One rule covers the table and the card head.
+   7% reads at the 30px row height and stays below the 14% accent tint of the
+   copy confirmation below, so a hover is never mistaken for a copy. */
+.admin-key:hover {
+  background: color-mix(in oklab, var(--fg) 7%, transparent);
+  color: var(--fg);
 }
 
 .admin-key:focus-visible {
@@ -1860,6 +1876,15 @@ h1 {
   color: var(--fg);
 }
 
+/* The request id is on its way somewhere else — a gateway log, a message to
+   the backend — so it is copied by clicking it (§5.8) rather than selected by
+   hand. It stays plain readable text either way.
+
+   No colour of its own: the whole block reads at the --fg-2 of
+   .admin-error-detail. "Request ID:" is meta, but --fg-3 measures 2.91:1 on
+   --bg in light — under §7's 3:1 floor for meta itself, which is the same
+   number that disqualified the message line above, and being meta does not
+   exempt a label from the floor written for meta. */
 .admin-request-id-line {
   display: flex;
   flex-wrap: wrap;
@@ -1881,8 +1906,13 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+/* The same overlay as the key above, for the same reason: this button renders
+   on the page plane under the table and inside the row card, and an opaque
+   token can only suit one of them. --surface-2 was not visibly wrong here —
+   against --bg it happens to move toward contrast in both themes — but that is
+   two tokens coinciding, not a rule, and the section now has one hover. */
 .admin-request-id:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--fg) 7%, transparent);
   color: var(--fg);
 }
 
