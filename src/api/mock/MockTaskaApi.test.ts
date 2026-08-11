@@ -336,6 +336,68 @@ describe("MockTaskaApi", () => {
       }
     });
 
+    // The console branches on the catalog's column types — which operators a
+    // filter offers, and whether a row can be opened at all — so a seed that
+    // does not carry those cases proves nothing about the screen above it.
+    it("spells column types the way information_schema does", async () => {
+      const catalog = await api.getAdminCatalog();
+      const types = new Set(
+        catalog.services.flatMap((service) => service.tables).flatMap((table) => table.columns.map((c) => c.type)),
+      );
+
+      // Every class the gateway distinguishes is present.
+      expect(types).toContain("character varying");
+      expect(types).toContain("timestamp with time zone");
+      expect(types).toContain("integer");
+      expect(types).toContain("boolean");
+      expect(types).toContain("uuid");
+      // And none of the short aliases, which the gateway matches exactly and
+      // would therefore classify as "unknown" — offering operators it refuses.
+      expect(types).not.toContain("varchar");
+      expect(types).not.toContain("timestamptz");
+    });
+
+    it("seeds both a table whose rows can be opened and one whose rows cannot", async () => {
+      const catalog = await api.getAdminCatalog();
+      const keyTypes = catalog.services
+        .flatMap((service) => service.tables)
+        .map((table) => table.columns.find((column) => column.name === table.primaryKey)?.type);
+
+      // A uuid key is addressable by the gateway; anything else is not, and
+      // §5.8 refuses to link it. Both cases have to exist in mock mode or the
+      // screen's decision is never exercised.
+      expect(keyTypes).toContain("uuid");
+      expect(keyTypes.some((type) => type !== "uuid")).toBe(true);
+    });
+
+    it("reads one row by its key and refuses a key nobody has", async () => {
+      const page = await api.listAdminRows({ service: "auth", table: "users" });
+      const id = String(page.rows[0].id);
+
+      await expect(api.getAdminRow({ service: "auth", table: "users", id })).resolves.toMatchObject({ id });
+      // The way the REST implementation's 404 reaches the card, so the
+      // missing-row state is reachable without a gateway.
+      await expect(
+        api.getAdminRow({ service: "auth", table: "users", id: "0f3d5cb0-0000-0000-0000-000000000000" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    // The gateway types the path parameter as a UUID, so a card for a row keyed
+    // by a code is one the mock could serve and the gateway never can. The
+    // console refuses to link those rows; a hand-typed address has to hit the
+    // same wall in both modes, or mock mode teaches a screen that does not
+    // exist.
+    it("refuses a row id the gateway would not parse", async () => {
+      const rows = await api.listAdminRows({ service: "admin", table: "audit_log" });
+      const id = String(rows.rows[0].id);
+
+      // The row is genuinely there — it is the address that is impossible.
+      expect(id).not.toMatch(/^[0-9a-f-]{36}$/i);
+      await expect(api.getAdminRow({ service: "admin", table: "audit_log", id })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+    });
+
     it("marks at least one column sensitive, so masking is reachable without a gateway", async () => {
       const catalog = await api.getAdminCatalog();
       const sensitive = catalog.services
@@ -366,7 +428,7 @@ describe("MockTaskaApi", () => {
       const exact = await api.listAdminRows({
         service: "auth",
         table: "users",
-        filters: [{ column: "global_role", operator: "eq", value: "global_admin" }],
+        filters: [{ column: "global_role", operator: "equals", value: "global_admin" }],
       });
       expect(exact.rows).toHaveLength(0);
 
@@ -406,6 +468,86 @@ describe("MockTaskaApi", () => {
       expect(asc.rows[0]).toEqual(desc.rows[desc.rows.length - 1]);
     });
 
+    /**
+     * The gateway compares a `from`/`to` range typed — `BigDecimal` for a
+     * numeric column, `OffsetDateTime` for a temporal one — and the mock is
+     * both the reference implementation and what the e2e suite runs against
+     * (AGENTS.md: the three implementations stay behaviourally
+     * interchangeable). Comparing as text is not a mock detail: it answers a
+     * different set of rows than the wire does.
+     */
+    it("compares a numeric range as numbers, not as text", async () => {
+      const from = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        pageSize: 100,
+        filters: [{ column: "failed_logins", operator: "from", value: "10" }],
+      });
+
+      // As text, "5" >= "10" — so the row with 5 came back from a filter that
+      // asked for 10 and up.
+      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20]);
+
+      const to = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        pageSize: 100,
+        filters: [{ column: "failed_logins", operator: "to", value: "10" }],
+      });
+
+      expect(to.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10]);
+    });
+
+    it("compares a temporal range as instants, not as text", async () => {
+      // The same moment, spelled with the milliseconds the picker used to emit.
+      // As text `"…10:00:00Z" <= "…10:00:00.000Z"` is false, so the boundary row
+      // the gateway keeps was the one row the mock dropped.
+      const to = await api.listAdminRows({
+        service: "admin",
+        table: "audit_log",
+        pageSize: 100,
+        filters: [{ column: "created_at", operator: "to", value: "2026-07-01T10:00:00.000Z" }],
+      });
+
+      expect(to.rows).toHaveLength(1);
+      expect(to.rows[0].created_at).toBe("2026-07-01T10:00:00Z");
+
+      const from = await api.listAdminRows({
+        service: "admin",
+        table: "audit_log",
+        pageSize: 100,
+        filters: [{ column: "created_at", operator: "from", value: "2026-07-01T10:00:00.000Z" }],
+      });
+
+      // The boundary belongs to both halves, and nothing else is missing from
+      // this one: 47 rows, one of which is the boundary.
+      expect(from.rows).toHaveLength(47);
+    });
+
+    it("sorts a numeric column as numbers, not as locale-collated text", async () => {
+      const asc = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        pageSize: 100,
+        sort: "failed_logins",
+        order: "asc",
+      });
+
+      // `localeCompare` put 10 before 5 here, and did it differently depending
+      // on the machine's locale.
+      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20]);
+
+      const desc = await api.listAdminRows({
+        service: "auth",
+        table: "users",
+        pageSize: 100,
+        sort: "failed_logins",
+        order: "desc",
+      });
+
+      expect(desc.rows.map((row) => row.failed_logins)).toEqual([20, 15, 10, 5, 0]);
+    });
+
     it("applies each filter operator", async () => {
       const contains = await api.listAdminRows({
         service: "auth",
@@ -417,7 +559,7 @@ describe("MockTaskaApi", () => {
       const equals = await api.listAdminRows({
         service: "auth",
         table: "users",
-        filters: [{ column: "global_role", operator: "eq", value: "GLOBAL_ADMIN" }],
+        filters: [{ column: "global_role", operator: "equals", value: "GLOBAL_ADMIN" }],
       });
       expect(equals.rows).toHaveLength(1);
 

@@ -267,21 +267,28 @@ it. Entries are deleted only when the compensating code is deleted.
 ### `sortableColumns` and `filterableColumns` are always empty
 
 - **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
-- **Contract:** `MetaInfoDto` carries `columns`, `sortableColumns` and
-  `filterableColumns`, and the console is meant to read the latter two rather
-  than assume every column can be ordered or filtered.
+- **Contract:** `TableCapabilitiesDto` — renamed from `MetaInfoDto` by
+  `b22a2e020574`, same shape, still delivered under `meta` — carries `columns`,
+  `sortableColumns` and `filterableColumns`, and the console is meant to read
+  the latter two rather than assume every column can be ordered or filtered.
 - **Observed** (found by `api-contract-guard`, 2026-08-05, by reading the
   backend at `25d0cf7000e5`): `admin-service`'s `ListTableRowsMapper` builds
   `MetaInfo` with both lists left as literal `//TODO:` lines. It is the only
-  code path that builds `MetaInfo`, and the pinned commit *is* `develop` HEAD,
-  so no deployed build can populate them.
-- **Compensation:** `AdminScreen` falls back to `meta.columns` when a list comes
-  back empty. Without it, the filter form would never render and no column would
-  ever be sortable against a real gateway — while both work fully against the
-  mock, which advertises every column. The fallback is safe: the gateway does
-  not validate `sort` against any catalog, and accepts a filter on any column it
-  has. When it starts stating the lists, they win and the fallback stops
-  applying on its own.
+  code path that builds `MetaInfo`, so no deployed build can populate them.
+  **Still true at `b22a2e020574`** — TAS-103 rewrote most of this file and left
+  both TODOs exactly where they were.
+- **Compensation:** the Data section falls back to `meta.columns` when a list
+  comes back empty. Without it, the filter form would never render and no column
+  would ever be sortable against a real gateway — while both work fully against
+  the mock, which advertises every column. When the gateway starts stating the
+  lists, they win and the fallback stops applying on its own.
+- **The fallback got riskier with TAS-103.** It used to be safe on the grounds
+  that the gateway "accepts a filter on any column it has"; it now validates the
+  column against the table's real columns *and* the operator against that
+  column's type, answering 400 for either. Falling back to `meta.columns` — the
+  table's actual columns — still cannot name a column that does not exist, so
+  the fallback stands, but it is now one assumption closer to producing a 400
+  than it was when it was written.
 - **User-visible effect while open:** none, by design — that is the point of the
   fallback. Without it the console would silently lose two of its three
   controls in production only.
@@ -290,14 +297,16 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ### The read-only rows endpoint 500s on a plain first-page read
 
-- **Endpoints:** `GET /api/v1/readonly/metadata` and
-  `GET /api/v1/readonly/{service}/{table}`.
+- **Endpoints:** `GET /api/v1/readonly/catalog` — named
+  `GET /api/v1/readonly/metadata` when this entry was written, and renamed by
+  backend `b22a2e020574` — and `GET /api/v1/readonly/{service}/{table}`.
 - **Contract:** both arrived with backend `25d0cf7000e5`. `GLOBAL_ADMIN` only,
   and the first endpoints here to enumerate `401`, `403` and `404` separately
   instead of collapsing everything into `default`.
 - **Observed 2026-08-06, signed in as a real `GLOBAL_ADMIN`** — the first time
   either endpoint has answered this frontend:
-  - `GET /readonly/metadata` → **200**, and a much richer catalog than the mock
+  - `GET /readonly/metadata` (as it was then called) → **200**, and a much
+    richer catalog than the mock
     seeds: `workflow` (statuses, transitions, validator_rules,
     workflow_bindings, workflows), `project` (outbox_events, project_members,
     project_settings, projects), `notification` (email_delivery_attempts,
@@ -331,13 +340,20 @@ it. Entries are deleted only when the compensating code is deleted.
   and rows so the console is clickable without a gateway — this repository's
   normal mock-first mode, not a workaround — and `rest` calls the real endpoints
   and surfaces whatever they answer, request id included.
-- **Verified since, and no longer open:** the filter spelling (`column`,
-  `column.contains`, `column.from`, `column.to`) matches the gateway's own
-  parser, and `style: form, explode: true` genuinely means top-level query keys,
-  so flattening them is the contract's reading rather than a guess. A bare key
-  is treated as `equals`. Note the gateway *silently skips* an unrecognised
-  operator, so a misspelling would return unfiltered rows rather than an error —
-  which is why the spelling is pinned in `RestTaskaApi.test.ts`.
+- **Verified then, and since overtaken by TAS-103:** `style: form, explode: true`
+  genuinely means top-level query keys, so flattening them is the contract's
+  reading rather than a guess — that half still holds. The rest of what this
+  bullet used to say does not: the spelling it verified was the bare key with
+  `column.contains` / `.from` / `.to` beside it, a bare key meant `equals`, and
+  an unrecognised operator was silently skipped. Backend `b22a2e020574` requires
+  an explicit operator on every key, spells equality `.equals`, and answers 400
+  for both a bare key and an unknown operator. See the three entries at the end
+  of this file.
+  > Note what this cost: a spelling recorded here as **verified against the live
+  > gateway** was wrong five days later, and nothing in the repository would have
+  > said so until a request failed. "Verified" is a statement about a moment, not
+  > a property, and entries in this file need re-reading against the contract
+  > whenever the pinned backend commit moves.
 - **Settled by that observation:** `X-Request-Id` **is** exposed cross-origin on
   a 5xx, not only on the 401 — the console displays it, which is how the id
   above was captured. And the catalog's shape matches what the code expects.
@@ -357,7 +373,8 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ### Nothing in the real catalog is marked sensitive, and the columns that hold secrets are not the ones the masking config names
 
-- **Endpoint:** `GET /api/v1/readonly/metadata`
+- **Endpoint:** `GET /api/v1/readonly/catalog` (`/readonly/metadata` when
+  observed)
 - **Observed 2026-08-06** against the deployed gateway, with an admin token:
   **zero** of the 28 tables' columns come back `sensitive: true`. Not one, in
   any service.
@@ -389,14 +406,23 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ### `primaryKey` is null on every table
 
-- **Endpoint:** `GET /api/v1/readonly/metadata`
+- **Endpoint:** `GET /api/v1/readonly/catalog` (`/readonly/metadata` when
+  observed)
 - **Contract:** `TableMetadataDto.primaryKey` is a plain `string`.
 - **Observed:** null on all 28 tables.
 - **Compensation:** the console falls back to an `id` column and then to the row
-  index for React keys, so it renders correctly either way. Harmless here; it
-  would stop being harmless for anything that needs to address a row.
-- **Removal:** the backend populating it, or the contract admitting it is
-  optional.
+  index for React keys, so it renders correctly either way.
+- **No longer harmless.** The old note here said this "would stop being harmless
+  for anything that needs to address a row". TAS-103 added exactly that —
+  `GET /readonly/{service}/{table}/{id}` — and TAS-161 built the row card on it.
+  A row is made clickable only when the catalog names a primary key, so against
+  the deployed gateway **no row in any table is clickable** and the card is
+  unreachable outside `mock`. That is the correct behaviour rather than a
+  workaround: a link built on a guessed key would address the wrong row, or a
+  column that is not unique, and the card would confidently show a stranger's
+  data.
+- **Removal:** the backend populating it. Until then the row card is a
+  mock-only feature, alongside everything else the 500 already blocks.
 
 ### Masking depends on a join the contract does not guarantee
 
@@ -434,19 +460,293 @@ it. Entries are deleted only when the compensating code is deleted.
 - **Removal:** [TAS-104](https://jira.ozero.dev/browse/TAS-104) is the backend
   half of masking.
 
-### The range filters are timestamp-only, server-side
+### Closed by TAS-103: the operator/type rules are stated and enforced
 
 - **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
-- **Contract:** documents `.from` / `.to` as generic bounds, with the examples
-  using timestamps but nothing restricting them.
-- **Observed** (backend source): the gateway emits
-  `"col" >= $n::timestamptz`, so a range filter on a text column, or a
-  non-ISO value, is a Postgres cast failure — a 5xx, never a 400 the UI could
-  explain.
-- **Compensation:** the console offers `from`/`to` only when the catalog states
-  a date- or time-like `type` for the selected column, and resets the operator
-  when the column changes to one that cannot take it.
-- **Removal:** the contract naming the constraint, or the gateway answering 400.
+- **Was:** the gateway emitted `"col" >= $n::timestamptz`, so a range filter on
+  a text column, or a non-ISO value, was a Postgres cast failure — a 5xx, never
+  a 400 the UI could explain. The console compensated by offering `from`/`to`
+  only for a date- or time-like catalog `type`.
+- **Now** (backend `b22a2e020574`, read from source): `ReadOnlyQueryValidator`
+  checks the pairing before building any SQL and answers `INVALID_ARGUMENT`,
+  and the contract's own prose names the four operators. The rules are wider
+  than the old compensation assumed in one direction and narrower in another:
+  - `contains` is **TEXT only** — it was previously offered on every column,
+    and on a `uuid` or a timestamp it is now a 400 rather than a wrong-looking
+    empty result;
+  - `from`/`to` cover **temporal *and* numeric**, not temporal alone;
+  - `equals` is valid everywhere, but its *value* is parsed by type: numeric
+    columns want a number and boolean columns want exactly `true`/`false`,
+    both 400 otherwise.
+- **What replaced the compensation:** `classifyColumnType` in
+  `src/lib/adminColumnTypes.ts` mirrors the backend's `DbColumnType` map
+  exactly, and the filter popover uses it twice — to offer only the operators
+  the server will accept, **and** to pick a value control the server's parser
+  will accept: a number field for numeric, a `true`/`false` choice for boolean,
+  a date picker for temporal, free text only where the server really does take
+  an arbitrary string. Both halves are compensation and both come out together.
+  This is no longer a workaround for a missing 400 — it is the client half of a
+  rule both sides now state.
+- **The part that is still a divergence:** the mapping is an *exact* match on
+  `information_schema.columns.data_type`, and nothing in the contract publishes
+  that list. It was copied from backend source, so a type added on the backend
+  (a domain type, an array type, `citext` arriving in a new schema) silently
+  falls to `OTHER` here and loses operators the server would have accepted. The
+  failure direction is the safe one — fewer operators offered, never a request
+  the server refuses — but it is drift the contract cannot warn us about.
+- **Removal:** the catalog stating the operators a column accepts, rather than a
+  raw Postgres type the client has to classify for itself. `TableCapabilitiesDto`
+  is the obvious home; it already carries `filterableColumns`.
+
+### Dates in a range filter must carry an offset, and the contract's example does not
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Contract:** shows `?created_at.from=2026-01-01T00:00:00Z` and describes the
+  result as `created_at >= '2026-01-01'` — a date, which reads as though a bare
+  date were acceptable input.
+- **Observed** (backend source): `ReadOnlyQueryBuilder.parseTemporalValue` calls
+  `OffsetDateTime.parse`, which accepts **only** a full ISO-8601 timestamp with
+  an offset. `2026-01-01` is a 400, and so is `2026-01-01T00:00` — the exact
+  string a browser's `datetime-local` input produces.
+- **Compensation:** for a temporal column the filter value is entered with a
+  date/time picker and serialised with its offset before it is sent (§5.8), so
+  the format is the form's job rather than something the admin has to know. A
+  free-text field here would have meant guessing the one spelling that works.
+- **Removal:** the contract's example spelling out that the offset is required,
+  or the gateway accepting a bare date.
+
+### `equals` on a temporal column is offered, untested on both sides, and probably useless
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Contract:** `equals` is described as plain equality with no type restriction,
+  and the gateway's own validator only constrains `contains` and `from`/`to`. So
+  a timestamp column formally accepts `equals`, and the console offers it.
+- **Why it is doubtful:** `ReadOnlyQueryBuilder.parseEqualsValue` converts only
+  NUMERIC and BOOLEAN; a temporal value stays a Java `String` and is bound
+  against a `timestamptz` column, and whether that works depends on the
+  parameter type r2dbc-postgresql infers — which this repository cannot settle.
+  Neither side tests it: the backend's `shouldAllowEqualsOnAnyColumnType`
+  asserts only the SQL text, and its integration test for `equals` uses a text
+  column.
+- **And on a timestamp column, even where it works it cannot match.** The picker
+  this frontend uses has minute resolution and serialises to `…:00Z`, while a
+  real `created_at` carries seconds and fractions. Exact equality against a
+  timestamp is close to never the question a person means. A `date` column is
+  the exception — it is TEMPORAL too, it has day resolution, and there
+  `…T00:00:00Z` could genuinely match.
+- **Not compensated, deliberately.** Dropping `equals` for temporal columns
+  would be this file's usual "fewer operators is the safe direction" move, but
+  here it would contradict the contract rather than follow the backend, and the
+  cost of being wrong is a control that returns nothing rather than a 400. It
+  stays offered and stays recorded.
+- **Removal:** an observed answer from the live gateway once TAS-156 lifts —
+  either it errors, in which case the operator comes out, or it works, in which
+  case only the resolution mismatch remains.
+
+### The contract's filter examples contradict its own format rule
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Contract:** states «Формат ключа: column.operator» and then gives
+  `?status=active&assignee_id=123 → комбинация фильтров` as an example — bare
+  keys, with no operator. The two are not compatible.
+- **Observed** (backend source): `FilterParser` splits on the last dot and
+  throws `INVALID_ARGUMENT` — "Filter key must contain operator" — for any key
+  without one. The example is the broken half.
+- **Why it matters beyond tidiness:** an example is what a reader copies, and
+  this one describes the *old* behaviour, where a bare key meant equality. Any
+  client written from the examples rather than the rule gets a 400 on its first
+  filter.
+- **Compensation:** `RestTaskaApi` always emits `column.operator`; the spelling
+  is pinned by tests so it cannot drift back.
+- **Removal:** the contract fixing its own examples.
+
+### Unknown filter operators are now rejected, not ignored
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Previously recorded here as settled:** "the gateway *silently skips* an
+  unrecognised operator, so a misspelling would return unfiltered rows rather
+  than an error — which is why the spelling is pinned in `RestTaskaApi.test.ts`".
+  That is no longer true, and the entry it sat in is corrected below.
+- **Now:** `FilterOperator.fromValue` throws `INVALID_ARGUMENT` for anything
+  outside `equals` / `contains` / `from` / `to`, and `.eq` — the spelling this
+  frontend used until TAS-161 — is one of the things outside it. A blank value
+  is also a 400.
+- **Effect:** the failure mode improved. A misspelling used to show unfiltered
+  rows under a chip that read as applied; it now says so. The pinning tests stay
+  anyway, because they are now guarding against a 400 rather than against a
+  silent lie.
+
+### The gateway reads `page`, `pageSize`, `sort` and `order` as filter keys, so every declared parameter is a 400
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Observed 2026-08-11** against `api.taska.ozero.dev` with a real
+  `GLOBAL_ADMIN` token, on backend `b22a2e020574`:
+
+  | Request | Answer |
+  | --- | --- |
+  | `?page=0&pageSize=3` | **400** `Filter key must contain operator (e.g. 'column.equals'), got: page` |
+  | `?sort=id&order=asc` | **400** `… got: sort` |
+  | no query string at all | **404** `No primary key found for table: statuses` |
+  | `?status_key.equals=todo` | 404 — past the filter parser, dies on the same missing key |
+
+- **What this means:** the `filter` catch-all is capturing **every** query
+  parameter, including the four the contract declares as parameters in their own
+  right. There is no request this endpoint currently answers with rows. Paging,
+  sorting and the plain default read are each a 400, and the one shape that gets
+  past the parser then hits the entry below.
+- **The 500 that TAS-156 was filed for is gone.** That bug reported a
+  parameter-independent `Internal error` on every table; the failure has moved,
+  not persisted. The ticket needs re-pointing rather than closing — the endpoint
+  is still unusable, for two new and much more specific reasons.
+- **Effect on this frontend:** `RestTaskaApi.listAdminRows` always sends `page`
+  and `pageSize`, so against the deployed gateway every read is a 400. TAS-161's
+  4xx branch renders it correctly — "The gateway would not accept this request",
+  the server's own sentence naming `page`, and the request id — which is the
+  first time this screen has shown a *useful* failure. Before that fix it would
+  have said the API could not be reached.
+- **Compensation:** none, and none is appropriate. The frontend cannot stop
+  sending the parameters the contract requires it to send.
+- **Removal:** a backend fix — the filter map must exclude the declared
+  parameters. Note the contract itself is not wrong here; `style: form,
+  explode: true` on a free-form object beside four named parameters is a normal
+  OpenAPI construction, and the binding is what mis-implements it.
+- **A fix is in flight** (backend, confirmed 2026-08-11). When it lands, this
+  entry and the `primaryKey` one below should close together — and the **first**
+  thing to do with the first `200` this endpoint ever returns is read
+  `pagination.currentPage` on a request for page 2. That is the one assumption in
+  this feature that has never met a real answer; everything else here has either
+  been observed or read from source. Do it before celebrating that rows appeared,
+  because rows appearing is exactly the moment an off-by-one page number stops
+  being noticeable.
+
+### `primaryKey: null` also breaks the default read, not just the row card
+
+- **Endpoints:** `GET /api/v1/readonly/catalog` and
+  `GET /api/v1/readonly/{service}/{table}`
+- **Observed 2026-08-11** with an admin token: `primaryKey` is `null` on **all
+  28** tables across all 6 services — unchanged from 2026-08-06, and unchanged
+  by TAS-103.
+- **Why it is worse than the earlier entry said:** `ReadOnlyQueryBuilder`
+  `buildSelectSql` falls back to `ORDER BY "<primaryKey>"` whenever no `sort` is
+  given, because Postgres does not guarantee row order without it and pagination
+  would otherwise duplicate and drop rows. With no primary key resolvable, that
+  fallback cannot be built and the request 404s with
+  `No primary key found for table: <table>`. So the missing key does not merely
+  disable the row card — it makes the **unsorted** read impossible, which is the
+  read the console issues first.
+- **Root cause is one query.** `MetadataSchemaRepository.findPrimaryKeys` selects
+  from `information_schema.table_constraints` joined to `key_column_usage`
+  filtered by `tc.table_schema = :schema`. It returns nothing for any of the six
+  schemas, while `findColumns` against the same schemas returns every column —
+  so the schema value is right and the constraint lookup is what comes back
+  empty.
+- **Removal:** the backend. This is now the highest-value fix in the area: it
+  unblocks the default read, sorting-free paging, and the row card at once.
+
+### Still no sensitive column, now confirmed twice
+
+- **Endpoint:** `GET /api/v1/readonly/catalog`
+- **Observed 2026-08-11:** **zero** of 28 tables flag a single column
+  `sensitive`, exactly as on 2026-08-06. TAS-104 is still To Do, and the entry
+  above about `auth.credentials.secret_hash` and the two `token_hash` columns
+  stands unchanged.
+- **Worth restating because the risk got closer:** the console masks exactly
+  what the catalog flags. The moment rows start arriving, hashes render in
+  clear.
+
+### The catalog's real column types are all covered by the client's classifier
+
+- **Endpoint:** `GET /api/v1/readonly/catalog`
+- **Observed 2026-08-11:** the 28 tables use exactly eight distinct
+  `data_type` values — `bigint`, `boolean`, `character varying`, `integer`,
+  `jsonb`, `text`, `timestamp with time zone`, `uuid`.
+- **Checked against `src/lib/adminColumnTypes.ts`:** six map to a class
+  (`bigint`/`integer` → NUMERIC, `boolean` → BOOLEAN, `character varying`/`text`
+  → TEXT, `timestamp with time zone` → TEMPORAL) and two fall to `OTHER`
+  (`jsonb`, `uuid`), which is what the gateway does with them too. So the
+  copied-map divergence recorded above, while still real in principle, has **no
+  live instance today**: every type the real catalog contains is classified the
+  same way on both sides.
+- **Keep watching it anyway.** This is a snapshot of one deployment, and the
+  drift risk was never about the types that exist now.
+
+### The page basis flipped, and the contract states it for the request only
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Contract:** the `page` **parameter** is now `minimum: 0, default: 0`; it was
+  `minimum: 1, default: 1`, and `page=0` was a live 400 as recently as
+  2026-08-06 (recorded in the 500 entry above). `PaginationInfoDto.currentPage`,
+  however, is a bare `integer` with no minimum and no prose — the contract never
+  says which basis the *response* uses.
+- **Read from backend source** (`b22a2e020574`): `AdminReadonlyServiceImpl`
+  normalises the 0-based `page` and passes that same value into the response
+  DTO, and `ListTableRowsMapper` sets `currentPage` from it and derives
+  `hasPrev = page > 0`, `hasNext = page < totalPages - 1`. So `currentPage` is
+  0-based too.
+- **Compensation:** `RestTaskaApi` converts at the wire and nowhere else — it
+  sends `page - 1` and returns `currentPage + 1`. The domain, the URL, the pager
+  and the mock stay 1-based, so `/admin/data/x/y?page=2` keeps meaning the
+  second page for links already shared.
+- **Confirmed by the backend, 2026-08-11: the page counter is 0-based, full
+  stop.** Stated directly by the team that owns the service, which is a better
+  source than either of the two this entry had before it. The `- 1` out and
+  `+ 1` back in `RestTaskaApi` are correct as written, and no code changes.
+- **How it stood before that,** because the reasoning is worth keeping: the
+  request side was established three ways in backend source — `offset = page *
+  pageSize`, `default-page: 0` in `application.yml`, and `hasPrev = page > 0`,
+  which is only coherent on a 0-based counter. The response echo was the
+  unobserved half, and it could not be observed: `?page=0&pageSize=3` no longer
+  500s but 400s, because the gateway reads `page` as a filter key (entry above),
+  so no request has ever returned a `pagination` object at all.
+- **What is left is a sanity check, not an open assumption.** When the endpoint
+  starts answering, read `currentPage` on a request for page 2 once. If it ever
+  disagrees with the statement above, `RestTaskaApi.toPagination` is the single
+  line to change — but the expectation now is that it will not.
+- **The contract should still say it.** `PaginationInfoDto.currentPage` is a
+  bare `integer` with no minimum and no prose, and a fact that has to be
+  established by asking the team is a fact the next client will get wrong. One
+  sentence in the schema removes a whole class of off-by-one.
+- **Removal:** the contract stating the basis of `currentPage`, which costs one
+  sentence and removes a class of off-by-one nobody can test for today.
+
+### A row can only be addressed by a `uuid`, so most tables have no row card
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}/{id}`
+- **Contract:** `id` is `type: string, format: uuid`, and the gateway's
+  controller takes it as a `java.util.UUID` — a non-uuid key is refused before
+  admin-service is called.
+- **But admin-service does not need one:** `ReadOnlyQueryBuilder`
+  `buildSafeGetByIdQuery` compares `"pk"::text = $1`, which works for a numeric
+  id, a short code, anything. The restriction is the gateway's alone.
+- **Effect:** a table whose primary key is not a uuid — a lookup keyed by a
+  code, a sequence-numbered log — has no reachable row card at all.
+- **Compensation:** `isAddressableKey` makes a row clickable only when the
+  catalog names a primary key *and* types it `uuid`. A link that is certain to
+  be refused is worse than no link, and the reader is not told the row is
+  openable when it is not. The same guard also refuses a key the catalog marks
+  sensitive: the address contains the key, so linking it would print in the URL
+  bar, the accessible name and browser history the exact value the table
+  withholds.
+- **Removal:** the gateway taking `id` as a string and letting admin-service's
+  `::text` comparison do what it already does.
+
+### The single-row response carries no `meta`, and its `data` is optional
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}/{id}`
+- **Contract:** `ReadOnlySingleRowResponseDto` has exactly one property, `data`,
+  and it is not required. There is no `meta`, so — unlike the rows endpoint —
+  the response does not state which service and table it came from.
+- **Effect on masking:** the fail-closed join described two entries below cannot
+  be done the same way here. The card has only the URL's service and table to
+  join the catalog on, so it trusts the address rather than the server's own
+  statement. This is weaker, and it is the best available: there is nothing else
+  in the response to key on.
+- **Effect of an absent `data`:** a 200 with no `data` renders as a card of
+  dashes rather than as a missing row — the server has a 404 for the missing
+  case and uses it, so an empty 200 means "nothing to say about this row", which
+  is what a row of dashes reads as.
+- **Removal:** `ReadOnlySingleRowResponseDto` carrying the same `meta` the rows
+  response does, and marking `data` required.
 
 ### Issue links answer with a different field than they are asked with, and nothing states what it can hold
 

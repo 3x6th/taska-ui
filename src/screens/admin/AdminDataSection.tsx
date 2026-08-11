@@ -2,12 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import { taskaApi } from "../../api/client";
-import type { AdminTable } from "../../domain/types";
+import type { AdminRow, AdminTable } from "../../domain/types";
 import { AdminCatalogColumn } from "./AdminCatalogColumn";
 import { AdminError } from "./AdminError";
 import { AdminFilterControl } from "./AdminFilterControl";
+import { AdminRowCard } from "./AdminRowCard";
 import { AdminRowsTable } from "./AdminRowsTable";
-import { defaultSelection, findTable } from "./columns";
+import { defaultSelection, findTable, isAddressableKey } from "./columns";
 import type { AdminViewState } from "./urlState";
 import { readViewState, writeViewState } from "./urlState";
 
@@ -15,13 +16,14 @@ const PAGE_SIZE = 20;
 
 /**
  * The Data section (DESIGN.md §5.8) — a read-only window onto the services' own
- * tables, over `GET /readonly/metadata` and `GET /readonly/{service}/{table}`.
+ * tables, over `GET /readonly/catalog`, `GET /readonly/{service}/{table}` and
+ * `GET /readonly/{service}/{table}/{id}`.
  *
- * Everything selectable is in the URL: the service and the table in the path,
- * the page, the sort and the filter in the query. A link to a table opens the
- * same rows for the next admin and survives a reload — and the table that used
- * to be substituted silently when nothing was chosen is now substituted into
- * the address bar, where it can be seen.
+ * Everything selectable is in the URL: the service, the table and the row in
+ * the path, the page, the sort and the filter in the query. A link to a table
+ * opens the same rows for the next admin and survives a reload — and the table
+ * that used to be substituted silently when nothing was chosen is now
+ * substituted into the address bar, where it can be seen.
  */
 export function AdminDataSection() {
   const params = useParams();
@@ -33,6 +35,8 @@ export function AdminDataSection() {
 
   const catalog = catalogQuery.data;
   const selection = params.service && params.table ? { service: params.service, table: params.table } : null;
+  // `…/:table/:id` — one row instead of the table, in the same section body.
+  const rowId = params.id ?? null;
   // Nothing is chosen on a bare `/admin/data`, so the first table in the
   // catalog stands in — an admin console that opens on an empty frame and asks
   // you to pick before showing anything is a worse answer than showing
@@ -77,7 +81,9 @@ export function AdminDataSection() {
         order: view.sort ? view.order : undefined,
         filters: view.filter && view.filter.column ? [view.filter] : undefined,
       }),
-    enabled: Boolean(current),
+    // A row card asks for its own row and nothing else. The cached rows of the
+    // table behind it stay in the client, which is what makes Back instant.
+    enabled: Boolean(current) && rowId === null,
     // Paging swaps the whole table for a spinner otherwise, and the row a
     // person was reading jumps as it comes back.
     placeholderData: (previous) => previous,
@@ -146,6 +152,25 @@ export function AdminDataSection() {
     return <Navigate replace to={`/admin/data/${fallback.service}/${fallback.table}`} />;
   }
 
+  // The card replaces the table in the section body and nothing else moves:
+  // rail, catalog column and the section heading stay (§5.8). Everything below
+  // this point is about the table, and a row card has no page, no sort and no
+  // filter of its own — it only carries the table's, for the way back.
+  if (rowId && current) {
+    return (
+      <div className="admin-data">
+        <AdminCatalogColumn services={services} />
+        <AdminRowCard
+          backQuery={searchParams.toString()}
+          catalogTable={selectedTable}
+          rowId={rowId}
+          service={current.service}
+          table={current.table}
+        />
+      </div>
+    );
+  }
+
   const rows = shown;
   // Specifically "the rows on screen are from a different table than the one
   // selected", not "a request is in flight". Filtering and paging refetch
@@ -198,6 +223,22 @@ export function AdminDataSection() {
   // the previous rows, so the query is never "pending" again and nothing would
   // otherwise say the table on screen is out of date.
   const busy = rowsQuery.isFetching;
+  // Where a row opens — computed from the table the *rows* came from, like the
+  // masking, so a row can never be linked under another table's key. Null when
+  // the gateway could not address it anyway: the row id is a `UUID` in the path,
+  // so a table keyed by a code has no row addresses at all (§5.8).
+  //
+  // The current query rides along, and the card's Back link brings it home: a
+  // reader who opened a row from page 7 of a filtered table returns to page 7
+  // of that filter, not to the top of an unfiltered one.
+  const rowHref = (row: AdminRow) => {
+    if (!rows || !shownTable || !isAddressableKey(shownTable)) return null;
+    const key = row[shownTable.primaryKey];
+    if (typeof key !== "string" || key === "") return null;
+    const query = writeViewState(view).toString();
+    const path = `/admin/data/${rows.meta.service}/${rows.meta.table}/${encodeURIComponent(key)}`;
+    return query ? `${path}?${query}` : path;
+  };
 
   return (
     <div className="admin-data">
@@ -263,6 +304,7 @@ export function AdminDataSection() {
             onPage={(page) => update({ page })}
             onSort={toggleSort}
             order={view.order}
+            rowHref={rowHref}
             rows={rows}
             sort={view.sort}
             sortable={sortable}

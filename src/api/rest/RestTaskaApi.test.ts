@@ -453,7 +453,11 @@ describe("RestTaskaApi read-only admin", () => {
     vi.stubGlobal("fetch", fetchStub);
 
     await expect(new RestTaskaApi().getAdminCatalog()).resolves.toEqual({ services: [] });
-    expect(fetchStub.mock.calls[0][0]).toContain("/readonly/metadata");
+    // `/readonly/catalog` since backend b22a2e0 (TAS-103). The old
+    // `/readonly/metadata` 404s, which took the whole admin area down with it —
+    // this endpoint is the first call the section makes.
+    expect(fetchStub.mock.calls[0][0]).toContain("/readonly/catalog");
+    expect(fetchStub.mock.calls[0][0]).not.toContain("/readonly/metadata");
   });
 
   it("renames the wire's `data` to `rows` and passes pagination and meta through", async () => {
@@ -488,8 +492,61 @@ describe("RestTaskaApi read-only admin", () => {
     const url = await urlFor({ service: "auth", table: "users", page: 2, pageSize: 20 });
 
     expect(url.pathname).toContain("/readonly/auth/users");
-    expect(url.searchParams.get("page")).toBe("2");
+    // The wire is 0-based, the domain and the URL are not: page 2 of the
+    // console is `page=1` on the gateway.
+    expect(url.searchParams.get("page")).toBe("1");
     expect(url.searchParams.get("pageSize")).toBe("20");
+  });
+
+  it("sends the first page as 0 and never sends a negative one", async () => {
+    // `page=0` used to be a 400 and is now the default. The conversion lives
+    // here alone, so it is pinned here alone.
+    expect((await urlFor({ service: "auth", table: "users", page: 1 })).searchParams.get("page")).toBe("0");
+    // Nothing should produce this — `readViewState` clamps to 1 — but a
+    // negative page on the wire is a 400 that costs the reader the whole table.
+    expect((await urlFor({ service: "auth", table: "users", page: 0 })).searchParams.get("page")).toBe("0");
+    expect((await urlFor({ service: "auth", table: "users" })).searchParams.has("page")).toBe(false);
+  });
+
+  it("moves the answered page back onto the domain's 1-based count", async () => {
+    const fetchStub = vi.fn(async () =>
+      answer({
+        data: [{ id: "1" }],
+        // The gateway's second page.
+        pagination: { currentPage: 1, pageSize: 20, totalRows: 41, totalPages: 3, hasNext: true, hasPrev: true },
+        meta: { service: "auth", table: "users" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().listAdminRows({ service: "auth", table: "users", page: 2 });
+
+    // The pager, the URL and everything above this line count from 1.
+    expect(result.pagination.currentPage).toBe(2);
+    // Basis-independent, so they arrive exactly as stated.
+    expect(result.pagination.hasPrev).toBe(true);
+    expect(result.pagination.hasNext).toBe(true);
+    expect(result.pagination.totalPages).toBe(3);
+  });
+
+  // `null + 1` is 1, so a null here used to read as the first page: "Page 1 of
+  // 5" printed over page 3's rows, with Next then stepping to 2. Nothing in the
+  // contract forbids the null — none of the pagination fields is required — and
+  // every sibling field already treats absent and null the same.
+  it("does not read a null page number as the first page", async () => {
+    const fetchStub = vi.fn(async () =>
+      answer({
+        data: [{ id: "1" }],
+        pagination: { currentPage: null, pageSize: 20, totalRows: 41, totalPages: 3, hasNext: true, hasPrev: true },
+        meta: { service: "auth", table: "users" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().listAdminRows({ service: "auth", table: "users", page: 3 });
+
+    // The page we asked for, which is the only thing anyone knows here.
+    expect(result.pagination.currentPage).toBe(3);
   });
 
   it("sends order only alongside a sort column", async () => {
@@ -501,12 +558,16 @@ describe("RestTaskaApi read-only admin", () => {
     expect(unsorted.searchParams.has("sort")).toBe(false);
   });
 
+  // Every key carries its operator now. The gateway splits on the last dot and
+  // answers 400 both for a key without one ("Filter key must contain operator")
+  // and for an operator it does not know — the old bare-equality spelling is
+  // not merely unfashionable, it fails.
   it.each([
-    ["eq", "status", "status", "active"],
+    ["equals", "status", "status.equals", "active"],
     ["contains", "email", "email.contains", "@gmail.com"],
     ["from", "created_at", "created_at.from", "2026-01-01T00:00:00Z"],
     ["to", "created_at", "created_at.to", "2026-12-31T23:59:59Z"],
-  ] as const)("spells the %s filter as %s -> %s", async (operator, column, expectedKey, value) => {
+  ] as const)("spells the %s filter on %s as %s", async (operator, column, expectedKey, value) => {
     const url = await urlFor({
       service: "auth",
       table: "users",
@@ -514,9 +575,14 @@ describe("RestTaskaApi read-only admin", () => {
     });
 
     expect(url.searchParams.get(expectedKey)).toBe(value);
+    // The bare column name is not a filter key any more, for any operator.
+    expect(url.searchParams.has(column)).toBe(false);
   });
 
   it("treats an empty filter value as no filter rather than as matching empty", async () => {
+    // Kept after the operator rename, and now agreed with by the server: a
+    // blank value is "Filter value must not be empty", a 400 that costs the
+    // reader the table for an input they merely cleared.
     const url = await urlFor({
       service: "auth",
       table: "users",
@@ -524,28 +590,28 @@ describe("RestTaskaApi read-only admin", () => {
     });
 
     expect(url.searchParams.has("email.contains")).toBe(false);
+    expect([...url.searchParams.keys()].some((key) => key.startsWith("email"))).toBe(false);
   });
 
-  it("spells a filter around the paging keys instead of overwriting or dropping it", async () => {
+  it("cannot collide with the paging keys, because every filter key carries its operator", async () => {
     // The server owns the column names, so a table with a column called `page`
-    // is its prerogative. The bare key would be eaten as paging, so the
-    // explicit `.eq` spelling the contract documents is used instead — the
-    // filter still reaches the server, and the requested page survives.
+    // is its prerogative. The operator suffix is what keeps the two apart now:
+    // `page.equals` is not `page`, so no rename is needed and none happens.
     const url = await urlFor({
       service: "admin",
       table: "audit_log",
       page: 3,
       sort: "created_at",
       filters: [
-        { column: "page", operator: "eq", value: "99" },
-        { column: "sort", operator: "eq", value: "nonsense" },
+        { column: "page", operator: "equals", value: "99" },
+        { column: "sort", operator: "equals", value: "nonsense" },
       ],
     });
 
-    expect(url.searchParams.get("page")).toBe("3");
+    expect(url.searchParams.get("page")).toBe("2");
     expect(url.searchParams.get("sort")).toBe("created_at");
-    expect(url.searchParams.get("page.eq")).toBe("99");
-    expect(url.searchParams.get("sort.eq")).toBe("nonsense");
+    expect(url.searchParams.get("page.equals")).toBe("99");
+    expect(url.searchParams.get("sort.equals")).toBe("nonsense");
   });
 
   it("fills in a pagination block the server did not send rather than letting the pager crash", async () => {
@@ -593,5 +659,50 @@ describe("RestTaskaApi read-only admin", () => {
     const url = await urlFor({ service: "auth", table: "../../users" });
 
     expect(url.pathname).not.toContain("/../");
+  });
+
+  it("reads one row by its key and unwraps `data`", async () => {
+    const row = { id: "0f3d5cb0-3a0e-4e3a-9d19-6d0a1f3a9c11", email: "anna@example.com" };
+    const fetchStub = vi.fn(async (input: string) => answer({ data: row }, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().getAdminRow({
+      service: "auth",
+      table: "users",
+      id: "0f3d5cb0-3a0e-4e3a-9d19-6d0a1f3a9c11",
+    });
+
+    expect(result).toEqual(row);
+    expect(String(fetchStub.mock.calls[0][0])).toContain(
+      "/readonly/auth/users/0f3d5cb0-3a0e-4e3a-9d19-6d0a1f3a9c11",
+    );
+  });
+
+  it("passes a missing row's 404 up as a 404, so the card can say the row is gone", async () => {
+    const fetchStub = vi.fn(
+      async () =>
+        ({
+          status: 404,
+          ok: false,
+          headers: { get: () => "req-42" },
+          json: async () => ({ code: "NOT_FOUND", message: "Row not found" }),
+        }) as unknown as Response,
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    // The card tells a missing row apart from a refusal and from a fault, and
+    // it can only do that if the status survives the trip.
+    await expect(
+      new RestTaskaApi().getAdminRow({ service: "auth", table: "users", id: "nope" }),
+    ).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
+  });
+
+  it("escapes a row id rather than letting it reshape the path", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer({ data: {} }, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await new RestTaskaApi().getAdminRow({ service: "auth", table: "users", id: "../../../etc" });
+
+    expect(String(fetchStub.mock.calls[0][0])).not.toContain("/../");
   });
 });

@@ -1,6 +1,7 @@
-import { Lock } from "lucide-react";
+import { ChevronRight, Lock } from "lucide-react";
 import { useMemo } from "react";
-import type { AdminRows, AdminSortOrder, AdminTable } from "../../domain/types";
+import { Link, useNavigate } from "react-router-dom";
+import type { AdminRow, AdminRows, AdminSortOrder, AdminTable } from "../../domain/types";
 import { formatCell, isAlignedType } from "./columns";
 import { useCopied } from "./useCopied";
 
@@ -19,6 +20,13 @@ interface AdminRowsTableProps {
   onPage: (page: number) => void;
   /** Said in the body when there are no rows, with the table itself kept. */
   empty: string;
+  /**
+   * Where a row opens, or `null` when it cannot be opened at all — the gateway
+   * takes the row id as a `UUID`, so a table keyed by a code or a number has no
+   * addressable rows (§5.8). Returning `null` is not a styling choice: a link
+   * that is certain to be refused is worse than no link.
+   */
+  rowHref: (row: AdminRow) => string | null;
 }
 
 /**
@@ -27,9 +35,24 @@ interface AdminRowsTableProps {
  * rows, a sticky header, the primary key frozen against the horizontal scroll,
  * and the pagination in the table's own sticky footer.
  */
-export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onPage, empty }: AdminRowsTableProps) {
+export function AdminRowsTable({
+  rows,
+  table,
+  sortable,
+  sort,
+  order,
+  onSort,
+  onPage,
+  empty,
+  rowHref,
+}: AdminRowsTableProps) {
+  const navigate = useNavigate();
   const columns = rows.meta.columns;
   const name = `${rows.meta.service}.${rows.meta.table}`;
+  // Whether this table has openable rows at all, which is what decides the
+  // extra column. Asked of the page as a whole rather than per row, so one row
+  // with a null key cannot take the column away from the rest.
+  const opens = rows.rows.some((row) => rowHref(row) !== null);
 
   const sensitiveColumns = useMemo(
     () => new Set(table.columns.filter((column) => column.sensitive).map((column) => column.name)),
@@ -49,8 +72,16 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
   // rule is about — when it is not, the table simply scrolls whole.
   const frozenColumn = columns[0] === table.primaryKey ? table.primaryKey : undefined;
 
-  const cellClass = (column: string) =>
-    [alignedColumns.has(column) ? "admin-cell-mono" : "", column === frozenColumn ? "admin-cell-frozen" : ""]
+  const cellClass = (column: string, value: unknown) =>
+    [
+      alignedColumns.has(column) ? "admin-cell-mono" : "",
+      column === frozenColumn ? "admin-cell-frozen" : "",
+      // The dash that stands in for an absent value is chrome, not content, and
+      // §5.8 gives it `--fg-3` in the table exactly as on the card. Marked on
+      // the cell rather than inside `formatCell`, which stays a pure string and
+      // keeps telling `null` apart from the string "null".
+      (value === null || value === undefined) && !sensitiveColumns.has(column) ? "admin-cell-null" : "",
+    ]
       .filter(Boolean)
       .join(" ");
 
@@ -89,6 +120,14 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
                 </th>
               );
             })}
+            {/* The column that carries the row's own link. Named for a screen
+                reader and empty to the eye: a visible header over a chevron
+                would caption the one column that is not the table's data. */}
+            {opens ? (
+              <th className="admin-open-head">
+                <span className="visually-hidden">Open row</span>
+              </th>
+            ) : null}
           </tr>
         </thead>
         <tbody>
@@ -102,30 +141,63 @@ export function AdminRowsTable({ rows, table, sortable, sort, order, onSort, onP
               </td>
             </tr>
           ) : null}
-          {rows.rows.map((row, index) => (
-            <tr key={String(row[table.primaryKey] ?? index)}>
-              {columns.map((column) => (
-                <td className={cellClass(column) || undefined} key={column}>
-                  {column === frozenColumn && !sensitiveColumns.has(column) ? (
-                    <PrimaryKeyCell value={formatCell(row[column])} />
-                  ) : sensitiveColumns.has(column) ? (
-                    // The catalog says this column holds secrets. Say that it
-                    // exists and stop there — not a masked length, which leaks
-                    // one. The label distinguishes a withheld cell from one
-                    // whose content happens to be the word "hidden", and
-                    // deliberately avoids the word "value" so it cannot collide
-                    // with the filter form's own labels.
-                    <span aria-label="hidden by the catalog" className="admin-hidden-cell">
-                      <Lock aria-hidden="true" size={11} />
-                      hidden
-                    </span>
-                  ) : (
-                    formatCell(row[column])
-                  )}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {rows.rows.map((row, index) => {
+            const href = rowHref(row);
+            const key = formatCell(row[table.primaryKey]);
+            return (
+              // The whole row is the pointer target (§5.8), and the link in the
+              // last cell is the same move for the keyboard — the row itself
+              // cannot be the control without lying to a screen reader about
+              // what a table row is. A click that lands on the key's copy
+              // button, or that ends a text selection, is not a navigation.
+              <tr
+                className={href ? "admin-row-opens" : undefined}
+                key={String(row[table.primaryKey] ?? index)}
+                onClick={(event) => {
+                  if (!href) return;
+                  if ((event.target as HTMLElement).closest("a, button")) return;
+                  if (window.getSelection()?.toString()) return;
+                  // A modifier says "not here": ⌘/Ctrl for a new tab, Shift for
+                  // a new window, Alt to download. Routing in-app anyway would
+                  // take the one gesture an admin uses to keep the table open
+                  // while reading a row — the link in the last cell is a real
+                  // link and does all of that itself.
+                  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  void navigate(href);
+                }}
+              >
+                {columns.map((column) => (
+                  <td className={cellClass(column, row[column]) || undefined} key={column}>
+                    {column === frozenColumn && !sensitiveColumns.has(column) ? (
+                      <PrimaryKeyCell value={formatCell(row[column])} />
+                    ) : sensitiveColumns.has(column) ? (
+                      // The catalog says this column holds secrets. Say that it
+                      // exists and stop there — not a masked length, which leaks
+                      // one. The label distinguishes a withheld cell from one
+                      // whose content happens to be the word "hidden", and
+                      // deliberately avoids the word "value" so it cannot collide
+                      // with the filter form's own labels.
+                      <span aria-label="hidden by the catalog" className="admin-hidden-cell">
+                        <Lock aria-hidden="true" size={11} />
+                        hidden
+                      </span>
+                    ) : (
+                      formatCell(row[column])
+                    )}
+                  </td>
+                ))}
+                {opens ? (
+                  <td className="admin-open-cell">
+                    {href ? (
+                      <Link aria-label={`Open row ${key}`} className="admin-open-row" to={href}>
+                        <ChevronRight aria-hidden="true" size={14} />
+                      </Link>
+                    ) : null}
+                  </td>
+                ) : null}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
 

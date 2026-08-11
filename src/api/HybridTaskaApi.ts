@@ -13,6 +13,8 @@ import type {
 } from "./TaskaApi";
 import type {
   AdminCatalog,
+  AdminRow,
+  AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
   Issue,
@@ -199,5 +201,9 @@ export class HybridTaskaApi implements TaskaApi {
 
   listAdminRows(query: AdminRowsQuery): Promise<AdminRows> {
     return this.live.listAdminRows(query);
+  }
+
+  getAdminRow(query: AdminRowQuery): Promise<AdminRow> {
+    return this.live.getAdminRow(query);
   }
 }

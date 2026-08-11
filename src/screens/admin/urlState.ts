@@ -18,13 +18,25 @@ export interface AdminViewState {
   filter: AdminFilter | null;
 }
 
-export const filterOperators: AdminFilterOperator[] = ["eq", "contains", "from", "to"];
+export const filterOperators: AdminFilterOperator[] = ["equals", "contains", "from", "to"];
 
 export const operatorLabels: Record<AdminFilterOperator, string> = {
-  eq: "is",
+  equals: "is",
   contains: "contains",
   from: "from",
   to: "to",
+};
+
+/**
+ * Spellings this app has used for an operator but no longer writes. The admin
+ * URL is shareable by design (§5.8), so a link sent last week must keep
+ * filtering: dropping the filter would show unfiltered rows under a chip that
+ * still read as applied, which is exactly the silent-wrong-answer case the URL
+ * state exists to avoid. Only reading accepts these — `writeViewState` emits
+ * the current spelling, so an old link that is opened and re-shared heals.
+ */
+const legacyOperators: Record<string, AdminFilterOperator> = {
+  eq: "equals",
 };
 
 /**
@@ -38,13 +50,18 @@ function decodeFilter(raw: string | null): AdminFilter | null {
   if (first <= 0) return null;
   const second = raw.indexOf(":", first + 1);
   if (second < 0) return null;
-  const operator = raw.slice(first + 1, second);
-  if (!filterOperators.includes(operator as AdminFilterOperator)) return null;
-  return {
-    column: raw.slice(0, first),
-    operator: operator as AdminFilterOperator,
-    value: raw.slice(second + 1),
-  };
+  const spelled = raw.slice(first + 1, second);
+  const operator = filterOperators.includes(spelled as AdminFilterOperator)
+    ? (spelled as AdminFilterOperator)
+    : legacyOperators[spelled];
+  if (!operator) return null;
+  const value = raw.slice(second + 1);
+  // A filter with no value is not a filter (§5.8). The API layer already drops
+  // it from the request, which is what made it dangerous: the chip read as
+  // applied and the empty state said "No rows match this filter" over a table
+  // nothing had narrowed.
+  if (value === "") return null;
+  return { column: raw.slice(0, first), operator, value };
 }
 
 /** Anything unreadable in the query reads as "not set" rather than as an error:
@@ -68,7 +85,7 @@ export function writeViewState(state: AdminViewState): URLSearchParams {
     params.set("sort", state.sort);
     if (state.order === "desc") params.set("order", "desc");
   }
-  if (state.filter && state.filter.column) {
+  if (state.filter && state.filter.column && state.filter.value !== "") {
     params.set("filter", `${state.filter.column}:${state.filter.operator}:${state.filter.value}`);
   }
   return params;

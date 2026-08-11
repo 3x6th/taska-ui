@@ -150,6 +150,202 @@ test("a filter that matches nothing says so instead of looking broken", async ({
   await expect(page.getByText("No rows match this filter.")).toBeVisible();
 });
 
+test("opens one row and comes back to the page and filter it was opened from", async ({ page }) => {
+  await openConsole(page);
+
+  // A filtered second page, so the way back has something to lose: without the
+  // table's query travelling with the row address, Back lands on page 1 of an
+  // unfiltered table and the reader has to find their place again.
+  await page.goto("/admin/data/auth/sessions?filter=revoked:equals:false&page=2");
+  await expect(page.getByText("Page 2 of 2")).toBeVisible();
+  const key = await page.locator(".admin-table tbody tr td").first().innerText();
+
+  await page.getByRole("link", { name: /^Open row / }).first().click();
+
+  await expect(page).toHaveURL(/\/admin\/data\/auth\/sessions\/[0-9a-f-]{36}\?/);
+  // The card is the section body: the table is gone, the rail and the catalog
+  // are not.
+  await expect(page.locator(".admin-table")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Tables" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Administration" })).toBeVisible();
+  // The key in full, and copyable — the table shortens it, the card does not.
+  await expect(page.getByRole("button", { name: /^Copy [0-9a-f-]{36}$/ })).toBeVisible();
+  await expect(page.getByText("ip_address", { exact: true })).toBeVisible();
+
+  // Named "Back to …" rather than the table's name alone: the chevron is
+  // aria-hidden, so the bare name sounded exactly like the card's own heading.
+  await page.getByRole("link", { name: "Back to auth.sessions" }).click();
+
+  await expect(page).toHaveURL(/page=2/);
+  await expect(page).toHaveURL(/filter=revoked%3Aequals%3Afalse/);
+  await expect(page.getByText("Page 2 of 2")).toBeVisible();
+  await expect(page.locator(".admin-table tbody tr td").first()).toHaveText(key);
+});
+
+test("does not offer a row link where the gateway could not take one", async ({ page }) => {
+  await openConsole(page);
+
+  // audit_log is keyed by a code rather than a uuid, and the gateway parses the
+  // row id as a UUID — so those rows have no address, and the console says so
+  // by not linking them.
+  await page.getByRole("link", { name: "audit_log", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+
+  await expect(page.getByRole("link", { name: /^Open row / })).toHaveCount(0);
+});
+
+// The gateway parses the row id in the path as a UUID, so this address is a 400
+// there whatever the row behind it. The mock refuses it the same way, or mock
+// mode would teach a card the deployed console can never open.
+test("refuses a row address the gateway could not parse, instead of serving a card", async ({ page }) => {
+  await openConsole(page);
+
+  await page.goto("/admin/data/admin/audit_log/audit-001");
+
+  await expect(page.getByRole("alert")).toContainText("would not accept this request");
+  // Not "could not be reached": nothing is down, the request was read and
+  // refused.
+  await expect(page.getByRole("alert")).not.toContainText("could not be reached");
+  await expect(page.locator(".admin-card")).toHaveCount(0);
+});
+
+// Nothing in this block is chrome. The sentence sends the reader to the
+// gateway's own line for what to change, and the request id beside it is how
+// the fault gets filed — so neither may sit at --fg-3, which measures 2.91:1 on
+// --bg in light and is under §7's 3:1 floor even for the meta it is meant for.
+// Colours are compared to each other and to the theme's own --fg-3 rather than
+// to a hex, so this holds in both themes and survives a change of palette: what
+// is pinned is the ranking, not the value.
+test("keeps every line of a gateway failure above the meta colour", async ({ page }) => {
+  await openConsole(page);
+
+  await page.goto("/admin/data/admin/audit_log/audit-001");
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("would not accept this request");
+  const message = alert.locator(".admin-error-detail");
+  await expect(message).toBeVisible();
+
+  const sentenceColour = await alert.locator("p").first().evaluate((node) => getComputedStyle(node).color);
+  const messageColour = await message.evaluate((node) => getComputedStyle(node).color);
+  // Mock mode cannot produce the three-line version of this block at all: only
+  // the REST client reads X-Request-Id off a response, so there is no seeded
+  // failure and no URL that will render a request id here. Do not go looking
+  // for one and conclude the code is broken — the line is put on the live
+  // document to read the rule that will paint it against the deployed gateway,
+  // and taken off again.
+  const paleAndRequestId = await message.evaluate((node) => {
+    const requestIdLine = document.createElement("p");
+    requestIdLine.className = "admin-error-detail admin-request-id-line";
+    node.after(requestIdLine);
+    // The theme's own --fg-3, resolved by the live document rather than written
+    // out as a hex, so the assertion below reads the same in dark.
+    const pale = document.createElement("span");
+    pale.style.color = "var(--fg-3)";
+    node.append(pale);
+    const read = { requestId: getComputedStyle(requestIdLine).color, pale: getComputedStyle(pale).color };
+    requestIdLine.remove();
+    pale.remove();
+    return read;
+  });
+
+  expect(messageColour).toBe(sentenceColour);
+  expect(paleAndRequestId.requestId).toBe(messageColour);
+  expect(messageColour).not.toBe(paleAndRequestId.pale);
+});
+
+// The copy button on a key sits inside a row whose own hover already lifts the
+// cells under it, so an opaque hover token suits at most one of the planes this
+// one rule lands on: --surface-3 matches the lifted row exactly and leaves no
+// delta at all on the rows whose key is most worth copying, and --surface-2
+// inverts against it in dark. A translucent mix of --fg composites the right
+// way over each of them, and the request id under a gateway failure carries the
+// same rule on a different plane again. Values are compared to the planes they
+// land on and to each other, never to a hex, so this reads the same in dark.
+test("keeps a hover visible on whichever plane it lands on", async ({ page }) => {
+  await openConsole(page);
+
+  const cell = page.locator(".admin-table tbody .admin-cell-frozen").first();
+  const key = cell.locator(".admin-key");
+  await key.hover();
+
+  const keyHover = await key.evaluate((node) => getComputedStyle(node).backgroundColor);
+  // The row lifts under its own hover while the pointer is on the key, so this
+  // is the pair that was identical — a hover that changed nothing.
+  expect(keyHover).not.toBe(await cell.evaluate((node) => getComputedStyle(node).backgroundColor));
+  // Translucent, which is the whole point: an opaque colour can only be a step
+  // in the right direction on one plane, and this rule serves three.
+  expect(keyHover).not.toMatch(/^rgb\(/);
+
+  await page.goto("/admin/data/admin/audit_log/audit-001");
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("would not accept this request");
+  // Mock mode cannot produce a request id (see the test above), so the line is
+  // built on the live document to hover the rule that will carry it against the
+  // deployed gateway.
+  await alert.locator(".admin-error-detail").evaluate((node) => {
+    const line = document.createElement("p");
+    line.className = "admin-error-detail admin-request-id-line";
+    const button = document.createElement("button");
+    button.className = "admin-request-id";
+    button.type = "button";
+    button.textContent = "c85c0694-7909-4a8a";
+    line.append(button);
+    node.after(line);
+  });
+  const requestId = page.locator(".admin-request-id");
+  await requestId.hover();
+
+  // One hover for the section: the id sits on the page plane rather than on a
+  // lifted row, and the rule does not have to know which.
+  expect(await requestId.evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(keyHover);
+});
+
+// The value is entered with the control the column's type calls for (§5.8), and
+// a timestamp is read as UTC — the same clock the column beside it prints in.
+test("filters a timestamp with the picker, in the digits the column shows", async ({ page }) => {
+  await openConsole(page);
+
+  await page.getByRole("link", { name: "sessions", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "auth.sessions" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Filter" }).click();
+  await page.getByLabel("Column", { exact: true }).selectOption("expires_at");
+  await page.getByLabel("Match", { exact: true }).selectOption("from");
+  // The field says which clock its digits are on, because the column does not.
+  await page.getByLabel("Value UTC").fill("2026-09-10T08:00");
+  await page.getByRole("button", { name: "Apply" }).click();
+
+  // The digits typed, the digits on the chip and the digits in the address are
+  // the same digits — and no `.000`.
+  await expect(page.getByRole("button", { name: "expires_at from 2026-09-10T08:00:00Z" })).toBeVisible();
+  await expect(page).toHaveURL(/filter=expires_at%3Afrom%3A2026-09-10T08%3A00%3A00Z/);
+  await expect(page.getByText("27 rows")).toBeVisible();
+
+  // A boolean column is a choice, not a text field, and its single legal
+  // operator is stated rather than put in a dropdown that cannot change it.
+  await page.getByRole("button", { name: "expires_at from 2026-09-10T08:00:00Z" }).click();
+  await page.getByLabel("Column", { exact: true }).selectOption("revoked");
+  await expect(page.getByLabel("Match", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Value", { exact: true }).locator("option")).toHaveText(["true", "false"]);
+  // Read as one sentence, not two boxes: the flex gap between the label and the
+  // answer is invisible to anything reading the text, so without an explicit
+  // space in the markup this line reaches a screen reader as "Matchis".
+  expect(await page.locator(".admin-filter-fixed").textContent()).toBe("Match is");
+});
+
+test("says a row is missing instead of showing the not-found screen", async ({ page }) => {
+  await openConsole(page);
+
+  await page.goto("/admin/data/auth/sessions/0f3d5cb0-0000-0000-0000-000000000000");
+
+  await expect(page.getByText("No row with this key in auth.sessions.")).toBeVisible();
+  // The address is a real one, so this is not §4.18 — and the section keeps
+  // working around the message.
+  await expect(page.getByRole("heading", { name: "Page not found" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Tables" })).toBeVisible();
+});
+
 test("finds a table through the catalog search", async ({ page }) => {
   await openConsole(page);
 
