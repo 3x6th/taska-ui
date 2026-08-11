@@ -1,56 +1,6 @@
 import type { AdminCatalog, AdminFilterOperator, AdminTable } from "../../domain/types";
+import { classifyColumnType } from "../../lib/adminColumnTypes";
 import { filterOperators } from "./urlState";
-
-/**
- * How the gateway groups a column's type when it decides which filter operators
- * that column may take (`DbColumnType`). Anything it does not recognise is
- * `OTHER`, which accepts equality and nothing else.
- */
-export type AdminColumnClass = "TEXT" | "TEMPORAL" | "NUMERIC" | "BOOLEAN" | "OTHER";
-
-/**
- * The catalog states `information_schema.columns.data_type` verbatim, and the
- * gateway matches it **exactly** against this list, lowercased — not as a
- * substring. So `character varying` is text and `character varying[]` is not,
- * which is the difference between a filter that works and a 400.
- */
-const COLUMN_CLASS_BY_TYPE = new Map<string, AdminColumnClass>([
-  ["text", "TEXT"],
-  ["character varying", "TEXT"],
-  ["varchar", "TEXT"],
-  ["character", "TEXT"],
-  ["char", "TEXT"],
-  ["name", "TEXT"],
-  ["citext", "TEXT"],
-  ["timestamp with time zone", "TEMPORAL"],
-  ["timestamp without time zone", "TEMPORAL"],
-  ["date", "TEMPORAL"],
-  ["time with time zone", "TEMPORAL"],
-  ["time without time zone", "TEMPORAL"],
-  ["integer", "NUMERIC"],
-  ["bigint", "NUMERIC"],
-  ["smallint", "NUMERIC"],
-  ["numeric", "NUMERIC"],
-  ["decimal", "NUMERIC"],
-  ["real", "NUMERIC"],
-  ["double precision", "NUMERIC"],
-  ["serial", "NUMERIC"],
-  ["bigserial", "NUMERIC"],
-  ["smallserial", "NUMERIC"],
-  ["boolean", "BOOLEAN"],
-]);
-
-/**
- * The class the gateway will put this column in. A type it has never heard of —
- * `uuid`, `jsonb`, `bytea`, an absent type, a domain type from a later
- * migration — is `OTHER` on purpose: fewer operators is the safe direction,
- * because offering one the server rejects turns a filter into a 400 the reader
- * cannot act on.
- */
-export function classifyColumnType(type?: string): AdminColumnClass {
-  if (!type) return "OTHER";
-  return COLUMN_CLASS_BY_TYPE.get(type.trim().toLowerCase()) ?? "OTHER";
-}
 
 /**
  * Which operators this column may be filtered with (DESIGN.md §5.8). The
@@ -73,6 +23,33 @@ export function operatorsForType(type?: string): AdminFilterOperator[] {
 /** Whether a column may carry a value the operator's own parser will accept. */
 export function supportsOperator(type: string | undefined, operator: AdminFilterOperator): boolean {
   return operatorsForType(type).includes(operator);
+}
+
+/** Which control the filter's Value field is, for a column of this type. */
+export type AdminValueControl = "text" | "number" | "boolean" | "datetime";
+
+/**
+ * The control the value is entered with (DESIGN.md §5.8). Not cosmetics: the
+ * gateway parses the value against the column's type and answers 400 when it
+ * cannot — `ReadOnlyQueryBuilder` runs `new BigDecimal(value)` for a numeric
+ * column and takes only `true`/`false` for a boolean one, and a timestamp goes
+ * through `OffsetDateTime.parse`. A free text field for any of those is a 400
+ * the reader was given no help avoiding.
+ *
+ * A type the gateway does not classify — `uuid`, `inet`, `jsonb` — keeps the
+ * free field, because there the server really does take the string as written.
+ */
+export function valueControlForType(type?: string): AdminValueControl {
+  switch (classifyColumnType(type)) {
+    case "TEMPORAL":
+      return "datetime";
+    case "NUMERIC":
+      return "number";
+    case "BOOLEAN":
+      return "boolean";
+    default:
+      return "text";
+  }
 }
 
 /**

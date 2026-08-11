@@ -45,8 +45,12 @@ export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }:
     <div className="admin-plane">
       <div className="admin-plane-head">
         {/* Carries the query it came with: returning from a row on page 7 of a
-            filtered table has to land back on page 7 of that filter (§5.8). */}
-        <Link className="admin-back-link" to={backTo}>
+            filtered table has to land back on page 7 of that filter (§5.8).
+            Named "Back to …" because the chevron is `aria-hidden`: without it
+            the link's whole accessible name is the table's, which is also the
+            heading thirty pixels below — two identical words, neither of which
+            says this one is the way out. The visible text stays the name. */}
+        <Link aria-label={`Back to ${name}`} className="admin-back-link" to={backTo}>
           <ChevronLeft aria-hidden="true" size={14} />
           {name}
         </Link>

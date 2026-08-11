@@ -72,8 +72,16 @@ export function AdminRowsTable({
   // rule is about — when it is not, the table simply scrolls whole.
   const frozenColumn = columns[0] === table.primaryKey ? table.primaryKey : undefined;
 
-  const cellClass = (column: string) =>
-    [alignedColumns.has(column) ? "admin-cell-mono" : "", column === frozenColumn ? "admin-cell-frozen" : ""]
+  const cellClass = (column: string, value: unknown) =>
+    [
+      alignedColumns.has(column) ? "admin-cell-mono" : "",
+      column === frozenColumn ? "admin-cell-frozen" : "",
+      // The dash that stands in for an absent value is chrome, not content, and
+      // §5.8 gives it `--fg-3` in the table exactly as on the card. Marked on
+      // the cell rather than inside `formatCell`, which stays a pure string and
+      // keeps telling `null` apart from the string "null".
+      (value === null || value === undefined) && !sensitiveColumns.has(column) ? "admin-cell-null" : "",
+    ]
       .filter(Boolean)
       .join(" ");
 
@@ -149,11 +157,17 @@ export function AdminRowsTable({
                   if (!href) return;
                   if ((event.target as HTMLElement).closest("a, button")) return;
                   if (window.getSelection()?.toString()) return;
+                  // A modifier says "not here": ⌘/Ctrl for a new tab, Shift for
+                  // a new window, Alt to download. Routing in-app anyway would
+                  // take the one gesture an admin uses to keep the table open
+                  // while reading a row — the link in the last cell is a real
+                  // link and does all of that itself.
+                  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
                   void navigate(href);
                 }}
               >
                 {columns.map((column) => (
-                  <td className={cellClass(column) || undefined} key={column}>
+                  <td className={cellClass(column, row[column]) || undefined} key={column}>
                     {column === frozenColumn && !sensitiveColumns.has(column) ? (
                       <PrimaryKeyCell value={formatCell(row[column])} />
                     ) : sensitiveColumns.has(column) ? (

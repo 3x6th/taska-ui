@@ -529,6 +529,26 @@ describe("RestTaskaApi read-only admin", () => {
     expect(result.pagination.totalPages).toBe(3);
   });
 
+  // `null + 1` is 1, so a null here used to read as the first page: "Page 1 of
+  // 5" printed over page 3's rows, with Next then stepping to 2. Nothing in the
+  // contract forbids the null — none of the pagination fields is required — and
+  // every sibling field already treats absent and null the same.
+  it("does not read a null page number as the first page", async () => {
+    const fetchStub = vi.fn(async () =>
+      answer({
+        data: [{ id: "1" }],
+        pagination: { currentPage: null, pageSize: 20, totalRows: 41, totalPages: 3, hasNext: true, hasPrev: true },
+        meta: { service: "auth", table: "users" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().listAdminRows({ service: "auth", table: "users", page: 3 });
+
+    // The page we asked for, which is the only thing anyone knows here.
+    expect(result.pagination.currentPage).toBe(3);
+  });
+
   it("sends order only alongside a sort column", async () => {
     const sorted = await urlFor({ service: "auth", table: "users", sort: "email", order: "desc" });
     expect(sorted.searchParams.get("sort")).toBe("email");

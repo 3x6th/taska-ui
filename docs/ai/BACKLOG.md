@@ -205,8 +205,11 @@ frontend story is blocked by its backend half and ships mock-first meanwhile.
   rather than a permanent placeholder.
 - [TAS-155](https://jira.ozero.dev/browse/TAS-155) — the read-only admin
   console itself, over the two `/readonly` endpoints the 2026-08-05 contract
-  refresh brought in. Blocked by TAS-152 (the way in) and TAS-103 (the
-  gateway half, still In Progress), so it ships mock-first.
+  refresh brought in. Blocked by TAS-152 (the way in) and TAS-103 (the gateway
+  half), so it shipped mock-first. TAS-103 landed on 2026-08-11 and moved the
+  contract under it — [TAS-161](https://jira.ozero.dev/browse/TAS-161) followed
+  it there and added the row card. Still mock-first, now because of
+  [TAS-156](https://jira.ozero.dev/browse/TAS-156) and the null `primaryKey`.
 
 ## New contract surface not yet claimed by a story
 

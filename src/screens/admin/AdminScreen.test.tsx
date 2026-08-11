@@ -72,6 +72,10 @@ const {
               { name: "email", type: "character varying", sensitive: false },
               { name: "password_hash", type: "character varying", sensitive: true },
               { name: "failed_logins", type: "integer", sensitive: false },
+              // Every class the filter form draws a different control for:
+              // text, number, boolean, timestamp — and `id`, a type the gateway
+              // does not classify at all, which keeps the free field.
+              { name: "email_verified", type: "boolean", sensitive: false },
               { name: "created_at", type: "timestamp with time zone", sensitive: false },
             ],
           },
@@ -104,13 +108,14 @@ const {
 
   const rowsByTable: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {
     "auth.users": {
-      columns: ["id", "email", "password_hash", "failed_logins", "created_at"],
+      columns: ["id", "email", "password_hash", "failed_logins", "email_verified", "created_at"],
       rows: [
         {
           id: "u1",
           email: "anna@example.com",
           password_hash: SECRET_VALUE,
           failed_logins: 2,
+          email_verified: true,
           created_at: null,
         },
       ],
@@ -544,6 +549,24 @@ describe("/admin console", () => {
     expect(document.body.textContent).not.toContain(SECRET);
   });
 
+  // The dash that stands in for an absent value is chrome, not data, and §5.8
+  // gives it `--fg-3` in the table exactly as on the card. It rendered at full
+  // `--fg` weight in the table and pale on the card — the same `null` in two
+  // colours one click apart.
+  it("marks an absent value in the table so it is drawn as the card draws it", async () => {
+    renderAdmin("/admin/data/auth/users");
+    const row = (await screen.findByRole("cell", { name: "u1" })).closest("tr")!;
+    const cells = within(row).getAllByRole("cell");
+
+    // created_at is null in the seed; email is not.
+    expect(cells[cells.length - 2]).toHaveTextContent("—");
+    expect(cells[cells.length - 2]).toHaveClass("admin-cell-null");
+    expect(within(row).getByRole("cell", { name: "anna@example.com" })).not.toHaveClass("admin-cell-null");
+    // The masked cell is not "absent" — it has a value, and saying otherwise
+    // would leak the difference between an empty secret and a set one.
+    expect(within(row).getByText("hidden").closest("td")).not.toHaveClass("admin-cell-null");
+  });
+
   it("names the scroll container so it can be reached and scrolled from the keyboard", async () => {
     renderAdmin();
 
@@ -780,11 +803,36 @@ describe("/admin console selection in the URL", () => {
     expect(screen.queryByRole("option", { name: "contains" })).not.toBeInTheDocument();
 
     // Unknown to the gateway's type list: equality alone, failing towards the
-    // filter that cannot be refused.
+    // filter that cannot be refused — and a single legal operator is stated
+    // rather than put in a dropdown that cannot change it (§5.8).
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "id" } });
-    expect(screen.getAllByRole("option", { name: "is" })).toHaveLength(1);
+    expect(screen.queryByLabelText("Match")).toBeNull();
     expect(screen.queryByRole("option", { name: "from" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "contains" })).not.toBeInTheDocument();
+  });
+
+  // A dropdown holding one option is a control that cannot change anything, and
+  // uuid, inet and boolean columns all have exactly one legal operator.
+  it("states the match instead of offering a select when only one operator is legal", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email_verified" } });
+
+    // No control — but the operator is still on screen, and it is still what
+    // gets applied.
+    expect(screen.queryByLabelText("Match")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Match" })).toBeNull();
+    expect(screen.getByText("Match")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(lastRowsQuery()?.filters?.[0]).toMatchObject({ column: "email_verified", operator: "equals" });
+
+    // And a column with a real choice gets the select back.
+    fireEvent.click(screen.getByRole("button", { name: "email_verified is true" }));
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
+    expect(screen.getByLabelText("Match")).toBeVisible();
   });
 
   // A stranded operator leaves the select showing a blank — its option is gone
@@ -798,8 +846,8 @@ describe("/admin console selection in the URL", () => {
     fireEvent.change(screen.getByLabelText("Match"), { target: { value: "contains" } });
     expect(screen.getByLabelText("Match")).toHaveValue("contains");
 
-    // `contains` is text-only, and a uuid column is not text.
-    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "id" } });
+    // `contains` is text-only, and a timestamp column is not text.
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "created_at" } });
     expect(screen.getByLabelText("Match")).toHaveValue("equals");
 
     // The same in the other direction: a range operator on a text column.
@@ -807,29 +855,65 @@ describe("/admin console selection in the URL", () => {
     fireEvent.change(screen.getByLabelText("Match"), { target: { value: "from" } });
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
     expect(screen.getByLabelText("Match")).toHaveValue("equals");
+
+    // And through a column that has no select at all: the stranded operator
+    // still lands on `equals`, which is what a later column with a select shows.
+    fireEvent.change(screen.getByLabelText("Match"), { target: { value: "contains" } });
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "id" } });
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
+    expect(screen.getByLabelText("Match")).toHaveValue("equals");
   });
 
   // A timestamp is parsed strictly server-side, so the form owns the format
   // (§5.8): the field is a picker and what leaves it is a full ISO-8601 moment.
-  it("sends a temporal filter as a full ISO-8601 value from a date picker", async () => {
+  //
+  // The digits are the whole point. Every timestamp this section prints is the
+  // server's raw UTC string, so the picker is read as UTC — and this test is
+  // meaningless at TZ=UTC alone. Run it under a non-UTC zone too
+  // (`TZ=Europe/Moscow npx vitest run`): reading the field as local wall time
+  // passes at UTC and is three hours wrong in Moscow, which is exactly how it
+  // shipped.
+  it("sends the digits that were typed, as UTC and without milliseconds", async () => {
     renderAdmin("/admin/data/auth/users");
     expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "created_at" } });
     fireEvent.change(screen.getByLabelText("Match"), { target: { value: "from" } });
-    expect(screen.getByLabelText("Value")).toHaveAttribute("type", "datetime-local");
+    // The field says which clock it is on, because the column beside it does
+    // not: `2026-09-10T08:00:00Z`.
+    const value = screen.getByLabelText("Value UTC");
+    expect(value).toHaveAttribute("type", "datetime-local");
 
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "2026-01-01T00:00" } });
+    fireEvent.change(value, { target: { value: "2026-09-10T08:00" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     const sent = lastRowsQuery()?.filters?.[0];
     expect(sent?.column).toBe("created_at");
     expect(sent?.operator).toBe("from");
-    // Whatever the runner's timezone, what goes out is an instant with an
-    // offset — `2026-01-01` and `2026-01-01T00:00` are both 400s.
-    expect(sent?.value).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
-    expect(new Date(sent!.value).getTime()).toBe(new Date("2026-01-01T00:00").getTime());
+    // Not "an instant with an offset" — *these* digits, and no `.000`.
+    expect(sent?.value).toBe("2026-09-10T08:00:00Z");
+  });
+
+  it("shows the same digits on the chip and back in the picker", async () => {
+    renderAdmin("/admin/data/auth/users?filter=created_at:from:2026-09-10T08:00:00Z");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    // One filter, one spelling: the chip says what the wire says.
+    const chip = screen.getByRole("button", { name: "created_at from 2026-09-10T08:00:00Z" });
+    // Truncated by width, so the whole value has to survive in `title` as well
+    // as in the accessible name (§5.8).
+    expect(chip).toHaveAttribute("title", "created_at from 2026-09-10T08:00:00Z");
+
+    fireEvent.click(chip);
+
+    // And the picker reopens on the digits the chip is showing, not on those
+    // digits moved by the reader's offset.
+    expect(screen.getByLabelText("Value UTC")).toHaveValue("2026-09-10T08:00");
+
+    // Re-applying an untouched filter changes nothing about it.
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(lastRowsQuery()?.filters?.[0].value).toBe("2026-09-10T08:00:00Z");
   });
 
   it("keeps a text filter's plain field", async () => {
@@ -840,6 +924,84 @@ describe("/admin console selection in the URL", () => {
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
 
     expect(screen.getByLabelText("Value")).toHaveAttribute("type", "text");
+    // A type the gateway does not parse takes the string as written, so it
+    // keeps the free field too.
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "id" } });
+    expect(screen.getByLabelText("Value")).toHaveAttribute("type", "text");
+  });
+
+  // The gateway parses the value against the column's type — `new BigDecimal`
+  // for a number, `true`/`false` for a boolean — and answers 400 for anything
+  // else. A free field for either is a 400 the reader was given no help
+  // avoiding, and it is what makes the rejected-request screen reachable from
+  // the ordinary form (§5.8).
+  it("gives a numeric column a numeric field", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "failed_logins" } });
+
+    const value = screen.getByLabelText("Value");
+    expect(value).toHaveAttribute("type", "number");
+    // `numeric(10,2)` is a numeric column too, and the default step of 1 would
+    // call its values invalid.
+    expect(value).toHaveAttribute("step", "any");
+
+    fireEvent.change(value, { target: { value: "12" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(lastRowsQuery()?.filters?.[0]).toMatchObject({ column: "failed_logins", value: "12" });
+  });
+
+  it("gives a boolean column a true/false choice rather than a text field", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email_verified" } });
+
+    const value = screen.getByLabelText("Value");
+    expect(value.tagName).toBe("SELECT");
+    expect(within(value as HTMLSelectElement).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "true",
+      "false",
+    ]);
+
+    fireEvent.change(value, { target: { value: "false" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(lastRowsQuery()?.filters?.[0]).toMatchObject({ column: "email_verified", value: "false" });
+  });
+
+  // §5.8: a blank filter is not applied and creates no chip. The picker makes
+  // "open it, pick nothing, Apply" an easy gesture, and the API layer drops an
+  // empty value from the request — so the chip claimed a filter that had never
+  // been sent, over a table nothing had narrowed.
+  it("applies nothing and shows no chip when the value is left blank", async () => {
+    renderAdmin("/admin/data/auth/users");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "created_at" } });
+    fireEvent.change(screen.getByLabelText("Match"), { target: { value: "from" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(screen.queryByRole("button", { name: /Remove filter/ })).toBeNull();
+    expect(currentLocation()).toBe("/admin/data/auth/users");
+    expect(lastRowsQuery()?.filters).toBeUndefined();
+    // And the empty-result copy does not blame a filter that was never applied.
+    expect(screen.queryByText("No rows match this filter.")).toBeNull();
+  });
+
+  it("drops an applied filter when its value is cleared", async () => {
+    renderAdmin("/admin/data/auth/users?filter=email:contains:anna");
+    expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: /email contains anna/ }));
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(currentLocation()).toBe("/admin/data/auth/users");
+    expect(screen.queryByRole("button", { name: /Remove filter/ })).toBeNull();
   });
 });
 
@@ -885,7 +1047,13 @@ describe("/admin console, opening one row", () => {
     expect(currentLocation()).toBe("/admin/data/auth/users/u1?filter=email%3Acontains%3Aanna");
     // Back from a row read on page 7 of a filtered table has to be page 7 of
     // that filter, not the top of an unfiltered one.
-    const back = await screen.findByRole("link", { name: "auth.users" });
+    //
+    // "Back to …", not the table's name alone: the chevron is aria-hidden, so
+    // the bare name made this link sound exactly like the heading below it
+    // (§5.8). The visible text is still just the name.
+    const back = await screen.findByRole("link", { name: "Back to auth.users" });
+    expect(back).toHaveTextContent("auth.users");
+    expect(screen.queryByRole("link", { name: "auth.users" })).toBeNull();
     fireEvent.click(back);
     expect(currentLocation()).toBe("/admin/data/auth/users?filter=email%3Acontains%3Aanna");
   });
@@ -919,6 +1087,24 @@ describe("/admin console, opening one row", () => {
     expect(document.body.textContent).not.toContain(SECRET);
   });
 
+  // ⌘/Ctrl for a new tab, Shift for a new window: the gestures that keep the
+  // table open while a row is read. Routing in-app anyway took them away, and
+  // the link in the last cell is a real link that already does all of it.
+  it("leaves a modified click to the browser instead of navigating in-app", async () => {
+    renderAdmin("/admin/data/auth/users");
+    const cell = await screen.findByRole("cell", { name: "anna@example.com" });
+
+    for (const modifier of ["metaKey", "ctrlKey", "shiftKey", "altKey"] as const) {
+      fireEvent.click(cell, { [modifier]: true });
+      expect(currentLocation()).toBe("/admin/data/auth/users");
+    }
+
+    // A plain click still opens the row: this is about the modifier, not about
+    // taking the row's own click away.
+    fireEvent.click(cell);
+    expect(currentLocation()).toBe("/admin/data/auth/users/u1");
+  });
+
   it("says the row is missing rather than answering with the not-found screen", async () => {
     renderAdmin("/admin/data/auth/users/nobody");
 
@@ -927,7 +1113,8 @@ describe("/admin console, opening one row", () => {
     expect(await screen.findByText(/No row with this key in auth.users/)).toBeVisible();
     expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
     expect(screen.getByRole("navigation", { name: "Tables" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "auth.users" })).toBeVisible();
+    // The way back out is still there, and still says it is the way back.
+    expect(screen.getByRole("link", { name: "Back to auth.users" })).toBeVisible();
   });
 
   it("tells a server fault on the row apart from a missing row", async () => {
@@ -985,6 +1172,11 @@ describe("/admin console error copy", () => {
   beforeEach(() => {
     releaseMe();
     releaseRows();
+    // The fake's failures are module state and outlive a test, so each of these
+    // starts from "nothing is failing" and breaks exactly one call.
+    failCatalog(undefined);
+    failRows(undefined);
+    failRow(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
     window.localStorage.clear();
@@ -1021,6 +1213,45 @@ describe("/admin console error copy", () => {
     renderAdmin();
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reached/i);
+  });
+
+  /**
+   * Since TAS-103 the gateway validates the filter's operator and its value
+   * against the column's type, so a 400 is the designed answer to bad input
+   * rather than a rarity. Calling it "could not be reached" tells an admin who
+   * mistyped a number that the infrastructure is down — a false claim, and one
+   * that gets escalated as an outage. The screen made this exact mistake once
+   * with 5xx already (docs/ai/API-DIVERGENCE.md).
+   */
+  it("names a rejected request as rejected, not as an unreachable API", async () => {
+    failRows(
+      Object.assign(new Error("Invalid filter value for column failed_logins"), {
+        status: 400,
+        requestId: "8f21ab0c",
+      }),
+    );
+    renderAdmin("/admin/data/auth/users");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).not.toHaveTextContent(/could not be reached/i);
+    expect(alert).toHaveTextContent(/would not accept this request/i);
+    // The server's own line stays: it names the column and the problem, and it
+    // is the only part that says what to change.
+    expect(alert).toHaveTextContent("Invalid filter value for column failed_logins");
+    expect(alert).toHaveTextContent("8f21ab0c");
+  });
+
+  // The mock carries a code where REST carries a status (src/api/errors.ts), and
+  // both have to reach the same sentence or the two modes stop matching on
+  // screen. This is the shape the mock answers a row id the gateway would not
+  // parse with.
+  it("says the same for the mock's own rejection, which carries no status", async () => {
+    failRow(Object.assign(new Error("Row id AUD-1 is not a UUID"), { code: "INVALID_ARGUMENT" }));
+    renderAdmin("/admin/data/auth/users/AUD-1");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/would not accept this request/i);
+    expect(alert).not.toHaveTextContent(/could not be reached/i);
   });
 
   it("names a refusal as being about the account or the table", async () => {

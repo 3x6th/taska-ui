@@ -55,11 +55,13 @@ function decodeFilter(raw: string | null): AdminFilter | null {
     ? (spelled as AdminFilterOperator)
     : legacyOperators[spelled];
   if (!operator) return null;
-  return {
-    column: raw.slice(0, first),
-    operator,
-    value: raw.slice(second + 1),
-  };
+  const value = raw.slice(second + 1);
+  // A filter with no value is not a filter (§5.8). The API layer already drops
+  // it from the request, which is what made it dangerous: the chip read as
+  // applied and the empty state said "No rows match this filter" over a table
+  // nothing had narrowed.
+  if (value === "") return null;
+  return { column: raw.slice(0, first), operator, value };
 }
 
 /** Anything unreadable in the query reads as "not set" rather than as an error:
@@ -83,7 +85,7 @@ export function writeViewState(state: AdminViewState): URLSearchParams {
     params.set("sort", state.sort);
     if (state.order === "desc") params.set("order", "desc");
   }
-  if (state.filter && state.filter.column) {
+  if (state.filter && state.filter.column && state.filter.value !== "") {
     params.set("filter", `${state.filter.column}:${state.filter.operator}:${state.filter.value}`);
   }
   return params;

@@ -35,6 +35,8 @@ import type {
   User,
   Workflow,
 } from "../../domain/types";
+import type { AdminColumnClass } from "../../lib/adminColumnTypes";
+import { classifyColumnType } from "../../lib/adminColumnTypes";
 
 const ANNA_ID = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
 const MARK_ID = "e65186a2-b807-42ae-a66f-711be116a93b";
@@ -83,6 +85,53 @@ const makeId = (prefix: string) => {
 
 const byCreatedAt = <T extends { createdAt: string }>(a: T, b: T) =>
   new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+
+/** Ordinary text ordering, deterministic and not locale-collated. */
+const compareAsText = (left: unknown, right: unknown) => {
+  const a = String(left);
+  const b = String(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+};
+
+/**
+ * Compare a table value the way the read-only admin API compares it: the
+ * gateway binds a `BigDecimal` for a numeric column and an `OffsetDateTime` for
+ * a temporal one, and the database does the rest.
+ *
+ * `null` when either side cannot be read as the column's type — a filter value
+ * the gateway would have answered 400 for, or an absent cell, neither of which
+ * matches anything. Callers that need a total order (sorting) fall back to text.
+ *
+ * The three implementations have to stay behaviourally interchangeable
+ * (AGENTS.md), and this mock is what the e2e suite runs against, so comparing
+ * as strings here was not a mock detail: `failed_logins.from=10` matched 9 in
+ * every test and would not on the wire, and at a timestamp boundary
+ * `"…08:00:00Z" <= "…08:00:00.000Z"` is false, so the mock dropped a row the
+ * gateway keeps.
+ */
+const compareAsColumn = (columnClass: AdminColumnClass, left: unknown, right: unknown): number | null => {
+  if (left === null || left === undefined || right === null || right === undefined) return null;
+  if (columnClass === "NUMERIC") {
+    const a = Number(left);
+    const b = Number(right);
+    if (Number.isNaN(a) || Number.isNaN(b)) return null;
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  if (columnClass === "TEMPORAL") {
+    const a = new Date(String(left)).getTime();
+    const b = new Date(String(right)).getTime();
+    if (Number.isNaN(a) || Number.isNaN(b)) return null;
+    return a - b;
+  }
+  return compareAsText(left, right);
+};
+
+/**
+ * The gateway types the row id in `GET /readonly/{service}/{table}/{id}` as a
+ * `UUID`, so anything else is refused before admin-service sees it — whatever
+ * the table's own key looks like.
+ */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * A link is stored once, the way it was created, and read from both ends. What
@@ -955,10 +1004,14 @@ export class MockTaskaStore {
   listAdminRows(query: AdminRowsQuery): AdminRows {
     const table = this.adminTable(query.service, query.table);
     const columns = table.columns.map((column) => column.name);
+    // The catalog's own types, which is what makes the comparisons below the
+    // gateway's comparisons rather than JavaScript's.
+    const typeOf = (column: string) => table.columns.find((item) => item.name === column)?.type;
     let rows = this.adminRowsFor(query.service, query.table);
 
     for (const filter of query.filters ?? []) {
       if (filter.value === "") continue;
+      const columnClass = classifyColumnType(typeOf(filter.column));
       rows = rows.filter((row) => {
         const raw = row[filter.column];
         const value = raw === null || raw === undefined ? "" : String(raw);
@@ -970,12 +1023,20 @@ export class MockTaskaStore {
           // in production.
           case "contains":
             return value.toLowerCase().includes(filter.value.toLowerCase());
-          case "from":
-            return value >= filter.value;
-          case "to":
-            return value <= filter.value;
+          case "from": {
+            const order = compareAsColumn(columnClass, raw, filter.value);
+            return order !== null && order >= 0;
+          }
+          case "to": {
+            const order = compareAsColumn(columnClass, raw, filter.value);
+            return order !== null && order <= 0;
+          }
           default:
-            return value === filter.value;
+            // Equality is typed too, and for the same reason: the gateway binds
+            // a BigDecimal against a numeric column, so `10.0` and `10` are the
+            // same row there. Where the value cannot be read as the column's
+            // type, the text comparison is the honest fallback.
+            return (compareAsColumn(columnClass, raw, filter.value) ?? (value === filter.value ? 0 : 1)) === 0;
         }
       });
     }
@@ -983,6 +1044,7 @@ export class MockTaskaStore {
     if (query.sort && columns.includes(query.sort)) {
       const direction = query.order === "desc" ? -1 : 1;
       const sortColumn = query.sort;
+      const columnClass = classifyColumnType(typeOf(sortColumn));
       rows = [...rows].sort((left, right) => {
         const a = left[sortColumn];
         const b = right[sortColumn];
@@ -990,7 +1052,11 @@ export class MockTaskaStore {
         // top is never what the person asking to sort by it wanted.
         if (a === null || a === undefined) return 1;
         if (b === null || b === undefined) return -1;
-        return String(a).localeCompare(String(b)) * direction;
+        // By the column's type, not `localeCompare`: the gateway sorts in the
+        // database, where 9 comes before 10 and a timestamp is an instant.
+        // Sorting every column as locale-collated text put 10 before 9 and made
+        // the order depend on the machine's locale.
+        return (compareAsColumn(columnClass, a, b) ?? compareAsText(a, b)) * direction;
       });
     }
 
@@ -1027,13 +1093,22 @@ export class MockTaskaStore {
    * gateway's 404 reaches the UI, so the card's missing-row state is reachable
    * in mock mode — that state is otherwise unreachable without a database.
    *
-   * The id is compared as text, which is what admin-service does (`"pk"::text
-   * = $1`). The gateway is stricter — it parses the path parameter as a UUID
-   * and refuses anything else — but that refusal belongs to the gateway, and
-   * the console never builds such a link in the first place.
+   * A key that is not a UUID is refused outright, because that is where the
+   * gateway refuses it: the path parameter is typed `UUID`, so
+   * `/admin/data/admin/audit_log/AUD-0001` is a 400 there however honest the
+   * row behind it. Serving a card the gateway never could made the mock the
+   * more permissive of the two, which is the direction that hides bugs — the
+   * console refuses to link those rows, and a hand-typed address has to hit the
+   * same wall in both modes.
+   *
+   * Past that, the id is compared as text, which is what admin-service does
+   * (`"pk"::text = $1`).
    */
   adminRow(query: AdminRowQuery): AdminRow {
     const table = this.adminTable(query.service, query.table);
+    if (!UUID_PATTERN.test(query.id)) {
+      throw new MockApiError("INVALID_ARGUMENT", `Row id ${query.id} is not a UUID`);
+    }
     const row = this.adminRowsFor(query.service, query.table).find(
       (candidate) => String(candidate[table.primaryKey] ?? "") === query.id,
     );
@@ -1073,7 +1148,11 @@ export class MockTaskaStore {
         // Never rendered — the catalog marks the column sensitive. Present so
         // that masking is exercised against a value rather than against a gap.
         password_hash: `$2b$10$mock${index}`,
-        failed_logins: index,
+        // Spans one and two digits on purpose: 5 and 10 order one way as
+        // numbers and the other way as text, so a numeric column compared as a
+        // string — in a filter or in a sort — is visible here rather than only
+        // against a real database.
+        failed_logins: index * 5,
         email_verified: index % 2 === 0,
         created_at: `2026-06-0${index + 1}T09:00:00Z`,
       }));

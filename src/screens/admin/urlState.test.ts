@@ -49,6 +49,19 @@ describe("admin view state in the URL", () => {
     expect(written).not.toContain("eq%3A");
   });
 
+  // §5.8: a blank filter is not applied and creates no chip. The API layer
+  // drops an empty value from the request either way, which is exactly what
+  // made this quiet — the chip read as applied over an unfiltered table, and
+  // the empty state said "No rows match this filter".
+  it("reads a filter with no value as no filter at all", () => {
+    expect(read("filter=email:contains:").filter).toBeNull();
+    expect(read("filter=expires_at:from:").filter).toBeNull();
+  });
+
+  it("never writes a filter with no value", () => {
+    expect(write({ ...base, filter: { column: "email", operator: "contains", value: "" } })).toBe("");
+  });
+
   it("reads an operator it has never heard of as no filter at all", () => {
     // Not an error state: a hand-edited address should show the table rather
     // than a diagnostic, and an operator we cannot send is not a filter.

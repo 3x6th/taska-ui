@@ -511,6 +511,32 @@ it. Entries are deleted only when the compensating code is deleted.
 - **Removal:** the contract's example spelling out that the offset is required,
   or the gateway accepting a bare date.
 
+### `equals` on a temporal column is offered, untested on both sides, and probably useless
+
+- **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
+- **Contract:** `equals` is described as plain equality with no type restriction,
+  and the gateway's own validator only constrains `contains` and `from`/`to`. So
+  a timestamp column formally accepts `equals`, and the console offers it.
+- **Why it is doubtful:** `ReadOnlyQueryBuilder.parseEqualsValue` converts only
+  NUMERIC and BOOLEAN; a temporal value stays a Java `String` and is bound
+  against a `timestamptz` column, and whether that works depends on the
+  parameter type r2dbc-postgresql infers — which this repository cannot settle.
+  Neither side tests it: the backend's `shouldAllowEqualsOnAnyColumnType`
+  asserts only the SQL text, and its integration test for `equals` uses a text
+  column.
+- **And even where it works it cannot match.** The picker this frontend uses has
+  minute resolution and serialises to `…:00Z`, while a real `created_at` carries
+  seconds and fractions. Exact equality against a timestamp is close to never
+  the question a person means.
+- **Not compensated, deliberately.** Dropping `equals` for temporal columns
+  would be this file's usual "fewer operators is the safe direction" move, but
+  here it would contradict the contract rather than follow the backend, and the
+  cost of being wrong is a control that returns nothing rather than a 400. It
+  stays offered and stays recorded.
+- **Removal:** an observed answer from the live gateway once TAS-156 lifts —
+  either it errors, in which case the operator comes out, or it works, in which
+  case only the resolution mismatch remains.
+
 ### The contract's filter examples contradict its own format rule
 
 - **Endpoint:** `GET /api/v1/readonly/{service}/{table}`

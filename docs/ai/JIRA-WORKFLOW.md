@@ -40,7 +40,7 @@ the story has drifted and should be transitioned rather than the table edited.
 | [TAS-124](https://jira.ozero.dev/browse/TAS-124) / [TAS-125](https://jira.ozero.dev/browse/TAS-125) | removing the N+1 board hydration | Board API (TAS-125 in review). Covers the list-DTO gap that was dropped from TAS-141 as a duplicate. |
 | [TAS-145](https://jira.ozero.dev/browse/TAS-145) | [TAS-148](https://jira.ozero.dev/browse/TAS-148) | No `PATCH /projects/{id}` and no `description` column. Until it ships, editing a project is mock-only. |
 | [TAS-146](https://jira.ozero.dev/browse/TAS-146) | [TAS-149](https://jira.ozero.dev/browse/TAS-149) | Nothing sets `archived_at`, so archiving is mock-only and the read-only board state cannot be exercised against the gateway. |
-| [TAS-103](https://jira.ozero.dev/browse/TAS-103) | [TAS-155](https://jira.ozero.dev/browse/TAS-155) | The `/api/v1/readonly/*` endpoints are in the contract but the story is still In Progress, so the admin console ships mock-first. See `API-DIVERGENCE.md`. |
+| [TAS-156](https://jira.ozero.dev/browse/TAS-156) | [TAS-155](https://jira.ozero.dev/browse/TAS-155) / [TAS-161](https://jira.ozero.dev/browse/TAS-161) | The `/api/v1/readonly/*` endpoints are deployed and TAS-103 landed on 2026-08-11, but every table read answers 500 and the catalog states no `primaryKey`, so the admin console still ships mock-first — for those two reasons now, not for a missing gateway half. See `API-DIVERGENCE.md`. |
 
 `TAS-147` was on this list until 2026-08-05 and is now Done: `globalRole` is in
 the contract as of backend `25d0cf7000e5`, which is what unblocked `TAS-151`.

@@ -563,7 +563,11 @@ export class RestTaskaApi implements TaskaApi {
     return {
       // The `+ 1` half of the conversion above. Where the server said nothing,
       // the caller's own page is already 1-based and needs no move.
-      currentPage: wire?.currentPage !== undefined ? wire.currentPage + 1 : (query.page ?? 1),
+      //
+      // `!= null`, like every sibling's `??`: nothing in the contract forbids a
+      // JSON `null` here, and `null + 1` is 1 — a footer reading "Page 1 of 5"
+      // over page 3's rows, with the pager then stepping from the wrong number.
+      currentPage: wire?.currentPage != null ? wire.currentPage + 1 : (query.page ?? 1),
       pageSize: wire?.pageSize ?? query.pageSize ?? rowCount,
       totalRows: wire?.totalRows ?? rowCount,
       totalPages: wire?.totalPages ?? 1,

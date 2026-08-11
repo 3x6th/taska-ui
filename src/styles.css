@@ -1401,10 +1401,42 @@ h1 {
   margin-bottom: 4px;
 }
 
-.admin-filter-popover label span {
+.admin-filter-popover label {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.admin-filter-popover label span,
+.admin-filter-fixed span {
   color: var(--fg-2);
   font-size: 11.5px;
   font-weight: 550;
+}
+
+/* The clock the digits are on, beside the field they are typed into. Mono and
+   --fg-2 like the read-only marker: this is a statement about the data, not a
+   caption, and --fg-3 would put it at 2.8:1 on this plane (§7). */
+.admin-filter-popover .admin-filter-unit {
+  color: var(--fg-2);
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+/* Match, where the column's type allows exactly one operator: the answer in
+   place of a dropdown that could not change it (§5.8). */
+.admin-filter-fixed {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.admin-filter-fixed .admin-filter-fixed-value {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 400;
 }
 
 .admin-filter-popover select,
@@ -1543,18 +1575,29 @@ h1 {
 }
 
 /* A row that can be opened says so before it is clicked: the pointer changes
-   and the row lifts to --surface-2 under it. Rows of a table the gateway cannot
-   address by key carry neither, because they do not open (§5.8). */
+   and the row lifts under it. Rows of a table the gateway cannot address by key
+   carry neither, because they do not open (§5.8).
+
+   --surface-3, not -2: the table's own plane is --surface, and against it -2 is
+   a step *down* — 1.04:1 in dark, which is no signal at all. §2.1 reserves -3
+   for hover on recessed planes, and this row is the recessed one while the
+   pointer is over it.
+
+   The same treatment when the row's link has focus (§5.8). On a wide table that
+   link is off the right edge of the scroll container, so a focus ring alone
+   leaves a keyboard reader seeing which control is focused and not which row. */
 .admin-row-opens {
   cursor: pointer;
 }
 
-.admin-row-opens:hover td {
-  background: var(--surface-2);
+.admin-row-opens:hover td,
+.admin-table tr:has(.admin-open-row:focus-visible) td {
+  background: var(--surface-3);
 }
 
-.admin-table .admin-row-opens:hover .admin-cell-frozen {
-  background: var(--surface-2);
+.admin-table .admin-row-opens:hover .admin-cell-frozen,
+.admin-table tr:has(.admin-open-row:focus-visible) .admin-cell-frozen {
+  background: var(--surface-3);
 }
 
 /* The last column is the row's own link, and it holds only a chevron: a wider
@@ -1562,29 +1605,30 @@ h1 {
    for. */
 .admin-table .admin-open-head,
 .admin-table .admin-open-cell {
-  width: 30px;
-  padding: 0 6px 0 0;
+  width: 36px;
+  padding: 0 4px 0 0;
   text-align: right;
 }
 
+/* 28×28 is §7's floor for a dense toolbar, and it still fits the 30px row. */
 .admin-open-row {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border-radius: 6px;
   color: var(--fg-3);
 }
 
 .admin-open-row:hover {
-  background: var(--surface-2);
+  background: var(--surface-3);
   color: var(--fg);
 }
 
 .admin-open-row:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 /* Reads as a stated absence, not as a value. */
@@ -1628,13 +1672,16 @@ h1 {
 .admin-back-link {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
+  min-height: 28px;
   gap: 3px;
   border-radius: 6px;
   padding: 0 6px 0 2px;
   color: var(--fg-2);
   font-size: 11.5px;
   font-weight: 550;
+  /* Decided, not inherited: the rail, the catalog and the brand are all `none`,
+     and this was the one underlined link in the area. */
+  text-decoration: none;
 }
 
 .admin-back-link:hover {
@@ -1646,10 +1693,13 @@ h1 {
   outline-offset: 2px;
 }
 
-/* Scrolls on its own like the table does, so the section never scrolls whole. */
+/* Scrolls on its own like the table does, so the section never scrolls whole.
+   Capped at 860 (§5.8): the label column is 200 and the longest value about
+   300, so at 1920 every separator crossed a thousand empty pixels. */
 .admin-card {
   flex: 0 1 auto;
   min-height: 0;
+  max-width: 860px;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 11px;
@@ -1703,8 +1753,11 @@ h1 {
   padding: 5px 12px;
 }
 
+/* The one border weight §2.1 defines for a divider at rest. A 55% mix of it was
+   a third weight the system does not have, and in dark it computed to
+   rgba(255,255,255,.044) — a separator that is not there. */
 .admin-card-field + .admin-card-field {
-  border-top: 1px solid color-mix(in oklab, var(--border) 55%, transparent);
+  border-top: 1px solid var(--border);
 }
 
 .admin-card-field dt {
@@ -1728,8 +1781,11 @@ h1 {
   white-space: pre-wrap;
 }
 
-/* An absent value is not a quiet value: the dash is chrome, so it is pale. */
-.admin-card-null {
+/* An absent value is not a quiet value: the dash is chrome, so it is pale — and
+   the same pale in the table as on the card (§5.8). One rule for both, because
+   two rules is how `null` came to render in two colours one click apart. */
+.admin-card-null,
+.admin-table td.admin-cell-null {
   color: var(--fg-3);
 }
 
@@ -1779,9 +1835,16 @@ h1 {
   color: var(--fg);
 }
 
+/* The card head *is* a recessed plane — it is --surface-2 itself — so the rule
+   above painted the hover in the colour it was already sitting on, leaving the
+   interactive key flatter than the plain value below it. */
+.admin-card-key .admin-key:hover {
+  background: var(--surface-3);
+}
+
 .admin-key:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 /* Two seconds of accent tint instead of two seconds of reflow. */

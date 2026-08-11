@@ -172,7 +172,9 @@ test("opens one row and comes back to the page and filter it was opened from", a
   await expect(page.getByRole("button", { name: /^Copy [0-9a-f-]{36}$/ })).toBeVisible();
   await expect(page.getByText("ip_address", { exact: true })).toBeVisible();
 
-  await page.getByRole("link", { name: "auth.sessions" }).click();
+  // Named "Back to …" rather than the table's name alone: the chevron is
+  // aria-hidden, so the bare name sounded exactly like the card's own heading.
+  await page.getByRole("link", { name: "Back to auth.sessions" }).click();
 
   await expect(page).toHaveURL(/page=2/);
   await expect(page).toHaveURL(/filter=revoked%3Aequals%3Afalse/);
@@ -190,6 +192,50 @@ test("does not offer a row link where the gateway could not take one", async ({ 
   await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
 
   await expect(page.getByRole("link", { name: /^Open row / })).toHaveCount(0);
+});
+
+// The gateway parses the row id in the path as a UUID, so this address is a 400
+// there whatever the row behind it. The mock refuses it the same way, or mock
+// mode would teach a card the deployed console can never open.
+test("refuses a row address the gateway could not parse, instead of serving a card", async ({ page }) => {
+  await openConsole(page);
+
+  await page.goto("/admin/data/admin/audit_log/audit-001");
+
+  await expect(page.getByRole("alert")).toContainText("would not accept this request");
+  // Not "could not be reached": nothing is down, the request was read and
+  // refused.
+  await expect(page.getByRole("alert")).not.toContainText("could not be reached");
+  await expect(page.locator(".admin-card")).toHaveCount(0);
+});
+
+// The value is entered with the control the column's type calls for (§5.8), and
+// a timestamp is read as UTC — the same clock the column beside it prints in.
+test("filters a timestamp with the picker, in the digits the column shows", async ({ page }) => {
+  await openConsole(page);
+
+  await page.getByRole("link", { name: "sessions", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "auth.sessions" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Filter" }).click();
+  await page.getByLabel("Column", { exact: true }).selectOption("expires_at");
+  await page.getByLabel("Match", { exact: true }).selectOption("from");
+  // The field says which clock its digits are on, because the column does not.
+  await page.getByLabel("Value UTC").fill("2026-09-10T08:00");
+  await page.getByRole("button", { name: "Apply" }).click();
+
+  // The digits typed, the digits on the chip and the digits in the address are
+  // the same digits — and no `.000`.
+  await expect(page.getByRole("button", { name: "expires_at from 2026-09-10T08:00:00Z" })).toBeVisible();
+  await expect(page).toHaveURL(/filter=expires_at%3Afrom%3A2026-09-10T08%3A00%3A00Z/);
+  await expect(page.getByText("27 rows")).toBeVisible();
+
+  // A boolean column is a choice, not a text field, and its single legal
+  // operator is stated rather than put in a dropdown that cannot change it.
+  await page.getByRole("button", { name: "expires_at from 2026-09-10T08:00:00Z" }).click();
+  await page.getByLabel("Column", { exact: true }).selectOption("revoked");
+  await expect(page.getByLabel("Match", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Value", { exact: true }).locator("option")).toHaveText(["true", "false"]);
 });
 
 test("says a row is missing instead of showing the not-found screen", async ({ page }) => {

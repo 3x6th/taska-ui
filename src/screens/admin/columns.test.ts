@@ -1,60 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AdminTable } from "../../domain/types";
-import { classifyColumnType, isAddressableKey, isAlignedType, operatorsForType } from "./columns";
-
-/**
- * The catalog states `information_schema.columns.data_type` verbatim, and the
- * gateway matches that string exactly before deciding whether a filter is
- * legal. Everything here is about that exactness: a class this file gets wrong
- * is an operator the console offers and the server answers 400 to, with no way
- * for the reader to tell why.
- */
-describe("column type classification", () => {
-  it.each([
-    ["text", "TEXT"],
-    ["character varying", "TEXT"],
-    ["varchar", "TEXT"],
-    ["character", "TEXT"],
-    ["char", "TEXT"],
-    ["name", "TEXT"],
-    ["citext", "TEXT"],
-    ["timestamp with time zone", "TEMPORAL"],
-    ["timestamp without time zone", "TEMPORAL"],
-    ["date", "TEMPORAL"],
-    ["time with time zone", "TEMPORAL"],
-    ["time without time zone", "TEMPORAL"],
-    ["integer", "NUMERIC"],
-    ["bigint", "NUMERIC"],
-    ["smallint", "NUMERIC"],
-    ["numeric", "NUMERIC"],
-    ["decimal", "NUMERIC"],
-    ["real", "NUMERIC"],
-    ["double precision", "NUMERIC"],
-    ["serial", "NUMERIC"],
-    ["bigserial", "NUMERIC"],
-    ["smallserial", "NUMERIC"],
-    ["boolean", "BOOLEAN"],
-  ] as const)("puts %s in %s", (type, expected) => {
-    expect(classifyColumnType(type)).toBe(expected);
-    // The gateway lowercases before matching, and a catalog is free to shout.
-    expect(classifyColumnType(type.toUpperCase())).toBe(expected);
-  });
-
-  it.each(["uuid", "jsonb", "json", "bytea", "inet", "character varying[]", "timestamptz", undefined])(
-    "falls back to OTHER for %s",
-    (type) => {
-      expect(classifyColumnType(type)).toBe("OTHER");
-    },
-  );
-
-  // Substring matching is the trap this table replaced: `timestamptz` contains
-  // "timestamp" but is not what information_schema returns, and an array type
-  // contains its element type without behaving like it.
-  it("matches the whole type, not a fragment of it", () => {
-    expect(classifyColumnType("character varying[]")).toBe("OTHER");
-    expect(classifyColumnType("integer[]")).toBe("OTHER");
-  });
-});
+import { isAddressableKey, isAlignedType, operatorsForType, supportsOperator, valueControlForType } from "./columns";
 
 describe("filter operators offered per column type", () => {
   it("offers contains only for text", () => {
@@ -85,6 +31,55 @@ describe("filter operators offered per column type", () => {
   it("offers equality for every type, including the ones it knows", () => {
     for (const type of ["text", "boolean", "integer", "date", "uuid"]) {
       expect(operatorsForType(type)).toContain("equals");
+    }
+  });
+});
+
+/**
+ * The value is constrained by the column's type for the same reason the
+ * operator is: `ReadOnlyQueryBuilder` parses it typed — `new BigDecimal` for a
+ * numeric column, `true`/`false` for a boolean one — and answers 400 when it
+ * cannot. A free text field for either is a 400 the reader was given no help
+ * avoiding, and the one that makes the "rejected request" error reachable from
+ * the ordinary form.
+ */
+describe("which control enters a filter value", () => {
+  it("gives a numeric column a numeric field", () => {
+    for (const type of ["integer", "bigint", "numeric", "double precision", "smallserial"]) {
+      expect(valueControlForType(type)).toBe("number");
+    }
+  });
+
+  it("gives a boolean column a true/false choice", () => {
+    expect(valueControlForType("boolean")).toBe("boolean");
+    expect(valueControlForType("BOOLEAN")).toBe("boolean");
+  });
+
+  it("gives a temporal column the picker", () => {
+    for (const type of ["timestamp with time zone", "timestamp without time zone", "date"]) {
+      expect(valueControlForType(type)).toBe("datetime");
+    }
+  });
+
+  // Free text stays exactly where the server really does take the string as
+  // written: text columns, and the types it does not classify at all.
+  it("keeps the free field for text and for types the gateway does not parse", () => {
+    for (const type of ["text", "character varying", "uuid", "inet", "jsonb", undefined]) {
+      expect(valueControlForType(type)).toBe("text");
+    }
+  });
+});
+
+describe("whether an operator is one the column can take", () => {
+  it("answers for the pairing the gateway validates", () => {
+    expect(supportsOperator("character varying", "contains")).toBe(true);
+    expect(supportsOperator("uuid", "contains")).toBe(false);
+    expect(supportsOperator("integer", "from")).toBe(true);
+    expect(supportsOperator("boolean", "to")).toBe(false);
+    // Equality is the fallback every type accepts, which is why a stranded
+    // operator lands there.
+    for (const type of ["uuid", "boolean", "inet", "text", undefined]) {
+      expect(supportsOperator(type, "equals")).toBe(true);
     }
   });
 });
