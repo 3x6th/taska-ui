@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -10,9 +10,28 @@ import { TopBar } from "../components/TopBar";
 import type { Project, ProjectMember } from "../domain/types";
 import type { ScreenProps } from "./App";
 
+/** `null` is "the server did not say", which a card must never round down to 0. */
 interface ProjectSummary {
-  count: number;
-  members: ProjectMember[];
+  count: number | null;
+  members: ProjectMember[] | null;
+}
+
+async function loadSummary(projectId: string): Promise<ProjectSummary> {
+  // `allSettled`, not `all`: the issue count and the member list are two
+  // independent facts about one project, and they do not fail together. In
+  // hybrid mode the member read is synthesised from `GET /projects/{id}`, which
+  // is currently a 500 (TAS-162), while the issue list answers perfectly well —
+  // so joining them is how a card ends up claiming zero issues for a project
+  // that has nine.
+  const [issues, members] = await Promise.allSettled([
+    taskaApi.listIssues(projectId, { pageSize: 100 }),
+    taskaApi.listMembers(projectId),
+  ]);
+
+  return {
+    count: issues.status === "fulfilled" ? (issues.value.totalCount ?? issues.value.items.length) : null,
+    members: members.status === "fulfilled" ? members.value : null,
+  };
 }
 
 export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
@@ -24,24 +43,18 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => taskaApi.listProjects() });
   const projects = projectsQuery.data ?? [];
 
-  const summariesQuery = useQuery({
-    queryKey: ["project-summaries", projects.map((project) => project.id).join(",")],
-    enabled: projects.length > 0,
-    queryFn: async () => {
-      const entries = await Promise.all(
-        projects.map(async (project) => {
-          const [issues, members] = await Promise.all([
-            taskaApi.listIssues(project.id, { pageSize: 100 }),
-            taskaApi.listMembers(project.id),
-          ]);
-          return [project.id, { count: issues.totalCount ?? issues.items.length, members }] as const;
-        }),
-      );
-      return Object.fromEntries(entries) as Record<string, ProjectSummary>;
-    },
+  // One query per project rather than a single `Promise.all` across all of
+  // them. The batch rejected as a whole, so one project the gateway would not
+  // answer for erased the counts of every other project in the list — and each
+  // card then stated "0 issues", which is a claim about the project rather than
+  // an admission about the request (TAS-163). The `project-summaries` prefix is
+  // kept so the existing invalidation after a create still matches.
+  const summaryQueries = useQueries({
+    queries: projects.map((project) => ({
+      queryKey: ["project-summaries", project.id],
+      queryFn: () => loadSummary(project.id),
+    })),
   });
-
-  const summaries = summariesQuery.data ?? {};
 
   return (
     <main className="page-shell">
@@ -74,11 +87,12 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
           </div>
         ) : (
           <div className="project-grid">
-            {projects.map((project) => (
+            {projects.map((project, index) => (
               <ProjectCard
                 key={project.id}
                 project={project}
-                summary={summaries[project.id]}
+                // Same order as the queries were built in, one per project.
+                summary={summaryQueries[index]?.data}
                 onOpen={() => navigate(`/projects/${project.id}/board`)}
               />
             ))}
@@ -90,8 +104,25 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   );
 }
 
+/**
+ * An em dash is what this interface already says for "the server did not tell
+ * us" (AdminScreen's `formatCell`); the word behind it is for the screen
+ * reader, which would otherwise hear a bare "issues".
+ */
+function Unknown() {
+  return (
+    <>
+      <span aria-hidden="true">—</span>
+      <span className="visually-hidden">unknown</span>
+    </>
+  );
+}
+
 function ProjectCard({ project, summary, onOpen }: { project: Project; summary?: ProjectSummary; onOpen: () => void }) {
-  const members = summary?.members ?? [];
+  // `undefined` — still loading — reads the same as a failure here: neither is
+  // a number, and neither is zero.
+  const members = summary?.members ?? null;
+  const count = summary?.count ?? null;
   return (
     <button className="project-card" onClick={onOpen} type="button">
       <div className="project-card-head">
@@ -109,13 +140,15 @@ function ProjectCard({ project, summary, onOpen }: { project: Project; summary?:
       <p>{project.description ?? "Project workspace"}</p>
       <div className="project-card-foot">
         <div className="avatar-stack">
-          {members.slice(0, 4).map((member) => (
+          {(members ?? []).slice(0, 4).map((member) => (
             <Avatar key={member.userId} user={member.user ? { displayName: member.user.displayName, color: member.user.color } : null} size="sm" />
           ))}
-          <span className="member-count">{members.length} members</span>
+          <span className="member-count" title={members ? undefined : "Not loaded"}>
+            {members ? members.length : <Unknown />} members
+          </span>
         </div>
-        <span className="issue-count">
-          <strong>{summary?.count ?? 0}</strong> issues
+        <span className="issue-count" title={count === null ? "Not loaded" : undefined}>
+          <strong>{count === null ? <Unknown /> : count}</strong> issues
         </span>
       </div>
     </button>

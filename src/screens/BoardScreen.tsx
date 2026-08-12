@@ -1,7 +1,8 @@
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
@@ -11,7 +12,7 @@ import {
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronLeft, Plus, Search, Trash2, X } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
@@ -84,10 +85,25 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // A drop with no legal transition must say so — the board has no toast, so
   // silence here means the card just snaps back unexplained.
   const [dragNotice, setDragNotice] = useState<string | null>(null);
+  // Split by input type instead of one PointerSensor (TAS-164). Pointer events
+  // give a sensor no way to stop the browser claiming a touch gesture for
+  // scrolling, and the only reliable counter — `touch-action: none` on the
+  // card — is not available here: cards fill the column, so it would leave
+  // nowhere on a phone to start a scroll (DESIGN.md §5.2). A long press does
+  // the same job without taking scrolling away. Below the delay the gesture
+  // still belongs to the browser; the tolerance is kept under a browser's own
+  // touch slop (~8px) so the drag can never activate after a scroll has
+  // already started, which is the one state where both would happen at once.
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    useSensor(MouseSensor, {
       activationConstraint: {
         distance: 8,
+      },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: 250,
+        tolerance: 5,
       },
     }),
   );
@@ -145,6 +161,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
   const issues = useMemo(() => issuesQuery.data?.items ?? [], [issuesQuery.data]);
   const canEdit = membershipQuery.data?.role === "ADMIN" || membershipQuery.data?.role === "MEMBER";
+  // "The server never told us your role" and "you are a VIEWER" are different
+  // states, and only one of them is a permission. Both end in a board nobody
+  // can write to — the server stays the authority, so write access we could
+  // not verify is not ours to grant (AGENTS.md) — but a read-only board
+  // presented without a word is what made TAS-163 invisible. This says which
+  // of the two it is; it never invents a role.
+  const roleUnknown = membershipQuery.isError;
 
   const userById = useMemo(() => toUserMap(members), [members]);
   const statuses = useMemo(
@@ -352,9 +375,26 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         </span>
       </section>
 
-      {issuesQuery.isError ? <div className="form-error board-api-error">{issuesQuery.error.message}</div> : null}
-      {transitionIssue.isError ? <div className="form-error board-api-error">{transitionIssue.error.message}</div> : null}
-      {dragNotice ? <div className="form-error board-api-error">{dragNotice}</div> : null}
+      {projectQuery.isError ? (
+        <BoardNotice error={projectQuery.error}>
+          This project&apos;s details could not be loaded, so its name and key are missing above.
+        </BoardNotice>
+      ) : null}
+      {roleUnknown ? (
+        <BoardNotice error={membershipQuery.error}>
+          Your role in this project could not be determined, so everything that writes to it is switched off. This is
+          not a read-only project — the board does not know what you are allowed to do, and will not guess.
+        </BoardNotice>
+      ) : null}
+      {issuesQuery.isError ? (
+        <BoardNotice error={issuesQuery.error}>The issues on this board could not be loaded.</BoardNotice>
+      ) : null}
+      {transitionIssue.isError ? (
+        <BoardNotice error={transitionIssue.error}>
+          The move could not be saved, so the card went back where it was.
+        </BoardNotice>
+      ) : null}
+      {dragNotice ? <BoardNotice>{dragNotice}</BoardNotice> : null}
 
       <DndContext sensors={sensors} onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
         <section className="columns-area">
@@ -418,6 +458,29 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   );
 }
 
+/**
+ * DESIGN.md §5.6 asks for a toast carrying `error.message` and
+ * `error.requestId`. There is no toast component — the gap is recorded in §5.6
+ * itself — so these keep the inline banner the board already used rather than
+ * inventing a component to satisfy the letter of the spec. What §5.6 is really
+ * asking for is the part that was missing: a sentence the reader can act on,
+ * the gateway's own words, and the id that identifies the failure in its log.
+ */
+function BoardNotice({ children, error }: { children: ReactNode; error?: unknown }) {
+  const message = error instanceof Error && error.message ? error.message : null;
+  const requestId = error instanceof Error ? (error as { requestId?: unknown }).requestId : undefined;
+
+  return (
+    <div className="form-error board-api-error" role="alert">
+      <p>{children}</p>
+      {message ? <p className="board-api-detail">{message}</p> : null}
+      {typeof requestId === "string" && requestId ? (
+        <p className="board-api-detail">Request ID: {requestId}</p>
+      ) : null}
+    </div>
+  );
+}
+
 const fallbackStatuses: WorkflowStatus[] = [
   { id: "fallback-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
   { id: "fallback-progress", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
@@ -472,8 +535,10 @@ function BoardColumn({
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: status.statusKey, disabled: !canEdit });
 
+  // A named section rather than a bare div: each column is a landmark a screen
+  // reader can jump between, and the drop target stops being anonymous.
   return (
-    <div className={`board-column ${isOver ? "is-over" : ""}`} ref={setNodeRef}>
+    <section aria-label={`${status.name} column`} className={`board-column ${isOver ? "is-over" : ""}`} ref={setNodeRef}>
       <div className="column-head">
         <span className="status-dot" style={{ background: statusColors[status.statusKey] }} />
         <strong>{status.name}</strong>
@@ -488,7 +553,7 @@ function BoardColumn({
         ))}
         {issues.length === 0 ? <div className="empty-column">Drop issues here</div> : null}
       </div>
-    </div>
+    </section>
   );
 }
 

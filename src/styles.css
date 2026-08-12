@@ -2234,6 +2234,38 @@ h1 {
   margin: 12px 18px 0;
 }
 
+/* A banner now carries a sentence, the gateway's own message and the request
+   id (§5.6), so it holds blocks rather than one string. */
+.board-api-error p {
+  margin: 0;
+}
+
+.board-api-error p + p {
+  margin-top: 4px;
+}
+
+/* Verbatim machine strings, set the way every other one in this interface is
+   (§2.3) — small, mono, and selectable, because the point of a request id is
+   that someone copies it into a gateway log search.
+
+   §5.6 asks for `--fg-3` here, but it is describing a toast on `--surface`.
+   On this banner's danger tint that measures 2.52:1 in the light theme, under
+   the 3:1 floor §7 sets even for non-critical meta, so the quieter of two
+   greys gives way to the rule that decides whether it can be read at all.
+   `--fg-2` measures 5.82:1 light / 6.65:1 dark and still reads as secondary
+   next to the danger-coloured sentence above it. */
+.board-api-detail {
+  color: var(--fg-2);
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  /* The gateway's wording is not ours to keep short, and an unbroken id would
+     otherwise push the board sideways on a phone. */
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .divider {
   width: 1px;
   height: 18px;
@@ -2365,6 +2397,16 @@ h1 {
   color: var(--fg);
   cursor: grab;
   text-align: left;
+  /* TAS-164. Not `none`: the cards fill the column, so taking pan away here
+     would leave a phone with nowhere to start a scroll (§5.2). `manipulation`
+     keeps pan and pinch-zoom and drops only double-tap zoom, whose wait sits
+     right on top of the long press that starts a touch drag. */
+  touch-action: manipulation;
+  /* A long press otherwise raises the text-selection callout over the card the
+     finger is about to drag; on desktop the same rule stops the 8px before the
+     mouse drag activates from painting a selection across the card. */
+  -webkit-touch-callout: none;
+  user-select: none;
   transition:
     border-color var(--dur-hover) var(--ease),
     box-shadow var(--dur-hover) var(--ease),
