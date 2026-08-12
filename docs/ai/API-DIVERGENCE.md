@@ -68,6 +68,12 @@ it. Entries are deleted only when the compensating code is deleted.
   [TAS-163](https://jira.ozero.dev/browse/TAS-163) and fixed on
   `fix/TAS-163-board-resilience`; this entry stays open until the gateway is
   fixed regardless.
+- **Drag works again on the stand from 2026-08-12, and the 500 is still here.**
+  `getMembership` stopped reading the project when
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN` is on (see the membership entry below), so
+  this endpoint no longer decides whether anyone may write. Everything else the
+  500 breaks it still breaks: no project name, no key, no member list, no
+  assignee row. Do not read a working board as evidence that this is fixed.
 - **Removal:** [TAS-162](https://jira.ozero.dev/browse/TAS-162) (backend). The
   request ids above identify the failure in the gateway log.
   [TAS-137](https://jira.ozero.dev/browse/TAS-137) independently removes the
@@ -148,6 +154,27 @@ it. Entries are deleted only when the compensating code is deleted.
   `ADMIN` when `VITE_TASKA_ASSUME_PROJECT_ADMIN=true` or the caller created the
   project, and `VIEWER` otherwise. `listMembers` returns a single-element list
   containing only the current user.
+- **Narrowed 2026-08-12 (owner's call).** With the flag on, `getMembership` no
+  longer reads the project at all. It never used the value on that path — the
+  role is the flag, and `isMember`/`projectExists` are hardcoded — so the call
+  contributed nothing but a way to fail, and TAS-162's 500 was reaching through
+  it to revoke write access on the deployed stand. With the flag **off** the
+  behaviour is unchanged, failure included, because `createdBy` is genuinely
+  needed there. `listMembers` still reads the project (it needs `addedAt` and
+  `addedBy`) and still fails honestly while the gateway is broken: the assignee
+  row stays empty and the member count reads as unknown.
+- **What this costs, stated plainly:** with the flag on, `getMembership` can no
+  longer reject, so the "your role could not be determined" state added by
+  [TAS-163](https://jira.ozero.dev/browse/TAS-163) is unreachable in the
+  deployed configuration. It stays reachable in `rest` mode, with the flag off,
+  and in unit tests — which is where it is proven, deliberately, rather than by
+  a configuration nobody runs. This is the trade: the stand gets its board back
+  today, and the honesty path it just gained is exercised everywhere except the
+  stand.
+- **What it is not:** a workaround for the 500. The board still reports that the
+  project details failed, still shows no name or key, and still has no member
+  list. The only thing that changed is that a read the flag does not consult
+  stopped deciding whether the user may write.
 - **User-visible effect:** a project appears to have exactly one member; the
   assignee filter and chips can only ever offer the current user.
 - **Two further consequences** (found by `api-contract-guard`, 2026-08-03):
