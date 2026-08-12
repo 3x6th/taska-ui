@@ -48,20 +48,22 @@ it. Entries are deleted only when the compensating code is deleted.
   - `…/issues`, `…/workflow` and `GET /issues/{id}` all answer `200`.
 - **Compensation:** none, and none is appropriate — the frontend does not work
   around a server fault.
-- **User-visible effect, and why it is out of proportion to one endpoint:** this
-  single 500 disables the product's core gesture. Because the contract has no
-  membership endpoint (see TAS-137 below), `HybridTaskaApi.getMembership`
-  synthesises the caller's role from `getProject` + `getCurrentUser`. The 500
-  rejects that query, `membershipQuery.data` is `undefined`, `canEdit` is
-  `false`, and every column is a `useDroppable({disabled: true})` — so **no card
-  can be dragged to any status, on desktop or on touch**. Verified in the
-  browser: the card lifts and follows the cursor, no column ever reports
-  `is-over`, nothing moves, and nothing is said. `VITE_TASKA_ASSUME_PROJECT_ADMIN`
-  does not rescue it: the flag is read *inside* `getMembership`, which rejects
-  earlier on its `Promise.all`, so the deployed build fails identically.
-  On the projects screen the same rejection travels through `listMembers` and
-  collapses the whole `Promise.all`, so every card reads "0 issues / 0 members"
-  while the issue lists themselves loaded fine.
+- **User-visible effect as first observed on 2026-08-12, before the same day's
+  fixes.** Kept in the past tense on purpose: this is what the 500 did to the
+  shipped build, and it is why TAS-163 exists. What it does *now* is the bullet
+  below. This single 500 disabled the product's core gesture. Because the
+  contract has no membership endpoint (see TAS-137 below),
+  `HybridTaskaApi.getMembership` synthesised the caller's role from
+  `getProject` + `getCurrentUser`. The 500 rejected that query,
+  `membershipQuery.data` was `undefined`, `canEdit` was `false`, and every
+  column was a `useDroppable({disabled: true})` — so **no card could be dragged
+  to any status, on desktop or on touch**. Verified in the browser: the card
+  lifted and followed the cursor, no column ever reported `is-over`, nothing
+  moved, and nothing was said. `VITE_TASKA_ASSUME_PROJECT_ADMIN` did not rescue
+  it, because the flag was read *inside* `getMembership`, which rejected earlier
+  on its `Promise.all`. On the projects screen the same rejection travelled
+  through `listMembers` and collapsed the whole `Promise.all`, so every card
+  read "0 issues / 0 members" while the issue lists themselves loaded fine.
 - **The frontend half is a real defect of ours, not just fallout:** a failed
   role read must not be indistinguishable from `VIEWER`, and an unknown count
   must not render as `0`. Tracked as
@@ -78,6 +80,50 @@ it. Entries are deleted only when the compensating code is deleted.
   request ids above identify the failure in the gateway log.
   [TAS-137](https://jira.ozero.dev/browse/TAS-137) independently removes the
   coupling that turns this endpoint into a permissions outage.
+
+### A failed workflow read is silently replaced by the mock's workflow
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/workflow`
+- **Found by `api-contract-guard`, 2026-08-12.** Pre-existing; recorded now
+  because it stopped being unreachable on the stand that day.
+- **Compensation:** `BoardScreen`'s `fallbackStatuses` / `fallbackTransitions`
+  are used whenever `workflowQuery.data` is undefined — including when the read
+  *failed*, not only before it has answered. Their transition ids are
+  byte-for-byte the mock's seeded UUIDs (`MockTaskaApi`), so a board whose
+  workflow could not be read presents three invented columns as this project's
+  workflow, with nothing said, and a drop posts
+  `transitionId: "55555555-5555-5555-5555-555555555555"` to a gateway that has
+  never heard of it.
+- **Why it is newly reachable:** until `getMembership` stopped depending on the
+  project read (see the membership entry), a gateway sick enough to fail the
+  workflow read was also failing the membership read, so `canEdit` was false and
+  every droppable disabled — nothing could be dropped and the fabricated
+  workflow was inert. With the flag on, `canEdit` is now unconditionally true on
+  the stand, so the fabricated workflow is live.
+- **The shape of the bug is this file's whole subject:** the fallback is a
+  reasonable *loading* default and a lie as a *failure* default, and one
+  `undefined` check cannot tell those apart. Note the notice gate on the board
+  covers project, role, issues, transition and drag — but not the workflow.
+- **Fix:** treat the failure separately from the wait (`useUnanswered`, as the
+  other four queries now do), say so, and refuse a drop whose transition came
+  from the fallback rather than posting an id the server cannot know.
+- **Removal:** the fix above; there is no backend ask here. The endpoint answers
+  `200` on the stand today.
+
+### The contract's status keys are open, and the UI's are closed
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/workflow`
+- **Contract:** `statusKey` and `category` are deliberately unconstrained
+  strings — the description says the enum is omitted "для расширяемости".
+- **UI:** both are modelled as the closed `IssueStatus` union, and
+  `statusLabels` / `statusColors` (`src/lib/format.ts`) are keyed off it.
+- **Consequence:** a fourth status key renders a column with no colour and no
+  label, and its issues appear in no column at all — the board filters cards by
+  `issue.status === status.statusKey`.
+- **Compensation:** none. Recorded so the next person to add a status knows the
+  frontend will not simply follow.
+- **Removal:** narrow at the mapper the way TAS-151 did for `globalRole`, or
+  have the contract state the enum.
 
 ### `GET /issues/{issueId}` 500s once an issue has a comment
 
@@ -184,7 +230,11 @@ it. Entries are deleted only when the compensating code is deleted.
   demoted to `VIEWER`. The synthesis both over- and under-grants.
 - **Removal:** [TAS-137](https://jira.ozero.dev/browse/TAS-137). When it
   ships, delete `HybridTaskaApi`, drop `VITE_TASKA_ASSUME_PROJECT_ADMIN`, and
-  default `VITE_TASKA_API_MODE` to `rest`.
+  default `VITE_TASKA_API_MODE` to `rest`. The flag lives in five places, and
+  deleting only the first is what makes a removal look finished when it is
+  not: `src/api/client.ts`, `.github/workflows/deploy-pages.yml`,
+  `.env.example`, `README.md`, and the GitHub repository variable itself
+  (`gh variable list`).
 - **Risk while open:** with the flag on, every caller gets an `ADMIN` view of
   the UI; role gating is unverifiable in this mode and a passing permission
   check proves nothing.
