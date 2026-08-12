@@ -175,9 +175,21 @@ mock or compensation disappears with the story that removes the mock, and does
 not deserve its own ticket. A duplicate found after filing gets closed with a
 link, not left to drift.
 
-When writing Jira descriptions, use plain text and simple lists. Do not use
-`#` headings inside list items — the Jira converter renders them as giant
-bold headers and the result is unreadable.
+When writing Jira descriptions, use plain text and simple lists. The MCP
+converter mangles more Markdown than it renders, and every case below was
+found by writing a ticket and then reading it back — so read back anything
+you file:
+
+- No `#` headings inside list items: they render as giant bold headers.
+- No numbered lists. `1.` is converted to `##`, which turns the first item of
+  an ordered list into a heading and leaves the rest as plain text. Write
+  "First." / "Second." as prose, or use `*` bullets.
+- Underscores in identifiers become emphasis in **comments**
+  (`jira_add_comment` takes Markdown): `VITE_TASKA_ASSUME_PROJECT_ADMIN` comes
+  out as `VITE*TASKA*ASSUME*PROJECT*ADMIN`. Description fields via
+  `jira_update_issue` keep underscores intact. When a comment must name a
+  snake_case or SCREAMING_SNAKE identifier, describe it instead, or accept the
+  mangling knowingly rather than by surprise.
 
 ## Verification evidence
 
