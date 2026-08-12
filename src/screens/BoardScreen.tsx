@@ -12,16 +12,19 @@ import {
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronLeft, Plus, Search, Trash2, X } from "lucide-react";
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
 import { isMissingOrForbidden } from "../api/errors";
+import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { PriorityBars, TypeChip } from "../components/IssueBits";
 import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
+import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   Issue,
   IssueComment,
@@ -161,13 +164,29 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
   const issues = useMemo(() => issuesQuery.data?.items ?? [], [issuesQuery.data]);
   const canEdit = membershipQuery.data?.role === "ADMIN" || membershipQuery.data?.role === "MEMBER";
+  // Each of these is the same single fact as the behaviour beside it, never a
+  // second opinion about the same query: `canEdit` is "the membership answer
+  // says so", and `roleUnread.unanswered` is "there is no membership answer and
+  // asking has failed". Deriving the two from different facets of the query —
+  // `data?.role` for one, `isError` for the other — is what made the banner
+  // disappear on every refetch while the controls stayed off, and made it
+  // appear over a board that was fully writable (see `useUnanswered`).
+  const projectUnread = useUnanswered(projectQuery);
+  const roleUnread = useUnanswered(membershipQuery);
+  const issuesUnread = useUnanswered(issuesQuery);
   // "The server never told us your role" and "you are a VIEWER" are different
   // states, and only one of them is a permission. Both end in a board nobody
   // can write to — the server stays the authority, so write access we could
   // not verify is not ours to grant (AGENTS.md) — but a read-only board
   // presented without a word is what made TAS-163 invisible. This says which
   // of the two it is; it never invents a role.
-  const roleUnknown = membershipQuery.isError;
+  const roleUnknown = roleUnread.unanswered;
+  // Failure is not zero. With no issue list, "0" in a column head, "0 of 0" in
+  // the filter bar and "Drop issues here" in every column are three claims
+  // about the project made by a request that never answered — the last of them
+  // an invitation to drop a card into a column whose contents are unknown
+  // (§5.6: empty and error have to be distinguishable).
+  const issuesUnknown = issuesUnread.unanswered;
 
   const userById = useMemo(() => toUserMap(members), [members]);
   const statuses = useMemo(
@@ -231,7 +250,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const activeIssue = activeIssueId ? issues.find((item) => item.id === activeIssueId) : undefined;
 
   const handleDragStart = (event: DragStartEvent) => {
+    // Both event notices are about the drag that came before this one. Picking
+    // a card up is the moment they stop being news, and a mutation error never
+    // clears itself — one failed drop used to leave a permanent block of the
+    // board's own height behind it.
     setDragNotice(null);
+    if (transitionIssue.isError) transitionIssue.reset();
     setActiveIssueId(String(event.active.id));
   };
 
@@ -269,7 +293,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // `*` fallback route never sees it, because the path itself is valid.
   // DESIGN.md §4.18 answers both with the same screen. This sits below every
   // hook on purpose — returning earlier would make the hook order conditional.
-  if (projectQuery.isError && isMissingOrForbidden(projectQuery.error)) {
+  //
+  // Read from the same fact as every banner below rather than from `isError`:
+  // a refetch of a query with no data resets it to `pending` with the error
+  // cleared, and this branch would then hand back the project's own chrome —
+  // its name, its filters, its columns — to someone the gateway has already
+  // said may not see it, until the answer came back and took it away again.
+  if (projectUnread.unanswered && isMissingOrForbidden(projectUnread.error)) {
     return <NotFoundScreen />;
   }
 
@@ -371,40 +401,70 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           </button>
         ) : null}
         <span className="counter">
-          {filteredIssues.length} of {issues.length}
+          {issuesUnknown ? (
+            <>
+              <Unknown /> of <Unknown />
+            </>
+          ) : (
+            `${filteredIssues.length} of ${issues.length}`
+          )}
         </span>
       </section>
 
-      {projectQuery.isError ? (
-        <BoardNotice error={projectQuery.error}>
-          This project&apos;s details could not be loaded, so its name and key are missing above.
-        </BoardNotice>
+      {/* One container, capped, so the board keeps most of the plane whatever
+          fails. As five loose siblings these took 54% of a 900px viewport and
+          75% of a 640px one, and at 390x640 the columns collapsed to 24px
+          behind an overflow nothing could scroll to. Four is now the ceiling —
+          the two event notices below are both cleared when a drag starts, and
+          one drag raises at most one of them — but the cap is what makes the
+          count stop mattering. */}
+      {projectUnread.unanswered || roleUnknown || issuesUnknown || transitionIssue.isError || dragNotice ? (
+        <div className="board-notices">
+          {projectUnread.unanswered ? (
+            <ApiNotice error={projectUnread.error}>
+              This project&apos;s details could not be loaded, so its name and key are missing above.
+            </ApiNotice>
+          ) : null}
+          {roleUnknown ? (
+            <ApiNotice error={roleUnread.error}>
+              Your role could not be loaded, so editing is off — a failed read, not a read-only project.
+            </ApiNotice>
+          ) : null}
+          {issuesUnknown ? (
+            <ApiNotice error={issuesUnread.error}>The issues on this board could not be loaded.</ApiNotice>
+          ) : null}
+          {/* The two below are events, not states of the screen: a rollback and
+              a refused drop. An event that cannot be dismissed is how a stack
+              this tall becomes permanent. */}
+          {transitionIssue.isError ? (
+            <ApiNotice
+              dismiss={{ label: "Dismiss the failed move", onDismiss: () => transitionIssue.reset() }}
+              error={transitionIssue.error}
+            >
+              The move could not be saved, so the card went back where it was.
+            </ApiNotice>
+          ) : null}
+          {dragNotice ? (
+            <ApiNotice dismiss={{ label: "Dismiss the refused move", onDismiss: () => setDragNotice(null) }}>
+              {dragNotice}
+            </ApiNotice>
+          ) : null}
+        </div>
       ) : null}
-      {roleUnknown ? (
-        <BoardNotice error={membershipQuery.error}>
-          Your role in this project could not be determined, so everything that writes to it is switched off. This is
-          not a read-only project — the board does not know what you are allowed to do, and will not guess.
-        </BoardNotice>
-      ) : null}
-      {issuesQuery.isError ? (
-        <BoardNotice error={issuesQuery.error}>The issues on this board could not be loaded.</BoardNotice>
-      ) : null}
-      {transitionIssue.isError ? (
-        <BoardNotice error={transitionIssue.error}>
-          The move could not be saved, so the card went back where it was.
-        </BoardNotice>
-      ) : null}
-      {dragNotice ? <BoardNotice>{dragNotice}</BoardNotice> : null}
 
       <DndContext sensors={sensors} onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
         <section className="columns-area">
-          {workflowQuery.isLoading || issuesQuery.isLoading
+          {/* A read that has already failed goes back to `isLoading` on every
+              retry, so without the first clause the columns explained by the
+              banner above would swap themselves for skeletons on a timer. */}
+          {!issuesUnknown && (workflowQuery.isLoading || issuesQuery.isLoading)
             ? statuses.map((status) => <ColumnSkeleton key={status.statusKey} status={status} />)
             : statuses.map((status) => (
                 <BoardColumn
                   key={status.statusKey}
                   status={status}
                   issues={filteredIssues.filter((issue) => issue.status === status.statusKey)}
+                  issuesUnknown={issuesUnknown}
                   userById={userById}
                   canEdit={canEdit}
                   onAdd={() => setCreating(true)}
@@ -458,29 +518,6 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   );
 }
 
-/**
- * DESIGN.md §5.6 asks for a toast carrying `error.message` and
- * `error.requestId`. There is no toast component — the gap is recorded in §5.6
- * itself — so these keep the inline banner the board already used rather than
- * inventing a component to satisfy the letter of the spec. What §5.6 is really
- * asking for is the part that was missing: a sentence the reader can act on,
- * the gateway's own words, and the id that identifies the failure in its log.
- */
-function BoardNotice({ children, error }: { children: ReactNode; error?: unknown }) {
-  const message = error instanceof Error && error.message ? error.message : null;
-  const requestId = error instanceof Error ? (error as { requestId?: unknown }).requestId : undefined;
-
-  return (
-    <div className="form-error board-api-error" role="alert">
-      <p>{children}</p>
-      {message ? <p className="board-api-detail">{message}</p> : null}
-      {typeof requestId === "string" && requestId ? (
-        <p className="board-api-detail">Request ID: {requestId}</p>
-      ) : null}
-    </div>
-  );
-}
-
 const fallbackStatuses: WorkflowStatus[] = [
   { id: "fallback-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
   { id: "fallback-progress", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
@@ -521,6 +558,7 @@ const fallbackTransitions: WorkflowTransition[] = [
 function BoardColumn({
   status,
   issues,
+  issuesUnknown,
   userById,
   canEdit,
   onAdd,
@@ -528,6 +566,8 @@ function BoardColumn({
 }: {
   status: WorkflowStatus;
   issues: Issue[];
+  /** The issue list never arrived: this column knows nothing about its contents. */
+  issuesUnknown: boolean;
   userById: Map<string, Pick<User, "displayName" | "color">>;
   canEdit: boolean;
   onAdd: () => void;
@@ -542,16 +582,31 @@ function BoardColumn({
       <div className="column-head">
         <span className="status-dot" style={{ background: statusColors[status.statusKey] }} />
         <strong>{status.name}</strong>
-        <span className="count-pill">{issues.length}</span>
+        <span className="count-pill">{issuesUnknown ? <Unknown /> : issues.length}</span>
         <button className="icon-button mini" disabled={!canEdit} onClick={onAdd} title="Create issue" type="button">
           <Plus size={13} />
         </button>
       </div>
       <div className="issue-list">
         {issues.map((issue) => (
-          <IssueCard key={issue.id} issue={issue} user={issue.assigneeId ? userById.get(issue.assigneeId) : null} onOpen={onOpenIssue} />
+          <IssueCard
+            key={issue.id}
+            issue={issue}
+            user={issue.assigneeId ? userById.get(issue.assigneeId) : null}
+            canEdit={canEdit}
+            onOpen={onOpenIssue}
+          />
         ))}
-        {issues.length === 0 ? <div className="empty-column">Drop issues here</div> : null}
+        {/* Three different empty columns. A column whose contents are unknown
+            must not invite a card, and the dashed frame §5.6 gives the empty
+            state is exactly that invitation; a reader who cannot drop one must
+            not be told to either (§5.7) — the same promise the card itself has
+            stopped making. */}
+        {issuesUnknown ? (
+          <div className="empty-column is-unknown">Not loaded</div>
+        ) : issues.length === 0 ? (
+          <div className="empty-column">{canEdit ? "Drop issues here" : "No issues"}</div>
+        ) : null}
       </div>
     </section>
   );
@@ -560,22 +615,31 @@ function BoardColumn({
 function IssueCard({
   issue,
   user,
+  canEdit,
   onOpen,
 }: {
   issue: Issue;
   user?: Pick<User, "displayName" | "color"> | null;
+  canEdit: boolean;
   onOpen: (issueId: string) => void;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: issue.id });
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: issue.id, disabled: !canEdit });
 
+  // Neither `listeners` nor `attributes` when this board cannot be written to
+  // (§5.7). `attributes` does carry `aria-disabled`, but it also carries
+  // `aria-roledescription="draggable"` and an `aria-describedby` telling the
+  // reader to press the space bar — an instruction no sensor here implements,
+  // for a gesture the server would refuse. Both objects are ours to spread or
+  // not, so a viewer's card is simply a button that opens an issue: nothing
+  // lifts, nothing is announced as draggable, nothing is promised.
   return (
     <button
-      className={`issue-card ${isDragging ? "is-dragging" : ""}`}
+      className={`issue-card ${canEdit ? "" : "is-static"} ${isDragging ? "is-dragging" : ""}`}
       onClick={() => onOpen(issue.id)}
       ref={setNodeRef}
       type="button"
-      {...listeners}
-      {...attributes}
+      {...(canEdit ? listeners : null)}
+      {...(canEdit ? attributes : null)}
     >
       <IssueCardContent issue={issue} user={user} />
     </button>

@@ -3,17 +3,27 @@ import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
+import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { TopBar } from "../components/TopBar";
+import { PendingValue, Unknown } from "../components/Unknown";
 import type { Project, ProjectMember } from "../domain/types";
+import { useUnanswered } from "../hooks/useUnanswered";
 import type { ScreenProps } from "./App";
 
 /** `null` is "the server did not say", which a card must never round down to 0. */
 interface ProjectSummary {
   count: number | null;
   members: ProjectMember[] | null;
+  /**
+   * Why a `null` above is `null`. The query itself resolves either way — one
+   * half of a card is worth drawing without the other — so this is the only
+   * route the gateway's own words and its request id have out of here, and
+   * without it the screen could say "unknown" and nothing more.
+   */
+  failure: Error | null;
 }
 
 async function loadSummary(projectId: string): Promise<ProjectSummary> {
@@ -27,10 +37,12 @@ async function loadSummary(projectId: string): Promise<ProjectSummary> {
     taskaApi.listIssues(projectId, { pageSize: 100 }),
     taskaApi.listMembers(projectId),
   ]);
+  const rejection = [issues, members].find((result) => result.status === "rejected")?.reason;
 
   return {
     count: issues.status === "fulfilled" ? (issues.value.totalCount ?? issues.value.items.length) : null,
     members: members.status === "fulfilled" ? members.value : null,
+    failure: rejection instanceof Error ? rejection : null,
   };
 }
 
@@ -56,6 +68,15 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
     })),
   });
 
+  const projectsUnread = useUnanswered(projectsQuery);
+  // One line for the whole grid, not one per card: a gateway that is failing
+  // fails for every project at once, and the reader needs the reason once. The
+  // cards carry which fact is missing; this carries why. Until now the only
+  // trace of a failure here was a `title` attribute — invisible to a touch
+  // screen and to a keyboard, and it never carried the message or the request
+  // id at all.
+  const summaryFailure = summaryQueries.find((query) => query.data?.failure)?.data?.failure;
+
   return (
     <main className="page-shell">
       <TopBar
@@ -70,7 +91,8 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
           <div>
             <h1>Projects</h1>
             <p>
-              {projects.length} projects · {meQuery.data?.displayName ?? "Member"}
+              {projectsUnread.unanswered ? <Unknown /> : projects.length} projects ·{" "}
+              {meQuery.data?.displayName ?? "Member"}
             </p>
           </div>
           <button className="primary-button" onClick={() => setCreating(true)} type="button">
@@ -79,7 +101,18 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
           </button>
         </div>
 
-        {projectsQuery.isLoading ? (
+        {projectsUnread.unanswered ? (
+          <ApiNotice error={projectsUnread.error}>The project list could not be loaded.</ApiNotice>
+        ) : summaryFailure ? (
+          <ApiNotice error={summaryFailure} live="polite">
+            Some project details could not be loaded, so their counts show as unknown.
+          </ApiNotice>
+        ) : null}
+
+        {/* Not while the read has already failed: a retry puts the query back
+            into `pending`, and four skeleton cards under a banner saying the
+            list could not be loaded is the same lie in a different shape. */}
+        {projectsQuery.isPending && !projectsUnread.unanswered ? (
           <div className="project-grid">
             {Array.from({ length: 4 }).map((_, index) => (
               <div className="project-card skeleton-card" key={index} />
@@ -93,6 +126,10 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
                 project={project}
                 // Same order as the queries were built in, one per project.
                 summary={summaryQueries[index]?.data}
+                // Loading is not unknown (§5.6). Without this the numbers spent
+                // every visit as em dashes before appearing, which said a
+                // request that was about to succeed had already failed.
+                pending={summaryQueries[index]?.isPending ?? true}
                 onOpen={() => navigate(`/projects/${project.id}/board`)}
               />
             ))}
@@ -104,23 +141,17 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   );
 }
 
-/**
- * An em dash is what this interface already says for "the server did not tell
- * us" (AdminScreen's `formatCell`); the word behind it is for the screen
- * reader, which would otherwise hear a bare "issues".
- */
-function Unknown() {
-  return (
-    <>
-      <span aria-hidden="true">—</span>
-      <span className="visually-hidden">unknown</span>
-    </>
-  );
-}
-
-function ProjectCard({ project, summary, onOpen }: { project: Project; summary?: ProjectSummary; onOpen: () => void }) {
-  // `undefined` — still loading — reads the same as a failure here: neither is
-  // a number, and neither is zero.
+function ProjectCard({
+  project,
+  summary,
+  pending,
+  onOpen,
+}: {
+  project: Project;
+  summary?: ProjectSummary;
+  pending: boolean;
+  onOpen: () => void;
+}) {
   const members = summary?.members ?? null;
   const count = summary?.count ?? null;
   return (
@@ -143,12 +174,16 @@ function ProjectCard({ project, summary, onOpen }: { project: Project; summary?:
           {(members ?? []).slice(0, 4).map((member) => (
             <Avatar key={member.userId} user={member.user ? { displayName: member.user.displayName, color: member.user.color } : null} size="sm" />
           ))}
-          <span className="member-count" title={members ? undefined : "Not loaded"}>
-            {members ? members.length : <Unknown />} members
+          {/* Three states, not two: a number, a request still in flight, and a
+              request that failed. The `title` that used to stand in for the
+              third was hover-only — unreachable from a touch screen and from a
+              keyboard — and it called a pending read "Not loaded" as well. */}
+          <span className="member-count">
+            {pending ? <PendingValue /> : members ? members.length : <Unknown />} members
           </span>
         </div>
-        <span className="issue-count" title={count === null ? "Not loaded" : undefined}>
-          <strong>{count === null ? <Unknown /> : count}</strong> issues
+        <span className="issue-count">
+          <strong>{pending ? <PendingValue /> : count === null ? <Unknown /> : count}</strong> issues
         </span>
       </div>
     </button>

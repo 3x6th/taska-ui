@@ -1,6 +1,5 @@
-import { Copy } from "lucide-react";
-import { isMissingOrForbidden } from "../../api/errors";
-import { useCopied } from "./useCopied";
+import { apiErrorFacts, isMissingOrForbidden } from "../../api/errors";
+import { RequestId } from "../../components/RequestId";
 
 /**
  * These four cases read very differently to the person looking at them, and
@@ -18,18 +17,13 @@ import { useCopied } from "./useCopied";
  */
 export function AdminError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
   const refused = isMissingOrForbidden(error);
-  const status = error instanceof Error ? (error as { status?: unknown }).status : undefined;
-  const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
-  const serverBroke = typeof status === "number" && status >= 500;
   // Status from the REST implementation, code from the mock — the two error
-  // classes are unrelated (src/api/errors.ts), and both have to reach the same
-  // four sentences or mock and rest stop being interchangeable on screen.
-  const rejected = (typeof status === "number" && status >= 400 && status < 500) || code === "INVALID_ARGUMENT";
-  // Every error response carries X-Request-Id, and the gateway exposes it
-  // cross-origin — confirmed on a live 500. This area's audience is the one
-  // person who will go and read the gateway log, so it is the one place where
-  // showing it earns its space (§5.8).
-  const requestId = error instanceof Error ? (error as { requestId?: unknown }).requestId : undefined;
+  // classes are unrelated, which is why one shared reader (src/api/errors.ts)
+  // pulls both: either half alone leaves one API mode with nothing to say, and
+  // the four sentences below stop being interchangeable on screen.
+  const { message, requestId, status, code } = apiErrorFacts(error);
+  const serverBroke = status !== null && status >= 500;
+  const rejected = (status !== null && status >= 400 && status < 500) || code === "INVALID_ARGUMENT";
   return (
     <div className="admin-note" role="alert">
       <p>
@@ -41,44 +35,21 @@ export function AdminError({ error, onRetry }: { error: unknown; onRetry: () => 
               ? "The gateway would not accept this request. Nothing is down: it read what was asked for and refused it, and what to change is in its own words below."
               : "The read-only admin API could not be reached."}
       </p>
-      {error instanceof Error && error.message ? <p className="admin-error-detail">{error.message}</p> : null}
-      {typeof requestId === "string" && requestId ? <RequestId value={requestId} /> : null}
+      {message ? <p className="admin-error-detail">{message}</p> : null}
+      {/* Every error response carries X-Request-Id, and the gateway exposes it
+          cross-origin — confirmed on a live 500. This area's audience is the
+          one person who will go and read the gateway log, so it is where
+          showing it earns its space (§5.8). The affordance itself is shared
+          with the board (`src/components/RequestId.tsx`); the line around it
+          keeps this block's own type. */}
+      {requestId ? (
+        <p className="admin-error-detail">
+          <RequestId value={requestId} />
+        </p>
+      ) : null}
       <button className="secondary-button" onClick={onRetry} type="button">
         Try again
       </button>
     </div>
-  );
-}
-
-/**
- * The id is going somewhere else — a gateway log, a message to the backend —
- * so it is copied by clicking it rather than selected by hand (§5.8). It stays
- * readable as text either way: the button carries the id itself, so a browser
- * without clipboard permission loses the convenience, not the value.
- */
-function RequestId({ value }: { value: string }) {
-  const [copyState, copy] = useCopied();
-
-  return (
-    <p className="admin-error-detail admin-request-id-line">
-      <span>Request ID:</span>
-      <button
-        aria-label={`Copy request id ${value}`}
-        className="admin-request-id"
-        onClick={() => copy(value)}
-        type="button"
-      >
-        {value}
-        <Copy aria-hidden="true" size={14} />
-      </button>
-      {/* A live region rather than a tooltip: the answer is the only evidence
-          the click did anything, and it has to reach a screen reader as well as
-          an eye. A refused clipboard says so instead of saying nothing —
-          silence here is indistinguishable from a dead button, and the id
-          itself is still on screen to select by hand. */}
-      <span className="admin-copied" role="status">
-        {copyState === "copied" ? "Copied" : copyState === "failed" ? "Couldn’t copy" : ""}
-      </span>
-    </p>
   );
 }

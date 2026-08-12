@@ -14,8 +14,14 @@ import { ProjectsScreen } from "./ProjectsScreen";
  * project's failure reaches which card, and about zero never standing in for
  * unknown.
  */
-const { fakeApi, failIssuesFor, failMembersFor, reset } = vi.hoisted(() => {
-  const state = { issueFailures: new Set<string>(), memberFailures: new Set<string>() };
+const { fakeApi, failIssuesFor, failMembersFor, holdSummaries, releaseSummaries, reset } = vi.hoisted(() => {
+  const state: {
+    issueFailures: Set<string>;
+    memberFailures: Set<string>;
+    /** A gate the summary reads wait behind, so the pending state can be looked at. */
+    gate?: Promise<void>;
+    openGate?: () => void;
+  } = { issueFailures: new Set<string>(), memberFailures: new Set<string>() };
   const now = "2026-08-01T09:00:00Z";
 
   const project = (id: string, projectKey: string, name: string) => ({
@@ -46,7 +52,13 @@ const { fakeApi, failIssuesFor, failMembersFor, reset } = vi.hoisted(() => {
       project("project-c", "CCC", "Gamma"),
     ],
     listIssues: async (projectId: string) => {
-      if (state.issueFailures.has(projectId)) throw new Error(`Internal error for ${projectId}`);
+      if (state.gate) await state.gate;
+      if (state.issueFailures.has(projectId)) {
+        throw Object.assign(new Error(`Internal error for ${projectId}`), {
+          status: 500,
+          requestId: "c85c0694-7909-4a8a",
+        });
+      }
       return { items: [], page: 0, pageSize: 100, totalCount: issueCounts[projectId] ?? 0 };
     },
     listMembers: async (projectId: string) => {
@@ -67,9 +79,22 @@ const { fakeApi, failIssuesFor, failMembersFor, reset } = vi.hoisted(() => {
     fakeApi: api as unknown as TaskaApi,
     failIssuesFor: (projectId: string) => state.issueFailures.add(projectId),
     failMembersFor: (projectId: string) => state.memberFailures.add(projectId),
+    holdSummaries: () => {
+      state.gate = new Promise<void>((resolve) => {
+        state.openGate = resolve;
+      });
+    },
+    releaseSummaries: () => {
+      const open = state.openGate;
+      state.gate = undefined;
+      state.openGate = undefined;
+      open?.();
+    },
     reset: () => {
       state.issueFailures.clear();
       state.memberFailures.clear();
+      state.gate = undefined;
+      state.openGate = undefined;
     },
   };
 });
@@ -141,5 +166,44 @@ describe("project cards state what they know", () => {
     const gamma = await screen.findByRole("button", { name: /Gamma/ });
     expect(gamma).toHaveAccessibleName(/0 issues/);
     expect(within(gamma).queryByText("—")).not.toBeInTheDocument();
+  });
+
+  // Loading and unknown were the same em dash, so every visit began by telling
+  // the reader that four requests still in flight had already failed — and the
+  // `title="Not loaded"` behind it said so in words (§5.6: loading is a
+  // skeleton).
+  it("waits with a skeleton rather than declaring the numbers unknown", async () => {
+    holdSummaries();
+    renderProjects();
+
+    const alpha = await screen.findByRole("button", { name: /Alpha/ });
+    expect(alpha).toHaveAccessibleName(/loading issues/);
+    expect(alpha).toHaveAccessibleName(/loading members/);
+    expect(within(alpha).queryByText("—")).not.toBeInTheDocument();
+
+    // And it gives way to the real number rather than staying.
+    releaseSummaries();
+    expect(await within(alpha).findByText("9")).toBeVisible();
+    expect(alpha).not.toHaveAccessibleName(/loading/);
+  });
+
+  // The only trace of a failure used to be a `title` attribute — hover-only, so
+  // unreachable from a touch screen and from a keyboard — and neither the
+  // gateway's message nor its request id reached the reader at all.
+  it("says once, in reachable text, why a number is missing", async () => {
+    failIssuesFor("project-b");
+    renderProjects();
+
+    const notice = await screen.findByText(/Some project details could not be loaded/i);
+    expect(notice).toBeVisible();
+    expect(screen.getByText("Internal error for project-b")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Copy request id c85c0694-7909-4a8a/ })).toBeVisible();
+  });
+
+  it("keeps quiet when every project answered", async () => {
+    renderProjects();
+
+    await within(await screen.findByRole("button", { name: /Alpha/ })).findByText("9");
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
   });
 });

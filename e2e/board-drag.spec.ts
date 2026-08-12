@@ -100,6 +100,90 @@ test.describe("dragging a card with a mouse", () => {
   });
 });
 
+/**
+ * §5.7's read-only board, on the real thing rather than in jsdom. Anna is not a
+ * member of the Mobile project, so the mock answers VIEWER for it and the board
+ * is reachable by URL — hiding controls is a courtesy, and the server stays the
+ * authority.
+ *
+ * This is the permission path, not the failure path: the role arrived and said
+ * no. What shipped first still let the card lift and track the cursor across
+ * every column before the drop did nothing and said nothing, which is the exact
+ * bug TAS-163 exists to kill.
+ */
+test.describe("a board this account may only read", () => {
+  test.skip(({ isMobile }) => Boolean(isMobile), "the drag below needs two columns on screen");
+
+  const MOBILE_BOARD = "/projects/f315c5cf-3333-47d1-8d22-79f07c2ec99b/board";
+  const VIEWER_CARD = /MOB-5/;
+
+  async function openViewerBoard(page: Page) {
+    await page.goto("/login");
+    await page.getByLabel("Email").fill("anna@example.com");
+    await page.getByLabel("Password").fill("mock-accepts-anything");
+    await page.locator("form button[type=submit]").click();
+    await expect(page).toHaveURL(/\/projects$/);
+
+    await page.goto(MOBILE_BOARD);
+    await expect(page.getByText("MOB-5", { exact: true })).toBeVisible();
+  }
+
+  test("offers a card no drag at all, and says nothing about a space bar", async ({ page }) => {
+    await openViewerBoard(page);
+
+    const card = page.getByRole("button", { name: VIEWER_CARD });
+    // dnd-kit's `attributes` announce a draggable and point at instructions for
+    // picking it up with the space bar. Neither is attached here: there is no
+    // keyboard sensor to honour them, and the gesture would be refused anyway.
+    await expect(card).not.toHaveAttribute("aria-roledescription");
+    await expect(card).not.toHaveAttribute("aria-describedby");
+    // Not `aria-disabled` either — the card is a working button that opens the
+    // issue, and disabling it would take reading away with writing.
+    await expect(card).not.toHaveAttribute("aria-disabled");
+    await expect(page.getByRole("button", { name: "New" })).toBeDisabled();
+    // And the empty column stops asking for a card it would not accept.
+    await expect(column(page, "Done").getByText("No issues")).toBeVisible();
+    await expect(page.getByText("Drop issues here")).toHaveCount(0);
+  });
+
+  test("does not lift the card, highlight a column or move anything", async ({ page }) => {
+    await openViewerBoard(page);
+
+    const todo = column(page, "To Do");
+    const inProgress = column(page, "In Progress");
+    const card = todo.getByRole("button", { name: VIEWER_CARD });
+    const from = await centreOf(card);
+    const to = await centreOf(inProgress);
+
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 20, from.y, { steps: 5 });
+    await page.mouse.move(to.x, from.y, { steps: 15 });
+
+    await expect(liftedCard(page)).toHaveCount(0);
+    await expect(inProgress).not.toHaveClass(/is-over/);
+
+    await page.mouse.up();
+
+    await expect(todo.getByRole("button", { name: VIEWER_CARD })).toBeVisible();
+    await expect(inProgress.getByRole("button", { name: VIEWER_CARD })).toHaveCount(0);
+    // A refusal, not a fault: nothing here failed, so nothing is announced.
+    await expect(page.getByRole("alert")).toHaveCount(0);
+  });
+
+  test("still opens the issue from the card it would not drag", async ({ page }) => {
+    await openViewerBoard(page);
+
+    await page.getByRole("button", { name: VIEWER_CARD }).click();
+    await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();
+    // The keyboard path a writer would use is closed to a reader. §5.7 asks for
+    // these to be hidden and the panel disables them instead — a pre-existing
+    // difference this branch does not touch; what is pinned here is that the
+    // button equivalent of the drag is no more available than the drag.
+    await expect(page.getByRole("button", { name: "Start Progress" })).toBeDisabled();
+  });
+});
+
 test.describe("dragging a card with a finger", () => {
   test.skip(({ hasTouch }) => !hasTouch, "only the phone project emulates touch");
 

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
@@ -12,18 +12,33 @@ import { BoardScreen } from "./BoardScreen";
  * back to "Project", the key badge vanished, every write control went disabled
  * and drag stopped working, and nothing on screen said why (TAS-163). These
  * tests are about the difference between a board that cannot be written to and
- * a board that will not say whether it can.
+ * a board that will not say whether it can — and about the two ways the first
+ * attempt at saying it got the answer wrong.
  */
 const PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
 
-const { fakeApi, setMembership, failMembership, failProject, reset } = vi.hoisted(() => {
+const {
+  fakeApi,
+  setMembership,
+  failMembership,
+  holdMembership,
+  failProject,
+  holdProject,
+  failIssues,
+  reset,
+} = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
   const state: {
     membership: { role: "ADMIN" | "MEMBER" | "VIEWER"; isMember: boolean; projectExists: boolean };
     membershipFailure?: Error;
+    membershipHeld: boolean;
     projectFailure?: Error;
+    projectHeld: boolean;
+    issuesFailure?: Error;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
+    membershipHeld: false,
+    projectHeld: false,
   };
 
   const api = {
@@ -37,6 +52,7 @@ const { fakeApi, setMembership, failMembership, failProject, reset } = vi.hoiste
       status: "ACTIVE" as const,
     }),
     getProject: async (projectId: string) => {
+      if (state.projectHeld) return new Promise(() => {});
       if (state.projectFailure) throw state.projectFailure;
       return {
         id: projectId,
@@ -49,6 +65,9 @@ const { fakeApi, setMembership, failMembership, failProject, reset } = vi.hoiste
       };
     },
     getMembership: async () => {
+      // A request that never settles: the only way to hold a query in the
+      // refetch window the banner has to survive.
+      if (state.membershipHeld) return new Promise(() => {});
       if (state.membershipFailure) throw state.membershipFailure;
       return state.membership;
     },
@@ -62,7 +81,33 @@ const { fakeApi, setMembership, failMembership, failProject, reset } = vi.hoiste
       statuses: [{ id: "s1", statusKey: "TODO" as const, name: "To Do", category: "TODO" as const, sortOrder: 10 }],
       transitions: [],
     }),
-    listIssues: async () => ({ items: [], page: 0, pageSize: 100, totalCount: 0 }),
+    listIssues: async () => {
+      if (state.issuesFailure) throw state.issuesFailure;
+      return {
+        items: [
+          {
+            id: "issue-1",
+            projectId: PROJECT_ID,
+            issueNumber: 102,
+            issueKey: "TAS-102",
+            issueType: "TASK" as const,
+            summary: "Wire the board to the gateway",
+            description: "",
+            status: "TODO" as const,
+            priority: "MEDIUM" as const,
+            assigneeId: null,
+            reporterId: "user-anna",
+            createdAt: now,
+            updatedAt: now,
+            version: 1,
+            deletedAt: null,
+          },
+        ],
+        page: 0,
+        pageSize: 100,
+        totalCount: 1,
+      };
+    },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
   };
 
@@ -74,13 +119,25 @@ const { fakeApi, setMembership, failMembership, failProject, reset } = vi.hoiste
     failMembership: (error: Error) => {
       state.membershipFailure = error;
     },
+    holdMembership: (held: boolean) => {
+      state.membershipHeld = held;
+    },
     failProject: (error: Error) => {
       state.projectFailure = error;
+    },
+    holdProject: (held: boolean) => {
+      state.projectHeld = held;
+    },
+    failIssues: (error: Error) => {
+      state.issuesFailure = error;
     },
     reset: () => {
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
+      state.membershipHeld = false;
       state.projectFailure = undefined;
+      state.projectHeld = false;
+      state.issuesFailure = undefined;
     },
   };
 });
@@ -101,6 +158,7 @@ function renderBoard() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 /**
@@ -110,23 +168,71 @@ function renderBoard() {
  */
 const AFTER_RETRY = { timeout: 3000 };
 
+const membershipKey = ["membership", PROJECT_ID];
+
 describe("board failures the user can see", () => {
   beforeEach(() => {
     reset();
     window.localStorage.clear();
   });
 
-  it("says the role could not be determined rather than presenting a silent read-only board", async () => {
+  it("says the role could not be loaded rather than presenting a silent read-only board", async () => {
     failMembership(Object.assign(new Error("Internal error"), { status: 500, requestId: "6f1c2b40-a1e2-4d55" }));
     renderBoard();
 
     const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
-    expect(alert).toHaveTextContent(/role in this project could not be determined/i);
-    // The gateway's own words and the id that finds this failure in its log.
-    expect(alert).toHaveTextContent("Internal error");
-    expect(alert).toHaveTextContent("6f1c2b40-a1e2-4d55");
+    expect(alert).toHaveTextContent(/role could not be loaded/i);
+    // The gateway's own words and the id that finds this failure in its log sit
+    // beside the sentence, not inside its live region: `role="alert"` is
+    // assertive and atomic, and a screen reader should not be interrupted to
+    // hear a UUID spelled out.
+    expect(alert).not.toHaveTextContent("Internal error");
+    expect(screen.getByText("Internal error")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Copy request id 6f1c2b40-a1e2-4d55/ })).toBeVisible();
     // Still no write access: a role we could not verify is not a role.
     expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+  });
+
+  // The first fix read `membershipQuery.isError`, and react-query resets a
+  // query with no data to `status:"pending", error:null` at the *start* of
+  // every refetch. So the explanation disappeared on each refocus while the
+  // controls it explained stayed off — the silent read-only board of TAS-163,
+  // back on a timer.
+  it("keeps saying so while it retries, instead of going quiet on every refetch", async () => {
+    failMembership(Object.assign(new Error("Internal error"), { status: 500 }));
+    const queryClient = renderBoard();
+    await screen.findByRole("alert", undefined, AFTER_RETRY);
+
+    holdMembership(true);
+    void queryClient.refetchQueries({ queryKey: membershipKey });
+
+    // The window this is about: react-query has thrown the error away and put
+    // the query back into `pending`, with no data to show for it.
+    await waitFor(() => expect(queryClient.getQueryState(membershipKey)?.status).toBe("pending"));
+    expect(queryClient.getQueryState(membershipKey)?.error).toBeNull();
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/role could not be loaded/i);
+    expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+    // And the gateway's words are kept across the gap, so the banner does not
+    // shrink and grow while the request is in flight.
+    expect(screen.getByText("Internal error")).toBeVisible();
+  });
+
+  // The other direction of the same mistake: `isError` is *also* true when a
+  // background refetch fails while the previous answer is still cached. The
+  // board was then fully writable — New, the column "+", the drop targets —
+  // under a banner announcing that writing was off.
+  it("does not claim writes are off while a cached role still says otherwise", async () => {
+    const queryClient = renderBoard();
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+
+    failMembership(new Error("Internal error"));
+    void queryClient.refetchQueries({ queryKey: membershipKey });
+    await waitFor(() => expect(queryClient.getQueryState(membershipKey)?.status).toBe("error"), AFTER_RETRY);
+
+    // Data was retained, so the role is not unknown and nothing changed.
+    expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("does not accuse the server when the answer was VIEWER", async () => {
@@ -148,7 +254,7 @@ describe("board failures the user can see", () => {
     const alerts = await screen.findAllByRole("alert", undefined, AFTER_RETRY);
     const projectAlert = alerts.find((alert) => /details could not be loaded/i.test(alert.textContent ?? ""));
     expect(projectAlert).toBeDefined();
-    expect(projectAlert).toHaveTextContent("c85c0694-7909-4a8a");
+    expect(screen.getByRole("button", { name: /Copy request id c85c0694-7909-4a8a/ })).toBeVisible();
     // The fallback title is still there — the banner is what stops it reading
     // as the project's actual name.
     expect(screen.getByText("Project")).toBeVisible();
@@ -159,5 +265,93 @@ describe("board failures the user can see", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // §4.18's screen has the same failure mode as the banners: reading `isError`
+  // handed the project's own chrome — its name, its filters, its columns —
+  // back to a visitor the gateway had already refused, for the length of every
+  // refetch.
+  it("keeps a refused project refused while it asks again", async () => {
+    failProject(Object.assign(new Error("Project not found"), { status: 404, code: "NOT_FOUND" }));
+    const queryClient = renderBoard();
+    await screen.findByRole("heading", { name: /not found/i }, AFTER_RETRY);
+
+    holdProject(true);
+    void queryClient.refetchQueries({ queryKey: ["project", PROJECT_ID] });
+    await waitFor(() => expect(queryClient.getQueryState(["project", PROJECT_ID])?.status).toBe("pending"));
+
+    expect(screen.getByRole("heading", { name: /not found/i })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument();
+  });
+});
+
+// A board with no issue list said "0" in the column head, "0 of 0" in the
+// filter bar and "Drop issues here" in every column — three claims about the
+// project, made by a request that never answered, one of them an invitation to
+// drop a card into a column whose contents are unknown.
+describe("a board that could not read its issues", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("counts nothing rather than counting zero", async () => {
+    failIssues(Object.assign(new Error("Internal error"), { status: 500 }));
+    renderBoard();
+
+    const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
+    expect(alert).toHaveTextContent(/issues on this board could not be loaded/i);
+
+    const column = screen.getByRole("region", { name: "To Do column" });
+    expect(within(column).queryByText("0")).not.toBeInTheDocument();
+    expect(within(column).getAllByText("—").length).toBeGreaterThan(0);
+    // The dashes carry the word for a screen reader, in both places.
+    expect(within(column).getAllByText("unknown").length).toBeGreaterThan(0);
+    expect(screen.queryByText("0 of 0")).not.toBeInTheDocument();
+
+    // And no column offers itself as a target for a card.
+    expect(screen.queryByText("Drop issues here")).not.toBeInTheDocument();
+    expect(within(column).getByText("Not loaded")).toBeVisible();
+  });
+
+  it("still counts a genuine zero", async () => {
+    renderBoard();
+
+    const column = await screen.findByRole("region", { name: "To Do column" });
+    // One seeded issue, and the counter states it.
+    expect(within(column).getByText("1")).toBeVisible();
+    expect(screen.getByText("1 of 1")).toBeVisible();
+  });
+});
+
+// §5.7: a VIEWER gets no drag. The first attempt left `useDraggable`'s
+// `attributes` on the card, on the grounds that they carry `aria-disabled` —
+// but they also carry `aria-roledescription="draggable"` and an
+// `aria-describedby` telling the reader to press the space bar, for a gesture
+// no sensor here implements and the server would refuse anyway.
+describe("a card on a board that cannot be written to", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("is an ordinary button, announced as nothing else", async () => {
+    setMembership("VIEWER");
+    renderBoard();
+
+    const card = await screen.findByRole("button", { name: /TAS-102/ });
+    expect(card).not.toHaveAttribute("aria-roledescription");
+    expect(card).not.toHaveAttribute("aria-describedby");
+    expect(card).not.toHaveAttribute("aria-disabled");
+    expect(card).not.toHaveAttribute("aria-pressed");
+    // The one thing it still does.
+    expect(card).toBeEnabled();
+  });
+
+  it("is a draggable one when the role allows it", async () => {
+    renderBoard();
+
+    const card = await screen.findByRole("button", { name: /TAS-102/ });
+    await waitFor(() => expect(card).toHaveAttribute("aria-roledescription", "draggable"));
   });
 });

@@ -236,7 +236,10 @@ test("keeps every line of a gateway failure above the meta colour", async ({ pag
   // and taken off again.
   const paleAndRequestId = await message.evaluate((node) => {
     const requestIdLine = document.createElement("p");
-    requestIdLine.className = "admin-error-detail admin-request-id-line";
+    // The line keeps this block's own type (.admin-error-detail); the affordance
+    // inside it is shared with the board, so its classes carry no screen name.
+    requestIdLine.className = "admin-error-detail";
+    requestIdLine.append(Object.assign(document.createElement("span"), { className: "request-id-line" }));
     node.after(requestIdLine);
     // The theme's own --fg-3, resolved by the live document rather than written
     // out as a hex, so the assertion below reads the same in dark.
@@ -285,15 +288,18 @@ test("keeps a hover visible on whichever plane it lands on", async ({ page }) =>
   // deployed gateway.
   await alert.locator(".admin-error-detail").evaluate((node) => {
     const line = document.createElement("p");
-    line.className = "admin-error-detail admin-request-id-line";
+    line.className = "admin-error-detail";
+    const wrap = document.createElement("span");
+    wrap.className = "request-id-line";
     const button = document.createElement("button");
-    button.className = "admin-request-id";
+    button.className = "request-id";
     button.type = "button";
     button.textContent = "c85c0694-7909-4a8a";
-    line.append(button);
+    wrap.append(button);
+    line.append(wrap);
     node.after(line);
   });
-  const requestId = page.locator(".admin-request-id");
+  const requestId = page.locator(".request-id");
   await requestId.hover();
 
   // One hover for the section: the id sits on the page plane rather than on a
