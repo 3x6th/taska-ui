@@ -35,6 +35,14 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   shapes, hybrid hardcodes healthy, rest propagates 404 — pick one contract.
 - **Mock seed lacks VIEWER/MEMBER projects**, so `canEdit === false` has never
   been observed. Seed one of each so gating is exercisable.
+  > **This one stopped being hypothetical on 2026-08-12.** `canEdit === false`
+  > reached the deployed stand — not through a role, but through a failed
+  > membership read (TAS-162) — and took drag-and-drop with it on every project,
+  > silently. Nobody had ever seen that state, in the mock or in a test, so
+  > nothing caught it. The gap that mattered was not the missing role: it was
+  > that the only path to `canEdit === false` was unobserved, so the *silence*
+  > was never noticed either. Seeding the roles is still right, and TAS-163 adds
+  > the coverage for the failure path.
 - **`markAllNotificationsRead` loop needs an iteration cap** (unbounded if the
   gateway ever ignores `unreadOnly`).
 - **The board's 100-issue page is now a functional ceiling, not just a paging

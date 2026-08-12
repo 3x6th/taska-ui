@@ -29,6 +29,50 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ## Open — runtime differs from the contract
 
+### `GET /projects/{projectId}` 500s on every existing project
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}`
+- **Contract:** `200` with `ProjectResponseDto`.
+- **Observed 2026-08-12**, signed in as `admin` (`GLOBAL_ADMIN`), against the
+  deployed gateway: **500** `{"code":"INTERNAL","message":"Internal error"}` for
+  all seven real project ids, without exception. Request ids
+  `fe1d39e6-b34c-45d6-9fd3-5c4ddee7dd73` and
+  `9a5533b2-7d21-4c8f-bf1b-4c814b021ce7`.
+  - `GET /projects` (the list) answers `200` with all seven projects, so the
+    data is readable — it is the single-project read that fails.
+  - A **nonexistent** id answers a clean `404 NOT_FOUND: "Project not found"`.
+    A valid id 500s and an invalid one 404s, which places the fault *after* the
+    project row is resolved — in mapping or serialising the found record, not in
+    the lookup. Same diagnostic shape used to localise the admin-service 500
+    below.
+  - `…/issues`, `…/workflow` and `GET /issues/{id}` all answer `200`.
+- **Compensation:** none, and none is appropriate — the frontend does not work
+  around a server fault.
+- **User-visible effect, and why it is out of proportion to one endpoint:** this
+  single 500 disables the product's core gesture. Because the contract has no
+  membership endpoint (see TAS-137 below), `HybridTaskaApi.getMembership`
+  synthesises the caller's role from `getProject` + `getCurrentUser`. The 500
+  rejects that query, `membershipQuery.data` is `undefined`, `canEdit` is
+  `false`, and every column is a `useDroppable({disabled: true})` — so **no card
+  can be dragged to any status, on desktop or on touch**. Verified in the
+  browser: the card lifts and follows the cursor, no column ever reports
+  `is-over`, nothing moves, and nothing is said. `VITE_TASKA_ASSUME_PROJECT_ADMIN`
+  does not rescue it: the flag is read *inside* `getMembership`, which rejects
+  earlier on its `Promise.all`, so the deployed build fails identically.
+  On the projects screen the same rejection travels through `listMembers` and
+  collapses the whole `Promise.all`, so every card reads "0 issues / 0 members"
+  while the issue lists themselves loaded fine.
+- **The frontend half is a real defect of ours, not just fallout:** a failed
+  role read must not be indistinguishable from `VIEWER`, and an unknown count
+  must not render as `0`. Tracked as
+  [TAS-163](https://jira.ozero.dev/browse/TAS-163) and fixed on
+  `fix/TAS-163-board-resilience`; this entry stays open until the gateway is
+  fixed regardless.
+- **Removal:** [TAS-162](https://jira.ozero.dev/browse/TAS-162) (backend). The
+  request ids above identify the failure in the gateway log.
+  [TAS-137](https://jira.ozero.dev/browse/TAS-137) independently removes the
+  coupling that turns this endpoint into a permissions outage.
+
 ### `GET /issues/{issueId}` 500s once an issue has a comment
 
 - **Endpoint:** `GET /api/v1/issues/{issueId}`
@@ -40,6 +84,13 @@ it. Entries are deleted only when the compensating code is deleted.
 - **User-visible effect:** because of the N+1 hydration below, one commented
   issue anywhere in a project makes the whole board fail to load, and the
   projects screen loses every card's issue count and member row with it.
+- **Not observed on 2026-08-12, but that is not an all-clear.** Hydrating every
+  issue in all seven projects — 19 `GET /issues/{id}` calls, the exact path that
+  used to fail — returned `200` every time. What was *not* established is
+  whether any of those 19 issues carries a comment, and without that the run
+  says nothing about the failing condition. Treat this as "the bug did not
+  appear in a sample of unknown relevance", not as "the bug is fixed". Closing
+  it needs a deliberate probe: add a comment to an issue, then read that issue.
 - **Removal:** [TAS-139](https://jira.ozero.dev/browse/TAS-139).
 
 ### `GET /projects` reports an empty collection as 404
