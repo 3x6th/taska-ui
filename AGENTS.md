@@ -115,14 +115,16 @@ TAS-140: add lint and test verification
 
 Before a PR:
 
-1. run `npm run check`, then `npm run build`
-2. capture browser evidence when UI changed
-3. give the exact diff and evidence to `release-reviewer`
-4. fix all blocking findings
-5. rerun checks, then get a fresh verdict from every role whose blocking
+1. `git fetch && git rebase origin/main` — **before briefing anyone**, not
+   before pushing
+2. run `npm run check`, then `npm run build`
+3. capture browser evidence when UI changed
+4. give the exact diff and evidence to `release-reviewer`
+5. fix all blocking findings
+6. rerun checks, then get a fresh verdict from every role whose blocking
    findings were fixed
-6. push and open the PR
-7. the orchestrator may merge once available checks are green and the
+7. push and open the PR
+8. the orchestrator may merge once available checks are green and the
    reviewer verdicts have no unresolved blockers — the owner has delegated
    the merge itself; the verdict requirement is what is not delegated
 
@@ -131,7 +133,7 @@ the independent evidence.
 
 ### A fix is not reviewed by the agent that ordered it
 
-The second half of step 5 is the one that gets skipped, because by then the
+The second half of step 6 is the one that gets skipped, because by then the
 orchestrator has read the findings, directed the fixes, and looked at the
 result — and that feels like review. It is not: the orchestrator and the
 builder are the two parties the finding was about. The role that raised a
@@ -146,6 +148,7 @@ the diff in front of you looks:
 | Change | Verdict before merge |
 | --- | --- |
 | First submission of a story | Full pass by every role whose zone it touches |
+| A bug fix that adds no surface and changes no contract | `release-reviewer`, plus the one role whose zone the bug lives in |
 | Fixes to blocking findings | Re-verdict from the role that raised them, scoped to those findings |
 | Deletion, documentation, configuration | `release-reviewer` in narrow scope |
 
@@ -153,6 +156,41 @@ Skipping is allowed and is sometimes right. Skipping silently is not: a PR
 carrying no verdict says so in its own body, in words, so the owner is
 choosing rather than assuming. An orchestrator judging its own work too small
 to review is the failure this table exists to prevent.
+
+### Stage the reviews; do not fire them all at the first draft
+
+Where a change needs more than one role, review it in two waves rather than
+one volley: `release-reviewer` on the first submission, then the specialist
+roles once its blockers are fixed. A first draft is the roughest the code will
+ever be, and three simultaneous reviews of it mostly discover the same
+roughness three times and are then invalidated together by the first round of
+fixes. The exception is a change whose whole risk lives in one specialist's
+zone — a contract change, a pure design change — where that role goes first
+and `release-reviewer` follows.
+
+This is a sequencing rule, not permission to drop a role. Every role the
+verdict table names still reports before merge; they just do not all read the
+same draft.
+
+### Ask a reviewer for a verdict, not an inventory
+
+Review prompts cap the non-blocking half: **every blocking finding, and at
+most three others.** A read-only role given no limit will report everything it
+noticed, because noticing is its job — and the surplus is not free. It is paid
+for twice, once in the reviewer's own run and again in the orchestrator
+triaging items it will not act on. Anything beyond the cap that is worth
+keeping goes to `docs/ai/BACKLOG.md` in one line, which is where it would have
+ended up anyway.
+
+### Match the model to the pass, not to the agent
+
+Each agent's frontmatter names a default model; the `Agent` tool's `model`
+parameter overrides it per call, and the orchestrator is expected to use that.
+Design, a first implementation, and any review keep the strong model. A pass
+that applies a list the orchestrator has already decided — "make these four
+edits, run the gate" — does not, and a fifteen-line mechanical change on the
+strongest model is waste with no upside. When in doubt, keep the strong model:
+a second round-trip costs far more than the difference.
 
 There is one environment. The deployed site is the team's own working stand —
 no external users yet — so shipping mock-backed features there for the team
