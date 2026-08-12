@@ -233,6 +233,26 @@ time.
 - **`MouseSensor` accepts a middle-click press** where `PointerSensor`
   required button 0. Harmless in practice; noted so it is a known trade.
 
+### Added after the re-verdicts (2026-08-12)
+
+- **The editable board still announces a drag gesture it cannot perform.**
+  TAS-163 retired the false `aria-roledescription="draggable"` and the
+  "press the space bar" instruction for *viewers* only, by withholding
+  dnd-kit's attributes. `MEMBER` and `ADMIN` cards still carry both, and there
+  is still no `KeyboardSensor` — so the instruction remains false for exactly
+  the people who can actually move a card. The panel's transition buttons are
+  the real keyboard path (§5.3), so this is a wrong instruction rather than a
+  dead end, but it is now inconsistent as well as wrong.
+- **28×28 controls on a touch plane.** The new dismiss and request-id buttons
+  meet §7's dense-toolbar floor and not its 44×44 touch floor. Same gap §7
+  already records for the 22px column `+`, so this is a doc-alignment question
+  — decide the rule in §7 rather than patching the two newest buttons.
+- **The projects screen now stacks a danger tint over the accent radial.**
+  `.projects-page`'s gradient is already a recorded §1 violation awaiting
+  TAS-142; the new failure notice composites on top of it, which is two tinted
+  planes and slightly strengthens the case for removing the gradient rather
+  than working around it.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each
