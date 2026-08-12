@@ -22,7 +22,7 @@ import { Avatar } from "../components/Avatar";
 import { PriorityBars, TypeChip } from "../components/IssueBits";
 import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { Unknown } from "../components/Unknown";
+import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
@@ -174,6 +174,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const projectUnread = useUnanswered(projectQuery);
   const roleUnread = useUnanswered(membershipQuery);
   const issuesUnread = useUnanswered(issuesQuery);
+  const workflowUnread = useUnanswered(workflowQuery);
   // "The server never told us your role" and "you are a VIEWER" are different
   // states, and only one of them is a permission. Both end in a board nobody
   // can write to — the server stays the authority, so write access we could
@@ -187,6 +188,14 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // an invitation to drop a card into a column whose contents are unknown
   // (§5.6: empty and error have to be distinguishable).
   const issuesUnknown = issuesUnread.unanswered;
+  // The fallback workflow below is a *loading* default and would be a lie as a
+  // *failure* default: its transition ids are this repository's own mock seed,
+  // so a board whose workflow could not be read would present three columns as
+  // if the server had described them and post a transition id the gateway has
+  // never heard of. The columns stay — their keys are the contract's own
+  // statuses and the issues have to go somewhere — but nothing may be moved on
+  // a workflow nobody sent, and this is what says so.
+  const workflowUnknown = workflowUnread.unanswered;
 
   const userById = useMemo(() => toUserMap(members), [members]);
   const statuses = useMemo(
@@ -273,12 +282,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       return;
     }
     const workflow = workflowQuery.data?.[issue.issueType];
-    const transition = findTransition(
-      issue.status,
-      nextStatus,
-      workflow?.statuses ?? fallbackStatuses,
-      workflow?.transitions ?? fallbackTransitions,
-    );
+    // No fallback on this path, ever. The only transition ids this repository
+    // owns are the mock's seed, and posting one to a gateway that never
+    // described it invents a transition — the drop is refused instead, whether
+    // the workflow read failed or has simply not answered yet.
+    if (!workflow) {
+      setDragNotice(`${issue.issueKey} was not moved: this project's workflow could not be loaded.`);
+      setActiveIssueId(null);
+      return;
+    }
+    const transition = findTransition(issue.status, nextStatus, workflow.statuses, workflow.transitions);
     if (transition) {
       transitionIssue.mutate({ movedIssueId: issue.id, nextStatus, transitionId: transition.id });
     } else {
@@ -400,10 +413,19 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             Clear
           </button>
         ) : null}
+        {/* Three states again, and for the same reason as the cards on the
+            projects screen: "0 of 0" from a request that has not answered is a
+            claim about the project, not a count. Unknown first — a retry of a
+            failed read is `pending` again, and the failure is the stabler
+            statement of the two. */}
         <span className="counter">
           {issuesUnknown ? (
             <>
               <Unknown /> of <Unknown />
+            </>
+          ) : issuesQuery.isPending ? (
+            <>
+              <PendingValue /> of <PendingValue />
             </>
           ) : (
             `${filteredIssues.length} of ${issues.length}`
@@ -418,8 +440,17 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           the two event notices below are both cleared when a drag starts, and
           one drag raises at most one of them — but the cap is what makes the
           count stop mattering. */}
-      {projectUnread.unanswered || roleUnknown || issuesUnknown || transitionIssue.isError || dragNotice ? (
-        <div className="board-notices">
+      {projectUnread.unanswered ||
+      roleUnknown ||
+      issuesUnknown ||
+      workflowUnknown ||
+      transitionIssue.isError ||
+      dragNotice ? (
+        // Labelled and focusable: with no request id in any of them the stack
+        // can outgrow its cap with nothing focusable inside, and only Chrome
+        // focuses a scroller of its own accord — in Firefox and Safari the
+        // banners below the fold would be unreachable from the keyboard.
+        <section aria-label="Board problems" className="board-notices" tabIndex={0}>
           {projectUnread.unanswered ? (
             <ApiNotice error={projectUnread.error}>
               This project&apos;s details could not be loaded, so its name and key are missing above.
@@ -432,6 +463,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           ) : null}
           {issuesUnknown ? (
             <ApiNotice error={issuesUnread.error}>The issues on this board could not be loaded.</ApiNotice>
+          ) : null}
+          {workflowUnknown ? (
+            <ApiNotice error={workflowUnread.error}>
+              This project&apos;s workflow could not be loaded, so no card can be moved.
+            </ApiNotice>
           ) : null}
           {/* The two below are events, not states of the screen: a rollback and
               a refused drop. An event that cannot be dismissed is how a stack
@@ -449,7 +485,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               {dragNotice}
             </ApiNotice>
           ) : null}
-        </div>
+        </section>
       ) : null}
 
       <DndContext sensors={sensors} onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
@@ -499,6 +535,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           canEdit={canEdit}
           currentUserId={meQuery.data?.id}
           workflows={workflowQuery.data}
+          workflowUnknown={workflowUnknown}
           onClose={() => navigate(`/projects/${projectId}/board`)}
         />
       ) : null}
@@ -518,41 +555,25 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   );
 }
 
+/**
+ * The columns to draw before the workflow has been read, and after a read that
+ * failed. These are safe to invent because they are not inventions: the three
+ * keys are `IssueStatus` from the contract, the issues already carry one each,
+ * and a board has to put them somewhere. Only the labels and the order are
+ * ours.
+ *
+ * There is deliberately no matching `fallbackTransitions` any more. It used to
+ * sit beside this and carry four ids copied from the mock's seed, which the
+ * drop path and the panel's transition buttons both read whenever
+ * `workflowQuery.data` was undefined — so a board whose workflow read failed
+ * offered moves the gateway had never described and posted their ids as if it
+ * had. A status is a fact the issue already states; a transition is a claim
+ * about the server, and this file has no honest source for one.
+ */
 const fallbackStatuses: WorkflowStatus[] = [
   { id: "fallback-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
   { id: "fallback-progress", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
   { id: "fallback-done", statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30 },
-];
-
-const fallbackTransitions: WorkflowTransition[] = [
-  {
-    id: "55555555-5555-5555-5555-555555555555",
-    fromStatusId: "fallback-todo",
-    toStatusId: "fallback-progress",
-    name: "Start Progress",
-    sortOrder: 10,
-  },
-  {
-    id: "66666666-6666-6666-6666-666666666666",
-    fromStatusId: "fallback-progress",
-    toStatusId: "fallback-done",
-    name: "Complete",
-    sortOrder: 20,
-  },
-  {
-    id: "88888888-8888-8888-8888-888888888888",
-    fromStatusId: "fallback-progress",
-    toStatusId: "fallback-todo",
-    name: "Move to To Do",
-    sortOrder: 25,
-  },
-  {
-    id: "77777777-7777-7777-7777-777777777777",
-    fromStatusId: "fallback-done",
-    toStatusId: "fallback-progress",
-    name: "Reopen",
-    sortOrder: 30,
-  },
 ];
 
 function BoardColumn({
@@ -736,6 +757,7 @@ function IssuePanel({
   canEdit,
   currentUserId,
   workflows,
+  workflowUnknown,
   onClose,
 }: {
   projectId: string;
@@ -748,6 +770,8 @@ function IssuePanel({
   canEdit: boolean;
   currentUserId?: string;
   workflows?: WorkflowsByIssueType;
+  /** The workflow read failed; these buttons are the keyboard path a drag has. */
+  workflowUnknown: boolean;
   onClose: () => void;
 }) {
   const navigate = useNavigate();
@@ -775,13 +799,11 @@ function IssuePanel({
   }
 
   const workflow = issue ? workflows?.[issue.issueType] : undefined;
-  const availableTransitions = issue
-    ? resolveTransitions(
-        issue.status,
-        workflow?.statuses ?? fallbackStatuses,
-        workflow?.transitions ?? fallbackTransitions,
-      )
-    : [];
+  // These buttons are the drag's keyboard equivalent (§5.3), so they answer to
+  // the same rule as the drop: only the server's own transitions, never the
+  // fallback's. Offering a move built from an invented id would post that id.
+  const availableTransitions =
+    issue && workflow ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
 
   const updateIssue = useMutation({
     mutationFn: (patch: { summary?: string; description?: string; priority?: IssuePriority }) => taskaApi.updateIssue(projectId, issueId, patch),
@@ -850,7 +872,14 @@ function IssuePanel({
             <span className="status-pill" style={{ color: statusColors[issue.status] }}>
               {statusLabels[issue.status]}
             </span>
-            <span className="arrow">→</span>
+            {availableTransitions.length ? <span className="arrow">→</span> : null}
+            {/* Said here as well as on the board behind this panel: the panel
+                covers the notice stack, and an empty row beside a status pill
+                reads as "this issue has nowhere to go" rather than "we do not
+                know where it can go". */}
+            {workflowUnknown ? (
+              <span className="transition-note">The workflow could not be loaded, so no move is offered.</span>
+            ) : null}
             {availableTransitions.map((transition) => (
               <button
                 className="secondary-button compact-button"

@@ -101,6 +101,112 @@ test.describe("dragging a card with a mouse", () => {
 });
 
 /**
+ * A board whose workflow read failed.
+ *
+ * The mock cannot fail a single read on demand, and the failure is the whole
+ * point here, so this one drives the app's own TanStack Query cache instead: it
+ * walks the React fiber to the live client and puts the workflow query into the
+ * state the gateway would have produced. Everything downstream of that — the
+ * board, the drop, the panel — is the real product.
+ *
+ * Why it has to be an end-to-end test at all: with the fallback in place the
+ * drop *succeeded* here, because the four ids the fallback carried were copied
+ * from this mock's own seed. Against the deployed gateway the same drop posts a
+ * transition id nobody described. So what is asserted below is that no move is
+ * attempted, and the mock accepting the id is exactly what made the old
+ * behaviour invisible.
+ */
+test.describe("a board whose workflow could not be read", () => {
+  test.skip(({ isMobile }) => Boolean(isMobile), "the drag below needs two columns on screen");
+
+  async function failWorkflowRead(page: Page) {
+    await page.evaluate(() => {
+      interface Fiber {
+        child?: Fiber;
+        sibling?: Fiber;
+        alternate?: Fiber;
+        memoizedProps?: { value?: unknown };
+      }
+      interface QueryClientish {
+        getQueryCache: () => { findAll: (filter: unknown) => Array<{ setState: (state: unknown) => void }> };
+      }
+
+      const root = document.getElementById("root");
+      const key = root && Object.keys(root).find((name) => name.startsWith("__reactContainer$"));
+      const start = key ? (root as unknown as Record<string, Fiber>)[key] : undefined;
+      const seen = new Set<Fiber>();
+      const stack: Fiber[] = start ? [start] : [];
+
+      while (stack.length) {
+        const node = stack.pop()!;
+        if (seen.has(node)) continue;
+        seen.add(node);
+        const value = node.memoizedProps?.value as Partial<QueryClientish> | undefined;
+        if (typeof value?.getQueryCache === "function") {
+          for (const query of (value as QueryClientish).getQueryCache().findAll({ queryKey: ["workflows"] })) {
+            query.setState({
+              status: "error",
+              fetchStatus: "idle",
+              data: undefined,
+              error: Object.assign(new Error("500 Internal Server Error from workflow-service"), { status: 500 }),
+              errorUpdateCount: 1,
+              errorUpdatedAt: Date.now(),
+              dataUpdatedAt: 0,
+            });
+          }
+          return;
+        }
+        // React keeps two fiber trees and swaps them, so the walk follows
+        // `alternate` as well or it can search the one that is not current.
+        for (const next of [node.child, node.sibling, node.alternate]) {
+          if (next) stack.push(next);
+        }
+      }
+      throw new Error("no QueryClient on this page");
+    });
+    await expect(page.getByRole("alert").filter({ hasText: /workflow could not be loaded/ })).toBeVisible();
+  }
+
+  test("refuses the drop instead of posting a transition the server never described", async ({ page }) => {
+    await openBoard(page);
+    await failWorkflowRead(page);
+
+    const todo = column(page, "To Do");
+    const inProgress = column(page, "In Progress");
+    const card = todo.getByRole("button", { name: CARD });
+    const from = await centreOf(card);
+    const to = await centreOf(inProgress);
+
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 20, from.y, { steps: 5 });
+    await page.mouse.move(to.x, from.y, { steps: 15 });
+    await page.mouse.up();
+
+    // Nothing moved, optimistically or otherwise, and the board says why.
+    await expect(page.getByRole("alert").filter({ hasText: /was not moved/ })).toBeVisible();
+    await expect(todo.getByRole("button", { name: CARD })).toBeVisible();
+    await expect(inProgress.getByRole("button", { name: CARD })).toHaveCount(0);
+    // Not the rollback banner either: a rollback would mean a request went out.
+    await expect(page.getByRole("alert").filter({ hasText: /could not be saved/ })).toHaveCount(0);
+  });
+
+  test("offers no transition button that would post one either", async ({ page }) => {
+    await openBoard(page);
+    await failWorkflowRead(page);
+
+    await column(page, "To Do").getByRole("button", { name: CARD }).click();
+    await expect(page.getByRole("complementary", { name: "TAS-102 issue" })).toBeVisible();
+
+    // The four names the fallback carried, none of them the server's.
+    for (const name of ["Start Progress", "Complete", "Move to To Do", "Reopen"]) {
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+    }
+    await expect(page.getByText("The workflow could not be loaded, so no move is offered.")).toBeVisible();
+  });
+});
+
+/**
  * §5.7's read-only board, on the real thing rather than in jsdom. Anna is not a
  * member of the Mobile project, so the mock answers VIEWER for it and the board
  * is reachable by URL — hiding controls is a courtesy, and the server stays the

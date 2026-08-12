@@ -2291,6 +2291,15 @@ h1 {
   margin: 12px 18px 0;
 }
 
+/* It carries `tabindex="0"` because none of its children is guaranteed to be
+   focusable — a stack of banners with no request id and nothing to dismiss can
+   still outgrow the cap — and only Chrome focuses a scroll container by itself.
+   Anything focusable needs §7's ring, including this. */
+.board-notices:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* §5.6 asks for an accent bar or icon in --danger, and never for
    danger-coloured prose. That matters more than it sounds: on the 12% danger
    tint, --danger text measures 2.95:1 in light — under §7's floor for
@@ -2700,6 +2709,14 @@ h1 {
   flex-wrap: wrap;
   gap: 8px;
   margin: 14px 0 22px;
+}
+
+/* Why this row is empty. --fg-2, not --fg-3: it is a statement about the data
+   rather than meta beside it, and it stands where controls would be (§7). */
+.transition-note {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  text-wrap: pretty;
 }
 
 .status-pill {

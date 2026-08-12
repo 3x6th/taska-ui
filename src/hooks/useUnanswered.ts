@@ -11,7 +11,13 @@ export interface QueryFacts {
 export interface Unanswered {
   /** The read has failed and there is still nothing to show for it. */
   unanswered: boolean;
-  /** The failure to report, kept across the refetch that clears `error`. */
+  /**
+   * The failure to report, kept across the refetch that clears `error` — and
+   * `null` whenever `unanswered` is false, so the remembered failure cannot
+   * outlive the state it explains. Every caller gates on `unanswered` first
+   * today; this makes one that forgets render nothing rather than a failure
+   * that has since been answered.
+   */
   error: Error | null;
 }
 
@@ -51,8 +57,9 @@ export function useUnanswered(query: QueryFacts): Unanswered {
   const [lastError, setLastError] = useState<Error | null>(null);
   if (query.error && query.error !== lastError) setLastError(query.error);
 
+  const unanswered = query.data === undefined && query.errorUpdateCount > 0;
   return {
-    unanswered: query.data === undefined && query.errorUpdateCount > 0,
-    error: query.error ?? lastError,
+    unanswered,
+    error: unanswered ? (query.error ?? lastError) : null,
   };
 }

@@ -25,6 +25,7 @@ const {
   failProject,
   holdProject,
   failIssues,
+  failWorkflow,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -35,6 +36,7 @@ const {
     projectFailure?: Error;
     projectHeld: boolean;
     issuesFailure?: Error;
+    workflowFailure?: Error;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -72,15 +74,18 @@ const {
       return state.membership;
     },
     listMembers: async () => [],
-    getWorkflow: async () => ({
-      id: "workflow",
-      name: "Default",
-      version: 1,
-      createdAt: now,
-      updatedAt: now,
-      statuses: [{ id: "s1", statusKey: "TODO" as const, name: "To Do", category: "TODO" as const, sortOrder: 10 }],
-      transitions: [],
-    }),
+    getWorkflow: async () => {
+      if (state.workflowFailure) throw state.workflowFailure;
+      return {
+        id: "workflow",
+        name: "Default",
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+        statuses: [{ id: "s1", statusKey: "TODO" as const, name: "To Do", category: "TODO" as const, sortOrder: 10 }],
+        transitions: [],
+      };
+    },
     listIssues: async () => {
       if (state.issuesFailure) throw state.issuesFailure;
       return {
@@ -131,6 +136,9 @@ const {
     failIssues: (error: Error) => {
       state.issuesFailure = error;
     },
+    failWorkflow: (error: Error) => {
+      state.workflowFailure = error;
+    },
     reset: () => {
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
@@ -138,6 +146,7 @@ const {
       state.projectFailure = undefined;
       state.projectHeld = false;
       state.issuesFailure = undefined;
+      state.workflowFailure = undefined;
     },
   };
 });
@@ -322,6 +331,53 @@ describe("a board that could not read its issues", () => {
     expect(within(column).getByText("1")).toBeVisible();
     expect(screen.getByText("1 of 1")).toBeVisible();
   });
+
+  // "0 of 0" from a request that has not answered is the same claim as "0 of 0"
+  // from one that failed. §5.6: loading is a skeleton.
+  it("counts nothing while the issues are still on their way", async () => {
+    renderBoard();
+
+    expect(await screen.findByText("Board")).toBeVisible();
+    expect(screen.queryByText("0 of 0")).not.toBeInTheDocument();
+    // Then the real numbers arrive.
+    expect(await screen.findByText("1 of 1")).toBeVisible();
+  });
+});
+
+/**
+ * A workflow that could not be read used to be indistinguishable from one that
+ * had not arrived: both left `workflowQuery.data` undefined, and the fallback
+ * filled the gap with four transition ids copied from this repository's own
+ * mock seed. The board then offered moves the server had never described, and a
+ * drop posted one of those ids to a gateway that has never heard of it
+ * (api-contract-guard, TAS-163). The columns are still drawn — their keys come
+ * from the contract's `IssueStatus` — but nothing may be moved.
+ */
+describe("a board that could not read its workflow", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("says so, and still draws the columns the issues need", async () => {
+    failWorkflow(Object.assign(new Error("Internal error"), { status: 500, requestId: "0b41d8a2-77c4-4a1f" }));
+    renderBoard();
+
+    const alerts = await screen.findAllByRole("alert", undefined, AFTER_RETRY);
+    expect(alerts.some((alert) => /workflow could not be loaded/i.test(alert.textContent ?? ""))).toBe(true);
+    expect(screen.getByRole("button", { name: /Copy request id 0b41d8a2-77c4-4a1f/ })).toBeVisible();
+
+    // The board is still a board: three contract statuses, and the issue in the
+    // column its own `status` names.
+    expect(screen.getByRole("region", { name: "To Do column" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "In Progress column" })).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "To Do column" })).getByText(/TAS-102/)).toBeVisible();
+  });
+
+  // The refusal of the drop itself, and the keyboard half of the same defect —
+  // the panel's transition buttons — are in e2e/board-drag.spec.ts: both need a
+  // real drag or the whole issue panel, and both are only meaningful against an
+  // API that would accept the invented id, which the mock does.
 });
 
 // §5.7: a VIEWER gets no drag. The first attempt left `useDraggable`'s
