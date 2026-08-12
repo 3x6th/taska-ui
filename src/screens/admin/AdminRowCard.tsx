@@ -3,9 +3,9 @@ import { ChevronLeft, Lock } from "lucide-react";
 import { Link } from "react-router-dom";
 import { taskaApi } from "../../api/client";
 import type { AdminTable } from "../../domain/types";
+import { useCopied } from "../../hooks/useCopied";
 import { AdminError } from "./AdminError";
 import { formatCell, isAlignedType } from "./columns";
-import { useCopied } from "./useCopied";
 
 interface AdminRowCardProps {
   service: string;

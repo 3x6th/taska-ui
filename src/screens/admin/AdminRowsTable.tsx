@@ -2,8 +2,8 @@ import { ChevronRight, Lock } from "lucide-react";
 import { useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { AdminRow, AdminRows, AdminSortOrder, AdminTable } from "../../domain/types";
+import { useCopied } from "../../hooks/useCopied";
 import { formatCell, isAlignedType } from "./columns";
-import { useCopied } from "./useCopied";
 
 interface AdminRowsTableProps {
   rows: AdminRows;

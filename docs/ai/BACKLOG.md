@@ -33,8 +33,24 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   branches on `error.status` behaves differently per mode.
 - **`getMembership` disagreement:** mock returns `projectExists: false`
   shapes, hybrid hardcodes healthy, rest propagates 404 — pick one contract.
-- **Mock seed lacks VIEWER/MEMBER projects**, so `canEdit === false` has never
-  been observed. Seed one of each so gating is exercisable.
+- **Mock seed lacks a project where the viewer is a *member* with a read-only
+  role.** ~~so `canEdit === false` has never been observed~~ — corrected
+  2026-08-12: `canEdit === false` **is** reachable and now has e2e coverage.
+  Anna is not in `MOB`'s member list, and `getMembership` falls back to
+  `role: "VIEWER"` for a non-member, so her Mobile board is a genuine viewer
+  board. What the seed still cannot produce is `isMember: true` with a
+  `VIEWER` or explicitly read-only role — `project()` assigns `ADMIN` to the
+  first member and `MEMBER` to the rest, and nothing is ever seeded `VIEWER`.
+  So "not a member" and "a member who may not write" remain the same picture
+  in every test, and only the first one exists.
+  > **This one stopped being hypothetical on 2026-08-12.** `canEdit === false`
+  > reached the deployed stand — not through a role, but through a failed
+  > membership read (TAS-162) — and took drag-and-drop with it on every project,
+  > silently. Nobody had ever seen that state, in the mock or in a test, so
+  > nothing caught it. The gap that mattered was not the missing role: it was
+  > that the only path to `canEdit === false` was unobserved, so the *silence*
+  > was never noticed either. Seeding the roles is still right, and TAS-163 adds
+  > the coverage for the failure path.
 - **`markAllNotificationsRead` loop needs an iteration cap** (unbounded if the
   gateway ever ignores `unreadOnly`).
 - **The board's 100-issue page is now a functional ceiling, not just a paging
@@ -176,6 +192,66 @@ ones were fixed in the branch; these were not, and each says why.
 - **The channel PNGs are stored as full RGB** (`docs/design/mascot-channels/`,
   2.7 MB). They are single-channel maps; a greyscale pass would remove most of
   that with no loss of source fidelity.
+
+### Found while reviewing TAS-163/164 (2026-08-12), pre-existing
+
+None of these were caused by that branch; they were seen while two reviewers
+had the board open, and are recorded so they are not re-discovered a third
+time.
+
+- **`.form-error` fails §7 wherever it appears, not just on the board.**
+  `--danger` on its own 12% danger tint measures **2.96:1 light** / 4.92:1
+  dark — under every floor in §7 — and the same class sets the login form's
+  errors on `--surface` at 3.17:1. TAS-163 fixes the board's use of it by
+  setting the sentence to `--fg` and carrying the error colour in an accent
+  bar, which is what §5.6 actually asks for. The other call sites still
+  inherit the failing combination, and the fix is the same one.
+- **dnd-kit announces a keyboard drag that does not exist.** Every card
+  carries `aria-describedby` → "To pick up a draggable item, press the space
+  bar…", while the sensor list has no `KeyboardSensor`. The instruction is
+  false for every user, not only a viewer. The button path required by §5.3
+  does work, so this is a wrong instruction rather than a dead end — but it is
+  worse than silence. Either register a `KeyboardSensor` or supply
+  `screenReaderInstructions` that describe the transition buttons instead.
+- **§5.7 says a `VIEWER` gets `readOnly` fields; the code gives them
+  `disabled` ones.** A viewer therefore cannot select or copy an issue's
+  summary or description — `disabled` removes the text from reach entirely,
+  which is not what read-only means.
+- **The filter bar's "X of Y" counter clips at 390px** — measured 10.2px wide
+  by 50px tall inside a 46px bar.
+- **`--font-mono` is specified in §2.3 and never declared in `styles.css`.**
+  TAS-163 defines it and converts the copies it found; check for others.
+- **`listIssues` is still all-or-nothing internally.** Its N+1 hydration uses
+  `Promise.all`, so one unreadable issue still zeroes its own project's count.
+  TAS-163 contained the blast radius to a single card; it did not remove it,
+  and TAS-124/125 is what actually does.
+- ~~No test proves a real `VIEWER` cannot drag.~~ **Withdrawn the same day it
+  was written.** It rested on "the mock seeds no VIEWER project", which is
+  false: Anna is not a member of `MOB`, and a non-member gets `VIEWER`. TAS-163
+  covers that board in e2e. The narrower gap that *is* real is recorded on the
+  seed item above — a member who may not write has still never been seen.
+- **`MouseSensor` accepts a middle-click press** where `PointerSensor`
+  required button 0. Harmless in practice; noted so it is a known trade.
+
+### Added after the re-verdicts (2026-08-12)
+
+- **The editable board still announces a drag gesture it cannot perform.**
+  TAS-163 retired the false `aria-roledescription="draggable"` and the
+  "press the space bar" instruction for *viewers* only, by withholding
+  dnd-kit's attributes. `MEMBER` and `ADMIN` cards still carry both, and there
+  is still no `KeyboardSensor` — so the instruction remains false for exactly
+  the people who can actually move a card. The panel's transition buttons are
+  the real keyboard path (§5.3), so this is a wrong instruction rather than a
+  dead end, but it is now inconsistent as well as wrong.
+- **28×28 controls on a touch plane.** The new dismiss and request-id buttons
+  meet §7's dense-toolbar floor and not its 44×44 touch floor. Same gap §7
+  already records for the 22px column `+`, so this is a doc-alignment question
+  — decide the rule in §7 rather than patching the two newest buttons.
+- **The projects screen now stacks a danger tint over the accent radial.**
+  `.projects-page`'s gradient is already a recorded §1 violation awaiting
+  TAS-142; the new failure notice composites on top of it, which is two tinted
+  planes and slightly strengthens the case for removing the gradient rather
+  than working around it.
 
 ## Frontend stories already filed
 

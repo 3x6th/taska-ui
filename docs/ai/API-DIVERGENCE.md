@@ -29,6 +29,102 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ## Open — runtime differs from the contract
 
+### `GET /projects/{projectId}` 500s on every existing project
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}`
+- **Contract:** `200` with `ProjectResponseDto`.
+- **Observed 2026-08-12**, signed in as `admin` (`GLOBAL_ADMIN`), against the
+  deployed gateway: **500** `{"code":"INTERNAL","message":"Internal error"}` for
+  all seven real project ids, without exception. Request ids
+  `fe1d39e6-b34c-45d6-9fd3-5c4ddee7dd73` and
+  `9a5533b2-7d21-4c8f-bf1b-4c814b021ce7`.
+  - `GET /projects` (the list) answers `200` with all seven projects, so the
+    data is readable — it is the single-project read that fails.
+  - A **nonexistent** id answers a clean `404 NOT_FOUND: "Project not found"`.
+    A valid id 500s and an invalid one 404s, which places the fault *after* the
+    project row is resolved — in mapping or serialising the found record, not in
+    the lookup. Same diagnostic shape used to localise the admin-service 500
+    below.
+  - `…/issues`, `…/workflow` and `GET /issues/{id}` all answer `200`.
+- **Compensation:** none, and none is appropriate — the frontend does not work
+  around a server fault.
+- **User-visible effect as first observed on 2026-08-12, before the same day's
+  fixes.** Kept in the past tense on purpose: this is what the 500 did to the
+  shipped build, and it is why TAS-163 exists. What it does *now* is the bullet
+  below. This single 500 disabled the product's core gesture. Because the
+  contract has no membership endpoint (see TAS-137 below),
+  `HybridTaskaApi.getMembership` synthesised the caller's role from
+  `getProject` + `getCurrentUser`. The 500 rejected that query,
+  `membershipQuery.data` was `undefined`, `canEdit` was `false`, and every
+  column was a `useDroppable({disabled: true})` — so **no card could be dragged
+  to any status, on desktop or on touch**. Verified in the browser: the card
+  lifted and followed the cursor, no column ever reported `is-over`, nothing
+  moved, and nothing was said. `VITE_TASKA_ASSUME_PROJECT_ADMIN` did not rescue
+  it, because the flag was read *inside* `getMembership`, which rejected earlier
+  on its `Promise.all`. On the projects screen the same rejection travelled
+  through `listMembers` and collapsed the whole `Promise.all`, so every card
+  read "0 issues / 0 members" while the issue lists themselves loaded fine.
+- **The frontend half is a real defect of ours, not just fallout:** a failed
+  role read must not be indistinguishable from `VIEWER`, and an unknown count
+  must not render as `0`. Tracked as
+  [TAS-163](https://jira.ozero.dev/browse/TAS-163) and fixed on
+  `fix/TAS-163-board-resilience`; this entry stays open until the gateway is
+  fixed regardless.
+- **Drag works again on the stand from 2026-08-12, and the 500 is still here.**
+  `getMembership` stopped reading the project when
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN` is on (see the membership entry below), so
+  this endpoint no longer decides whether anyone may write. Everything else the
+  500 breaks it still breaks: no project name, no key, no member list, no
+  assignee row. Do not read a working board as evidence that this is fixed.
+- **Removal:** [TAS-162](https://jira.ozero.dev/browse/TAS-162) (backend). The
+  request ids above identify the failure in the gateway log.
+  [TAS-137](https://jira.ozero.dev/browse/TAS-137) independently removes the
+  coupling that turns this endpoint into a permissions outage.
+
+### A failed workflow read is silently replaced by the mock's workflow
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/workflow`
+- **Found by `api-contract-guard`, 2026-08-12.** Pre-existing; recorded now
+  because it stopped being unreachable on the stand that day.
+- **Compensation:** `BoardScreen`'s `fallbackStatuses` / `fallbackTransitions`
+  are used whenever `workflowQuery.data` is undefined — including when the read
+  *failed*, not only before it has answered. Their transition ids are
+  byte-for-byte the mock's seeded UUIDs (`MockTaskaApi`), so a board whose
+  workflow could not be read presents three invented columns as this project's
+  workflow, with nothing said, and a drop posts
+  `transitionId: "55555555-5555-5555-5555-555555555555"` to a gateway that has
+  never heard of it.
+- **Why it is newly reachable:** until `getMembership` stopped depending on the
+  project read (see the membership entry), a gateway sick enough to fail the
+  workflow read was also failing the membership read, so `canEdit` was false and
+  every droppable disabled — nothing could be dropped and the fabricated
+  workflow was inert. With the flag on, `canEdit` is now unconditionally true on
+  the stand, so the fabricated workflow is live.
+- **The shape of the bug is this file's whole subject:** the fallback is a
+  reasonable *loading* default and a lie as a *failure* default, and one
+  `undefined` check cannot tell those apart. Note the notice gate on the board
+  covers project, role, issues, transition and drag — but not the workflow.
+- **Fix:** treat the failure separately from the wait (`useUnanswered`, as the
+  other four queries now do), say so, and refuse a drop whose transition came
+  from the fallback rather than posting an id the server cannot know.
+- **Removal:** the fix above; there is no backend ask here. The endpoint answers
+  `200` on the stand today.
+
+### The contract's status keys are open, and the UI's are closed
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/workflow`
+- **Contract:** `statusKey` and `category` are deliberately unconstrained
+  strings — the description says the enum is omitted "для расширяемости".
+- **UI:** both are modelled as the closed `IssueStatus` union, and
+  `statusLabels` / `statusColors` (`src/lib/format.ts`) are keyed off it.
+- **Consequence:** a fourth status key renders a column with no colour and no
+  label, and its issues appear in no column at all — the board filters cards by
+  `issue.status === status.statusKey`.
+- **Compensation:** none. Recorded so the next person to add a status knows the
+  frontend will not simply follow.
+- **Removal:** narrow at the mapper the way TAS-151 did for `globalRole`, or
+  have the contract state the enum.
+
 ### `GET /issues/{issueId}` 500s once an issue has a comment
 
 - **Endpoint:** `GET /api/v1/issues/{issueId}`
@@ -40,6 +136,13 @@ it. Entries are deleted only when the compensating code is deleted.
 - **User-visible effect:** because of the N+1 hydration below, one commented
   issue anywhere in a project makes the whole board fail to load, and the
   projects screen loses every card's issue count and member row with it.
+- **Not observed on 2026-08-12, but that is not an all-clear.** Hydrating every
+  issue in all seven projects — 19 `GET /issues/{id}` calls, the exact path that
+  used to fail — returned `200` every time. What was *not* established is
+  whether any of those 19 issues carries a comment, and without that the run
+  says nothing about the failing condition. Treat this as "the bug did not
+  appear in a sample of unknown relevance", not as "the bug is fixed". Closing
+  it needs a deliberate probe: add a comment to an issue, then read that issue.
 - **Removal:** [TAS-139](https://jira.ozero.dev/browse/TAS-139).
 
 ### `GET /projects` reports an empty collection as 404
@@ -97,6 +200,27 @@ it. Entries are deleted only when the compensating code is deleted.
   `ADMIN` when `VITE_TASKA_ASSUME_PROJECT_ADMIN=true` or the caller created the
   project, and `VIEWER` otherwise. `listMembers` returns a single-element list
   containing only the current user.
+- **Narrowed 2026-08-12 (owner's call).** With the flag on, `getMembership` no
+  longer reads the project at all. It never used the value on that path — the
+  role is the flag, and `isMember`/`projectExists` are hardcoded — so the call
+  contributed nothing but a way to fail, and TAS-162's 500 was reaching through
+  it to revoke write access on the deployed stand. With the flag **off** the
+  behaviour is unchanged, failure included, because `createdBy` is genuinely
+  needed there. `listMembers` still reads the project (it needs `addedAt` and
+  `addedBy`) and still fails honestly while the gateway is broken: the assignee
+  row stays empty and the member count reads as unknown.
+- **What this costs, stated plainly:** with the flag on, `getMembership` can no
+  longer reject, so the "your role could not be determined" state added by
+  [TAS-163](https://jira.ozero.dev/browse/TAS-163) is unreachable in the
+  deployed configuration. It stays reachable in `rest` mode, with the flag off,
+  and in unit tests — which is where it is proven, deliberately, rather than by
+  a configuration nobody runs. This is the trade: the stand gets its board back
+  today, and the honesty path it just gained is exercised everywhere except the
+  stand.
+- **What it is not:** a workaround for the 500. The board still reports that the
+  project details failed, still shows no name or key, and still has no member
+  list. The only thing that changed is that a read the flag does not consult
+  stopped deciding whether the user may write.
 - **User-visible effect:** a project appears to have exactly one member; the
   assignee filter and chips can only ever offer the current user.
 - **Two further consequences** (found by `api-contract-guard`, 2026-08-03):
@@ -106,7 +230,11 @@ it. Entries are deleted only when the compensating code is deleted.
   demoted to `VIEWER`. The synthesis both over- and under-grants.
 - **Removal:** [TAS-137](https://jira.ozero.dev/browse/TAS-137). When it
   ships, delete `HybridTaskaApi`, drop `VITE_TASKA_ASSUME_PROJECT_ADMIN`, and
-  default `VITE_TASKA_API_MODE` to `rest`.
+  default `VITE_TASKA_API_MODE` to `rest`. The flag lives in five places, and
+  deleting only the first is what makes a removal look finished when it is
+  not: `src/api/client.ts`, `.github/workflows/deploy-pages.yml`,
+  `.env.example`, `README.md`, and the GitHub repository variable itself
+  (`gh variable list`).
 - **Risk while open:** with the flag on, every caller gets an `ADMIN` view of
   the UI; role gating is unverifiable in this mode and a passing permission
   check proves nothing.
