@@ -83,13 +83,29 @@ export class HybridTaskaApi implements TaskaApi {
   }
 
   async getMembership(projectId: string): Promise<ProjectMembership> {
+    // With the assumption on, every field below is already decided: the role is
+    // ADMIN by assumption, and the other two are constants. The project read
+    // contributed nothing to the answer and was the only thing in it that could
+    // fail — so on the deployed stand, where the flag is on, TAS-162's 500 on
+    // `GET /projects/{id}` was taking write access away from the board over a
+    // result that was then thrown away.
+    //
+    // This is not a workaround for that 500 and must not grow into one. The
+    // board still shows the project-details failure, its name and key are still
+    // missing, and `listMembers` below still needs the project for `addedAt`
+    // and `addedBy` and still fails honestly when it cannot have it. All this
+    // does is stop a read the flag does not use from deciding who may write.
+    if (this.assumeProjectAdmin) {
+      return { role: "ADMIN", isMember: true, projectExists: true };
+    }
+
     const [project, currentUser] = await Promise.all([
       this.live.getProject(projectId),
       this.live.getCurrentUser(),
     ]);
 
     return {
-      role: this.assumeProjectAdmin || project.createdBy === currentUser.id ? "ADMIN" : "VIEWER",
+      role: project.createdBy === currentUser.id ? "ADMIN" : "VIEWER",
       isMember: true,
       projectExists: true,
     };

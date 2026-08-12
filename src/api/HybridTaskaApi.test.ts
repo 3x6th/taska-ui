@@ -33,16 +33,45 @@ describe("HybridTaskaApi", () => {
     expect(getWorkflow).toHaveBeenCalledWith(project.id, undefined);
   });
 
-  it("synthesises membership without calling the unimplemented endpoint", async () => {
+  it("synthesises membership without calling any endpoint at all", async () => {
     const live = liveApi();
-    const getMembership = vi.spyOn(live, "getMembership");
-
     const hybrid = new HybridTaskaApi(live, true);
     const [project] = await hybrid.listProjects();
+
+    // Spied after the setup call above, so these count only what the membership
+    // read itself does.
+    const getMembership = vi.spyOn(live, "getMembership");
+    const getProject = vi.spyOn(live, "getProject");
+    const getCurrentUser = vi.spyOn(live, "getCurrentUser");
+
     const membership = await hybrid.getMembership(project.id);
 
-    expect(getMembership).not.toHaveBeenCalled();
     expect(membership).toEqual({ role: "ADMIN", isMember: true, projectExists: true });
+    // The endpoint that does not exist yet (TAS-137) is still not called — and
+    // neither are the two that do. Under this flag the answer is a constant,
+    // so a read of the project only added a way for it to fail; the absence of
+    // the call is the point, not the ADMIN above it.
+    expect(getMembership).not.toHaveBeenCalled();
+    expect(getProject).not.toHaveBeenCalled();
+    expect(getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  // The reason the call had to go: on the deployed stand this flag is on and
+  // `GET /projects/{id}` is a 500 (TAS-162), which used to revoke write access
+  // to the whole board. What must NOT follow is a member list invented without
+  // the project — `addedAt` and `addedBy` only exist there.
+  it("keeps the assumed role when the project read is failing, and still fails the member list", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    const [project] = await live.listProjects();
+    vi.spyOn(live, "getProject").mockRejectedValue(new Error("Internal error"));
+
+    await expect(hybrid.getMembership(project.id)).resolves.toEqual({
+      role: "ADMIN",
+      isMember: true,
+      projectExists: true,
+    });
+    await expect(hybrid.listMembers(project.id)).rejects.toThrow("Internal error");
   });
 
   it("reports a single member — the current user — and nobody else", async () => {
@@ -100,5 +129,18 @@ describe("HybridTaskaApi", () => {
 
     expect(own).toBeDefined();
     await expect(hybrid.getMembership(own!.id)).resolves.toMatchObject({ role: "ADMIN" });
+  });
+
+  // Without the flag the project read is not decoration: it is where the role
+  // comes from. A failure there has to reach the caller, because a role that
+  // could not be derived is not one this class may invent — and the board's
+  // "your role could not be loaded" state is exactly what that failure feeds.
+  it("rejects when the project read fails and the assumption is off", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, false);
+    const [project] = await live.listProjects();
+    vi.spyOn(live, "getProject").mockRejectedValue(new Error("Internal error"));
+
+    await expect(hybrid.getMembership(project.id)).rejects.toThrow("Internal error");
   });
 });
