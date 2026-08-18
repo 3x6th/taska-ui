@@ -125,7 +125,7 @@ export function AdminRowsTable({
                       masked — not on every row. Outside the sort button so it
                       does not join that button's accessible name. */}
                   {sensitiveColumns.has(column) ? (
-                    <span className="admin-masked-head">
+                    <span className="admin-masked-head" title="masked column">
                       <Lock aria-hidden="true" size={10} />
                       <span className="visually-hidden">{", masked column"}</span>
                     </span>

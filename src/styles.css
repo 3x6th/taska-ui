@@ -260,18 +260,35 @@ textarea:disabled {
    hover on the wordmark, and the same focus ring as every other control. */
 .topbar-home {
   display: inline-flex;
+  /* It became a control, so it takes §1's floor: 32 in the bar's own density,
+     44 where a finger has to find it. The bar is 52 tall, so both fit without
+     moving anything; the negative margin keeps the wordmark optically flush
+     with the page's left edge despite the padding the target needs. */
+  align-items: center;
+  min-height: 32px;
+  margin-left: -6px;
+  padding: 0 6px;
   border-radius: 8px;
   color: inherit;
   text-decoration: none;
 }
 
-.topbar-home:hover .logo-text {
-  color: var(--fg-2);
+/* A wash, not a dim. Every other hover in this shell moves toward --fg; a logo
+   that fades on hover reads as being switched off. --surface-2 on the bar's
+   --surface is the same step .admin-rail-link takes. */
+.topbar-home:hover {
+  background: var(--surface-2);
 }
 
 .topbar-home:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline-offset: 2px;
+}
+
+@media (max-width: 767px) {
+  .topbar-home {
+    min-height: 44px;
+  }
 }
 
 .logo-mark {

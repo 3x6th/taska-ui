@@ -41,6 +41,19 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   operates on the underlying column. Unreachable from the console, since
   sensitive columns are stripped from both sort and filter — but the mock is the
   reference implementation.
+- **Contrast leftovers from the TAS-161 review** (`art-director`, 2026-08-18):
+  `.admin-hidden-cell` at `--fg-3` on a hovered row (`--surface-3`) measures
+  2.60:1 light / 2.82:1 dark, under §7's 3:1 floor. Pre-existing, but the hover
+  rule and that token pair now meet on every row of a `HIDE` column.
+- **`.logo-text` declares no `color`** while §1 forbids implicit text colour; the
+  only rule that sets it is a `:hover`.
+- **A `HIDE` column stacks a header lock over an identical lock in every row**
+  (12 visible at 390 on `auth.sessions`). Worth suppressing the cell glyph when
+  the whole column is withheld — the word `hidden` already carries the cell.
+- **On `/projects` the logo links to `/projects`.** Either `aria-current="page"`
+  or no link on the current route.
+- **`/admin/data/auth/<unknown-table>` sits on "Loading rows…" forever** — no
+  terminal error, no empty state. Pre-existing, outside the TAS-161 diff.
 - **Masking leftovers from the TAS-161 review** (release-reviewer, 2026-08-18),
   all in the admin console and none blocking:
   - `isWithheld` tests `value.includes("*")`. A shape test —

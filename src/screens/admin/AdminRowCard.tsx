@@ -106,7 +106,7 @@ export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }:
                   <dt>
                     {column.name}
                     {column.sensitive ? (
-                      <span className="admin-masked-head">
+                      <span className="admin-masked-head" title="masked column">
                         <Lock aria-hidden="true" size={10} />
                         <span className="visually-hidden">{", masked column"}</span>
                       </span>
@@ -124,8 +124,12 @@ export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }:
                       .join(" ")}
                   >
                     {isWithheld(column.sensitive, value) ? (
+                      // No lock here, unlike the table: the term sits directly
+                      // above the value, and two identical padlocks 38px apart
+                      // read as a stutter rather than as two statements. The
+                      // table keeps its cell lock because there the column's
+                      // own label is far away in the frozen header.
                       <span aria-label="withheld by the server" className="admin-hidden-cell">
-                        <Lock aria-hidden="true" size={11} />
                         hidden
                       </span>
                     ) : (
