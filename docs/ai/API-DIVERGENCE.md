@@ -70,12 +70,13 @@ it. Entries are deleted only when the compensating code is deleted.
   [TAS-163](https://jira.ozero.dev/browse/TAS-163) and fixed on
   `fix/TAS-163-board-resilience`; this entry stays open until the gateway is
   fixed regardless.
-- **Drag works again on the stand from 2026-08-12, and the 500 is still here.**
+- **Drag came back on 2026-08-12, six days before the 500 did.**
   `getMembership` stopped reading the project when
   `VITE_TASKA_ASSUME_PROJECT_ADMIN` is on (see the membership entry below), so
-  this endpoint no longer decides whether anyone may write. Everything else the
-  500 breaks it still breaks: no project name, no key, no member list, no
-  assignee row. Do not read a working board as evidence that this is fixed.
+  this endpoint stopped deciding whether anyone may write. Everything else the
+  500 broke it went on breaking until the fix below: no project name, no key,
+  no member list, no assignee row. The lesson outlives the bug — a working
+  board was never evidence that this endpoint worked.
 - **Fixed on the stand, verified 2026-08-18** with a `GLOBAL_ADMIN` token
   against `api.taska.ozero.dev`, on backend `7fb303b53ba6`: **200** with a full
   `ProjectResponseDto` for three ids spanning the range that used to fail —
@@ -438,7 +439,15 @@ it. Entries are deleted only when the compensating code is deleted.
 - **Removal:** the backend TODOs. Worth its own backend story;
   [TAS-103](https://jira.ozero.dev/browse/TAS-103) is the umbrella.
 
-### The read-only rows endpoint 500s on a plain first-page read
+### Closed by TAS-103: the read-only rows endpoint answers 200
+
+- **Resolved 2026-08-18** on backend `7fb303b53ba6`. Everything below is the
+  history of a fault that no longer reproduces: reads answer **200** with rows,
+  and the failure travelled through two further shapes on the way out — first
+  the parameter-independent 500 recorded here, then the filter-map 400 and the
+  missing primary key recorded in the two entries above. Kept because the
+  sequence is the record of how the endpoint was actually debugged, and because
+  TAS-156 was filed against the first shape and needs closing against the last.
 
 - **Endpoints:** `GET /api/v1/readonly/catalog` — named
   `GET /api/v1/readonly/metadata` when this entry was written, and renamed by
@@ -864,14 +873,17 @@ it. Entries are deleted only when the compensating code is deleted.
   `No primary key found for table: <table>`. So the missing key does not merely
   disable the row card — it makes the **unsorted** read impossible, which is the
   read the console issues first.
-- **Root cause is one query.** `MetadataSchemaRepository.findPrimaryKeys` selects
-  from `information_schema.table_constraints` joined to `key_column_usage`
-  filtered by `tc.table_schema = :schema`. It returns nothing for any of the six
-  schemas, while `findColumns` against the same schemas returns every column —
-  so the schema value is right and the constraint lookup is what comes back
-  empty.
-- **Removal:** the backend. This is now the highest-value fix in the area: it
-  unblocks the default read, sorting-free paging, and the row card at once.
+- **Root cause was one query.** `MetadataSchemaRepository.findPrimaryKeys`
+  selected from `information_schema.table_constraints` joined to
+  `key_column_usage` filtered by `tc.table_schema = :schema`, and returned
+  nothing for any of the six schemas while `findColumns` against the same
+  schemas returned every column — so the schema value was right and the
+  constraint lookup was what came back empty.
+- **Fixed, verified 2026-08-18** on backend `7fb303b53ba6`: the catalog names a
+  primary key on every table, and the unsorted default read
+  (`GET /readonly/issue/issues?pageSize=3`, no `sort`) answers **200** with
+  rows. Both halves this entry described are gone. See the sibling `primaryKey`
+  entry above for the per-table detail.
 
 ### Closed by TAS-104: sensitive columns arrive flagged and already masked
 

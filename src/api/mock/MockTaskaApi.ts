@@ -1169,7 +1169,10 @@ export class MockTaskaStore {
         // The other half of the same rule: `MASK_PARTIAL` keeps the first and
         // last character and stars the middle, which is a value — degraded, but
         // enough to tell two rows apart — and the console prints it.
-        recovery_email: `${user.email[0]}${"*".repeat(5)}${user.email.slice(-9)}`,
+        recovery_email:
+          user.email.length <= 2
+            ? "***"
+            : `${user.email[0]}${"*".repeat(user.email.length - 2)}${user.email.slice(-1)}`,
         // Spans one and two digits on purpose: 5 and 10 order one way as
         // numbers and the other way as text, so a numeric column compared as a
         // string — in a filter or in a sort — is visible here rather than only

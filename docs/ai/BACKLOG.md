@@ -19,6 +19,22 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **Masking leftovers from the TAS-161 review** (release-reviewer, 2026-08-18),
+  all in the admin console and none blocking:
+  - `isWithheld` tests `value.includes("*")`. A shape test —
+    `v === "***" || /^.\*+.$/.test(v)` — would fail *closed* if the backend ever
+    changes `maskPartial`, where the substring test fails open. It would also
+    close the one false positive: a legitimate value containing `*` on a flagged
+    column, reachable in principle for the free-form `auth.credentials.meta`.
+  - `isWithheld(true, null)` returns `false`, so a sensitive null draws the `—`
+    dash. From backend source a correct server can never send it — all three
+    treatments write a string or drop the key — so reaching that branch *means*
+    masking did not run, and the dash then leaks set-versus-unset. Treating it as
+    withheld is a two-word change.
+  - `aria-label` on the `.admin-hidden-cell` span is name-prohibited on
+    `role=generic` in ARIA 1.2. Chrome honours it, NVDA may not. Pre-existing,
+    and it wants a `role="img"` or a visually-hidden span instead.
+
 - **Toast component** (`DESIGN.md` §5.6 is the contract). Unlocks two things
   at once: optimistic rollbacks stop failing silently, and `requestId` gets a
   place to appear once the gateway exposes it over CORS (TAS-141).

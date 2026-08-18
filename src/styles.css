@@ -1694,19 +1694,26 @@ h1 {
   outline-offset: 2px;
 }
 
-/* Reads as a stated absence, not as a value. */
 /* The lock that marks a masked *column*, in the table's header and on the
-   card's term. Small, --fg-3 and inline after the name: it is a property of
-   the column, so it sits with the column's name once rather than in every one
-   of its cells. A cell only carries its own lock when nothing came back at
-   all, which keeps the two locks saying two different things. */
+   card's term. Inline after the name: it is a property of the column, so it
+   sits with the column's name once rather than in every one of its cells. A
+   cell only carries its own lock when nothing came back at all, which keeps
+   the two locks saying two different things.
+
+   It inherits the header's own --fg-2 rather than taking --fg-3, which is the
+   colour the rest of this section's chrome uses. --fg-3 on the sticky header's
+   --surface-2 is 2.76:1 in the light theme — under §7's 3:1 floor, and §7
+   already names this exact token pair as a known defect. On a MASK_PARTIAL
+   column this glyph is the only thing telling a sighted reader that
+   a*****ample.com is not what is stored, so it is not chrome. */
 .admin-masked-head {
   display: inline-flex;
   margin-left: 4px;
-  color: var(--fg-3);
+  color: inherit;
   vertical-align: middle;
 }
 
+/* Reads as a stated absence, not as a value. */
 .admin-hidden-cell {
   display: inline-flex;
   align-items: center;

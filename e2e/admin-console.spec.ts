@@ -5,8 +5,11 @@ import { expect, test, type Page } from "@playwright/test";
 // seeded user's email signs in with any password. Mark is the seed's only
 // GLOBAL_ADMIN, so he is the only one who can reach this section at all.
 //
-// The seed's `auth.users` table carries a column the catalog marks sensitive,
-// which is what makes the masking assertions here mean something.
+// The seed carries one column per masking treatment the gateway applies
+// (TAS-104), which is what makes the masking assertions here mean something:
+// `auth.users.password_hash` arrives as `"***"` (MASK_FULL) and
+// `recovery_email` partly starred (MASK_PARTIAL), and `auth.sessions.token_hash`
+// does not arrive at all (HIDE).
 
 async function openConsole(page: Page) {
   await page.goto("/login");
@@ -54,7 +57,14 @@ test("never renders the value of a column the catalog marked sensitive", async (
   // The column is named — hiding its existence would misrepresent the schema —
   // but no row shows what is in it.
   await expect(page.getByText("hidden").first()).toBeVisible();
-  await expect(page.locator("body")).not.toContainText("$2b$10$");
+  // Not `$2b$10$`: the mock stopped sending a raw hash when it started masking
+  // the way the gateway masks, so asserting the hash is absent now passes
+  // whatever the console does. What still means something is that the masked
+  // column prints nothing but the lock — the literal the server sends in its
+  // place must not reach the cell either.
+  await expect(page.getByRole("cell", { name: "***", exact: true })).toHaveCount(0);
+  // And the partial mask is printed, which is the other half of the rule.
+  await expect(page.getByRole("cell", { name: /^a\*+m$/ })).toBeVisible();
 
   // Settled state after a table switch. Note what this does NOT prove: the
   // transient leak that used to happen mid-switch is invisible to Playwright,
