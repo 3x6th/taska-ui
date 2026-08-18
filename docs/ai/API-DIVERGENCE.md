@@ -27,7 +27,11 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ---
 
-## Open — runtime differs from the contract
+## Runtime differs from the contract
+
+Headings starting with "Closed by" are settled and kept for their history;
+everything else here is live.
+
 
 ### Closed by TAS-154: `GET /projects/{projectId}` answers 200
 
@@ -205,7 +209,10 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ---
 
-## Open — the contract is silent or lacks what the UI needs
+## The contract is silent or lacks what the UI needs
+
+Same rule as above: "Closed by" is settled, the rest is live.
+
 
 ### No membership or member-read endpoints
 
@@ -666,7 +673,13 @@ it. Entries are deleted only when the compensating code is deleted.
   and says why, rather than defaulting to "nothing here is sensitive" — which on
   screen is indistinguishable from a genuinely harmless table. Pinned by a test
   that fails when the guard is removed.
-- **Removal:** an observed `200` from both endpoints showing the names agree.
+- **Removal:** the *rows* schema stating that `meta.service` and `meta.table`
+  are the catalog's own identifiers. Not an observation — one was made on
+  2026-08-18 and is recorded above (`auth.users` echoed `"service": "auth"`,
+  `"table": "users"`, matching the catalog character for character), and it did
+  not close this entry: two schemas that constrain each other in no way can
+  agree on every table anyone has looked at and still disagree on the next one.
+  Only the contract saying so turns the join from observed into guaranteed.
 
 ### The allow-list is the real control, and the client half is defence in depth
 

@@ -31,6 +31,7 @@ const {
   holdRows,
   releaseRows,
   failCatalog,
+  serveCatalog,
   failRows,
   failRow,
   setMetaMismatch,
@@ -45,6 +46,7 @@ const {
     rowsGate?: Promise<void>;
     rowsRelease?: () => void;
     catalogFailure?: Error;
+    catalogOverride?: typeof catalog;
     rowsFailure?: Error;
     rowFailure?: Error;
     metaMismatch?: boolean;
@@ -168,7 +170,7 @@ const {
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
     getAdminCatalog: async () => {
       if (state.catalogFailure) throw state.catalogFailure;
-      return catalog;
+      return state.catalogOverride ?? catalog;
     },
     listAdminRows: async (query: AdminRowsQuery) => {
       state.rowsQuery = query;
@@ -257,6 +259,10 @@ const {
     },
     failCatalog: (failure?: Error) => {
       state.catalogFailure = failure;
+    },
+    /** Serve a different catalog, for the shapes the seed cannot express. */
+    serveCatalog: (replacement?: typeof catalog) => {
+      state.catalogOverride = replacement;
     },
     /**
      * Fail the *rows* request, which every error test used to leave untested —
@@ -356,6 +362,7 @@ describe("/admin", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(anna);
@@ -489,6 +496,7 @@ describe("/admin sections under construction", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
@@ -547,6 +555,7 @@ describe("/admin console", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
@@ -636,6 +645,36 @@ describe("/admin console", () => {
     expect(home).toHaveAttribute("href", "/projects");
   });
 
+  // The mirror of the fail-closed test below. `sensitive` is optional in the
+  // contract and a missing flag reads as `true`, so a gateway that stops
+  // sending it produces a *successful* read in which every column is locked —
+  // key included — with no sort, no filter form and no row links. Silently,
+  // that is indistinguishable from a table which really is all secret.
+  it("says so when every column of a table comes back sensitive", async () => {
+    const allSecret = {
+      services: [
+        {
+          name: "auth",
+          databaseAlias: "taska_auth",
+          tables: [
+            {
+              name: "users",
+              primaryKey: "id",
+              columns: [
+                { name: "id", type: "uuid", sensitive: true },
+                { name: "email", type: "character varying", sensitive: true },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    serveCatalog(allSecret);
+    renderAdmin("/admin/data/auth/users");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/marks every column/i);
+  });
+
   it("names the scroll container so it can be reached and scrolled from the keyboard", async () => {
     renderAdmin();
 
@@ -703,6 +742,7 @@ describe("/admin console selection in the URL", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
@@ -1085,6 +1125,7 @@ describe("/admin console, opening one row", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     failRow(undefined);
     setMetaMismatch(false);
@@ -1210,6 +1251,7 @@ describe("/admin console, when the catalog and the rows disagree", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
@@ -1244,6 +1286,7 @@ describe("/admin console error copy", () => {
     // The fake's failures are module state and outlive a test, so each of these
     // starts from "nothing is failing" and breaks exactly one call.
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     failRow(undefined);
     setMetaMismatch(false);

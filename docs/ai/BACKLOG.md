@@ -41,6 +41,11 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   operates on the underlying column. Unreachable from the console, since
   sensitive columns are stripped from both sort and filter — but the mock is the
   reference implementation.
+- **`title="masked column"` sits on a `role=generic` span** that already carries
+  the visually-hidden `", masked column"`. Name-from-author is prohibited on
+  generic, and the header computes correctly with no doubling in Chrome — but
+  some AT surfaces `title` as a description, so this wants a manual AT pass.
+  Same family as the `aria-label` note on `.admin-hidden-cell`.
 - **Contrast leftovers from the TAS-161 review** (`art-director`, 2026-08-18):
   `.admin-hidden-cell` at `--fg-3` on a hovered row (`--surface-3`) measures
   2.60:1 light / 2.82:1 dark, under §7's 3:1 floor. Pre-existing, but the hover

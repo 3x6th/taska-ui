@@ -274,10 +274,15 @@ textarea:disabled {
 }
 
 /* A wash, not a dim. Every other hover in this shell moves toward --fg; a logo
-   that fades on hover reads as being switched off. --surface-2 on the bar's
-   --surface is the same step .admin-rail-link takes. */
+   that fades on hover reads as being switched off.
+
+   --surface-3, not -2, for the reason already written out above
+   `.admin-row-opens`: the bar's own plane is --surface, and -2 against it is a
+   step *down* — 1.04:1 in dark, no signal at all. The theme toggle beside it
+   gets away with -2 because it also moves --fg-2 to --fg; the wordmark already
+   rests at --fg, so the background is the only channel left here. */
 .topbar-home:hover {
-  background: var(--surface-2);
+  background: var(--surface-3);
 }
 
 .topbar-home:focus-visible {
