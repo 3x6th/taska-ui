@@ -46,6 +46,12 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   generic, and the header computes correctly with no doubling in Chrome — but
   some AT surfaces `title` as a description, so this wants a manual AT pass.
   Same family as the `aria-label` note on `.admin-hidden-cell`.
+- **No screen-level test pins 403 to the Not-found screen.** `errors.test.ts`
+  pins the collapse in `isMissingOrForbidden`, and `BoardScreen.test.tsx` uses a
+  404 — so the path that is now the *production* answer for "not yours"
+  (observed 2026-08-18) is covered only by the helper beneath it. Deferred out
+  of the docs-only branch that found it, on purpose: adding a test there would
+  have pulled a second reviewer role onto a documentation change.
 - **Contrast leftovers from the TAS-161 review** (`art-director`, 2026-08-18):
   `.admin-hidden-cell` at `--fg-3` on a hovered row (`--surface-3`) measures
   2.60:1 light / 2.82:1 dark, under §7's 3:1 floor. Pre-existing, but the hover
