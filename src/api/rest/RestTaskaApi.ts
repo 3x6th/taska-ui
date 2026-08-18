@@ -485,7 +485,20 @@ export class RestTaskaApi implements TaskaApi {
         ...service,
         name: service.name ?? "",
         databaseAlias: service.databaseAlias ?? "",
-        tables: (service.tables ?? []).map((table) => ({ ...table, columns: table.columns ?? [] })),
+        tables: (service.tables ?? []).map((table) => ({
+          ...table,
+          // `sensitive` is the one field here that decides whether a secret is
+          // drawn, and `ColumnMetadataDto` has no `required` block — a gateway
+          // may legally omit it while `AdminColumn.sensitive` asserts a boolean.
+          // Absent therefore means sensitive, not harmless: the deployed
+          // catalog sends the field on every column today, so treating a
+          // missing one as `true` costs nothing now and fails closed if that
+          // ever stops being true. The alternative — defaulting to `false` —
+          // would drop the column's lock, print `"***"` as data, and let the
+          // column be sorted on, which is the leak `withoutSensitive` exists to
+          // prevent.
+          columns: (table.columns ?? []).map((column) => ({ ...column, sensitive: column.sensitive !== false })),
+        })),
       })),
     };
   }

@@ -254,6 +254,48 @@ textarea:disabled {
   gap: 8px;
 }
 
+/* The logo doubles as the way home (§5.1) — on /admin it is the only way back
+   to the projects short of the browser's own. It must not start reading as a
+   text link, so it keeps the logo's colours and takes only a cursor, a quiet
+   hover on the wordmark, and the same focus ring as every other control. */
+.topbar-home {
+  display: inline-flex;
+  /* It became a control, so it takes §1's floor: 32 in the bar's own density,
+     44 where a finger has to find it. The bar is 52 tall, so both fit without
+     moving anything; the negative margin keeps the wordmark optically flush
+     with the page's left edge despite the padding the target needs. */
+  align-items: center;
+  min-height: 32px;
+  margin-left: -6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* A wash, not a dim. Every other hover in this shell moves toward --fg; a logo
+   that fades on hover reads as being switched off.
+
+   --surface-3, not -2, for the reason already written out above
+   `.admin-row-opens`: the bar's own plane is --surface, and -2 against it is a
+   step *down* — 1.04:1 in dark, no signal at all. The theme toggle beside it
+   gets away with -2 because it also moves --fg-2 to --fg; the wordmark already
+   rests at --fg, so the background is the only channel left here. */
+.topbar-home:hover {
+  background: var(--surface-3);
+}
+
+.topbar-home:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 767px) {
+  .topbar-home {
+    min-height: 44px;
+  }
+}
+
 .logo-mark {
   display: inline-flex;
   align-items: center;
@@ -1672,6 +1714,25 @@ h1 {
 .admin-open-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* The lock that marks a masked *column*, in the table's header and on the
+   card's term. Inline after the name: it is a property of the column, so it
+   sits with the column's name once rather than in every one of its cells. A
+   cell only carries its own lock when nothing came back at all, which keeps
+   the two locks saying two different things.
+
+   It inherits the header's own --fg-2 rather than taking --fg-3, which is the
+   colour the rest of this section's chrome uses. --fg-3 on the sticky header's
+   --surface-2 is 2.76:1 in the light theme — under §7's 3:1 floor, and §7
+   already names this exact token pair as a known defect. On a MASK_PARTIAL
+   column this glyph is the only thing telling a sighted reader that
+   a*****ample.com is not what is stored, so it is not chrome. */
+.admin-masked-head {
+  display: inline-flex;
+  margin-left: 4px;
+  color: inherit;
+  vertical-align: middle;
 }
 
 /* Reads as a stated absence, not as a value. */

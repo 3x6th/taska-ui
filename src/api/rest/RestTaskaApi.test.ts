@@ -655,6 +655,59 @@ describe("RestTaskaApi read-only admin", () => {
     ).resolves.toEqual({ services: [] });
   });
 
+  // `ColumnMetadataDto` has no `required` block, so the gateway may legally send
+  // a column with no `sensitive` at all — while the domain type asserts a
+  // boolean and the whole masking rule reads it. Absent has to mean sensitive:
+  // defaulting it to `false` drops the column's lock, prints the masking literal
+  // as data, and lets the column be sorted on.
+  it("treats a column with no sensitive flag as sensitive", async () => {
+    const fetchStub = vi.fn(async () =>
+      answer({
+        services: [
+          {
+            name: "auth",
+            tables: [
+              {
+                name: "credentials",
+                columns: [{ name: "id", type: "uuid", sensitive: false }, { name: "secret_hash", type: "text" }],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const catalog = await new RestTaskaApi().getAdminCatalog();
+    const columns = catalog.services[0].tables[0].columns;
+
+    expect(columns[0].sensitive).toBe(false);
+    expect(columns[1].sensitive).toBe(true);
+  });
+
+  // `HIDE` deletes the key from the row rather than nulling it, and that is the
+  // only thing telling the console "withheld" apart from "empty". Anything on
+  // the way through that filled the gap in — a `?? null`, a per-row mapper —
+  // would turn a withheld secret into a value that reads as absent, and only
+  // against the real gateway: the mock and the screen fakes cannot show it.
+  it("lets a key the server removed from a row stay removed", async () => {
+    const fetchStub = vi.fn(async () =>
+      answer({
+        data: [{ id: "c1", user_id: "u1" }],
+        meta: { service: "auth", table: "credentials", columns: ["id", "user_id", "secret_hash"] },
+        pagination: { currentPage: 0, pageSize: 20, totalRows: 1, totalPages: 1, hasNext: false, hasPrev: false },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const rows = await new RestTaskaApi().listAdminRows({ service: "auth", table: "credentials", page: 1 });
+
+    expect("secret_hash" in rows.rows[0]).toBe(false);
+    expect(rows.rows[0].secret_hash).toBeUndefined();
+    // The column is still named, which is what puts a header over an empty cell.
+    expect(rows.meta.columns).toContain("secret_hash");
+  });
+
   it("escapes a service or table name rather than letting it reshape the path", async () => {
     const url = await urlFor({ service: "auth", table: "../../users" });
 

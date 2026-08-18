@@ -5,7 +5,7 @@ import { taskaApi } from "../../api/client";
 import type { AdminTable } from "../../domain/types";
 import { useCopied } from "../../hooks/useCopied";
 import { AdminError } from "./AdminError";
-import { formatCell, isAlignedType } from "./columns";
+import { formatCell, isAlignedType, isWithheld } from "./columns";
 
 interface AdminRowCardProps {
   service: string;
@@ -100,19 +100,36 @@ export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }:
               const value = rowQuery.data?.[column.name];
               return (
                 <div className="admin-card-field" key={column.name}>
-                  <dt>{column.name}</dt>
+                  {/* The same split as the table: the term carries the lock
+                      that says the column is masked, so a partly starred value
+                      below it cannot read as what is stored. */}
+                  <dt>
+                    {column.name}
+                    {column.sensitive ? (
+                      <span className="admin-masked-head" title="masked column">
+                        <Lock aria-hidden="true" size={10} />
+                        <span className="visually-hidden">{", masked column"}</span>
+                      </span>
+                    ) : null}
+                  </dt>
                   <dd
                     className={[
                       "admin-card-value",
                       isAlignedType(column.type) ? "admin-cell-mono" : "",
-                      value === null || value === undefined ? "admin-card-null" : "",
+                      (value === null || value === undefined) && !isWithheld(column.sensitive, value)
+                        ? "admin-card-null"
+                        : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
                   >
-                    {column.sensitive ? (
-                      <span aria-label="hidden by the catalog" className="admin-hidden-cell">
-                        <Lock aria-hidden="true" size={11} />
+                    {isWithheld(column.sensitive, value) ? (
+                      // No lock here, unlike the table: the term sits directly
+                      // above the value, and two identical padlocks 38px apart
+                      // read as a stutter rather than as two statements. The
+                      // table keeps its cell lock because there the column's
+                      // own label is far away in the frozen header.
+                      <span aria-label="withheld by the server" className="admin-hidden-cell">
                         hidden
                       </span>
                     ) : (

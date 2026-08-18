@@ -31,6 +31,7 @@ const {
   holdRows,
   releaseRows,
   failCatalog,
+  serveCatalog,
   failRows,
   failRow,
   setMetaMismatch,
@@ -45,6 +46,7 @@ const {
     rowsGate?: Promise<void>;
     rowsRelease?: () => void;
     catalogFailure?: Error;
+    catalogOverride?: typeof catalog;
     rowsFailure?: Error;
     rowFailure?: Error;
     metaMismatch?: boolean;
@@ -70,7 +72,15 @@ const {
             columns: [
               { name: "id", type: "uuid", sensitive: false },
               { name: "email", type: "character varying", sensitive: false },
+              // One column per masking treatment the gateway applies (TAS-104):
+              // `password_hash` arrives unmasked here on purpose — that is the
+              // gateway forgetting to mask, and it must still not reach the
+              // screen — `recovery_email` is partially masked and is meant to
+              // be read, and `token_hash` is hidden, so no row carries the key
+              // at all while the catalog still names the column.
               { name: "password_hash", type: "character varying", sensitive: true },
+              { name: "recovery_email", type: "character varying", sensitive: true },
+              { name: "token_hash", type: "character varying", sensitive: true },
               { name: "failed_logins", type: "integer", sensitive: false },
               // Every class the filter form draws a different control for:
               // text, number, boolean, timestamp — and `id`, a type the gateway
@@ -108,12 +118,25 @@ const {
 
   const rowsByTable: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {
     "auth.users": {
-      columns: ["id", "email", "password_hash", "failed_logins", "email_verified", "created_at"],
+      columns: [
+        "id",
+        "email",
+        "password_hash",
+        "recovery_email",
+        "token_hash",
+        "failed_logins",
+        "email_verified",
+        "created_at",
+      ],
       rows: [
         {
           id: "u1",
           email: "anna@example.com",
           password_hash: SECRET_VALUE,
+          recovery_email: "a**************m",
+          // `token_hash` is absent, not null: a hidden column is deleted from
+          // the row, which is the only way the console can tell it apart from
+          // a column that is simply empty.
           failed_logins: 2,
           email_verified: true,
           created_at: null,
@@ -147,7 +170,7 @@ const {
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
     getAdminCatalog: async () => {
       if (state.catalogFailure) throw state.catalogFailure;
-      return catalog;
+      return state.catalogOverride ?? catalog;
     },
     listAdminRows: async (query: AdminRowsQuery) => {
       state.rowsQuery = query;
@@ -236,6 +259,10 @@ const {
     },
     failCatalog: (failure?: Error) => {
       state.catalogFailure = failure;
+    },
+    /** Serve a different catalog, for the shapes the seed cannot express. */
+    serveCatalog: (replacement?: typeof catalog) => {
+      state.catalogOverride = replacement;
     },
     /**
      * Fail the *rows* request, which every error test used to leave untested —
@@ -335,6 +362,7 @@ describe("/admin", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(anna);
@@ -468,6 +496,7 @@ describe("/admin sections under construction", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
@@ -526,6 +555,7 @@ describe("/admin console", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
@@ -544,9 +574,45 @@ describe("/admin console", () => {
 
     // The column exists and is named; only its values are withheld.
     expect(await screen.findByRole("columnheader", { name: /password_hash/ })).toBeVisible();
-    expect(screen.getByText("hidden")).toBeVisible();
+    expect(screen.getAllByText("hidden").length).toBeGreaterThan(0);
     expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain(SECRET);
+  });
+
+  /**
+   * The gateway masks server-side now (TAS-104) and does it three ways, so
+   * "sensitive" stopped meaning one thing on screen. A partial mask is a value
+   * — it answers which mailbox a row belongs to — and the console printing a
+   * lock over it threw away the entire reason the backend was asked for a
+   * partial mask rather than a full one.
+   */
+  it("prints a partial mask rather than hiding it", async () => {
+    renderAdmin();
+
+    expect(await screen.findByRole("cell", { name: "a**************m" })).toBeVisible();
+  });
+
+  // What keeps the printed stars from reading as the stored value: the lock
+  // moves to the column, where it is said once instead of on every row.
+  it("marks a masked column in its header, and only a masked one", async () => {
+    renderAdmin();
+
+    expect(await screen.findByRole("columnheader", { name: "recovery_email, masked column" })).toBeVisible();
+    expect(screen.getByRole("columnheader", { name: "password_hash, masked column" })).toBeVisible();
+    expect(screen.getByRole("columnheader", { name: "email" })).toBeVisible();
+  });
+
+  // A hidden column arrives as a header with nothing behind it. The cell has to
+  // say the server withheld it, or an admin reads it as an empty value and goes
+  // looking for a bug in the data.
+  it("withholds a column the gateway removed from the row entirely", async () => {
+    renderAdmin();
+    const row = (await screen.findByRole("cell", { name: "u1" })).closest("tr")!;
+    const cells = within(row).getAllByRole("cell");
+    const columns = screen.getAllByRole("columnheader").map((header) => header.textContent ?? "");
+
+    const tokenCell = cells[columns.findIndex((name) => name.startsWith("token_hash"))];
+    expect(within(tokenCell).getByText("hidden")).toBeVisible();
   });
 
   // The dash that stands in for an absent value is chrome, not data, and §5.8
@@ -564,7 +630,49 @@ describe("/admin console", () => {
     expect(within(row).getByRole("cell", { name: "anna@example.com" })).not.toHaveClass("admin-cell-null");
     // The masked cell is not "absent" — it has a value, and saying otherwise
     // would leak the difference between an empty secret and a set one.
-    expect(within(row).getByText("hidden").closest("td")).not.toHaveClass("admin-cell-null");
+    for (const withheld of within(row).getAllByText("hidden")) {
+      expect(withheld.closest("td")).not.toHaveClass("admin-cell-null");
+    }
+  });
+
+  // Not the only way out — the rail has "Back to projects" at its foot — but it
+  // is the one every reader tries first, and the top of the page had nothing
+  // clickable on it at all.
+  it("goes back to the projects from the logo", async () => {
+    renderAdmin();
+
+    const home = await screen.findByRole("link", { name: "Taska — all projects" });
+    expect(home).toHaveAttribute("href", "/projects");
+  });
+
+  // The mirror of the fail-closed test below. `sensitive` is optional in the
+  // contract and a missing flag reads as `true`, so a gateway that stops
+  // sending it produces a *successful* read in which every column is locked —
+  // key included — with no sort, no filter form and no row links. Silently,
+  // that is indistinguishable from a table which really is all secret.
+  it("says so when every column of a table comes back sensitive", async () => {
+    const allSecret = {
+      services: [
+        {
+          name: "auth",
+          databaseAlias: "taska_auth",
+          tables: [
+            {
+              name: "users",
+              primaryKey: "id",
+              columns: [
+                { name: "id", type: "uuid", sensitive: true },
+                { name: "email", type: "character varying", sensitive: true },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    serveCatalog(allSecret);
+    renderAdmin("/admin/data/auth/users");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/marks every column/i);
   });
 
   it("names the scroll container so it can be reached and scrolled from the keyboard", async () => {
@@ -589,7 +697,7 @@ describe("/admin console", () => {
     // Wait for the rows themselves, not just the caption: the caption renders
     // from the selection before any data has arrived.
     expect(await screen.findByRole("cell", { name: "u1" })).toBeVisible();
-    expect(screen.getByText("hidden")).toBeVisible();
+    expect(screen.getAllByText("hidden").length).toBeGreaterThan(0);
 
     holdRows();
     fireEvent.click(screen.getByRole("link", { name: "audit_log" }));
@@ -602,7 +710,7 @@ describe("/admin console", () => {
     // Mid-switch: the old rows are still on screen, still masked, and still
     // captioned with the table they actually belong to.
     expect(document.body.textContent).not.toContain(SECRET);
-    expect(screen.getByText("hidden")).toBeVisible();
+    expect(screen.getAllByText("hidden").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "auth.users" })).toBeVisible();
 
     await act(async () => {
@@ -634,6 +742,7 @@ describe("/admin console selection in the URL", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
@@ -1016,6 +1125,7 @@ describe("/admin console, opening one row", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     failRow(undefined);
     setMetaMismatch(false);
@@ -1083,7 +1193,7 @@ describe("/admin console, opening one row", () => {
     // The column is named — the card must not misrepresent the row's shape —
     // and only its value is withheld.
     expect(await screen.findByText("password_hash")).toBeVisible();
-    expect(screen.getByText("hidden")).toBeVisible();
+    expect(screen.getAllByText("hidden").length).toBeGreaterThan(0);
     expect(document.body.textContent).not.toContain(SECRET);
   });
 
@@ -1141,6 +1251,7 @@ describe("/admin console, when the catalog and the rows disagree", () => {
     releaseMe();
     releaseRows();
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     setMetaMismatch(false);
     setCurrentUser(admin);
@@ -1175,6 +1286,7 @@ describe("/admin console error copy", () => {
     // The fake's failures are module state and outlive a test, so each of these
     // starts from "nothing is failing" and breaks exactly one call.
     failCatalog(undefined);
+    serveCatalog(undefined);
     failRows(undefined);
     failRow(undefined);
     setMetaMismatch(false);

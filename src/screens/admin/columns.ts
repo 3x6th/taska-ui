@@ -146,3 +146,55 @@ export function formatCell(value: unknown): string {
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
 }
+
+/**
+ * The literal a fully masked value arrives as. `admin-service` replaces the
+ * whole value with it, so this is a protocol constant rather than a guess
+ * about content.
+ */
+const fullyMaskedValue = "***";
+
+/**
+ * Whether this cell has to be shown as withheld rather than printed.
+ *
+ * `admin-service` masks sensitive columns server-side in three ways and the
+ * catalog does not say which one a column got — it says only `sensitive:
+ * true`. So the treatment has to be read off the value that arrived, which is
+ * the one place the distinction survives:
+ *
+ * - `HIDE` deletes the key from the row, so it arrives as `undefined`;
+ * - `MASK_FULL` replaces the value with `"***"`;
+ * - `MASK_PARTIAL` keeps the first and last character and stars the middle.
+ *
+ * The first two are the same fact to a reader — nothing came back — and both
+ * get the lock. The third is a value: degraded, but real. `n****a@mail.ru`
+ * answers "which mailbox is this?", and hiding it behind a lock throws away
+ * the entire point of having asked for a partial mask. The column's own header
+ * carries the lock that says the column is masked, so a partly starred value
+ * cannot be mistaken for what is stored.
+ *
+ * `null` is neither case: an absent value rather than a withheld one, and it
+ * reads as the same `—` as any other null. Only a missing *key* means the
+ * server took the column away, and JSON keeps those two apart for us.
+ *
+ * The last clause is the one that is not about display. A sensitive value is
+ * printed only when it carries evidence of having been masked — a `*` — and a
+ * sensitive column that arrives in clear is withheld here anyway. That is not
+ * hypothetical: printing whatever the gateway sends is exactly the regression
+ * `AdminScreen.test.tsx` pins, where a password hash reached the screen. The
+ * catalog said the column holds secrets; if the value contradicts that, the
+ * catalog is the one we believe. `maskPartial` on the backend stars every
+ * result it produces — a value of two characters or fewer, and `null` itself,
+ * come back as `"***"` — so this rule cannot withhold a genuinely masked cell.
+ */
+export function isWithheld(sensitive: boolean, value: unknown): boolean {
+  if (!sensitive) return false;
+  if (value === undefined) return true;
+  // An absent value is not a withheld one, and the column header already says
+  // the column is masked.
+  if (value === null) return false;
+  if (value === fullyMaskedValue) return true;
+  // A non-string on a secret column cannot be checked for masking at all, so
+  // it does not get printed.
+  return typeof value !== "string" || !value.includes("*");
+}

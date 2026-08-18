@@ -220,7 +220,15 @@ export interface Page<T> {
 export interface AdminColumn {
   name: string;
   type: string;
-  /** Column the catalog marks as holding secrets. Its values are never rendered. */
+  /**
+   * Column the catalog marks as holding secrets. The server masks it before it
+   * leaves admin-service, three different ways, so this flag says the column is
+   * masked — not that nothing of it is drawn. A partial mask is a value and is
+   * printed; see `isWithheld` for which of the three arrived.
+   *
+   * The contract does not require the field. `RestTaskaApi` defaults a missing
+   * one to `true`, so this is a boolean by the time anything reads it.
+   */
   sensitive: boolean;
 }
 

@@ -112,6 +112,21 @@ export function AdminDataSection() {
     () => new Set(shownTable?.columns.filter((column) => column.sensitive).map((column) => column.name) ?? []),
     [shownTable],
   );
+  // The other end of the same fail-closed rule, and the state it produces has
+  // to say so. `sensitive` is optional in the contract, and `RestTaskaApi`
+  // reads a missing flag as `true` — so a gateway that stops sending the field
+  // turns a *successful* read into a table where every column is locked, the
+  // key included, with no sort, no filter form and no row links. That is
+  // indistinguishable on screen from a table which genuinely holds nothing but
+  // secrets, and this file already argues four lines above that a state we
+  // cannot tell apart from a real one must not be entered silently.
+  //
+  // A real table whose every column — including its primary key — is a secret
+  // does not exist, so there is nothing to guard against a false positive here.
+  const everyColumnSensitive =
+    shownTable !== undefined &&
+    shownTable.columns.length > 0 &&
+    sensitiveColumns.size === shownTable.columns.length;
 
   const update = (changes: Partial<AdminViewState>) => {
     // Replace rather than push: paging and sorting a table would otherwise pile
@@ -292,6 +307,14 @@ export function AdminDataSection() {
             <p>
               The catalog does not describe {rows?.meta.service}.{rows?.meta.table}, so this table cannot be shown
               without risking a column that should have stayed hidden.
+            </p>
+          </div>
+        ) : everyColumnSensitive ? (
+          <div className="admin-note" role="alert">
+            <p>
+              The catalog marks every column of {rows?.meta.service}.{rows?.meta.table} as sensitive, including its
+              key. That is far more likely to mean the catalog stopped stating which columns hold secrets than that
+              this table is all secret, so every column is being treated as one.
             </p>
           </div>
         ) : rows && shownTable ? (

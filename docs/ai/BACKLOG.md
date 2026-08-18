@@ -19,6 +19,62 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **Record leftovers from the TAS-161 review** (`api-contract-guard`,
+  2026-08-18), all in `docs/ai/API-DIVERGENCE.md` and all the same shape — a
+  claim pinned to a state the 2026-08-18 stand session moved past:
+  - the page-basis entry still says the response echo "could not be observed"
+    and that no request has ever returned a `pagination` object, which a
+    different entry answers 100 lines earlier;
+  - the empty `sortableColumns`/`filterableColumns` entry is pinned to
+    "Still true at `b22a2e020574`" while the snapshot moved to `7fb303b53ba6`
+    and that session had `meta` in hand.
+- **`AdminRowsTable` takes columns from `rows.meta.columns` and `sensitive` from
+  the catalog**, so a column in `meta` and absent from the catalog is drawn with
+  no lock. Not a plaintext leak while the server masks — it would print `"***"`
+  as data. The mock cannot reproduce it: it derives `meta.columns` from the
+  catalog. Fail-closed already holds at table granularity, not at column
+  granularity.
+- **`IssuePriority` and `UserStatus` are closed unions over contract-open
+  strings**, with no narrowing at the mapper and no divergence entry. The
+  existing "status keys are open" entry covers only workflow `statusKey`.
+- **The mock filters and sorts already-masked values** where the gateway
+  operates on the underlying column. Unreachable from the console, since
+  sensitive columns are stripped from both sort and filter — but the mock is the
+  reference implementation.
+- **`title="masked column"` sits on a `role=generic` span** that already carries
+  the visually-hidden `", masked column"`. Name-from-author is prohibited on
+  generic, and the header computes correctly with no doubling in Chrome — but
+  some AT surfaces `title` as a description, so this wants a manual AT pass.
+  Same family as the `aria-label` note on `.admin-hidden-cell`.
+- **Contrast leftovers from the TAS-161 review** (`art-director`, 2026-08-18):
+  `.admin-hidden-cell` at `--fg-3` on a hovered row (`--surface-3`) measures
+  2.60:1 light / 2.82:1 dark, under §7's 3:1 floor. Pre-existing, but the hover
+  rule and that token pair now meet on every row of a `HIDE` column.
+- **`.logo-text` declares no `color`** while §1 forbids implicit text colour; the
+  only rule that sets it is a `:hover`.
+- **A `HIDE` column stacks a header lock over an identical lock in every row**
+  (12 visible at 390 on `auth.sessions`). Worth suppressing the cell glyph when
+  the whole column is withheld — the word `hidden` already carries the cell.
+- **On `/projects` the logo links to `/projects`.** Either `aria-current="page"`
+  or no link on the current route.
+- **`/admin/data/auth/<unknown-table>` sits on "Loading rows…" forever** — no
+  terminal error, no empty state. Pre-existing, outside the TAS-161 diff.
+- **Masking leftovers from the TAS-161 review** (release-reviewer, 2026-08-18),
+  all in the admin console and none blocking:
+  - `isWithheld` tests `value.includes("*")`. A shape test —
+    `v === "***" || /^.\*+.$/.test(v)` — would fail *closed* if the backend ever
+    changes `maskPartial`, where the substring test fails open. It would also
+    close the one false positive: a legitimate value containing `*` on a flagged
+    column, reachable in principle for the free-form `auth.credentials.meta`.
+  - `isWithheld(true, null)` returns `false`, so a sensitive null draws the `—`
+    dash. From backend source a correct server can never send it — all three
+    treatments write a string or drop the key — so reaching that branch *means*
+    masking did not run, and the dash then leaks set-versus-unset. Treating it as
+    withheld is a two-word change.
+  - `aria-label` on the `.admin-hidden-cell` span is name-prohibited on
+    `role=generic` in ARIA 1.2. Chrome honours it, NVDA may not. Pre-existing,
+    and it wants a `role="img"` or a visually-hidden span instead.
+
 - **Toast component** (`DESIGN.md` §5.6 is the contract). Unlocks two things
   at once: optimistic rollbacks stop failing silently, and `requestId` gets a
   place to appear once the gateway exposes it over CORS (TAS-141).

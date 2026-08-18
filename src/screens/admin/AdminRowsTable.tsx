@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { AdminRow, AdminRows, AdminSortOrder, AdminTable } from "../../domain/types";
 import { useCopied } from "../../hooks/useCopied";
-import { formatCell, isAlignedType } from "./columns";
+import { formatCell, isAlignedType, isWithheld } from "./columns";
 
 interface AdminRowsTableProps {
   rows: AdminRows;
@@ -80,7 +80,9 @@ export function AdminRowsTable({
       // §5.8 gives it `--fg-3` in the table exactly as on the card. Marked on
       // the cell rather than inside `formatCell`, which stays a pure string and
       // keeps telling `null` apart from the string "null".
-      (value === null || value === undefined) && !sensitiveColumns.has(column) ? "admin-cell-null" : "",
+      (value === null || value === undefined) && !isWithheld(sensitiveColumns.has(column), value)
+        ? "admin-cell-null"
+        : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -117,6 +119,17 @@ export function AdminRowsTable({
                   ) : (
                     column
                   )}
+                  {/* The masking marker belongs to the column, not to each of
+                      its cells: a partly starred value is still a value, and
+                      the reader needs to be told once that the column is
+                      masked — not on every row. Outside the sort button so it
+                      does not join that button's accessible name. */}
+                  {sensitiveColumns.has(column) ? (
+                    <span className="admin-masked-head" title="masked column">
+                      <Lock aria-hidden="true" size={10} />
+                      <span className="visually-hidden">{", masked column"}</span>
+                    </span>
+                  ) : null}
                 </th>
               );
             })}
@@ -170,14 +183,15 @@ export function AdminRowsTable({
                   <td className={cellClass(column, row[column]) || undefined} key={column}>
                     {column === frozenColumn && !sensitiveColumns.has(column) ? (
                       <PrimaryKeyCell value={formatCell(row[column])} />
-                    ) : sensitiveColumns.has(column) ? (
-                      // The catalog says this column holds secrets. Say that it
-                      // exists and stop there — not a masked length, which leaks
-                      // one. The label distinguishes a withheld cell from one
-                      // whose content happens to be the word "hidden", and
-                      // deliberately avoids the word "value" so it cannot collide
-                      // with the filter form's own labels.
-                      <span aria-label="hidden by the catalog" className="admin-hidden-cell">
+                    ) : isWithheld(sensitiveColumns.has(column), row[column]) ? (
+                      // The server sent nothing for this cell — either the whole
+                      // value replaced by `***` or the key removed from the row.
+                      // Say that it exists and stop there, without a masked
+                      // length, which would leak one. The label distinguishes a
+                      // withheld cell from one whose content happens to be the
+                      // word "hidden", and deliberately avoids the word "value"
+                      // so it cannot collide with the filter form's own labels.
+                      <span aria-label="withheld by the server" className="admin-hidden-cell">
                         <Lock aria-hidden="true" size={11} />
                         hidden
                       </span>

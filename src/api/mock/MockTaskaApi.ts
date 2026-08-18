@@ -892,7 +892,8 @@ export class MockTaskaStore {
    * The read-only admin API looks at the *services' own tables*, not at the
    * product model, so this is deliberately a separate shape rather than a view
    * over `this.projects` and friends: snake_case columns, database ids, and one
-   * `sensitive` column so the masking path is reachable without a gateway.
+   * column per masking treatment — `MASK_FULL`, `MASK_PARTIAL` and `HIDE` —
+   * so all three render paths are reachable without a gateway.
    * Rows are derived from the same seed where it is cheap, so a table the
    * console shows agrees with the app around it.
    *
@@ -926,6 +927,7 @@ export class MockTaskaStore {
                 { name: "status", type: "character varying", sensitive: false },
                 { name: "global_role", type: "character varying", sensitive: false },
                 { name: "password_hash", type: "character varying", sensitive: true },
+                { name: "recovery_email", type: "character varying", sensitive: true },
                 { name: "failed_logins", type: "integer", sensitive: false },
                 { name: "email_verified", type: "boolean", sensitive: false },
                 { name: "created_at", type: "timestamp with time zone", sensitive: false },
@@ -941,6 +943,7 @@ export class MockTaskaStore {
               columns: [
                 { name: "id", type: "uuid", sensitive: false },
                 { name: "user_id", type: "uuid", sensitive: false },
+                { name: "token_hash", type: "character varying", sensitive: true },
                 { name: "ip_address", type: "inet", sensitive: false },
                 { name: "revoked", type: "boolean", sensitive: false },
                 { name: "expires_at", type: "timestamp with time zone", sensitive: false },
@@ -1158,9 +1161,18 @@ export class MockTaskaStore {
         display_name: user.displayName,
         status: user.status,
         global_role: user.globalRole ?? null,
-        // Never rendered — the catalog marks the column sensitive. Present so
-        // that masking is exercised against a value rather than against a gap.
-        password_hash: `$2b$10$mock${index}`,
+        // Masked here, not in the client. `admin-service` replaces a
+        // `MASK_FULL` column's value with this exact literal before it leaves
+        // the server, so a mock that sent the real hash and trusted the console
+        // to hide it would be teaching a shape the gateway never sends.
+        password_hash: "***",
+        // The other half of the same rule: `MASK_PARTIAL` keeps the first and
+        // last character and stars the middle, which is a value — degraded, but
+        // enough to tell two rows apart — and the console prints it.
+        recovery_email:
+          user.email.length <= 2
+            ? "***"
+            : `${user.email[0]}${"*".repeat(user.email.length - 2)}${user.email.slice(-1)}`,
         // Spans one and two digits on purpose: 5 and 10 order one way as
         // numbers and the other way as text, so a numeric column compared as a
         // string — in a filter or in a sort — is visible here rather than only
@@ -1177,6 +1189,10 @@ export class MockTaskaStore {
       return Array.from({ length: 45 }, (_, index) => ({
         id: `9c1f${String(index + 1).padStart(4, "0")}-0000-4000-8000-0000000${String(index + 1).padStart(5, "0")}`,
         user_id: [ANNA_ID, MARK_ID, SOFIA_ID][index % 3],
+        // `token_hash` is deliberately absent: a `HIDE` column is deleted from
+        // the row altogether, so the console meets a missing key rather than a
+        // masked value. The catalog still names it, which is the case the table
+        // has to survive — a column with a header and no cell behind it.
         ip_address: `10.0.${index % 8}.${index % 251}`,
         revoked: index % 3 === 0,
         expires_at: `2026-09-${String((index % 28) + 1).padStart(2, "0")}T08:00:00Z`,
