@@ -655,10 +655,13 @@ Same rule as above: "Closed by" is settled, the rest is live.
   both invisible to anyone reading the contract. If the backend changes the
   masking literal, nothing type-checks and no test fails; the console simply
   starts printing `***` as though it were data.
-- **Removal:** the contract stating the masking treatment per column — either as
-  an enum beside `sensitive` in `ColumnMetadataDto`, or as prose naming the
-  literal and the missing-key case. An enum would let the console stop guessing
-  from values altogether.
+- **Removal:** [TAS-165](https://jira.ozero.dev/browse/TAS-165) — the contract
+  stating the masking treatment per column, either as an enum beside `sensitive`
+  in `ColumnMetadataDto` or as prose naming the literal and the missing-key
+  case. An enum lets the console stop guessing from values altogether, and
+  deletes the guess from all four places it is written. The same ticket carries
+  the `PaginationInfoDto.currentPage` basis sentence, since both are contract
+  wording rather than behaviour.
 
 ### Masking depends on a join the contract does not guarantee
 
