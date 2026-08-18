@@ -1675,6 +1675,18 @@ h1 {
 }
 
 /* Reads as a stated absence, not as a value. */
+/* The lock that marks a masked *column*, in the table's header and on the
+   card's term. Small, --fg-3 and inline after the name: it is a property of
+   the column, so it sits with the column's name once rather than in every one
+   of its cells. A cell only carries its own lock when nothing came back at
+   all, which keeps the two locks saying two different things. */
+.admin-masked-head {
+  display: inline-flex;
+  margin-left: 4px;
+  color: var(--fg-3);
+  vertical-align: middle;
+}
+
 .admin-hidden-cell {
   display: inline-flex;
   align-items: center;

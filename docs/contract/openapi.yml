@@ -1,7 +1,7 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: b22a2e020574 (develop, 2026-08-11)
-# Fetched: 2026-08-11
+# Backend commit: 7fb303b53ba6 (develop, 2026-08-14)
+# Fetched: 2026-08-18
 #
 # The backend repository is the single source of truth for this contract.
 # This copy exists so read-only reviewers without network access can audit
@@ -985,6 +985,8 @@ paths:
           description: |
             Фильтры по колонкам таблицы. Формат ключа: column.operator.
 
+            Параметры page, pageSize, sort, order — не фильтры (пагинация/сортировка).
+
             Поддерживаемые операторы:
             - .equals — точное совпадение (column = value)
             - .contains — поиск по подстроке (column LIKE '%value%')
@@ -995,10 +997,10 @@ paths:
             - ?status.equals=active → status = 'active'
             - ?email.contains=@gmail.com → email LIKE '%@gmail.com%'
             - ?created_at.from=2026-01-01T00:00:00Z → created_at >= '2026-01-01'
-            - ?status=active&assignee_id=123 → комбинация фильтров
+            - ?status.equals=active&email.contains=@test.com → комбинация фильтров
 
             Каждый ключ фильтра может быть указан только один раз.
-            При дублировании (?status=active&status=blocked) будет использовано только одно значение.
+            При дублировании (?status.equals=active&status.equals=blocked) будет использовано только одно значение.
       responses:
         '200':
           description: Данные успешно получены

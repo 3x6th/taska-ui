@@ -29,7 +29,7 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ## Open — runtime differs from the contract
 
-### `GET /projects/{projectId}` 500s on every existing project
+### Closed by TAS-154: `GET /projects/{projectId}` answers 200
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}`
 - **Contract:** `200` with `ProjectResponseDto`.
@@ -76,10 +76,25 @@ it. Entries are deleted only when the compensating code is deleted.
   this endpoint no longer decides whether anyone may write. Everything else the
   500 breaks it still breaks: no project name, no key, no member list, no
   assignee row. Do not read a working board as evidence that this is fixed.
-- **Removal:** [TAS-162](https://jira.ozero.dev/browse/TAS-162) (backend). The
-  request ids above identify the failure in the gateway log.
-  [TAS-137](https://jira.ozero.dev/browse/TAS-137) independently removes the
-  coupling that turns this endpoint into a permissions outage.
+- **Fixed on the stand, verified 2026-08-18** with a `GLOBAL_ADMIN` token
+  against `api.taska.ozero.dev`, on backend `7fb303b53ba6`: **200** with a full
+  `ProjectResponseDto` for three ids spanning the range that used to fail —
+  `c9594240…` (`API`, created 2026-07-30, one of the seven originally observed),
+  `9e6ee639…` (`TEST_154`) and `c2ed3fd0…` (`TAS`). Not one 500. The fix is
+  [TAS-154](https://jira.ozero.dev/browse/TAS-154), which added a membership
+  check to `project-service`'s read path — the mapping fault this entry
+  localised was in the code that check replaced.
+- **What is not yet observed:** a **non-member** reading a project. Every id
+  above was read by the user who created it, so the new membership check passed
+  trivially and its refusal has never been seen. The refusal shape is the open
+  question the entry below (`GET /projects/{id}` never says what "not yours"
+  looks like) already tracks, and TAS-154 makes it reachable for the first time
+  — a second, non-admin token is all it needs.
+- **Removal:** this entry stays until
+  [TAS-137](https://jira.ozero.dev/browse/TAS-137) removes the coupling that
+  turned this endpoint into a permissions outage, and until the non-member case
+  above is observed. [TAS-162](https://jira.ozero.dev/browse/TAS-162) is
+  answered.
 
 ### A failed workflow read is silently replaced by the mock's workflow
 
@@ -499,7 +514,7 @@ it. Entries are deleted only when the compensating code is deleted.
 - **Removal:** a backend fix. The request id above identifies the failure in the
   gateway log.
 
-### Nothing in the real catalog is marked sensitive, and the columns that hold secrets are not the ones the masking config names
+### Closed by TAS-104: the catalog flags the columns that really hold secrets
 
 - **Endpoint:** `GET /api/v1/readonly/catalog` (`/readonly/metadata` when
   observed)
@@ -526,13 +541,32 @@ it. Entries are deleted only when the compensating code is deleted.
   column is a secret if the server does not say so, and guessing from column
   names is exactly the kind of hidden rule this file exists to prevent. The
   console's masking is correct and inert.
-- **Removal:** [TAS-104](https://jira.ozero.dev/browse/TAS-104), which owns
-  masking and is still To Do. This entry is the concrete column list it needs.
-- **Order of operations matters:** TAS-104 should land *before or with*
-  [TAS-156](https://jira.ozero.dev/browse/TAS-156). Fixing the 500 first opens
-  the tables while nothing is flagged.
+- **Fixed, verified 2026-08-18** on backend `7fb303b53ba6`. The config no
+  longer names columns that do not exist; it names the ones this entry listed,
+  and the catalog flags them:
 
-### `primaryKey` is null on every table
+  | Column | Treatment |
+  | --- | --- |
+  | `auth.credentials.secret_hash` | `HIDE` |
+  | `auth.refresh_tokens.token_hash` | `HIDE` |
+  | `auth.invite_tokens.token_hash` | `HIDE` |
+  | `auth.credentials.algo`, `auth.credentials.meta` | `MASK_FULL` (the default) |
+  | `issue.idempotency_keys.request_hash` | `MASK_FULL` |
+  | `notification.notification_preferences.email` | `MASK_PARTIAL` |
+  | `notification.email_delivery_attempts.to_email` | `MASK_PARTIAL` |
+
+  Read live, not from source: `credentials` rows come back with `meta` and
+  `algo` as `"***"` and **no `secret_hash` key at all**, while `id`, `provider`
+  and `subject` still carry their real values — including explicit `null`s, so a
+  missing key is genuinely a removed column rather than a dropped null.
+- **The order-of-operations worry is spent.** TAS-104 landed before the tables
+  opened, which is the sequence this entry asked for. The hashes never rendered
+  in clear.
+- **Note `auth.users.email` is *not* flagged** while `notification…email` is.
+  That is the config's decision and the console follows it either way, but it
+  means the same address is printed whole on one table and starred on another.
+
+### Closed by TAS-103: `primaryKey` is populated, and rows are addressable
 
 - **Endpoint:** `GET /api/v1/readonly/catalog` (`/readonly/metadata` when
   observed)
@@ -549,8 +583,42 @@ it. Entries are deleted only when the compensating code is deleted.
   workaround: a link built on a guessed key would address the wrong row, or a
   column that is not unique, and the card would confidently show a stranger's
   data.
-- **Removal:** the backend populating it. Until then the row card is a
-  mock-only feature, alongside everything else the 500 already blocks.
+- **Fixed, verified 2026-08-18** on backend `7fb303b53ba6`: every table in the
+  catalog names one — `id` on most, `project_id` on `project_settings` and
+  `project_members`, `user_id` on `notification_preferences`. The row card is no
+  longer mock-only. Note that the three non-`id` keys are exactly the tables
+  `isAddressableKey` still refuses, and correctly: they are `uuid`, but a
+  `project_members` row is keyed by `(project_id, user_id)` in truth, so a card
+  addressed by `project_id` alone would show one member and claim to be the
+  row.
+
+### The contract says a column is sensitive but never says what that does to the value
+
+- **Endpoints:** `GET /api/v1/readonly/catalog` and
+  `GET /api/v1/readonly/{service}/{table}`
+- **The gap, as of backend `7fb303b53ba6`:** the word `mask` does not appear
+  anywhere in `openapi.yml`. The catalog's `sensitive: true` is the only thing
+  stated, and it is a boolean — it does not say *which* of the three treatments
+  a column got. Nor does the rows schema mention that `"***"` is a reserved
+  value, or that a property the catalog names may be **absent from the row
+  object entirely**, which is what `HIDE` does. A reader with only the contract
+  would conclude that every declared column is present on every row.
+- **Compensation:** `isWithheld` in `src/screens/admin/columns.ts` recovers the
+  treatment from the value that arrived, because that is the only place the
+  distinction survives: a missing key is `HIDE`, `"***"` is `MASK_FULL`, and
+  anything else on a flagged column is a partial mask and is printed. The rule
+  is documented at length there rather than inferred at three call sites, and
+  `columns.test.ts` pins each branch.
+- **Why this is worth writing down rather than absorbing:** the compensation
+  depends on `"***"` being exactly three asterisks and on `MASK_PARTIAL` always
+  producing at least one — both true in `SensitiveColumnMaskService` today, and
+  both invisible to anyone reading the contract. If the backend changes the
+  masking literal, nothing type-checks and no test fails; the console simply
+  starts printing `***` as though it were data.
+- **Removal:** the contract stating the masking treatment per column — either as
+  an enum beside `sensitive` in `ColumnMetadataDto`, or as prose naming the
+  literal and the missing-key case. An enum would let the console stop guessing
+  from values altogether.
 
 ### Masking depends on a join the contract does not guarantee
 
@@ -567,7 +635,7 @@ it. Entries are deleted only when the compensating code is deleted.
   that fails when the guard is removed.
 - **Removal:** an observed `200` from both endpoints showing the names agree.
 
-### Client-side masking is cosmetic, and the allow-list is the real control
+### The allow-list is the real control, and the client half is defence in depth
 
 - **Good news, established from backend source** (2026-08-05): sensitive values
   are withheld *server-side*. `admin-service`'s `SensitiveColumnMaskService`
@@ -576,12 +644,27 @@ it. Entries are deleted only when the compensating code is deleted.
   flag and the masking cannot disagree, and the console's own masking is defence
   in depth rather than the only protection. The earlier open question here is
   answered favourably and closed.
-- **The part that remains true anyway:** masking is a config allow-list,
-  currently `users.password_hash`, `users.token_hash`, `users.secret_hash`,
-  `users.refresh_token`, `users.access_token`. A secret column not on that list
-  is neither flagged nor masked, and the UI cannot do better than the flag it is
-  given. A `jsonb` column with a secret nested inside it is likewise beyond what
-  a column-level flag can express, and the console prints such a cell whole.
+- **The part that remains true anyway:** masking is a config allow-list. A
+  secret column not on it is neither flagged nor masked, and the UI cannot do
+  better than the flag it is given. A `jsonb` column with a secret nested inside
+  it is likewise beyond what a column-level flag can express, and the console
+  prints such a cell whole. (The list itself is no longer wrong — see the
+  TAS-104 entries above — but it is still a list.)
+- **Updated 2026-08-18: "cosmetic" is no longer the right word for the client
+  half.** TAS-104 shipped three treatments, not one, and the console now has a
+  decision to make rather than a blanket rule to apply. `HIDE` and `MASK_FULL`
+  are the same fact to a reader — nothing came back — and both draw the lock.
+  `MASK_PARTIAL` is a value, and drawing a lock over `n****a@mail.ru` threw away
+  the entire reason the backend was asked for a partial mask, so it is printed
+  and the lock moves to the column header. `isWithheld` in
+  `src/screens/admin/columns.ts` is where the three are told apart.
+- **The defence in depth is now explicit, and it is the reason that function is
+  not a one-liner.** A sensitive value is printed only if it carries evidence of
+  having been masked — a `*`. A sensitive column that arrives in clear is
+  withheld anyway, on the grounds that the catalog said it holds secrets and a
+  hash that reaches the screen cannot be recalled. This costs nothing against a
+  correct server: `maskPartial` stars every result it produces, returning
+  `"***"` for `null` and for any value of two characters or fewer.
 - **And:** whatever the server does send is in the response body, the
   react-query cache and devtools regardless of what is drawn. The console
   drawing "hidden" is not a security boundary.
@@ -671,7 +754,7 @@ it. Entries are deleted only when the compensating code is deleted.
   either it errors, in which case the operator comes out, or it works, in which
   case only the resolution mismatch remains.
 
-### The contract's filter examples contradict its own format rule
+### Closed: the contract fixed its own filter examples
 
 - **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
 - **Contract:** states «Формат ключа: column.operator» and then gives
@@ -686,7 +769,14 @@ it. Entries are deleted only when the compensating code is deleted.
   filter.
 - **Compensation:** `RestTaskaApi` always emits `column.operator`; the spelling
   is pinned by tests so it cannot drift back.
-- **Removal:** the contract fixing its own examples.
+- **Fixed in the contract, verified 2026-08-18** on backend `7fb303b53ba6`. The
+  combination example now reads
+  `?status.equals=active&email.contains=@test.com`, the duplicate-key example
+  was corrected the same way, and a new line states that `page`, `pageSize`,
+  `sort` and `order` are not filters. This is the whole of the contract diff
+  between `b22a2e020574` and `7fb303b53ba6` — the endpoint set did not change.
+- **Nothing to do on this side:** the contract moved to where `RestTaskaApi`
+  already was.
 
 ### Unknown filter operators are now rejected, not ignored
 
@@ -704,7 +794,7 @@ it. Entries are deleted only when the compensating code is deleted.
   anyway, because they are now guarding against a 400 rather than against a
   silent lie.
 
-### The gateway reads `page`, `pageSize`, `sort` and `order` as filter keys, so every declared parameter is a 400
+### Closed by TAS-103: the declared parameters are no longer read as filters
 
 - **Endpoint:** `GET /api/v1/readonly/{service}/{table}`
 - **Observed 2026-08-11** against `api.taska.ozero.dev` with a real
@@ -717,37 +807,49 @@ it. Entries are deleted only when the compensating code is deleted.
   | no query string at all | **404** `No primary key found for table: statuses` |
   | `?status_key.equals=todo` | 404 — past the filter parser, dies on the same missing key |
 
-- **What this means:** the `filter` catch-all is capturing **every** query
+- **What that meant:** the `filter` catch-all was capturing **every** query
   parameter, including the four the contract declares as parameters in their own
-  right. There is no request this endpoint currently answers with rows. Paging,
-  sorting and the plain default read are each a 400, and the one shape that gets
-  past the parser then hits the entry below.
-- **The 500 that TAS-156 was filed for is gone.** That bug reported a
-  parameter-independent `Internal error` on every table; the failure has moved,
-  not persisted. The ticket needs re-pointing rather than closing — the endpoint
-  is still unusable, for two new and much more specific reasons.
-- **Effect on this frontend:** `RestTaskaApi.listAdminRows` always sends `page`
-  and `pageSize`, so against the deployed gateway every read is a 400. TAS-161's
-  4xx branch renders it correctly — "The gateway would not accept this request",
-  the server's own sentence naming `page`, and the request id — which is the
-  first time this screen has shown a *useful* failure. Before that fix it would
-  have said the API could not be reached.
-- **Compensation:** none, and none is appropriate. The frontend cannot stop
-  sending the parameters the contract requires it to send.
-- **Removal:** a backend fix — the filter map must exclude the declared
-  parameters. Note the contract itself is not wrong here; `style: form,
-  explode: true` on a free-form object beside four named parameters is a normal
-  OpenAPI construction, and the binding is what mis-implements it.
-- **A fix is in flight** (backend, confirmed 2026-08-11). When it lands, this
-  entry and the `primaryKey` one below should close together — and the **first**
-  thing to do with the first `200` this endpoint ever returns is read
-  `pagination.currentPage` on a request for page 2. That is the one assumption in
-  this feature that has never met a real answer; everything else here has either
-  been observed or read from source. Do it before celebrating that rows appeared,
-  because rows appearing is exactly the moment an off-by-one page number stops
-  being noticeable.
+  right. There was no request the endpoint answered with rows — paging, sorting
+  and the plain default read were each a 400, and the one shape that got past
+  the parser then hit the missing primary key.
+- **The 500 TAS-156 was filed for was already gone by then.** That bug reported
+  a parameter-independent `Internal error` on every table; the failure had
+  moved, not persisted.
+- **Effect on this frontend while it lasted:** `RestTaskaApi.listAdminRows`
+  always sends `page` and `pageSize`, so every read against the deployed gateway
+  was a 400. TAS-161's 4xx branch rendered it correctly — "The gateway would not
+  accept this request", the server's own sentence naming `page`, and the request
+  id. That branch has not been exercised by this fault since, and is now only
+  reachable through a genuinely bad filter.
+- **Compensation:** none was possible, and none was appropriate. The frontend
+  cannot stop sending the parameters the contract requires it to send.
+- **The contract was never wrong here.** `style: form, explode: true` on a
+  free-form object beside four named parameters is a normal OpenAPI
+  construction; the binding mis-implemented it. The contract has since gained
+  prose saying the four are not filters, which is documentation of the fix
+  rather than a change of meaning.
+- **Fixed, verified 2026-08-18** on backend `7fb303b53ba6`.
+  `AdminReadOnlyController.extractColumnFilters` now takes the query parameters
+  off the exchange and removes the four declared ones before the filter map is
+  built, and the contract's prose says so in as many words. Every shape in the
+  table above answers **200** with rows.
+- **The page-basis check this entry demanded, done first, as instructed.**
+  `GET /readonly/issue/issues` with `pageSize=3`, over pages 0, 1 and 2:
 
-### `primaryKey: null` also breaks the default read, not just the row card
+  | Request | `pagination.currentPage` | First row |
+  | --- | --- | --- |
+  | `?pageSize=3` (no page) | `0` | `kappa-test-1` |
+  | `?page=0&pageSize=3` | `0` | `kappa-test-1` |
+  | `?page=1&pageSize=3` | `1` | `API-5` |
+  | `?page=2&pageSize=3` | `2` | `PCAI-11` |
+
+  The wire is 0-based in the request *and* in the echo, the default page is 0,
+  and the three pages hold different rows. So `RestTaskaApi.listAdminRows`'s
+  `page - 1` on the way out and `toPagination`'s `+ 1` on the way back are both
+  right, and the footer counts from 1 over the rows it claims. The one
+  assumption in this feature that had never met a real answer now has one.
+
+### Closed by TAS-103: the default read works, because the key is there
 
 - **Endpoints:** `GET /api/v1/readonly/catalog` and
   `GET /api/v1/readonly/{service}/{table}`
@@ -771,16 +873,15 @@ it. Entries are deleted only when the compensating code is deleted.
 - **Removal:** the backend. This is now the highest-value fix in the area: it
   unblocks the default read, sorting-free paging, and the row card at once.
 
-### Still no sensitive column, now confirmed twice
+### Closed by TAS-104: sensitive columns arrive flagged and already masked
 
 - **Endpoint:** `GET /api/v1/readonly/catalog`
-- **Observed 2026-08-11:** **zero** of 28 tables flag a single column
-  `sensitive`, exactly as on 2026-08-06. TAS-104 is still To Do, and the entry
-  above about `auth.credentials.secret_hash` and the two `token_hash` columns
-  stands unchanged.
-- **Worth restating because the risk got closer:** the console masks exactly
-  what the catalog flags. The moment rows start arriving, hashes render in
-  clear.
+- **Was:** zero of 28 tables flagged a single column, on 2026-08-06 and again
+  on 2026-08-11, while rows were still unreachable — so "the moment rows start
+  arriving, hashes render in clear" was the standing risk.
+- **Observed 2026-08-18:** rows arrive *and* the flags are there, in the same
+  deployment. The risk closed without ever being realised. Details and the
+  column-by-column treatment are in the entry above.
 
 ### The catalog's real column types are all covered by the client's classifier
 

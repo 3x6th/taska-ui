@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { AdminTable } from "../../domain/types";
-import { isAddressableKey, isAlignedType, operatorsForType, supportsOperator, valueControlForType } from "./columns";
+import {
+  isAddressableKey,
+  isAlignedType,
+  isWithheld,
+  operatorsForType,
+  supportsOperator,
+  valueControlForType,
+} from "./columns";
 
 describe("filter operators offered per column type", () => {
   it("offers contains only for text", () => {
@@ -131,6 +138,49 @@ describe("which columns are set in mono", () => {
   it("leaves prose in the UI font", () => {
     for (const type of ["character varying", "text", "boolean", undefined]) {
       expect(isAlignedType(type)).toBe(false);
+    }
+  });
+});
+
+/**
+ * `admin-service` masks server-side in three ways and tells us which one it
+ * used only through the value itself, so this is where the three are told
+ * apart (TAS-104). The rule that a sensitive value must *prove* it was masked
+ * before it is printed is the one worth pinning: it is what stops a gateway
+ * that forgets to mask a column from putting a password hash on screen.
+ */
+describe("which sensitive cells are withheld", () => {
+  it("withholds a hidden column, whose key never arrives", () => {
+    expect(isWithheld(true, undefined)).toBe(true);
+  });
+
+  it("withholds a fully masked value", () => {
+    expect(isWithheld(true, "***")).toBe(true);
+  });
+
+  it("prints a partial mask, which is the whole point of asking for one", () => {
+    expect(isWithheld(true, "n****a@mail.ru")).toBe(false);
+    expect(isWithheld(true, "a*z")).toBe(false);
+  });
+
+  it("withholds a sensitive value that arrived unmasked", () => {
+    // The catalog said this column holds secrets and the value disagrees. The
+    // catalog wins: a hash that reached the screen is not recoverable by
+    // noticing it afterwards.
+    expect(isWithheld(true, "$2b$10$0GkGDkkzq1L5m")).toBe(true);
+    expect(isWithheld(true, 42)).toBe(true);
+    expect(isWithheld(true, { key: "value" })).toBe(true);
+  });
+
+  it("treats a sensitive null as absent rather than withheld", () => {
+    // Absent is not withheld, and the column's header already carries the lock
+    // that says the column is masked.
+    expect(isWithheld(true, null)).toBe(false);
+  });
+
+  it("leaves a column the catalog did not mark alone", () => {
+    for (const value of ["anna@example.com", null, undefined, 0, false]) {
+      expect(isWithheld(false, value)).toBe(false);
     }
   });
 });
