@@ -626,6 +626,16 @@ describe("/admin console", () => {
     }
   });
 
+  // Not the only way out — the rail has "Back to projects" at its foot — but it
+  // is the one every reader tries first, and the top of the page had nothing
+  // clickable on it at all.
+  it("goes back to the projects from the logo", async () => {
+    renderAdmin();
+
+    const home = await screen.findByRole("link", { name: "Taska — all projects" });
+    expect(home).toHaveAttribute("href", "/projects");
+  });
+
   it("names the scroll container so it can be reached and scrolled from the keyboard", async () => {
     renderAdmin();
 

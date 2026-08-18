@@ -254,6 +254,26 @@ textarea:disabled {
   gap: 8px;
 }
 
+/* The logo doubles as the way home (§5.1) — on /admin it is the only way back
+   to the projects short of the browser's own. It must not start reading as a
+   text link, so it keeps the logo's colours and takes only a cursor, a quiet
+   hover on the wordmark, and the same focus ring as every other control. */
+.topbar-home {
+  display: inline-flex;
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.topbar-home:hover .logo-text {
+  color: var(--fg-2);
+}
+
+.topbar-home:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .logo-mark {
   display: inline-flex;
   align-items: center;
