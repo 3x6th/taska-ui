@@ -102,14 +102,14 @@ everything else here is live.
   disguised 404. `isMissingOrForbidden` already covers both the code and the
   status, and `BoardScreen` answers with the Not-found screen — verified end to
   end against the real gateway through the dev proxy: the board URL of a project
-  this user is not in draws "Page doesn't exist, or you don't have access to
-  it", and their own board draws normally. No frontend change needed; the
+  this user is not in draws "This page doesn't exist, or you don't have access
+  to it." — the screen's own words — and their own board draws normally. No frontend change needed; the
   compensation written for the 500 turns out to be the right shape for the 403.
-- **Removal:** this entry stays until
-  [TAS-137](https://jira.ozero.dev/browse/TAS-137) removes the coupling that
-  turned this endpoint into a permissions outage, and until the non-member case
-  above is observed. [TAS-162](https://jira.ozero.dev/browse/TAS-162) is
-  answered.
+- **What is still owed here:** only
+  [TAS-137](https://jira.ozero.dev/browse/TAS-137), which removes the coupling
+  that turned this endpoint into a permissions outage.
+  [TAS-162](https://jira.ozero.dev/browse/TAS-162) is answered, and the
+  non-member case this entry used to wait on is the bullet directly above.
 
 ### A failed workflow read is silently replaced by the mock's workflow
 
@@ -215,10 +215,11 @@ everything else here is live.
   enumerates `401`/`403`, so the server refuses regardless of what the menu
   shows. The `/admin` screen must therefore still render a real 403 rather
   than treat it as unreachable.
-- **Removal:** deploy a gateway at or past `25d0cf7000e5`, then confirm the
-  field on a live response. [TAS-147](https://jira.ozero.dev/browse/TAS-147) is
-  Done at contract level; this entry closes when the runtime is observed, not
-  when the story closed.
+- **What is still owed here:** nothing on the gateway's side — TAS-147 is Done
+  at contract level and the runtime was observed on 2026-08-18. The normaliser
+  in `RestTaskaApi.getCurrentUser` stays until `UNSPECIFIED` is either seen on
+  the wire or dropped from the enum, since it is the only enum member no live
+  response has produced.
 
 ---
 
@@ -274,6 +275,20 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **Risk while open:** with the flag on, every caller gets an `ADMIN` view of
   the UI; role gating is unverifiable in this mode and a passing permission
   check proves nothing.
+
+- **A 401 here signs the reader out, and nothing states when a 401 is the right
+  answer.** Moved from the project-read entry when that one closed, because this
+  risk did not close with it. Since TAS-150 the client treats **every** 401 on a
+  bearer route as a dead session: tokens cleared, cache dropped, back to
+  `/login`. `isMissingOrForbidden` covers 403/404 only, so the two answers do
+  not overlap today — but the contract's `code` is a free-form string with
+  nothing else to key on, and `GET /projects/{id}/membership` and
+  `GET /projects/{id}/members` have no contract at all. If either ever answers
+  401 for "not yours" rather than "not authenticated", a member browsing
+  somebody else's project is signed out instead of shown the Not-found screen.
+  Re-check before `rest` becomes the default mode. Not probed on 2026-08-18:
+  `…/members` answered **405** to a `GET` (the path exists for `POST` only),
+  and `…/membership` was not requested at all.
 
 ### Accepting an invitation does not produce a session
 
@@ -413,40 +428,40 @@ Same rule as above: "Closed by" is settled, the rest is live.
   project-service had no membership concept. TAS-154 gave it one, and a
   non-admin token walked the path on 2026-08-18: 403 for someone else's project,
   and the Not-found screen drawn from a real refusal for the first time.
-- **Since TAS-150, 401 is no longer just another error.** The client now treats
-  **every** 401 on a bearer route as a dead session: the tokens are cleared, the
-  query cache is dropped, and the user is returned to `/login`.
-  `isMissingOrForbidden` (`src/api/errors.ts`) still covers 403/404 only, so the
-  two answers do not overlap — but the contract's `code` is a free-form string
-  with nothing else to key on, so if the gateway ever answers 401 for "not
-  yours" rather than "not authenticated", a member browsing somebody else's
-  project would be signed out instead of shown the Not-found screen. This must
-  be re-checked when `rest` becomes the default mode, including the two
-  endpoints that have no contract at all —
-  `GET /projects/{id}/membership` and `GET /projects/{id}/members` (see the
-  first entry in this section) — whose 401 would now sign the user out.
-- **Removal:** [TAS-137](https://jira.ozero.dev/browse/TAS-137) makes the
-  no-access case reachable; [TAS-141](https://jira.ozero.dev/browse/TAS-141)
-  is where the contract should name the error codes.
+- **A 401 answered for "not yours" would sign the reader out** rather than show
+  the Not-found screen. That risk is live and does not belong to this closed
+  entry; it moved to `No membership or member-read endpoints`, which already
+  owns the two uncontracted endpoints it turns on.
+- **What is still owed here:** only the contract naming the codes —
+  [TAS-141](https://jira.ozero.dev/browse/TAS-141). The reachability half is
+  spent: TAS-154 made the no-access case reachable and it has been walked.
 
 - **Answered 2026-08-18**, see the table in the TAS-154 entry above: a
   non-member gets `403 PERMISSION_DENIED`, a nonexistent id gets `404
-  NOT_FOUND`. The contract enumerates both and the gateway now distinguishes
-  them.
+  NOT_FOUND`. The contract enumerates neither — it declares `200` and `default`
+  and nothing else, exactly as the Contract bullet above says. The gateway
+  distinguishes them anyway, which is why this is an observation and not a
+  promise, and why TAS-141 still has a reason to exist.
 - **The gateway therefore discloses which projects exist** to anyone with a
-  session: 403 and 404 are different answers, so a signed-in user can walk ids
-  and learn which are real without being able to read any of them. Worth naming;
-  not obviously wrong for a tracker whose project ids are uuids and are shared
-  in links anyway.
+  session: 403 and 404 are different answers, so a signed-in user can confirm an
+  id they already hold without being able to read anything behind it. Not
+  enumeration — a v4 uuid space cannot be walked. Worth naming; not obviously
+  wrong for a tracker whose ids travel in shared links anyway. The larger
+  disclosure on this stand is the workflow read below.
 - **The console does not pass that distinction on.** `isMissingOrForbidden`
   collapses 403 and 404 into one screen on purpose (DESIGN.md §4.18), so the UI
-  answers "doesn't exist, or you don't have access to it" for both. That was a
-  design decision taken before the shapes were observed, and the observation
-  does not disturb it.
+  answers "This page doesn't exist, or you don't have access to it." for both —
+  quoted from `NotFoundScreen.tsx`, not paraphrased. That was a design decision
+  taken before the shapes were observed, and the observation does not disturb
+  it.
 
 ### The workflow read is not membership-checked, unlike every endpoint beside it
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/workflow?issueType=…`
+- **Contract:** declares `400`, `401`, **`403`**, `404` and `default` for this
+  path — unlike the project read beside it, which enumerates nothing. So this is
+  not merely a backend-authorization opinion: the contract already anticipated a
+  403 here, and the runtime does not produce one.
 - **Observed 2026-08-18** as `defaultUser`, against a project they are not a
   member of: `GET /projects/{id}` is **403**, `…/issues` is **403**, and
   `…/workflow` is **200** for `TASK`, `BUG` and `STORY` alike. Visible in the
@@ -456,12 +471,18 @@ Same rule as above: "Closed by" is settled, the rest is live.
   configuration — status keys, transition names, sort order. On this stand every
   project shares one "Default workflow", so today it discloses nothing a member
   could not already guess. That is a property of the seed, not of the endpoint.
-- **Compensation:** none needed. The board never renders on the strength of a
-  workflow it can reach without the project — the project read is what decides
-  the screen, and it is refused first.
+- **Compensation:** none needed, but not for the reason it first looks like.
+  The gate at `BoardScreen.tsx:315` reads the project query **alone**, so no
+  workflow answer can keep the board up. Nothing is refused "first": the six
+  reads fire concurrently, and until the project refusal lands the shell can
+  draw its columns from the workflow that just answered 200 — a second of
+  plausible chrome for a project the viewer must not see, which
+  `BoardScreen.tsx:64-73` already documents as its own window.
 - **Removal:** a backend fix — the membership check TAS-154 added to the project
-  read belongs on its siblings too. Not filed: it is a backend authorization
-  question for the owner to weigh, and this record is the evidence for it.
+  read belongs on its siblings too. Not filed, and deliberately: AGENTS.md lets
+  this harness file a contract-**design** problem directly, and this is a runtime
+  defect against a contract that is already correct, so it is the owner's call.
+  Raised with the owner on 2026-08-18 rather than left here to be found.
 
 ### `sortableColumns` and `filterableColumns` are always empty
 
