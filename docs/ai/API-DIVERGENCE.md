@@ -275,7 +275,6 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **Risk while open:** with the flag on, every caller gets an `ADMIN` view of
   the UI; role gating is unverifiable in this mode and a passing permission
   check proves nothing.
-
 - **A 401 here signs the reader out, and nothing states when a 401 is the right
   answer.** Moved from the project-read entry when that one closed, because this
   risk did not close with it. Since TAS-150 the client treats **every** 401 on a
@@ -286,9 +285,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `GET /projects/{id}/members` have no contract at all. If either ever answers
   401 for "not yours" rather than "not authenticated", a member browsing
   somebody else's project is signed out instead of shown the Not-found screen.
-  Re-check before `rest` becomes the default mode. Not probed on 2026-08-18:
-  `…/members` answered **405** to a `GET` (the path exists for `POST` only),
-  and `…/membership` was not requested at all.
+  Re-check before `rest` becomes the default mode. Neither was probed for this
+  question on 2026-08-18: a `GET` to `…/members` answered **405**, since the
+  contract gives that path a `POST` only, and `…/membership` was never
+  requested. So the live half of this risk is `…/membership` plus whatever
+  TAS-137 adds — a path that answers 405 unconditionally can never answer a 401
+  for "not yours".
 
 ### Accepting an invitation does not produce a session
 
@@ -435,7 +437,6 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **What is still owed here:** only the contract naming the codes —
   [TAS-141](https://jira.ozero.dev/browse/TAS-141). The reachability half is
   spent: TAS-154 made the no-access case reachable and it has been walked.
-
 - **Answered 2026-08-18**, see the table in the TAS-154 entry above: a
   non-member gets `403 PERMISSION_DENIED`, a nonexistent id gets `404
   NOT_FOUND`. The contract enumerates neither — it declares `200` and `default`
@@ -473,8 +474,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
   could not already guess. That is a property of the seed, not of the endpoint.
 - **Compensation:** none needed, but not for the reason it first looks like.
   The gate at `BoardScreen.tsx:315` reads the project query **alone**, so no
-  workflow answer can keep the board up. Nothing is refused "first": the six
-  reads fire concurrently, and until the project refusal lands the shell can
+  workflow answer can keep the board up. Nothing is refused "first": the five
+  project-scoped reads fire concurrently, and until the refusal lands the shell can
   draw its columns from the workflow that just answered 200 — a second of
   plausible chrome for a project the viewer must not see, which
   `BoardScreen.tsx:64-73` already documents as its own window.
@@ -482,7 +483,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
   read belongs on its siblings too. Not filed, and deliberately: AGENTS.md lets
   this harness file a contract-**design** problem directly, and this is a runtime
   defect against a contract that is already correct, so it is the owner's call.
-  Raised with the owner on 2026-08-18 rather than left here to be found.
+  Surfaced to the owner in the working session that found it, on 2026-08-18,
+  rather than left here to be found later — no Jira key yet, by design.
 
 ### `sortableColumns` and `filterableColumns` are always empty
 
@@ -1204,3 +1206,8 @@ without re-deriving it.
 
 So this section stays empty by design. To find what is still live, read the
 headings: anything not starting with "Closed" is open.
+
+A closed entry ends with **What is still owed here** rather than **Removal** —
+"removal" names work that has to happen, and under a closed heading that reads
+as an instruction to redo what is already done. If nothing is owed, the entry
+ends on its last observation and carries neither label.
