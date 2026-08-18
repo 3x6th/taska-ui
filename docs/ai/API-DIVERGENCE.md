@@ -509,12 +509,22 @@ it. Entries are deleted only when the compensating code is deleted.
 - **Settled by that observation:** `X-Request-Id` **is** exposed cross-origin on
   a 5xx, not only on the 401 — the console displays it, which is how the id
   above was captured. And the catalog's shape matches what the code expects.
-- **Still unverified**, because no table has yet returned rows: how a timestamp
-  is spelled in JSON (the backend encodes dates as epoch **seconds**, losing
-  sub-second precision, and whether Jackson emits ISO or a bare number is
-  unconfirmed); whether `meta.service` / `meta.table` echo the catalog's own
-  spelling — see the fail-closed entry below. Every one of those needs a table
-  that actually returns rows, so they stay open until the 500 is fixed.
+- **Both of the questions this bullet used to hold open were answered on
+  2026-08-18**, by the same session that closed the 500. They needed a table
+  that returns rows, and rows now come back:
+  - **Timestamps are ISO strings with an offset, not epoch numbers.**
+    `auth.credentials` returned `"updated_at": "2026-08-14T16:14:33Z"` and
+    `"created_at": "2026-07-13T15:27:11Z"`. Jackson emits ISO. So `formatCell`
+    prints a date rather than a bare integer, and the `from`/`to` datetime
+    control's ISO value is the same spelling the column holds. Sub-second
+    precision is absent from the wire, which matters to nothing the console
+    draws.
+  - **`meta.service` and `meta.table` echo the catalog's own spelling exactly.**
+    `GET /readonly/auth/users` answered `"meta": {"service": "auth", "table":
+    "users", …}`, matching the catalog's `name` fields character for character.
+    That is the join `maskingIsKnown` fails closed on, and it holds — see the
+    fail-closed entry below, which stays open only because one observation is
+    not a guarantee from two schemas that constrain each other in no way.
 - **Compensation for the 500:** none, and none is appropriate — the frontend
   does not work around a server fault. The console scopes the error to the
   result area, so the table picker stays usable and another table can be tried,
@@ -618,6 +628,20 @@ it. Entries are deleted only when the compensating code is deleted.
   anything else on a flagged column is a partial mask and is printed. The rule
   is documented at length there rather than inferred at three call sites, and
   `columns.test.ts` pins each branch.
+- **The literal is written down in four places, not one**, which is what makes
+  this entry's removal wider than it looks: `columns.ts` reads `"***"`,
+  `src/api/mock/MockTaskaApi.ts` reproduces both it and admin-service's
+  partial-mask algorithm so the mock stays a faithful reference, and
+  `columns.test.ts` and `e2e/admin-console.spec.ts` assert against it. Whoever
+  removes this compensation edits all four or leaves the mock teaching a shape
+  that stopped mattering.
+- **A second unstated default, found by `api-contract-guard` on 2026-08-18:**
+  `ColumnMetadataDto` has no `required` block, so `sensitive` is optional by
+  contract while `AdminColumn.sensitive` asserts a boolean. The deployed catalog
+  sends it on every column, but `RestTaskaApi.getAdminCatalog` no longer relies
+  on that: a missing flag is read as `true`. Fail closed, because the failure in
+  the other direction is a column with no lock, the masking literal printed as
+  data, and a secret column that can be sorted on.
 - **Why this is worth writing down rather than absorbing:** the compensation
   depends on `"***"` being exactly three asterisks and on `MASK_PARTIAL` always
   producing at least one — both true in `SensitiveColumnMaskService` today, and
@@ -1087,4 +1111,11 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ## Closed
 
-*(none yet)*
+Entries are closed **in place**, by re-heading them `### Closed by TAS-…` and
+rewriting the body in the past tense with the observation that closed them. That
+keeps the history next to the compensation it explains, which is the whole point
+of the file — a closed entry is how the next agent learns the endpoint's shape
+without re-deriving it.
+
+So this section stays empty by design. To find what is still live, read the
+headings: anything not starting with "Closed" is open.

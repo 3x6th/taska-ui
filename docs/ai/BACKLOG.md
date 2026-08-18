@@ -19,6 +19,28 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **Record leftovers from the TAS-161 review** (`api-contract-guard`,
+  2026-08-18), all in `docs/ai/API-DIVERGENCE.md` and all the same shape — a
+  claim pinned to a state the 2026-08-18 stand session moved past:
+  - the page-basis entry still says the response echo "could not be observed"
+    and that no request has ever returned a `pagination` object, which a
+    different entry answers 100 lines earlier;
+  - the empty `sortableColumns`/`filterableColumns` entry is pinned to
+    "Still true at `b22a2e020574`" while the snapshot moved to `7fb303b53ba6`
+    and that session had `meta` in hand.
+- **`AdminRowsTable` takes columns from `rows.meta.columns` and `sensitive` from
+  the catalog**, so a column in `meta` and absent from the catalog is drawn with
+  no lock. Not a plaintext leak while the server masks — it would print `"***"`
+  as data. The mock cannot reproduce it: it derives `meta.columns` from the
+  catalog. Fail-closed already holds at table granularity, not at column
+  granularity.
+- **`IssuePriority` and `UserStatus` are closed unions over contract-open
+  strings**, with no narrowing at the mapper and no divergence entry. The
+  existing "status keys are open" entry covers only workflow `statusKey`.
+- **The mock filters and sorts already-masked values** where the gateway
+  operates on the underlying column. Unreachable from the console, since
+  sensitive columns are stripped from both sort and filter — but the mock is the
+  reference implementation.
 - **Masking leftovers from the TAS-161 review** (release-reviewer, 2026-08-18),
   all in the admin console and none blocking:
   - `isWithheld` tests `value.includes("*")`. A shape test —
