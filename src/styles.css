@@ -732,13 +732,18 @@ h1 {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  /* Kept, not neutralised, even though `Avatar` now sets an inline fill for
-     every user it is given (TAS-171): the two person-less states own their own
-     backgrounds below, so this only ever paints a circle something rendered
-     without going through the component — and it is the one value that stays
-     legible under the white initials on the next line. */
+  /* One fallback in two declarations, not a fill plus a universal glyph colour:
+     `Avatar` sets both inline for every user it is given, and since TAS-175 the
+     glyph it sets is computed from the fill (`readableTextOn`), so this pair is
+     no longer what initials wear — it is only the accent circle and the token
+     that names its foreground. Kept rather than dropped because the two
+     person-less states below own their own backgrounds, which leaves it for a
+     circle rendered without going through the component. `--accent-fg` is
+     #ffffff in both themes, which measures 6.29:1 on the light accent and
+     3.85:1 on the dark one — above §7's 3:1 either way, and a token rather
+     than a literal because §8 does not let the component layer hold a hex. */
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
   font-weight: 650;
   line-height: 1;
   text-align: center;
@@ -1070,10 +1075,14 @@ h1 {
   min-width: 0;
 }
 
+/* No `color` here. It used to repeat `.avatar`'s white at a specificity that
+   also beat `.avatar-empty`'s --fg-3, so a stack was the one place the glyph
+   colour was decided by where an avatar sat rather than by what it was drawn
+   on. Inline styles won over it either way; what it changed was which rule a
+   reader would trust. */
 .avatar-stack .avatar {
   position: relative;
   border: 2px solid var(--surface);
-  color: #fff;
   box-shadow: 0 1px 2px rgba(20, 20, 40, 0.08);
 }
 
@@ -2492,6 +2501,26 @@ h1 {
   outline-offset: 1.5px;
 }
 
+/* DESIGN.md §4.4's `opacity:.85` for the unselected half of a selectable
+   avatar, written there since the prototype and never carried here (TAS-175).
+   It cost little while §2.2's palette was darkened; with the bright hues back
+   the bar is four saturated discs at full strength, and the eye reaches them
+   before it reaches "New" or the board — the opposite of §1's pale chrome.
+   Dimming the button rather than the circle so `is-active`'s outline is not
+   what the rule has to dodge. */
+.avatar-filter:not(.is-active) {
+  opacity: 0.85;
+}
+
+/* Lifted under the pointer and under the keyboard, together: 0.85 next to a
+   0.58 `:disabled` is close enough to read as unavailable, and a control that
+   answers a mouse but not a Tab is the §1.6 failure. This is also the only
+   hover feedback these buttons have. */
+.avatar-filter:not(.is-active):hover,
+.avatar-filter:not(.is-active):focus-visible {
+  opacity: 1;
+}
+
 .clear-button {
   height: 28px;
   border-radius: 7px;
@@ -2864,7 +2893,12 @@ h1 {
   background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
 
+/* The `color` is the point, not the size: this is the chip's name, and §1's
+   hard rule is that a text node never takes its colour by accident. It landed
+   on --fg through inheritance from `body`, which is the value it keeps — said
+   here so it stays that value when a parent changes. */
 .assignee-chip span:last-child {
+  color: var(--fg);
   font-size: 11.5px;
   font-weight: 550;
 }

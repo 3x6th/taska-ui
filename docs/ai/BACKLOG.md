@@ -506,6 +506,28 @@ time.
   Cosmetic, pre-existing, noticed by `art-director` on the create path TAS-171
   made worth looking at.
 
+### Left open by TAS-175 (from `art-director`, 2026-08-22)
+
+- **The mock shows four of the five palette values.** Sofia computes to
+  `#10b981` but states `#ec4899`, so emerald never renders — and it is the one
+  worth looking at next to the green STORY chip (`--type-story`). Fixable by
+  stating `#10b981` for Mark instead of `#0ea5e9`, at the cost of sky, which has
+  no token neighbour on screen. Not taken during TAS-175: the owner was already
+  looking at the current arrangement, and changing the picture underneath a
+  review for the sake of the demo is the wrong trade.
+- **`.avatar-loading` is `--surface-3`, which is 1.62:1 against the top bar in
+  the dark theme** — a skeleton almost nobody can see. Pre-existing.
+- **`.assignee-chip` disables at `opacity: .58` where §4.1 says `.5`.**
+  Cosmetic drift, one value.
+- **`.avatar-filter` and `.assignee-chip` have no `:focus-visible` rule** — the
+  same §7 gap TAS-142 already holds for the rest of the app, now visible in one
+  more row.
+- **Disabled avatars fall below every contrast floor by construction:** under
+  the chip's `opacity`, the glyph/fill pair composites to 2.08–2.82:1 light and
+  2.44–3.56:1 dark. This is what `opacity` does to any pair — the darkened
+  TAS-171 palette measured 2.39–2.50 / 3.39–3.48 in the same place — so it is
+  the disabled recipe that would need fixing, not the palette.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each
