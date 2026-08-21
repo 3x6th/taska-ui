@@ -64,7 +64,10 @@ describe("issueLinkTypeLabel", () => {
 describe("avatarColor", () => {
   const ids = Array.from({ length: 200 }, (_, index) => `3f1f5a2e-0000-4000-8000-${String(index).padStart(12, "0")}`);
 
-  // The mock's seeded people, so a drift here is also visible on screen.
+  // Real ids from the mock, so a failure names someone a reader can go and look
+  // up. What they pin is the *computed* answer, which is what the screen shows
+  // for Tom and Priya only — Anna, Mark and Sofia state a colour, and a stated
+  // colour wins.
   it.each([
     ["6d774efa-57d8-4ae0-a27e-2984d1dfbbf6", "#c1397c"],
     ["16ad2404-96e3-4c51-b00d-55c5d1451d3c", "#077d56"],

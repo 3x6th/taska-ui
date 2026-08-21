@@ -410,9 +410,13 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **Compensation:** the UI renders a Description textarea; `RestTaskaApi`
   correctly does not send it. The field works in mock and is a silent no-op
   against the gateway.
-- **Removal:** frontend follow-up — remove the textarea, or keep it only if
-  [TAS-141](https://jira.ozero.dev/browse/TAS-141) adds the field to the
-  contract.
+- **Removal:** [TAS-145](https://jira.ozero.dev/browse/TAS-145), which was
+  widened on 2026-08-21 to accept `description` on create, and
+  [TAS-148](https://jira.ozero.dev/browse/TAS-148), whose same pass makes the
+  form actually send it. This used to point at TAS-141 and no longer does: the
+  field is landing in the project itself rather than in a contract cleanup.
+  Until then the textarea stays and stays a no-op — removing it would take the
+  field away twice.
 
 ### Neither a project nor a user carries a colour, and the UI draws one anyway
 

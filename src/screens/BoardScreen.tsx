@@ -1940,14 +1940,21 @@ function ProjectLabelsModal({
 
   const error = (labelsQuery.error ?? createLabel.error ?? updateLabel.error ?? deleteLabel.error)?.message;
   const trimmed = name.trim();
+  const badge = keyBadgeStyle(projectKey, projectColor);
 
   return (
     <Modal
       title="Labels"
+      // No badge rather than an empty one when the project could not be read
+      // (TAS-163): `keyBadgeStyle` withholds the colour in that case, and a
+      // pill with neither a key inside it nor a colour on it is a chip someone
+      // forgot to fill in, not a quieter way of saying the same thing.
       eyebrow={
-        <span className="key-badge" style={keyBadgeStyle(projectKey, projectColor)}>
-          {projectKey}
-        </span>
+        badge ? (
+          <span className="key-badge" style={badge}>
+            {projectKey}
+          </span>
+        ) : undefined
       }
       onClose={onClose}
     >
@@ -2132,13 +2139,18 @@ function CreateIssueModal({
     },
   });
 
+  const badge = keyBadgeStyle(projectKey, projectColor);
+
   return (
     <Modal
       title="New issue"
+      // Same as `ProjectLabelsModal`: an unstyled pill would be an empty chip.
       eyebrow={
-        <span className="key-badge" style={keyBadgeStyle(projectKey, projectColor)}>
-          {projectKey}
-        </span>
+        badge ? (
+          <span className="key-badge" style={badge}>
+            {projectKey}
+          </span>
+        ) : undefined
       }
       onClose={onClose}
     >

@@ -215,6 +215,10 @@ export class MockTaskaStore {
         email: "anna@example.com",
         displayName: "Anna Ivanova",
         status: "ACTIVE",
+        // Deliberately not the colour Anna's own id computes to, and the same
+        // goes for Mark and Sofia. A seed that duplicates the computed answer
+        // exercises the branch without showing it: the point of seeding three
+        // people is that a reader can see which colour came from the server.
         // The three people who do state a colour state one from
         // `avatarColorChoices`, not one of the brighter §2.2 hues those were
         // derived from. This mock does not stand in for some server; it stands
@@ -225,7 +229,7 @@ export class MockTaskaStore {
         // environment where anybody looks at these colours at all. Same
         // argument as Tom and Priya below: a mock that had depicted reality
         // would not have let TAS-171's flat accent avatars live this long.
-        color: "#585bd8",
+        color: "#986004",
         globalRole: "USER",
       },
       {
@@ -243,7 +247,7 @@ export class MockTaskaStore {
         email: "sofia@example.com",
         displayName: "Sofia Reyes",
         status: "ACTIVE",
-        color: "#077d56",
+        color: "#c1397c",
         globalRole: "USER",
       },
       {
@@ -272,7 +276,12 @@ export class MockTaskaStore {
     ];
 
     this.projects = [
-      this.project(TASKA_PROJECT_ID, "TAS", "Taska Platform", "Core gateway, auth and issue services", "#6366f1", [
+      // Not `#6366f1`, which is what this key computes to: a seed equal to the
+      // computed answer hides the override branch instead of showing it, the
+      // same trap the seeded people above avoid. TAS and MOB now demonstrate a
+      // stated colour winning; WEB happens to state its computed one, which is
+      // honest and costs nothing.
+      this.project(TASKA_PROJECT_ID, "TAS", "Taska Platform", "Core gateway, auth and issue services", "#0052cc", [
         ANNA_ID,
         MARK_ID,
         SOFIA_ID,

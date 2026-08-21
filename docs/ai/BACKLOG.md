@@ -471,22 +471,32 @@ time.
   `.topbar-home` has the correct ring, which means §7's own preamble — "focus-visible
   реализован только в меню профиля" — is stale as well. Found by `art-director`
   while checking the keyboard path around the key badge. Candidate for TAS-142.
-- **The four assignee filter buttons have no accessible name at all.** `Avatar`
-  puts `aria-label` on a bare `<span>`, where ARIA forbids it and browsers drop
-  it, and the button contains nothing else — so §4.4's "всегда `title`/`aria-label`"
-  currently holds only through `title`, which a touch screen never shows. This
-  predates TAS-171 but weighs more after it: the only differentiator left in
-  that row is a hue, and hues collide. Candidate for TAS-142, or its own bug.
+- **Filed as [TAS-174](https://jira.ozero.dev/browse/TAS-174): the four assignee
+  filter buttons have no accessible name at all.** `Avatar` puts `aria-label` on
+  a bare `<span>`, where ARIA forbids it and browsers drop it, and the button
+  contains nothing else — so §4.4's "всегда `title`/`aria-label`" currently
+  holds only through `title`, which a touch screen never shows. Raised
+  independently by `art-director` and `release-reviewer`; it predates TAS-171
+  and survives on its own, which is why it got a key rather than a bullet.
 - **`labelColorChoices` is now shared between a user-chosen value and a computed
   one.** Adding a ninth colour for labels silently reshuffles every project's
   badge colour, because the index is `hash % length` and a project's colour is
   meant to be stable. Nothing schedules a ninth colour; if one is ever added,
   give the badge its own frozen copy of the list in the same change.
-- **Two CSS defaults are now unreachable and one comment says otherwise.**
-  `.avatar { background: var(--accent) }` and `.key-badge`'s own `color` cannot
-  be reached through their components any more — every instance sets its own
-  fill or carries `avatar-empty` / `avatar-loading`. Keeping them as defence is
-  fine; the comment TAS-171 added describes the case as though it occurs.
+- **`.avatar { background: var(--accent) }` is now unreachable** — every
+  instance either sets its own inline fill or carries `avatar-empty` /
+  `avatar-loading`. Keeping it as defence is fine; the comment TAS-171 added
+  describes the case as though it occurs. **`.key-badge` is the opposite** and
+  must not be swept up with it: since the glyph moved out of the inline style,
+  `color: var(--fg-2)` there is the *only* source of the badge's letter colour
+  on every screen, and its `background` is reached exactly on the empty-key
+  path. Deleting either would repaint or unpaint every badge in the product.
+- **The two colour branches have different safety properties**, which matters
+  only if `User.color` ever becomes real. The computed branch draws from a
+  palette measured against white initials; the stated branch returns any hex
+  that passes `isLabelColor`, with no contrast floor behind it. The badge is
+  immune — its colour lives only in the tint now — but an avatar colour chosen
+  by a user would need its own floor.
 - **`Project.color` and `User.color` remain in `src/domain/types.ts` for fields
   the contract does not have.** They are a forward hook for TAS-148 and the
   mock's own seed, and they are annotated as such — but if TAS-148 ever ships
