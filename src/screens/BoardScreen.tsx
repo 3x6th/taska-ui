@@ -1944,18 +1944,28 @@ function ProjectLabelsModal({
   );
 }
 
-/** The colour choices, as a radio group: one colour is picked, never several. */
+/**
+ * The colour choices: one is picked, never several.
+ *
+ * A group of `aria-pressed` buttons rather than an ARIA radio group, matching
+ * the segmented controls elsewhere in this file. `role="radio"` would announce
+ * a keyboard contract this does not implement — arrow keys moving the
+ * selection within a single tab stop — and a promise of an interaction nobody
+ * wrote is worse than the plainer control that behaves as it reads.
+ *
+ * The ring on the active swatch is not decoration: a checked state that only a
+ * colour expressed would be unreadable to exactly the people §4.6 exists for.
+ */
 function LabelSwatches({ onPick, selected }: { onPick: (color: string) => void; selected: string }) {
   return (
-    <div aria-label="Label colour" className="label-swatches" role="radiogroup">
+    <div aria-label="Label colour" className="label-swatches" role="group">
       {labelColorChoices.map((choice) => (
         <button
-          aria-checked={selected === choice}
           aria-label={`Colour ${choice}`}
+          aria-pressed={selected === choice}
           className={`label-swatch ${selected === choice ? "is-active" : ""}`}
           key={choice}
           onClick={() => onPick(choice)}
-          role="radio"
           style={{ background: choice }}
           type="button"
         />
