@@ -142,8 +142,17 @@ export const labelChipStyle = (color: string) => {
  * same reason `labelColorChoices` is one: the values are not theme-dependent,
  * and a component may not hold a hex (AGENTS.md), so the one place they are
  * allowed to live is here.
+ *
+ * Each is its §2.2 hue taken down in oklab — `#6366f1` by 8%, `#0ea5e9` by 22%,
+ * `#10b981` by 25%, `#f59e0b` by 30%, `#ec4899` by 14% — because §4.4 puts white
+ * initials on this fill, and the undarkened hues carried them at 2.15–4.47:1,
+ * three of the five under the 3:1 floor §7 holds even for optional meta. The
+ * fill an avatar had before this palette existed was `--accent` at 6.29:1, so
+ * anything dimmer than the values here would have made a solved problem worse.
+ * Measured: white on these is 5.07–5.38:1, and the fills sit 3.41–3.63:1 against
+ * `--surface` in the dark theme.
  */
-export const avatarColorChoices = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ec4899"];
+export const avatarColorChoices = ["#585bd8", "#0775a7", "#077d56", "#986004", "#c1397c"];
 
 /**
  * FNV-1a over the string's code units. A named algorithm rather than a sum of
@@ -162,7 +171,20 @@ const hash32 = (value: string) => {
   return hash >>> 0;
 };
 
-const fromPalette = (palette: string[], seed: string) => palette[hash32(seed) % palette.length];
+/**
+ * The one place a seed is turned into a colour, and therefore the one place the
+ * seed has to be defended. Both seeds are wire values on fields the contract
+ * never marks required — `ProjectResponseDto`, `ValidateAccessTokenResponseDto`
+ * and `ProjectMemberResponseDto` declare no `required` block at all — so a
+ * gateway that omits one hands this a `string` that is not there. Nothing in
+ * `src/` catches a throw during render, so on React 19 that would unmount the
+ * whole tree: a white screen in place of the plain accent circle this feature
+ * replaced. Hashed as the empty string instead, the same way the API layer
+ * already lands `notification.userId ?? ""` and `label.createdBy ?? ""`. Every
+ * seedless caller then shares one colour, which is a degradation a reader can
+ * see past rather than one that takes the page with it.
+ */
+const fromPalette = (palette: string[], seed: string | undefined | null) => palette[hash32(seed ?? "") % palette.length];
 
 /**
  * The colour an avatar is filled with. Seeded by **user id**, never by the name
@@ -173,25 +195,41 @@ const fromPalette = (palette: string[], seed: string) => palette[hash32(seed) % 
  *
  * A colour the server stated still wins, when there is one and the contract's
  * own pattern accepts it. The gateway has no `color` on a user (it is a label
- * field only), so in practice this computes; the mock states colours, and its
- * seeded people keep the ones DESIGN.md picked for them.
+ * field only), so against it this always computes; the mock states one for some
+ * of its seeded people and withholds it from the rest, so that both branches
+ * are reachable in the only environment anyone can click through.
  */
 export const avatarColor = (userId: string, color?: string) =>
   color && isLabelColor(color) ? color : fromPalette(avatarColorChoices, userId);
 
+const keyTint = (color: string) => `color-mix(in oklab, ${color} 16%, transparent)`;
+
 /**
- * DESIGN.md §4.5's project-key badge — the same tint-and-text recipe as
- * `labelChipStyle`, given a colour the build computes rather than one the
- * server sent.
+ * DESIGN.md §4.5's project-key badge. The tint only — the glyph is `--fg-2`
+ * from CSS, which is where this parts company with `labelChipStyle`. A label
+ * survives a weak colour because its name is text sitting beside the colour;
+ * a key badge *is* the coloured text, and across the eight values of the set
+ * below that read from 1.99:1. Moving the colour into the tint and the letters
+ * onto `--fg-2` measures 5.13–6.40:1 in both themes. The 16% stays as §4.5
+ * states it: raising the tint to compensate is what would undo this, since at
+ * 24% the dark theme falls back to 4.34:1.
  *
- * Seeded by **project key**, which is the one identifier the contract promises
- * cannot move: it is embedded in every `issueKey` (TAS-145), so a renamed
- * project keeps its colour, and the badge and the keys on its cards agree.
+ * Seeded by **project key**, which is the identifier this app has no way to
+ * change: `/api/v1/projects/{projectId}` carries a `get` and nothing else, so
+ * the contract offers no rename — an absence rather than a guarantee. The key
+ * is also embedded in every `issueKey`, which is where the backend records the
+ * same reasoning (TAS-145). So a project renamed some future way keeps its
+ * colour, and the badge agrees with the keys on the cards under it.
  */
 export const keyBadgeStyle = (projectKey: string, color?: string) => {
-  const value = color && isLabelColor(color) ? color : fromPalette(labelColorChoices, projectKey);
-  return {
-    color: value,
-    background: `color-mix(in oklab, ${value} 16%, transparent)`,
-  };
+  if (color && isLabelColor(color)) return { background: keyTint(color) };
+  // Nothing rather than a colour, when there is no key to compute one from. The
+  // modals ask with `project?.projectKey ?? ""` (TAS-163's failed `getProject`
+  // is exactly that path), and an empty pill wearing a confident hue would be
+  // claiming to know which project it belongs to — the same reason `Avatar`
+  // leaves a loading circle unpainted. The stated colour above is not subject
+  // to this: a colour the server sent is a fact about a project, not a guess.
+  const key = projectKey?.trim();
+  if (!key) return undefined;
+  return { background: keyTint(fromPalette(labelColorChoices, key)) };
 };

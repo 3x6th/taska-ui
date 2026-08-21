@@ -51,19 +51,26 @@ describe("issueLinkTypeLabel", () => {
 });
 
 /**
- * The colour is computed, not stored, so the property that matters is not which
- * hex a given id lands on — it is that the answer never moves. Nothing here
- * pins a specific pairing: doing so would freeze the hash rather than test it,
- * and a future change of algorithm is allowed as long as it keeps these three
- * promises.
+ * The colour is computed, not stored, so the property being tested is that the
+ * answer never moves. That is why the first case below is a golden and not a
+ * comparison of two calls made in the same process: a memoised random, or a
+ * module-level map filled in insertion order, would satisfy "twice in a row"
+ * and still repaint everyone on the next reload. A pinned input-to-hex pairing
+ * fails exactly when the hash changes, which is the promise being made.
+ *
+ * Changing the algorithm therefore means updating these numbers deliberately —
+ * that is the cost of the guarantee, not a brittleness in the test.
  */
 describe("avatarColor", () => {
   const ids = Array.from({ length: 200 }, (_, index) => `3f1f5a2e-0000-4000-8000-${String(index).padStart(12, "0")}`);
 
-  it("gives one user the same colour every time it is asked", () => {
-    // The whole point: a reload, a rebuild, or a switch between the mock and
-    // the gateway must not repaint the person.
-    expect(ids.map((id) => avatarColor(id))).toEqual(ids.map((id) => avatarColor(id)));
+  // The mock's seeded people, so a drift here is also visible on screen.
+  it.each([
+    ["6d774efa-57d8-4ae0-a27e-2984d1dfbbf6", "#c1397c"],
+    ["16ad2404-96e3-4c51-b00d-55c5d1451d3c", "#077d56"],
+    ["1ab80365-0843-460a-b0a1-e6dd3e0f2a0d", "#585bd8"],
+  ])("pins %s to %s, in this build and every later one", (id, expected) => {
+    expect(avatarColor(id)).toBe(expected);
   });
 
   it("only ever returns a colour from DESIGN.md §2.2's palette", () => {
@@ -88,36 +95,81 @@ describe("avatarColor", () => {
   it.each([["red"], ["#12345"], ["#12345g"], [""]])("computes a colour rather than passing %s to a style", (color) => {
     expect(avatarColorChoices).toContain(avatarColor(ids[0], color));
   });
+
+  it("draws a circle rather than throwing when the id never arrived", () => {
+    // `ValidateAccessTokenResponseDto` and `ProjectMemberResponseDto` mark no
+    // field required, and this runs during render with no error boundary above
+    // it: a throw here is a white screen, not a missing colour. The cast is the
+    // point of the test — it is the shape the wire can produce and the types
+    // cannot.
+    expect(() => avatarColor(undefined as unknown as string)).not.toThrow();
+    expect(avatarColorChoices).toContain(avatarColor(undefined as unknown as string));
+  });
 });
 
+/**
+ * The badge carries the project's colour as its tint only — the letters are
+ * `--fg-2` from CSS — so every assertion here is about `background`, and the
+ * absence of a `color` key is itself part of the contract being tested.
+ */
 describe("keyBadgeStyle", () => {
-  const keys = ["TAS", "WEB", "MOB", "OPS", "INFRA", "DESIGN", "QA", "SRE", "DATA", "ML"];
+  const keys = Array.from({ length: 200 }, (_, index) => `K${index}`);
+  const tint = (color: string) => `color-mix(in oklab, ${color} 16%, transparent)`;
 
-  it("draws §4.5's badge: the colour as text, a 16% tint behind it", () => {
-    const style = keyBadgeStyle("TAS", "#0052cc");
-    expect(style).toEqual({ color: "#0052cc", background: "color-mix(in oklab, #0052cc 16%, transparent)" });
+  it("draws §4.5's badge: a 16% tint, and no colour on the glyph", () => {
+    expect(keyBadgeStyle("TAS", "#0052cc")).toEqual({ background: tint("#0052cc") });
   });
 
-  it("gives one project key the same colour every time", () => {
-    expect(keys.map((key) => keyBadgeStyle(key))).toEqual(keys.map((key) => keyBadgeStyle(key)));
+  // Golden for the same reason as `avatarColor`'s: two calls agreeing inside
+  // one process is not evidence that a reload agrees with them.
+  it.each([
+    ["TAS", "#6366f1"],
+    ["WEB", "#0ea5e9"],
+    ["MOB", "#ec4899"],
+    ["OPS", "#e3a008"],
+  ])("pins %s to %s, in this build and every later one", (key, expected) => {
+    expect(keyBadgeStyle(key)).toEqual({ background: tint(expected) });
   });
 
   it("only ever computes a colour the label palette already offers", () => {
     for (const key of keys) {
-      expect(labelColorChoices).toContain(keyBadgeStyle(key).color);
+      expect(labelColorChoices.map(tint)).toContain(keyBadgeStyle(key)!.background);
     }
   });
 
-  it("spreads project keys across the palette instead of collapsing them onto one colour", () => {
-    const distinct = new Set(keys.map((key) => keyBadgeStyle(key).color));
-    expect(distinct.size).toBeGreaterThan(1);
+  it("reaches every colour in the palette rather than crowding into a few", () => {
+    // The bound is the whole palette, not "more than one": eight keys landing
+    // on two colours would satisfy a loose assertion and still leave most
+    // projects looking alike, which is the failure this feature exists to fix.
+    const distinct = new Set(keys.map((key) => keyBadgeStyle(key)!.background));
+    expect(distinct.size).toBe(labelColorChoices.length);
   });
 
   it("keeps a colour the server stated", () => {
-    expect(keyBadgeStyle("TAS", "#123456").color).toBe("#123456");
+    expect(keyBadgeStyle("TAS", "#123456")).toEqual({ background: tint("#123456") });
   });
 
   it.each([["violet"], ["#12345"], [""]])("computes a colour rather than passing %s to a style", (color) => {
-    expect(labelColorChoices).toContain(keyBadgeStyle("TAS", color).color);
+    expect(labelColorChoices.map(tint)).toContain(keyBadgeStyle("TAS", color)!.background);
+  });
+
+  it.each([["an empty key", ""], ["a blank key", "   "]])("paints nothing at all given %s", (_case, key) => {
+    // The modals ask with `project?.projectKey ?? ""`, so this is the board
+    // whose `getProject` failed (TAS-163). A confident hue on an empty pill
+    // would be claiming to know a project the app could not read.
+    expect(keyBadgeStyle(key)).toBeUndefined();
+  });
+
+  it("still honours a stated colour when the key is missing", () => {
+    // Not a guess: a colour on the wire is a fact about a project we were told
+    // about, whatever happened to its key.
+    expect(keyBadgeStyle("", "#123456")).toEqual({ background: tint("#123456") });
+  });
+
+  it("paints nothing rather than throwing when the key never arrived", () => {
+    // `ProjectResponseDto` marks nothing required either, and `listProjects`
+    // hands its items through unmapped.
+    expect(() => keyBadgeStyle(undefined as unknown as string)).not.toThrow();
+    expect(keyBadgeStyle(undefined as unknown as string)).toBeUndefined();
   });
 });

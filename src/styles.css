@@ -1105,7 +1105,12 @@ h1 {
   border-radius: 7px;
   padding: 4px 8px;
   background: color-mix(in oklab, var(--accent) 16%, transparent);
-  color: var(--accent);
+  /* The key is read, not admired: the project's colour is the tint behind it
+     (`keyBadgeStyle`), and the glyph stays on a text token. Colouring the
+     letters themselves is what put this badge at 1.99:1 on the weakest value of
+     the set; on --fg-2 the eight measure 5.13-6.40:1 in both themes. The accent
+     tint above is only the fallback for a badge given no project at all. */
+  color: var(--fg-2);
   font-size: 11px;
   font-weight: 500;
 }

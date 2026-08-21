@@ -215,7 +215,17 @@ export class MockTaskaStore {
         email: "anna@example.com",
         displayName: "Anna Ivanova",
         status: "ACTIVE",
-        color: "#6366f1",
+        // The three people who do state a colour state one from
+        // `avatarColorChoices`, not one of the brighter §2.2 hues those were
+        // derived from. This mock does not stand in for some server; it stands
+        // in for one that behaves correctly. The "colour came from the server"
+        // branch exists for TAS-148, where an admin picks from the set this app
+        // itself offers — so a seeded value from outside that set would be
+        // demonstrating a case the product does not permit, in the one
+        // environment where anybody looks at these colours at all. Same
+        // argument as Tom and Priya below: a mock that had depicted reality
+        // would not have let TAS-171's flat accent avatars live this long.
+        color: "#585bd8",
         globalRole: "USER",
       },
       {
@@ -224,7 +234,7 @@ export class MockTaskaStore {
         email: "mark@example.com",
         displayName: "Mark Lee",
         status: "ACTIVE",
-        color: "#0ea5e9",
+        color: "#0775a7",
         globalRole: "GLOBAL_ADMIN",
       },
       {
@@ -233,7 +243,7 @@ export class MockTaskaStore {
         email: "sofia@example.com",
         displayName: "Sofia Reyes",
         status: "ACTIVE",
-        color: "#10b981",
+        color: "#077d56",
         globalRole: "USER",
       },
       {
@@ -242,7 +252,13 @@ export class MockTaskaStore {
         email: "tom@example.com",
         displayName: "Tom Becker",
         status: "ACTIVE",
-        color: "#f59e0b",
+        // Tom and Priya state no colour on purpose. Every seeded person having
+        // one meant the only environment a reviewer or an e2e run can reach
+        // always took the "server sent a colour" branch — the branch the live
+        // gateway does not have — which is how the flat accent avatars of
+        // TAS-171 survived as long as they did. Two of the five now exercise
+        // the computed branch instead, and they were the pair that collided
+        // with each other anyway.
         globalRole: "USER",
       },
       {
@@ -251,7 +267,6 @@ export class MockTaskaStore {
         email: "priya@example.com",
         displayName: "Priya Nair",
         status: "ACTIVE",
-        color: "#ec4899",
         globalRole: "USER",
       },
     ];
@@ -273,7 +288,10 @@ export class MockTaskaStore {
         TOM_ID,
         PRIYA_ID,
       ]),
-      this.project(OPS_PROJECT_ID, "OPS", "Infra and Ops", "CI/CD, observability, on-call", "#0d9488", [
+      // OPS states no colour for the same reason as Tom and Priya above: one
+      // project has to take the computed path. Its former `#0d9488` was not a
+      // member of the palette a computed key draws from either.
+      this.project(OPS_PROJECT_ID, "OPS", "Infra and Ops", "CI/CD, observability, on-call", undefined, [
         ANNA_ID,
         TOM_ID,
       ]),

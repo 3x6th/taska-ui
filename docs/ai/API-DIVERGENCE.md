@@ -416,6 +416,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
 
 ### Neither a project nor a user carries a colour, and the UI draws one anyway
 
+- **Endpoint:** `GET /api/v1/projects`, `GET /api/v1/projects/{projectId}`,
+  `GET /api/v1/users/me`.
 - **Missing:** a colour on the project and on the current user.
   `ProjectResponseDto` is `{id, projectKey, name, createdBy, createdAt,
   updatedAt, archivedAt}` and `ValidateAccessTokenResponseDto` is `{id, login,
@@ -425,22 +427,35 @@ Same rule as above: "Closed by" is settled, the rest is live.
   read as optional fields (`src/domain/types.ts`) and the mock seeds both, so
   mock mode was colourful and the gateway was not: every project key badge and
   every avatar fell back to `var(--accent)`, which is the same colour for
-  everyone. Two members in a stack were indistinguishable, and so were ten
-  projects in a list. DESIGN.md §2.2 had promised "детерминированно по userId"
+  everyone. Ten projects in a list were one colour — that half is observed on
+  the stand. The avatar half is narrower than it looks: against the gateway a
+  *stack* of members is not reachable at all, because there is no member read
+  (see `No membership or member-read endpoints` above), so what this fixes
+  today is the current user's own circle — the profile menu, the assignee chip,
+  a reporter who is the reader. The stack symptom is real in `rest` mode only
+  once TAS-137 lands. DESIGN.md §2.2 had promised "детерминированно по userId"
   the whole time; nothing computed it.
 - **Compensation:** the colour is computed on the client — deterministically
   from `projectKey` for the key badge and from `userId` for the avatar
   (`src/lib/format.ts`, DESIGN.md §2.2). A colour the server *does* send still
   wins, so the mock's seeded values are unchanged and a future stored colour
   needs no client change to take effect.
+- **How it is switched off:** it is not. There is no flag and no mode in which
+  the computation is skipped — it is the fallback arm of an expression, and it
+  stops being reached for a given project the moment a stored colour arrives.
 - **Removal:** partial, and only for the project half.
-  [TAS-145](https://jira.ozero.dev/browse/TAS-145) adds a nullable `color` to
-  the project and [TAS-148](https://jira.ozero.dev/browse/TAS-148) lets an
-  ADMIN choose it; the computed value stays as the default for a project whose
-  colour nobody picked, so it is a default rather than a workaround. The
-  avatar half is deliberately permanent: the coloured circle is the fallback
-  *under* an uploaded avatar ([TAS-129](https://jira.ozero.dev/browse/TAS-129)),
-  not a gap waiting for a contract field.
+  [TAS-145](https://jira.ozero.dev/browse/TAS-145) and
+  [TAS-148](https://jira.ozero.dev/browse/TAS-148) were **widened on
+  2026-08-21** (owner's call) to carry a project colour: TAS-145 adds the
+  nullable `color` column, DTO field and `PATCH` body, TAS-148 the swatch an
+  ADMIN picks from. Neither backfills and neither defaults server-side, so the
+  computed value stays the default for every project whose colour nobody chose
+  — this compensation narrows rather than disappears, and that is deliberate.
+  The avatar half has no removing story and is not meant to have one: the
+  coloured circle is the fallback *under* an uploaded avatar
+  ([TAS-129](https://jira.ozero.dev/browse/TAS-129), listed in
+  `JIRA-WORKFLOW.md` so the citation is checkable), not a gap waiting for a
+  contract field.
 
 ### Closed by TAS-154: "not yours" is a 403, and the gateway tells it apart from "not there"
 
