@@ -78,6 +78,10 @@ All three are about the *product*. A question about process is not among them:
 this file answers those, and where it does not, the answer is a change to this
 file proposed alongside the work rather than instead of it.
 
+A blocked role is a fourth reason to stop, and it is deliberately not on that
+list, because it is not a question — it is a report followed by a wait. See
+*When the harness cannot run a role* below.
+
 Uncertainty that is not one of the three is handled by doing everything that
 does not depend on the answer, then stating the assumption and continuing.
 
@@ -85,7 +89,7 @@ does not depend on the answer, then stating the assumption and continuing.
 
 Sometimes the runtime will not let you do what this file requires: subagent
 delegation switched off, an MCP server down, a tool call refused, no
-credentials for the gateway, a pinned skill missing. When that happens:
+credentials for the gateway. When that happens:
 
 **Say it in the first sentence of the first reply after you learn it, and
 never later than that**, along with what you propose to do instead. Some of
@@ -129,7 +133,7 @@ afterwards.
 
 | Role | Write access | Responsibility |
 | --- | --- | --- |
-| Orchestrator (main thread) | Harness and docs, git, Jira, PRs | Scope, sequencing, evidence, external operations |
+| Orchestrator (main thread) | Harness, docs and repository configuration, git, Jira, PRs | Scope, sequencing, evidence, external operations |
 | `frontend-builder` | Workspace write | The only agent, orchestrator included, that may edit production frontend code |
 | `art-director` | Read-only | Design-system conformance, UX craft, states, keyboard, light/dark parity |
 | `api-contract-guard` | Read-only | Contract conformance, enums, role gating, mock/rest/hybrid parity |
@@ -291,6 +295,11 @@ carrying no verdict says so in its own body, in words, so the owner is
 choosing rather than assuming. An orchestrator judging its own work too small
 to review is the failure this table exists to prevent.
 
+This paragraph is about *choosing* to skip a role that could have run. A role
+that **cannot** run is a different thing and is not covered here — it does not
+get skipped with a note, it stops the run at the step it gates. See *When the
+harness cannot run a role*.
+
 ### Stage the reviews; do not fire them all at the first draft
 
 Where a change needs more than one role, review it in two waves rather than
@@ -362,7 +371,10 @@ ticket about it.
 
 Graduating a line from `docs/ai/BACKLOG.md` into `TAS` is the orchestrator's
 call, made with the same two tests and without asking. Strike the line when it
-graduates, and record the key beside it.
+graduates, record the key beside it, and **name the graduation in the reply
+that does it** — `TAS` is shared with the backend team, and a story appearing
+there is the kind of autonomous decision this file elsewhere requires you to
+state rather than merely to make.
 
 When writing Jira descriptions, use plain text and simple lists. The MCP
 converter mangles more Markdown than it renders, and every case below was
