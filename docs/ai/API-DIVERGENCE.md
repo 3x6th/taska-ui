@@ -410,9 +410,56 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **Compensation:** the UI renders a Description textarea; `RestTaskaApi`
   correctly does not send it. The field works in mock and is a silent no-op
   against the gateway.
-- **Removal:** frontend follow-up — remove the textarea, or keep it only if
-  [TAS-141](https://jira.ozero.dev/browse/TAS-141) adds the field to the
-  contract.
+- **Removal:** [TAS-145](https://jira.ozero.dev/browse/TAS-145), which was
+  widened on 2026-08-21 to accept `description` on create, and
+  [TAS-148](https://jira.ozero.dev/browse/TAS-148), whose same pass makes the
+  form actually send it. This used to point at TAS-141 and no longer does: the
+  field is landing in the project itself rather than in a contract cleanup.
+  Until then the textarea stays and stays a no-op — removing it would take the
+  field away twice.
+
+### Neither a project nor a user carries a colour, and the UI draws one anyway
+
+- **Endpoint:** `GET /api/v1/projects`, `GET /api/v1/projects/{projectId}`,
+  `GET /api/v1/users/me`.
+- **Missing:** a colour on the project and on the current user.
+  `ProjectResponseDto` is `{id, projectKey, name, createdBy, createdAt,
+  updatedAt, archivedAt}` and `ValidateAccessTokenResponseDto` is `{id, login,
+  email, displayName, status, globalRole}`. In `docs/contract/openapi.yml`,
+  `color` exists on a label and nowhere else.
+- **What it looked like before TAS-171.** `Project.color` and `User.color` were
+  read as optional fields (`src/domain/types.ts`) and the mock seeds both, so
+  mock mode was colourful and the gateway was not: every project key badge and
+  every avatar fell back to `var(--accent)`, which is the same colour for
+  everyone. Ten projects in a list were one colour — that half is observed on
+  the stand. The avatar half is narrower than it looks: against the gateway a
+  *stack* of members is not reachable at all, because there is no member read
+  (see `No membership or member-read endpoints` above), so what this fixes
+  today is the current user's own circle — the profile menu, the assignee chip,
+  a reporter who is the reader. The stack symptom is real in `rest` mode only
+  once TAS-137 lands. DESIGN.md §2.2 had promised "детерминированно по userId"
+  the whole time; nothing computed it.
+- **Compensation:** the colour is computed on the client — deterministically
+  from `projectKey` for the key badge and from `userId` for the avatar
+  (`src/lib/format.ts`, DESIGN.md §2.2). A colour the server *does* send still
+  wins, so the mock's seeded values are unchanged and a future stored colour
+  needs no client change to take effect.
+- **How it is switched off:** it is not. There is no flag and no mode in which
+  the computation is skipped — it is the fallback arm of an expression, and it
+  stops being reached for a given project the moment a stored colour arrives.
+- **Removal:** partial, and only for the project half.
+  [TAS-145](https://jira.ozero.dev/browse/TAS-145) and
+  [TAS-148](https://jira.ozero.dev/browse/TAS-148) were **widened on
+  2026-08-21** (owner's call) to carry a project colour: TAS-145 adds the
+  nullable `color` column, DTO field and `PATCH` body, TAS-148 the swatch an
+  ADMIN picks from. Neither backfills and neither defaults server-side, so the
+  computed value stays the default for every project whose colour nobody chose
+  — this compensation narrows rather than disappears, and that is deliberate.
+  The avatar half has no removing story and is not meant to have one: the
+  coloured circle is the fallback *under* an uploaded avatar
+  ([TAS-129](https://jira.ozero.dev/browse/TAS-129), listed in
+  `JIRA-WORKFLOW.md` so the citation is checkable), not a gap waiting for a
+  contract field.
 
 ### Closed by TAS-154: "not yours" is a 403, and the gateway tells it apart from "not there"
 

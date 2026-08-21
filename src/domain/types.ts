@@ -33,6 +33,10 @@ export interface User {
   email: string;
   displayName: string;
   status: UserStatus;
+  // Not in the contract at all — `color` there belongs to a label and to
+  // nothing else — so today this arrives only from the mock. It is load-bearing
+  // anyway: a value here beats the colour `avatarColor` computes from the id,
+  // which is the hook a chosen colour would arrive through (TAS-148).
   color?: string;
   // Optional because the deployed gateway may not carry the field yet, and
   // because UNSPECIFIED collapses to the same absence. Never inferred from the
@@ -49,6 +53,9 @@ export interface Project {
   updatedAt: string;
   archivedAt: string | null;
   description?: string;
+  // Same standing as `User.color` above: absent from the contract, present only
+  // in the mock, and still the value that wins over the colour `keyBadgeStyle`
+  // computes from the project key (TAS-148).
   color?: string;
   memberIds?: string[];
 }

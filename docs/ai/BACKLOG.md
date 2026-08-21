@@ -464,15 +464,62 @@ time.
   falls back to its raw id. Unchanged by TAS-169 and correct as documented —
   worth a story only when a project that large exists.
 
+### Left open by TAS-171 (from all three roles, 2026-08-21)
+
+- **`.project-card` has no `:focus-visible` rule**, so a focused card draws
+  Chrome's default `rgb(229,151,0) auto 1px` instead of §7's `2px var(--accent)`.
+  `.topbar-home` has the correct ring, which means §7's own preamble — "focus-visible
+  реализован только в меню профиля" — is stale as well. Found by `art-director`
+  while checking the keyboard path around the key badge. Candidate for TAS-142.
+- **Filed as [TAS-174](https://jira.ozero.dev/browse/TAS-174): the four assignee
+  filter buttons have no accessible name at all.** `Avatar` puts `aria-label` on
+  a bare `<span>`, where ARIA forbids it and browsers drop it, and the button
+  contains nothing else — so §4.4's "всегда `title`/`aria-label`" currently
+  holds only through `title`, which a touch screen never shows. Raised
+  independently by `art-director` and `release-reviewer`; it predates TAS-171
+  and survives on its own, which is why it got a key rather than a bullet.
+- **`labelColorChoices` is now shared between a user-chosen value and a computed
+  one.** Adding a ninth colour for labels silently reshuffles every project's
+  badge colour, because the index is `hash % length` and a project's colour is
+  meant to be stable. Nothing schedules a ninth colour; if one is ever added,
+  give the badge its own frozen copy of the list in the same change.
+- **`.avatar { background: var(--accent) }` is now unreachable** — every
+  instance either sets its own inline fill or carries `avatar-empty` /
+  `avatar-loading`. Keeping it as defence is fine; the comment TAS-171 added
+  describes the case as though it occurs. **`.key-badge` is the opposite** and
+  must not be swept up with it: since the glyph moved out of the inline style,
+  `color: var(--fg-2)` there is the *only* source of the badge's letter colour
+  on every screen, and its `background` is reached exactly on the empty-key
+  path. Deleting either would repaint or unpaint every badge in the product.
+- **The two colour branches have different safety properties**, which matters
+  only if `User.color` ever becomes real. The computed branch draws from a
+  palette measured against white initials; the stated branch returns any hex
+  that passes `isLabelColor`, with no contrast floor behind it. The badge is
+  immune — its colour lives only in the tint now — but an avatar colour chosen
+  by a user would need its own floor.
+- **`Project.color` and `User.color` remain in `src/domain/types.ts` for fields
+  the contract does not have.** They are a forward hook for TAS-148 and the
+  mock's own seed, and they are annotated as such — but if TAS-148 ever ships
+  without a colour, deleting both fields is the honest end state, and the
+  divergence entry becomes "computed, permanently".
+- **"1 members"** on a freshly created project card — plural not handled.
+  Cosmetic, pre-existing, noticed by `art-director` on the create path TAS-171
+  made worth looking at.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each
 frontend story is blocked by its backend half and ships mock-first meanwhile.
 
 - [TAS-148](https://jira.ozero.dev/browse/TAS-148) — edit a project (name,
-  description) with the key shown read-only. Blocked by TAS-145. Takes over
-  the Description-textarea item that used to sit above: the field stops being
-  a silent no-op once the backend has somewhere to put it.
+  description, **colour**) with the key shown read-only. Blocked by TAS-145.
+  Takes over the Description-textarea item that used to sit above: the field
+  stops being a silent no-op once the backend has somewhere to put it, and the
+  same pass makes the create form send it. **Widened 2026-08-21** (owner's
+  call, in Jira) to include a chosen project colour and a colour swatch in both
+  the edit dialog and the create form; TAS-171 already draws every badge from a
+  colour computed off `projectKey`, so what this story adds is the deliberate
+  override on top, not the colour itself.
 - [TAS-149](https://jira.ozero.dev/browse/TAS-149) — archive a project from
   the UI, plus the read-only board state for an archived one. Blocked by
   TAS-146.
@@ -566,6 +613,12 @@ is what recurs.
   `UpdateProject` does not exist and `taska.projects` has no `description`
   column, so the field the create form shows has nowhere to land yet. The
   project key stays immutable — it is part of every `issueKey`.
+  **Widened 2026-08-21** (owner's call, in Jira): a nullable `color` column and
+  DTO field, `description` accepted on create, and `{name?, description?,
+  color?}` on the PATCH. No backfill and no server-side default — TAS-171
+  computes the colour on the client, so `color` stays null until somebody
+  chooses one. This is what makes the project half of the colour compensation
+  in `API-DIVERGENCE.md` removable.
 - [TAS-146](https://jira.ozero.dev/browse/TAS-146) — archive a project
   (`DELETE /projects/{id}` as a soft delete) and refuse writes to an archived
   one. `archived_at` already exists in the table and in `ProjectResponse`;

@@ -11,6 +11,7 @@ import { TopBar } from "../components/TopBar";
 import { PendingValue, Unknown } from "../components/Unknown";
 import type { Project, ProjectMember } from "../domain/types";
 import { useUnanswered } from "../hooks/useUnanswered";
+import { keyBadgeStyle } from "../lib/format";
 import type { ScreenProps } from "./App";
 
 /** `null` is "the server did not say", which a card must never round down to 0. */
@@ -157,13 +158,7 @@ function ProjectCard({
   return (
     <button className="project-card" onClick={onOpen} type="button">
       <div className="project-card-head">
-        <span
-          className="key-badge"
-          style={{
-            color: project.color ?? "var(--accent)",
-            background: `color-mix(in oklab, ${project.color ?? "var(--accent)"} 16%, transparent)`,
-          }}
-        >
+        <span className="key-badge" style={keyBadgeStyle(project.projectKey, project.color)}>
           {project.projectKey}
         </span>
         <strong>{project.name}</strong>
@@ -172,7 +167,11 @@ function ProjectCard({
       <div className="project-card-foot">
         <div className="avatar-stack">
           {(members ?? []).slice(0, 4).map((member) => (
-            <Avatar key={member.userId} user={member.user ? { displayName: member.user.displayName, color: member.user.color } : null} size="sm" />
+            <Avatar
+              key={member.userId}
+              user={member.user ? { id: member.userId, displayName: member.user.displayName, color: member.user.color } : null}
+              size="sm"
+            />
           ))}
           {/* Three states, not two: a number, a request still in flight, and a
               request that failed. The `title` that used to stand in for the

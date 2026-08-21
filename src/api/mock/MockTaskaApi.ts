@@ -215,7 +215,21 @@ export class MockTaskaStore {
         email: "anna@example.com",
         displayName: "Anna Ivanova",
         status: "ACTIVE",
-        color: "#6366f1",
+        // Deliberately not the colour Anna's own id computes to, and the same
+        // goes for Mark and Sofia. A seed that duplicates the computed answer
+        // exercises the branch without showing it: the point of seeding three
+        // people is that a reader can see which colour came from the server.
+        // The three people who do state a colour state one from
+        // `avatarColorChoices`, not one of the brighter §2.2 hues those were
+        // derived from. This mock does not stand in for some server; it stands
+        // in for one that behaves correctly. The "colour came from the server"
+        // branch exists for TAS-148, where an admin picks from the set this app
+        // itself offers — so a seeded value from outside that set would be
+        // demonstrating a case the product does not permit, in the one
+        // environment where anybody looks at these colours at all. Same
+        // argument as Tom and Priya below: a mock that had depicted reality
+        // would not have let TAS-171's flat accent avatars live this long.
+        color: "#986004",
         globalRole: "USER",
       },
       {
@@ -224,7 +238,7 @@ export class MockTaskaStore {
         email: "mark@example.com",
         displayName: "Mark Lee",
         status: "ACTIVE",
-        color: "#0ea5e9",
+        color: "#0775a7",
         globalRole: "GLOBAL_ADMIN",
       },
       {
@@ -233,7 +247,7 @@ export class MockTaskaStore {
         email: "sofia@example.com",
         displayName: "Sofia Reyes",
         status: "ACTIVE",
-        color: "#10b981",
+        color: "#c1397c",
         globalRole: "USER",
       },
       {
@@ -242,7 +256,13 @@ export class MockTaskaStore {
         email: "tom@example.com",
         displayName: "Tom Becker",
         status: "ACTIVE",
-        color: "#f59e0b",
+        // Tom and Priya state no colour on purpose. Every seeded person having
+        // one meant the only environment a reviewer or an e2e run can reach
+        // always took the "server sent a colour" branch — the branch the live
+        // gateway does not have — which is how the flat accent avatars of
+        // TAS-171 survived as long as they did. Two of the five now exercise
+        // the computed branch instead, and they were the pair that collided
+        // with each other anyway.
         globalRole: "USER",
       },
       {
@@ -251,13 +271,17 @@ export class MockTaskaStore {
         email: "priya@example.com",
         displayName: "Priya Nair",
         status: "ACTIVE",
-        color: "#ec4899",
         globalRole: "USER",
       },
     ];
 
     this.projects = [
-      this.project(TASKA_PROJECT_ID, "TAS", "Taska Platform", "Core gateway, auth and issue services", "#6366f1", [
+      // Not `#6366f1`, which is what this key computes to: a seed equal to the
+      // computed answer hides the override branch instead of showing it, the
+      // same trap the seeded people above avoid. TAS and MOB now demonstrate a
+      // stated colour winning; WEB happens to state its computed one, which is
+      // honest and costs nothing.
+      this.project(TASKA_PROJECT_ID, "TAS", "Taska Platform", "Core gateway, auth and issue services", "#0052cc", [
         ANNA_ID,
         MARK_ID,
         SOFIA_ID,
@@ -273,7 +297,10 @@ export class MockTaskaStore {
         TOM_ID,
         PRIYA_ID,
       ]),
-      this.project(OPS_PROJECT_ID, "OPS", "Infra and Ops", "CI/CD, observability, on-call", "#0d9488", [
+      // OPS states no colour for the same reason as Tom and Priya above: one
+      // project has to take the computed path. Its former `#0d9488` was not a
+      // member of the palette a computed key draws from either.
+      this.project(OPS_PROJECT_ID, "OPS", "Infra and Ops", "CI/CD, observability, on-call", undefined, [
         ANNA_ID,
         TOM_ID,
       ]),
@@ -671,7 +698,7 @@ export class MockTaskaStore {
     if (!key || this.projects.some((project) => project.projectKey === key)) {
       throw new MockApiError("ALREADY_EXISTS", "Project key already exists");
     }
-    const project = this.project(makeId("project"), key, input.name.trim(), input.description || "Project workspace", "#7c3aed", [
+    const project = this.project(makeId("project"), key, input.name.trim(), input.description || "Project workspace", undefined, [
       this.currentUserId,
     ]);
     this.projects.unshift(project);
@@ -1398,7 +1425,14 @@ export class MockTaskaStore {
     projectKey: string,
     name: string,
     description: string,
-    color: string,
+    /**
+     * Optional because the gateway has no such field: `color` is a label
+     * property in the contract, and nothing else. The seeded projects state one
+     * so the mock keeps showing the palette DESIGN.md §2.2 chose; anything
+     * created at runtime states none and is coloured from its key, which is the
+     * path the live gateway takes for every project.
+     */
+    color: string | undefined,
     memberIds: string[],
   ): Project {
     return {
