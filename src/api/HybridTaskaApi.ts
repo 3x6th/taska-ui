@@ -4,12 +4,14 @@ import type {
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
+  CreateProjectLabelInput,
   ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
   TaskaApi,
   UpdateIssueInput,
+  UpdateProjectLabelInput,
 } from "./TaskaApi";
 import type {
   AdminCatalog,
@@ -22,9 +24,11 @@ import type {
   IssueLink,
   IssueType,
   IssueWithHistory,
+  Label,
   Notification,
   Page,
   Project,
+  ProjectLabel,
   ProjectMember,
   ProjectMembership,
   User,
@@ -177,6 +181,39 @@ export class HybridTaskaApi implements TaskaApi {
 
   deleteIssueLink(projectId: string, issueId: string, linkId: string): Promise<void> {
     return this.live.deleteIssueLink(projectId, issueId, linkId);
+  }
+
+  // Delegated whole, like the link routes above: labels are in the contract
+  // with their own role rules, and there is nothing here for this class to
+  // synthesise. Its compensation is about project membership only — which does
+  // reach these indirectly, since `getMembership` decides whether the panel
+  // offers the writes at all, and the server refuses them regardless.
+  listProjectLabels(projectId: string): Promise<ProjectLabel[]> {
+    return this.live.listProjectLabels(projectId);
+  }
+
+  createProjectLabel(projectId: string, input: CreateProjectLabelInput): Promise<ProjectLabel> {
+    return this.live.createProjectLabel(projectId, input);
+  }
+
+  updateProjectLabel(projectId: string, labelId: string, input: UpdateProjectLabelInput): Promise<ProjectLabel> {
+    return this.live.updateProjectLabel(projectId, labelId, input);
+  }
+
+  deleteProjectLabel(projectId: string, labelId: string): Promise<void> {
+    return this.live.deleteProjectLabel(projectId, labelId);
+  }
+
+  listIssueLabels(projectId: string, issueId: string): Promise<Label[]> {
+    return this.live.listIssueLabels(projectId, issueId);
+  }
+
+  addIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
+    return this.live.addIssueLabel(projectId, issueId, labelId);
+  }
+
+  removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
+    return this.live.removeIssueLabel(projectId, issueId, labelId);
   }
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

@@ -106,6 +106,7 @@ const {
             updatedAt: now,
             version: 1,
             deletedAt: null,
+            labels: [],
           },
         ],
         page: 0,
@@ -114,6 +115,11 @@ const {
       };
     },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
+    // The board reads the project's labels for its filter. These tests are
+    // about the five reads above and say nothing about labels, so this answers
+    // successfully with none rather than failing and adding a sixth state to
+    // every assertion below.
+    listProjectLabels: async () => [],
   };
 
   return {

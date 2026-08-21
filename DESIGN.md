@@ -316,6 +316,15 @@ Slide-over — единственная поверхность с горизон
   padding 1 7, radius 20.
 - **Status pill** (в панели): height 28, padding 0 12, radius 8, 12.5px/600,
   фон `color-mix(in oklab, <statusColor> 14%, transparent)`, текст `<statusColor>`.
+- **Label chip** (метка задачи, TAS-169): height 20, padding 0 8, radius 20,
+  11.5px/600, фон `color-mix(in oklab, <labelColor> 16%, transparent)`,
+  текст `<labelColor>`. Цвет метки приходит с сервера, а не из токенов, поэтому
+  задаётся инлайном; значение, не проходящее контрактный `^#[0-9A-Fa-f]{6}$`,
+  заменяется на `--accent`, а не рисуется как есть. Имя метки — всегда текст:
+  цвет здесь не единственный носитель смысла ровно по причине из §4.6.
+  Съёмная метка несёт внутри кнопку 15×15 на `currentColor` с обязательным
+  `aria-label` «Remove <name>»; длинное имя обрезается многоточием, чтобы чип
+  не растягивал строку.
 
 ### 4.6 Type chip
 Квадрат 14×14, `radius:4`, фон = цвет типа. **BUG — круг (`radius:50%`)**, чтобы тип читался
@@ -330,7 +339,10 @@ LOW=1, MEDIUM=2, HIGH=3. Обязателен `title`/`aria-label` («High prior
 - **Issue card:** `background:var(--surface); border:1px var(--border); radius:11; padding:12 13;
   box-shadow:var(--shadow); cursor:grab`.
   Анатомия: [type chip · issueKey (mono) · тип (overline) · ─── · priority bars] →
-  заголовок 13/500 → (опц.) превью описания 2 строки → [дата создания · аватар исполнителя].
+  заголовок 13/500 → (опц.) превью описания 2 строки → (опц.) метки, не более
+  двух рядов (`max-height:46`, дальше обрезается — полный список читается в
+  панели, а дата и аватар внизу карточки не должны уезжать) →
+  [дата создания · аватар исполнителя].
   hover: `border-color:var(--border-strong); box-shadow:var(--shadow-hover)`.
   dragging: `opacity:.4`.
 - **Project card:** `radius:13; padding:17`, hover `border-strong` + `translateY(-2px)`.

@@ -4,12 +4,14 @@ import type {
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
+  CreateProjectLabelInput,
   ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
   TaskaApi,
   UpdateIssueInput,
+  UpdateProjectLabelInput,
 } from "../TaskaApi";
 import { SessionExpiredSignal } from "../session";
 import type {
@@ -28,9 +30,11 @@ import type {
   IssueLink,
   IssueType,
   IssueWithHistory,
+  Label,
   Notification,
   Page,
   Project,
+  ProjectLabel,
   ProjectMember,
   ProjectMembership,
   User,
@@ -88,10 +92,42 @@ interface RestAdminCatalog {
   services?: (Partial<Omit<AdminService, "tables">> & { tables?: AdminTable[] })[];
 }
 
-type RestIssue = Omit<Issue, "assigneeId" | "deletedAt"> & {
+type RestIssue = Omit<Issue, "assigneeId" | "deletedAt" | "labels"> & {
   assigneeId?: string | null;
   deletedAt?: string | null;
+  // Absent on every gateway built before TAS-120, and absent again the moment
+  // this app talks to one. `toIssue` turns that into `[]` so no card has to.
+  labels?: RestLabel[];
 };
+
+/**
+ * `IssueLabelResponseDto` — the three fields a label has when an *issue* is
+ * carrying it, and `ProjectLabelResponseDto`'s first three as well. Optional
+ * throughout because neither schema declares a `required` block, which is the
+ * same reading `RestIssueLink` gets and for the same reason.
+ */
+interface RestLabel {
+  id?: string;
+  name?: string;
+  color?: string;
+}
+
+interface RestProjectLabel extends RestLabel {
+  projectId?: string;
+  createdBy?: string;
+  createdAt?: string;
+  deletedAt?: string | null;
+}
+
+interface RestListProjectLabelsResponse {
+  items?: RestProjectLabel[];
+  totalCount?: number;
+}
+
+interface RestListIssueLabelsResponse {
+  items?: RestLabel[];
+  totalCount?: number;
+}
 
 type RestIssueHistoryEvent = Omit<IssueHistoryEvent, "issueId">;
 
@@ -290,6 +326,7 @@ export class RestTaskaApi implements TaskaApi {
     const search = new URLSearchParams();
     if (params.status) search.set("status", params.status);
     if (params.assigneeId) search.set("assigneeId", params.assigneeId);
+    if (params.labelId) search.set("labelId", params.labelId);
     if (params.page !== undefined) search.set("page", String(params.page));
     if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
     const response = await this.request<RestListIssuesResponse>(
@@ -388,6 +425,61 @@ export class RestTaskaApi implements TaskaApi {
 
   async deleteIssueLink(_projectId: string, issueId: string, linkId: string): Promise<void> {
     await this.request<void>(`${this.linksPath(issueId)}/${this.segment(linkId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listProjectLabels(projectId: string): Promise<ProjectLabel[]> {
+    const response = await this.request<RestListProjectLabelsResponse>(this.projectLabelsPath(projectId));
+    return (response.items ?? []).map((label) => this.toProjectLabel(label, projectId));
+  }
+
+  async createProjectLabel(projectId: string, input: CreateProjectLabelInput): Promise<ProjectLabel> {
+    const response = await this.request<RestProjectLabel>(this.projectLabelsPath(projectId), {
+      method: "POST",
+      body: { name: input.name, color: input.color },
+    });
+    return this.toProjectLabel(response, projectId);
+  }
+
+  async updateProjectLabel(
+    projectId: string,
+    labelId: string,
+    input: UpdateProjectLabelInput,
+  ): Promise<ProjectLabel> {
+    // Both fields every time: `UpdateProjectLabelRequestDto` requires `name` and
+    // `color`, so a rename still sends the colour it is keeping. The caller does
+    // the keeping — this layer does not read the label first to fill a gap.
+    const response = await this.request<RestProjectLabel>(
+      `${this.projectLabelsPath(projectId)}/${this.segment(labelId)}`,
+      {
+        method: "PATCH",
+        body: { name: input.name, color: input.color },
+      },
+    );
+    return this.toProjectLabel(response, projectId);
+  }
+
+  async deleteProjectLabel(projectId: string, labelId: string): Promise<void> {
+    await this.request<void>(`${this.projectLabelsPath(projectId)}/${this.segment(labelId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listIssueLabels(projectId: string, issueId: string): Promise<Label[]> {
+    const response = await this.request<RestListIssueLabelsResponse>(this.issueLabelsPath(projectId, issueId));
+    return (response.items ?? []).map((label) => toLabel(label));
+  }
+
+  async addIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
+    await this.request<unknown>(this.issueLabelsPath(projectId, issueId), {
+      method: "POST",
+      body: { labelId },
+    });
+  }
+
+  async removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
+    await this.request<void>(`${this.issueLabelsPath(projectId, issueId)}/${this.segment(labelId)}`, {
       method: "DELETE",
     });
   }
@@ -649,6 +741,14 @@ export class RestTaskaApi implements TaskaApi {
     return `/issues/${this.segment(issueId)}/links`;
   }
 
+  private projectLabelsPath(projectId: string) {
+    return `/projects/${this.segment(projectId)}/labels`;
+  }
+
+  private issueLabelsPath(projectId: string, issueId: string) {
+    return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/labels`;
+  }
+
   private commentsPath(projectId: string, issueId: string) {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/comments`;
   }
@@ -674,6 +774,25 @@ export class RestTaskaApi implements TaskaApi {
       ...issue,
       assigneeId: issue.assigneeId || null,
       deletedAt: issue.deletedAt ?? null,
+      labels: (issue.labels ?? []).map((label) => toLabel(label)),
+    };
+  }
+
+  /**
+   * `projectId` is passed in rather than trusted from the body: the response
+   * declares no required fields, and the project a label belongs to is a fact
+   * the caller asked the question with. A body that names a different project
+   * is still preferred — it is the server's answer — but an absent one falls
+   * back to the path rather than to the empty string, which would leave the
+   * label pointing at no project at all.
+   */
+  private toProjectLabel(label: RestProjectLabel, projectId: string): ProjectLabel {
+    return {
+      ...toLabel(label),
+      projectId: label.projectId ?? projectId,
+      createdBy: label.createdBy ?? "",
+      createdAt: label.createdAt ?? "",
+      deletedAt: label.deletedAt ?? null,
     };
   }
 
@@ -781,6 +900,21 @@ export class RestTaskaApi implements TaskaApi {
  */
 function toGlobalRole(value: unknown): GlobalRole | undefined {
   return value === "USER" || value === "GLOBAL_ADMIN" ? value : undefined;
+}
+
+/**
+ * A label the UI can draw whatever the response left out. An id it cannot use
+ * is worse than no row at all, so an unaddressable label keeps the empty id it
+ * arrived with and the caller decides — but the name and the colour are only
+ * ever *drawn*, and blanks there are handled where they are rendered
+ * (`labelChipStyle`, which falls back to the accent for an unstated colour).
+ */
+function toLabel(label: RestLabel): Label {
+  return {
+    id: label.id ?? "",
+    name: label.name ?? "",
+    color: typeof label.color === "string" ? label.color : "",
+  };
 }
 
 async function mapWithConcurrency<T, R>(

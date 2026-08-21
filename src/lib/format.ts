@@ -90,3 +90,43 @@ export const relativeTime = (iso: string) => {
   const days = Math.round(hours / 24);
   return days === 1 ? "Yesterday" : `${days}d ago`;
 };
+
+/**
+ * The contract's own spelling for a label colour (`^#[0-9A-Fa-f]{6}$`). Kept
+ * here rather than only in the API layer because this is where a colour is
+ * turned into CSS, and a value the gateway sent is not a value this build
+ * chose — the check is what stops an unexpected one reaching a style attribute.
+ */
+export const isLabelColor = (value: string) => /^#[0-9a-f]{6}$/i.test(value);
+
+/**
+ * Colours offered when a label is created. Deliberately a short list rather
+ * than a free colour input: every value here is already legible against both
+ * surfaces at §4.5's 16% tint, which a hand-typed one would not be.
+ */
+export const labelColorChoices = [
+  "#0052cc",
+  "#0ea5e9",
+  "#3fa863",
+  "#e3a008",
+  "#e5544b",
+  "#ec4899",
+  "#8b5cf6",
+  "#6366f1",
+];
+
+/**
+ * DESIGN.md §4.5's badge recipe — tinted background, the colour itself as the
+ * text — applied to a colour the *server* chose rather than one this build
+ * picked. A value the contract's own pattern rejects never reaches CSS: it
+ * falls back to the accent, so a malformed colour leaves a readable chip
+ * instead of an invisible or unstyled one.
+ */
+export const labelChipStyle = (color: string) => {
+  const value = isLabelColor(color) ? color : "var(--accent)";
+  return {
+    color: value,
+    background: `color-mix(in oklab, ${value} 16%, transparent)`,
+    borderColor: `color-mix(in oklab, ${value} 32%, transparent)`,
+  };
+};
