@@ -4,12 +4,14 @@ import type {
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
+  CreateProjectLabelInput,
   ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
   TaskaApi,
   UpdateIssueInput,
+  UpdateProjectLabelInput,
 } from "../TaskaApi";
 import type {
   AdminCatalog,
@@ -27,9 +29,11 @@ import type {
   IssueStatus,
   IssueType,
   IssueWithHistory,
+  Label,
   Notification,
   Page,
   Project,
+  ProjectLabel,
   ProjectMember,
   ProjectMembership,
   User,
@@ -144,6 +148,12 @@ const compareAsColumn = (columnClass: AdminColumnClass, left: unknown, right: un
  * `UUID`, so anything else is refused before admin-service sees it — whatever
  * the table's own key looks like.
  */
+/** The contract's own spelling for a label colour: `^#[0-9A-Fa-f]{6}$`. */
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+
+/** `CreateProjectLabelRequestDto.name` — `minLength: 1, maxLength: 50`. */
+const LABEL_NAME_MAX = 50;
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -180,6 +190,14 @@ export class MockTaskaStore {
   private historyByIssue: Record<string, IssueHistoryEvent[]>;
   private commentsByIssue: Record<string, IssueComment[]>;
   private links: StoredIssueLink[] = [];
+  private projectLabels: ProjectLabel[];
+  /**
+   * Which labels an issue carries, held as ids against `projectLabels` rather
+   * than as copies on the issue. A rename or a recolour then shows everywhere
+   * at once, and a soft-deleted label leaves every issue it was on — which is
+   * what the gateway does (TAS-119) and what copies would quietly get wrong.
+   */
+  private labelIdsByIssue: Record<string, string[]> = {};
   private notifications: Notification[];
   private workflow: Workflow;
   private currentUserId = ANNA_ID;
@@ -352,6 +370,7 @@ export class MockTaskaStore {
       updatedAt: ts(day, minute++),
       version: 1,
       deletedAt: null,
+      labels: [],
     });
 
     this.issues = [
@@ -550,6 +569,52 @@ export class MockTaskaStore {
       });
     });
 
+    // Labels the projects already own, so the picker is not empty on first
+    // load and so a project Anna cannot write to has labels to be read-only
+    // about. Colours are the seed's own data, not design tokens: the contract
+    // stores a HEX string per label and this is what the server would send.
+    const labelSeed: [string, string, string][] = [
+      [TASKA_PROJECT_ID, "backend", "#0052cc"],
+      [TASKA_PROJECT_ID, "frontend", "#8b5cf6"],
+      [TASKA_PROJECT_ID, "tech-debt", "#e3a008"],
+      [TASKA_PROJECT_ID, "needs-design", "#ec4899"],
+      [WEB_PROJECT_ID, "design", "#ec4899"],
+      [WEB_PROJECT_ID, "accessibility", "#3fa863"],
+      [MOB_PROJECT_ID, "ios", "#0ea5e9"],
+      [MOB_PROJECT_ID, "android", "#3fa863"],
+      [OPS_PROJECT_ID, "observability", "#6366f1"],
+    ];
+    this.projectLabels = labelSeed.map(([projectId, name, color], index) => ({
+      id: makeId("label"),
+      projectId,
+      name,
+      color,
+      createdBy: ANNA_ID,
+      createdAt: ts(9, 10 + index),
+      deletedAt: null,
+    }));
+
+    const issueLabelSeed: [string, string][] = [
+      ["TAS-101", "backend"],
+      ["TAS-101", "tech-debt"],
+      ["TAS-102", "frontend"],
+      ["TAS-103", "frontend"],
+      ["TAS-103", "needs-design"],
+      ["TAS-107", "backend"],
+      ["TAS-110", "tech-debt"],
+      ["WEB-13", "design"],
+      ["WEB-13", "accessibility"],
+      ["MOB-5", "ios"],
+    ];
+    issueLabelSeed.forEach(([issueKey, labelName]) => {
+      const target = this.issues.find((item) => item.issueKey === issueKey);
+      const label = this.projectLabels.find(
+        (item) => item.projectId === target?.projectId && item.name === labelName,
+      );
+      if (!target || !label) return;
+      (this.labelIdsByIssue[target.id] ??= []).push(label.id);
+    });
+
     this.notifications = [
       this.notification("ISSUE_ASSIGNED", "Issue assigned", "TAS-107 was assigned to you", `/projects/${TASKA_PROJECT_ID}/issues/${tas107?.id ?? ""}`, ts(25, 10), null),
       this.notification("ISSUE_TRANSITIONED", "Status changed", "TAS-101 moved to In Progress", `/projects/${TASKA_PROJECT_ID}/issues/${tas101?.id ?? ""}`, ts(25, 7), null),
@@ -657,9 +722,15 @@ export class MockTaskaStore {
       .filter((item) => item.projectId === projectId && item.deletedAt === null)
       .filter((item) => !params.status || item.status === params.status)
       .filter((item) => !params.assigneeId || item.assigneeId === params.assigneeId)
+      // The contract's `labelId` query parameter. Filtered on the ids actually
+      // attached, so a label that was soft-deleted matches nothing rather than
+      // matching the issues it used to be on.
+      .filter((item) => !params.labelId || this.labelsForIssue(item.id).some((label) => label.id === params.labelId))
       .sort(byCreatedAt);
     return {
-      items: filtered.slice(page * pageSize, page * pageSize + pageSize),
+      items: filtered
+        .slice(page * pageSize, page * pageSize + pageSize)
+        .map((item) => this.issueView(item)),
       page,
       pageSize,
       totalCount: filtered.length,
@@ -669,7 +740,7 @@ export class MockTaskaStore {
   getIssue(projectId: string, issueId: string): IssueWithHistory {
     const issue = this.findIssue(projectId, issueId);
     return {
-      issue,
+      issue: this.issueView(issue),
       history: this.historyByIssue[issue.id] ?? [],
     };
   }
@@ -694,6 +765,7 @@ export class MockTaskaStore {
       updatedAt: now(),
       version: 1,
       deletedAt: null,
+      labels: [],
     };
     this.issues.push(issue);
     this.historyByIssue[issue.id] = [];
@@ -701,7 +773,7 @@ export class MockTaskaStore {
     this.notifications.unshift(
       this.notification("ISSUE_CREATED", "Issue created", `${issue.issueKey} was created`, `/projects/${projectId}/issues/${issue.id}`, now(), null),
     );
-    return issue;
+    return this.issueView(issue);
   }
 
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Issue {
@@ -716,7 +788,7 @@ export class MockTaskaStore {
       field: changedPriority ? "priority" : "issue",
       to: changedPriority ? input.priority : undefined,
     });
-    return issue;
+    return this.issueView(issue);
   }
 
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Issue {
@@ -733,7 +805,7 @@ export class MockTaskaStore {
         this.notification("ISSUE_ASSIGNED", "Issue assigned", `${issue.issueKey} was assigned to you`, `/projects/${projectId}/issues/${issue.id}`, now(), null),
       );
     }
-    return issue;
+    return this.issueView(issue);
   }
 
   transitionIssue(projectId: string, issueId: string, transitionId: string): Issue {
@@ -754,7 +826,7 @@ export class MockTaskaStore {
     this.notifications.unshift(
       this.notification("ISSUE_TRANSITIONED", "Status changed", `${issue.issueKey} moved to ${toStatus}`, `/projects/${projectId}/issues/${issue.id}`, now(), null),
     );
-    return issue;
+    return this.issueView(issue);
   }
 
   deleteIssue(projectId: string, issueId: string): void {
@@ -814,6 +886,85 @@ export class MockTaskaStore {
       throw new MockApiError("NOT_FOUND", "Issue link not found");
     }
     this.links = this.links.filter((item) => item.id !== link.id);
+  }
+
+  listProjectLabels(projectId: string): ProjectLabel[] {
+    this.getProject(projectId);
+    return this.projectLabels.filter((label) => label.projectId === projectId && label.deletedAt === null);
+  }
+
+  createProjectLabel(projectId: string, input: CreateProjectLabelInput): ProjectLabel {
+    this.getProject(projectId);
+    const name = this.validLabelName(input.name);
+    const color = this.validLabelColor(input.color);
+    if (this.findLabelByName(projectId, name)) {
+      throw new MockApiError("ALREADY_EXISTS", `This project already has a label called "${name}"`);
+    }
+    const label: ProjectLabel = {
+      id: makeId("label"),
+      projectId,
+      name,
+      color,
+      createdBy: this.currentUserId,
+      createdAt: now(),
+      deletedAt: null,
+    };
+    this.projectLabels.push(label);
+    return label;
+  }
+
+  updateProjectLabel(projectId: string, labelId: string, input: UpdateProjectLabelInput): ProjectLabel {
+    const label = this.findProjectLabel(projectId, labelId);
+    const name = this.validLabelName(input.name);
+    const color = this.validLabelColor(input.color);
+    // A label keeping its own name is not a duplicate of itself.
+    const clash = this.findLabelByName(projectId, name);
+    if (clash && clash.id !== label.id) {
+      throw new MockApiError("ALREADY_EXISTS", `This project already has a label called "${name}"`);
+    }
+    label.name = name;
+    label.color = color;
+    return label;
+  }
+
+  /**
+   * Soft delete, as the contract's own summary says. The row keeps its place in
+   * the store with `deletedAt` set, which is what makes it vanish from the
+   * project list *and* from every issue at once: `labelsForIssue` resolves
+   * through this list, so nothing has to walk the issues and unpick them.
+   */
+  deleteProjectLabel(projectId: string, labelId: string): void {
+    const label = this.findProjectLabel(projectId, labelId);
+    label.deletedAt = now();
+  }
+
+  listIssueLabels(projectId: string, issueId: string): Label[] {
+    const issue = this.findIssue(projectId, issueId);
+    return this.labelsForIssue(issue.id);
+  }
+
+  addIssueLabel(projectId: string, issueId: string, labelId: string): void {
+    const issue = this.findIssue(projectId, issueId);
+    const label = this.findProjectLabel(projectId, labelId);
+    const attached = (this.labelIdsByIssue[issue.id] ??= []);
+    if (attached.includes(label.id)) {
+      throw new MockApiError("ALREADY_EXISTS", `${issue.issueKey} already carries "${label.name}"`);
+    }
+    attached.push(label.id);
+    // "UPDATED" rather than a LABEL_ADDED of our own invention: the gateway's
+    // history DTO types `eventType` as a bare string with no enum, so this
+    // build has no value to claim. The panel prints "updated this issue".
+    this.pushHistory(issue.id, "UPDATED", this.currentUserId, { field: "labels", to: label.name });
+  }
+
+  removeIssueLabel(projectId: string, issueId: string, labelId: string): void {
+    const issue = this.findIssue(projectId, issueId);
+    const attached = this.labelIdsByIssue[issue.id] ?? [];
+    if (!attached.includes(labelId)) {
+      throw new MockApiError("NOT_FOUND", "This issue does not carry that label");
+    }
+    this.labelIdsByIssue[issue.id] = attached.filter((id) => id !== labelId);
+    this.pushHistory(issue.id, "UPDATED", this.currentUserId, { field: "labels" });
   }
 
   listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Page<IssueComment> {
@@ -1302,6 +1453,63 @@ export class MockTaskaStore {
     };
   }
 
+  /** The issue as a reader sees it: the stored record plus its current labels. */
+  private issueView(issue: Issue): Issue {
+    return { ...issue, labels: this.labelsForIssue(issue.id) };
+  }
+
+  /**
+   * Resolved through `projectLabels` on every read, in the project's own label
+   * order rather than in the order they were attached — the picker below the
+   * chips lists them the same way, and two orders for one set of labels reads
+   * as a bug even when both are arbitrary.
+   */
+  private labelsForIssue(issueId: string): Label[] {
+    const attached = this.labelIdsByIssue[issueId] ?? [];
+    return this.projectLabels
+      .filter((label) => label.deletedAt === null && attached.includes(label.id))
+      .map(({ id, name, color }) => ({ id, name, color }));
+  }
+
+  private findProjectLabel(projectId: string, labelId: string): ProjectLabel {
+    this.getProject(projectId);
+    const label = this.projectLabels.find(
+      (item) => item.projectId === projectId && item.id === labelId && item.deletedAt === null,
+    );
+    if (!label) {
+      throw new MockApiError("NOT_FOUND", "Label not found");
+    }
+    return label;
+  }
+
+  /** Case-insensitive, as TAS-119 asks: "Backend" and "backend" are one name. */
+  private findLabelByName(projectId: string, name: string): ProjectLabel | undefined {
+    return this.projectLabels.find(
+      (item) =>
+        item.projectId === projectId &&
+        item.deletedAt === null &&
+        item.name.toLowerCase() === name.toLowerCase(),
+    );
+  }
+
+  private validLabelName(value: string): string {
+    const name = value.trim();
+    if (!name) {
+      throw new MockApiError("INVALID_ARGUMENT", "A label needs a name");
+    }
+    if (name.length > LABEL_NAME_MAX) {
+      throw new MockApiError("INVALID_ARGUMENT", `A label name is at most ${LABEL_NAME_MAX} characters`);
+    }
+    return name;
+  }
+
+  private validLabelColor(value: string): string {
+    if (!HEX_COLOR_PATTERN.test(value)) {
+      throw new MockApiError("INVALID_ARGUMENT", "A label colour must be a #RRGGBB value");
+    }
+    return value;
+  }
+
   private findIssue(projectId: string, issueId: string): Issue {
     const issue = this.issues.find((item) => item.projectId === projectId && item.id === issueId && item.deletedAt === null);
     if (!issue) {
@@ -1505,6 +1713,41 @@ export class MockTaskaApi implements TaskaApi {
 
   async deleteIssueLink(projectId: string, issueId: string, linkId: string): Promise<void> {
     this.store.deleteIssueLink(projectId, issueId, linkId);
+    await wait(null);
+  }
+
+  async listProjectLabels(projectId: string): Promise<ProjectLabel[]> {
+    return wait(this.store.listProjectLabels(projectId));
+  }
+
+  async createProjectLabel(projectId: string, input: CreateProjectLabelInput): Promise<ProjectLabel> {
+    return wait(this.store.createProjectLabel(projectId, input));
+  }
+
+  async updateProjectLabel(
+    projectId: string,
+    labelId: string,
+    input: UpdateProjectLabelInput,
+  ): Promise<ProjectLabel> {
+    return wait(this.store.updateProjectLabel(projectId, labelId, input));
+  }
+
+  async deleteProjectLabel(projectId: string, labelId: string): Promise<void> {
+    this.store.deleteProjectLabel(projectId, labelId);
+    await wait(null);
+  }
+
+  async listIssueLabels(projectId: string, issueId: string): Promise<Label[]> {
+    return wait(this.store.listIssueLabels(projectId, issueId));
+  }
+
+  async addIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
+    this.store.addIssueLabel(projectId, issueId, labelId);
+    await wait(null);
+  }
+
+  async removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
+    this.store.removeIssueLabel(projectId, issueId, labelId);
     await wait(null);
   }
 

@@ -93,6 +93,37 @@ export interface Workflow {
   transitions: WorkflowTransition[];
 }
 
+/**
+ * A label as an *issue* carries it — the contract's `IssueLabelResponseDto`,
+ * and the same three fields `IssueResponseDto.labels[]` holds. Deliberately not
+ * an alias for `ProjectLabel` below: three fields is everything the issue side
+ * of the contract is ever told, and typing it as the project record would put
+ * `createdBy` and `deletedAt` in scope for code that has never been sent them.
+ */
+export interface Label {
+  id: string;
+  name: string;
+  color: string;
+}
+
+/**
+ * A label as the *project* owns it (`ProjectLabelResponseDto`). `deletedAt` is
+ * the contract's soft delete: a removed label keeps its row and stops being
+ * returned by the list. Whether it also comes off the issues already carrying
+ * it is *this repository's* reading of TAS-119, not something the contract
+ * states or the gateway has been observed doing — the mock implements it that
+ * way, and nothing here depends on the gateway agreeing. Nothing in this app
+ * asks for deleted labels, so in practice this is `null` wherever it is read —
+ * it is modelled because the field is in the response, not because a screen
+ * branches on it.
+ */
+export interface ProjectLabel extends Label {
+  projectId: string;
+  createdBy: string;
+  createdAt: string;
+  deletedAt: string | null;
+}
+
 export interface Issue {
   id: string;
   projectId: string;
@@ -109,6 +140,14 @@ export interface Issue {
   updatedAt: string;
   version: number;
   deletedAt: string | null;
+  /**
+   * `IssueResponseDto.labels`. Always an array by the time it is read — the API
+   * layer defaults an absent one to `[]` — so a card never has to ask whether
+   * the gateway sent the field. The list endpoint's short DTO does not carry
+   * labels at all; `listIssues` hydrates each row from the detail endpoint
+   * (`RestTaskaApi`), which is where the board's chips come from.
+   */
+  labels: Label[];
 }
 
 export type IssueEventType =

@@ -308,6 +308,145 @@ describe("MockTaskaApi", () => {
     });
   });
 
+  /**
+   * The label rules the gateway states in TAS-119 — project scope, one name per
+   * project case-insensitively, a HEX colour, and a soft delete that reaches
+   * every issue at once. The cases below find their subjects in the seed rather
+   * than naming them, so a reshuffled seed changes nothing here.
+   */
+  describe("labels", () => {
+    it("lists the project's own labels and puts them on the issues that carry them", async () => {
+      const labels = await api.listProjectLabels(project.id);
+      expect(labels.length).toBeGreaterThan(0);
+      expect(labels.every((label) => label.projectId === project.id && label.deletedAt === null)).toBe(true);
+
+      const { items } = await api.listIssues(project.id);
+      const carrier = items.find((issue) => issue.labels.length > 0);
+      expect(carrier).toBeDefined();
+      if (!carrier) return;
+
+      // What the issue carries is the project's label narrowed to the three
+      // fields the issue side of the contract has.
+      const projectIds = labels.map((label) => label.id);
+      expect(projectIds).toEqual(expect.arrayContaining(carrier.labels.map((label) => label.id)));
+      expect(Object.keys(carrier.labels[0]).sort()).toEqual(["color", "id", "name"]);
+    });
+
+    it("creates a label, trimming the name the caller typed", async () => {
+      const created = await api.createProjectLabel(project.id, { name: "  spacing  ", color: "#0052cc" });
+
+      expect(created).toMatchObject({ projectId: project.id, name: "spacing", color: "#0052cc", deletedAt: null });
+      expect((await api.listProjectLabels(project.id)).some((label) => label.id === created.id)).toBe(true);
+    });
+
+    it("refuses a name the project already uses, whatever its case", async () => {
+      const [existing] = await api.listProjectLabels(project.id);
+
+      await expect(
+        api.createProjectLabel(project.id, { name: existing.name.toUpperCase(), color: "#123456" }),
+      ).rejects.toThrow();
+    });
+
+    it("refuses a colour the contract's own pattern rejects", async () => {
+      await expect(api.createProjectLabel(project.id, { name: "unheard-of", color: "red" })).rejects.toThrow();
+      await expect(api.createProjectLabel(project.id, { name: "unheard-of", color: "#12345" })).rejects.toThrow();
+    });
+
+    it("lets a label keep its own name through a recolour", async () => {
+      const [label] = await api.listProjectLabels(project.id);
+
+      const updated = await api.updateProjectLabel(project.id, label.id, { name: label.name, color: "#123456" });
+
+      expect(updated).toMatchObject({ id: label.id, name: label.name, color: "#123456" });
+    });
+
+    it("shows a rename through every issue carrying the label", async () => {
+      const { items } = await api.listIssues(project.id);
+      const carrier = items.find((issue) => issue.labels.length > 0);
+      expect(carrier).toBeDefined();
+      if (!carrier) return;
+      const [carried] = carrier.labels;
+
+      await api.updateProjectLabel(project.id, carried.id, { name: "renamed", color: "#123456" });
+
+      const after = await api.getIssue(project.id, carrier.id);
+      expect(after.issue.labels.find((label) => label.id === carried.id)).toEqual({
+        id: carried.id,
+        name: "renamed",
+        color: "#123456",
+      });
+    });
+
+    it("puts a label on an issue once and refuses the second attempt", async () => {
+      const { items } = await api.listIssues(project.id);
+      const bare = items.find((issue) => issue.labels.length === 0);
+      const [label] = await api.listProjectLabels(project.id);
+      expect(bare).toBeDefined();
+      if (!bare) return;
+
+      await api.addIssueLabel(project.id, bare.id, label.id);
+
+      expect((await api.listIssueLabels(project.id, bare.id)).map((item) => item.id)).toEqual([label.id]);
+      expect((await api.getIssue(project.id, bare.id)).issue.labels.map((item) => item.id)).toEqual([label.id]);
+      await expect(api.addIssueLabel(project.id, bare.id, label.id)).rejects.toThrow();
+    });
+
+    it("takes a label off an issue and refuses to take off one it does not carry", async () => {
+      const { items } = await api.listIssues(project.id);
+      const carrier = items.find((issue) => issue.labels.length > 0);
+      expect(carrier).toBeDefined();
+      if (!carrier) return;
+      const [carried] = carrier.labels;
+
+      await api.removeIssueLabel(project.id, carrier.id, carried.id);
+
+      expect((await api.listIssueLabels(project.id, carrier.id)).some((label) => label.id === carried.id)).toBe(false);
+      await expect(api.removeIssueLabel(project.id, carrier.id, carried.id)).rejects.toThrow();
+    });
+
+    it("takes a soft-deleted label off the project and off every issue at once", async () => {
+      const { items } = await api.listIssues(project.id);
+      const carrier = items.find((issue) => issue.labels.length > 0);
+      expect(carrier).toBeDefined();
+      if (!carrier) return;
+      const [carried] = carrier.labels;
+
+      await api.deleteProjectLabel(project.id, carried.id);
+
+      expect((await api.listProjectLabels(project.id)).some((label) => label.id === carried.id)).toBe(false);
+      expect((await api.listIssueLabels(project.id, carrier.id)).some((label) => label.id === carried.id)).toBe(false);
+      // A deleted label cannot be addressed again, which is what stops the UI
+      // from "restoring" one by re-adding it to an issue.
+      await expect(api.addIssueLabel(project.id, carrier.id, carried.id)).rejects.toThrow();
+    });
+
+    it("filters the issue list by label", async () => {
+      const { items } = await api.listIssues(project.id);
+      const carrier = items.find((issue) => issue.labels.length > 0);
+      expect(carrier).toBeDefined();
+      if (!carrier) return;
+      const [carried] = carrier.labels;
+
+      const filtered = await api.listIssues(project.id, { labelId: carried.id });
+
+      expect(filtered.items.length).toBeGreaterThan(0);
+      expect(filtered.items.every((issue) => issue.labels.some((label) => label.id === carried.id))).toBe(true);
+      expect(filtered.items.some((issue) => issue.id === carrier.id)).toBe(true);
+      expect(filtered.items.length).toBeLessThan(items.length);
+    });
+
+    it("answers a label from another project with a not-found rather than a cross-project write", async () => {
+      const projects = await api.listProjects();
+      const other = projects.find((item) => item.id !== project.id);
+      expect(other).toBeDefined();
+      if (!other) return;
+      const [foreign] = await api.listProjectLabels(other.id);
+      const { items } = await api.listIssues(project.id);
+
+      await expect(api.addIssueLabel(project.id, items[0].id, foreign.id)).rejects.toThrow();
+    });
+  });
+
   describe("notifications", () => {
     it("marks every notification read and reports how many changed", async () => {
       const before = await api.listNotifications({ unreadOnly: true });

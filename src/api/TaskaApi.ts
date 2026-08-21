@@ -12,9 +12,11 @@ import type {
   IssueStatus,
   IssueType,
   IssueWithHistory,
+  Label,
   Notification,
   Page,
   Project,
+  ProjectLabel,
   ProjectMember,
   ProjectMembership,
   User,
@@ -46,6 +48,8 @@ export interface CreateProjectInput {
 export interface ListIssuesParams {
   status?: IssueStatus;
   assigneeId?: string;
+  /** `labelId` on the wire: the issues carrying this label, filtered by the server. */
+  labelId?: string;
   page?: number;
   pageSize?: number;
 }
@@ -67,6 +71,25 @@ export interface CreateIssueLinkInput {
   targetIssueId: string;
   /** The request half of the contract's asymmetry — closed, unlike the response. */
   linkType: IssueLinkType;
+}
+
+/**
+ * Both label writes take the same pair, because `UpdateProjectLabelRequestDto`
+ * requires `name` *and* `color` just as the create does — a PATCH that means to
+ * change only the colour still has to send the name it is keeping. The two
+ * types are kept apart anyway: they are two request bodies in the contract, and
+ * an alias would hide it the day one of them grows a field.
+ */
+export interface CreateProjectLabelInput {
+  /** 1-50 characters, unique within the project (the server decides, not this). */
+  name: string;
+  /** `#RRGGBB`. The contract rejects any other spelling with a 400. */
+  color: string;
+}
+
+export interface UpdateProjectLabelInput {
+  name: string;
+  color: string;
 }
 
 export interface ListCommentsParams {
@@ -130,6 +153,33 @@ export interface TaskaApi {
   listIssueLinks(projectId: string, issueId: string): Promise<IssueLink[]>;
   createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): Promise<IssueLink>;
   deleteIssueLink(projectId: string, issueId: string, linkId: string): Promise<void>;
+
+  /**
+   * The project's own labels (`GET /projects/{projectId}/labels`). Everyone who
+   * can read the project can read these — the writes below are the gated half.
+   * Soft-deleted labels are not in the answer, so nothing here filters them.
+   */
+  listProjectLabels(projectId: string): Promise<ProjectLabel[]>;
+  createProjectLabel(projectId: string, input: CreateProjectLabelInput): Promise<ProjectLabel>;
+  updateProjectLabel(projectId: string, labelId: string, input: UpdateProjectLabelInput): Promise<ProjectLabel>;
+  /** Soft delete by the contract's own summary: the row stays, the label stops being served. */
+  deleteProjectLabel(projectId: string, labelId: string): Promise<void>;
+
+  /**
+   * The labels on one issue. `Issue.labels` carries the same set from the detail
+   * read, so this exists for the panel to refetch after a write rather than for
+   * a screen that has no issue in hand.
+   */
+  listIssueLabels(projectId: string, issueId: string): Promise<Label[]>;
+  /**
+   * Returns nothing on purpose. `AddIssueLabelResponseDto` answers with the join
+   * row — issue id, label id, who and when — and the caller picked the label out
+   * of a list it already holds, so there is no fact in that response it does not
+   * have. Passing it up would invite a component to treat a join record as a
+   * label, which is the one thing it is not.
+   */
+  addIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void>;
+  removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void>;
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
   addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;

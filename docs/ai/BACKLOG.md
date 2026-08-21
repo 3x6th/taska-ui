@@ -317,6 +317,129 @@ time.
   planes and slightly strengthens the case for removing the gradient rather
   than working around it.
 
+### Left open by TAS-169 (from `art-director` and `release-reviewer`, 2026-08-21)
+
+- **A card silently drops its third row of labels, including the one the board
+  was filtered on.** The two-row cap works and §4.8 sanctions it — verified by
+  injecting nine chips, it clamps to 46px against a 98px scrollHeight and cuts
+  between rows without severing a chip. What it does not do is say more exist.
+  On an unfiltered board that is the right trade; with a label filter on, every
+  card matches that label and a heavily labelled card may not show the one it
+  was matched by, so the board looks like it filtered wrongly. Cheapest honest
+  fix with no new tokens: a trailing `+N` chip styled as §4.5's count pill.
+  Needs a measurement pass the card does not currently do, which is why it is
+  here and not in TAS-169.
+- **The 390px filter bar's horizontal overflow more than doubled.** Measured at
+  390x844: `scrollWidth` 741 against `clientWidth` 390. The two label controls
+  are ~201px of that, so the pre-existing ~150px is now well over twice as
+  much, and because the pair sits before the spacer, the label picker, the
+  manage button, Clear and the counter are all off-screen behind a scroll
+  strip on the first screenful. It does scroll and everything is reachable, so
+  it is not a defect — but below 820px the bar probably wants to wrap to two
+  rows rather than scroll, or the label picker wants to sit ahead of the
+  assignee row.
+- **Opening an issue panel can now drive a full re-read of the issue page.**
+  `IssueLinksSection`'s own observer on `["issues", projectId, "ALL"]` refetches
+  on mount when the entry is stale (`staleTime` 20_000), where before the panel
+  added no observer at all. Against the real gateway that is not one call:
+  `RestTaskaApi.listIssues` hydrates every item with a per-issue `getIssue` at
+  concurrency 6. Nothing required — if it shows as load, the smallest change is
+  `refetchOnMount: false` on that one observer, which consumes the cached page
+  without ever driving a fetch of it.
+- **Pressing "Add" by keyboard drops focus to `<body>`,** because the button
+  disables itself in the same commit that submits. Costs a keyboard user their
+  place in the panel. Present wherever a submit button gates on emptied state,
+  so it wants a focus-management decision rather than a per-button patch.
+- **One component, two vertical rhythms:** panel chip rows wrap at `row-gap: 8`
+  (the hit targets need it), board card chip rows at 6. Both are inside §2.4's
+  5-8 band and the card's 46px two-row arithmetic depends on 6, so the
+  divergence is defensible — but neither comment mentions the other, and the
+  next reader will trip over it.
+- **The board card truncates its label row with no indicator** while the panel
+  heading counts them all — a card can read "5 chips" beside a panel saying
+  "Labels 7". Same family as the `+N` item above; recorded separately because
+  the mismatch between the two surfaces is the part a user notices.
+- **The "Manage labels" icon button takes its accessible name from `title`,
+  not `aria-label`,** which §7 makes mandatory for text-free icon buttons.
+  Pre-existing pattern, shared with other icon buttons on the board.
+- **The three `onError` restores TAS-169 added are themselves late writes, and
+  none is pinned.** Each is guarded (`current === ""`, so it can only ever
+  write into a field the user has left empty) and each is there for a good
+  reason — a refused create should not also cost the name that was typed. But
+  the guard is the only thing between them and the hazard the story spent four
+  rounds closing, and no test holds it: the mock has no failure injection for
+  `addIssueLabel`, `createIssueLink` or `createProjectLabel`, so pinning them
+  means building one. That injection is the actual work item here; the three
+  tests are cheap once it exists.
+- **The links picker's half of the same fix has no in-flight test.** Three of
+  the four late-write paths are pinned; `IssueLinksSection`'s reset is covered
+  only by typecheck, lint and the existing `issue-links.spec.ts`. The
+  one-task interleaving pattern the label tests use transfers directly.
+- **Only three components were audited for the late-write pattern.**
+  `ProjectLabelsModal`, `IssueLabelsSection` and `IssueLinksSection` were read
+  for it and are clean beyond the four found. `IssuePanel` and the board carry
+  their own mutations that were not read for it — `updateIssue`, `assignIssue`,
+  `transitionIssue`, the comment mutations. The shape to look for: anything
+  written in `onSuccess` or `onSettled` that a user could have changed during
+  the round trip.
+- **Chromium resolves a point hit test as a 1x1 rect, so at any shared edge the
+  lower of two boxes wins from ~0.95px before its own top edge.** Found while
+  measuring the label chips' remove controls (TAS-169), then reproduced on two
+  bare absolutely-positioned divs with no gap and no pseudo-elements — it is an
+  engine constant, not this component's doing, and it appears at DPR 1 and 3
+  and at integer and fractional layout origins alike. The only way to remove it
+  is a >=1px dead strip between hit boxes. Recorded because the next person to
+  measure a hit target will find the same 1px and think they have a bug. It is
+  also Chromium-only as measured: whether Safari and Firefox resolve a shared
+  edge the same way is unknown.
+- **`--danger` as bare text is 3.68:1 on light `--surface`, product-wide.**
+  `.form-error` is the same recipe on a 12% tint. Pre-existing, but a second
+  class (`.filter-error`, TAS-169) now uses it, so it is worth a row in the
+  §7 recorded-gap list rather than staying folded into one component.
+- **§2.4's spacing scale has no 24, and the panel's section rhythm is 24** in
+  four places (`.issue-labels`, `.issue-links`, `.comments`, `.activity`).
+  TAS-169 joining that family was right; the doc/code divergence predates it
+  and belongs to §2.4, not to a component.
+- **The board's assignee filter cannot distinguish loading from empty**, the
+  way the label picker now can after TAS-169. Same pattern, same fix.
+- **The create-label input's placeholder is `backend`**, which is also the
+  name of a seeded label — at a glance in dark it reads as a pre-filled value
+  rather than a hint.
+- **`.compact-button` is radius 8 where §2.5 gives buttons 9.** Repo-wide and
+  shared with the Links section's button, so the Labels "Add" matches its
+  sibling; fixing one without the other would be worse.
+- **No modal in the product handles `Esc`.** DESIGN.md §4.11 specifies `Esc`
+  as cancel for every modal, and `src/components/Modal.tsx` implements none —
+  closing is by the backdrop or the Close button only. Pre-existing and not
+  TAS-169's doing; noticed by `frontend-builder` while driving the new
+  manage-labels dialog, which is simply the newest modal to inherit the gap.
+  Belongs to no story yet.
+- **The board's transition mutation options are defined inline, so the
+  rollback key cannot be unit-tested.** TAS-169 fixed a real key-drift bug
+  there with no test: the mutation is reachable only through dnd-kit's
+  `onDragEnd`, and jsdom gives every element a zero-size rect so no drag
+  completes. Extracting the options into a pure factory taking
+  `(queryClient, issuesKey)` would let a test call `onMutate`, change the key,
+  call `onError` and assert which entry was restored — no dnd-kit involved. Do
+  it the next time that mutation is edited, not before.
+
+### Found while fixing the TAS-169 review blocker (2026-08-21)
+
+- **Two call sites now produce the query key `["issues", projectId, "ALL"]`
+  with `queryFn` bodies that differ cosmetically.** The board passes
+  `labelId: undefined` explicitly; `IssueLinksSection` omits the key entirely.
+  Identical across mock, rest and hybrid today, and deliberately the same cache
+  entry so an unfiltered board costs the panel nothing. The hazard is later:
+  add a parameter to the board's `listIssues` call without adding it here and
+  the two observers disagree, silently, about what one cache entry holds. A
+  shared options helper would remove the class. Not filed — it is a latent
+  coupling with no user-visible symptom yet, and it disappears if either call
+  site stops needing the page.
+- **The links section still resolves link targets from a page**
+  (`pageSize: 100`), so on a project past a hundred issues a link row still
+  falls back to its raw id. Unchanged by TAS-169 and correct as documented —
+  worth a story only when a project that large exists.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each

@@ -11,15 +11,15 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, ChevronLeft, Plus, Search, Trash2, X } from "lucide-react";
+import { Bell, Check, ChevronLeft, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import type { CreateIssueLinkInput } from "../api/TaskaApi";
+import type { CreateIssueLinkInput, CreateProjectLabelInput } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
 import { isMissingOrForbidden } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
-import { PriorityBars, TypeChip } from "../components/IssueBits";
+import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
@@ -31,10 +31,12 @@ import type {
   IssueHistoryEvent,
   IssueLink,
   IssueLinkType,
+  Label,
   Page,
   IssuePriority,
   IssueStatus,
   IssueType,
+  ProjectLabel,
   ProjectMember,
   User,
   Workflow,
@@ -44,8 +46,10 @@ import type {
 import {
   formatDateTime,
   formatDay,
+  isLabelColor,
   issueLinkTypeLabel,
   issueLinkTypes,
+  labelColorChoices,
   priorityMeta,
   relativeTime,
   statusColors,
@@ -57,6 +61,8 @@ import { NotFoundScreen } from "./NotFoundScreen";
 
 type IssueTypeFilter = IssueType | "ALL";
 type AssigneeFilter = string | "ALL";
+/** A project label's id, or every issue whatever it carries. */
+type LabelFilter = string | "ALL";
 type WorkflowsByIssueType = Partial<Record<IssueType, Workflow>>;
 
 const concreteIssueTypes: IssueType[] = ["TASK", "BUG", "STORY"];
@@ -82,6 +88,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<IssueTypeFilter>("ALL");
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>("ALL");
+  const [labelFilter, setLabelFilter] = useState<LabelFilter>("ALL");
+  const [managingLabels, setManagingLabels] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
@@ -143,10 +151,26 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       return Object.fromEntries(entries) as WorkflowsByIssueType;
     },
   });
-  const issuesQuery = useQuery({
-    queryKey: ["issues", projectId],
+  const projectLabelsQuery = useQuery({
+    queryKey: ["project-labels", projectId],
     enabled: Boolean(projectId),
-    queryFn: () => taskaApi.listIssues(projectId, { pageSize: 100 }),
+    queryFn: () => taskaApi.listProjectLabels(projectId),
+    retry: retryUnlessMissing,
+  });
+  // The one filter the *server* applies, so it belongs in the key rather than
+  // in the predicate below with the other three. With `pageSize: 100` a
+  // client-side label filter would quietly only filter the hundred issues this
+  // page happens to hold, and answer "the ones carrying this label among those"
+  // to a question that asked about the project.
+  const issuesKey = useMemo(() => ["issues", projectId, labelFilter], [projectId, labelFilter]);
+  const issuesQuery = useQuery({
+    queryKey: issuesKey,
+    enabled: Boolean(projectId),
+    queryFn: () =>
+      taskaApi.listIssues(projectId, {
+        pageSize: 100,
+        labelId: labelFilter === "ALL" ? undefined : labelFilter,
+      }),
     retry: retryUnlessMissing,
   });
   const notificationsQuery = useQuery({
@@ -163,7 +187,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // every render and invalidate the memos below.
   const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
   const issues = useMemo(() => issuesQuery.data?.items ?? [], [issuesQuery.data]);
+  const projectLabels = useMemo(() => projectLabelsQuery.data ?? [], [projectLabelsQuery.data]);
   const canEdit = membershipQuery.data?.role === "ADMIN" || membershipQuery.data?.role === "MEMBER";
+  // Narrower than `canEdit` on purpose: TAS-119 lets a MEMBER put labels on an
+  // issue but reserves creating, renaming and deleting the project's labels for
+  // its ADMIN. The server enforces both; this only decides what is offered.
+  const isProjectAdmin = membershipQuery.data?.role === "ADMIN";
   // Each of these is the same single fact as the behaviour beside it, never a
   // second opinion about the same query: `canEdit` is "the membership answer
   // says so", and `roleUnread.unanswered` is "there is no membership answer and
@@ -175,6 +204,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const roleUnread = useUnanswered(membershipQuery);
   const issuesUnread = useUnanswered(issuesQuery);
   const workflowUnread = useUnanswered(workflowQuery);
+  const labelsUnread = useUnanswered(projectLabelsQuery);
   // "The server never told us your role" and "you are a VIEWER" are different
   // states, and only one of them is a permission. Both end in a board nobody
   // can write to — the server stays the authority, so write access we could
@@ -217,10 +247,18 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     mutationFn: ({ movedIssueId, transitionId }: { movedIssueId: string; nextStatus: IssueStatus; transitionId: string }) =>
       taskaApi.transitionIssue(projectId, movedIssueId, transitionId),
     onMutate: async ({ nextStatus, movedIssueId }) => {
-      await queryClient.cancelQueries({ queryKey: ["issues", projectId] });
-      const previousIssues = queryClient.getQueryData<Page<Issue>>(["issues", projectId]);
+      // Captured, not read again in `onError`. Since TAS-169 `issuesKey`
+      // carries the label filter, and react-query hands a pending mutation the
+      // options object of the *latest* render — so a filter changed mid-flight
+      // would roll back under a key this snapshot never came from: the new
+      // filter's page overwritten with cards that need not carry its label,
+      // and the old page left holding the optimistic move. `staleTime` is
+      // 20_000 (src/main.tsx), so neither corrects itself promptly.
+      const key = issuesKey;
+      await queryClient.cancelQueries({ queryKey: key });
+      const previousIssues = queryClient.getQueryData<Page<Issue>>(key);
 
-      queryClient.setQueryData<Page<Issue>>(["issues", projectId], (current) => {
+      queryClient.setQueryData<Page<Issue>>(key, (current) => {
         if (!current) return current;
         return {
           ...current,
@@ -237,11 +275,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         };
       });
 
-      return { previousIssues };
+      return { previousIssues, key };
     },
     onError: (_error, _variables, context) => {
       if (context?.previousIssues) {
-        queryClient.setQueryData(["issues", projectId], context.previousIssues);
+        queryClient.setQueryData(context.key, context.previousIssues);
       }
     },
     onSuccess: async (_, variables) => {
@@ -254,7 +292,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["notifications"] }),
   });
 
-  const hasFilters = Boolean(query || typeFilter !== "ALL" || assigneeFilter !== "ALL");
+  const hasFilters = Boolean(query || typeFilter !== "ALL" || assigneeFilter !== "ALL" || labelFilter !== "ALL");
   const unreadCount = notificationsQuery.data?.items.filter((item) => !item.readAt).length ?? 0;
   const activeIssue = activeIssueId ? issues.find((item) => item.id === activeIssueId) : undefined;
 
@@ -398,6 +436,46 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             </button>
           ))}
         </div>
+        <span className="divider" />
+        {/* A failed label read is said here rather than in the notice stack
+            above: the stack is capped at four (§5.6) and this costs the board
+            nothing but a filter. Saying nothing would leave a picker offering
+            only "All" and looking like a project that has no labels. */}
+        {labelsUnread.unanswered ? (
+          <span className="filter-error">Labels could not be loaded</span>
+        ) : (
+          <label className="filter-select">
+            <span className="filter-label">Label</span>
+            {/* Pending and empty would otherwise be the same picker — one
+                holding nothing but "All" — and they are different answers:
+                "we have not asked yet" against "this project has no labels".
+                `isLoading` rather than `isPending` so a query held disabled
+                (no projectId) never claims to be loading. */}
+            <select
+              disabled={projectLabelsQuery.isLoading}
+              onChange={(event) => setLabelFilter(event.target.value)}
+              value={projectLabelsQuery.isLoading ? "LOADING" : labelFilter}
+            >
+              {projectLabelsQuery.isLoading ? (
+                <option value="LOADING">Loading labels</option>
+              ) : (
+                <>
+                  <option value="ALL">All</option>
+                  {projectLabels.filter((label) => !isPendingLabel(label)).map((label) => (
+                    <option key={label.id} value={label.id}>
+                      {label.name || "Unnamed label"}
+                    </option>
+                  ))}
+                </>
+              )}
+            </select>
+          </label>
+        )}
+        {isProjectAdmin ? (
+          <button className="icon-button" onClick={() => setManagingLabels(true)} title="Manage labels" type="button">
+            <Tag size={15} />
+          </button>
+        ) : null}
         <div className="topbar-spacer" />
         {hasFilters ? (
           <button
@@ -406,6 +484,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               setQuery("");
               setTypeFilter("ALL");
               setAssigneeFilter("ALL");
+              setLabelFilter("ALL");
             }}
             type="button"
           >
@@ -529,7 +608,6 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           key={issueId}
           issueId={issueId}
           projectId={projectId}
-          issues={issues}
           members={members}
           userById={userById}
           canEdit={canEdit}
@@ -537,6 +615,18 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           workflows={workflowQuery.data}
           workflowUnknown={workflowUnknown}
           onClose={() => navigate(`/projects/${projectId}/board`)}
+        />
+      ) : null}
+
+      {managingLabels ? (
+        <ProjectLabelsModal
+          projectId={projectId}
+          projectKey={project?.projectKey ?? ""}
+          onClose={() => setManagingLabels(false)}
+          // A filter pointing at a label that no longer exists would ask the
+          // gateway for the issues of a deleted label and get an empty board
+          // back — an answer indistinguishable from "nothing carries it".
+          onLabelDeleted={(labelId) => setLabelFilter((current) => (current === labelId ? "ALL" : current))}
         />
       ) : null}
 
@@ -678,6 +768,13 @@ function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "di
       </span>
       <strong>{issue.summary}</strong>
       <p>{issue.description}</p>
+      {issue.labels.length ? (
+        <span className="issue-card-labels">
+          {issue.labels.map((label) => (
+            <LabelChip key={label.id || label.name} label={label} />
+          ))}
+        </span>
+      ) : null}
       <span className="issue-card-foot">
         <span>{formatDay(issue.createdAt)}</span>
         <Avatar user={user} size="sm" />
@@ -751,7 +848,6 @@ function NotificationsPopover({
 function IssuePanel({
   projectId,
   issueId,
-  issues,
   members,
   userById,
   canEdit,
@@ -762,9 +858,6 @@ function IssuePanel({
 }: {
   projectId: string;
   issueId: string;
-  /** The board's `["issues", projectId]` page — the links section resolves its
-   *  targets from it rather than fetching each linked issue again. */
-  issues: Issue[];
   members: ProjectMember[];
   userById: Map<string, Pick<User, "displayName" | "color">>;
   canEdit: boolean;
@@ -950,7 +1043,9 @@ function IssuePanel({
             />
           </label>
 
-          <IssueLinksSection projectId={projectId} issueId={issueId} issues={issues} canEdit={canEdit} />
+          <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
+
+          <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
           <CommentsSection
             projectId={projectId}
@@ -982,6 +1077,190 @@ function IssuePanel({
 }
 
 /**
+ * `GET/POST/DELETE /projects/{projectId}/issues/{issueId}/labels`, read beside
+ * the project's own list so the picker only offers labels this issue does not
+ * already carry.
+ *
+ * The section owns its labels query rather than reading `issue.labels` off the
+ * panel's detail response, for the same reason the links section owns its own:
+ * the writes here are about *this* list, and an optimistic add against a field
+ * of the issue would mean rewriting the issue to show one chip. The detail
+ * read's copy is not wasted — it is what the board's cards draw.
+ */
+function IssueLabelsSection({
+  projectId,
+  issueId,
+  canEdit,
+}: {
+  projectId: string;
+  issueId: string;
+  canEdit: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [picked, setPicked] = useState("");
+
+  const labelsKey = ["issue-labels", projectId, issueId];
+  const labelsQuery = useQuery({
+    queryKey: labelsKey,
+    queryFn: () => taskaApi.listIssueLabels(projectId, issueId),
+    retry: retryUnlessMissing,
+  });
+  // Same key the board and the manage modal use, so all three share one read.
+  const projectLabelsQuery = useQuery({
+    queryKey: ["project-labels", projectId],
+    queryFn: () => taskaApi.listProjectLabels(projectId),
+    retry: retryUnlessMissing,
+  });
+
+  const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
+  const projectLabels = useMemo(() => projectLabelsQuery.data ?? [], [projectLabelsQuery.data]);
+  const attached = useMemo(() => new Set(labels.map((label) => label.id)), [labels]);
+  const attachable = projectLabels.filter(
+    (label) => !attached.has(label.id) && !isPendingLabel(label),
+  );
+
+  // One write, three stale caches: this list, the panel's issue, and the board
+  // cards that draw `issue.labels` from the list read behind them.
+  const settle = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: labelsKey }),
+      queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
+      queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }),
+    ]);
+
+  const addLabel = useMutation({
+    mutationFn: (labelId: string) => taskaApi.addIssueLabel(projectId, issueId, labelId),
+    onMutate: async (labelId) => {
+      await queryClient.cancelQueries({ queryKey: labelsKey });
+      const previous = queryClient.getQueryData<Label[]>(labelsKey);
+      // No placeholder id, unlike the links section: the label came out of a
+      // list this component is holding, so the optimistic chip *is* the label
+      // and there is nothing for the server's answer to reconcile.
+      const chosen = projectLabels.find((label) => label.id === labelId);
+      if (chosen) {
+        queryClient.setQueryData<Label[]>(labelsKey, (current) => [
+          ...(current ?? []),
+          { id: chosen.id, name: chosen.name, color: chosen.color },
+        ]);
+      }
+      return { previous };
+    },
+    onError: (_error, labelId, context) => {
+      if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+      // The rollback puts the label back in the picker, so put the choice back
+      // with it — unless something else has been chosen since, which is the
+      // one thing this must never overwrite.
+      setPicked((current) => (current === "" ? labelId : current));
+    },
+    onSettled: settle,
+  });
+
+  const removeLabel = useMutation({
+    mutationFn: (labelId: string) => taskaApi.removeIssueLabel(projectId, issueId, labelId),
+    onMutate: async (labelId) => {
+      await queryClient.cancelQueries({ queryKey: labelsKey });
+      const previous = queryClient.getQueryData<Label[]>(labelsKey);
+      queryClient.setQueryData<Label[]>(labelsKey, (current) =>
+        (current ?? []).filter((label) => label.id !== labelId),
+      );
+      return { previous };
+    },
+    onError: (_error, _labelId, context) => {
+      if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+    },
+    onSettled: settle,
+  });
+
+  // Mutations first, reads second. A react-query observer can hold data *and*
+  // an error at once — a cached list plus a failed background refetch — and in
+  // that state the picker is still populated, so an add that the server refused
+  // would otherwise be explained by whatever the refetch said instead. A
+  // mutation error is always about the action just taken; a query error is
+  // about the background.
+  const error =
+    (addLabel.error ?? removeLabel.error ?? labelsQuery.error ?? projectLabelsQuery.error)?.message;
+
+  return (
+    <section className="issue-labels">
+      <h3>
+        Labels
+        {labels.length ? <span className="count-pill">{labels.length}</span> : null}
+      </h3>
+
+      {canEdit ? (
+        <form
+          className="issue-label-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!picked) return;
+            addLabel.mutate(picked);
+            // The picker resets here, in the submit handler, and nowhere later.
+            // It used to reset in the mutation's `onSuccess`, a round trip after
+            // the press — and by then the reset had nothing left to do, because
+            // the option just added leaves the picker the moment the optimistic
+            // list includes it and the browser drops the selection itself. All
+            // a late reset could still reach was a label chosen in the
+            // meantime, and it took it silently: choice gone, Add button dead
+            // because `picked` was empty again, nothing on screen saying why.
+            // `onMutate` is not late enough to be wrong but not early enough to
+            // be right either — react-query runs it a microtask after this — so
+            // the reset belongs in the same synchronous handler that read the
+            // value.
+            setPicked("");
+          }}
+        >
+          <label className="issue-link-field issue-link-target">
+            <span>Add label</span>
+            <select
+              disabled={attachable.length === 0}
+              onChange={(event) => setPicked(event.target.value)}
+              value={picked}
+            >
+              <option value="">Select a label</option>
+              {attachable.map((label) => (
+                <option key={label.id} value={label.id}>
+                  {label.name || "Unnamed label"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="secondary-button compact-button" disabled={!picked || addLabel.isPending} type="submit">
+            Add
+          </button>
+        </form>
+      ) : null}
+
+      {/* Only a successful read may say the project has none — an empty picker
+          after a failed one would read as "there are no labels to add". */}
+      {canEdit && projectLabelsQuery.isSuccess && projectLabels.length === 0 ? (
+        <p className="issue-links-empty">This project has no labels yet.</p>
+      ) : null}
+
+      {error ? <div className="form-error">{error}</div> : null}
+
+      {labelsQuery.isPending ? <p className="issue-links-empty">Loading labels</p> : null}
+      {labelsQuery.isSuccess && labels.length === 0 ? <p className="issue-links-empty">No labels yet</p> : null}
+
+      {labels.length ? (
+        <div className="label-chip-row">
+          {labels.map((label) => (
+            <LabelChip
+              key={label.id || label.name}
+              label={label}
+              // A label the response left unaddressable cannot be removed: the
+              // request would name no label. The chip still shows — the label
+              // is on the issue either way.
+              onRemove={canEdit && label.id ? () => removeLabel.mutate(label.id) : undefined}
+              removeDisabled={removeLabel.isPending && removeLabel.variables === label.id}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/**
  * `GET/POST/DELETE /issues/{issueId}/links`. Two things are worth knowing here:
  *
  * 1. Which issue a row points at is decided by comparing both ends against the
@@ -1003,12 +1282,10 @@ const optimisticLinkId = "tk-optimistic-link";
 function IssueLinksSection({
   projectId,
   issueId,
-  issues,
   canEdit,
 }: {
   projectId: string;
   issueId: string;
-  issues: Issue[];
   canEdit: boolean;
 }) {
   const navigate = useNavigate();
@@ -1018,6 +1295,22 @@ function IssueLinksSection({
   const [targetIssueId, setTargetIssueId] = useState("");
   // Refused before the request goes out; the server stays the authority.
   const [localError, setLocalError] = useState<string | null>(null);
+
+  // Its own read of the project, deliberately not the board's page behind the
+  // panel. Since TAS-169 the board's key carries its label filter and the
+  // server applies it, so borrowing that page would let a filter decide which
+  // issues may be linked to and turn every existing link pointing outside it
+  // into a bare id. `"ALL"` is the *same cache entry* the board already holds
+  // whenever no filter is set, so this costs nothing in the common case and
+  // one extra read only while a filter is on and a panel is open. The page is
+  // still a page: an issue beyond `pageSize` resolves to its id (see the row
+  // below), which is the honest answer on a project this large.
+  const projectIssuesQuery = useQuery({
+    queryKey: ["issues", projectId, "ALL"],
+    queryFn: () => taskaApi.listIssues(projectId, { pageSize: 100 }),
+    retry: retryUnlessMissing,
+  });
+  const issues = useMemo(() => projectIssuesQuery.data?.items ?? [], [projectIssuesQuery.data]);
 
   const linksKey = ["issue-links", projectId, issueId];
   const linksQuery = useQuery({
@@ -1060,12 +1353,12 @@ function IssueLinksSection({
       ]);
       return { previousLinks };
     },
-    onError: (_error, _input, context) => {
+    onError: (_error, input, context) => {
       if (context?.previousLinks) {
         queryClient.setQueryData(linksKey, context.previousLinks);
       }
+      setTargetIssueId((current) => (current === "" ? input.targetIssueId : current));
     },
-    onSuccess: () => setTargetIssueId(""),
     onSettled: invalidateLinks,
   });
 
@@ -1093,7 +1386,19 @@ function IssueLinksSection({
     [links, issueId],
   );
   const linkable = issues.filter((item) => item.id !== issueId && !linkedIssueIds.has(item.id));
-  const error = localError ?? (linksQuery.error ?? createLink.error ?? deleteLink.error)?.message;
+  // `projectIssuesQuery` is in here because its failure is otherwise silent:
+  // with a filter on it is a different query from the board's, so the board's
+  // own notice does not cover it, and the only trace left would be a picker
+  // offering nothing and rows showing ids — which is what "this issue has no
+  // links worth naming" looks like.
+  //
+  // Mutations are read before the two queries for the same reason as in
+  // `IssueLabelsSection`: with a cached page plus a failed background refetch
+  // the picker is still populated, so a refused link would be explained by the
+  // refetch rather than by the refusal.
+  const error =
+    localError ??
+    (createLink.error ?? deleteLink.error ?? linksQuery.error ?? projectIssuesQuery.error)?.message;
 
   return (
     <section className="issue-links">
@@ -1114,6 +1419,11 @@ function IssueLinksSection({
               return;
             }
             createLink.mutate({ targetIssueId, linkType });
+            // Same reason as the label picker above: the reset happens with the
+            // press, never on the server's answer, because the optimistic row
+            // takes this target out of the picker immediately and anything the
+            // answer resets is a choice made after it.
+            setTargetIssueId("");
           }}
         >
           <div className="issue-link-field">
@@ -1473,6 +1783,306 @@ function ActivityItem({
         </p>
         <time>{formatDateTime(event.occurredAt)}</time>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Id the optimistic row of a create carries until the server answers with the
+ * real one. Same idea as `optimisticLinkId`, and deliberately not the empty
+ * string: a label whose `id` the response omitted is real but unaddressable,
+ * which is a different state from one that does not exist yet.
+ */
+const optimisticLabelId = "tk-optimistic-label";
+
+/**
+ * A label the server has not answered for yet, and therefore one no picker may
+ * offer. The optimistic row exists so the *list* looks right the instant a
+ * label is created — that is all it is for. It is not an address: every route
+ * that takes a label id types it `format: uuid`, so submitting the placeholder
+ * is "Label not found" from the mock and a 400 from the gateway. A row that
+ * cannot be acted on yet is not the same as one that can, and a control that
+ * offers it is offering an action that cannot succeed.
+ *
+ * The window is short — one create round trip — but it is exactly the window
+ * in which someone who just made a label reaches for it.
+ */
+const isPendingLabel = (label: { id: string }) => label.id === optimisticLabelId;
+
+/**
+ * `POST/PATCH/DELETE /projects/{projectId}/labels` — the project's own list,
+ * which is what the issue picker draws from.
+ *
+ * ADMIN-only by TAS-119, which is why the board only offers the button that
+ * opens this. That is presentation: the gateway refuses the three writes for
+ * everyone else regardless, and nothing here treats the hidden button as the
+ * permission.
+ */
+function ProjectLabelsModal({
+  projectId,
+  projectKey,
+  onClose,
+  onLabelDeleted,
+}: {
+  projectId: string;
+  projectKey: string;
+  onClose: () => void;
+  onLabelDeleted: (labelId: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(labelColorChoices[0]);
+  const [editing, setEditing] = useState<{ id: string; name: string; color: string } | null>(null);
+
+  const labelsKey = ["project-labels", projectId];
+  const labelsQuery = useQuery({
+    queryKey: labelsKey,
+    queryFn: () => taskaApi.listProjectLabels(projectId),
+    retry: retryUnlessMissing,
+  });
+  const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
+
+  // A rename or a recolour changes every chip drawn from these labels, and a
+  // delete takes the label off every issue that carried it (the contract's
+  // soft delete), so the issue lists and the board go with them.
+  const settle = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: labelsKey }),
+      queryClient.invalidateQueries({ queryKey: ["issue-labels", projectId] }),
+      queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
+    ]);
+
+  const createLabel = useMutation({
+    mutationFn: (input: CreateProjectLabelInput) => taskaApi.createProjectLabel(projectId, input),
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: labelsKey });
+      const previous = queryClient.getQueryData<ProjectLabel[]>(labelsKey);
+      queryClient.setQueryData<ProjectLabel[]>(labelsKey, (current) => [
+        ...(current ?? []),
+        {
+          id: optimisticLabelId,
+          projectId,
+          name: input.name,
+          color: input.color,
+          createdBy: "",
+          createdAt: new Date().toISOString(),
+          deletedAt: null,
+        },
+      ]);
+      return { previous };
+    },
+    onError: (_error, input, context) => {
+      if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+      // Put the typed name back with the rolled-back row — unless something has
+      // been typed since, which is the one thing this must never overwrite. A
+      // name is worth restoring where a picked option was only worth offering:
+      // the likeliest failure here is the duplicate-name refusal, and the field
+      // the user has to edit to get past it is the one they just lost.
+      setName((current) => (current === "" ? input.name : current));
+    },
+    onSettled: settle,
+  });
+
+  const updateLabel = useMutation({
+    mutationFn: (input: { id: string; name: string; color: string }) =>
+      // Both fields every time: the contract requires `name` and `color` on the
+      // PATCH, so a recolour resends the name it is keeping.
+      taskaApi.updateProjectLabel(projectId, input.id, { name: input.name, color: input.color }),
+    onMutate: async (input) => {
+      await queryClient.cancelQueries({ queryKey: labelsKey });
+      const previous = queryClient.getQueryData<ProjectLabel[]>(labelsKey);
+      queryClient.setQueryData<ProjectLabel[]>(labelsKey, (current) =>
+        (current ?? []).map((label) =>
+          label.id === input.id ? { ...label, name: input.name, color: input.color } : label,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+    },
+    // The close stays on the answer — an early one would shut the editor before
+    // the save landed, and a refused save would then report its error with
+    // nothing open to fix it in. What it does not stay is unconditional: a row
+    // opened during the round trip is not the row this save was about, and
+    // closing it would throw away a name being typed right now. Same hazard as
+    // the three resets above, answered with a guard instead of a move.
+    onSuccess: (_result, input) =>
+      setEditing((current) => (current?.id === input.id ? null : current)),
+    onSettled: settle,
+  });
+
+  const deleteLabel = useMutation({
+    mutationFn: (labelId: string) => taskaApi.deleteProjectLabel(projectId, labelId),
+    onMutate: async (labelId) => {
+      await queryClient.cancelQueries({ queryKey: labelsKey });
+      const previous = queryClient.getQueryData<ProjectLabel[]>(labelsKey);
+      queryClient.setQueryData<ProjectLabel[]>(labelsKey, (current) =>
+        (current ?? []).filter((label) => label.id !== labelId),
+      );
+      return { previous };
+    },
+    onError: (_error, _labelId, context) => {
+      if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+    },
+    onSuccess: (_result, labelId) => onLabelDeleted(labelId),
+    onSettled: settle,
+  });
+
+  const error = (labelsQuery.error ?? createLabel.error ?? updateLabel.error ?? deleteLabel.error)?.message;
+  const trimmed = name.trim();
+
+  return (
+    <Modal title="Labels" eyebrow={<span className="key-badge">{projectKey}</span>} onClose={onClose}>
+      <form
+        className="label-create-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!trimmed) return;
+          createLabel.mutate({ name: trimmed, color });
+          // Cleared here rather than in the mutation's `onSuccess`, for the
+          // reason the label and link pickers carry above: a reset that lands
+          // with the server's answer lands on whatever was typed during the
+          // round trip and takes it. Third and last of the three inputs that
+          // were reset on the answer — `updateLabel` below still closes the
+          // rename row from `onSuccess`, which is a mode change rather than a
+          // reset of a value this handler read, and moving it would close the
+          // editor before the save landed. It shares the hazard all the same,
+          // a write arriving late enough to land on something newer, and is
+          // guarded there rather than moved.
+          setName("");
+        }}
+      >
+        <label className="field">
+          <span>New label</span>
+          <input
+            autoFocus
+            maxLength={50}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="backend"
+            value={name}
+          />
+        </label>
+        <LabelSwatches onPick={setColor} selected={color} />
+        <button className="primary-button" disabled={!trimmed || createLabel.isPending} type="submit">
+          Add label
+        </button>
+      </form>
+
+      {error ? <div className="form-error">{error}</div> : null}
+
+      {labelsQuery.isPending ? <p className="issue-links-empty">Loading labels</p> : null}
+      {labelsQuery.isSuccess && labels.length === 0 ? (
+        <p className="issue-links-empty">This project has no labels yet.</p>
+      ) : null}
+
+      <ul className="label-manage-list">
+        {labels.map((label) => {
+          const pending = isPendingLabel(label);
+          const isEditing = editing?.id === label.id;
+          return (
+            <li className="label-manage-row" key={label.id || label.name}>
+              {isEditing ? (
+                <form
+                  className="label-edit-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const next = editing.name.trim();
+                    if (next) updateLabel.mutate({ id: editing.id, name: next, color: editing.color });
+                  }}
+                >
+                  <input
+                    aria-label={`Rename ${label.name || "label"}`}
+                    maxLength={50}
+                    onChange={(event) => setEditing({ ...editing, name: event.target.value })}
+                    value={editing.name}
+                  />
+                  <LabelSwatches
+                    onPick={(next) => setEditing({ ...editing, color: next })}
+                    selected={editing.color}
+                  />
+                  <button
+                    aria-label="Save label"
+                    className="icon-button"
+                    disabled={!editing.name.trim() || updateLabel.isPending}
+                    type="submit"
+                  >
+                    <Check size={15} />
+                  </button>
+                  <button aria-label="Cancel" className="icon-button" onClick={() => setEditing(null)} type="button">
+                    <X size={15} />
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <LabelChip label={label} />
+                  <div className="topbar-spacer" />
+                  <button
+                    aria-label={`Edit ${label.name || "label"}`}
+                    className="icon-button"
+                    // Nothing may be addressed on a row the server has not
+                    // answered for yet, and nothing may be addressed on a label
+                    // whose id never arrived.
+                    disabled={pending || !label.id}
+                    onClick={() =>
+                      setEditing({
+                        id: label.id,
+                        name: label.name,
+                        // A colour the contract's pattern rejects cannot be sent
+                        // back on the PATCH — it would be a 400 — so the editor
+                        // opens on a colour that can.
+                        color: isLabelColor(label.color) ? label.color : labelColorChoices[0],
+                      })
+                    }
+                    type="button"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    aria-label={`Delete ${label.name || "label"}`}
+                    className="icon-button"
+                    disabled={pending || !label.id || (deleteLabel.isPending && deleteLabel.variables === label.id)}
+                    onClick={() => deleteLabel.mutate(label.id)}
+                    type="button"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </Modal>
+  );
+}
+
+/**
+ * The colour choices: one is picked, never several.
+ *
+ * A group of `aria-pressed` buttons rather than an ARIA radio group, matching
+ * the segmented controls elsewhere in this file. `role="radio"` would announce
+ * a keyboard contract this does not implement — arrow keys moving the
+ * selection within a single tab stop — and a promise of an interaction nobody
+ * wrote is worse than the plainer control that behaves as it reads.
+ *
+ * The ring on the active swatch is not decoration: a checked state that only a
+ * colour expressed would be unreadable to exactly the people §4.6 exists for.
+ */
+function LabelSwatches({ onPick, selected }: { onPick: (color: string) => void; selected: string }) {
+  return (
+    <div aria-label="Label colour" className="label-swatches" role="group">
+      {labelColorChoices.map((choice) => (
+        <button
+          aria-label={`Colour ${choice}`}
+          aria-pressed={selected === choice}
+          className={`label-swatch ${selected === choice ? "is-active" : ""}`}
+          key={choice}
+          onClick={() => onPick(choice)}
+          style={{ background: choice }}
+          type="button"
+        />
+      ))}
     </div>
   );
 }

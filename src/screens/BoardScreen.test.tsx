@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
@@ -26,6 +26,8 @@ const {
   holdProject,
   failIssues,
   failWorkflow,
+  seedLabels,
+  holdLabelCreate,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -37,10 +39,14 @@ const {
     projectHeld: boolean;
     issuesFailure?: Error;
     workflowFailure?: Error;
+    labels: { id: string; name: string; color: string }[];
+    labelCreateHeld: boolean;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
     projectHeld: false,
+    labels: [],
+    labelCreateHeld: false,
   };
 
   const api = {
@@ -106,6 +112,7 @@ const {
             updatedAt: now,
             version: 1,
             deletedAt: null,
+            labels: [],
           },
         ],
         page: 0,
@@ -114,6 +121,48 @@ const {
       };
     },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
+    // The board reads the project's labels for its filter. The tests about the
+    // five reads above say nothing about labels, so this answers successfully
+    // with none — `seedLabels` is what the label tests use to put something in
+    // it, rather than every other assertion growing a sixth state.
+    listProjectLabels: async () => state.labels,
+    createProjectLabel: async (_projectId: string, input: { name: string; color: string }) => {
+      // A create that never settles. The defect this covers lives entirely in
+      // the window between the optimistic row appearing and the server
+      // answering, and against the mock that window is 140ms of real time — a
+      // test that raced it would be passing on a stopwatch. Holding the
+      // promise makes the window the whole test instead.
+      if (state.labelCreateHeld) return new Promise(() => {});
+      const label = { id: `label-${state.labels.length + 1}`, name: input.name, color: input.color };
+      state.labels = [...state.labels, label];
+      return label;
+    },
+    // The panel's own reads. Empty answers throughout: this is scaffolding for
+    // the label picker inside it, not a second set of claims about the panel.
+    getIssue: async (projectId: string, issueId: string) => ({
+      issue: {
+        id: issueId,
+        projectId,
+        issueNumber: 102,
+        issueKey: "TAS-102",
+        issueType: "TASK" as const,
+        summary: "Wire the board to the gateway",
+        description: "",
+        status: "TODO" as const,
+        priority: "MEDIUM" as const,
+        assigneeId: null,
+        reporterId: "user-anna",
+        createdAt: now,
+        updatedAt: now,
+        version: 1,
+        deletedAt: null,
+        labels: [],
+      },
+      history: [],
+    }),
+    listIssueLabels: async () => [],
+    listIssueLinks: async () => [],
+    listComments: async () => ({ items: [], page: 0, pageSize: 50, totalCount: 0 }),
   };
 
   return {
@@ -139,6 +188,12 @@ const {
     failWorkflow: (error: Error) => {
       state.workflowFailure = error;
     },
+    seedLabels: (labels: { id: string; name: string; color: string }[]) => {
+      state.labels = labels;
+    },
+    holdLabelCreate: (held: boolean) => {
+      state.labelCreateHeld = held;
+    },
     reset: () => {
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
@@ -147,22 +202,27 @@ const {
       state.projectHeld = false;
       state.issuesFailure = undefined;
       state.workflowFailure = undefined;
+      state.labels = [];
+      state.labelCreateHeld = false;
     },
   };
 });
 
 vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
 
-function renderBoard() {
+function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const board = <BoardScreen theme="light" toggleTheme={() => {}} onLogout={() => {}} logoutPending={false} />;
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/projects/${PROJECT_ID}/board`]}>
+      <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
-          <Route
-            path="/projects/:projectId/board"
-            element={<BoardScreen theme="light" toggleTheme={() => {}} onLogout={() => {}} logoutPending={false} />}
-          />
+          <Route path="/projects/:projectId/board" element={board} />
+          {/* The same screen with the panel open, which is how the app routes
+              it too. Rendering straight at this URL puts the panel's label
+              picker and the board's side by side without a drag-enabled card
+              having to be clicked first. */}
+          <Route path="/projects/:projectId/issues/:issueId" element={board} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -409,5 +469,70 @@ describe("a card on a board that cannot be written to", () => {
 
     const card = await screen.findByRole("button", { name: /TAS-102/ });
     await waitFor(() => expect(card).toHaveAttribute("aria-roledescription", "draggable"));
+  });
+});
+
+/**
+ * A create is optimistic, so a new label is drawn the instant it is asked for,
+ * carrying `optimisticLabelId` until the server answers with a real one. That
+ * placeholder is for the *list*: it is not an address, and every route that
+ * takes a label id types it `format: uuid`, so submitting it is "Label not
+ * found" from the mock and a 400 from the gateway.
+ *
+ * Both pickers offered it anyway for the length of the round trip — the board's
+ * filter and the panel's "Add label" — which is a control offering an action
+ * that cannot succeed, to the one person most likely to take it: whoever just
+ * made the label. Held rather than raced, so the window is the whole test.
+ */
+describe("a label the server has not answered for yet", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const optionNames = (select: HTMLElement) =>
+    Array.from((select as HTMLSelectElement).options).map((option) => option.textContent);
+
+  it("is drawn in the manage list, and offered by neither picker", async () => {
+    seedLabels([{ id: "label-backend", name: "backend", color: "#0052cc" }]);
+    holdLabelCreate(true);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+
+    const boardPicker = await screen.findByLabelText("Label");
+    const panelPicker = await screen.findByLabelText("Add label");
+    await waitFor(() => expect(optionNames(boardPicker)).toEqual(["All", "backend"]));
+    expect(optionNames(panelPicker)).toEqual(["Select a label", "backend"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Manage labels" }));
+    fireEvent.change(await screen.findByLabelText("New label"), { target: { value: "release" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add label" }));
+
+    // Drawn at once, which is the whole point of the optimistic row — and
+    // marked as a row nothing may be done to yet, which the modal already did.
+    const pendingRow = await screen.findByRole("button", { name: "Edit release" });
+    expect(pendingRow).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete release" })).toBeDisabled();
+
+    // Neither picker grew an option for it.
+    expect(optionNames(boardPicker)).toEqual(["All", "backend"]);
+    expect(optionNames(panelPicker)).toEqual(["Select a label", "backend"]);
+  });
+
+  it("is offered by both the moment the server answers", async () => {
+    seedLabels([{ id: "label-backend", name: "backend", color: "#0052cc" }]);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+
+    const boardPicker = await screen.findByLabelText("Label");
+    const panelPicker = await screen.findByLabelText("Add label");
+    await waitFor(() => expect(optionNames(boardPicker)).toEqual(["All", "backend"]));
+
+    fireEvent.click(screen.getByRole("button", { name: "Manage labels" }));
+    fireEvent.change(await screen.findByLabelText("New label"), { target: { value: "release" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add label" }));
+
+    // The guard is about an id that does not exist yet, not about hiding a new
+    // label: once the create settles, both pickers carry it.
+    await waitFor(() => expect(optionNames(boardPicker)).toEqual(["All", "backend", "release"]));
+    await waitFor(() => expect(optionNames(panelPicker)).toEqual(["Select a label", "backend", "release"]));
   });
 });

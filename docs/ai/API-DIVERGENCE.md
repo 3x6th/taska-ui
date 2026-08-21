@@ -1196,6 +1196,78 @@ Same rule as above: "Closed by" is settled, the rest is live.
 
 ---
 
+### The label routes have never answered this frontend, and the runtime spec describes their bodies differently from the contract
+
+- **Endpoints:** the seven `labels` routes added by
+  [TAS-120](https://jira.ozero.dev/browse/TAS-120) — project labels
+  (`GET`/`POST /projects/{projectId}/labels`,
+  `PATCH`/`DELETE /projects/{projectId}/labels/{labelId}`) and issue labels
+  (`GET`/`POST /projects/{projectId}/issues/{issueId}/labels`,
+  `DELETE …/labels/{labelId}`) — plus the `labelId` query parameter on
+  `GET /projects/{projectId}/issues` and `IssueResponseDto.labels`.
+- **Contract** (`docs/contract/openapi.yml`, backend `4d1570431d60`): the two
+  project-label writes take `{name, color}` (`CreateProjectLabelRequestDto` /
+  `UpdateProjectLabelRequestDto`, colour `^#[0-9A-Fa-f]{6}$`, name 1–50), and
+  the issue write takes `{labelId}` (`AddIssueLabelRequestDto`).
+- **Observed 2026-08-21** in the gateway's *runtime* spec — `GET /v3/api-docs`,
+  which is what `swagger-ui` renders and therefore what a reader sees first:
+  all three request bodies are `{"type": "string"}` rather than the DTOs the
+  contract names. Every response schema matches the contract.
+  - Settled by reading the gateway rather than by guessing between the two:
+    `LabelsController` takes `Mono<CreateProjectLabelRequestDto>`,
+    `Mono<UpdateProjectLabelRequestDto>` and `Mono<AddIssueLabelRequestDto>`,
+    so the JSON on the wire is the DTO. The `string` is springdoc failing to
+    introspect a reactive request body, not a second contract. `RestTaskaApi`
+    sends the DTOs.
+  - Worth keeping rather than dismissing as a generator artifact: the next
+    person to read the Swagger page will reach the same doubt, and the thing
+    that resolves it — the controller signature — is not on that page.
+- **Compensation:** none. `RestTaskaApi` follows the contract as written.
+- **What is unverified, which is nearly all of it.** Not one of the seven
+  routes has been called against `api.taska.ozero.dev`: this session held no
+  gateway credentials. Everything the UI does with labels is pinned against
+  `MockTaskaStore`, and two of the store's rules are this repository's reading
+  of [TAS-119](https://jira.ozero.dev/browse/TAS-119) rather than observed
+  behaviour: a name unique per project case-insensitively, and a soft delete
+  that takes the label off every issue at once. Read the mock-backed tests and
+  the e2e spec as pinning what the UI does with such a server, never as
+  evidence of one.
+  - **Role gating is the UI's alone.** TAS-119 says VIEWER reads, MEMBER and
+    ADMIN attach and detach on an issue, and only project ADMIN owns the
+    project's labels — and the UI splits its controls that way. The *store*
+    enforces none of it: no label write in `MockTaskaStore` consults a role, so
+    nothing in the mock-backed suite proves the split is even the right one.
+    The seven routes each declare a `403` in the contract, which is what the
+    UI is deferring to; whether the gateway draws the line in the same place is
+    unobserved. Do not read a green e2e run as evidence about permissions.
+  - The same caveat covers the `labelId` filter: the board makes it the
+    server's job (`["issues", projectId, labelFilter]`) because a client-side
+    filter over a 100-issue page would answer a narrower question, so a gateway
+    that ignores the parameter would quietly show an unfiltered board.
+  - `IssueResponseDto.labels` is defaulted to `[]` by `RestTaskaApi`, so a
+    gateway that does not send the field yet draws unlabelled cards instead of
+    failing.
+  - **Both label list responses carry `totalCount` while neither route
+    declares a `page` or `pageSize`** — unlike `GET /projects/{projectId}/issues`
+    and the comments route, which declare both. A count with nothing to page by
+    is either redundant or the trace of a default page size the contract does
+    not state. `RestTaskaApi` discards it, so a truncated list would arrive
+    looking complete. The first live call against a project with many labels
+    should check whether `items.length === totalCount`.
+  - **Neither list route states an order**, and the three implementations do
+    not agree by construction: the mock returns project labels in insertion
+    order and an issue's labels in *project* order rather than attach order,
+    `RestTaskaApi` passes through whatever arrives, and the gateway's order is
+    unknown and need not be stable between calls. Both optimistic writes
+    append, so a chip can move once the server answers. Nothing sorts, on
+    purpose — inventing an order here would hide the fact that the contract has
+    none.
+- **Removed by:** the first sign-in against the deployed gateway with a project
+  that has labels. Replace this entry with what was observed — including
+  whether `labelId` filters anything.
+
+---
+
 ## Closed
 
 Entries are closed **in place**, by re-heading them `### Closed by TAS-…` and

@@ -759,3 +759,186 @@ describe("RestTaskaApi read-only admin", () => {
     expect(String(fetchStub.mock.calls[0][0])).not.toContain("/../");
   });
 });
+
+/**
+ * The label routes (TAS-120). What matters here is what leaves the browser —
+ * the path, the method and the body — because that is the half of the contract
+ * a screen cannot check for itself, plus the two places a missing field would
+ * otherwise reach a component: an issue with no `labels` and a label with no
+ * `color`.
+ */
+describe("RestTaskaApi labels", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (route: (input: string) => unknown, status = 200) => {
+    const fetchStub = vi.fn(async (input: string, _init?: { method?: string; body?: string }) =>
+      answer(status, route(input)),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the project's labels and fills in what the response left out", async () => {
+    const fetchStub = stubFetch(() => ({
+      items: [
+        {
+          id: "label-1",
+          projectId: "project-1",
+          name: "backend",
+          color: "#0052cc",
+          createdBy: "user-1",
+          createdAt: "2026-08-20T09:00:00Z",
+          deletedAt: null,
+        },
+        // Nothing in `ProjectLabelResponseDto` is required, so this is a legal
+        // answer — and every field a screen reads has to survive it.
+        { id: "label-2" },
+      ],
+    }));
+
+    const labels = await new RestTaskaApi().listProjectLabels("project-1");
+
+    expect(String(fetchStub.mock.calls[0][0])).toContain("/projects/project-1/labels");
+    expect(labels[0]).toEqual({
+      id: "label-1",
+      projectId: "project-1",
+      name: "backend",
+      color: "#0052cc",
+      createdBy: "user-1",
+      createdAt: "2026-08-20T09:00:00Z",
+      deletedAt: null,
+    });
+    // The project comes from the path the caller asked with, never from nothing.
+    expect(labels[1]).toEqual({
+      id: "label-2",
+      projectId: "project-1",
+      name: "",
+      color: "",
+      createdBy: "",
+      createdAt: "",
+      deletedAt: null,
+    });
+  });
+
+  it("sends the name and the colour when a label is created", async () => {
+    const fetchStub = stubFetch(() => ({ id: "label-9", name: "frontend", color: "#8b5cf6" }), 201);
+
+    await new RestTaskaApi().createProjectLabel("project-1", { name: "frontend", color: "#8b5cf6" });
+
+    const [url, init] = fetchStub.mock.calls[0];
+    expect(String(url)).toContain("/projects/project-1/labels");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body ?? "{}")).toEqual({ name: "frontend", color: "#8b5cf6" });
+  });
+
+  it("PATCHes both fields, because the contract requires both even for a rename", async () => {
+    const fetchStub = stubFetch(() => ({ id: "label-1", name: "platform", color: "#0052cc" }));
+
+    await new RestTaskaApi().updateProjectLabel("project-1", "label-1", {
+      name: "platform",
+      color: "#0052cc",
+    });
+
+    const [url, init] = fetchStub.mock.calls[0];
+    expect(String(url)).toContain("/projects/project-1/labels/label-1");
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(init?.body ?? "{}")).toEqual({ name: "platform", color: "#0052cc" });
+  });
+
+  it("deletes a project label by id", async () => {
+    const fetchStub = stubFetch(() => undefined, 204);
+
+    await new RestTaskaApi().deleteProjectLabel("project-1", "label-1");
+
+    const [url, init] = fetchStub.mock.calls[0];
+    expect(String(url)).toContain("/projects/project-1/labels/label-1");
+    expect(init?.method).toBe("DELETE");
+  });
+
+  it("posts the label id to the issue's own label route and takes it off again", async () => {
+    const fetchStub = stubFetch(() => ({ issueId: "issue-1", labelId: "label-1" }), 201);
+
+    const api = new RestTaskaApi();
+    await api.addIssueLabel("project-1", "issue-1", "label-1");
+
+    const [addUrl, addInit] = fetchStub.mock.calls[0];
+    expect(String(addUrl)).toContain("/projects/project-1/issues/issue-1/labels");
+    expect(addInit?.method).toBe("POST");
+    expect(JSON.parse(addInit?.body ?? "{}")).toEqual({ labelId: "label-1" });
+
+    vi.unstubAllGlobals();
+    const removeStub = stubFetch(() => undefined, 204);
+    await api.removeIssueLabel("project-1", "issue-1", "label-1");
+
+    const [removeUrl, removeInit] = removeStub.mock.calls[0];
+    expect(String(removeUrl)).toContain("/projects/project-1/issues/issue-1/labels/label-1");
+    expect(removeInit?.method).toBe("DELETE");
+  });
+
+  it("escapes the ids rather than letting them reshape the path", async () => {
+    const fetchStub = stubFetch(() => undefined, 204);
+
+    await new RestTaskaApi().removeIssueLabel("../../admin", "issue-1", "../../../etc");
+
+    expect(String(fetchStub.mock.calls[0][0])).not.toContain("/../");
+  });
+
+  it("carries the label filter into the issue list query", async () => {
+    const fetchStub = stubFetch((input) =>
+      input.includes("/issues/")
+        ? { issue: { id: "issue-1", labels: [{ id: "label-1", name: "backend", color: "#0052cc" }] }, history: [] }
+        : { items: [{ id: "issue-1" }], totalCount: 1 },
+    );
+
+    const page = await new RestTaskaApi().listIssues("project-1", { labelId: "label-1", pageSize: 100 });
+
+    expect(String(fetchStub.mock.calls[0][0])).toContain("labelId=label-1");
+    // The list DTO carries no labels, so the board's chips come from the detail
+    // read this method hydrates each row with.
+    expect(page.items[0].labels).toEqual([{ id: "label-1", name: "backend", color: "#0052cc" }]);
+  });
+
+  it("gives an issue an empty label list when the gateway sends none", async () => {
+    // Every gateway older than TAS-120 answers exactly like this, and the board
+    // reads `issue.labels.length` without asking whether the field arrived.
+    stubFetch(() => ({ issue: { id: "issue-1", summary: "No labels here" }, history: [] }));
+
+    const detail = await new RestTaskaApi().getIssue("project-1", "issue-1");
+
+    expect(detail.issue.labels).toEqual([]);
+  });
+
+  it("reads an issue's labels and keeps one whose colour never arrived", async () => {
+    const fetchStub = stubFetch(() => ({
+      items: [
+        { id: "label-1", name: "backend", color: "#0052cc" },
+        { id: "label-2", name: "no colour" },
+      ],
+    }));
+
+    const labels = await new RestTaskaApi().listIssueLabels("project-1", "issue-1");
+
+    expect(String(fetchStub.mock.calls[0][0])).toContain("/projects/project-1/issues/issue-1/labels");
+    // Kept, not dropped: the label is on the issue whatever the gateway failed
+    // to say about it, and the chip falls back to the accent when it is drawn.
+    expect(labels).toEqual([
+      { id: "label-1", name: "backend", color: "#0052cc" },
+      { id: "label-2", name: "no colour", color: "" },
+    ]);
+  });
+});
