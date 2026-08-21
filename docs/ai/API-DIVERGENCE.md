@@ -1196,7 +1196,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
 
 ---
 
-### The label routes have never answered this frontend, and the runtime spec describes their bodies differently from the contract
+### Closed by observation: the label routes answer exactly as the contract says — and writing one breaks the issue read
 
 - **Endpoints:** the seven `labels` routes added by
   [TAS-120](https://jira.ozero.dev/browse/TAS-120) — project labels
@@ -1223,15 +1223,63 @@ Same rule as above: "Closed by" is settled, the rest is live.
     person to read the Swagger page will reach the same doubt, and the thing
     that resolves it — the controller signature — is not on that page.
 - **Compensation:** none. `RestTaskaApi` follows the contract as written.
-- **What is unverified, which is nearly all of it.** Not one of the seven
-  routes has been called against `api.taska.ozero.dev`: this session held no
-  gateway credentials. Everything the UI does with labels is pinned against
-  `MockTaskaStore`, and two of the store's rules are this repository's reading
-  of [TAS-119](https://jira.ozero.dev/browse/TAS-119) rather than observed
-  behaviour: a name unique per project case-insensitively, and a soft delete
-  that takes the label off every issue at once. Read the mock-backed tests and
-  the e2e spec as pinning what the UI does with such a server, never as
-  evidence of one.
+- **Observed 2026-08-21** against the deployed gateway, signed in as `admin`
+  (`GLOBAL_ADMIN`), on project `kappa-test`
+  (`c7f82d29-4207-4278-b5fc-cb16b844264b`). All seven routes answer, and they
+  answer exactly as the contract states — this is the paragraph that used to
+  say none of them had ever been called.
+  - `GET …/labels` → `200 {"items":[],"totalCount":0}` on a project with none.
+  - `POST …/labels` with `{"name","color"}` → `201` with the full
+    `ProjectLabelResponseDto`: `id`, `projectId`, `name`, `color`, `createdBy`,
+    `createdAt`, and `deletedAt: null`. **The DTO is the body, not the bare
+    string the runtime spec prints** — the reading taken from
+    `LabelsController` above is confirmed on the wire.
+  - `PATCH …/labels/{id}` with both fields → `200`, name and colour both
+    changed. `DELETE …/labels/{id}` → `204`, and the project list is empty
+    afterwards.
+  - `POST …/issues/{id}/labels` with `{"labelId"}` → `201` with the join row
+    (`issueId`, `labelId`, `createdBy`, `createdAt`) — nothing the caller did
+    not already have, which is why `TaskaApi` returns `void`.
+  - `GET …/issues/{id}/labels` → `200` with the three-field
+    `IssueLabelResponseDto`. `DELETE …/labels/{labelId}` → `204`.
+  - `GET /projects/{id}/issues` carries no labels, as the contract says: the
+    short DTO holds `id`, `issueKey`, `issueType`, `priority`, `summary`,
+    `assigneeId` and nothing else.
+- **Still unverified after that pass:** whether `labelId` actually filters
+  (the probe project had one issue, so a filter proves nothing there), what
+  order either list route returns, and whether `totalCount` can disagree with
+  `items.length`. The two mock rules taken from
+  [TAS-119](https://jira.ozero.dev/browse/TAS-119) — case-insensitive name
+  uniqueness and a soft delete that reaches every issue — were not exercised
+  either. And `IssueResponseDto.labels` could not be checked at all, for the
+  reason immediately below.
+- **Writing a label makes the issue permanently unreadable
+  ([TAS-172](https://jira.ozero.dev/browse/TAS-172)).** This is the finding
+  that matters, and it is not in the label routes — they are clean.
+  `GET /api/v1/issues/{issueId}` answers `500` for any issue a label has ever
+  touched: `{"code":"INTERNAL_SERVER_ERROR","message":"Unknown event type:
+  ISSUE_EVENT_TYPE_LABEL_ADDED"}`. TAS-119 taught issue-service to write
+  `LABEL_ADDED` and `LABEL_REMOVED` history events; the gateway's history
+  mapper does not know them and throws.
+  - It does not heal. Detaching the label changes the message to
+    `LABEL_REMOVED` and keeps the `500`; deleting the label from the project
+    entirely leaves the issue `500` still, because the history event is
+    already written and nothing on the client can retract it.
+  - **It takes the whole board with it, not just the panel.**
+    `RestTaskaApi.listIssues` hydrates every row through `getIssue`, because
+    the list DTO omits fields the card needs. One labelled issue therefore
+    fails the project's entire issue read — measured: the list answers `200`,
+    the single row's hydration answers `500`, the whole call rejects.
+  - **Compensation: none, and the UI ships the writes anyway** — the owner's
+    call, made knowing the above, so the backend team can work the bug against
+    a real reproduction. What that means in practice: attaching a label on the
+    deployed stand permanently breaks that issue and its project's board.
+  - `kappa-test-1` (`09bf59ad-82e6-4650-992a-5d7c0dfadea9`) is in that state
+    now, broken by this verification pass. It is the live reproduction.
+  - Same class as [TAS-139](https://jira.ozero.dev/browse/TAS-139), which was
+    this bug on comment events and was closed. It will recur on the next event
+    type issue-service adds unless an unknown type stops being fatal, which is
+    what TAS-172 asks for.
   - **Role gating is the UI's alone.** TAS-119 says VIEWER reads, MEMBER and
     ADMIN attach and detach on an issue, and only project ADMIN owns the
     project's labels — and the UI splits its controls that way. The *store*
@@ -1262,9 +1310,11 @@ Same rule as above: "Closed by" is settled, the rest is live.
     append, so a chip can move once the server answers. Nothing sorts, on
     purpose — inventing an order here would hide the fact that the contract has
     none.
-- **Removed by:** the first sign-in against the deployed gateway with a project
-  that has labels. Replace this entry with what was observed — including
-  whether `labelId` filters anything.
+- **Removed by:** [TAS-172](https://jira.ozero.dev/browse/TAS-172) closing,
+  plus one more live pass covering what the list above still marks unverified
+  — the `labelId` filter on a project with several labelled issues, list
+  ordering, `totalCount`, and `IssueResponseDto.labels`, which cannot be seen
+  until the issue read stops answering `500`.
 
 ---
 
