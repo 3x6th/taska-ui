@@ -2,8 +2,13 @@
 
 This repository is the frontend of Taska, an issue tracker. It is built by an
 orchestrating agent directing four specialised subagents against documents that
-outrank the code. This file is the single authority for who may change what,
-which source wins a conflict, and what counts as evidence.
+outrank the code. This file is the single authority for how much is decided
+without asking, who may change what, which source wins a conflict, and what
+counts as evidence.
+
+It is written to be handed a task and left alone. `CLAUDE.md` carries the few
+rules that have to be in context before the first tool call and points here for
+the rest.
 
 ## Authority
 
@@ -41,12 +46,91 @@ the difference into a component and move on.
 This has already happened: `VITE_TASKA_ASSUME_PROJECT_ADMIN` exists purely
 because the contract has no membership or member-read endpoints (`TAS-137`).
 
+## Autonomy
+
+The point of this harness is that work can be handed over. A task arriving
+here — "connect the new endpoints", a Jira key, a Swagger URL, a bug report —
+is authorisation to run the whole delivery flow below and come back with a
+merged PR. It is not an invitation to negotiate how.
+
+Run it without checking in: read the contract, the story and the code before
+deciding anything; find or file the Jira story; brief `frontend-builder`
+rather than writing production frontend code yourself; run the gate; capture
+evidence; take the verdicts the change's class requires; open the PR, fix the
+blockers, merge.
+
+Make the ordinary calls yourself and state them. Which component holds the
+state, what a section is called, how an empty state is worded, which of two
+reasonable layouts to build — deciding these *is* the work. An orchestrator
+that asks about them is not being careful. It is handing back the part of the
+job it was given.
+
+### The only reasons to stop and ask
+
+1. Proceeding under *any* assumption would be unsafe, or would make the work
+   useless if the assumption turns out wrong.
+2. The action is destructive, or outside the approved Jira, GitHub and
+   deployment scope.
+3. Two readings of the request lead to materially different products — not to
+   different details of the same product.
+
+All three are about the *product*. A question about process is not among them:
+this file answers those, and where it does not, the answer is a change to this
+file proposed alongside the work rather than instead of it.
+
+Uncertainty that is not one of the three is handled by doing everything that
+does not depend on the answer, then stating the assumption and continuing.
+
+### When the harness cannot run a role
+
+Sometimes the runtime will not let you do what this file requires: subagent
+delegation switched off, an MCP server down, a tool call refused, no
+credentials for the gateway, a pinned skill missing. When that happens:
+
+**Say it in the first sentence of the first reply after you learn it, and
+never later than that**, along with what you propose to do instead. Some of
+these are knowable before the first tool call — delegation switched off — and
+some are only discovered on the call that fails. A mid-run discovery is
+reported before the next step that depends on it, not saved for the end. It
+goes in the PR body and the Jira comment too, but never *only* there.
+
+The test is not a soft one. If the owner would have said "then stop and tell
+me" had they known at the start, then saying it at the end is not disclosure.
+It is a fait accompli with a footnote.
+
+Then stop at the step the blocked role gates, and do everything it does not.
+With delegation off that means: read the contract, file the story, plan the
+change, say exactly what you would build — and write no production frontend
+code and merge nothing, because those are the two things the missing roles
+exist to gate.
+
+**A general handover is not permission to substitute.** "Connect the new
+endpoints" authorises the *work*; it does not authorise one party to take the
+place of a role that was supposed to check it. Only a specific answer from the
+owner, given after the report and about that report, does that. Until it
+arrives, the run stops at the gate and waits — which costs one reply, and is
+the entire difference between this rule and the one it replaces.
+
+When the owner does answer and it covers proceeding, proceed — but take the
+strongest substitute available, label it for what it is, and never let it be
+read as the thing it replaced. A self-review by the agent that wrote the code
+is not a verdict, and a PR carrying one says so in those words.
+
+This section exists because of TAS-169. Subagent delegation was disabled by
+the session's own configuration; the orchestrator wrote the production code
+itself, verified it itself, and disclosed both in the finished PR body. Every
+sentence of that disclosure was true and the letter of this file allowed it.
+It still left the owner reading about a decision they would have made
+differently, at the one moment it had become expensive to change. A rule you
+cannot follow is a stop-and-report, not a rule you route around and document
+afterwards.
+
 ## Roles
 
 | Role | Write access | Responsibility |
 | --- | --- | --- |
-| Orchestrator (main thread) | Repository, git, Jira, PRs | Scope, sequencing, evidence, external operations |
-| `frontend-builder` | Workspace write | The only subagent that may edit production frontend code |
+| Orchestrator (main thread) | Harness and docs, git, Jira, PRs | Scope, sequencing, evidence, external operations |
+| `frontend-builder` | Workspace write | The only agent, orchestrator included, that may edit production frontend code |
 | `art-director` | Read-only | Design-system conformance, UX craft, states, keyboard, light/dark parity |
 | `api-contract-guard` | Read-only | Contract conformance, enums, role gating, mock/rest/hybrid parity |
 | `release-reviewer` | Read-only | Independent verdict before any PR |
@@ -62,6 +146,54 @@ frontmatter — that restriction is the mechanism, not a request.
 Subagents live in `.claude/agents/`. All work here runs in Claude Code; if a
 second agent runtime is ever added, define the same roles for it with
 identical role bodies and keep the two definitions in sync.
+
+## Tooling the harness expects you to use
+
+The four subagents are the machinery this file is mostly about. These are the
+rest of it, and each answers to the same rule: reach for it when it is the
+right instrument, and report it under *When the harness cannot run a role*
+when it is not available.
+
+Report what *this task* needs, not everything that happens to be missing. A
+gap with a documented restore path is fixed rather than announced — the skill
+symlinks under `.claude/skills/` point into git-ignored `.agents/`, so a fresh
+clone and every new worktree start with none of them; run
+`npx skills experimental_install` (README) instead of opening with a report
+about it.
+
+- **Subagents** (`.claude/agents/`) — the roles above. Not optional.
+- **Workflows** — deterministic fan-out across many agents. Worth it when a
+  pass is genuinely parallel and its shape is known in advance: reading one
+  diff from several angles at once *on a draft that has already passed
+  `release-reviewer`*, verifying each finding independently before acting on
+  it, sweeping a change across many files. One review by one role is an
+  `Agent` call, not a workflow, and a workflow does not license the volley
+  *Stage the reviews* forbids — it is a way to *run* a role, never a way to
+  skip one, and the verdict table below is unaffected by how a role was
+  launched.
+- **Skills** — pinned in `skills-lock.json`, symlinked under
+  `.claude/skills/`. `design-taste-frontend` for craft, ranked below
+  `DESIGN.md` (see below); `find-animation-opportunities`,
+  `improve-animations` and `review-animations` for motion. A skill is a source
+  of craft, never of direction, and never outranks `DESIGN.md` or the
+  contract.
+- **Plugins** — the `voltagent-lang`, `voltagent-data-ai` and
+  `voltagent-qa-sec` packs enabled at user level are generic: they do not know
+  this repository's contract, its design system, or its roles, so the four
+  project agents come first for anything touching Taska. Do not read "generic"
+  as "irrelevant" — the packs ship `react-specialist`, `typescript-pro`,
+  `accessibility-tester`, `ui-ux-tester`, `code-reviewer` and
+  `security-auditor`, which are squarely on this repository's surface and are
+  the best substitutes available when a project role cannot run.
+- **MCP servers** — `refero` (project `.mcp.json`) for design references,
+  under `docs/ai/REFERENCE-LOCK.md`'s rules. `mcp-atlassian` for Jira, which
+  is registered at user level rather than in this repository, so confirm it is
+  in scope before relying on it; `gh` is preferred over the GitHub MCP for
+  writes. `context7` for library documentation, in preference to memory or a
+  web search. The browser tools are how visual evidence is captured and are
+  not optional for UI work.
+
+Credentials for any of these are covered by *Safety* at the end of this file.
 
 ## Frontend constraints
 
@@ -115,6 +247,8 @@ TAS-140: add lint and test verification
 
 Before a PR:
 
+0. find or file the Jira story, per *Jira discipline* — the commit subject
+   needs its key, so this precedes the first commit rather than the PR
 1. `git fetch && git rebase origin/main` — **before briefing anyone**, not
    before pushing
 2. run `npm run check`, then `npm run build`
@@ -199,19 +333,36 @@ mocked, and move on.
 
 ### Jira discipline
 
-Jira stories are created by the owner, or by the orchestrator only after
-proposing it to the owner and getting a yes. The one exception: a genuine
-contract-design problem (not a temporary mock-era gap) may be filed directly.
-Everything else that is worth remembering goes to `docs/ai/BACKLOG.md` first —
-that file is the working memory; Jira is for agreed work.
+Two paths in, and which one a thing takes depends on who raised it.
 
-Before proposing or filing anything, search the existing `TAS` backlog for it.
-Two checks, both mandatory: is there already a story that covers this or that
-this duplicates (search by endpoint, service name, and the Russian and English
-keywords); and does the problem even survive — a pain caused by a temporary
-mock or compensation disappears with the story that removes the mock, and does
-not deserve its own ticket. A duplicate found after filing gets closed with a
-link, not left to drift.
+**Work the owner handed over — file it yourself, and do not ask.** "Connect
+the new endpoints" is a decision already made; a story is the bookkeeping of
+it, not a second approval. Search `TAS` first, use the existing key if one
+covers the work, and create the story yourself when none does. Link it to the
+backend story it depends on. Then start.
+
+**Problems you found along the way — `docs/ai/BACKLOG.md` first.** Bugs,
+contract gaps, design debt and open questions go there as one line. That file
+is the working memory. A `TAS` story is for a problem that survives on its
+own, and most do not: a pain caused by a temporary mock or a compensation
+disappears with the story that removes it and never deserved a ticket. A
+genuine contract-design problem is the clearest case that does, and may be
+filed directly.
+
+Before filing anything, on either path, search the existing `TAS` backlog:
+is there already a story that covers this or that this duplicates — by
+endpoint, by service name, and in both Russian and English keywords. A
+duplicate found after filing gets closed with a link, not left to drift.
+
+The survival test applies on both paths too, not only the second. Handed-over
+work is usually real by definition, but "fix this" sometimes turns out to name
+a mock artifact that disappears with the story removing the mock. When it
+does, say so and do not file — the owner asked for the problem gone, not for a
+ticket about it.
+
+Graduating a line from `docs/ai/BACKLOG.md` into `TAS` is the orchestrator's
+call, made with the same two tests and without asking. Strike the line when it
+graduates, and record the key beside it.
 
 When writing Jira descriptions, use plain text and simple lists. The MCP
 converter mangles more Markdown than it renders, and every case below was

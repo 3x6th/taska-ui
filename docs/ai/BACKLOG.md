@@ -1,10 +1,12 @@
 # Backlog — working memory
 
-Things worth remembering that are not yet agreed work. Per `AGENTS.md`, Jira
-stories are created by the owner or after proposing to the owner; this file is
-where proposals and keep-in-mind items live until then. Items graduate to Jira
-and get struck from here; items that stop mattering get deleted with a line of
-why.
+Things worth remembering that are not yet agreed work. Per `AGENTS.md`, this
+is where a problem the agents *found* lands first — work the owner hands over
+gets its story filed directly instead. A line graduates to Jira when it
+survives the two tests there (it is not a mock artifact, and it duplicates
+nothing already filed); that call is the orchestrator's and needs no asking.
+Items graduate and get struck from here with their key beside them; items that
+stop mattering get deleted with a line of why.
 
 Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
