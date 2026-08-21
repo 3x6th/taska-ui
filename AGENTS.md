@@ -265,6 +265,14 @@ Before a PR:
 8. the orchestrator may merge once available checks are green and the
    reviewer verdicts have no unresolved blockers — the owner has delegated
    the merge itself; the verdict requirement is what is not delegated
+9. **the merge is not done until the story is:** transition the Jira issue to
+   `Done` with the PR link in a comment, and update its row in
+   `docs/ai/JIRA-WORKFLOW.md` to `merged (PR #N)`. Both are part of step 8,
+   not follow-up work — a merged PR under a `To Do` story is how `TAS-134`
+   and `TAS-136` came to disagree with themselves, and that table says to
+   trust the repository column, which only holds if it is written when the
+   PR lands. If part of the story did not ship, the honest status plus a
+   comment naming what is left beats `Done`.
 
 Do not fake a same-account GitHub approval. The written reviewer verdict is
 the independent evidence.

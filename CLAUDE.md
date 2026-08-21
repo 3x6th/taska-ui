@@ -30,7 +30,9 @@ story → plan → implement **through `frontend-builder`** → `npm run check` 
 roles the change's class requires → fix the blockers → **a fresh verdict from
 each role that raised one**, because the role that raised a finding is the
 only one who may call it closed → PR → merge once checks are green and no
-blocking finding is unresolved.
+blocking finding is unresolved → **transition the story to `Done` and record
+the merge in `docs/ai/JIRA-WORKFLOW.md`**, which is part of merging rather
+than something after it.
 
 Decide the ordinary things yourself and say what you decided. Naming, file
 layout, which component holds the state, how a section is worded, which of two
