@@ -2876,6 +2876,7 @@ h1 {
   color: var(--fg);
 }
 
+.issue-labels,
 .issue-links {
   margin-top: 24px;
 }
@@ -3037,6 +3038,7 @@ button.issue-link-open:hover {
   margin-top: 24px;
 }
 
+.issue-labels h3,
 .issue-links h3,
 .comments h3,
 .activity h3 {
@@ -3275,14 +3277,18 @@ button.issue-link-open:hover {
    tint and the text colour are set inline from that value (`labelChipStyle` in
    src/lib/format.ts), so everything here is the geometry the colour is poured
    into. The name is always text — colour is never the only carrier of meaning
-   (§4.6), and a chip is searchable and readable with the colour ignored. */
+   (§4.6), and a chip is searchable and readable with the colour ignored.
+
+   The panel's `section.issue-labels` is deliberately not styled here: it takes
+   its top margin and its heading from the `.issue-links` / `.comments` /
+   `.activity` rules above, because it is one more section of that panel rather
+   than a section with a look of its own. */
 .label-chip {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   max-width: 100%;
   height: 20px;
-  border: 1px solid transparent;
   border-radius: 20px;
   padding: 0 8px;
   font-size: 11.5px;
@@ -3324,15 +3330,35 @@ button.issue-link-open:hover {
     background var(--dur-hover) var(--ease);
 }
 
-/* The × is 15px because the chip is 20px, and 15px is well under the 24px a
-   finger needs (WCAG 2.5.8). The drawn size stays — a bigger circle would
-   swallow the chip — and only the *hit* area grows, which is the one way to
-   have both. It reaches into the 6px gap beside the chip, where the only
-   neighbour is another chip's text and nothing else is clickable. */
+/* The × is 15px because the chip is 20px. The drawn size stays — a bigger
+   circle would swallow the chip — and only the *hit* area grows, which is the
+   one way to have both. The floor it grows to is DESIGN.md §1's 28×28, not
+   WCAG 2.5.8's 24: §1 outranks the looser external minimum, and the colour
+   swatches added by the same story are held to 28 by that same rule, so the
+   two controls answer to one number.
+
+   28 does not fit inside a 20px chip without covering something, so the four
+   insets are not equal. What decides the direction is what a mis-tap costs,
+   because this button is destructive and unconfirmed — one tap detaches a
+   label with nothing to undo it. Outward, the box grows into the 6px gap
+   beside the chip, whose only occupant is another chip's text: nothing there
+   listens, so a mis-tap costs nothing, and 8.5 is as far as it goes before the
+   next chip starts (it lands 0.5px short of it). Inward it is pulled back to
+   4.5 — 2px of that is the gap, so 2.5px of the name is covered rather than
+   4.5px, and that is the least the floor allows: 4.5 + 15 + 8.5 = 28 exactly.
+
+   That clawback is the whole reason the box is not symmetric. At an even -6.5
+   it covered 4.5px of the name, and on a two-character label — "io" here, and
+   the seed alone ships "ios" — that is about half the name sitting inside a
+   destructive target, where a user pointing at the *name* detaches the label
+   instead. Short names are not exotic, so the tighter side faces them.
+
+   Vertically it keeps 6.5 both ways: it grows 4px into the 6px row gap, which
+   is measured to reach neither the row above nor the row below. */
 .label-chip-remove::after {
   content: "";
   position: absolute;
-  inset: -5px;
+  inset: -6.5px -8.5px -6.5px -4.5px;
 }
 
 .label-chip-remove:hover:not(:disabled) {
@@ -3393,11 +3419,13 @@ button.issue-link-open:hover {
   gap: 7px;
 }
 
+/* Radius 9 is DESIGN.md §2.5's value for a select, the same one
+   `.issue-link-target select` above carries. */
 .filter-select select {
   max-width: 148px;
   height: 26px;
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: 9px;
   padding: 0 6px;
   background: var(--surface);
   color: var(--fg);
@@ -3413,9 +3441,17 @@ button.issue-link-open:hover {
   outline-offset: 2px;
 }
 
-.filter-note {
-  color: var(--fg-3);
+/* The one thing the filter bar ever says on its own, and it is always a
+   failure — so it is named for that and coloured `--danger` like every other
+   failure in this app. `--fg-3` is the placeholder and disabled colour: a read
+   that failed rendered in it reads as a filter that has nothing to offer,
+   which is the opposite of what happened. Weight 550 rather than the
+   `.form-error` block's 600 because this sits inline in a 46px bar between
+   `--fg-3` labels, not in a tinted box of its own. */
+.filter-error {
+  color: var(--danger);
   font-size: 11.5px;
+  font-weight: 550;
 }
 
 .label-create-form {
@@ -3440,6 +3476,7 @@ button.issue-link-open:hover {
 /* A colour choice is the one control here whose meaning *is* its colour, so it
    carries a checked state a colour cannot express: the ring. */
 .label-swatch {
+  position: relative;
   width: 20px;
   height: 20px;
   border: 2px solid transparent;
@@ -3448,6 +3485,28 @@ button.issue-link-open:hover {
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fg) 14%, transparent);
   cursor: pointer;
   transition: transform var(--dur-hover) var(--ease);
+}
+
+/* Same trick as `.label-chip-remove::after`: the drawn dot stays 20px, because
+   a 28px one would turn a quiet row of colours into the loudest thing in the
+   modal, and only the *hit* area grows to §1's 28×28 floor. The swatches sit
+   5px apart, so neighbouring extensions overlap by 3px, and in those 3px the
+   later sibling wins — each swatch owns 28px of height but only 25px of
+   exclusive width, which is all a 25px pitch can give. That is acceptable
+   between these siblings and nowhere else: they are one exclusive choice, so
+   an edge tap lands on one of two colours in the same group, both flows still
+   need an explicit submit, and the rename row has a Cancel. Outward the 4px
+   stays inside the gaps around the group (6px in the rename row, 10px in the
+   create form), so it never reaches the name field or the save button.
+
+   -6, not -4, and the difference is the 2px transparent border above: an
+   absolutely positioned box is laid out against its ancestor's *padding* box,
+   so the inset starts from a 16px square, not the 20px one on screen. -4
+   measures 24×24 in the browser and fails the floor it was written for. */
+.label-swatch::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
 }
 
 .label-swatch:hover {
@@ -3493,12 +3552,13 @@ button.issue-link-open:hover {
   width: 100%;
 }
 
+/* Radius 9: §2.5 gives inputs the same value as buttons and selects. */
 .label-edit-form input {
   flex: 1;
   min-width: 110px;
   height: 28px;
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: 9px;
   padding: 0 8px;
   background: var(--surface);
   color: var(--fg);

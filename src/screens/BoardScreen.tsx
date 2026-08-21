@@ -442,17 +442,32 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             nothing but a filter. Saying nothing would leave a picker offering
             only "All" and looking like a project that has no labels. */}
         {labelsUnread.unanswered ? (
-          <span className="filter-note">Labels could not be loaded</span>
+          <span className="filter-error">Labels could not be loaded</span>
         ) : (
           <label className="filter-select">
             <span className="filter-label">Label</span>
-            <select onChange={(event) => setLabelFilter(event.target.value)} value={labelFilter}>
-              <option value="ALL">All</option>
-              {projectLabels.map((label) => (
-                <option key={label.id} value={label.id}>
-                  {label.name || "Unnamed label"}
-                </option>
-              ))}
+            {/* Pending and empty would otherwise be the same picker — one
+                holding nothing but "All" — and they are different answers:
+                "we have not asked yet" against "this project has no labels".
+                `isLoading` rather than `isPending` so a query held disabled
+                (no projectId) never claims to be loading. */}
+            <select
+              disabled={projectLabelsQuery.isLoading}
+              onChange={(event) => setLabelFilter(event.target.value)}
+              value={projectLabelsQuery.isLoading ? "LOADING" : labelFilter}
+            >
+              {projectLabelsQuery.isLoading ? (
+                <option value="LOADING">Loading labels</option>
+              ) : (
+                <>
+                  <option value="ALL">All</option>
+                  {projectLabels.filter((label) => !isPendingLabel(label)).map((label) => (
+                    <option key={label.id} value={label.id}>
+                      {label.name || "Unnamed label"}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
           </label>
         )}
@@ -1100,7 +1115,9 @@ function IssueLabelsSection({
   const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
   const projectLabels = useMemo(() => projectLabelsQuery.data ?? [], [projectLabelsQuery.data]);
   const attached = useMemo(() => new Set(labels.map((label) => label.id)), [labels]);
-  const attachable = projectLabels.filter((label) => !attached.has(label.id));
+  const attachable = projectLabels.filter(
+    (label) => !attached.has(label.id) && !isPendingLabel(label),
+  );
 
   // One write, three stale caches: this list, the panel's issue, and the board
   // cards that draw `issue.labels` from the list read behind them.
@@ -1151,7 +1168,14 @@ function IssueLabelsSection({
     onSettled: settle,
   });
 
-  const error = (labelsQuery.error ?? projectLabelsQuery.error ?? addLabel.error ?? removeLabel.error)?.message;
+  // Mutations first, reads second. A react-query observer can hold data *and*
+  // an error at once — a cached list plus a failed background refetch — and in
+  // that state the picker is still populated, so an add that the server refused
+  // would otherwise be explained by whatever the refetch said instead. A
+  // mutation error is always about the action just taken; a query error is
+  // about the background.
+  const error =
+    (addLabel.error ?? removeLabel.error ?? labelsQuery.error ?? projectLabelsQuery.error)?.message;
 
   return (
     <section className="issue-labels">
@@ -1350,9 +1374,14 @@ function IssueLinksSection({
   // own notice does not cover it, and the only trace left would be a picker
   // offering nothing and rows showing ids — which is what "this issue has no
   // links worth naming" looks like.
+  //
+  // Mutations are read before the two queries for the same reason as in
+  // `IssueLabelsSection`: with a cached page plus a failed background refetch
+  // the picker is still populated, so a refused link would be explained by the
+  // refetch rather than by the refusal.
   const error =
     localError ??
-    (linksQuery.error ?? projectIssuesQuery.error ?? createLink.error ?? deleteLink.error)?.message;
+    (createLink.error ?? deleteLink.error ?? linksQuery.error ?? projectIssuesQuery.error)?.message;
 
   return (
     <section className="issue-links">
@@ -1745,6 +1774,20 @@ function ActivityItem({
 const optimisticLabelId = "tk-optimistic-label";
 
 /**
+ * A label the server has not answered for yet, and therefore one no picker may
+ * offer. The optimistic row exists so the *list* looks right the instant a
+ * label is created — that is all it is for. It is not an address: every route
+ * that takes a label id types it `format: uuid`, so submitting the placeholder
+ * is "Label not found" from the mock and a 400 from the gateway. A row that
+ * cannot be acted on yet is not the same as one that can, and a control that
+ * offers it is offering an action that cannot succeed.
+ *
+ * The window is short — one create round trip — but it is exactly the window
+ * in which someone who just made a label reaches for it.
+ */
+const isPendingLabel = (label: { id: string }) => label.id === optimisticLabelId;
+
+/**
  * `POST/PATCH/DELETE /projects/{projectId}/labels` — the project's own list,
  * which is what the issue picker draws from.
  *
@@ -1889,7 +1932,7 @@ function ProjectLabelsModal({
 
       <ul className="label-manage-list">
         {labels.map((label) => {
-          const pending = label.id === optimisticLabelId;
+          const pending = isPendingLabel(label);
           const isEditing = editing?.id === label.id;
           return (
             <li className="label-manage-row" key={label.id || label.name}>

@@ -108,8 +108,11 @@ export interface Label {
 
 /**
  * A label as the *project* owns it (`ProjectLabelResponseDto`). `deletedAt` is
- * the contract's soft delete: a removed label keeps its row, stops being
- * returned by the list, and stops being attached to issues. Nothing in this app
+ * the contract's soft delete: a removed label keeps its row and stops being
+ * returned by the list. Whether it also comes off the issues already carrying
+ * it is *this repository's* reading of TAS-119, not something the contract
+ * states or the gateway has been observed doing — the mock implements it that
+ * way, and nothing here depends on the gateway agreeing. Nothing in this app
  * asks for deleted labels, so in practice this is `null` wherever it is read —
  * it is modelled because the field is in the response, not because a screen
  * branches on it.

@@ -118,15 +118,19 @@ export const labelColorChoices = [
 /**
  * DESIGN.md §4.5's badge recipe — tinted background, the colour itself as the
  * text — applied to a colour the *server* chose rather than one this build
- * picked. A value the contract's own pattern rejects never reaches CSS: it
- * falls back to the accent, so a malformed colour leaves a readable chip
- * instead of an invisible or unstyled one.
+ * picked. Exactly those two values and no third: the recipe names a fill and a
+ * text colour, and every other badge in this app (`key-badge`, `count-pill`,
+ * `type-chip`) is drawn without a ring, so a bordered label chip would be the
+ * only one shouting in its family.
+ *
+ * A value the contract's own pattern rejects never reaches CSS: it falls back
+ * to the accent, so a malformed colour leaves a readable chip instead of an
+ * invisible or unstyled one.
  */
 export const labelChipStyle = (color: string) => {
   const value = isLabelColor(color) ? color : "var(--accent)";
   return {
     color: value,
     background: `color-mix(in oklab, ${value} 16%, transparent)`,
-    borderColor: `color-mix(in oklab, ${value} 32%, transparent)`,
   };
 };

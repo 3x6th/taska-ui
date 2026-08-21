@@ -317,6 +317,50 @@ time.
   planes and slightly strengthens the case for removing the gradient rather
   than working around it.
 
+### Left open by TAS-169 (from `art-director` and `release-reviewer`, 2026-08-21)
+
+- **A card silently drops its third row of labels, including the one the board
+  was filtered on.** The two-row cap works and §4.8 sanctions it — verified by
+  injecting nine chips, it clamps to 46px against a 98px scrollHeight and cuts
+  between rows without severing a chip. What it does not do is say more exist.
+  On an unfiltered board that is the right trade; with a label filter on, every
+  card matches that label and a heavily labelled card may not show the one it
+  was matched by, so the board looks like it filtered wrongly. Cheapest honest
+  fix with no new tokens: a trailing `+N` chip styled as §4.5's count pill.
+  Needs a measurement pass the card does not currently do, which is why it is
+  here and not in TAS-169.
+- **The 390px filter bar's horizontal overflow more than doubled.** Measured at
+  390x844: `scrollWidth` 741 against `clientWidth` 390. The two label controls
+  are ~201px of that, so the pre-existing ~150px is now well over twice as
+  much, and because the pair sits before the spacer, the label picker, the
+  manage button, Clear and the counter are all off-screen behind a scroll
+  strip on the first screenful. It does scroll and everything is reachable, so
+  it is not a defect — but below 820px the bar probably wants to wrap to two
+  rows rather than scroll, or the label picker wants to sit ahead of the
+  assignee row.
+- **Opening an issue panel can now drive a full re-read of the issue page.**
+  `IssueLinksSection`'s own observer on `["issues", projectId, "ALL"]` refetches
+  on mount when the entry is stale (`staleTime` 20_000), where before the panel
+  added no observer at all. Against the real gateway that is not one call:
+  `RestTaskaApi.listIssues` hydrates every item with a per-issue `getIssue` at
+  concurrency 6. Nothing required — if it shows as load, the smallest change is
+  `refetchOnMount: false` on that one observer, which consumes the cached page
+  without ever driving a fetch of it.
+- **No modal in the product handles `Esc`.** DESIGN.md §4.11 specifies `Esc`
+  as cancel for every modal, and `src/components/Modal.tsx` implements none —
+  closing is by the backdrop or the Close button only. Pre-existing and not
+  TAS-169's doing; noticed by `frontend-builder` while driving the new
+  manage-labels dialog, which is simply the newest modal to inherit the gap.
+  Belongs to no story yet.
+- **The board's transition mutation options are defined inline, so the
+  rollback key cannot be unit-tested.** TAS-169 fixed a real key-drift bug
+  there with no test: the mutation is reachable only through dnd-kit's
+  `onDragEnd`, and jsdom gives every element a zero-size rect so no drag
+  completes. Extracting the options into a pure factory taking
+  `(queryClient, issuesKey)` would let a test call `onMutate`, change the key,
+  call `onError` and assert which entry was restored — no dnd-kit involved. Do
+  it the next time that mutation is edited, not before.
+
 ### Found while fixing the TAS-169 review blocker (2026-08-21)
 
 - **Two call sites now produce the query key `["issues", projectId, "ALL"]`
