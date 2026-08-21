@@ -1145,10 +1145,13 @@ function IssueLabelsSection({
       }
       return { previous };
     },
-    onError: (_error, _labelId, context) => {
+    onError: (_error, labelId, context) => {
       if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+      // The rollback puts the label back in the picker, so put the choice back
+      // with it — unless something else has been chosen since, which is the
+      // one thing this must never overwrite.
+      setPicked((current) => (current === "" ? labelId : current));
     },
-    onSuccess: () => setPicked(""),
     onSettled: settle,
   });
 
@@ -1189,7 +1192,21 @@ function IssueLabelsSection({
           className="issue-label-form"
           onSubmit={(event) => {
             event.preventDefault();
-            if (picked) addLabel.mutate(picked);
+            if (!picked) return;
+            addLabel.mutate(picked);
+            // The picker resets here, in the submit handler, and nowhere later.
+            // It used to reset in the mutation's `onSuccess`, a round trip after
+            // the press — and by then the reset had nothing left to do, because
+            // the option just added leaves the picker the moment the optimistic
+            // list includes it and the browser drops the selection itself. All
+            // a late reset could still reach was a label chosen in the
+            // meantime, and it took it silently: choice gone, Add button dead
+            // because `picked` was empty again, nothing on screen saying why.
+            // `onMutate` is not late enough to be wrong but not early enough to
+            // be right either — react-query runs it a microtask after this — so
+            // the reset belongs in the same synchronous handler that read the
+            // value.
+            setPicked("");
           }}
         >
           <label className="issue-link-field issue-link-target">
@@ -1336,12 +1353,12 @@ function IssueLinksSection({
       ]);
       return { previousLinks };
     },
-    onError: (_error, _input, context) => {
+    onError: (_error, input, context) => {
       if (context?.previousLinks) {
         queryClient.setQueryData(linksKey, context.previousLinks);
       }
+      setTargetIssueId((current) => (current === "" ? input.targetIssueId : current));
     },
-    onSuccess: () => setTargetIssueId(""),
     onSettled: invalidateLinks,
   });
 
@@ -1402,6 +1419,11 @@ function IssueLinksSection({
               return;
             }
             createLink.mutate({ targetIssueId, linkType });
+            // Same reason as the label picker above: the reset happens with the
+            // press, never on the server's answer, because the optimistic row
+            // takes this target out of the picker immediately and anything the
+            // answer resets is a choice made after it.
+            setTargetIssueId("");
           }}
         >
           <div className="issue-link-field">

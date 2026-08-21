@@ -346,6 +346,39 @@ time.
   concurrency 6. Nothing required — if it shows as load, the smallest change is
   `refetchOnMount: false` on that one observer, which consumes the cached page
   without ever driving a fetch of it.
+- **The picker's `onError` restore is the one write to picker state that still
+  happens after the press, and nothing pins it.** TAS-169 moved both picker
+  resets into their submit handlers; the failure path still puts the choice
+  back from `onError`, guarded by `current === ""` so it can never overwrite a
+  newer one. Untested because the mock has no failure injection for
+  `addIssueLabel` — pinning it means adding one. Same gap on the links half of
+  the same fix, which has no in-flight test of its own.
+- **Chromium resolves a point hit test as a 1x1 rect, so at any shared edge the
+  lower of two boxes wins from ~0.95px before its own top edge.** Found while
+  measuring the label chips' remove controls (TAS-169), then reproduced on two
+  bare absolutely-positioned divs with no gap and no pseudo-elements — it is an
+  engine constant, not this component's doing, and it appears at DPR 1 and 3
+  and at integer and fractional layout origins alike. The only way to remove it
+  is a >=1px dead strip between hit boxes. Recorded because the next person to
+  measure a hit target will find the same 1px and think they have a bug. It is
+  also Chromium-only as measured: whether Safari and Firefox resolve a shared
+  edge the same way is unknown.
+- **`--danger` as bare text is 3.68:1 on light `--surface`, product-wide.**
+  `.form-error` is the same recipe on a 12% tint. Pre-existing, but a second
+  class (`.filter-error`, TAS-169) now uses it, so it is worth a row in the
+  §7 recorded-gap list rather than staying folded into one component.
+- **§2.4's spacing scale has no 24, and the panel's section rhythm is 24** in
+  four places (`.issue-labels`, `.issue-links`, `.comments`, `.activity`).
+  TAS-169 joining that family was right; the doc/code divergence predates it
+  and belongs to §2.4, not to a component.
+- **The board's assignee filter cannot distinguish loading from empty**, the
+  way the label picker now can after TAS-169. Same pattern, same fix.
+- **The create-label input's placeholder is `backend`**, which is also the
+  name of a seeded label — at a glance in dark it reads as a pre-filled value
+  rather than a hint.
+- **`.compact-button` is radius 8 where §2.5 gives buttons 9.** Repo-wide and
+  shared with the Links section's button, so the Labels "Add" matches its
+  sibling; fixing one without the other would be worse.
 - **No modal in the product handles `Esc`.** DESIGN.md §4.11 specifies `Esc`
   as cancel for every modal, and `src/components/Modal.tsx` implements none —
   closing is by the backdrop or the Close button only. Pre-existing and not

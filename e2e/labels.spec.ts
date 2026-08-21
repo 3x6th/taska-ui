@@ -200,3 +200,273 @@ test("a viewer reads the labels and is offered no way to change them", async ({ 
   await expect(labels.getByRole("button", { name: "Add", exact: true })).toHaveCount(0);
   await expect(labels.getByRole("button", { name: /^Remove label/ })).toHaveCount(0);
 });
+
+/**
+ * The remove control's hit area and the row gap are one coupled fact, and this
+ * test exists because that coupling was got wrong twice inside a single review
+ * cycle: first as a symmetric 25px box that never reached DESIGN.md §1's 28
+ * floor, then as a 28px box left in a 6px row gap, where two stacked controls
+ * overlapped by 2px and — no `z-index` anywhere — the later sibling took the
+ * shared band, so a tap aimed at one row detached the label on the row below.
+ * Destructive, unconfirmed, no undo. Both times the only thing that caught it
+ * was a hand-driven browser probe, and nothing in this suite would have
+ * noticed someone collapsing `column-gap`/`row-gap` back into one `gap`.
+ *
+ * The sentence whose absence caused both failures: a 28×28 target on a 20px
+ * chip has to grow 4px above and below it, two of those extensions share one
+ * row gap, so a row gap under 8 cannot satisfy §1 no matter what the inset
+ * says. The inset and the gap can only be read together, which is why this
+ * asserts the geometry they produce rather than either number.
+ *
+ * Driving five adds in a row is what turned up the picker reset this branch
+ * carried — a selection made while an add was in flight was thrown away
+ * silently. That is fixed, and pinned by the test below this one; the wait
+ * inside the loop here stays regardless, because the board card gaining the
+ * chip is the honest signal that the write landed, and the optimistic chip in
+ * the panel is not.
+ *
+ * Tolerance. Chromium resolves a point hit test as a 1×1px rect, so at any
+ * shared edge the lower box starts winning ~0.95px before its own top — on two
+ * bare divs with no gap and no pseudo-elements too. That is an engine constant
+ * the whole product carries, not this rule's business, so the sweep below
+ * ignores the last pixel of each box. A test that goes red on a browser
+ * constant is worse than no test.
+ */
+const ENGINE_POINT_BAND = 1;
+const FLOAT_SLACK = 0.01;
+const MIN_TARGET = 28;
+
+test("a wrapped label row keeps every remove control clear of the rows around it", async ({ page }) => {
+  await openBoard(page);
+
+  // TAS-101 seeds two labels on one row, so the wrapped case does not exist
+  // until it is built. Three more on top of the four the project seeds is seven
+  // chips, which is the fewest that wraps on every viewport this suite runs,
+  // the widest included — and the panel is the only place a chip carries a
+  // remove control at all, so this is the only place the geometry can be read.
+  await page.getByRole("button", { name: "Manage labels" }).click();
+  const modal = page.getByRole("dialog", { name: "Labels" });
+  const guards = ["wrap-guard-a", "wrap-guard-b", "wrap-guard-c"];
+  for (const guard of guards) {
+    await modal.getByLabel("New label").fill(guard);
+    await modal.getByRole("button", { name: "Add label" }).click();
+    // The optimistic row carries a placeholder id; an enabled edit control is
+    // what says the server answered and the next name may be typed.
+    await expect(modal.getByRole("button", { name: `Edit ${guard}` })).toBeEnabled();
+    await expect(modal.getByLabel("New label")).toHaveValue("");
+  }
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+
+  const card = page.locator(".issue-card", { hasText: "TAS-101" });
+  await card.click();
+  const labels = page.locator(".issue-labels");
+  await expect(labels).toBeVisible();
+  for (const name of ["frontend", "needs-design", ...guards]) {
+    await labels.locator("select").selectOption({ label: name });
+    await labels.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(labels.getByRole("button", { name: `Remove label ${name}` })).toBeVisible();
+    // The panel's chip is optimistic and says nothing about the write landing.
+    // The card behind the panel gains it only once the add settled and the
+    // board re-read, which is what this waits for: measuring geometry against
+    // chips the server has not confirmed would be measuring a guess.
+    await expect(card.locator(".label-chip", { hasText: name })).toBeAttached();
+  }
+  await expect(labels.getByRole("button", { name: /^Remove label/ })).toHaveCount(7);
+
+  const probe = await page.evaluate(
+    ({ band }) => {
+      const row = document.querySelector(".label-chip-row");
+      if (!row) return null;
+
+      // The clickable box is the `::after` extension rather than the drawn
+      // button, so it is read from the pseudo-element's own computed insets —
+      // this test must not carry a second copy of the numbers it is checking.
+      const controls = [...row.querySelectorAll(".label-chip-remove")].map((button) => {
+        const box = button.getBoundingClientRect();
+        const after = getComputedStyle(button, "::after");
+        const chip = button.closest(".label-chip");
+        return {
+          name: chip?.querySelector(".label-chip-name")?.textContent ?? "?",
+          hit: {
+            top: box.top + parseFloat(after.top),
+            bottom: box.bottom - parseFloat(after.bottom),
+            left: box.left + parseFloat(after.left),
+            right: box.right - parseFloat(after.right),
+          },
+        };
+      });
+
+      const byTop = new Map<number, typeof controls>();
+      for (const control of controls) {
+        const key = Math.round(control.hit.top);
+        const bucket = byTop.get(key);
+        if (bucket) bucket.push(control);
+        else byTop.set(key, [control]);
+      }
+      const rows = [...byTop.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, items]) => items.sort((a, b) => a.hit.left - b.hit.left));
+
+      const rowIndexAt = (y: number) => rows.findIndex((items) => y >= items[0].hit.top && y < items[0].hit.bottom);
+
+      const boundaries = rows.slice(0, -1).map((items, index) => ({
+        rows: `${index + 1}|${index + 2}`,
+        overlap: items[0].hit.bottom - rows[index + 1][0].hit.top,
+      }));
+
+      const exclusive = rows.map((items, index) => {
+        const above = index > 0 ? rows[index - 1][0].hit.bottom : -Infinity;
+        const below = index < rows.length - 1 ? rows[index + 1][0].hit.top : Infinity;
+        return {
+          row: index + 1,
+          height: Math.min(items[0].hit.bottom, below) - Math.max(items[0].hit.top, above),
+        };
+      });
+
+      // Walk the band around each boundary across the whole width of the row,
+      // and record every point that sits inside one row's control but answers
+      // with a control belonging to another row. A point answering with no
+      // control at all is the space between two chips, and is not a wrong
+      // target — only a control stealing another row's area is.
+      const bounds = row.getBoundingClientRect();
+      const sweeps = rows.slice(0, -1).map((upper, index) => {
+        const lower = rows[index + 1];
+        const wrong: { x: number; y: number; expected: string; got: string }[] = [];
+        let probed = 0;
+        for (let x = bounds.left + 1; x < bounds.right; x += 3) {
+          for (let y = upper[0].hit.bottom - 5; y <= lower[0].hit.top + 5; y += 0.25) {
+            const owner = rowIndexAt(y);
+            if (owner < 0) continue;
+            // The last pixel of a box belongs to the engine, not to this rule.
+            if (y >= rows[owner][0].hit.bottom - band) continue;
+            const chip = document.elementFromPoint(x, y)?.closest(".label-chip-remove")?.closest(".label-chip");
+            if (!chip) continue;
+            probed += 1;
+            const got = rowIndexAt(chip.getBoundingClientRect().top + 4);
+            if (got !== owner && wrong.length < 5) {
+              wrong.push({
+                x: +x.toFixed(2),
+                y: +y.toFixed(2),
+                expected: `row ${owner + 1}`,
+                got: `row ${got + 1} "${chip.querySelector(".label-chip-name")?.textContent ?? "?"}"`,
+              });
+            }
+          }
+        }
+        return { rows: `${index + 1}|${index + 2}`, probed, wrong };
+      });
+
+      return {
+        rowCount: rows.length,
+        sizes: controls.map((c) => ({
+          name: c.name,
+          width: +(c.hit.right - c.hit.left).toFixed(2),
+          height: +(c.hit.bottom - c.hit.top).toFixed(2),
+        })),
+        boundaries,
+        exclusive,
+        sweeps,
+      };
+    },
+    { band: ENGINE_POINT_BAND },
+  );
+
+  expect(probe, "the panel rendered no label chip row to measure").not.toBeNull();
+  if (!probe) return;
+
+  // Without a wrap there is nothing here to prove, so a layout change that
+  // stopped wrapping must fail loudly rather than pass an empty test.
+  expect(probe.rowCount, "the chip row did not wrap, so nothing was measured").toBeGreaterThan(1);
+
+  for (const size of probe.sizes) {
+    expect(size.width, `remove control for "${size.name}" is narrower than §1's floor`).toBeGreaterThanOrEqual(
+      MIN_TARGET - FLOAT_SLACK,
+    );
+    expect(size.height, `remove control for "${size.name}" is shorter than §1's floor`).toBeGreaterThanOrEqual(
+      MIN_TARGET - FLOAT_SLACK,
+    );
+  }
+
+  // The regression itself: two stacked controls sharing any area at all means
+  // one row's tap detaches the other row's label.
+  for (const boundary of probe.boundaries) {
+    expect(
+      boundary.overlap,
+      `remove controls on rows ${boundary.rows} overlap by ${boundary.overlap.toFixed(2)}px`,
+    ).toBeLessThanOrEqual(FLOAT_SLACK);
+  }
+
+  // And the floor survives the wrap: a middle row measured 24px at the row gap
+  // this replaced, which is below both §1's 28 and the 25 that preceded it.
+  for (const row of probe.exclusive) {
+    expect(
+      row.height,
+      `row ${row.row} keeps only ${row.height.toFixed(2)}px of height no other row's control claims`,
+    ).toBeGreaterThanOrEqual(MIN_TARGET - FLOAT_SLACK);
+  }
+
+  expect(probe.sweeps.length, "the row did not wrap, so no boundary was walked").toBeGreaterThan(0);
+  for (const sweep of probe.sweeps) {
+    expect(sweep.probed, `no control was under the probe around rows ${sweep.rows}`).toBeGreaterThan(0);
+    expect(
+      sweep.wrong,
+      `around rows ${sweep.rows}, points inside one row's control answered with another row's`,
+    ).toEqual([]);
+  }
+});
+
+/**
+ * A label chosen while the previous add is still in flight used to be thrown
+ * away without a word. `addLabel` reset the picker in `onSuccess`, a round trip
+ * after the user pressed Add — and by then the reset had nothing left to do,
+ * because the option for the label just added leaves the picker the moment the
+ * optimistic list includes it and the browser drops the selection itself. All
+ * the late reset could still hit was a choice made in the meantime. The symptom
+ * was the worst kind: the selection vanished, the Add button went dead because
+ * `picked` was empty again, and nothing on screen said why — a failure
+ * indistinguishable from nothing happening. Against the mock the window is the
+ * seeded 140ms; against the gateway it is a full round trip.
+ *
+ * Both halves of the window are driven from one task below, so the add cannot
+ * settle between pressing Add and choosing again. That is the point being
+ * pinned — the interleaving, not the way the events are produced — and leaving
+ * it to two round-trips of Playwright timing would make this a test of how fast
+ * the machine is.
+ *
+ * `IssueLinksSection` carried the identical shape with its own picker and is
+ * fixed in the same commit; this pins the labels half, which is the one this
+ * story owns.
+ */
+test("keeps a label chosen while the previous add is still in flight", async ({ page }) => {
+  const labels = await openIssuePanel(page, "TAS-104");
+  const picker = labels.locator("select");
+  const addButton = labels.getByRole("button", { name: "Add", exact: true });
+
+  const second = await picker.locator("option", { hasText: "frontend" }).getAttribute("value");
+  expect(second).toBeTruthy();
+
+  await picker.selectOption({ label: "backend" });
+  await page.evaluate((next) => {
+    const add = [...document.querySelectorAll<HTMLButtonElement>(".issue-labels button")].find(
+      (button) => button.textContent?.trim() === "Add",
+    );
+    const select = document.querySelector<HTMLSelectElement>(".issue-labels select");
+    add?.click();
+    if (select) {
+      select.value = next;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }, second ?? "");
+
+  // Let the first add land: the card behind the panel gains its chip only once
+  // the write settled and the board re-read, so this is past the window.
+  const card = page.locator(".issue-card", { hasText: "TAS-104" });
+  await expect(card.locator(".label-chip", { hasText: "backend" })).toBeAttached();
+
+  // The second choice is still there, and still submittable.
+  await expect(picker).toHaveValue(second ?? "");
+  await expect(addButton).toBeEnabled();
+  await addButton.click();
+  await expect(labels.getByRole("button", { name: "Remove label frontend" })).toBeVisible();
+  await expect(card.locator(".label-chip", { hasText: "frontend" })).toBeAttached();
+});

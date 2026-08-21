@@ -3353,8 +3353,15 @@ button.issue-link-open:hover {
    destructive target, where a user pointing at the *name* detaches the label
    instead. Short names are not exotic, so the tighter side faces them.
 
-   Vertically it keeps 6.5 both ways: it grows 4px into the 6px row gap, which
-   is measured to reach neither the row above nor the row below. */
+   Vertically it keeps 6.5 both ways, which puts 4px of the box outside the
+   chip above and below. The binding neighbour on this axis is not the chip on
+   the next row but that chip's *own* extension: two of these boxes share one
+   row gap and each reaches 4px into it, so the gap has to be at least twice
+   the reach. Below that they overlap, and with no `z-index` the later sibling
+   takes the shared band — a tap aimed at one row detaching the label on the
+   row under it, which is the same wrong-target hazard the horizontal clawback
+   above exists to prevent. That is why `.label-chip-row` splits its gap and
+   gives the vertical axis 8px. */
 .label-chip-remove::after {
   content: "";
   position: absolute;
@@ -3376,10 +3383,19 @@ button.issue-link-open:hover {
   outline-offset: 1px;
 }
 
+/* One gap per axis, because the two axes answer to different neighbours. Across
+   it stays 6: `.label-chip-remove::after` was measured against exactly that
+   number, and its outward 8.5 lands 0.5px short of the next chip, so widening
+   or narrowing this would invalidate that measurement. Down it is 8 — twice the
+   4px each remove extension reaches into the row gap — so when the row wraps,
+   two stacked remove controls meet on a shared boundary instead of overlapping,
+   and each keeps a full exclusive 28×28 (§1). 8 is the top of §2.4's 5–8 range
+   for inline groups, so this is a value the scale already carries. */
 .label-chip-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  column-gap: 6px;
+  row-gap: 8px;
 }
 
 /* Two rows of chips at most. §4.8 ends the card with the created date and the
