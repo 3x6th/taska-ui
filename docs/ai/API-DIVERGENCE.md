@@ -414,6 +414,34 @@ Same rule as above: "Closed by" is settled, the rest is live.
   [TAS-141](https://jira.ozero.dev/browse/TAS-141) adds the field to the
   contract.
 
+### Neither a project nor a user carries a colour, and the UI draws one anyway
+
+- **Missing:** a colour on the project and on the current user.
+  `ProjectResponseDto` is `{id, projectKey, name, createdBy, createdAt,
+  updatedAt, archivedAt}` and `ValidateAccessTokenResponseDto` is `{id, login,
+  email, displayName, status, globalRole}`. In `docs/contract/openapi.yml`,
+  `color` exists on a label and nowhere else.
+- **What it looked like before TAS-171.** `Project.color` and `User.color` were
+  read as optional fields (`src/domain/types.ts`) and the mock seeds both, so
+  mock mode was colourful and the gateway was not: every project key badge and
+  every avatar fell back to `var(--accent)`, which is the same colour for
+  everyone. Two members in a stack were indistinguishable, and so were ten
+  projects in a list. DESIGN.md §2.2 had promised "детерминированно по userId"
+  the whole time; nothing computed it.
+- **Compensation:** the colour is computed on the client — deterministically
+  from `projectKey` for the key badge and from `userId` for the avatar
+  (`src/lib/format.ts`, DESIGN.md §2.2). A colour the server *does* send still
+  wins, so the mock's seeded values are unchanged and a future stored colour
+  needs no client change to take effect.
+- **Removal:** partial, and only for the project half.
+  [TAS-145](https://jira.ozero.dev/browse/TAS-145) adds a nullable `color` to
+  the project and [TAS-148](https://jira.ozero.dev/browse/TAS-148) lets an
+  ADMIN choose it; the computed value stays as the default for a project whose
+  colour nobody picked, so it is a default rather than a workaround. The
+  avatar half is deliberately permanent: the coloured circle is the fallback
+  *under* an uploaded avatar ([TAS-129](https://jira.ozero.dev/browse/TAS-129)),
+  not a gap waiting for a contract field.
+
 ### Closed by TAS-154: "not yours" is a 403, and the gateway tells it apart from "not there"
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}`

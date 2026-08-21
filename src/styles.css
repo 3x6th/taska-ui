@@ -732,6 +732,11 @@ h1 {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
+  /* Kept, not neutralised, even though `Avatar` now sets an inline fill for
+     every user it is given (TAS-171): the two person-less states own their own
+     backgrounds below, so this only ever paints a circle something rendered
+     without going through the component — and it is the one value that stays
+     legible under the white initials on the next line. */
   background: var(--accent);
   color: #fff;
   font-weight: 650;

@@ -49,6 +49,7 @@ import {
   isLabelColor,
   issueLinkTypeLabel,
   issueLinkTypes,
+  keyBadgeStyle,
   labelColorChoices,
   priorityMeta,
   relativeTime,
@@ -361,13 +362,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           <ChevronLeft size={17} />
         </button>
         {project ? (
-          <span
-            className="key-badge"
-            style={{
-              color: project.color ?? "var(--accent)",
-              background: `color-mix(in oklab, ${project.color ?? "var(--accent)"} 16%, transparent)`,
-            }}
-          >
+          <span className="key-badge" style={keyBadgeStyle(project.projectKey, project.color)}>
             {project.projectKey}
           </span>
         ) : null}
@@ -432,7 +427,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               onClick={() => setAssigneeFilter(member.userId)}
               type="button"
             >
-              <Avatar user={member.user ? { displayName: member.user.displayName, color: member.user.color } : null} size="sm" />
+              <Avatar
+                user={member.user ? { id: member.userId, displayName: member.user.displayName, color: member.user.color } : null}
+                size="sm"
+              />
             </button>
           ))}
         </div>
@@ -622,6 +620,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <ProjectLabelsModal
           projectId={projectId}
           projectKey={project?.projectKey ?? ""}
+          projectColor={project?.color}
           onClose={() => setManagingLabels(false)}
           // A filter pointing at a label that no longer exists would ask the
           // gateway for the issues of a deleted label and get an empty board
@@ -633,6 +632,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       {creating ? (
         <CreateIssueModal
           projectKey={project?.projectKey ?? ""}
+          projectColor={project?.color}
           onClose={() => setCreating(false)}
           onCreated={(issue) => {
             setCreating(false);
@@ -679,7 +679,7 @@ function BoardColumn({
   issues: Issue[];
   /** The issue list never arrived: this column knows nothing about its contents. */
   issuesUnknown: boolean;
-  userById: Map<string, Pick<User, "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
   canEdit: boolean;
   onAdd: () => void;
   onOpenIssue: (issueId: string) => void;
@@ -730,7 +730,7 @@ function IssueCard({
   onOpen,
 }: {
   issue: Issue;
-  user?: Pick<User, "displayName" | "color"> | null;
+  user?: Pick<User, "id" | "displayName" | "color"> | null;
   canEdit: boolean;
   onOpen: (issueId: string) => void;
 }) {
@@ -757,7 +757,7 @@ function IssueCard({
   );
 }
 
-function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "displayName" | "color"> | null }) {
+function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "id" | "displayName" | "color"> | null }) {
   return (
     <>
       <span className="issue-card-meta">
@@ -859,7 +859,7 @@ function IssuePanel({
   projectId: string;
   issueId: string;
   members: ProjectMember[];
-  userById: Map<string, Pick<User, "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
   canEdit: boolean;
   currentUserId?: string;
   workflows?: WorkflowsByIssueType;
@@ -997,7 +997,7 @@ function IssuePanel({
                   key={member.userId}
                   label={member.user?.displayName.split(" ")[0] ?? "User"}
                   onClick={() => assignIssue.mutate(member.userId)}
-                  user={member.user ? { displayName: member.user.displayName, color: member.user.color } : null}
+                  user={member.user ? { id: member.userId, displayName: member.user.displayName, color: member.user.color } : null}
                 />
               ))}
             </div>
@@ -1555,7 +1555,7 @@ function CommentsSection({
   issueId: string;
   canComment: boolean;
   currentUserId?: string;
-  userById: Map<string, Pick<User, "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
 }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -1681,7 +1681,7 @@ function CommentItem({
   onDelete,
 }: {
   comment: IssueComment;
-  author?: Pick<User, "displayName" | "color">;
+  author?: Pick<User, "id" | "displayName" | "color">;
   canManage: boolean;
   editing: boolean;
   pending: boolean;
@@ -1748,7 +1748,7 @@ function AssigneeChip({
   disabled,
   onClick,
 }: {
-  user: Pick<User, "displayName" | "color"> | null;
+  user: Pick<User, "id" | "displayName" | "color"> | null;
   label: string;
   active: boolean;
   disabled: boolean;
@@ -1769,8 +1769,8 @@ function ActivityItem({
   isLast,
 }: {
   event: IssueHistoryEvent;
-  user?: Pick<User, "displayName" | "color">;
-  userById: Map<string, Pick<User, "displayName" | "color">>;
+  user?: Pick<User, "id" | "displayName" | "color">;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
   isLast: boolean;
 }) {
   return (
@@ -1821,11 +1821,20 @@ const isPendingLabel = (label: { id: string }) => label.id === optimisticLabelId
 function ProjectLabelsModal({
   projectId,
   projectKey,
+  projectColor,
   onClose,
   onLabelDeleted,
 }: {
   projectId: string;
   projectKey: string;
+  /**
+   * Only so the eyebrow badge matches the one in the topbar behind this modal.
+   * Passed rather than recomputed from the key: a colour the server stated wins
+   * over the computed one (`keyBadgeStyle`), and a modal that skipped the
+   * argument would agree with the board only until the first project that has
+   * one — TAS-148.
+   */
+  projectColor?: string;
   onClose: () => void;
   onLabelDeleted: (labelId: string) => void;
 }) {
@@ -1933,7 +1942,15 @@ function ProjectLabelsModal({
   const trimmed = name.trim();
 
   return (
-    <Modal title="Labels" eyebrow={<span className="key-badge">{projectKey}</span>} onClose={onClose}>
+    <Modal
+      title="Labels"
+      eyebrow={
+        <span className="key-badge" style={keyBadgeStyle(projectKey, projectColor)}>
+          {projectKey}
+        </span>
+      }
+      onClose={onClose}
+    >
       <form
         className="label-create-form"
         onSubmit={(event) => {
@@ -2090,11 +2107,14 @@ function LabelSwatches({ onPick, selected }: { onPick: (color: string) => void; 
 function CreateIssueModal({
   projectId,
   projectKey,
+  projectColor,
   onClose,
   onCreated,
 }: {
   projectId: string;
   projectKey: string;
+  /** Same reason as `ProjectLabelsModal`: one key, one colour, on every surface. */
+  projectColor?: string;
   onClose: () => void;
   onCreated: (issue: Issue) => void;
 }) {
@@ -2113,7 +2133,15 @@ function CreateIssueModal({
   });
 
   return (
-    <Modal title="New issue" eyebrow={<span className="key-badge">{projectKey}</span>} onClose={onClose}>
+    <Modal
+      title="New issue"
+      eyebrow={
+        <span className="key-badge" style={keyBadgeStyle(projectKey, projectColor)}>
+          {projectKey}
+        </span>
+      }
+      onClose={onClose}
+    >
       <form
         className="form-stack"
         onSubmit={(event) => {
@@ -2172,6 +2200,9 @@ function toUserMap(members: ProjectMember[]) {
       .map((member) => [
         member.userId,
         {
+          // The membership row carries the id, the nested summary does not —
+          // and the id is what an avatar's colour is computed from.
+          id: member.userId,
           displayName: member.user!.displayName,
           color: member.user!.color,
         },
@@ -2179,7 +2210,7 @@ function toUserMap(members: ProjectMember[]) {
   );
 }
 
-function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, "displayName" | "color">>) {
+function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, "id" | "displayName" | "color">>) {
   if (event.eventType === "CREATED") return "created this issue";
   if (event.eventType === "TRANSITIONED") {
     const fromStatus = event.payload.from ?? event.payload.fromStatus;

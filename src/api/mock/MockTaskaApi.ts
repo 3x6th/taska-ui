@@ -671,7 +671,7 @@ export class MockTaskaStore {
     if (!key || this.projects.some((project) => project.projectKey === key)) {
       throw new MockApiError("ALREADY_EXISTS", "Project key already exists");
     }
-    const project = this.project(makeId("project"), key, input.name.trim(), input.description || "Project workspace", "#7c3aed", [
+    const project = this.project(makeId("project"), key, input.name.trim(), input.description || "Project workspace", undefined, [
       this.currentUserId,
     ]);
     this.projects.unshift(project);
@@ -1398,7 +1398,14 @@ export class MockTaskaStore {
     projectKey: string,
     name: string,
     description: string,
-    color: string,
+    /**
+     * Optional because the gateway has no such field: `color` is a label
+     * property in the contract, and nothing else. The seeded projects state one
+     * so the mock keeps showing the palette DESIGN.md §2.2 chose; anything
+     * created at runtime states none and is coloured from its key, which is the
+     * path the live gateway takes for every project.
+     */
+    color: string | undefined,
     memberIds: string[],
   ): Project {
     return {

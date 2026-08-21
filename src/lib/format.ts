@@ -136,3 +136,62 @@ export const labelChipStyle = (color: string) => {
     background: `color-mix(in oklab, ${value} 16%, transparent)`,
   };
 };
+
+/**
+ * DESIGN.md §2.2's avatar palette. A list of hexes rather than tokens for the
+ * same reason `labelColorChoices` is one: the values are not theme-dependent,
+ * and a component may not hold a hex (AGENTS.md), so the one place they are
+ * allowed to live is here.
+ */
+export const avatarColorChoices = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ec4899"];
+
+/**
+ * FNV-1a over the string's code units. A named algorithm rather than a sum of
+ * characters because the requirement is stability, not distribution: the same
+ * id has to land on the same colour across reloads, rebuilds, and the mock/rest
+ * split, so nothing here may depend on insertion order, list position, or
+ * `Math.random`. `Math.imul` keeps the 32-bit multiply from losing precision
+ * once the accumulator passes 2^53.
+ */
+const hash32 = (value: string) => {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+};
+
+const fromPalette = (palette: string[], seed: string) => palette[hash32(seed) % palette.length];
+
+/**
+ * The colour an avatar is filled with. Seeded by **user id**, never by the name
+ * or the initials: a display name can be edited, and a colour that moved when
+ * someone fixed their surname would be noise rather than identity — while two
+ * people who share initials have to differ somehow, which is the entire reason
+ * the fill is coloured at all.
+ *
+ * A colour the server stated still wins, when there is one and the contract's
+ * own pattern accepts it. The gateway has no `color` on a user (it is a label
+ * field only), so in practice this computes; the mock states colours, and its
+ * seeded people keep the ones DESIGN.md picked for them.
+ */
+export const avatarColor = (userId: string, color?: string) =>
+  color && isLabelColor(color) ? color : fromPalette(avatarColorChoices, userId);
+
+/**
+ * DESIGN.md §4.5's project-key badge — the same tint-and-text recipe as
+ * `labelChipStyle`, given a colour the build computes rather than one the
+ * server sent.
+ *
+ * Seeded by **project key**, which is the one identifier the contract promises
+ * cannot move: it is embedded in every `issueKey` (TAS-145), so a renamed
+ * project keeps its colour, and the badge and the keys on its cards agree.
+ */
+export const keyBadgeStyle = (projectKey: string, color?: string) => {
+  const value = color && isLabelColor(color) ? color : fromPalette(labelColorChoices, projectKey);
+  return {
+    color: value,
+    background: `color-mix(in oklab, ${value} 16%, transparent)`,
+  };
+};
