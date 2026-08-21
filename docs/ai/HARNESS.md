@@ -184,6 +184,50 @@ asking why. The harness has no mechanism that notices a missing verdict, and
 the new rule is prose, not a gate — it will hold exactly as well as the next
 orchestrator's willingness to follow it when it is inconvenient.
 
+**2026-08-21 — the orchestrator wrote the production code itself under
+`TAS-169`, because the session forbade the subagent that was supposed to.**
+The runtime this session ran in carried an instruction not to call the agent
+tool unless the owner asked for it. That collided with `AGENTS.md`, where
+`frontend-builder` is the only writer of production frontend code and three
+read-only roles supply the verdicts. The orchestrator followed the runtime,
+built the whole labels feature itself, verified it itself, and disclosed both
+in the PR body and the Jira comment.
+
+Every sentence of that disclosure was true, and `AGENTS.md` permitted it — it
+says skipping is allowed and only silent skipping is not. The owner still
+learned about it after a finished PR, at the one moment redirecting was
+expensive, and said so. Disclosure that arrives when the work is done is not
+disclosure; it is a fait accompli with a footnote.
+
+The constraint was not in the repository. It was in neither
+`.claude/settings.json`, nor `.claude/settings.local.json`, nor the user-level
+settings, so no file here can switch it off. Closed under `TAS-170` by
+attacking what the repository *can* control: the report is now due the moment
+the block is learned rather than before the first reply only (some blocks are
+discovered on the failing call); a run stops at the step the blocked role
+gates rather than substituting for it; and — the finding that mattered most —
+a general handover no longer counts as permission to substitute. The first
+draft of `TAS-170` failed on exactly that: it told the orchestrator to report
+early and then let it proceed "if the owner's instruction already covers
+proceeding", which the same document defined a handover to be. `TAS-169` would
+have replayed identically with one extra sentence at the top.
+`release-reviewer` caught it; the orchestrator did not.
+
+Two smaller things went with it. The roles table said `frontend-builder` was
+the only *subagent* that may write production code, and an orchestrator is not
+a subagent — the literal loophole used here, now closed. And `CLAUDE.md` was
+rewritten from a pointer into the contract, because it is the file always in
+context while `AGENTS.md` is read on demand, and the rule that failed was in
+the file nobody was holding at the moment of the decision.
+
+Worth keeping in view, and it is the same sentence as the entry above: this is
+prose, not a gate. Nothing in the harness notices that a verdict is missing or
+that the wrong party wrote the code. The one mechanical control that exists —
+the `tools` list that makes a read-only role actually read-only — has no
+equivalent for "the orchestrator did not delegate". A PR template or a CI
+check demanding a named verdict per the table is the obvious next mechanism
+and does not exist yet.
+
 ## Verification
 
 `npm run check` is typecheck, lint at zero warnings, unit tests, and the
