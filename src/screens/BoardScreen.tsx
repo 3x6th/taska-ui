@@ -247,10 +247,18 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     mutationFn: ({ movedIssueId, transitionId }: { movedIssueId: string; nextStatus: IssueStatus; transitionId: string }) =>
       taskaApi.transitionIssue(projectId, movedIssueId, transitionId),
     onMutate: async ({ nextStatus, movedIssueId }) => {
-      await queryClient.cancelQueries({ queryKey: issuesKey });
-      const previousIssues = queryClient.getQueryData<Page<Issue>>(issuesKey);
+      // Captured, not read again in `onError`. Since TAS-169 `issuesKey`
+      // carries the label filter, and react-query hands a pending mutation the
+      // options object of the *latest* render — so a filter changed mid-flight
+      // would roll back under a key this snapshot never came from: the new
+      // filter's page overwritten with cards that need not carry its label,
+      // and the old page left holding the optimistic move. `staleTime` is
+      // 20_000 (src/main.tsx), so neither corrects itself promptly.
+      const key = issuesKey;
+      await queryClient.cancelQueries({ queryKey: key });
+      const previousIssues = queryClient.getQueryData<Page<Issue>>(key);
 
-      queryClient.setQueryData<Page<Issue>>(issuesKey, (current) => {
+      queryClient.setQueryData<Page<Issue>>(key, (current) => {
         if (!current) return current;
         return {
           ...current,
@@ -267,11 +275,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         };
       });
 
-      return { previousIssues };
+      return { previousIssues, key };
     },
     onError: (_error, _variables, context) => {
       if (context?.previousIssues) {
-        queryClient.setQueryData(issuesKey, context.previousIssues);
+        queryClient.setQueryData(context.key, context.previousIssues);
       }
     },
     onSuccess: async (_, variables) => {
@@ -585,7 +593,6 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           key={issueId}
           issueId={issueId}
           projectId={projectId}
-          issues={issues}
           members={members}
           userById={userById}
           canEdit={canEdit}
@@ -826,7 +833,6 @@ function NotificationsPopover({
 function IssuePanel({
   projectId,
   issueId,
-  issues,
   members,
   userById,
   canEdit,
@@ -837,9 +843,6 @@ function IssuePanel({
 }: {
   projectId: string;
   issueId: string;
-  /** The board's `["issues", projectId]` page — the links section resolves its
-   *  targets from it rather than fetching each linked issue again. */
-  issues: Issue[];
   members: ProjectMember[];
   userById: Map<string, Pick<User, "displayName" | "color">>;
   canEdit: boolean;
@@ -1027,7 +1030,7 @@ function IssuePanel({
 
           <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
-          <IssueLinksSection projectId={projectId} issueId={issueId} issues={issues} canEdit={canEdit} />
+          <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
           <CommentsSection
             projectId={projectId}
@@ -1238,12 +1241,10 @@ const optimisticLinkId = "tk-optimistic-link";
 function IssueLinksSection({
   projectId,
   issueId,
-  issues,
   canEdit,
 }: {
   projectId: string;
   issueId: string;
-  issues: Issue[];
   canEdit: boolean;
 }) {
   const navigate = useNavigate();
@@ -1253,6 +1254,22 @@ function IssueLinksSection({
   const [targetIssueId, setTargetIssueId] = useState("");
   // Refused before the request goes out; the server stays the authority.
   const [localError, setLocalError] = useState<string | null>(null);
+
+  // Its own read of the project, deliberately not the board's page behind the
+  // panel. Since TAS-169 the board's key carries its label filter and the
+  // server applies it, so borrowing that page would let a filter decide which
+  // issues may be linked to and turn every existing link pointing outside it
+  // into a bare id. `"ALL"` is the *same cache entry* the board already holds
+  // whenever no filter is set, so this costs nothing in the common case and
+  // one extra read only while a filter is on and a panel is open. The page is
+  // still a page: an issue beyond `pageSize` resolves to its id (see the row
+  // below), which is the honest answer on a project this large.
+  const projectIssuesQuery = useQuery({
+    queryKey: ["issues", projectId, "ALL"],
+    queryFn: () => taskaApi.listIssues(projectId, { pageSize: 100 }),
+    retry: retryUnlessMissing,
+  });
+  const issues = useMemo(() => projectIssuesQuery.data?.items ?? [], [projectIssuesQuery.data]);
 
   const linksKey = ["issue-links", projectId, issueId];
   const linksQuery = useQuery({
@@ -1328,7 +1345,14 @@ function IssueLinksSection({
     [links, issueId],
   );
   const linkable = issues.filter((item) => item.id !== issueId && !linkedIssueIds.has(item.id));
-  const error = localError ?? (linksQuery.error ?? createLink.error ?? deleteLink.error)?.message;
+  // `projectIssuesQuery` is in here because its failure is otherwise silent:
+  // with a filter on it is a different query from the board's, so the board's
+  // own notice does not cover it, and the only trace left would be a picker
+  // offering nothing and rows showing ids — which is what "this issue has no
+  // links worth naming" looks like.
+  const error =
+    localError ??
+    (linksQuery.error ?? projectIssuesQuery.error ?? createLink.error ?? deleteLink.error)?.message;
 
   return (
     <section className="issue-links">

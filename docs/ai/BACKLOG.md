@@ -317,6 +317,23 @@ time.
   planes and slightly strengthens the case for removing the gradient rather
   than working around it.
 
+### Found while fixing the TAS-169 review blocker (2026-08-21)
+
+- **Two call sites now produce the query key `["issues", projectId, "ALL"]`
+  with `queryFn` bodies that differ cosmetically.** The board passes
+  `labelId: undefined` explicitly; `IssueLinksSection` omits the key entirely.
+  Identical across mock, rest and hybrid today, and deliberately the same cache
+  entry so an unfiltered board costs the panel nothing. The hazard is later:
+  add a parameter to the board's `listIssues` call without adding it here and
+  the two observers disagree, silently, about what one cache entry holds. A
+  shared options helper would remove the class. Not filed — it is a latent
+  coupling with no user-visible symptom yet, and it disappears if either call
+  site stops needing the page.
+- **The links section still resolves link targets from a page**
+  (`pageSize: 100`), so on a project past a hundred issues a link row still
+  falls back to its raw id. Unchanged by TAS-169 and correct as documented —
+  worth a story only when a project that large exists.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each

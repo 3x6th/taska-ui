@@ -105,6 +105,46 @@ test("filters the board down to one label and back", async ({ page }) => {
   await expect(counter).toHaveText(before ?? "");
 });
 
+test("keeps an issue's links whole while the board is filtered by label", async ({ page }) => {
+  // The regression this pins: the board's issue page is keyed by the label
+  // filter and read from the server, so a panel that borrowed that page let a
+  // board filter decide which issues could be linked to, and turned every link
+  // pointing outside the filter into a bare id. The links section reads the
+  // project unfiltered instead.
+  await openBoard(page);
+
+  const filter = page.locator(".filter-select select");
+  await filter.selectOption({ label: "backend" });
+  // Two issues carry it, so the page behind the panel holds two of the ten.
+  await expect(page.locator(".issue-card")).toHaveCount(2);
+
+  await page.locator(".issue-card", { hasText: "TAS-101" }).click();
+  await expect(page.getByRole("complementary", { name: "TAS-101 issue" })).toBeVisible();
+
+  const links = page.locator(".issue-links");
+  // Neither seeded target carries "backend" — TAS-102 carries "frontend",
+  // TAS-110 carries "tech-debt" — and both still read as issues.
+  await expect(links.getByRole("button", { name: /Blocks TAS-102/ })).toBeVisible();
+  await expect(links.getByRole("button", { name: /Is duplicated by TAS-110/ })).toBeVisible();
+  // The unresolved form is a real state (an issue beyond the page), so the
+  // rows above are not enough on their own: nothing here may be in it.
+  await expect(links.locator(".issue-key.is-unresolved")).toHaveCount(0);
+
+  // And what may be linked to is still the project, not the filter.
+  const picker = links.locator("select");
+  await expect(picker.locator("option", { hasText: "TAS-103" })).toHaveCount(1);
+  await expect(picker.locator("option", { hasText: "TAS-104" })).toHaveCount(1);
+  // Seven of the project's ten: the issue itself and its two existing targets
+  // are not offered. The eighth option is the "Select an issue" placeholder.
+  await expect(picker.locator("option")).toHaveCount(8);
+
+  // The filter itself is untouched by any of this — it is the columns' filter
+  // and it is correct there.
+  await expect(filter).not.toHaveValue("ALL");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.locator(".issue-card")).toHaveCount(2);
+});
+
 test("creates a project label, renames it, and deletes it", async ({ page }) => {
   await openBoard(page);
 
