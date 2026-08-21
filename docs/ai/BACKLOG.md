@@ -382,6 +382,30 @@ time.
   `transitionIssue`, the comment mutations. The shape to look for: anything
   written in `onSuccess` or `onSettled` that a user could have changed during
   the round trip.
+- **A paused fetch is a third state the board does not model, and it looks
+  exactly like an empty project.** Seen on the deployed stand (2026-08-21) on
+  the project TAS-172 broke: the issues query sat at
+  `status: "pending", fetchStatus: "paused", fetchFailureCount: 1,
+  errorUpdateCount: 0` indefinitely. `useUnanswered` keys on
+  `errorUpdateCount > 0`, so with the retry paused rather than failed it never
+  reports, and the board drew "0" in every column head with "Drop issues here"
+  under it — the claim §5.6 exists to prevent, made by a read that never
+  answered.
+  - **Not confirmed as a product defect, and it should not be written up as
+    one without more evidence.** react-query pauses a retry when its
+  `onlineManager` says offline. `navigator.onLine` read `true` at the time and
+    a healthy project's board had loaded in the same pane minutes earlier, so
+    something flipped that manager and did not flip it back — plausibly the
+    502 seen in the console, plausibly the automation browser. Dispatching an
+    `online` event did not resume it.
+  - What *is* established: the error path itself works. The projects screen in
+    the same session showed the same backend failure correctly — its own
+    notice, the gateway's message, and a request id — so this is about the
+    paused state specifically, not about the board's failure presentation.
+  - Worth reproducing deliberately: throttle to offline mid-retry in a normal
+    browser and see whether a real user can reach the same permanent
+    "loading". If they can, the fix is to treat `fetchStatus === "paused"` as
+    its own state and say so, rather than to touch `useUnanswered`.
 - **Chromium resolves a point hit test as a 1x1 rect, so at any shared edge the
   lower of two boxes wins from ~0.95px before its own top edge.** Found while
   measuring the label chips' remove controls (TAS-169), then reproduced on two
