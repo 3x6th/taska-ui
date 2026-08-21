@@ -96,6 +96,14 @@ export const relativeTime = (iso: string) => {
  * here rather than only in the API layer because this is where a colour is
  * turned into CSS, and a value the gateway sent is not a value this build
  * chose — the check is what stops an unexpected one reaching a style attribute.
+ *
+ * Despite the name, all three colours go through it: label, project and user.
+ * The pattern came from the label schema, but what it does here is filter an
+ * input on its way into `color-mix`, and that job is the same whatever the
+ * value describes — it is not a claim that the value conforms to the contract.
+ * Project and user colour are not in the contract at all and no gateway sends
+ * them today. So tightening this to suit labels would silently restyle avatars
+ * and key badges; that would need three checks, not a narrower one.
  */
 export const isLabelColor = (value: string) => /^#[0-9a-f]{6}$/i.test(value);
 
