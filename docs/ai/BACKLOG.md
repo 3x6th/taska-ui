@@ -346,13 +346,42 @@ time.
   concurrency 6. Nothing required — if it shows as load, the smallest change is
   `refetchOnMount: false` on that one observer, which consumes the cached page
   without ever driving a fetch of it.
-- **The picker's `onError` restore is the one write to picker state that still
-  happens after the press, and nothing pins it.** TAS-169 moved both picker
-  resets into their submit handlers; the failure path still puts the choice
-  back from `onError`, guarded by `current === ""` so it can never overwrite a
-  newer one. Untested because the mock has no failure injection for
-  `addIssueLabel` — pinning it means adding one. Same gap on the links half of
-  the same fix, which has no in-flight test of its own.
+- **Pressing "Add" by keyboard drops focus to `<body>`,** because the button
+  disables itself in the same commit that submits. Costs a keyboard user their
+  place in the panel. Present wherever a submit button gates on emptied state,
+  so it wants a focus-management decision rather than a per-button patch.
+- **One component, two vertical rhythms:** panel chip rows wrap at `row-gap: 8`
+  (the hit targets need it), board card chip rows at 6. Both are inside §2.4's
+  5-8 band and the card's 46px two-row arithmetic depends on 6, so the
+  divergence is defensible — but neither comment mentions the other, and the
+  next reader will trip over it.
+- **The board card truncates its label row with no indicator** while the panel
+  heading counts them all — a card can read "5 chips" beside a panel saying
+  "Labels 7". Same family as the `+N` item above; recorded separately because
+  the mismatch between the two surfaces is the part a user notices.
+- **The "Manage labels" icon button takes its accessible name from `title`,
+  not `aria-label`,** which §7 makes mandatory for text-free icon buttons.
+  Pre-existing pattern, shared with other icon buttons on the board.
+- **The three `onError` restores TAS-169 added are themselves late writes, and
+  none is pinned.** Each is guarded (`current === ""`, so it can only ever
+  write into a field the user has left empty) and each is there for a good
+  reason — a refused create should not also cost the name that was typed. But
+  the guard is the only thing between them and the hazard the story spent four
+  rounds closing, and no test holds it: the mock has no failure injection for
+  `addIssueLabel`, `createIssueLink` or `createProjectLabel`, so pinning them
+  means building one. That injection is the actual work item here; the three
+  tests are cheap once it exists.
+- **The links picker's half of the same fix has no in-flight test.** Three of
+  the four late-write paths are pinned; `IssueLinksSection`'s reset is covered
+  only by typecheck, lint and the existing `issue-links.spec.ts`. The
+  one-task interleaving pattern the label tests use transfers directly.
+- **Only three components were audited for the late-write pattern.**
+  `ProjectLabelsModal`, `IssueLabelsSection` and `IssueLinksSection` were read
+  for it and are clean beyond the four found. `IssuePanel` and the board carry
+  their own mutations that were not read for it — `updateIssue`, `assignIssue`,
+  `transitionIssue`, the comment mutations. The shape to look for: anything
+  written in `onSuccess` or `onSettled` that a user could have changed during
+  the round trip.
 - **Chromium resolves a point hit test as a 1x1 rect, so at any shared edge the
   lower of two boxes wins from ~0.95px before its own top edge.** Found while
   measuring the label chips' remove controls (TAS-169), then reproduced on two

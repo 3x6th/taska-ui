@@ -100,9 +100,11 @@ export const relativeTime = (iso: string) => {
 export const isLabelColor = (value: string) => /^#[0-9a-f]{6}$/i.test(value);
 
 /**
- * Colours offered when a label is created. Deliberately a short list rather
- * than a free colour input: every value here is already legible against both
- * surfaces at §4.5's 16% tint, which a hand-typed one would not be.
+ * Colours offered when a label is created. A fixed list rather than a free
+ * colour input so the set can be measured once and recorded: none of these
+ * eight clears 4.5:1 in both themes at §4.5's 16% tint — DESIGN.md §9 carries
+ * the measured table, §7 the recorded gap (TAS-142). Adding a ninth value is
+ * not made safe by this list existing.
  */
 export const labelColorChoices = [
   "#0052cc",

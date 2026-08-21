@@ -1871,10 +1871,15 @@ function ProjectLabelsModal({
       ]);
       return { previous };
     },
-    onError: (_error, _input, context) => {
+    onError: (_error, input, context) => {
       if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+      // Put the typed name back with the rolled-back row — unless something has
+      // been typed since, which is the one thing this must never overwrite. A
+      // name is worth restoring where a picked option was only worth offering:
+      // the likeliest failure here is the duplicate-name refusal, and the field
+      // the user has to edit to get past it is the one they just lost.
+      setName((current) => (current === "" ? input.name : current));
     },
-    onSuccess: () => setName(""),
     onSettled: settle,
   });
 
@@ -1896,7 +1901,14 @@ function ProjectLabelsModal({
     onError: (_error, _input, context) => {
       if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
     },
-    onSuccess: () => setEditing(null),
+    // The close stays on the answer — an early one would shut the editor before
+    // the save landed, and a refused save would then report its error with
+    // nothing open to fix it in. What it does not stay is unconditional: a row
+    // opened during the round trip is not the row this save was about, and
+    // closing it would throw away a name being typed right now. Same hazard as
+    // the three resets above, answered with a guard instead of a move.
+    onSuccess: (_result, input) =>
+      setEditing((current) => (current?.id === input.id ? null : current)),
     onSettled: settle,
   });
 
@@ -1926,7 +1938,19 @@ function ProjectLabelsModal({
         className="label-create-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (trimmed) createLabel.mutate({ name: trimmed, color });
+          if (!trimmed) return;
+          createLabel.mutate({ name: trimmed, color });
+          // Cleared here rather than in the mutation's `onSuccess`, for the
+          // reason the label and link pickers carry above: a reset that lands
+          // with the server's answer lands on whatever was typed during the
+          // round trip and takes it. Third and last of the three inputs that
+          // were reset on the answer — `updateLabel` below still closes the
+          // rename row from `onSuccess`, which is a mode change rather than a
+          // reset of a value this handler read, and moving it would close the
+          // editor before the save landed. It shares the hazard all the same,
+          // a write arriving late enough to land on something newer, and is
+          // guarded there rather than moved.
+          setName("");
         }}
       >
         <label className="field">

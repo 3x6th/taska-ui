@@ -470,3 +470,90 @@ test("keeps a label chosen while the previous add is still in flight", async ({ 
   await expect(labels.getByRole("button", { name: "Remove label frontend" })).toBeVisible();
   await expect(card.locator(".label-chip", { hasText: "frontend" })).toBeAttached();
 });
+
+/**
+ * The same reset shape as the test above, in the third and last place this
+ * branch had it: `ProjectLabelsModal`'s create form. What is lost here is typed
+ * text rather than a picked option, so the failure is visible where the other
+ * was silent — but the name still disappears mid-keystroke and "Add label" goes
+ * dead with it, and having two of the three instances fixed would leave the
+ * next reader unable to tell which shape was meant.
+ *
+ * Driven from one task for the same reason: the interleaving is the subject,
+ * and the field is set through the prototype's own value setter because React
+ * tracks an input's value and would otherwise treat the assignment as no change
+ * and skip `onChange`.
+ */
+test("keeps a label name typed while the previous create is still in flight", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "Manage labels" }).click();
+  const modal = page.getByRole("dialog", { name: "Labels" });
+  const field = modal.getByLabel("New label");
+  const addLabel = modal.getByRole("button", { name: "Add label" });
+
+  await field.fill("first-label");
+  await page.evaluate(() => {
+    const form = document.querySelector<HTMLFormElement>(".label-create-form");
+    const submit = form?.querySelector<HTMLButtonElement>("button[type=submit]");
+    const input = form?.querySelector<HTMLInputElement>("input");
+    submit?.click();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (input && setValue) {
+      setValue.call(input, "second-label");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+
+  // Past the window: an enabled edit control is what says the first create was
+  // answered, the same signal the round-trip test above this file uses.
+  await expect(modal.getByRole("button", { name: "Edit first-label" })).toBeEnabled();
+
+  await expect(field).toHaveValue("second-label");
+  await expect(addLabel).toBeEnabled();
+  await addLabel.click();
+  await expect(modal.getByRole("button", { name: "Edit second-label" })).toBeEnabled();
+});
+
+/**
+ * The fourth late write, and the one that is guarded rather than moved. The
+ * rename row closes on the server's answer, which is where it belongs: closing
+ * it at submission would leave a refused save reporting its error with nothing
+ * open to fix it in. But `editing` holds one row at a time and the other rows'
+ * edit controls stay live during a save, so an unconditional close reached a
+ * row it was never about — open a different rename inside the round trip and
+ * the first save's answer shut it, taking the name being typed in it.
+ *
+ * Driven from one task for the same reason as the two tests above: the
+ * interleaving is the subject.
+ */
+test("keeps a rename row open when the save that answers is a different row's", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "Manage labels" }).click();
+  const modal = page.getByRole("dialog", { name: "Labels" });
+
+  await modal.getByRole("button", { name: "Edit backend" }).click();
+  await modal.getByLabel("Rename backend").fill("backend-renamed");
+
+  await page.evaluate(() => {
+    const save = document.querySelector<HTMLButtonElement>(
+      '.label-edit-form button[aria-label="Save label"]',
+    );
+    const editAnother = document.querySelector<HTMLButtonElement>('button[aria-label="Edit frontend"]');
+    save?.click();
+    editAnother?.click();
+  });
+
+  // Past the window. The rename only reaches the board once the write settled
+  // and the issue lists were re-read — `onMutate` touches the project's label
+  // list and nothing else — so the card behind the modal is the honest signal
+  // that the answer has been and gone.
+  await expect(
+    page.locator(".issue-card", { hasText: "TAS-101" }).locator(".label-chip", { hasText: "backend-renamed" }),
+  ).toBeAttached();
+
+  // The row opened during that window is still open, still holding its name.
+  await expect(modal.getByLabel("Rename frontend")).toBeVisible();
+  await expect(modal.getByLabel("Rename frontend")).toHaveValue("frontend");
+  // And still submittable, so this is a live editor rather than a stranded one.
+  await expect(modal.getByRole("button", { name: "Save label" })).toBeEnabled();
+});
