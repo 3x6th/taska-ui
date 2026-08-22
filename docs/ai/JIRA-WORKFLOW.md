@@ -15,7 +15,7 @@ states are not.
 | [TAS-134](https://jira.ozero.dev/browse/TAS-134) | Connect the current-user profile | To Do | shipped (`UserProfileMenu.tsx`) |
 | [TAS-135](https://jira.ozero.dev/browse/TAS-135) | Add logout | Done | shipped |
 | [TAS-136](https://jira.ozero.dev/browse/TAS-136) | Connect the frontend to gateway issue endpoints | To Do | merged (PR #6) |
-| [TAS-140](https://jira.ozero.dev/browse/TAS-140) | Agent harness, skill pins, DESIGN.md reconciliation | To Do | merged (PR #7); review fixes in PR #8 |
+| [TAS-140](https://jira.ozero.dev/browse/TAS-140) | Agent harness, skill pins, DESIGN.md reconciliation | Done | merged (PR #7); review fixes in PR #8 |
 | [TAS-142](https://jira.ozero.dev/browse/TAS-142) | Overlay accessibility, focus-visible, review gaps | To Do | recorded in `DESIGN.md`, not started |
 | [TAS-144](https://jira.ozero.dev/browse/TAS-144) | Page not found screen for an unknown or forbidden URL | To Do | merged (PR #11) |
 | [TAS-148](https://jira.ozero.dev/browse/TAS-148) | Edit a project (name, description), key read-only | To Do | not started |
@@ -26,8 +26,9 @@ states are not.
 | [TAS-155](https://jira.ozero.dev/browse/TAS-155) | Read-only admin console over the gateway's `/readonly` endpoints | To Do | in review (PR #18) |
 | [TAS-163](https://jira.ozero.dev/browse/TAS-163) | A failed `getProject` must not silently disable drag-and-drop or render unknown counts as `0` | To Do | `fix/TAS-163-board-resilience` |
 | [TAS-164](https://jira.ozero.dev/browse/TAS-164) | Drag-and-drop does not work on touch devices | To Do | `fix/TAS-163-board-resilience` |
-| [TAS-171](https://jira.ozero.dev/browse/TAS-171) | Deterministic colour for avatars and project key badges | To Do | merged (PR #29) |
+| [TAS-171](https://jira.ozero.dev/browse/TAS-171) | Deterministic colour for avatars and project key badges | Done | merged (PR #29) |
 | [TAS-174](https://jira.ozero.dev/browse/TAS-174) | Assignee filter buttons announce no accessible name (WCAG 4.1.2) | To Do | filed from the TAS-171 reviews, not started |
+| [TAS-175](https://jira.ozero.dev/browse/TAS-175) | Bright avatar palette restored, glyph computed from the fill | Done | merged (PR #32) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
