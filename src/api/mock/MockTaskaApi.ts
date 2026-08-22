@@ -219,17 +219,24 @@ export class MockTaskaStore {
         // goes for Mark and Sofia. A seed that duplicates the computed answer
         // exercises the branch without showing it: the point of seeding three
         // people is that a reader can see which colour came from the server.
+        // Anna computes to #ec4899, Mark to #ec4899 and Sofia to #10b981, so
+        // all three still state something else after TAS-175 restored the
+        // bright palette — the three values below are the §2.2 hues the
+        // darkened ones they replace were derived from, position for position.
         // The three people who do state a colour state one from
-        // `avatarColorChoices`, not one of the brighter §2.2 hues those were
-        // derived from. This mock does not stand in for some server; it stands
-        // in for one that behaves correctly. The "colour came from the server"
-        // branch exists for TAS-148, where an admin picks from the set this app
-        // itself offers — so a seeded value from outside that set would be
-        // demonstrating a case the product does not permit, in the one
+        // `avatarColorChoices`. This mock does not stand in for some server; it
+        // stands in for one that behaves correctly. The "colour came from the
+        // server" branch exists for TAS-148, where an admin picks from the set
+        // this app itself offers — so a seeded value from outside that set
+        // would be demonstrating a case the product does not permit, in the one
         // environment where anybody looks at these colours at all. Same
         // argument as Tom and Priya below: a mock that had depicted reality
         // would not have let TAS-171's flat accent avatars live this long.
-        color: "#986004",
+        //
+        // The five as drawn: Anna amber, Mark sky, Sofia pink, Tom and Priya
+        // indigo. Four of those take the dark glyph and indigo takes white, so
+        // both branches of `readableTextOn` are on screen at once.
+        color: "#f59e0b",
         globalRole: "USER",
       },
       {
@@ -238,7 +245,7 @@ export class MockTaskaStore {
         email: "mark@example.com",
         displayName: "Mark Lee",
         status: "ACTIVE",
-        color: "#0775a7",
+        color: "#0ea5e9",
         globalRole: "GLOBAL_ADMIN",
       },
       {
@@ -247,7 +254,7 @@ export class MockTaskaStore {
         email: "sofia@example.com",
         displayName: "Sofia Reyes",
         status: "ACTIVE",
-        color: "#c1397c",
+        color: "#ec4899",
         globalRole: "USER",
       },
       {
@@ -262,7 +269,9 @@ export class MockTaskaStore {
         // gateway does not have — which is how the flat accent avatars of
         // TAS-171 survived as long as they did. Two of the five now exercise
         // the computed branch instead, and they were the pair that collided
-        // with each other anyway.
+        // with each other anyway: both compute to #6366f1, which is DESIGN.md
+        // §2.2's birthday bound standing in front of a reader rather than
+        // written down in a document.
         globalRole: "USER",
       },
       {

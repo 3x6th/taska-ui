@@ -151,16 +151,91 @@ export const labelChipStyle = (color: string) => {
  * and a component may not hold a hex (AGENTS.md), so the one place they are
  * allowed to live is here.
  *
- * Each is its §2.2 hue taken down in oklab — `#6366f1` by 8%, `#0ea5e9` by 22%,
- * `#10b981` by 25%, `#f59e0b` by 30%, `#ec4899` by 14% — because §4.4 puts white
- * initials on this fill, and the undarkened hues carried them at 2.15–4.47:1,
- * three of the five under the 3:1 floor §7 holds even for optional meta. The
- * fill an avatar had before this palette existed was `--accent` at 6.29:1, so
- * anything dimmer than the values here would have made a solved problem worse.
- * Measured: white on these is 5.07–5.38:1, and the fills sit 3.41–3.63:1 against
- * `--surface` in the dark theme.
+ * The §2.2 hues themselves, restored (TAS-175). TAS-171 had darkened all five
+ * in oklab because §4.4 printed *white* initials on every fill, and white across
+ * the bright set measures 2.15–4.47:1 — but that is a fault in the fixed glyph,
+ * not in the fills. `readableTextOn` below chooses the glyph from the fill, and
+ * the bright set then reads 4.47 (`#6366f1`, white glyph), 6.45 (`#0ea5e9`),
+ * 7.05 (`#10b981`), 8.32 (`#f59e0b`) and 5.07 (`#ec4899`) — better than the
+ * darkened set's 5.07–5.38:1 on four of the five, and on the fifth white is
+ * still what gets picked.
+ *
+ * The collisions TAS-171 removed as a side effect come back with them: three of
+ * these are byte-equal to `labelColorChoices` values, and amber and emerald sit
+ * close to `--prio-medium` and `--type-story`. That is known and is the owner's
+ * call — which hues the product wears is a product decision, and it is a
+ * separate question from whether the initials on them can be read.
  */
-export const avatarColorChoices = ["#585bd8", "#0775a7", "#077d56", "#986004", "#c1397c"];
+export const avatarColorChoices = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ec4899"];
+
+/**
+ * The two glyph colours an avatar may wear. Literals, next to the palette and
+ * for the same reason it is one — but the dark one is a literal for a second
+ * reason that matters more: `--fg` *is* `#17171b`, and in the dark theme that
+ * same token is `#ededf1`. An avatar's fill is opaque and theme-independent, so
+ * a glyph tracking `--fg` would turn near-white on `#f59e0b` the moment the
+ * theme flipped — precisely the failure this pair exists to end. `styles.css`
+ * has no theme-independent dark token to borrow (`--accent-fg` is white in both
+ * themes), and inventing one would be an edit to DESIGN.md §2, so the value
+ * lives here, where the contrast that justifies it is also computed.
+ */
+const glyphOnDarkFill = "#ffffff";
+const glyphOnLightFill = "#17171b";
+
+/**
+ * WCAG 2.x relative luminance of an `#rrggbb` colour. Not oklab lightness,
+ * which is what every `color-mix` in this app reasons in: the only consumer of
+ * this number is a contrast ratio, and that ratio is *defined* on this
+ * quantity, so computing it any other way would be answering a question nobody
+ * asked.
+ */
+const relativeLuminance = (color: string) => {
+  const channel = (offset: number) => {
+    const value = parseInt(color.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+};
+
+/** WCAG 2.x contrast ratio between two relative luminances, either way round. */
+const contrastRatio = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+
+const darkGlyphLuminance = relativeLuminance(glyphOnLightFill);
+
+/**
+ * Which of the two glyph colours to print on a solid fill — computed from the
+ * fill, never looked up. A table would cover the five values above and nothing
+ * else, and the values that are *not* above are the ones with no other defence:
+ * `avatarColor` hands back whatever colour the server stated once it matches
+ * the contract's hex pattern, and a pattern is a check on shape, not on
+ * legibility. TAS-148 makes that path the normal one by letting an admin choose.
+ *
+ * Both ratios move monotonically with the fill's luminance and in opposite
+ * directions, so taking the larger of the two has a floor at the crossing:
+ * 4.23:1, verified by evaluating all 16,777,216 sRGB colours (worst is
+ * `#e101c0` at 4.2279). Every avatar in this app therefore clears §7's 3:1
+ * floor; 6.4% of the cube — including `#6366f1` at 4.47 — lands between 4.23
+ * and 4.5, and nothing lands below 4.0.
+ *
+ * That band is why the dark glyph is `--fg`'s value and not `#000000`. Black
+ * would put the floor at 4.58 and remove the band outright, but it is not a
+ * DESIGN.md §2 value, and what it buys is 0.35 of a point on `#e101c0` — a
+ * colour nothing in this product wears. Recorded rather than left to be
+ * rediscovered: TAS-148 hands the fill to an admin, and the next reader to
+ * find the band will otherwise reopen this.
+ *
+ * A fill this cannot parse gets white, which is what `.avatar`'s `--accent`
+ * fallback in `styles.css` is drawn to carry. Unreachable from `avatarColor`,
+ * which only ever returns a validated hex; it is here so a future caller cannot
+ * turn a malformed colour into `NaN` and a silently arbitrary glyph.
+ */
+export const readableTextOn = (fill: string) => {
+  if (!isLabelColor(fill)) return glyphOnDarkFill;
+  const luminance = relativeLuminance(fill);
+  const onWhite = contrastRatio(luminance, 1);
+  const onDark = contrastRatio(luminance, darkGlyphLuminance);
+  return onWhite >= onDark ? glyphOnDarkFill : glyphOnLightFill;
+};
 
 /**
  * FNV-1a over the string's code units. A named algorithm rather than a sum of

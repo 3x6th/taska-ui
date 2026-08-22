@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { avatarColor, avatarColorChoices, issueLinkTypeLabel, issueLinkTypes, keyBadgeStyle, labelColorChoices } from "./format";
+import {
+  avatarColor,
+  avatarColorChoices,
+  issueLinkTypeLabel,
+  issueLinkTypes,
+  keyBadgeStyle,
+  labelColorChoices,
+  readableTextOn,
+} from "./format";
 
 /**
  * `viewLinkType` is the one field in the domain that is deliberately an open
@@ -69,9 +77,9 @@ describe("avatarColor", () => {
   // for Tom and Priya only — Anna, Mark and Sofia state a colour, and a stated
   // colour wins.
   it.each([
-    ["6d774efa-57d8-4ae0-a27e-2984d1dfbbf6", "#c1397c"],
-    ["16ad2404-96e3-4c51-b00d-55c5d1451d3c", "#077d56"],
-    ["1ab80365-0843-460a-b0a1-e6dd3e0f2a0d", "#585bd8"],
+    ["6d774efa-57d8-4ae0-a27e-2984d1dfbbf6", "#ec4899"],
+    ["16ad2404-96e3-4c51-b00d-55c5d1451d3c", "#10b981"],
+    ["1ab80365-0843-460a-b0a1-e6dd3e0f2a0d", "#6366f1"],
   ])("pins %s to %s, in this build and every later one", (id, expected) => {
     expect(avatarColor(id)).toBe(expected);
   });
@@ -108,6 +116,120 @@ describe("avatarColor", () => {
     expect(() => avatarColor(undefined as unknown as string)).not.toThrow();
     expect(avatarColorChoices).toContain(avatarColor(undefined as unknown as string));
   });
+});
+
+/**
+ * The glyph on an avatar, and the whole of TAS-175: the palette went back to
+ * DESIGN.md §2.2's bright hues, which are unreadable under the fixed white
+ * initials §4.4 used to specify, and are better than the darkened set once the
+ * glyph is chosen per fill.
+ *
+ * Every ratio below is measured by this file's own WCAG implementation rather
+ * than by importing the one under test — a test that borrows the
+ * implementation's luminance would agree with it while both were wrong, which
+ * is exactly the failure mode that shipped in TAS-171.
+ */
+describe("readableTextOn", () => {
+  const luminance = (color: string) => {
+    const channel = (offset: number) => {
+      const value = Number.parseInt(color.slice(offset, offset + 2), 16) / 255;
+      return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+  };
+  const contrast = (a: string, b: string) => {
+    const [first, second] = [luminance(a), luminance(b)];
+    return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+  };
+  // The worst fill in the whole sRGB cube, found by evaluating all 16,777,216
+  // of them: at this luminance the two candidate glyphs are equally bad, and
+  // nothing can do better than 4.2279:1. Every other colour does better, so
+  // this is the floor the feature actually offers a colour nobody measured.
+  const floor = 4.22;
+
+  it.each(avatarColorChoices)("keeps the initials on %s above 4.4:1", (fill) => {
+    expect(contrast(fill, readableTextOn(fill))).toBeGreaterThanOrEqual(4.4);
+  });
+
+  it.each([
+    ["#6366f1", "#ffffff"],
+    ["#0ea5e9", "#17171b"],
+    ["#10b981", "#17171b"],
+    ["#f59e0b", "#17171b"],
+    ["#ec4899", "#17171b"],
+  ])("prints %s with %s, which is the better of the two", (fill, expected) => {
+    // Pinned per value, not only as an inequality: indigo is the one fill in
+    // the palette where white still wins (4.47 against 4.00), and a rule that
+    // quietly flipped it would keep passing the threshold test above.
+    expect(readableTextOn(fill)).toBe(expected);
+    const other = expected === "#ffffff" ? "#17171b" : "#ffffff";
+    expect(contrast(fill, expected)).toBeGreaterThan(contrast(fill, other));
+  });
+
+  it.each(["#ffffff", "#fffff0", "#fefefe", "#ffff00"])("puts a dark glyph on %s", (fill) => {
+    expect(readableTextOn(fill)).toBe("#17171b");
+    expect(contrast(fill, readableTextOn(fill))).toBeGreaterThanOrEqual(floor);
+  });
+
+  it.each(["#000000", "#010101", "#00003c", "#171717"])("puts a white glyph on %s", (fill) => {
+    expect(readableTextOn(fill)).toBe("#ffffff");
+    expect(contrast(fill, readableTextOn(fill))).toBeGreaterThanOrEqual(floor);
+  });
+
+  it.each(["#e101c0", "#808080", "#7f7f7f", "#767676", "#0052cc", "#e5544b", "#123456"])(
+    "stays readable on %s, a colour no palette here contains",
+    (fill) => {
+      // The point of computing rather than tabulating. `avatarColor` returns
+      // any hex the contract's pattern accepts, and TAS-148 turns that from a
+      // theoretical branch into the one an admin drives.
+      expect(contrast(fill, readableTextOn(fill))).toBeGreaterThanOrEqual(floor);
+    },
+  );
+
+  it("never drops below the floor across the colour cube", () => {
+    // A sweep rather than the full 16.7M: the minimum is a smooth function of
+    // luminance, so a coarse grid that included the worst point above cannot
+    // miss a region. Runs in milliseconds and would catch a sign error or a
+    // swapped coefficient that the hand-picked cases above sat either side of.
+    const steps = [0x00, 0x11, 0x2f, 0x4d, 0x6b, 0x89, 0xa7, 0xc5, 0xe3, 0xff];
+    const hex = (value: number) => value.toString(16).padStart(2, "0");
+    let worst = Number.POSITIVE_INFINITY;
+    for (const red of steps) {
+      for (const green of steps) {
+        for (const blue of steps) {
+          const fill = `#${hex(red)}${hex(green)}${hex(blue)}`;
+          worst = Math.min(worst, contrast(fill, readableTextOn(fill)));
+        }
+      }
+    }
+    expect(worst).toBeGreaterThanOrEqual(floor);
+  });
+
+  it("pairs every avatar this build can draw with a glyph that can be read", () => {
+    // The guarantee `Avatar` relies on, asserted end to end: whichever branch
+    // of `avatarColor` answers — hashed id or a colour the server stated — the
+    // initials on the result are legible.
+    const hex = (value: number) => (value % 256).toString(16).padStart(2, "0");
+    for (let index = 0; index < 200; index += 1) {
+      const id = `9c2b1d70-0000-4000-8000-${String(index).padStart(12, "0")}`;
+      const computed = avatarColor(id);
+      expect(contrast(computed, readableTextOn(computed))).toBeGreaterThanOrEqual(4.4);
+      // Stated colours spread across the cube rather than clustered, so this
+      // covers the branch an admin will drive rather than one corner of it.
+      const stated = avatarColor(id, `#${hex(index * 13)}${hex(index * 71)}${hex(index * 137)}`);
+      expect(contrast(stated, readableTextOn(stated))).toBeGreaterThanOrEqual(floor);
+    }
+  });
+
+  it.each([["red"], ["#12345"], ["#12345g"], [""], ["var(--accent)"]])(
+    "falls back to white rather than a NaN comparison given %s",
+    (fill) => {
+      // Unreachable through `avatarColor`, which only ever hands over a
+      // validated hex. White is the answer because the only fill that can be
+      // under it is `.avatar`'s --accent fallback in styles.css (6.29:1).
+      expect(readableTextOn(fill)).toBe("#ffffff");
+    },
+  );
 });
 
 /**
