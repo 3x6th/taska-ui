@@ -1453,12 +1453,23 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `minLength: 2`. They differ by exactly one character, so a client written
   against the contract meets a `400` at the boundary and nowhere else — the
   worst kind of gap to find in production.
-- **An empty `query` is a `400`; an absent `query` is a `200`.** The contract
-  gives the parameter `default: ""` — that is, it documents as the default
-  precisely the value the runtime refuses. This one has a real trap in it: the
-  obvious implementation sets the parameter on every keystroke and therefore
-  sends `query=` the moment the field is cleared, turning "show me everything"
-  into a `400`.
+- **An empty `query` is a `400`; an absent `query` is a `200`.** This one has a
+  real trap in it: the obvious implementation sets the parameter on every
+  keystroke and therefore sends `query=` the moment the field is cleared,
+  turning "show me everything" into a `400`.
+  - **Which spec says what, because the two do not agree and the difference is
+    the whole point of this bullet.** The handwritten contract vendored at
+    `docs/contract/openapi.yml` gives the parameter `type: string` and
+    `minLength: 2` and no default at all. The gateway's *generated* spec at
+    `https://api.taska.ozero.dev/v3/api-docs` gives it
+    `{"type":"string","default":"","minLength":2}` — so the springdoc
+    description of the running service documents as its default precisely the
+    value that same service answers `400` for. Corrected here on 2026-08-23
+    after `release-reviewer` checked the claim against the vendored file and
+    found it absent; the original entry attributed the default to the
+    handwritten contract, which never carried it. The runtime behaviour the
+    compensation is built on was measured directly either way and did not
+    depend on either document.
 - **An unrecognised `priority` or `issueType` is silently ignored.**
   `priority=URGENT` and `issueType=EPIC` both answer `200` with the *entire*
   set of 18 issues rather than `400`. A filter whose value the server did not

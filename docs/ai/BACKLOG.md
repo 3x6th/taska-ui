@@ -630,6 +630,34 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### Left over from the TAS-179 review (`release-reviewer`, 2026-08-23)
+
+Beyond the report's three-item cap, so recorded rather than triaged. None of
+them blocks the story.
+
+- **`GlobalSearch` sets `aria-expanded` from `listboxOpen` alone**, so it reads
+  `false` while the too-short, searching and no-match panels are on screen.
+  Deliberate and documented in the component — those panels are not a listbox —
+  but a strict ARIA 1.2 reading wants either a popup role on the panel or the
+  expanded state to follow the panel rather than the list.
+- **An unlinkable hit can be arrowed onto and does nothing when opened.** A hit
+  whose `issueKey` prefix matches no known project is `aria-disabled`, which is
+  right, but Enter on it is silent — no message, no reason. Rare by
+  construction; loud enough to be confusing when it happens.
+- **Two search fields with different scopes now share `/projects`** — "Search
+  issues" in the bar searches every project's issues, "Filter projects" in the
+  heading narrows the cards. Both are correct and they are not the same
+  question. Whether that reads as two fields or as one confusing one is
+  `art-director`'s call, not a defect.
+- **Case-colliding project keys would collapse in `projectIdByKey`** and route a
+  hit to the wrong project. Unreachable in the mock seed; the gateway has never
+  been asked whether it treats `TAS` and `tas` as one key. Worth a probe before
+  it is worth a fix.
+- **`summaryByProject`'s memo never memoises.** It depends on the `useQueries`
+  result array, whose identity changes every render. Harmless — the body is
+  cheap — but the memo is decoration, and a reader will assume it is doing
+  something.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each
