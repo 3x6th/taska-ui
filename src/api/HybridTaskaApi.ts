@@ -9,6 +9,7 @@ import type {
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
+  SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
   UpdateProjectLabelInput,
@@ -22,6 +23,7 @@ import type {
   Issue,
   IssueComment,
   IssueLink,
+  IssueSearchHit,
   IssueType,
   IssueWithHistory,
   Label,
@@ -142,6 +144,14 @@ export class HybridTaskaApi implements TaskaApi {
 
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
     return this.live.listIssues(projectId, params);
+  }
+
+  // Delegated whole. Search is one gateway route with no membership in it, and
+  // this class synthesises membership and nothing else — including the query
+  // guard, which belongs to whichever implementation is underneath rather than
+  // being applied twice on the way down.
+  searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>> {
+    return this.live.searchIssues(params);
   }
 
   getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {

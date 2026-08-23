@@ -16,3 +16,16 @@ if (typeof window !== "undefined" && !window.matchMedia) {
     dispatchEvent: () => false,
   });
 }
+
+// jsdom implements no layout, so it ships no `scrollIntoView` either — and the
+// global search scrolls its active option into view, because a combobox keeps
+// DOM focus on the input and the browser will never scroll the selection for
+// it. A no-op is the honest stub rather than a lie: there is no viewport here
+// for a row to be inside or outside of, so what this call does is only
+// answerable in a real browser, and it is answered there
+// (`e2e/topbar-popovers.spec.ts` measures the selected row against the list's
+// own box at three viewport sizes). Guarding the call in the component instead
+// would be production code shaped by a test environment.
+if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}

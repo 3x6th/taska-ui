@@ -30,6 +30,7 @@ states are not.
 | [TAS-174](https://jira.ozero.dev/browse/TAS-174) | Assignee filter buttons announce no accessible name (WCAG 4.1.2) | To Do | filed from the TAS-171 reviews, not started |
 | [TAS-175](https://jira.ozero.dev/browse/TAS-175) | Bright avatar palette restored, glyph computed from the fill | Done | merged (PR #32) |
 | [TAS-177](https://jira.ozero.dev/browse/TAS-177) | Phone portrait: the projects list is clipped by the browser's own toolbar, and the board's "X of Y" counter stacks into a column | Done | merged (PR #34) |
+| [TAS-179](https://jira.ozero.dev/browse/TAS-179) | Connect `GET /issues/search`: description in the board's local filter, a server search under it, global issue search in the shared top bar, and a client-side project filter | To Do | `feat/TAS-179-issue-search` |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
@@ -50,6 +51,7 @@ the story has drifted and should be transitioned rather than the table edited.
 | [TAS-156](https://jira.ozero.dev/browse/TAS-156) | [TAS-155](https://jira.ozero.dev/browse/TAS-155) / [TAS-161](https://jira.ozero.dev/browse/TAS-161) | The `/api/v1/readonly/*` endpoints are deployed and TAS-103 landed on 2026-08-11, but every table read answers 500 and the catalog states no `primaryKey`, so the admin console still ships mock-first — for those two reasons now, not for a missing gateway half. See `API-DIVERGENCE.md`. |
 | [TAS-162](https://jira.ozero.dev/browse/TAS-162) | the board's core gesture | `GET /projects/{projectId}` 500s on every existing project. Via the membership synthesis this disables every drop target, so no card can be moved at all, and it zeroes every count on the projects screen. See `API-DIVERGENCE.md`. |
 | [TAS-178](https://jira.ozero.dev/browse/TAS-178) | label chips on board cards | `GET /issues/{issueId}` answers `labels: []` for an issue that has labels, so no card draws a chip against the gateway. The association exists — the issue-labels route returns both — so this is the detail DTO going unfilled, not missing data. Probed 2026-08-23. See `API-DIVERGENCE.md`. |
+| [TAS-180](https://jira.ozero.dev/browse/TAS-180) | removing the search compensation, not the search | `GET /issues/search` rejects a two-character query the contract permits, `400`s on the empty `query` its own generated spec offers as the default, and silently ignores a `priority` or `issueType` it does not recognise — answering with the full set instead of an error. The UI compensates on all three, so search ships; the constant and the enum guard come out when this closes. Probed 2026-08-23. See `API-DIVERGENCE.md`. |
 
 `TAS-147` was on this list until 2026-08-05 and is now Done: `globalRole` is in
 the contract as of backend `25d0cf7000e5`, which is what unblocked `TAS-151`.
@@ -91,3 +93,38 @@ without Jira access can audit. If this section drifts from Jira, Jira wins.
   deleted from the document.
 - `art-director` returns a verdict on login and board at 1440×900, 1280×800,
   and 390×844 in both themes, citing `DESIGN.md` sections.
+
+### TAS-179 — connect `GET /issues/search`
+
+- The board's search finds an issue by a word that appears only in its
+  `description`.
+- The board reports an honest match count for the project rather than a count
+  of the loaded page, which silently under-reports past 100 issues.
+- The global search finds an issue in a project that is not currently open, and
+  following the result opens it.
+- The projects filter narrows the card list by project name and by project key.
+- A query below the runtime's three-character minimum, and an empty query,
+  never reach the wire — the parameter is omitted, never sent empty.
+- `mock`, `rest` and `hybrid` remain behaviourally interchangeable, including
+  on the rejection of a short query.
+- A server hit is never rendered inside a status column: the search DTO carries
+  no `status`, so a column placement would be a claim the gateway never made.
+- `npm run check` and `npm run build` pass, with browser evidence across the
+  three viewports in both themes.
+
+Scope added by the owner mid-flight, folded into this story rather than filed
+separately:
+
+- The profile avatar is the last control on the top bar and is flush right at
+  every width, including on a row the bar has wrapped onto.
+- No anchored popover — profile, notifications, or the new search dropdown —
+  crosses either edge of the viewport. The board bar wraps under 820px and
+  packs the wrapped row at `flex-start`, which moved the avatar away from the
+  right edge and sent its `right: 0` popover off the left of the screen.
+- Verified at 390 and at the 760–820 band where the wrap begins, in both
+  themes.
+- Every popover in the bar closes on a click outside it and on `Escape`, not
+  only on a second press of its own trigger. `DESIGN.md` §4.12 has required
+  both of the notifications popover since before it shipped;
+  `UserProfileMenu` was the only implementation of the pattern, so the three
+  call sites share one hook rather than three copies of the same effect.

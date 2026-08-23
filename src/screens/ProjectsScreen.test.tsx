@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
@@ -205,5 +205,81 @@ describe("project cards state what they know", () => {
 
     await within(await screen.findByRole("button", { name: /Alpha/ })).findByText("9");
     expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The filter over the cards. It is a client filter and that is not a
+ * compromise: `GET /projects` answers with the whole list unpaginated, so there
+ * is no page for it to be wrong about — unlike the board's issue box, which is
+ * why that one has a server half and this one does not.
+ */
+describe("filtering the project list", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const filterBy = async (text: string) => {
+    const box = await screen.findByPlaceholderText("Filter projects");
+    fireEvent.change(box, { target: { value: text } });
+  };
+
+  it("matches the name, case-insensitively", async () => {
+    renderProjects();
+    await screen.findByRole("button", { name: /Alpha/ });
+
+    await filterBy("bet");
+
+    expect(screen.getByRole("button", { name: /Beta/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Alpha/ })).not.toBeInTheDocument();
+  });
+
+  it("matches the project key as well, which is what the cards are labelled with", async () => {
+    renderProjects();
+    await screen.findByRole("button", { name: /Alpha/ });
+
+    await filterBy("ccc");
+
+    expect(screen.getByRole("button", { name: /Gamma/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Beta/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the heading count honest about what it is showing", async () => {
+    renderProjects();
+    expect(await screen.findByText(/^3 projects/)).toBeVisible();
+
+    await filterBy("a");
+
+    // Three of them contain an "a", so this says what is on screen and what it
+    // is out of — "3 projects" under a filter would be a claim about the
+    // account rather than about the filter.
+    expect(screen.getByText(/^3 of 3 projects/)).toBeVisible();
+
+    await filterBy("bet");
+    expect(screen.getByText(/^1 of 3 projects/)).toBeVisible();
+  });
+
+  it("says a filter matched nothing, which is not an account with no projects", async () => {
+    renderProjects();
+    await screen.findByRole("button", { name: /Alpha/ });
+
+    await filterBy("nothing like this");
+
+    expect(screen.getByText(/No projects match/)).toBeVisible();
+    expect(screen.getByText(/^0 of 3 projects/)).toBeVisible();
+  });
+
+  it("keeps each card's own counts with it while the list is filtered", async () => {
+    renderProjects();
+    // Counts belong to queries built over the unfiltered list, so a filtered
+    // grid read by position would print Alpha's nine on Beta's card.
+    await within(await screen.findByRole("button", { name: /Alpha/ })).findByText("9");
+
+    await filterBy("bet");
+
+    const beta = screen.getByRole("button", { name: /Beta/ });
+    expect(within(beta).getByText("4")).toBeVisible();
+    expect(within(beta).queryByText("9")).not.toBeInTheDocument();
   });
 });

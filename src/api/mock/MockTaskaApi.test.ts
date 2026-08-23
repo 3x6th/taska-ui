@@ -309,6 +309,165 @@ describe("MockTaskaApi", () => {
   });
 
   /**
+   * `GET /issues/search` as the deployed gateway was measured behaving on
+   * 2026-08-23, not as the contract describes it. Two of those measurements are
+   * the reason these cases exist at all: the runtime refuses a query below
+   * three characters where the contract permits two, and refuses an empty one
+   * where its own generated spec (`/v3/api-docs`) offers it as the parameter's
+   * default. The e2e suite runs against
+   * this mock, so a mock that quietly accepted either would let the suite pass
+   * a case the gateway answers 400 to.
+   */
+  describe("issue search", () => {
+    it("refuses a query below the minimum, and the empty string with it", async () => {
+      await expect(api.searchIssues({ query: "bo" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Search query must be at least 3 characters",
+      });
+      await expect(api.searchIssues({ query: "" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      // Whitespace is not length: the field the reader types into trims, and so
+      // does this, or " a " would be a legal three-character search for one
+      // character.
+      await expect(api.searchIssues({ query: " a " })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("treats an absent query as no text filter rather than as an empty one", async () => {
+      // The trap the compensation exists for: omitting the parameter is a 200
+      // with everything, sending it empty is a 400. They must not collapse.
+      const everything = await api.searchIssues({});
+      const inProject = await api.listIssues(project.id, { pageSize: 100 });
+
+      expect(everything.totalCount).toBeGreaterThanOrEqual(inProject.items.length);
+    });
+
+    it("matches the key, the summary and the description, case-insensitively", async () => {
+      const byKey = await api.searchIssues({ query: "tas-104", projectId: project.id, pageSize: 100 });
+      expect(byKey.items.map((hit) => hit.issueKey)).toContain("TAS-104");
+
+      const bySummary = await api.searchIssues({ query: "ONBOARDING", projectId: project.id, pageSize: 100 });
+      expect(bySummary.items.map((hit) => hit.issueKey)).toContain("TAS-102");
+
+      // The word appears in TAS-104's description and in no summary or key, so
+      // this is the OR the probe recorded and not a coincidence of wording.
+      const byDescription = await api.searchIssues({ query: "gRPC", projectId: project.id, pageSize: 100 });
+      expect(byDescription.items.map((hit) => hit.issueKey)).toEqual(["TAS-104"]);
+    });
+
+    it("searches every project the caller can see, and no further", async () => {
+      const hits = await api.searchIssues({ query: "board", pageSize: 100 });
+      const projects = await api.listProjects();
+      const keys = hits.items.map((hit) => hit.issueKey);
+
+      // More than one project answers, which is what "no projectId" means.
+      expect(new Set(keys.map((key) => key.split("-")[0])).size).toBeGreaterThan(1);
+      // And nothing from a project this account is not in. Anna is a member of
+      // three of the four seeded projects.
+      const visible = new Set(projects.map((item) => item.projectKey));
+      expect(keys.every((key) => visible.has(key.split("-")[0]))).toBe(true);
+      expect(keys.some((key) => key.startsWith("MOB-"))).toBe(false);
+    });
+
+    it("scopes to one project when asked, and refuses a project that is not there", async () => {
+      const scoped = await api.searchIssues({ query: "board", projectId: project.id, pageSize: 100 });
+      expect(scoped.items.length).toBeGreaterThan(0);
+      expect(scoped.items.every((hit) => hit.issueKey.startsWith(`${project.projectKey}-`))).toBe(true);
+
+      await expect(api.searchIssues({ query: "board", projectId: "no-such-project" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("refuses a project the caller is not a member of, the same way as one that is not there", async () => {
+      // Mark is in the seed's fourth project and Anna is not, so the id has to
+      // be fetched as him before the question can be asked as her.
+      await api.login({ email: "mark@example.com", password: "mock-accepts-anything" });
+      const marks = await api.listProjects();
+      const notAnnas = marks.find((item) => !["TAS", "WEB", "OPS"].includes(item.projectKey));
+      expect(notAnnas).toBeDefined();
+
+      await api.login({ email: "anna@example.com", password: "mock-accepts-anything" });
+      await expect(await api.listProjects().then((items) => items.map((item) => item.id))).not.toContain(notAnnas!.id);
+
+      // Existence is not access. Checking only that the project exists let a
+      // non-member read every issue in it — the mock stating an access rule in
+      // its own comment and not keeping it, which is worse than not stating one.
+      await expect(api.searchIssues({ query: "issues", projectId: notAnnas!.id })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("ANDs every filter onto the query", async () => {
+      const all = await api.searchIssues({ query: "the", projectId: project.id, pageSize: 100 });
+      const bugs = await api.searchIssues({
+        query: "the",
+        projectId: project.id,
+        issueType: "BUG",
+        priority: "HIGH",
+        pageSize: 100,
+      });
+
+      expect(bugs.items.length).toBeGreaterThan(0);
+      expect(bugs.items.length).toBeLessThan(all.items.length);
+      expect(bugs.items.every((hit) => hit.issueType === "BUG" && hit.priority === "HIGH")).toBe(true);
+    });
+
+    it("counts the whole matching set and pages the answer after it", async () => {
+      const whole = await api.searchIssues({ query: "the", projectId: project.id, pageSize: 100 });
+      expect(whole.totalCount).toBeGreaterThan(2);
+
+      const first = await api.searchIssues({ query: "the", projectId: project.id, page: 0, pageSize: 2 });
+      const second = await api.searchIssues({ query: "the", projectId: project.id, page: 1, pageSize: 2 });
+
+      expect(first.items).toHaveLength(2);
+      // The count is about the search, not about the page — the first honest
+      // issue total this frontend can print.
+      expect(first.totalCount).toBe(whole.totalCount);
+      expect(second.totalCount).toBe(whole.totalCount);
+      expect(first.items.map((hit) => hit.id)).not.toEqual(second.items.map((hit) => hit.id));
+    });
+
+    it("answers with the six fields of the short DTO and nothing else", async () => {
+      const created = await api.createIssue(project.id, {
+        issueType: "TASK",
+        summary: "Unassigned needle for the search",
+        description: "Nobody owns this one yet.",
+        priority: "LOW",
+      });
+
+      const { items } = await api.searchIssues({ query: "needle", projectId: project.id, pageSize: 100 });
+      const hit = items.find((item) => item.id === created.id);
+
+      expect(hit).toBeDefined();
+      // No status, no projectId, no description, no labels: a hit that carried
+      // them would let a column or a card claim something the gateway never
+      // sent.
+      expect(Object.keys(hit ?? {}).sort()).toEqual([
+        "assigneeId",
+        "id",
+        "issueKey",
+        "issueType",
+        "priority",
+        "summary",
+      ]);
+      // `""` on the wire for nobody, `null` here, exactly as `Issue.assigneeId`.
+      expect(hit?.assigneeId).toBeNull();
+    });
+
+    it("does not find a deleted issue", async () => {
+      const created = await api.createIssue(project.id, {
+        issueType: "TASK",
+        summary: "Doomed haystack entry",
+        description: "About to be deleted.",
+        priority: "LOW",
+      });
+      await api.deleteIssue(project.id, created.id);
+
+      const { items } = await api.searchIssues({ query: "haystack", projectId: project.id, pageSize: 100 });
+      expect(items).toEqual([]);
+    });
+  });
+
+  /**
    * The label rules the gateway states in TAS-119 — project scope, one name per
    * project case-insensitively, a HEX colour, and a soft delete that reaches
    * every issue at once. The cases below find their subjects in the seed rather

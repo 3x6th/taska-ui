@@ -1430,6 +1430,129 @@ Same rule as above: "Closed by" is settled, the rest is live.
   either half could be the one that stops carrying it. Whoever takes TAS-178
   reads it from the backend side first.
 
+### `GET /issues/search` rejects the query length its own contract permits, and ignores filter values it does not understand
+
+- **Endpoint:** `GET /api/v1/issues/search`, new in backend `4241be2ec144`
+  (TAS-110), connected by [TAS-179](https://jira.ozero.dev/browse/TAS-179).
+- **Probed 2026-08-23** against the deployed gateway with a `GLOBAL_ADMIN`
+  token supplied by the owner. Every line below is a measurement, not a
+  reading of the contract.
+- **What the endpoint does well, recorded so the next agent does not re-derive
+  it:** it matches a substring, case-insensitively, over `issue_key` OR
+  `summary` OR `description`, and Cyrillic works (`мапперы` finds
+  `TEST_TEST-1` by its description alone). Filters AND together. `page` and
+  `pageSize` behave, and `totalCount` is the size of the whole matching set
+  rather than of the page — which is the first honest issue total this
+  frontend has ever been able to print.
+
+**Three divergences, one of them a defect.**
+
+- **The minimum query length is 2 in the contract and 3 in the runtime.** A
+  two-character `query` answers `400 INVALID_ARGUMENT` with
+  `"Search query must be at least 3 characters"`, while the contract declares
+  `minLength: 2`. They differ by exactly one character, so a client written
+  against the contract meets a `400` at the boundary and nowhere else — the
+  worst kind of gap to find in production.
+  - **There are two validators, not one, and they disagree.** Found by
+    `api-contract-guard` on 2026-08-23 by probing *without* a token, which
+    separates them: `?query=a` and `?query=` answer `400 "Invalid request
+    parameters"` **before authentication**, while `?query=ab` reaches `401`.
+    So the gateway edge enforces the contract's own `minLength: 2` and the
+    service behind auth enforces 3 — the edge is faithful to the document and
+    the service is not, which is why the disagreement is invisible until you
+    hold a token. The same probe shows the edge enforcing `page >= 0` and
+    `pageSize` in `1..100` pre-auth, and *not* validating `priority`,
+    `issueType`, `statusKey` or `projectId` at all, which is independent
+    corroboration of the silently-ignored enum below.
+  - Consequence for `SEARCH_QUERY_TOO_SHORT_MESSAGE`, which the code calls the
+    gateway's wording reproduced verbatim: it is verbatim for a two-character
+    query and not for an empty or one-character one, where the edge answers
+    `"Invalid request parameters"` instead. Only a developer reading a thrown
+    error ever sees the difference — the UI never sends either.
+- **An empty `query` is a `400`; an absent `query` is a `200`.** This one has a
+  real trap in it: the obvious implementation sets the parameter on every
+  keystroke and therefore sends `query=` the moment the field is cleared,
+  turning "show me everything" into a `400`.
+  - **Which spec says what, because the two do not agree and the difference is
+    the whole point of this bullet.** The handwritten contract vendored at
+    `docs/contract/openapi.yml` gives the parameter `type: string` and
+    `minLength: 2` and no default at all. The gateway's *generated* spec at
+    `https://api.taska.ozero.dev/v3/api-docs` gives it
+    `{"type":"string","default":"","minLength":2}` — so the springdoc
+    description of the running service documents as its default precisely the
+    value that same service answers `400` for. Corrected here on 2026-08-23
+    after `release-reviewer` checked the claim against the vendored file and
+    found it absent; the original entry attributed the default to the
+    handwritten contract, which never carried it. The runtime behaviour the
+    compensation is built on was measured directly either way and did not
+    depend on either document.
+- **An unrecognised `priority` or `issueType` is silently ignored.**
+  `priority=URGENT` and `issueType=EPIC` both answer `200` with the *entire*
+  set of 18 issues rather than `400`. A filter whose value the server did not
+  understand answers with a wider result than the one asked for, and the
+  answer is indistinguishable from an honest "the filter applied and matched
+  everything". The neighbouring `statusKey` behaves better — an unknown key
+  yields an empty result, not a full one — and `projectId` behaves best of
+  all, answering `400` on a non-UUID and `404 Project not found` on a UUID it
+  does not know. Three parameters on one endpoint, three different answers to
+  the same question.
+
+- **Compensation:** the API layer never sends a `query` below the runtime
+  minimum and never sends an empty one — the parameter is omitted rather than
+  emptied — and only ever sends enum values the contract names. The minimum
+  lives in one exported constant so the mock, the REST mapper and the UI
+  cannot drift apart on it; the mock rejects a short query the same way the
+  gateway does, so the mock-backed e2e suite cannot pass a case the deployed
+  gateway would `400`.
+- **User-visible effect:** none of the three reaches a reader, which is the
+  point of the compensation. The cost is that the UI cannot offer a
+  two-character search — a real limitation for short keys, and the reason the
+  minimum is worth settling rather than absorbing.
+- **Removal:** [TAS-180](https://jira.ozero.dev/browse/TAS-180). The
+  silently-ignored enum is the half that is a defect; the other two are the
+  contract and the runtime disagreeing, and either side may be the one that
+  moves. When it closes, the constant and the enum guard come out together.
+
+### The search DTO carries no `status` and no `projectId`
+
+- **Endpoint:** `GET /api/v1/issues/search`.
+- **Observed 2026-08-23:** every hit is an `IssueShortResponseDto` —
+  `{id, issueKey, issueType, priority, summary, assigneeId}` — the same short
+  shape `GET /projects/{projectId}/issues` returns, and for the same reason.
+  It is not a contract violation: the contract declares exactly this. It is
+  recorded because of what it costs the UI.
+- **Two things follow, and both shape the feature rather than decorate it.**
+  A hit cannot be placed in a board column, because the column is a status and
+  the hit has none — so the board renders server hits as their own group and
+  never merges them into the columns. And a hit found outside the open project
+  cannot be linked, because a link needs a `projectId` the response omits.
+- **Compensation:** the `projectId` is resolved from the `issueKey` prefix
+  against the projects list the client already holds (`CRM-1` → `CRM`, split
+  on the *last* hyphen because project keys contain them: `kappa-test-1` →
+  `kappa-test`). Zero extra requests. A prefix matching no known project
+  yields a hit rendered without a link rather than a guessed route.
+  - **The lookup folds case, and that is a second compensation rather than a
+    detail of the first.** Project keys are contract-open strings and the
+    deployed gateway holds lower-case ones (`kappa-test`), so a key matched
+    exactly would fail to resolve on real data. The cost is that two keys
+    differing only in case would collapse into one and route a hit to the
+    wrong project; unreachable in the mock seed, and never asked of the
+    gateway. Recorded by `api-contract-guard`, 2026-08-23; the collision
+    hazard itself is in `docs/ai/BACKLOG.md`.
+  - **Ordering was never measured.** `page` and `pageSize` behave, but nothing
+    here establishes that the gateway's order is stable across pages — the
+    mock imposes `createdAt` ascending and the contract promises nothing. Both
+    callers read page 0 only, so this is latent rather than live.
+- **Why not hydrate.** `RestTaskaApi.listIssues` already pays an N+1 through
+  `getIssue` for exactly this reason, and the owner settled the general
+  question on 2026-08-23 while deciding TAS-178: fix the backend, do not
+  hydrate on the frontend. Hydrating search would be that same N+1 on every
+  keystroke, which is the version of it that cannot be afforded.
+- **Removal:** none filed, and none should be until the board itself is the
+  thing being changed — the short DTO is the contract's own design, and the
+  compensation above costs nothing. Recorded so the next agent does not
+  discover the missing `projectId` from a broken link.
+
 ---
 
 ## Closed

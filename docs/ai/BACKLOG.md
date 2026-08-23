@@ -36,9 +36,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   as data. The mock cannot reproduce it: it derives `meta.columns` from the
   catalog. Fail-closed already holds at table granularity, not at column
   granularity.
-- **`IssuePriority` and `UserStatus` are closed unions over contract-open
-  strings**, with no narrowing at the mapper and no divergence entry. The
-  existing "status keys are open" entry covers only workflow `statusKey`.
+- ~~**`IssuePriority` and `UserStatus` are closed unions over contract-open
+  strings**, with no narrowing at the mapper and no divergence entry.~~
+  Graduated to [TAS-173](https://jira.ozero.dev/browse/TAS-173), which had
+  already been filed for the same defect from the crash side and asks for the
+  helper, the missing error boundary, and tests per enum. Two corrections this
+  line got wrong, both from `api-contract-guard` on 2026-08-23: it omits
+  `IssueType`, which is the one the search path newly reads, and it understates
+  the failure — an unrecognised value is not a missing colour, it is a throw out
+  of `typeMeta[value].label` with no error boundary anywhere in `src/` to catch
+  it. Since TAS-179 that throw reaches the shared top bar, so it takes every
+  screen rather than the board, on data from a project the reader never opened.
+  Recorded on TAS-173 rather than re-filed.
 - **The mock filters and sorts already-masked values** where the gateway
   operates on the underlying column. Unreachable from the console, since
   sensitive columns are stripped from both sort and filter — but the mock is the
@@ -630,6 +639,99 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### Found while clamping the panels (TAS-179, 2026-08-23)
+
+- **The notifications popover overflows a short desktop viewport.** At
+  **1440×420** with a full inbox it runs 13.3px past the bottom. Untouched by
+  TAS-179 — the vertical clamp added there is scoped to ≤820, and above the
+  breakpoint the popover keeps its original bell-relative top of 47.5 — so this
+  is a pre-existing defect of the desktop anchor rather than one that story
+  created. Measured while sweeping the same question the story fixed below the
+  breakpoint; recorded rather than widened into the diff.
+
+### Left over from the TAS-179 design pass (`art-director`, 2026-08-23)
+
+Past the report's cap. Its four blocking findings were fixed in the story; these
+were not.
+
+- **The global search shows a 420×46 `--shadow-pop` panel to say "Type at least
+  three characters"** on keystrokes 1 and 2 of every single search. A popover
+  with the weight of a result list, carrying an instruction the reader is one
+  keystroke from not needing.
+- **`role="status"` regions in `GlobalSearch` are mounted and unmounted rather
+  than updated in place.** Screen readers announce it today, measured, but the
+  robust pattern is one persistent region whose text changes — a region that
+  appears at the same moment its text does is at the mercy of the reader's
+  timing.
+- **`SearchHitsGroup`'s head is a `<strong>`,** so the group cannot be reached
+  by heading navigation. It is a landmark in everything but markup.
+- **A last keystroke that kills every local match moves cards out of the columns
+  and into the hits band for about 200ms** before the debounce catches up. The
+  cards are never wrong, but they travel.
+- **The `aria-disabled` unopenable row carries none of §4.1's disabled recipe** —
+  it is visually identical to a live row apart from a 10.5px `--fg-3` note.
+  Unreachable against the mock, where search is already scoped to visible
+  projects, so it was reviewed from code only.
+
+Two states in this change could not be exercised at runtime at all, and that is
+worth keeping: **the mock has no failing path for `searchIssues`**, so the error
+branch of both new reads is reviewed from source; and `VIEWER` is unreachable
+while `VITE_TASKA_ASSUME_PROJECT_ADMIN` is set. Neither is a defect. Both are
+places where "verified" would be the wrong word.
+
+### Left over from the TAS-179 contract pass (`api-contract-guard`, 2026-08-23)
+
+Measured against the deployed gateway without a token, which is what made the
+first two visible at all. Past the report's cap, so recorded rather than
+triaged.
+
+- **The gateway edge rejects `page < 0` and `pageSize` outside `1..100`
+  pre-auth; the mock validates neither**, and `page: -1` there silently yields
+  an empty slice. Unreachable today — the callers pass fixed sizes — but it is
+  the reference implementation being laxer than the thing it models, same class
+  as the membership scoping bug the same pass found and fixed.
+- **The mock trims a query before measuring its length; the gateway counts raw
+  characters.** Verified: `?query=%20%20` passes the edge. So `"ab "` is
+  refused locally and would be accepted-and-empty remotely. Deliberate, and in
+  a code comment, but not in `API-DIVERGENCE.md`.
+- **`BoardScreen.tsx:616` falls back from the server total to `issues.length`.**
+  Both implementations always set `totalCount`, so the branch is unreachable —
+  and if it were ever reached it would print a page size where a project total
+  belongs, which is the exact lie the story was written to remove. Worth
+  deleting rather than documenting.
+- The locally reproduced too-short message is the *service's* wording. For an
+  empty or one-character query the edge answers `"Invalid request parameters"`
+  instead, so `SEARCH_QUERY_TOO_SHORT_MESSAGE` is verbatim for one of the three
+  lengths it covers. Only a developer reading a thrown error sees it.
+
+### Left over from the TAS-179 review (`release-reviewer`, 2026-08-23)
+
+Beyond the report's three-item cap, so recorded rather than triaged. None of
+them blocks the story.
+
+- **`GlobalSearch` sets `aria-expanded` from `listboxOpen` alone**, so it reads
+  `false` while the too-short, searching and no-match panels are on screen.
+  Deliberate and documented in the component — those panels are not a listbox —
+  but a strict ARIA 1.2 reading wants either a popup role on the panel or the
+  expanded state to follow the panel rather than the list.
+- **An unlinkable hit can be arrowed onto and does nothing when opened.** A hit
+  whose `issueKey` prefix matches no known project is `aria-disabled`, which is
+  right, but Enter on it is silent — no message, no reason. Rare by
+  construction; loud enough to be confusing when it happens.
+- **Two search fields with different scopes now share `/projects`** — "Search
+  issues" in the bar searches every project's issues, "Filter projects" in the
+  heading narrows the cards. Both are correct and they are not the same
+  question. Whether that reads as two fields or as one confusing one is
+  `art-director`'s call, not a defect.
+- **Case-colliding project keys would collapse in `projectIdByKey`** and route a
+  hit to the wrong project. Unreachable in the mock seed; the gateway has never
+  been asked whether it treats `TAS` and `tas` as one key. Worth a probe before
+  it is worth a fix.
+- **`summaryByProject`'s memo never memoises.** It depends on the `useQueries`
+  result array, whose identity changes every render. Harmless — the body is
+  cheap — but the memo is decoration, and a reader will assume it is doing
+  something.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each
@@ -701,6 +803,29 @@ raised and did not close:
   the deployed gateway and the row card is mock-only. Recorded in
   `API-DIVERGENCE.md`; worth a backend story of its own, since the card is
   finished frontend work that nothing but this can switch on.
+
+The 2026-08-23 refresh (backend `4241be2ec144`) brought two changes. The
+search endpoint is claimed; the other is not:
+
+- ~~**Issue search.** `GET /api/v1/issues/search`, the gateway half of
+  TAS-110.~~ Claimed by [TAS-179](https://jira.ozero.dev/browse/TAS-179), with
+  its runtime divergences filed as
+  [TAS-180](https://jira.ozero.dev/browse/TAS-180) and written up in
+  `API-DIVERGENCE.md`.
+- **`notificationType` stopped being an enum.** The same refresh deleted
+  `NotificationTypeDto` — a closed list of eleven values — and replaced the
+  field with a bare `type: string` carrying `example: ISSUE_ASSIGNED,
+  MEMBER_REMOVED etc.`. `src/domain/types.ts` still models `NotificationType`
+  as a closed union of twelve, so the UI is now narrower than the contract, and
+  a type the gateway invents next lands in a union that does not admit it.
+  Exactly the family of the "status keys are open, and the UI's are closed"
+  entry in `API-DIVERGENCE.md`, and it wants the same answer: narrow at the
+  mapper rather than at the type. Found on 2026-08-23 while refreshing the
+  snapshot for TAS-179; deliberately not fixed there, because a notification
+  type has nothing to do with issue search and widening a story at snapshot
+  time is how a reviewable diff stops being one. Note the twelfth value —
+  `MEMBER_ROLE_CHANGED` was never in the enum the contract just deleted, so the
+  union and the contract already disagreed before this.
 
 ### `--fg-3` on `--bg` is below the contrast floor, in two places TAS-161 did not touch
 

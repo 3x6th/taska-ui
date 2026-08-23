@@ -9,6 +9,7 @@ import type {
   IssueLink,
   IssueLinkType,
   IssuePriority,
+  IssueSearchHit,
   IssueStatus,
   IssueType,
   IssueWithHistory,
@@ -51,6 +52,54 @@ export interface ListIssuesParams {
   /** `labelId` on the wire: the issues carrying this label, filtered by the server. */
   labelId?: string;
   page?: number;
+  pageSize?: number;
+}
+
+/**
+ * The shortest `query` `GET /issues/search` will answer — **three**, measured
+ * against the deployed gateway on 2026-08-23, where the contract declares
+ * `minLength: 2`. The runtime wins (AGENTS.md), and it is exported so the mock,
+ * the REST mapper and every field in the UI read the same number: a UI that
+ * searched from two characters would meet a `400` at the boundary and nowhere
+ * else, which is the worst place to find a gap.
+ *
+ * The empty string is a `400` too, while omitting the parameter is a `200` with
+ * everything — so an absent query means "no text filter" and an *empty* one is
+ * a rejected query, never a silent "show me everything". Both divergences are
+ * recorded in docs/ai/API-DIVERGENCE.md and removed by TAS-180.
+ */
+export const SEARCH_QUERY_MIN_LENGTH = 3;
+
+/** The gateway's own wording for a query below that minimum, reproduced verbatim. */
+export const SEARCH_QUERY_TOO_SHORT_MESSAGE = `Search query must be at least ${SEARCH_QUERY_MIN_LENGTH} characters`;
+
+/**
+ * Every parameter `GET /issues/search` takes, all AND-combined by the server.
+ *
+ * The enums are the domain's own unions rather than the contract's bare
+ * `string`s on purpose: an unrecognised `priority` or `issueType` is *silently
+ * ignored* by the runtime, so the answer to a filter the server did not
+ * understand is the whole set rather than a `400` — indistinguishable from a
+ * filter that applied and matched everything (TAS-180). Types are the only
+ * thing standing between a typo and a wider result than the one asked for.
+ */
+export interface SearchIssuesParams {
+  /**
+   * Absent means "no text filter". Present means it is searched, so anything
+   * shorter than `SEARCH_QUERY_MIN_LENGTH` is rejected by the implementation
+   * before it reaches the wire rather than sent and refused.
+   */
+  query?: string;
+  /** Absent searches every project the caller can see. Unknown id → `NOT_FOUND`. */
+  projectId?: string;
+  statusKey?: IssueStatus;
+  assigneeId?: string;
+  reporterId?: string;
+  priority?: IssuePriority;
+  issueType?: IssueType;
+  /** Zero-based, like every other paged read here. */
+  page?: number;
+  /** 1..100 by contract; the gateway's own default is 20. */
   pageSize?: number;
 }
 
@@ -136,6 +185,22 @@ export interface TaskaApi {
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow>;
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>>;
+  /**
+   * `GET /issues/search` — substring, case-insensitive, over `issueKey` OR
+   * `summary` OR `description`, with every other parameter ANDed onto it.
+   *
+   * Answers with `IssueSearchHit`, which is not an `Issue` and must not be
+   * widened into one: see the type. `totalCount` is the size of the whole
+   * matching set rather than of the page, which makes it the first honest issue
+   * total this frontend has been able to print.
+   *
+   * A `query` shorter than `SEARCH_QUERY_MIN_LENGTH` — the empty string
+   * included — rejects with `INVALID_ARGUMENT` in every implementation, without
+   * a request. That is not politeness: the gateway answers `400` for exactly
+   * these, so a mock that quietly accepted them would hide the failure from the
+   * e2e suite.
+   */
+  searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>>;
   getIssue(projectId: string, issueId: string): Promise<IssueWithHistory>;
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue>;
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue>;

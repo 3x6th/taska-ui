@@ -143,4 +143,30 @@ describe("HybridTaskaApi", () => {
 
     await expect(hybrid.getMembership(project.id)).rejects.toThrow("Internal error");
   });
+
+  // Search is a gateway route with no membership in it, so this class has
+  // nothing to add to it — including the short-query guard, which belongs to
+  // whichever implementation is underneath and must not be applied twice.
+  it("passes a search straight through, guard and all", async () => {
+    const live = liveApi();
+    const searchIssues = vi.spyOn(live, "searchIssues");
+    const hybrid = new HybridTaskaApi(live, true);
+
+    const page = await hybrid.searchIssues({ query: "board", pageSize: 100 });
+
+    expect(searchIssues).toHaveBeenCalledWith({ query: "board", pageSize: 100 });
+    expect(page.items.length).toBeGreaterThan(0);
+    // The hit is as short here as it is underneath: nothing on the way through
+    // widens it back into an issue.
+    expect(Object.keys(page.items[0]).sort()).toEqual([
+      "assigneeId",
+      "id",
+      "issueKey",
+      "issueType",
+      "priority",
+      "summary",
+    ]);
+
+    await expect(hybrid.searchIssues({ query: "bo" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
 });
