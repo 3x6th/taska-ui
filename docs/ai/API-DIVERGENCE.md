@@ -1420,8 +1420,15 @@ Same rule as above: "Closed by" is settled, the rest is live.
   it — but that is a second per-issue request on top of the N+1 hydration
   `listIssues` already performs, i.e. two round trips per card on a board read.
   The probe says the field the gateway declares is the one to fill, so the fix
-  belongs there and the frontend stays as it is. Revisit only if TAS-178 will
-  not be taken.
+  belongs there and the frontend stays as it is. **The owner settled this on
+  2026-08-23, after reading the probe: fix the backend, do not hydrate on the
+  frontend.** So this is a decision on the record, not a default — revisit it
+  only if that changes.
+- **Which layer drops the field is not visible from here.** TAS-119 owns
+  `IssueResponse` in issue-service and TAS-120 owns the gateway's REST mapping;
+  from outside only the gateway's `200` with `labels: []` is observable, and
+  either half could be the one that stops carrying it. Whoever takes TAS-178
+  reads it from the backend side first.
 
 ---
 
