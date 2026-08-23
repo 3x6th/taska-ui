@@ -2457,6 +2457,19 @@ h1 {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 
+/* Changing a surface moves every foreground standing on it, and this one moved
+   two of them the wrong way: `--fg-3` reads 3.051/3.142 on a plain row and
+   2.816/2.597 on this fill, so dark crossed §7's 3:1 *because* of the fill
+   above and light went from under it to further under. Visibly, too — the row
+   the keyboard had chosen carried the dimmest key on the panel, which is the
+   opposite of what a selection should do. `--fg-2` measures 6.233/6.001 here
+   and makes the selected row the strongest one. No new token; the summary
+   beside it is already `--fg` and needs nothing. */
+.global-search-option.is-active .global-search-key,
+.global-search-option.is-active .global-search-note {
+  color: var(--fg-2);
+}
+
 /* A hit whose project key resolves to nothing cannot be opened, so it does not
    offer the pointer that says it can. */
 .global-search-option[aria-disabled="true"] {
@@ -4163,6 +4176,17 @@ button.issue-link-open:hover {
   .global-search-option {
     min-height: 44px;
     padding: 12px;
+  }
+
+  /* And the cap has to follow the rows it caps. A page is eight hits, so the
+     list is eight rows: 8 x 37.1 = 296.8 above this breakpoint, and the base
+     340 never engages. At the touch height the same eight measure 352, so 340
+     hid twelve pixels of the last row — with no way to reach them, because
+     `aria-activedescendant` moves no DOM focus and nothing here calls
+     `scrollIntoView`. One ArrowUp from the unselected state wraps onto exactly
+     that row, so the clipped one was the row the keyboard lands on first. */
+  .global-search-list {
+    max-height: 352px;
   }
 
   .notification-wrap {

@@ -106,6 +106,55 @@ test.describe("top bar popovers stay on screen when the bar wraps", () => {
     }
   });
 
+  // The list caps at a page of hits, and the rows grow to §7's touch floor
+  // below 820 — two numbers set in different rules that have to agree, and did
+  // not: at 44px rows the page of eight measured 352 against a 340 cap, so the
+  // last row was clipped by 12px with no way to reach it. Nothing scrolls it
+  // into view, because `aria-activedescendant` moves no DOM focus and there is
+  // no `scrollIntoView` anywhere in `src/` — and one ArrowUp from the
+  // unselected state wraps straight onto that row.
+  test("a full page of results is never clipped by the list's own cap", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport widths regardless of project");
+
+    await signIn(page);
+
+    for (const width of [390, 820, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+
+      const field = page.getByRole("combobox", { name: /Search issues/ });
+      await field.fill("tas-");
+      // Ten seeded issues carry this in their key, so the page fills to its
+      // eight. Waiting on the count rather than on the listbox: for the 200ms
+      // the field is debounced the query key has not changed yet, so the
+      // previous answer is legitimately still on screen.
+      await expect(page.getByRole("option")).toHaveCount(8);
+
+      const measured = await page.evaluate(() => {
+        const list = document.querySelector(".global-search-list") as HTMLElement;
+        const options = [...list.querySelectorAll(".global-search-option")];
+        const last = options[options.length - 1].getBoundingClientRect();
+        return {
+          clientHeight: list.clientHeight,
+          scrollHeight: list.scrollHeight,
+          rowHeight: options[0].getBoundingClientRect().height,
+          clippedBy: last.bottom - list.getBoundingClientRect().bottom,
+        };
+      });
+
+      expect(
+        measured.scrollHeight,
+        `${width}px: ${measured.rowHeight}px rows overflow the list by ${measured.scrollHeight - measured.clientHeight}px`,
+      ).toBeLessThanOrEqual(measured.clientHeight);
+      expect(measured.clippedBy, `${width}px: the last option is clipped by ${measured.clippedBy}px`).toBeLessThanOrEqual(0);
+      // Guards the guard: if the rows ever stop meeting §7's touch floor the
+      // assertion above goes quiet by getting easier.
+      if (width <= 820) expect(measured.rowHeight, `${width}px: rows are under §7's 44`).toBeGreaterThanOrEqual(44);
+
+      await field.press("Escape");
+      await field.fill("");
+    }
+  });
+
   test("the avatar is the right-hand end of the bar on whichever row it lands", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport widths regardless of project");
 
