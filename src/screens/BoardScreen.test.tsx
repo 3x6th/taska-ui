@@ -66,9 +66,10 @@ const {
     searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null }[];
     searchTotal: number;
     searchFailure?: Error;
-    /** Issues created during a test, and the ones deleted, so the list moves the way a server's would. */
+    /** Issues created during a test, the ones deleted and the fields edited, so the list moves the way a server's would. */
     created: ReturnType<typeof makeIssue>[];
     deleted: Set<string>;
+    edits: Record<string, { summary?: string; description?: string }>;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -79,6 +80,7 @@ const {
     searchTotal: 0,
     created: [],
     deleted: new Set<string>(),
+    edits: {},
   };
 
   const api = {
@@ -129,7 +131,9 @@ const {
       // The description is not empty: the board's own box searches descriptions
       // too, and a fixture with none could not tell whether it does.
       const seeded = makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", "Point the columns at the deployed gateway.");
-      const items = [seeded, ...state.created].filter((issue) => !state.deleted.has(issue.id));
+      const items = [seeded, ...state.created]
+        .filter((issue) => !state.deleted.has(issue.id))
+        .map((issue) => ({ ...issue, ...(state.edits[issue.id] ?? {}) }));
       return { items, page: 0, pageSize: 100, totalCount: items.length };
     },
     // Both of these move the issue list *and* the server's own match count, the
@@ -145,6 +149,19 @@ const {
     deleteIssue: async (_projectId: string, issueId: string) => {
       state.deleted.add(issueId);
       state.searchTotal = Math.max(0, state.searchTotal - 1);
+    },
+    // The third way match membership moves, and the one most likely to be
+    // re-broken: editing a summary or a description in or out of a match. It is
+    // safe today only because the panel's edit routes through `invalidateBoard`
+    // — nothing about the edit itself knows the search exists. Written here so
+    // that stops being luck. Every case below edits an issue *out* of its
+    // match, so the hit goes with it.
+    updateIssue: async (_projectId: string, issueId: string, patch: { summary?: string; description?: string }) => {
+      state.edits[issueId] = { ...state.edits[issueId], ...patch };
+      state.searchHits = state.searchHits.filter((hit) => hit.id !== issueId);
+      state.searchTotal = Math.max(0, state.searchTotal - 1);
+      const seeded = makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", "Point the columns at the deployed gateway.");
+      return { ...seeded, id: issueId, ...state.edits[issueId] };
     },
     // The search route answers with the short DTO — six fields, no status and
     // no projectId — so the fixture cannot accidentally hand the board an issue
@@ -192,6 +209,7 @@ const {
         version: 1,
         deletedAt: null,
         labels: [],
+        ...(state.edits[issueId] ?? {}),
       },
       history: [],
     }),
@@ -251,6 +269,7 @@ const {
       state.searchFailure = undefined;
       state.created = [];
       state.deleted = new Set<string>();
+      state.edits = {};
     },
   };
 });
@@ -258,13 +277,24 @@ const {
 vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
 
 function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
-  // `staleTime` is the app's own (src/main.tsx), not react-query's default of
-  // 0. It matters more than it looks: at 0 every cache entry is refetched the
-  // moment anything observes it again, so a query that nothing invalidates
-  // still corrects itself — and a whole class of staleness defect becomes
-  // invisible to this file. The counter's stranded search total (TAS-179) was
-  // exactly that class, and a test written under the default passed against
-  // the bug.
+  // `staleTime` is the app's own (src/main.tsx) rather than react-query's
+  // default of 0, so this harness caches the way production does. That is all
+  // it is: **it is not what makes the counter tests below bind.** The 2×2 was
+  // run — with `20_000` and with `0`, against the fix and against its absence —
+  // and the two tests fail without the fix under either value. At 0 react-query
+  // still refetches only on a trigger, and `BoardScreen` stays mounted with the
+  // same observer for the whole test, so nothing ever re-observes the key.
+  //
+  // What makes them bind is the fixture: a server total that differs from the
+  // loaded page's. The first draft seeded them equal, so "1 of 1" was what the
+  // counter read both before the search had answered and after, and the test
+  // asserted the pre-search state and measured nothing. The defect never
+  // depended on a cache window either — it was a missing invalidation, which is
+  // also why re-typing the query could not clear it.
+  //
+  // The line stays because the harness should mirror production, and because it
+  // is now the only thing here that would catch a refetch-on-observe
+  // regression.
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 20_000 } } });
   const board = <BoardScreen theme="light" toggleTheme={() => {}} onLogout={() => {}} logoutPending={false} />;
   render(
@@ -655,6 +685,31 @@ describe("the counter after a mutation", () => {
     // same query could not correct it.
     expect(await screen.findByText("3 of 3")).toBeVisible();
     expect(screen.queryByText("3 of 2")).not.toBeInTheDocument();
+  });
+
+  it("moves both halves when a summary is edited out of its match", async () => {
+    seedAnsweredSearch();
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("region", { name: "To Do column" });
+    // "wire" is in the seeded summary and in neither its description nor its
+    // key, so editing the summary is the only thing that can take this issue
+    // out of the match — with "deployed" the description would hold it in, now
+    // that the local predicate reads descriptions too.
+    await search("wire");
+    expect(await screen.findByText("2 of 2")).toBeVisible();
+
+    // The panel's summary commits on blur (§5.5). This is the third way match
+    // membership moves and the one nothing in the edit path knows about: it is
+    // safe only because it routes through `invalidateBoard`, and this is what
+    // says so if someone gives it its own invalidation later.
+    const summary = document.querySelector(".summary-textarea") as HTMLTextAreaElement;
+    fireEvent.change(summary, { target: { value: "Connect the board to the live gateway" } });
+    fireEvent.blur(summary);
+
+    // No cards and one hit, out of one — the same arithmetic as the delete,
+    // reached by editing a word rather than by removing a row.
+    expect(await screen.findByText("1 of 1")).toBeVisible();
+    expect(screen.queryByText("2 of 2")).not.toBeInTheDocument();
   });
 
   it("moves both halves when the matching issue is deleted, rather than leaving a total behind an emptier board", async () => {

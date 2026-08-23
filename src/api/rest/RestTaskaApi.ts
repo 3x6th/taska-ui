@@ -994,7 +994,9 @@ function toLabel(label: RestLabel): Label {
  * filter". The same rule the mock applies, and it lives on this side of the
  * wire so that the `400` the runtime would answer with is never spent: the
  * minimum is 3 in the runtime against `minLength: 2` in the contract, and the
- * empty string — which the contract offers as the *default* — is refused.
+ * empty string — which the gateway's own generated spec (`/v3/api-docs`) offers
+ * as the parameter's *default*, though the vendored contract states no default
+ * at all — is refused.
  *
  * The error is the gateway's own answer reproduced locally, `INVALID_ARGUMENT`
  * with `400` and its wording, so a caller cannot tell a query stopped here from

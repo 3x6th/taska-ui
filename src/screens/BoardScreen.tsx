@@ -612,7 +612,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               ) : searchUnread.unanswered ? (
                 <Unknown />
               ) : searchQuery.data && searchInStep ? (
-                (searchQuery.data.totalCount ?? issues.length)
+                // No `?? issues.length` behind this. Both implementations
+                // always state a total, so that branch was unreachable — and
+                // had it ever been reached it would have printed the size of
+                // one loaded page where a project total belongs, which is the
+                // exact substitution this counter was changed to stop making.
+                (searchQuery.data.totalCount ?? <Unknown />)
               ) : (
                 <PendingValue />
               )}
@@ -938,13 +943,20 @@ function SearchHitsGroup({
     <section aria-label="Other matches from the server" className="search-hits">
       {/* The heading explains the rows, so it comes with them. The other three
           answers are one sentence each: a header over an empty group would be
-          a band of prose explaining nothing. */}
+          a band of prose explaining nothing.
+
+          One sentence rather than two. The second used to explain *why* these
+          are not in a column — a design decision, told to a reader who did not
+          ask, in a paragraph that ran 188 characters and cost a phone 70px of
+          the group's whole budget before the first result. The heading and this
+          line carry what a reader needs; the reason lives in the comment above
+          this component. */}
       {!error && !loading && hits.length > 0 ? (
         <div className="search-hits-head">
           <strong>More matches for “{query}”</strong>
           <span>
             Found by the server across the whole project: matches in descriptions, and issues beyond the page this board
-            loaded. A search result carries no status, so these are not placed in a column.
+            loaded.
           </span>
         </div>
       ) : null}

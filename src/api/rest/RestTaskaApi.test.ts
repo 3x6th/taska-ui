@@ -770,8 +770,9 @@ describe("RestTaskaApi read-only admin", () => {
 /**
  * `GET /issues/search`, and mostly about the two things that must never reach
  * the wire: a query the runtime would refuse, and an empty one. The gateway
- * answers `400` for both, and the parameter's contract *default* is the empty
- * string — so the obvious implementation, which sets `query` on every
+ * answers `400` for both, and its own generated spec (`/v3/api-docs`) gives the
+ * parameter a *default* of the empty string — the vendored contract states no
+ * default — so the obvious implementation, which sets `query` on every
  * keystroke, turns a cleared field into an error (docs/ai/API-DIVERGENCE.md).
  */
 describe("RestTaskaApi issue search", () => {
@@ -803,7 +804,8 @@ describe("RestTaskaApi issue search", () => {
     const api = new RestTaskaApi();
 
     // Two characters is what the contract permits and the runtime refuses; the
-    // empty string is what the contract offers as the default.
+    // empty string is what the gateway's generated spec (`/v3/api-docs`) offers
+    // as the default.
     await expect(api.searchIssues({ query: "bo" })).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
       status: 400,

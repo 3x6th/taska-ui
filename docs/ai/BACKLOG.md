@@ -639,6 +639,36 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### Left over from the TAS-179 design pass (`art-director`, 2026-08-23)
+
+Past the report's cap. Its four blocking findings were fixed in the story; these
+were not.
+
+- **The global search shows a 420×46 `--shadow-pop` panel to say "Type at least
+  three characters"** on keystrokes 1 and 2 of every single search. A popover
+  with the weight of a result list, carrying an instruction the reader is one
+  keystroke from not needing.
+- **`role="status"` regions in `GlobalSearch` are mounted and unmounted rather
+  than updated in place.** Screen readers announce it today, measured, but the
+  robust pattern is one persistent region whose text changes — a region that
+  appears at the same moment its text does is at the mercy of the reader's
+  timing.
+- **`SearchHitsGroup`'s head is a `<strong>`,** so the group cannot be reached
+  by heading navigation. It is a landmark in everything but markup.
+- **A last keystroke that kills every local match moves cards out of the columns
+  and into the hits band for about 200ms** before the debounce catches up. The
+  cards are never wrong, but they travel.
+- **The `aria-disabled` unopenable row carries none of §4.1's disabled recipe** —
+  it is visually identical to a live row apart from a 10.5px `--fg-3` note.
+  Unreachable against the mock, where search is already scoped to visible
+  projects, so it was reviewed from code only.
+
+Two states in this change could not be exercised at runtime at all, and that is
+worth keeping: **the mock has no failing path for `searchIssues`**, so the error
+branch of both new reads is reviewed from source; and `VIEWER` is unreachable
+while `VITE_TASKA_ASSUME_PROJECT_ADMIN` is set. Neither is a defect. Both are
+places where "verified" would be the wrong word.
+
 ### Left over from the TAS-179 contract pass (`api-contract-guard`, 2026-08-23)
 
 Measured against the deployed gateway without a token, which is what made the

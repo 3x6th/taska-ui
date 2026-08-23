@@ -830,17 +830,23 @@ export class MockTaskaStore {
     const page = params.page ?? 0;
     const pageSize = params.pageSize ?? 20;
 
-    // A project that does not exist is a 404 from the gateway, and asking for
-    // one this user is not in is the same answer: the search is scoped to what
-    // `listProjects` would return, so an unscoped search can never be a way
-    // around it.
+    // A project that does not exist is a 404 from the gateway, and asking for one
+    // this user is not in is the same answer.
+    //
+    // Measured against `visible`, not through `getProject`: that one checks
+    // existence and nothing else, so the scoped branch used to hand a
+    // non-member every issue in a project they are not in — a reference
+    // implementation stating an access rule in its own comment and not keeping
+    // it, and an e2e case that could pass here and be refused by the gateway.
     const visible = new Set(this.listProjects().map((project) => project.id));
-    if (params.projectId !== undefined) {
-      this.getProject(params.projectId);
+    if (params.projectId !== undefined && !visible.has(params.projectId)) {
+      throw new MockApiError("NOT_FOUND", "Project not found");
     }
 
     const matched = this.issues
       .filter((item) => item.deletedAt === null)
+      // One rule either way: the unscoped search covers every visible project,
+      // and the scoped one covers a visible project. Neither reaches past them.
       .filter((item) => (params.projectId === undefined ? visible.has(item.projectId) : item.projectId === params.projectId))
       .filter((item) => !params.statusKey || item.status === params.statusKey)
       .filter((item) => !params.assigneeId || item.assigneeId === params.assigneeId)

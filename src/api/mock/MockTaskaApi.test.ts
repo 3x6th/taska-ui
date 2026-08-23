@@ -313,7 +313,8 @@ describe("MockTaskaApi", () => {
    * 2026-08-23, not as the contract describes it. Two of those measurements are
    * the reason these cases exist at all: the runtime refuses a query below
    * three characters where the contract permits two, and refuses an empty one
-   * where the contract offers it as the default. The e2e suite runs against
+   * where its own generated spec (`/v3/api-docs`) offers it as the parameter's
+   * default. The e2e suite runs against
    * this mock, so a mock that quietly accepted either would let the suite pass
    * a case the gateway answers 400 to.
    */
@@ -372,6 +373,25 @@ describe("MockTaskaApi", () => {
       expect(scoped.items.every((hit) => hit.issueKey.startsWith(`${project.projectKey}-`))).toBe(true);
 
       await expect(api.searchIssues({ query: "board", projectId: "no-such-project" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("refuses a project the caller is not a member of, the same way as one that is not there", async () => {
+      // Mark is in the seed's fourth project and Anna is not, so the id has to
+      // be fetched as him before the question can be asked as her.
+      await api.login({ email: "mark@example.com", password: "mock-accepts-anything" });
+      const marks = await api.listProjects();
+      const notAnnas = marks.find((item) => !["TAS", "WEB", "OPS"].includes(item.projectKey));
+      expect(notAnnas).toBeDefined();
+
+      await api.login({ email: "anna@example.com", password: "mock-accepts-anything" });
+      await expect(await api.listProjects().then((items) => items.map((item) => item.id))).not.toContain(notAnnas!.id);
+
+      // Existence is not access. Checking only that the project exists let a
+      // non-member read every issue in it — the mock stating an access rule in
+      // its own comment and not keeping it, which is worse than not stating one.
+      await expect(api.searchIssues({ query: "issues", projectId: notAnnas!.id })).rejects.toMatchObject({
         code: "NOT_FOUND",
       });
     });
