@@ -111,3 +111,15 @@ without Jira access can audit. If this section drifts from Jira, Jira wins.
   no `status`, so a column placement would be a claim the gateway never made.
 - `npm run check` and `npm run build` pass, with browser evidence across the
   three viewports in both themes.
+
+Scope added by the owner mid-flight, folded into this story rather than filed
+separately:
+
+- The profile avatar is the last control on the top bar and is flush right at
+  every width, including on a row the bar has wrapped onto.
+- No anchored popover — profile, notifications, or the new search dropdown —
+  crosses either edge of the viewport. The board bar wraps under 820px and
+  packs the wrapped row at `flex-start`, which moved the avatar away from the
+  right edge and sent its `right: 0` popover off the left of the screen.
+- Verified at 390 and at the 760–820 band where the wrap begins, in both
+  themes.
