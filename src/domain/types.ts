@@ -157,6 +157,38 @@ export interface Issue {
   labels: Label[];
 }
 
+/**
+ * One result of `GET /issues/search` — the contract's `IssueShortResponseDto`,
+ * and **not** an `Issue`.
+ *
+ * Six fields is everything the search route is ever told. There is no `status`,
+ * no `projectId`, no `description`, no `labels`, no `updatedAt` and no
+ * `version`, which is why this is its own type rather than a `Partial<Issue>`
+ * or an `Issue` with holes punched in it: a hit that was typed as an issue
+ * would let a column, a card or a drop target read a status the server never
+ * sent.
+ *
+ * Two consequences shape the feature rather than decorate it. A hit cannot be
+ * placed in a board column, so the board renders server hits as their own group
+ * (DESIGN.md §5.4 counts them, §5.2 does not hold them). And a hit needs a
+ * `projectId` to be linkable, which is resolved from the `issueKey` prefix
+ * against the projects list the client already holds — see
+ * `projectKeyFromIssueKey`. Deliberately not hydrated through `getIssue`: that
+ * is the N+1 `RestTaskaApi.listIssues` already pays, and the owner settled the
+ * general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md, TAS-178) — fix the
+ * backend, do not hydrate on the frontend. On a search it would be that N+1 on
+ * every keystroke.
+ */
+export interface IssueSearchHit {
+  id: string;
+  issueKey: string;
+  issueType: IssueType;
+  summary: string;
+  priority: IssuePriority;
+  /** `""` on the wire for an unassigned issue; normalised to `null` like `Issue.assigneeId`. */
+  assigneeId: string | null;
+}
+
 export type IssueEventType =
   | "CREATED"
   | "TRANSITIONED"

@@ -57,6 +57,28 @@ export const issueLinkTypeLabel = (viewLinkType: string) => {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Linked";
 };
 
+/**
+ * The project key an `issueKey` was built from — `CRM-1` → `CRM`.
+ *
+ * Split on the **last** hyphen, never the first: real project keys contain
+ * them (`kappa-test-1` → `kappa-test`, `TEST_TEST-1` → `TEST_TEST`), and
+ * splitting on the first would hand back `kappa` and link to nothing.
+ *
+ * This exists because `IssueShortResponseDto` — what `GET /issues/search`
+ * answers with — carries no `projectId`, and a route to an issue needs one.
+ * Resolving the prefix against the projects list the client already holds costs
+ * zero requests; a prefix that matches no known project means the hit is not
+ * linkable, and the caller renders it without a link rather than guessing a
+ * route (docs/ai/API-DIVERGENCE.md).
+ *
+ * The empty string for anything that is not `<key>-<something>`, which is a
+ * caller's cue that there is nothing to resolve rather than a key to look up.
+ */
+export const projectKeyFromIssueKey = (issueKey: string) => {
+  const cut = issueKey.lastIndexOf("-");
+  return cut > 0 && cut < issueKey.length - 1 ? issueKey.slice(0, cut) : "";
+};
+
 export const initials = (name = "") =>
   name
     .split(" ")

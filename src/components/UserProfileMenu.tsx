@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { LogOut, ShieldCheck } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import type { GlobalRole, User, UserStatus } from "../domain/types";
+import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { Avatar } from "./Avatar";
 
 interface UserProfileMenuProps {
@@ -34,27 +35,10 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   // safe direction (docs/ai/API-DIVERGENCE.md).
   const isGlobalAdmin = user?.globalRole === "GLOBAL_ADMIN";
 
-  useEffect(() => {
-    if (!open) return;
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
+  // Escape and a press outside, from the hook the notifications popover and the
+  // global search dropdown share (§4.16, §7). This used to be the only copy in
+  // the product, which is exactly why the other two shipped without it.
+  useDismissOnOutside(open, rootRef, () => setOpen(false));
 
   return (
     <div className="user-profile-menu" ref={rootRef}>

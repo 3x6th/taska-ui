@@ -6,6 +6,7 @@ import {
   issueLinkTypes,
   keyBadgeStyle,
   labelColorChoices,
+  projectKeyFromIssueKey,
   readableTextOn,
 } from "./format";
 
@@ -296,5 +297,35 @@ describe("keyBadgeStyle", () => {
     // hands its items through unmapped.
     expect(() => keyBadgeStyle(undefined as unknown as string)).not.toThrow();
     expect(keyBadgeStyle(undefined as unknown as string)).toBeUndefined();
+  });
+});
+
+/**
+ * The whole of the compensation for a search DTO that carries no `projectId`
+ * (docs/ai/API-DIVERGENCE.md). Every case here is a real project key: the
+ * deployed gateway holds `kappa-test` and `TEST_TEST` alongside the uppercase
+ * ones, and a split on the *first* hyphen would send `kappa-test-1` to a
+ * project called `kappa`.
+ */
+describe("projectKeyFromIssueKey", () => {
+  it.each([
+    ["TAS-101", "TAS"],
+    ["CRM-1", "CRM"],
+    ["kappa-test-1", "kappa-test"],
+    ["TEST_TEST-1", "TEST_TEST"],
+    ["a-b-c-d-999", "a-b-c-d"],
+  ])("reads %s as the key %s", (issueKey, expected) => {
+    expect(projectKeyFromIssueKey(issueKey)).toBe(expected);
+  });
+
+  it.each([
+    // Nothing to resolve rather than a key to look up: the caller renders the
+    // hit without a link instead of guessing a route.
+    ["TAS", ""],
+    ["", ""],
+    ["-101", ""],
+    ["TAS-", ""],
+  ])("reads %s as no key at all", (issueKey, expected) => {
+    expect(projectKeyFromIssueKey(issueKey)).toBe(expected);
   });
 });

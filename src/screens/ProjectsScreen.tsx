@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
@@ -52,9 +52,29 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
 
+  const [filter, setFilter] = useState("");
+
   const meQuery = useQuery({ queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser() });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => taskaApi.listProjects() });
-  const projects = projectsQuery.data ?? [];
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+
+  /**
+   * Filtered on the client, and correct by construction rather than as a
+   * compromise: `GET /projects` returns the whole list unpaginated, so there is
+   * no second page for a filter here to be wrong about. Name **and** key,
+   * because the key is what the reader knows a project by on every card and in
+   * every issue key. No endpoint for this exists and none is needed — the one
+   * search route the gateway has is for issues.
+   */
+  const visibleProjects = useMemo(() => {
+    const normalized = filter.trim().toLowerCase();
+    if (!normalized) return projects;
+    return projects.filter(
+      (project) =>
+        project.name.toLowerCase().includes(normalized) || project.projectKey.toLowerCase().includes(normalized),
+    );
+  }, [filter, projects]);
+  const filtering = filter.trim().length > 0;
 
   // One query per project rather than a single `Promise.all` across all of
   // them. The batch rejected as a whole, so one project the gateway would not
@@ -68,6 +88,14 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
       queryFn: () => loadSummary(project.id),
     })),
   });
+
+  // Position-free access to the per-project queries. `summaryQueries` is built
+  // over the *unfiltered* list, so once the grid can render a subset an index
+  // into it is one project's counts printed on another project's card.
+  const summaryByProject = useMemo(
+    () => new Map(projects.map((project, index) => [project.id, summaryQueries[index]])),
+    [projects, summaryQueries],
+  );
 
   const projectsUnread = useUnanswered(projectsQuery);
   // One line for the whole grid, not one per card: a gateway that is failing
@@ -91,15 +119,37 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
         <div className="projects-heading">
           <div>
             <h1>Projects</h1>
+            {/* The count says what is on screen and, when that is not all of
+                them, what it is out of. "2 projects" under an active filter
+                would be a claim about the account rather than about the
+                filter. */}
             <p>
-              {projectsUnread.unanswered ? <Unknown /> : projects.length} projects ·{" "}
-              {meQuery.data?.displayName ?? "Member"}
+              {projectsUnread.unanswered ? (
+                <Unknown />
+              ) : filtering ? (
+                `${visibleProjects.length} of ${projects.length}`
+              ) : (
+                projects.length
+              )}{" "}
+              projects · {meQuery.data?.displayName ?? "Member"}
             </p>
           </div>
-          <button className="primary-button" onClick={() => setCreating(true)} type="button">
-            <Plus size={15} />
-            New project
-          </button>
+          <div className="projects-heading-actions">
+            <label className="search-box">
+              <Search aria-hidden="true" size={15} />
+              <span className="visually-hidden">Filter projects by name or key</span>
+              <input
+                onChange={(event) => setFilter(event.target.value)}
+                placeholder="Filter projects"
+                type="text"
+                value={filter}
+              />
+            </label>
+            <button className="primary-button" onClick={() => setCreating(true)} type="button">
+              <Plus size={15} />
+              New project
+            </button>
+          </div>
         </div>
 
         {projectsUnread.unanswered ? (
@@ -119,18 +169,24 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
               <div className="project-card skeleton-card" key={index} />
             ))}
           </div>
+        ) : filtering && visibleProjects.length === 0 ? (
+          // A filter that matches nothing is not an account with no projects,
+          // and the two must not read the same (§5.6).
+          <p className="projects-empty">No projects match “{filter.trim()}”.</p>
         ) : (
           <div className="project-grid">
-            {projects.map((project, index) => (
+            {visibleProjects.map((project) => (
               <ProjectCard
                 key={project.id}
                 project={project}
-                // Same order as the queries were built in, one per project.
-                summary={summaryQueries[index]?.data}
+                // Keyed by project id rather than by position: the queries were
+                // built over the unfiltered list, so a filtered index would put
+                // one project's counts on another's card.
+                summary={summaryByProject.get(project.id)?.data}
                 // Loading is not unknown (§5.6). Without this the numbers spent
                 // every visit as em dashes before appearing, which said a
                 // request that was about to succeed had already failed.
-                pending={summaryQueries[index]?.isPending ?? true}
+                pending={summaryByProject.get(project.id)?.isPending ?? true}
                 onOpen={() => navigate(`/projects/${project.id}/board`)}
               />
             ))}

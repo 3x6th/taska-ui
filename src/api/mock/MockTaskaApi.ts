@@ -9,10 +9,12 @@ import type {
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
+  SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
+import { SEARCH_QUERY_MIN_LENGTH, SEARCH_QUERY_TOO_SHORT_MESSAGE } from "../TaskaApi";
 import type {
   AdminCatalog,
   AdminRow,
@@ -26,6 +28,7 @@ import type {
   IssueLink,
   IssueLinkType,
   IssuePriority,
+  IssueSearchHit,
   IssueStatus,
   IssueType,
   IssueWithHistory,
@@ -89,6 +92,40 @@ const makeId = (prefix: string) => {
 
 const byCreatedAt = <T extends { createdAt: string }>(a: T, b: T) =>
   new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+
+/**
+ * The search query as the gateway would accept it, or `null` for "the caller
+ * asked for no text filter at all".
+ *
+ * Absent and empty are different answers on this route and must stay different
+ * here: omitting `query` is a `200` with everything, `query=` is a `400`. So an
+ * empty string is a rejected query rather than a quiet "everything" — the trap
+ * that catches an implementation which sets the parameter on every keystroke.
+ *
+ * Measured on the trimmed value, and the trimmed value is what gets searched:
+ * the gateway counts raw characters, so `"ab "` is three to it and finds
+ * nothing, where refusing it says what actually happened. RestTaskaApi applies
+ * exactly the same rule.
+ */
+const requireSearchQuery = (raw: string | undefined): string | null => {
+  if (raw === undefined) return null;
+  const query = raw.trim();
+  if (query.length < SEARCH_QUERY_MIN_LENGTH) {
+    throw new MockApiError("INVALID_ARGUMENT", SEARCH_QUERY_TOO_SHORT_MESSAGE);
+  }
+  return query;
+};
+
+/** Substring, case-insensitive, over `issue_key` OR `summary` OR `description` — the probe's own OR. */
+const matchesSearchQuery = (issue: Issue, query: string | null) => {
+  if (!query) return true;
+  const needle = query.toLowerCase();
+  return (
+    issue.issueKey.toLowerCase().includes(needle) ||
+    issue.summary.toLowerCase().includes(needle) ||
+    issue.description.toLowerCase().includes(needle)
+  );
+};
 
 /** Ordinary text ordering, deterministic and not locale-collated. */
 const compareAsText = (left: unknown, right: unknown) => {
@@ -770,6 +807,57 @@ export class MockTaskaStore {
       page,
       pageSize,
       totalCount: filtered.length,
+    };
+  }
+
+  /**
+   * `GET /issues/search`, reproduced from the gateway probe of 2026-08-23
+   * rather than from the contract where the two differ.
+   *
+   * The semantics that matter, because the e2e suite runs against this and
+   * would otherwise pass cases the deployed gateway refuses: a query below
+   * `SEARCH_QUERY_MIN_LENGTH` (the empty string included) is an
+   * `INVALID_ARGUMENT`, an *absent* query is "no text filter"; the match is a
+   * case-insensitive substring over `issueKey` OR `summary` OR `description`;
+   * every other parameter ANDs onto it; `totalCount` counts the whole matching
+   * set and the page is sliced after; and with no `projectId` the search covers
+   * the projects this user can see — not every project in the store.
+   */
+  searchIssues(params: SearchIssuesParams = {}): Page<IssueSearchHit> {
+    const query = requireSearchQuery(params.query);
+    // 20 is the contract's declared default for this route, so the mock pages
+    // the way the gateway does when the caller states nothing.
+    const page = params.page ?? 0;
+    const pageSize = params.pageSize ?? 20;
+
+    // A project that does not exist is a 404 from the gateway, and asking for
+    // one this user is not in is the same answer: the search is scoped to what
+    // `listProjects` would return, so an unscoped search can never be a way
+    // around it.
+    const visible = new Set(this.listProjects().map((project) => project.id));
+    if (params.projectId !== undefined) {
+      this.getProject(params.projectId);
+    }
+
+    const matched = this.issues
+      .filter((item) => item.deletedAt === null)
+      .filter((item) => (params.projectId === undefined ? visible.has(item.projectId) : item.projectId === params.projectId))
+      .filter((item) => !params.statusKey || item.status === params.statusKey)
+      .filter((item) => !params.assigneeId || item.assigneeId === params.assigneeId)
+      .filter((item) => !params.reporterId || item.reporterId === params.reporterId)
+      .filter((item) => !params.priority || item.priority === params.priority)
+      .filter((item) => !params.issueType || item.issueType === params.issueType)
+      .filter((item) => matchesSearchQuery(item, query))
+      .sort(byCreatedAt);
+
+    const items = matched.slice(page * pageSize, page * pageSize + pageSize).map((item) => this.searchHit(item));
+    return {
+      items,
+      page,
+      // What the page actually holds, which is what RestTaskaApi reports too —
+      // the two answer identically whether or not the caller stated a size.
+      pageSize: params.pageSize ?? items.length,
+      totalCount: matched.length,
     };
   }
 
@@ -1502,6 +1590,23 @@ export class MockTaskaStore {
   }
 
   /**
+   * The issue as `IssueShortResponseDto` states it — six fields, listed one by
+   * one rather than spread, so the mock can never hand out a `status` or a
+   * `projectId` the gateway would not have sent. That narrowness is the whole
+   * reason `IssueSearchHit` exists.
+   */
+  private searchHit(issue: Issue): IssueSearchHit {
+    return {
+      id: issue.id,
+      issueKey: issue.issueKey,
+      issueType: issue.issueType,
+      summary: issue.summary,
+      priority: issue.priority,
+      assigneeId: issue.assigneeId || null,
+    };
+  }
+
+  /**
    * Resolved through `projectLabels` on every read, in the project's own label
    * order rather than in the order they were attached — the picker below the
    * chips lists them the same way, and two orders for one set of labels reads
@@ -1719,6 +1824,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
     return wait(this.store.listIssues(projectId, params));
+  }
+
+  async searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>> {
+    return wait(this.store.searchIssues(params));
   }
 
   async getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {

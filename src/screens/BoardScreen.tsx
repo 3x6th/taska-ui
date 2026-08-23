@@ -12,9 +12,10 @@ import {
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Check, ChevronLeft, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
-import { useId, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput } from "../api/TaskaApi";
+import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
 import { isMissingOrForbidden } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
@@ -24,6 +25,8 @@ import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   Issue,
@@ -31,6 +34,7 @@ import type {
   IssueHistoryEvent,
   IssueLink,
   IssueLinkType,
+  IssueSearchHit,
   Label,
   Page,
   IssuePriority,
@@ -81,6 +85,13 @@ const retryUnlessMissing = (failureCount: number, error: Error) =>
 const priorities: IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
 // The gateway caps `pageSize` for comments at 50.
 const commentsPageSize = 50;
+// DESIGN.md §4.14. The box itself is instant; only the request waits.
+const SEARCH_DEBOUNCE_MS = 200;
+// The endpoint's ceiling is 100 and the board already holds a page of that
+// size, so this is about the *extra* group: how many matches from outside the
+// loaded page are worth listing before the number itself is the answer. The
+// counter states the whole total either way.
+const boardSearchPageSize = 50;
 
 export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const { projectId = "", issueId } = useParams();
@@ -92,6 +103,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("ALL");
   const [managingLabels, setManagingLabels] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  // Wraps the bell as well as the panel, which is what keeps the dismissal
+  // below from fighting the bell's own toggle: a press on the trigger of an
+  // open popover is *inside* this, so the hook stays out of it and the toggle
+  // closes it once instead of closing and reopening on one press.
+  const notificationsRef = useRef<HTMLDivElement>(null);
   const [creating, setCreating] = useState(false);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   // A drop with no legal transition must say so — the board has no toast, so
@@ -183,6 +199,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryFn: () => taskaApi.getCurrentUser(),
   });
 
+  // DESIGN.md §4.12 has asked for both since before this popover shipped:
+  // «Закрытие: Esc, клик вне». Until now the bell was the only way back out,
+  // and §7 carried the gap as a written defect.
+  const closeNotifications = useCallback(() => setNotificationsOpen(false), []);
+  useDismissOnOutside(notificationsOpen, notificationsRef, closeNotifications);
+
   const project = projectQuery.data;
   // Memoized so the `?? []` fallback does not produce a new array identity on
   // every render and invalidate the memos below.
@@ -240,9 +262,66 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       if (typeFilter !== "ALL" && issue.issueType !== typeFilter) return false;
       if (assigneeFilter !== "ALL" && issue.assigneeId !== assigneeFilter) return false;
       if (!normalized) return true;
-      return issue.summary.toLowerCase().includes(normalized) || issue.issueKey.toLowerCase().includes(normalized);
+      // Three fields, the same three `GET /issues/search` matches on. The
+      // description was already on every hydrated issue and simply was not
+      // consulted, so a card the server would return for a word in its body was
+      // filtered out of the board by the box above it — the local and the
+      // server halves of one search disagreeing about what the question was.
+      return (
+        issue.summary.toLowerCase().includes(normalized) ||
+        issue.issueKey.toLowerCase().includes(normalized) ||
+        issue.description.toLowerCase().includes(normalized)
+      );
     });
   }, [assigneeFilter, issues, query, typeFilter]);
+
+  // The server's half of the same question, and only ever a supplement: the box
+  // above stays local and instant, and nothing below is allowed to blank what
+  // it has already put on screen.
+  //
+  // Two things come out of it — the honest total, because `issues.length`
+  // counts one loaded page and silently stops being the project's issue count
+  // past 100, and the matches that page does not hold (a description beyond it,
+  // an issue beyond it).
+  const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
+  // The label filter is the one filter this endpoint cannot take — there is no
+  // `labelId` parameter on it — so with a label chosen the server would answer
+  // a wider question than the bar is asking and the counter would quietly
+  // report the unlabelled total. Not asking is the honest option; the board
+  // falls back to counting its own page, which is what it did before.
+  const serverSearchEnabled =
+    Boolean(projectId) && labelFilter === "ALL" && debouncedQuery.length >= SEARCH_QUERY_MIN_LENGTH;
+  const searchQuery = useQuery({
+    queryKey: ["issue-search", projectId, debouncedQuery, typeFilter, assigneeFilter],
+    enabled: serverSearchEnabled,
+    queryFn: () =>
+      taskaApi.searchIssues({
+        projectId,
+        query: debouncedQuery,
+        // The two filters the bar shares with the endpoint, so its answer is
+        // about the same set the columns are showing rather than a wider one.
+        issueType: typeFilter === "ALL" ? undefined : typeFilter,
+        assigneeId: assigneeFilter === "ALL" ? undefined : assigneeFilter,
+        pageSize: boardSearchPageSize,
+      }),
+    retry: retryUnlessMissing,
+  });
+  const searchUnread = useUnanswered(searchQuery);
+  // Whether the server's answer is about the question currently in the box.
+  // For the 200ms after a keystroke it is not, and the two halves of "X of Y"
+  // are then measured against different queries — deleting a character makes
+  // the local half grow while the server's total still describes the longer
+  // word, which is how a counter comes to read "8 of 3". Y waits instead; the
+  // cards do not, because they are the half that must stay instant.
+  const searchInStep = debouncedQuery === query.trim();
+  // The hits the columns do not already hold. Compared against what is on
+  // screen *now* rather than against the debounced answer, so a card can never
+  // be drawn twice while the two are half a keystroke apart.
+  const extraHits = useMemo(() => {
+    if (!serverSearchEnabled) return [];
+    const shown = new Set(filteredIssues.map((issue) => issue.id));
+    return (searchQuery.data?.items ?? []).filter((hit) => !shown.has(hit.id));
+  }, [filteredIssues, searchQuery.data, serverSearchEnabled]);
 
   const transitionIssue = useMutation({
     mutationFn: ({ movedIssueId, transitionId }: { movedIssueId: string; nextStatus: IssueStatus; transitionId: string }) =>
@@ -373,33 +452,49 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           <Search size={15} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search issues" />
         </label>
-        <div className="notification-wrap">
-          <button className="icon-button" onClick={() => setNotificationsOpen((value) => !value)} title="Notifications" type="button">
-            <Bell size={16} />
-            {unreadCount ? <span className="notification-dot" /> : null}
+        {/* The bar's trailing controls, held together as one unwrappable group.
+            Below 820 this bar wraps, and wrapped flex lines pack at
+            flex-start — so as loose siblings the avatar and "New" could land
+            partway along a second row, with the profile popover then hanging
+            leftward from wherever the avatar stopped and running off the left
+            of the screen. The group keeps them together and `margin-left:auto`
+            keeps them flush right on whichever line they land on, which is
+            where a reader looks for a profile control anyway. */}
+        <div className="topbar-actions">
+          <div className="notification-wrap" ref={notificationsRef}>
+            <button
+              aria-expanded={notificationsOpen}
+              className="icon-button"
+              onClick={() => setNotificationsOpen((value) => !value)}
+              title="Notifications"
+              type="button"
+            >
+              <Bell size={16} />
+              {unreadCount ? <span className="notification-dot" /> : null}
+            </button>
+            {notificationsOpen ? (
+              <NotificationsPopover
+                notifications={notificationsQuery.data?.items ?? []}
+                onMarkAll={() => markAllRead.mutate()}
+                onOpen={(link) => {
+                  setNotificationsOpen(false);
+                  navigate(link);
+                }}
+              />
+            ) : null}
+          </div>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <button className="primary-button board-new" disabled={!canEdit} onClick={() => setCreating(true)} type="button">
+            <Plus size={15} />
+            New
           </button>
-          {notificationsOpen ? (
-            <NotificationsPopover
-              notifications={notificationsQuery.data?.items ?? []}
-              onMarkAll={() => markAllRead.mutate()}
-              onOpen={(link) => {
-                setNotificationsOpen(false);
-                navigate(link);
-              }}
-            />
-          ) : null}
+          <UserProfileMenu
+            user={meQuery.data}
+            loading={meQuery.isPending}
+            loggingOut={logoutPending}
+            onLogout={onLogout}
+          />
         </div>
-        <ThemeToggle theme={theme} onToggle={toggleTheme} />
-        <button className="primary-button board-new" disabled={!canEdit} onClick={() => setCreating(true)} type="button">
-          <Plus size={15} />
-          New
-        </button>
-        <UserProfileMenu
-          user={meQuery.data}
-          loading={meQuery.isPending}
-          loggingOut={logoutPending}
-          onLogout={onLogout}
-        />
       </header>
 
       <section className="filterbar">
@@ -494,7 +589,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             projects screen: "0 of 0" from a request that has not answered is a
             claim about the project, not a count. Unknown first — a retry of a
             failed read is `pending` again, and the failure is the stabler
-            statement of the two. */}
+            statement of the two.
+
+            While a search is running, Y is the *server's* total rather than the
+            size of the loaded page — the one number here that was previously a
+            quiet lie past 100 issues — and it carries the same three states,
+            because a search that has not answered has not answered. */}
         <span className="counter">
           {issuesUnknown ? (
             <>
@@ -505,7 +605,18 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               <PendingValue /> of <PendingValue />
             </>
           ) : (
-            `${filteredIssues.length} of ${issues.length}`
+            <>
+              {filteredIssues.length + extraHits.length} of{" "}
+              {!serverSearchEnabled ? (
+                issues.length
+              ) : searchUnread.unanswered ? (
+                <Unknown />
+              ) : searchQuery.data && searchInStep ? (
+                (searchQuery.data.totalCount ?? issues.length)
+              ) : (
+                <PendingValue />
+              )}
+            </>
           )}
         </span>
       </section>
@@ -593,6 +704,17 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           ) : null}
         </DragOverlay>
       </DndContext>
+
+      {serverSearchEnabled ? (
+        <SearchHitsGroup
+          error={searchUnread.unanswered ? searchUnread.error : null}
+          hits={extraHits}
+          loading={searchQuery.isFetching && !searchQuery.data}
+          projectId={projectId}
+          query={debouncedQuery}
+          userById={userById}
+        />
+      ) : null}
 
       {issueId ? (
         <IssuePanel
@@ -780,6 +902,97 @@ function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "id
         <Avatar user={user} size="sm" />
       </span>
     </>
+  );
+}
+
+/**
+ * What the server found that the columns above do not hold (DESIGN.md §5.4).
+ *
+ * Its own group, below the board and outside the `DndContext`, because a hit is
+ * an `IssueSearchHit` and has no status. Putting one in a status column would
+ * be a claim the server never made, and making it a drop target would offer a
+ * transition from a status nobody knows. So these rows do not lift, do not
+ * drag, and say in words what they are.
+ *
+ * Four states, and they are four different sentences: a search still running, a
+ * search that failed, a search that found nothing else, and the rows
+ * themselves. The board's own filtered cards are on screen throughout — nothing
+ * here blanks them, and there is no spinner over anything (§5.6).
+ */
+function SearchHitsGroup({
+  error,
+  hits,
+  loading,
+  projectId,
+  query,
+  userById,
+}: {
+  error: Error | null;
+  hits: IssueSearchHit[];
+  loading: boolean;
+  projectId: string;
+  query: string;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+}) {
+  return (
+    <section aria-label="Other matches from the server" className="search-hits">
+      {/* The heading explains the rows, so it comes with them. The other three
+          answers are one sentence each: a header over an empty group would be
+          a band of prose explaining nothing. */}
+      {!error && !loading && hits.length > 0 ? (
+        <div className="search-hits-head">
+          <strong>More matches for “{query}”</strong>
+          <span>
+            Found by the server across the whole project: matches in descriptions, and issues beyond the page this board
+            loaded. A search result carries no status, so these are not placed in a column.
+          </span>
+        </div>
+      ) : null}
+
+      {error ? (
+        // Not "nothing else was found". A search that never answered is not an
+        // empty result, and the counter above says <Unknown /> for the same
+        // reason.
+        <ApiNotice error={error} live="polite">
+          The rest of this project could not be searched.
+        </ApiNotice>
+      ) : loading ? (
+        <p className="search-hits-state" role="status">
+          Searching the rest of this project for “{query}”…
+        </p>
+      ) : hits.length === 0 ? (
+        <p className="search-hits-state" role="status">
+          Nothing else in this project matches “{query}”.
+        </p>
+      ) : (
+        <ul className="search-hits-list">
+          {hits.map((hit) => {
+            const assignee = hit.assigneeId ? userById.get(hit.assigneeId) : null;
+            return (
+              <li key={hit.id}>
+                {/* A link, not a button: it navigates and nothing about it
+                    drags, so it has to be middle-clickable and copyable like
+                    every other address in this app. */}
+                <Link className="search-hit" to={`/projects/${projectId}/issues/${hit.id}`}>
+                  <span className="search-hit-meta">
+                    <TypeChip type={hit.issueType} />
+                    <span className="issue-key">{hit.issueKey}</span>
+                    <span>{typeMeta[hit.issueType].label}</span>
+                    <PriorityBars priority={hit.priority} />
+                  </span>
+                  <strong>{hit.summary}</strong>
+                  {/* Everything a hit carries and nothing else — no status, no
+                      labels, no dates, because the server sent none of them. */}
+                  <span className="search-hit-foot">
+                    <Avatar user={assignee} size="sm" />
+                  </span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 

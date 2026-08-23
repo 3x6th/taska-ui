@@ -19,6 +19,8 @@ const PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
 
 const {
   fakeApi,
+  seedSearch,
+  failSearch,
   setMembership,
   failMembership,
   holdMembership,
@@ -41,12 +43,17 @@ const {
     workflowFailure?: Error;
     labels: { id: string; name: string; color: string }[];
     labelCreateHeld: boolean;
+    searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null }[];
+    searchTotal: number;
+    searchFailure?: Error;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
     projectHeld: false,
     labels: [],
     labelCreateHeld: false,
+    searchHits: [],
+    searchTotal: 0,
   };
 
   const api = {
@@ -103,7 +110,9 @@ const {
             issueKey: "TAS-102",
             issueType: "TASK" as const,
             summary: "Wire the board to the gateway",
-            description: "",
+            // Not empty any more: the board's own box searches descriptions
+            // too, and a fixture with none could not tell whether it does.
+            description: "Point the columns at the deployed gateway.",
             status: "TODO" as const,
             priority: "MEDIUM" as const,
             assigneeId: null,
@@ -119,6 +128,13 @@ const {
         pageSize: 100,
         totalCount: 1,
       };
+    },
+    // The search route answers with the short DTO — six fields, no status and
+    // no projectId — so the fixture cannot accidentally hand the board an issue
+    // where the gateway would hand it a hit.
+    searchIssues: async () => {
+      if (state.searchFailure) throw state.searchFailure;
+      return { items: state.searchHits, page: 0, pageSize: 50, totalCount: state.searchTotal };
     },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
     // The board reads the project's labels for its filter. The tests about the
@@ -194,6 +210,13 @@ const {
     holdLabelCreate: (held: boolean) => {
       state.labelCreateHeld = held;
     },
+    seedSearch: (hits: typeof state.searchHits, totalCount: number) => {
+      state.searchHits = hits;
+      state.searchTotal = totalCount;
+    },
+    failSearch: (error: Error) => {
+      state.searchFailure = error;
+    },
     reset: () => {
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
@@ -204,6 +227,9 @@ const {
       state.workflowFailure = undefined;
       state.labels = [];
       state.labelCreateHeld = false;
+      state.searchHits = [];
+      state.searchTotal = 0;
+      state.searchFailure = undefined;
     },
   };
 });
@@ -401,6 +427,177 @@ describe("a board that could not read its issues", () => {
     expect(screen.queryByText("0 of 0")).not.toBeInTheDocument();
     // Then the real numbers arrive.
     expect(await screen.findByText("1 of 1")).toBeVisible();
+  });
+});
+
+/**
+ * The board asks two searches at once and they answer different questions. The
+ * box filters the page already loaded — instantly, with no request, which is
+ * the thing that must not be traded away — and `GET /issues/search` answers
+ * about the whole project underneath it.
+ *
+ * What these pin is the seam between them: that the local half consults the
+ * description it always had, that a server hit is never placed in a status
+ * column it has no status for, that the counter stops counting one loaded page,
+ * and that a search which failed is not presented as a search that found
+ * nothing.
+ */
+describe("the board's search and the server's", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const search = async (text: string) => {
+    const box = await screen.findByPlaceholderText("Search issues");
+    fireEvent.change(box, { target: { value: text } });
+    return box;
+  };
+
+  it("keeps a card whose description matches, with nothing on the wire", async () => {
+    renderBoard();
+    await screen.findByRole("region", { name: "To Do column" });
+
+    // "deployed" is in TAS-102's description and in neither its summary nor its
+    // key — the field the predicate used to have and never read.
+    await search("deployed");
+
+    expect(screen.getByRole("button", { name: /TAS-102/ })).toBeVisible();
+    // Still instant: no server answer is needed for the card to stay.
+    expect(within(screen.getByRole("region", { name: "To Do column" })).getByText(/TAS-102/)).toBeVisible();
+  });
+
+  it("puts a hit the loaded page does not hold in its own group, never in a column", async () => {
+    seedSearch(
+      [
+        {
+          id: "issue-900",
+          issueKey: "TAS-900",
+          issueType: "BUG",
+          summary: "Deployed gateway rejects an empty query",
+          priority: "HIGH",
+          assigneeId: null,
+        },
+      ],
+      7,
+    );
+    renderBoard();
+    await screen.findByRole("region", { name: "To Do column" });
+
+    await search("deployed");
+
+    const group = await screen.findByRole("region", { name: "Other matches from the server" });
+    expect(await within(group).findByText("TAS-900")).toBeVisible();
+    // A hit has no status, so no column may claim it — placing one would be a
+    // statement the server never made.
+    expect(within(screen.getByRole("region", { name: "To Do column" })).queryByText("TAS-900")).not.toBeInTheDocument();
+    // And the group says what it is rather than appearing unexplained.
+    expect(within(group).getByText(/matches in descriptions/i)).toBeVisible();
+  });
+
+  it("counts the server's total instead of the page it happens to have loaded", async () => {
+    seedSearch(
+      [
+        {
+          id: "issue-900",
+          issueKey: "TAS-900",
+          issueType: "BUG",
+          summary: "Deployed gateway rejects an empty query",
+          priority: "HIGH",
+          assigneeId: null,
+        },
+      ],
+      7,
+    );
+    renderBoard();
+    // Before the search, Y is the loaded page, which is all the board knows.
+    expect(await screen.findByText("1 of 1")).toBeVisible();
+
+    await search("deployed");
+
+    // One card on the board plus one hit beside it, out of the seven the server
+    // says match. `1 of 1` here would have been the old quiet lie.
+    expect(await screen.findByText("2 of 7")).toBeVisible();
+  });
+
+  it("asks nothing until the query reaches the minimum the gateway enforces", async () => {
+    seedSearch([{ id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Short", priority: "LOW", assigneeId: null }], 7);
+    renderBoard();
+    await screen.findByRole("region", { name: "To Do column" });
+
+    // Two characters is what the contract permits and the runtime refuses.
+    await search("zz");
+
+    await waitFor(() => expect(screen.getByText("0 of 1")).toBeVisible());
+    expect(screen.queryByRole("region", { name: "Other matches from the server" })).not.toBeInTheDocument();
+  });
+
+  it("says a search failed rather than showing it as nothing found", async () => {
+    failSearch(Object.assign(new Error("Internal error"), { status: 500, requestId: "3a1f0b22-91cd-4e77" }));
+    renderBoard();
+    await screen.findByRole("region", { name: "To Do column" });
+
+    await search("deployed");
+
+    const group = await screen.findByRole("region", { name: "Other matches from the server" }, AFTER_RETRY);
+    expect(await within(group).findByText(/could not be searched/i, undefined, AFTER_RETRY)).toBeVisible();
+    // Not "nothing else matches", which is a different answer entirely.
+    expect(within(group).queryByText(/Nothing else in this project matches/i)).not.toBeInTheDocument();
+    // The gateway's own words and the id its log knows this by.
+    expect(within(group).getByText("Internal error")).toBeVisible();
+    // And Y admits it does not know, rather than falling back to a number that
+    // would read as an answer.
+    expect(screen.getByText("unknown")).toBeVisible();
+    // The local result is still on screen throughout: the failure of the
+    // supplement never blanks the board.
+    expect(screen.getByRole("button", { name: /TAS-102/ })).toBeVisible();
+  });
+});
+
+/**
+ * DESIGN.md §4.12 has asked for both ways out of this popover since before it
+ * shipped — «Закрытие: Esc, клик вне» — and until now the bell was the only
+ * one. §7 carried it as a written defect rather than an oversight. The
+ * behaviour is `useDismissOnOutside`, shared with the profile menu and the
+ * global search, so what these three assertions actually protect is the one
+ * copy all of them use.
+ */
+describe("the notifications popover", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const openBell = async () => {
+    const bell = await screen.findByRole("button", { name: "Notifications" });
+    fireEvent.click(bell);
+    return bell;
+  };
+
+  it("closes on Escape and on a press outside, and still toggles from its own bell", async () => {
+    renderBoard();
+
+    const bell = await openBell();
+    expect(screen.getByRole("button", { name: "Mark all read" })).toBeVisible();
+    expect(bell).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+
+    fireEvent.click(bell);
+    expect(screen.getByRole("button", { name: "Mark all read" })).toBeVisible();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+
+    // The press that would otherwise close it and let the toggle reopen it in
+    // the same click. The ref wraps the bell, so the outside handler never
+    // runs and the toggle closes it exactly once.
+    fireEvent.click(bell);
+    expect(screen.getByRole("button", { name: "Mark all read" })).toBeVisible();
+    fireEvent.pointerDown(bell);
+    fireEvent.click(bell);
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+    expect(bell).toHaveAttribute("aria-expanded", "false");
   });
 });
 

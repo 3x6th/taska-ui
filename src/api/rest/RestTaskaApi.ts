@@ -9,10 +9,12 @@ import type {
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
+  SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
+import { SEARCH_QUERY_MIN_LENGTH, SEARCH_QUERY_TOO_SHORT_MESSAGE } from "../TaskaApi";
 import { SessionExpiredSignal } from "../session";
 import type {
   AdminCatalog,
@@ -28,6 +30,7 @@ import type {
   Issue,
   IssueComment,
   IssueLink,
+  IssueSearchHit,
   IssueType,
   IssueWithHistory,
   Label,
@@ -146,6 +149,17 @@ interface RestIssueListItem {
 }
 
 interface RestListIssuesResponse {
+  items: RestIssueListItem[];
+  totalCount: number;
+}
+
+/**
+ * `SearchIssuesResponseDto`. The same two fields as `ListIssuesResponseDto`
+ * above and deliberately not an alias for it: they are two schemas in the
+ * contract, and one name would hide the day either of them grows a field.
+ * Both are `required` here, which the list response's schema does not say.
+ */
+interface RestSearchIssuesResponse {
   items: RestIssueListItem[];
   totalCount: number;
 }
@@ -340,6 +354,45 @@ export class RestTaskaApi implements TaskaApi {
       return details.issue;
     });
 
+    return {
+      items,
+      page: params.page ?? 0,
+      pageSize: params.pageSize ?? items.length,
+      totalCount: response.totalCount,
+    };
+  }
+
+  /**
+   * `GET /issues/search`. The whole of the compensation for TAS-180 lives in
+   * the first three lines: a `query` the runtime would refuse never leaves this
+   * process, and an absent one is *omitted* rather than sent empty — the
+   * gateway answers `400` for `query=` and `200` for no `query` at all, so the
+   * obvious implementation, which sets the parameter on every keystroke, turns
+   * a cleared field into an error.
+   *
+   * The enum filters are typed, never stringly passed through: an unrecognised
+   * `priority` or `issueType` is silently ignored by the runtime and answers
+   * with a *wider* set than the one asked for.
+   */
+  async searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>> {
+    const query = requireSearchQuery(params.query);
+    const search = new URLSearchParams();
+    if (query !== null) search.set("query", query);
+    if (params.projectId) search.set("projectId", params.projectId);
+    if (params.statusKey) search.set("statusKey", params.statusKey);
+    if (params.assigneeId) search.set("assigneeId", params.assigneeId);
+    if (params.reporterId) search.set("reporterId", params.reporterId);
+    if (params.priority) search.set("priority", params.priority);
+    if (params.issueType) search.set("issueType", params.issueType);
+    if (params.page !== undefined) search.set("page", String(params.page));
+    if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
+
+    const response = await this.request<RestSearchIssuesResponse>(`/issues/search${this.query(search)}`);
+    // No hydration, on purpose: `listIssues` above pays an N+1 through
+    // `getIssue` because the board needs a status, and doing the same here
+    // would be that N+1 on every keystroke. A hit stays as short as the
+    // contract made it (docs/ai/API-DIVERGENCE.md, TAS-178).
+    const items = (response.items ?? []).map((item) => this.toIssueSearchHit(item));
     return {
       items,
       page: params.page ?? 0,
@@ -796,6 +849,25 @@ export class RestTaskaApi implements TaskaApi {
     };
   }
 
+  /**
+   * `IssueShortResponseDto` → `IssueSearchHit`, field by field rather than by
+   * spread. The listing is the point: a spread would quietly widen the hit the
+   * day the DTO grows a field, and the one thing this type must keep proving is
+   * that it carries no status and no project.
+   */
+  private toIssueSearchHit(item: RestIssueListItem): IssueSearchHit {
+    return {
+      id: item.id,
+      issueKey: item.issueKey,
+      issueType: item.issueType,
+      summary: item.summary,
+      priority: item.priority,
+      // `""` for unassigned, exactly as the list endpoint answers — same
+      // normalisation as `toIssue`, so one shape of "nobody" reaches the UI.
+      assigneeId: item.assigneeId || null,
+    };
+  }
+
   private toIssueWithHistory(response: RestIssueWithHistory): IssueWithHistory {
     const issue = this.toIssue(response.issue);
     return {
@@ -915,6 +987,26 @@ function toLabel(label: RestLabel): Label {
     name: label.name ?? "",
     color: typeof label.color === "string" ? label.color : "",
   };
+}
+
+/**
+ * The search query as the gateway would accept it, or `null` for "no text
+ * filter". The same rule the mock applies, and it lives on this side of the
+ * wire so that the `400` the runtime would answer with is never spent: the
+ * minimum is 3 in the runtime against `minLength: 2` in the contract, and the
+ * empty string — which the contract offers as the *default* — is refused.
+ *
+ * The error is the gateway's own answer reproduced locally, `INVALID_ARGUMENT`
+ * with `400` and its wording, so a caller cannot tell a query stopped here from
+ * one stopped there and nothing has to special-case the compensation.
+ */
+function requireSearchQuery(raw: string | undefined): string | null {
+  if (raw === undefined) return null;
+  const query = raw.trim();
+  if (query.length < SEARCH_QUERY_MIN_LENGTH) {
+    throw new ApiError(SEARCH_QUERY_TOO_SHORT_MESSAGE, "INVALID_ARGUMENT", 400);
+  }
+  return query;
 }
 
 async function mapWithConcurrency<T, R>(

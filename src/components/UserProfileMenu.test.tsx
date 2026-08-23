@@ -133,6 +133,37 @@ describe("UserProfileMenu", () => {
 
   // Absent from the markup, not hidden and not disabled: a plain user has no
   // Administration entry to find in the DOM at all.
+  /**
+   * DESIGN.md §4.16 asks for all three ways out, and this menu is where the
+   * repository's implementation of them lives — it is now `useDismissOnOutside`
+   * and the notifications popover and the global search share it, so these
+   * cases pin the behaviour all three depend on rather than one component's.
+   */
+  it("closes on Escape, on a press outside, and on a second press of its own trigger", () => {
+    renderMenu({ loading: false, onLogout: vi.fn(), user: anna });
+    const trigger = screen.getByRole("button", { name: /Open profile for/ });
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog", { name: "Current user profile" })).toBeVisible();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog")).toBeVisible();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // The classic failure of this pattern: the outside handler fires on the
+    // press, the toggle fires on the release, and the menu closes and reopens
+    // in one click. The ref goes around the trigger, so it never starts.
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog")).toBeVisible();
+    fireEvent.pointerDown(trigger);
+    fireEvent.click(trigger);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("gives a plain user no administration entry", () => {
     renderMenu({ user: { ...anna, globalRole: "USER" }, loading: false, onLogout: vi.fn() });
 

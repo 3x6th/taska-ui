@@ -767,6 +767,163 @@ describe("RestTaskaApi read-only admin", () => {
  * otherwise reach a component: an issue with no `labels` and a label with no
  * `color`.
  */
+/**
+ * `GET /issues/search`, and mostly about the two things that must never reach
+ * the wire: a query the runtime would refuse, and an empty one. The gateway
+ * answers `400` for both, and the parameter's contract *default* is the empty
+ * string — so the obvious implementation, which sets `query` on every
+ * keystroke, turns a cleared field into an error (docs/ai/API-DIVERGENCE.md).
+ */
+describe("RestTaskaApi issue search", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("refuses a short or empty query without spending a request", async () => {
+    const fetchStub = stubFetch({ items: [], totalCount: 0 });
+    const api = new RestTaskaApi();
+
+    // Two characters is what the contract permits and the runtime refuses; the
+    // empty string is what the contract offers as the default.
+    await expect(api.searchIssues({ query: "bo" })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: "Search query must be at least 3 characters",
+    });
+    await expect(api.searchIssues({ query: "" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    await expect(api.searchIssues({ query: "  " })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+    // The point of the guard: the gateway is never asked a question it has
+    // already been measured refusing.
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("omits the query entirely when the caller states none", async () => {
+    const fetchStub = stubFetch({ items: [], totalCount: 0 });
+
+    await new RestTaskaApi().searchIssues({ projectId: "project-1" });
+
+    const url = String(fetchStub.mock.calls[0][0]);
+    expect(url).toContain("/issues/search?");
+    expect(url).toContain("projectId=project-1");
+    // Absent, not empty. `query=` is the 400 this whole guard is about.
+    expect(url).not.toContain("query=");
+  });
+
+  it("sends every filter the endpoint takes, and trims the query it sends", async () => {
+    const fetchStub = stubFetch({ items: [], totalCount: 0 });
+
+    await new RestTaskaApi().searchIssues({
+      query: "  board  ",
+      projectId: "project-1",
+      statusKey: "IN_PROGRESS",
+      assigneeId: "user-1",
+      reporterId: "user-2",
+      priority: "HIGH",
+      issueType: "BUG",
+      page: 2,
+      pageSize: 25,
+    });
+
+    const url = new URL(String(fetchStub.mock.calls[0][0]), "http://localhost");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      query: "board",
+      projectId: "project-1",
+      statusKey: "IN_PROGRESS",
+      assigneeId: "user-1",
+      reporterId: "user-2",
+      priority: "HIGH",
+      issueType: "BUG",
+      page: "2",
+      pageSize: "25",
+    });
+  });
+
+  it("maps the short DTO to a hit and keeps it short", async () => {
+    stubFetch({
+      items: [
+        {
+          id: "issue-1",
+          issueKey: "TAS-101",
+          summary: "Login form validation fails on empty email",
+          issueType: "BUG",
+          priority: "HIGH",
+          assigneeId: "user-mark",
+        },
+        // The gateway's own spelling of "nobody", same as the list endpoint.
+        { id: "issue-2", issueKey: "WEB-12", summary: "Responsive board layout", issueType: "STORY", priority: "MEDIUM", assigneeId: "" },
+      ],
+      totalCount: 42,
+    });
+
+    const page = await new RestTaskaApi().searchIssues({ query: "board", pageSize: 2 });
+
+    expect(page.items).toEqual([
+      {
+        id: "issue-1",
+        issueKey: "TAS-101",
+        summary: "Login form validation fails on empty email",
+        issueType: "BUG",
+        priority: "HIGH",
+        assigneeId: "user-mark",
+      },
+      {
+        id: "issue-2",
+        issueKey: "WEB-12",
+        summary: "Responsive board layout",
+        issueType: "STORY",
+        priority: "MEDIUM",
+        assigneeId: null,
+      },
+    ]);
+    // The count is of the whole matching set, not of the page.
+    expect(page.totalCount).toBe(42);
+    expect(page.page).toBe(0);
+  });
+
+  it("never hydrates a hit, whatever the board does with a list", async () => {
+    const fetchStub = stubFetch({
+      items: [{ id: "issue-1", issueKey: "TAS-101", summary: "One", issueType: "TASK", priority: "LOW" }],
+      totalCount: 1,
+    });
+
+    await new RestTaskaApi().searchIssues({ query: "one" });
+
+    // `listIssues` pays an N+1 through `getIssue` because the board needs a
+    // status. On a search that would be the same N+1 on every keystroke, and
+    // the owner ruled against it on 2026-08-23 (TAS-178).
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a page the gateway sent no items for as empty rather than throwing", async () => {
+    stubFetch({ totalCount: 0 });
+
+    await expect(new RestTaskaApi().searchIssues({ query: "nothing" })).resolves.toMatchObject({
+      items: [],
+      totalCount: 0,
+    });
+  });
+});
+
 describe("RestTaskaApi labels", () => {
   const answer = (status: number, body: unknown) =>
     ({
