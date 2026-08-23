@@ -281,8 +281,14 @@ time.
   `disabled` ones.** A viewer therefore cannot select or copy an issue's
   summary or description — `disabled` removes the text from reach entirely,
   which is not what read-only means.
-- **The filter bar's "X of Y" counter clips at 390px** — measured 10.2px wide
-  by 50px tall inside a 46px bar.
+- ~~**The filter bar's "X of Y" counter clips at 390px** — measured 10.2px wide
+  by 50px tall inside a 46px bar.~~ **Graduated 2026-08-23**, handed over by the
+  owner from an iPhone 17 Pro Max, and fixed on
+  `claude/mobile-projects-tasks-layout-nq01aa`. The cause was `.counter` taking
+  the default `flex-shrink: 1` in an overflowing bar and collapsing to the
+  min-content width of the word "of". **No `TAS` key beside it**: the Jira MCP
+  is not registered in the session that fixed it, so the story is still to be
+  filed — see the two environment lines at the foot of this section.
 - **`--font-mono` is specified in §2.3 and never declared in `styles.css`.**
   TAS-163 defines it and converts the copies it found; check for others.
 - **`listIssues` is still all-or-nothing internally.** Its N+1 hydration uses
@@ -329,7 +335,7 @@ time.
   fix with no new tokens: a trailing `+N` chip styled as §4.5's count pill.
   Needs a measurement pass the card does not currently do, which is why it is
   here and not in TAS-169.
-- **The 390px filter bar's horizontal overflow more than doubled.** Measured at
+- ~~**The 390px filter bar's horizontal overflow more than doubled.** Measured at
   390x844: `scrollWidth` 741 against `clientWidth` 390. The two label controls
   are ~201px of that, so the pre-existing ~150px is now well over twice as
   much, and because the pair sits before the spacer, the label picker, the
@@ -337,7 +343,14 @@ time.
   strip on the first screenful. It does scroll and everything is reachable, so
   it is not a defect — but below 820px the bar probably wants to wrap to two
   rows rather than scroll, or the label picker wants to sit ahead of the
-  assignee row.
+  assignee row.~~ **Graduated 2026-08-23** with the counter line above, and its
+  own recommendation is what shipped: the bar wraps instead of scrolling, at
+  every width rather than only below 820 — confining the wrap to a phone
+  breakpoint would have run the tail off the edge on an ordinary laptop
+  instead. Re-measured after the spacer came out, the bar holds one row from
+  ~791px and, with `Clear` showing, from ~883px (Taska Platform, 4 members,
+  ADMIN); above 820 only the filtered bar wraps at all, in the band 821–882.
+  Same missing `TAS` key.
 - **Opening an issue panel can now drive a full re-read of the issue page.**
   `IssueLinksSection`'s own observer on `["issues", projectId, "ALL"]` refetches
   on mount when the entry is stale (`staleTime` 20_000), where before the panel
@@ -527,6 +540,87 @@ time.
   2.44–3.56:1 dark. This is what `opacity` does to any pair — the darkened
   TAS-171 palette measured 2.39–2.50 / 3.39–3.48 in the same place — so it is
   the disabled recipe that would need fixing, not the palette.
+
+### Left open by the phone-portrait fixes (from `art-director`, 2026-08-23)
+
+- **The assignee group breaks across the wrap.** At 390 and 440 the label
+  «Assignee» and its `All` button end row 1 while the four avatars open row 2,
+  where the next thing after them is a divider and «Label» — so a reader
+  scanning row 2 meets four faces under no heading. The row-2 divider closes
+  the group correctly; the group's label is simply on the previous line. The
+  fix is a wrapper element around label + `All` + `.assignee-row` so the group
+  wraps as a unit, which is a DOM change to `BoardScreen.tsx` and belongs in
+  its own story rather than in a CSS bug fix.
+- **The login screen's card settles ~7px after first paint**, so any Playwright
+  assertion about its pixel geometry is a race unless it waits. Two causes
+  stacked: `.auth-card-wrap`'s `tk-pop` entrance (`translateY(7px)` over 500ms)
+  and the Hanken Grotesk swap. Both land in the same place, so no user is
+  affected — but a naive `goto` + `waitFor(button)` samples mid-flight, and it
+  cost a measurement pass on 2026-08-23 before it was spotted. The reliable
+  recipe, if a spec ever needs that screen's box tree: emulate
+  `reducedMotion: "reduce"` (the stylesheet already collapses that animation
+  under `prefers-reduced-motion`) and poll until the wrapper's height stops
+  changing across frames.
+- **The filtered filter bar gets *taller* as the viewport gets wider, across the
+  820 step.** Measured: 817–820 → 72.67px, 821–828 → 84px, 829–882 → 72.67px.
+  Crossing out of the media query swaps the bar's padding from `6 12` to `6 18`
+  and so costs 12px of row width exactly where the bar is already one row short.
+  Nobody hits it deliberately and it is not a defect. Smallest correction if it
+  ever bothers anyone: carry `6px 12px` up to the filtered wrap point (~890)
+  rather than to 820, so the narrower inset only ever applies to a bar that is
+  already wrapping.
+- **At 390 the counter takes a 35px row of its own for an ADMIN** — the bar
+  measures 110px against 80px for a MEMBER, the difference being the label-manage
+  button. The phone filter bar is carrying one control too many, and the manage
+  button is the one with a home elsewhere.
+- **A 12-member project strands the assignee row's trailing divider** at a row
+  edge once `.assignee-row` wraps within itself: a hairline at x=417 of a 440px
+  bar, or leading a row at x=12 at 390. The seed has four members, so this needs
+  a wider mock to see.
+- **`.board-topbar` at ≤820 uses `padding: 10px 12px`**, and `10` is not on
+  §2.4's scale. One value, pre-existing, unrelated to this change beyond having
+  been measured next to it.
+- **`:focus-visible` in the filter bar is still the UA default ring** —
+  measured `outline: 1px rgb(229,151,0)` on every button in the bar, with
+  `2px var(--accent)` reaching only the native `<select>`. The same §7 gap
+  TAS-142 already holds for the rest of the app, now visible in one more row.
+
+### Session environment, found 2026-08-23 fixing the phone-portrait bugs
+
+These three are about the harness rather than the product, and each will bite
+the next session in this image exactly as it bit this one.
+
+- **The runtime has no Jira MCP.** `mcp-atlassian` is not registered, so the
+  `TAS` backlog could not be searched, the story for the phone-portrait fixes
+  could not be filed, and nothing could be transitioned. Two graduated lines
+  above therefore carry no key, and `JIRA-WORKFLOW.md` holds the row that has
+  to be filed by hand. The browser MCP tools (`mcp__Claude_Browser__*`) and
+  `refero` are absent in the same session — the two read-only roles fell back
+  to driving Playwright over `Bash`, which works and is not the same thing.
+- **The pinned Playwright and the image's browsers are a version apart.**
+  `@playwright/test@1.62.1` in the lockfile wants Chromium revision 1234
+  (Chrome 151); `/opt/pw-browsers` carries revision 1194 (Chrome 141),
+  provisioned for the globally installed `playwright@1.56.1`. `npm run
+  test:e2e` cannot launch a browser at all without a `PLAYWRIGHT_BROWSERS_PATH`
+  shim, and every local e2e result is therefore Chrome 141 driven by the 1.62
+  driver. CI is unaffected — `frontend.yml` runs `npx playwright install
+  --with-deps chromium` and gets the right one — so this is provisioning, not
+  a repository defect, and the repository is the wrong place to fix it.
+- **`npm run check` cannot pass in this image at the suite's default timeout.**
+  Eighteen admin-console tests (six specs across three viewport projects) fail
+  on `Test timeout of 30000ms exceeded` at their *third* `page.goto`; every
+  test with two navigations passes at 26.7–28.2s against the same 30s budget.
+  Navigation costs ~13s here under software rendering. Verified pre-existing by
+  running `admin-console --project=desktop` against the unmodified tree: the
+  same six fail, at the same line numbers. With `--timeout=120000` the whole
+  suite is 165 passed, 15 skipped, 0 failed. Raising the repository's timeout
+  to suit one slow sandbox would blunt hang detection everywhere else, so it
+  has not been raised — but a `check` that cannot be run locally is worth a
+  decision rather than a workaround repeated per session.
+- **`.board-notices { max-height: 34vh }` still measures the large viewport**
+  now that the shell around it is `dvh`. On iOS the cap can exceed 34% of the
+  shell's real height while the toolbars show. Cosmetic, and out of scope of
+  the change that made it visible.
 
 ## Frontend stories already filed
 

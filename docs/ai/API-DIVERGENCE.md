@@ -1363,6 +1363,66 @@ Same rule as above: "Closed by" is settled, the rest is live.
   ordering, `totalCount`, and `IssueResponseDto.labels`, which cannot be seen
   until the issue read stops answering `500`.
 
+### `IssueResponseDto.labels` comes back empty, so no card on the board draws a label
+
+- **Endpoint:** `GET /api/v1/issues/{issueId}` — the detail read, and the only
+  route the board has for a card's labels. Note the shape: `RestTaskaApi.getIssue`
+  calls `/issues/{issueId}`, **not** `/projects/{projectId}/issues/{issueId}`. If
+  the two carry different DTOs, that is the first place to look.
+- **Contract** (`docs/contract/openapi.yml`): `IssueResponseDto.labels` is an
+  array of `IssueLabelResponseDto`, described as «Метки задачи (краткая
+  информация)».
+- **Observed 2026-08-23** by the owner on the deployed stand, project
+  `kappa-test`, issue `kappa-test-2`, with the label `test2` attached. The board
+  was filtered to `test2` and the card was returned — so the **gateway knows the
+  association**, because that filter is the server's job
+  (`["issues", projectId, labelFilter]`). The card then drew no label chip.
+- **Why that pins it to the response rather than the UI.** `IssueCardContent`
+  renders `{issue.labels.length ? … : null}` (`src/screens/BoardScreen.tsx:770`),
+  so an empty array draws nothing at all — which is what a reader sees. The board
+  gets its cards from `listIssues`, which hydrates every row through `getIssue`
+  and maps `labels: (issue.labels ?? []).map(toLabel)`
+  (`src/api/rest/RestTaskaApi.ts:777`). There is no fallback and no filter in
+  between: a populated `labels` on the wire reaches the chip. The same card draws
+  labels correctly against the mock, which is the control.
+- **This is the first observation of the field.** The label entry above says it
+  "could not be checked at all" and "cannot be seen until the issue read stops
+  answering `500`" — that was [TAS-172](https://jira.ozero.dev/browse/TAS-172),
+  which has since been fixed. The read now answers, and the field is empty.
+- **Probed directly on 2026-08-23**, from the owner's browser session against
+  the deployed gateway, and the inference above is confirmed. Project
+  `kappa-test` (`c7f82d29-4207-4278-b5fc-cb16b844264b`), issue `kappa-test-2`
+  (`20a52516-659b-48b5-a9c6-0f4817533541`):
+  - `GET /api/v1/issues/20a52516-…` answers `200` with an
+    `IssueWithHistoryResponseDto` whose `issue.labels` is `[]`.
+  - The `history` of that *same response* carries two `LABEL_ADDED` events,
+    `payload.labelName` `test` and `test2`.
+  - `GET /api/v1/projects/c7f82d29-…/issues/20a52516-…/labels` answers `200`
+    with both — `test` `#8B5CF6`, `test2` `#E3A008`, `totalCount: 2`.
+
+  So the association is held by the same service and served by the neighbouring
+  route, while the field the detail DTO declares stays empty. The earlier
+  session could not make this request at all: its egress policy rejected
+  `CONNECT api.taska.ozero.dev:443` with `403`, before TLS and before any
+  `Authorization` header was read.
+- **Filed as [TAS-178](https://jira.ozero.dev/browse/TAS-178)**, and it is the
+  unmet acceptance criterion of [TAS-119](https://jira.ozero.dev/browse/TAS-119)
+  («Issue labels возвращаются в `GetIssue`», «Labels возвращаются в
+  `ListIssues`») rather than new backend work. TAS-120 shipped the REST label
+  routes and they answer; it is the detail DTO that is not filled.
+- **Not closed by TAS-124/TAS-125 either.** The Board API's card DTO does carry
+  `labels`, but that is a different route. The detail read outlives it — the
+  issue panel uses it, and so does the board until a frontend story migrates the
+  board onto the Board API, which is not filed.
+- **Compensation: still none, and now by decision rather than while waiting.**
+  `GET /projects/{projectId}/issues/{issueId}/labels` is verified working and
+  returns the three-field DTO, so the board could hydrate labels per card from
+  it — but that is a second per-issue request on top of the N+1 hydration
+  `listIssues` already performs, i.e. two round trips per card on a board read.
+  The probe says the field the gateway declares is the one to fill, so the fix
+  belongs there and the frontend stays as it is. Revisit only if TAS-178 will
+  not be taken.
+
 ---
 
 ## Closed

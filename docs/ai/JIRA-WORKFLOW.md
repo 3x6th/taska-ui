@@ -29,6 +29,7 @@ states are not.
 | [TAS-171](https://jira.ozero.dev/browse/TAS-171) | Deterministic colour for avatars and project key badges | Done | merged (PR #29) |
 | [TAS-174](https://jira.ozero.dev/browse/TAS-174) | Assignee filter buttons announce no accessible name (WCAG 4.1.2) | To Do | filed from the TAS-171 reviews, not started |
 | [TAS-175](https://jira.ozero.dev/browse/TAS-175) | Bright avatar palette restored, glyph computed from the fill | Done | merged (PR #32) |
+| [TAS-177](https://jira.ozero.dev/browse/TAS-177) | Phone portrait: the projects list is clipped by the browser's own toolbar, and the board's "X of Y" counter stacks into a column | To Do | in review (PR #34) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
@@ -48,6 +49,7 @@ the story has drifted and should be transitioned rather than the table edited.
 | [TAS-146](https://jira.ozero.dev/browse/TAS-146) | [TAS-149](https://jira.ozero.dev/browse/TAS-149) | Nothing sets `archived_at`, so archiving is mock-only and the read-only board state cannot be exercised against the gateway. |
 | [TAS-156](https://jira.ozero.dev/browse/TAS-156) | [TAS-155](https://jira.ozero.dev/browse/TAS-155) / [TAS-161](https://jira.ozero.dev/browse/TAS-161) | The `/api/v1/readonly/*` endpoints are deployed and TAS-103 landed on 2026-08-11, but every table read answers 500 and the catalog states no `primaryKey`, so the admin console still ships mock-first — for those two reasons now, not for a missing gateway half. See `API-DIVERGENCE.md`. |
 | [TAS-162](https://jira.ozero.dev/browse/TAS-162) | the board's core gesture | `GET /projects/{projectId}` 500s on every existing project. Via the membership synthesis this disables every drop target, so no card can be moved at all, and it zeroes every count on the projects screen. See `API-DIVERGENCE.md`. |
+| [TAS-178](https://jira.ozero.dev/browse/TAS-178) | label chips on board cards | `GET /issues/{issueId}` answers `labels: []` for an issue that has labels, so no card draws a chip against the gateway. The association exists — the issue-labels route returns both — so this is the detail DTO going unfilled, not missing data. Probed 2026-08-23. See `API-DIVERGENCE.md`. |
 
 `TAS-147` was on this list until 2026-08-05 and is now Done: `globalRole` is in
 the contract as of backend `25d0cf7000e5`, which is what unblocked `TAS-151`.

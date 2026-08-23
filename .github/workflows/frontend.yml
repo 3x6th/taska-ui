@@ -41,3 +41,19 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The one guard on an artifact nobody reads. Lightning CSS collapses the
+      # `100vh` + `100dvh` pair in styles.css down to whichever its target
+      # prefers, so what ships is not what the source says — and the phone fix
+      # for a projects list clipped by the browser's own toolbar IS that one
+      # declaration. If a toolchain or target change ever drops `dvh` instead
+      # of `vh`, every check above still passes: the dev server keeps both, so
+      # the e2e suite cannot see it either. This fails instead of going quiet.
+      - name: Assert the viewport-height fix survived the CSS build
+        run: |
+          count=$(grep -o "100dvh" dist/assets/*.css | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No 100dvh in the built CSS. The app shells have lost the dynamic viewport height, and the projects list will clip behind mobile browser chrome again. See DESIGN.md section 5.1."
+            exit 1
+          fi
+          echo "100dvh survived the CSS build: $count occurrences"
