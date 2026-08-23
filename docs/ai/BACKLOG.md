@@ -702,6 +702,29 @@ raised and did not close:
   `API-DIVERGENCE.md`; worth a backend story of its own, since the card is
   finished frontend work that nothing but this can switch on.
 
+The 2026-08-23 refresh (backend `4241be2ec144`) brought two changes. The
+search endpoint is claimed; the other is not:
+
+- ~~**Issue search.** `GET /api/v1/issues/search`, the gateway half of
+  TAS-110.~~ Claimed by [TAS-179](https://jira.ozero.dev/browse/TAS-179), with
+  its runtime divergences filed as
+  [TAS-180](https://jira.ozero.dev/browse/TAS-180) and written up in
+  `API-DIVERGENCE.md`.
+- **`notificationType` stopped being an enum.** The same refresh deleted
+  `NotificationTypeDto` — a closed list of eleven values — and replaced the
+  field with a bare `type: string` carrying `example: ISSUE_ASSIGNED,
+  MEMBER_REMOVED etc.`. `src/domain/types.ts` still models `NotificationType`
+  as a closed union of twelve, so the UI is now narrower than the contract, and
+  a type the gateway invents next lands in a union that does not admit it.
+  Exactly the family of the "status keys are open, and the UI's are closed"
+  entry in `API-DIVERGENCE.md`, and it wants the same answer: narrow at the
+  mapper rather than at the type. Found on 2026-08-23 while refreshing the
+  snapshot for TAS-179; deliberately not fixed there, because a notification
+  type has nothing to do with issue search and widening a story at snapshot
+  time is how a reviewable diff stops being one. Note the twelfth value —
+  `MEMBER_ROLE_CHANGED` was never in the enum the contract just deleted, so the
+  union and the contract already disagreed before this.
+
 ### `--fg-3` on `--bg` is below the contrast floor, in two places TAS-161 did not touch
 
 Found while fixing the same defect on the admin error block (art-director,
