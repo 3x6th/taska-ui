@@ -153,10 +153,45 @@ textarea:disabled {
   }
 }
 
+/* Two declarations of one height, and the second is the one that matters on a
+   phone. `100vh` on iOS Safari and Chrome measures the *large* viewport — the
+   height the page would have with the browser's toolbars retracted, which they
+   are not until the reader drags the page. `.page-shell` and `.board-shell`
+   clip their own overflow and hand the scroll to a single region inside them,
+   so a shell taller than the visible area cannot be scrolled back from: it
+   parks the bottom of that region behind the browser's own bottom bar, and the
+   last project card never comes fully into view. `100dvh` is the visible height
+   and follows the chrome as it appears and retracts, which is exactly what a
+   fixed shell with an internal scroll region wants.
+
+   Honest about the pair, because the shipped artifact does not have one. `100vh`
+   stays first in source as documented intent, and the dev server is the only
+   place both declarations are ever live: Lightning CSS (Vite's CSS transformer —
+   no `browserslist` in package.json, no `build.cssTarget` in `vite.config.ts`)
+   drops the earlier declaration at build time because its default target already
+   supports `dvh`, so `dist` ships `100dvh` only. That costs nothing real: this
+   stylesheet leans on `color-mix(in oklab, …)` throughout, and `color-mix`'s
+   baseline (Chrome 111 / Safari 16.2) is *newer* than `dvh`'s (Chrome 108 /
+   Safari 15.4) — any browser able to render Taska's colours at all already knows
+   `dvh`, so the "fallback" could only ever have applied to a browser that could
+   not render the product anyway. Worth stating plainly rather than leaving a
+   comment that implies a safety net: a browser that does not know `dvh` gets
+   nothing to fall back to in `dist` — the `vh` line is already gone — so
+   `height` resolves to `auto`, not to `100vh`, which for `.page-shell` and
+   `.board-shell` means `overflow: hidden` on an auto-height column: a worse
+   degradation than the fallback appears to promise. CI asserts `100dvh` survives
+   the build (`.github/workflows/frontend.yml`), so a toolchain change that ever
+   drops the wrong line fails loudly there instead of shipping quietly.
+
+   Not `svh`: that sizes to the *small* viewport and would leave a dead strip
+   under the shell for as long as the toolbars are away.
+   `.auth-screen` carries the same height pair but not `overflow: hidden` — it
+   has no internal scroll region of its own to hand the scroll to, so it needs
+   a different answer; see its own rule below. */
 .page-shell,
-.board-shell,
-.auth-screen {
+.board-shell {
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -334,10 +369,43 @@ textarea:disabled {
   font-size: 14.5px;
 }
 
+/* Unlike `.page-shell` and `.board-shell` above, this shell hands the scroll
+   to nothing: the card sits centered directly inside it, with no inner region
+   of its own. `overflow: hidden` here does not protect a scroll region — there
+   isn't one — it just deletes the only path back to whatever the shell clips.
+   At 740×360 (a real constraint: a short laptop window, or a phone in
+   landscape) — and shorter still at 740×300 — the card needs more height than
+   the viewport gives it, with no pointer or keyboard path to the part that
+   doesn't fit. This was already true under `100vh`; `100dvh` is strictly
+   shorter on iOS, so it clips sooner, and it also takes away the one thing
+   that used to bail the reader out — dragging the page, which nudges iOS into
+   hiding its own chrome and growing the viewport back out. `overflow: auto`
+   restores a scroll path in the one shell that has nowhere else to put one; it
+   costs nothing on a viewport tall enough to show the whole card, since it
+   only turns on inside a box this rule is already clipping.
+
+   `overflow: auto` alone only recovers the bottom half of that clip, though. A
+   centered flex container splits its overflow evenly above and below the box,
+   but a scroll container's scrollable region only ever extends toward the end
+   direction — `scrollTop` cannot go negative — so the top half sits behind
+   `scrollTop: 0` with no scroll, pointer, or keyboard path to it: focusing an
+   element up there and calling `scrollIntoView()` cannot pull `scrollTop`
+   below 0 either. Swap `safe center` below for a plain `center` and that is
+   exactly what happens: `.auth-card-wrap`'s own top lands at -28.2px at
+   740×360, -58.2px at 740×300 — that many pixels rendered above the viewport,
+   permanently behind `scrollTop: 0`. `align-items: safe center` is the other
+   half of the fix: `safe` tells the browser to stop centering once it would
+   push content past the start edge, so the container falls back to start
+   alignment there instead of overflowing into a direction nothing can reach.
+   Baseline Chrome 93 / Safari 15.4 / Firefox 63, comfortably inside what this
+   stylesheet already assumes. */
 .auth-screen {
+  height: 100vh;
+  height: 100dvh;
+  overflow: auto;
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: center;
 }
 
@@ -388,7 +456,10 @@ textarea:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* The same height pair as the app shells above, for the same iOS reason —
+     see that comment for what the build actually keeps of it. */
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 26px;
   background: var(--bg);
 }
@@ -2195,6 +2266,18 @@ h1 {
   font-size: 11.5px;
 }
 
+/* Split out of the block above, which carries colour and size only. The counter
+   is the last item of a flex bar that overflows on a phone, and a flex item
+   shrinks by default to its min-content width. For "4 of 4" that width is the
+   word "of" — 11px measured — so the count broke into three stacked lines
+   inside a 46px bar and read as "4 / of / 4". `flex: none` is what stops it;
+   `white-space` is the second lock, because this string is assembled from parts
+   and is the only text in the bar with an interior space to break at. */
+.counter {
+  flex: none;
+  white-space: nowrap;
+}
+
 .search-box {
   display: flex;
   align-items: center;
@@ -2339,15 +2422,82 @@ h1 {
   font-size: 10.5px;
 }
 
+/* Wraps at every width rather than only on a phone, and states §2.7's 46 as a
+   floor rather than a fixed height. The bar is a row of content-sized controls,
+   so there is always a width at which they stop fitting, and it is not a phone
+   width: measured on the Taska Platform board as a project ADMIN with 4
+   members, the full bar wants ~791px, and ~883px with "Clear" showing —
+   content width, not viewport width, is what holds steady here (766px / 847px,
+   unmoved by the padding step), so these are measured figures, not fixed ones.
+   Below that the choice is between wrapping, squeezing controls to min-content
+   (which is how "4 of 4" became three stacked lines) and letting the tail run
+   off the right edge into `.board-shell`'s clip. Only the first keeps every
+   control readable and reachable. The bar still measures exactly 46 whenever
+   one row is enough: `box-sizing` is border-box everywhere here, so 6px of
+   block padding leaves the 32px icon button 1px of room inside the floor
+   instead of pushing it 1px past. */
 .filterbar {
   display: flex;
   flex: none;
   align-items: center;
-  height: 46px;
+  flex-wrap: wrap;
+  min-height: 46px;
   gap: 14px;
+  row-gap: 11px;
   border-bottom: 1px solid var(--border);
-  padding: 0 18px;
+  padding: 6px 18px;
   background: var(--surface);
+}
+
+/* Nothing in this bar is sized by the space available — every child states its
+   own width — so every child has to opt out of the default `flex-shrink: 1`.
+   Left to the default, a narrow viewport squeezes them to min-content instead
+   of admitting the bar is too narrow: the divider disappears, the type segments
+   lose their padding, the label picker collapses under its own select. The
+   counter, which fails the same way and worse, is handled beside its own rule
+   above. Scoped to the bar rather than written on the classes: `.segmented`
+   also appears in modals and on the login card, where shrinking is right. */
+.filterbar > .segmented,
+.filterbar > .divider,
+.filterbar > .filter-label,
+.filterbar > .filter-select,
+.filterbar > .filter-error,
+.filterbar > .assignee-all,
+.filterbar > .clear-button {
+  flex: none;
+}
+
+/* `.topbar-spacer` is a `flex: 1` box, and pushing everything after it to the
+   row's right edge was only ever true on the single row it used to be
+   guaranteed. Once the bar can wrap (above), a spacer left in the flow lands
+   on whichever row it happens to reach, grows to fill the rest of *that* row,
+   and pushes the counter onto a fresh line starting at the row's left edge
+   instead of its right — the same failure the old 820px-only version of this
+   rule fixed, reopened above 820 only when filtered: the unfiltered bar never
+   wraps past 820 at all, but the filtered one does, from 883px, reopening the
+   band at 821–882px on an ordinary laptop. Taking the spacer out of the flow at
+   every width, not only below 820, removes the band instead of relocating it;
+   `.filterbar` no longer has a spacer to divide two single-row groups, so
+   nothing here is conditional any more. `margin-left: auto` on the counter is
+   what still right-aligns it without one: an auto margin claims a flex line's
+   free space for its own item, so it needs no item ahead of it holding that
+   space open and costs no `column-gap` on either side of it — unlike
+   `flex: 0`, which would still be a 0×0 item collecting a 14px gap on both
+   sides, 28px of dead space mid-row, enough to force a wrap by itself. */
+.filterbar > .topbar-spacer {
+  display: none;
+}
+
+.filterbar > .counter {
+  margin-left: auto;
+}
+
+/* The one child whose width grows with the data. `flex: none` here would push a
+   project with many members past the right edge of a bar that no longer scrolls
+   sideways, so the row wraps within itself instead; an avatar button is 28px of
+   min-content and cannot squeeze below it. */
+.filterbar > .assignee-row {
+  flex-wrap: wrap;
 }
 
 /* The board states up to four failures at once — three reads and one event —
@@ -3642,12 +3792,15 @@ button.issue-link-open:hover {
     width: 100%;
   }
 
+  /* Only the inset narrows here: the bar wraps at every width now (above), and
+     that is what replaced the horizontal scroll strip this rule used to force.
+     The strip put the "X of Y" counter — last in source order — off the right
+     edge on a phone, so reading a count meant swiping a bar that never says it
+     has more to show (docs/ai/BACKLOG.md). The bar is `flex: none` in a column
+     shell, so it takes the height its rows need and the columns area keeps the
+     rest: 694 of 956 at 390 with every filter row showing. */
   .filterbar {
-    /* Without this, overflow-x: auto forces overflow-y to compute as auto
-       too, and the 46px bar grows a vertical scrollbar. */
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding: 0 12px;
+    padding: 6px 12px;
   }
 
   .projects-heading {
