@@ -654,11 +654,20 @@ the next session in this image exactly as it bit this one.
   hovering that top row, still puts a square ring corner in the panel's arc.
   Unreachable from the keyboard path, and not fixable in CSS without giving up
   full-bleed rows.
-- **The trigger's position is republished on `window.resize` only.** A layout
-  shift with the panel already open and no resize event — a late webfont
-  changing the "New" button's width — would leave `--trigger-right` stale. Fonts
+- ~~**The trigger's position is republished on `window.resize` only.** … Fonts
   load long before the first click, so a `ResizeObserver` on the bar was judged
-  not worth the wiring; recorded so the judgement is visible rather than assumed.
+  not worth the wiring.~~ **The judgement was wrong and the reasoning names the
+  wrong cause.** `art-director` measured it: the board bar grows **97 → 141** at
+  390 when the project data lands, which fires no resize event, so the published
+  `--trigger-bottom` stays at 42 while the bell moves to 86 — the clamp then
+  overstates the room by 44px and a full inbox runs 32px past the fold at
+  390×560. Not a webfont, and not hypothetical: it is the ordinary board-load
+  path. It was also a regression, because the CSS percentage it replaced
+  self-corrected on rewrap. Fixed inside TAS-181 with a `ResizeObserver` on the
+  bar and on `documentElement`. Kept struck through rather than deleted, because
+  the interesting part is not the defect but that a risk was recorded with a
+  plausible cause, and the plausible cause was the wrong one — which is what made
+  the judgement look safe.
 
 ### Found while clamping the panels (TAS-179, 2026-08-23)
 

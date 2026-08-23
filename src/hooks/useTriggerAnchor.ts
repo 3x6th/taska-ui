@@ -30,9 +30,26 @@ import { useLayoutEffect, type RefObject } from "react";
  * the fallback would also be the untested path.
  *
  * `useLayoutEffect`, so the properties are set in the same commit that mounts
- * the panel and the browser lays it out once, at its final width. A resize
- * republishes, because the bar rewraps under the open panel and the trigger
- * moves with it.
+ * the panel and the browser lays it out once, at its final width.
+ *
+ * **Republished from a `ResizeObserver` on the bar, not from `window.resize`.**
+ * The first version of this listened for resizes only, and that missed the
+ * ordinary path: at 390 the board bar grows from 97 to 141 when the project
+ * data lands, because the key badge and the real name arrive and the bar takes
+ * a third row. No resize event is fired for that, so the trigger moved 44px
+ * down under an already-open panel and the clamp kept the number it was born
+ * with — measured at 390x560, a full inbox reaching 592 against the fold.
+ * `main` did not have that failure because its clamp was a percentage of the
+ * bar, which self-corrected; a published constant only self-corrects if
+ * something republishes it. The bar covers the rewrap and the document element
+ * covers the viewport, which is what `resize` used to cover.
+ *
+ * Observing the wrapper itself would not do: its size never changes, only its
+ * position, and `ResizeObserver` reports the first and not the second. That is
+ * also the residual — a trigger that moves while every observed box keeps its
+ * size would still go unnoticed. On these two bars the trailing group is
+ * `flex: none` and pinned right, so the bell moves only when the bar rewraps
+ * or the viewport changes, and both are observed.
  *
  * Both properties are removed on close: they describe a position that is only
  * true while the panel is open, and a stale one left on the element would be
@@ -55,9 +72,14 @@ export function useTriggerAnchor(
     };
 
     publish();
-    window.addEventListener("resize", publish);
+    const observer = new ResizeObserver(publish);
+    // Both bars are `<header>` elements — the shared `TopBar` and the board's
+    // own — so one selector reaches whichever one a caller's trigger lives in.
+    const bar = element.closest("header");
+    if (bar) observer.observe(bar);
+    observer.observe(document.documentElement);
     return () => {
-      window.removeEventListener("resize", publish);
+      observer.disconnect();
       element.style.removeProperty("--trigger-right");
       element.style.removeProperty("--trigger-bottom");
     };

@@ -258,6 +258,81 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
     }
   });
 
+  // The clamp is a published number now, not a percentage of the bar, and a
+  // published number is only as good as what republishes it. The board bar
+  // grows from two rows to three at 390 when the project data lands — the key
+  // badge and the real name arrive — and that fires no resize event at all. The
+  // first version of this listened for resizes only, so a panel opened during
+  // the board's first load kept a clamp measured against the bar's earlier
+  // shape: at 390x560 that left `max-height: 500px` where there was room for
+  // 456, and a full inbox reaching 592 against the fold.
+  //
+  // The rewrap is staged here rather than raced, because the mock answers in
+  // 140ms and a test that has to click inside that window is a test that fails
+  // on a slow machine for the wrong reason. As far as layout is concerned the
+  // two are the same event: the bar's content changes, the bar takes another
+  // row, and nothing fires.
+  test("the height clamp follows the bar when it rewraps under an open panel", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport sizes regardless of project");
+
+    await signIn(page);
+    await page.getByRole("button", { name: /Taska Platform/ }).click();
+    await expect(page.locator(".counter")).toHaveText(/^\d+ of \d+$/);
+    await page.setViewportSize({ width: 390, height: 560 });
+
+    // Back to the shape the bar has before the project read answers.
+    await page.evaluate(() => {
+      const badge = document.querySelector(".board-topbar .key-badge") as HTMLElement | null;
+      if (badge) badge.style.display = "none";
+      const name = document.querySelector(".board-project-name") as HTMLElement;
+      name.dataset.settled = name.textContent ?? "";
+      name.textContent = "Project";
+    });
+
+    await page.locator(".board-topbar").getByRole("button", { name: "Notifications" }).click();
+    await page.waitForTimeout(300);
+
+    const read = () =>
+      page.evaluate(() => {
+        const pop = document.querySelector(".notifications-popover") as HTMLElement;
+        const bar = document.querySelector(".board-topbar") as HTMLElement;
+        const trigger = document.querySelector(".notification-wrap button") as HTMLElement;
+        return {
+          barHeight: bar.getBoundingClientRect().height,
+          bellBottom: trigger.getBoundingClientRect().bottom,
+          popTop: pop.getBoundingClientRect().top,
+          maxHeight: parseFloat(getComputedStyle(pop).maxHeight),
+          viewport: window.innerHeight,
+        };
+      });
+
+    const before = await read();
+
+    // The data arriving, in the only part of it the bar can see.
+    await page.evaluate(() => {
+      const badge = document.querySelector(".board-topbar .key-badge") as HTMLElement | null;
+      if (badge) badge.style.display = "";
+      const name = document.querySelector(".board-project-name") as HTMLElement;
+      name.textContent = name.dataset.settled ?? "";
+    });
+    await page.waitForTimeout(200);
+    const after = await read();
+
+    // The premise: if the bar ever stops growing here there is nothing to
+    // follow and this case proves nothing.
+    expect(
+      after.barHeight,
+      `the bar did not grow under the open panel: ${before.barHeight} then ${after.barHeight}`,
+    ).toBeGreaterThan(before.barHeight);
+    // The panel moved with its trigger, which it always did — `top: 38px` is
+    // relative to the bell. The clamp is the half that used to stay behind.
+    expect(after.popTop, "the panel did not follow the bell down").toBeGreaterThan(before.popTop);
+    expect(
+      after.popTop + after.maxHeight,
+      `a full inbox would reach ${(after.popTop + after.maxHeight).toFixed(1)} against a ${after.viewport}px viewport`,
+    ).toBeLessThanOrEqual(after.viewport);
+  });
+
   // A third way for something in the top bar to become unreachable, and the
   // one nobody had written: the indicator is on screen and still does not say
   // what it means. The search panel clips to a 13px radius and its rows are
@@ -474,8 +549,11 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
 
       // 1440 is the shape the wrapped widths have to match; 780 is the window
       // the original report came from; 390 is the width where the bell's right
-      // edge is 208.5 and the panel has to narrow to stay anchored.
-      for (const width of [1440, 820, 780, 390]) {
+      // edge is 208.5 and the panel has to narrow to stay anchored; 375 is
+      // where narrowing stops, because a panel thinner than 186 puts its own
+      // header on two lines — iPhone SE and 6/7/8, and what a 390 device gives
+      // at 125% zoom.
+      for (const width of [1440, 820, 780, 390, 375]) {
         await page.setViewportSize({ width, height: 844 });
 
         const bell = page.locator(".board-topbar").getByRole("button", { name: "Notifications" });
@@ -497,6 +575,14 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
             bell: trigger.getBoundingClientRect().toJSON(),
             barBottom: bar.getBoundingClientRect().bottom,
             barHeight: bar.getBoundingClientRect().height,
+            // What the anchor alone would give: the bell's right edge less the
+            // bar's own inner gutter. Derived rather than repeated, so the
+            // floor is detected as "the panel came out wider than the anchor
+            // asked for" without this file holding a second copy of 186.
+            gutter: parseFloat(getComputedStyle(bar).paddingLeft),
+            anchored:
+              parseFloat(getComputedStyle(pop).getPropertyValue("--trigger-right")) - parseFloat(getComputedStyle(bar).paddingLeft),
+            header: (pop.querySelector("header") as HTMLElement).getBoundingClientRect().height,
             // NaN when the computed value is `none`, which is how a deleted
             // clamp shows up here rather than as a quietly taller panel.
             maxHeight,
@@ -515,13 +601,36 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
           measured.pop.y,
           `${where}: the panel starts at ${measured.pop.y.toFixed(1)}, below a ${measured.barHeight.toFixed(1)}px bar rather than under the bell`,
         ).toBeLessThan(measured.barBottom);
-        // The horizontal half of the anchor. Losing this is how the panel came
-        // to belong to the bar in the first place.
-        const rightGap = measured.pop.x + measured.pop.width - measured.bell.right;
-        expect(
-          Math.abs(rightGap),
-          `${where}: the panel's right edge is ${rightGap.toFixed(1)}px from the bell's, so it is anchored to something else`,
-        ).toBeLessThanOrEqual(1);
+        // The panel's own header is the line that must never reflow: it carries
+        // the title and the only action the panel has. One line is 43.84 and
+        // the next is 60.34, so this catches a floor that stops holding as well
+        // as one that was never there.
+        expect(measured.header, `${where}: the panel's header has wrapped to ${measured.header.toFixed(2)}px`).toBeLessThan(50);
+
+        const floorBinds = measured.pop.width > measured.anchored + 0.5;
+        if (!floorBinds) {
+          // The horizontal half of the anchor. Losing this is how the panel
+          // came to belong to the bar in the first place.
+          const rightGap = measured.pop.x + measured.pop.width - measured.bell.right;
+          expect(
+            Math.abs(rightGap),
+            `${where}: the panel's right edge is ${rightGap.toFixed(1)}px from the bell's, so it is anchored to something else`,
+          ).toBeLessThanOrEqual(1);
+        } else {
+          // Past its own minimum the panel stops shrinking and slides right
+          // instead, so the right edge is no longer the bell's. What is left of
+          // the anchor, and what is asserted instead: it starts on the bar's
+          // inner edge and still hangs under the bell rather than beside it.
+          expect(
+            measured.pop.x,
+            `${where}: the panel starts at ${measured.pop.x.toFixed(1)} rather than on the bar's ${measured.gutter}px gutter`,
+          ).toBeCloseTo(measured.gutter, 0);
+          expect(measured.pop.x, `${where}: the panel no longer reaches under the bell`).toBeLessThanOrEqual(measured.bell.x);
+          expect(
+            measured.pop.x + measured.pop.width,
+            `${where}: the panel no longer reaches under the bell`,
+          ).toBeGreaterThanOrEqual(measured.bell.right);
+        }
         // The bar wraps at both narrow widths, which is the premise of the
         // whole case: if it ever stops, this is measuring a layout the report
         // was not about.

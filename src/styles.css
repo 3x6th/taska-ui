@@ -2592,23 +2592,39 @@ h1 {
 }
 
 /* §4.12's geometry, at every width: `top:38; right:0` from the bell itself.
-   The third term of the clamp is what lets that survive a narrow screen. The
-   bar's trailing controls are one group pinned right and the bell is its
-   *first* child, so the bell's right edge is 208.5 of 390 on a phone and a
-   full-width 312 panel hanging left from it would start 103.5px off the left
-   of the screen. `--trigger-right` is that 208.5, published by
-   `useTriggerAnchor` while the panel is open, and 12 is the board bar's own
-   side padding at those widths (§2.4) — so the panel narrows to end at the
-   bell and begin on the bar's inner edge, rather than moving to some other
-   trigger's edge. It binds below ~500px of viewport and costs every wider
-   screen nothing; the `100vw` fallback keeps the middle term in charge if the
-   property is ever missing. */
+   The clamp is what lets that survive a narrow screen. The bar's trailing
+   controls are one group pinned right and the bell is its *first* child, so
+   the bell's right edge is 208.5 of 390 on a phone and a full-width 312 panel
+   hanging left from it would start 103.5px off the left of the screen.
+   `--trigger-right` is that 208.5, published by `useTriggerAnchor` while the
+   panel is open, and 12 is the board bar's own side padding at those widths
+   (§2.4) — so the panel narrows to end at the bell and begin on the bar's
+   inner edge, rather than moving to some other trigger's edge. The middle term
+   holds when the property is missing, since `100vw` never wins the `min`.
+   Measured: a full 312 down to 506px of viewport, 306.5 at 500, 196.5 at 390.
+
+   **186 is a floor, and past it the panel shifts instead of shrinking.** Width
+   swept against the panel's own contents: the header holds "Notifications" and
+   "Mark all read" on one line from 185px up and wraps to 60.34 below it, and
+   the rows hold a one-line body from 212. Narrowing without a floor put the
+   panel's own title on two lines at 375 — iPhone SE and 6/7/8, and what a 390
+   device gives at 125% zoom — which is worse than the row reflow it was
+   trading against. So the width stops at 186 and `right` goes negative by
+   exactly the overshoot, sliding the panel right until its left edge sits on
+   the same 12px gutter. 186 rather than 212 because a 212 floor binds at 390
+   too and takes the panel 15.5px off the bell there, and the anchor is the
+   thing this story is about; below 186 the rows reflow and the header does
+   not. The two declarations agree by construction — the same 186 in both — and
+   `right` is 0 wherever the floor does not bind, so 1440, 820, 780 and 390 are
+   untouched. The floor binds at 379px of viewport and below, and the shift is
+   continuous from there: 0.48px past the bell at 379, 4.48 at 375, 59.48 at
+   320. */
 .notifications-popover {
   position: absolute;
   top: 38px;
-  right: 0;
+  right: min(0px, calc(var(--trigger-right, 100vw) - 12px - 186px));
   z-index: 20;
-  width: min(312px, calc(100vw - 24px), calc(var(--trigger-right, 100vw) - 12px));
+  width: max(186px, min(312px, calc(100vw - 24px), calc(var(--trigger-right, 100vw) - 12px)));
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 13px;
@@ -4197,15 +4213,25 @@ button.issue-link-open:hover {
     padding: 6px 12px;
   }
 
-  /* Two panels here are anchored to triggers that are *not* the last thing on
-     the bar — §4.13 puts the search before the theme toggle, and the bell
-     before both it and "New" — so §4.12's "flush with the trigger's right
-     edge" leaves a 312px or 420px panel hanging off the left of a 390px
-     screen whatever the trigger's own alignment is. Below 820 they anchor to
-     the bar instead: both bars are `position: relative`, so `right: 0` lands
+  /* The search field is anchored to a trigger that is *not* the last thing on
+     the bar — §4.13 puts it before the theme toggle — so §4.12's "flush with
+     the trigger's right edge" leaves a 420px panel hanging off the left of a
+     390px screen whatever the trigger's own alignment is. Below 820 it anchors
+     to the bar instead: the bar is `position: relative`, so `right: 0` lands
      on the bar's content edge — the same edge the avatar sits on — and
-     `top: 100%` clears a bar whose height is now whatever its rows add up to.
-     Above 820 nothing moves and §4.12 stands as written.
+     `top: 100%` clears it. Above 820 nothing moves and §4.12 stands as
+     written.
+
+     §4.13's rule has a precondition, and this is the selector it turns on:
+     **a panel anchors to the bar only where the bar cannot wrap.** The shared
+     bar is fixed at 52 and never does, so `top: 100%` here is still the row
+     the field is on. The board bar wraps at exactly these widths, so the same
+     re-anchor dropped the notifications popover below *both* of its rows,
+     where it read as belonging to the search field under the bell — that
+     panel now keeps §4.12's anchor at every width and narrows against the
+     bell's measured position instead (TAS-181, base rule up the file). This
+     is a structural difference between the two bars, not a preference, and
+     `.global-search` is only ever rendered in the bar that cannot wrap.
 
      The profile popover needs none of this: it is last on the bar at every
      width, so its own right edge is already the bar's, and the width clamp
