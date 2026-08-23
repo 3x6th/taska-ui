@@ -109,6 +109,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // open popover is *inside* this, so the hook stays out of it and the toggle
   // closes it once instead of closing and reopening on one press.
   const notificationsRef = useRef<HTMLDivElement>(null);
+  // Named for `useTriggerAnchor`: the bell's own box never changes size, only
+  // its position, and this is the box whose resizing moves it — the bar wraps
+  // to two rows below 820 and to three at 390 when the project data lands.
+  const topbarRef = useRef<HTMLElement>(null);
   const [creating, setCreating] = useState(false);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
   // A drop with no legal transition must say so — the board has no toast, so
@@ -210,7 +214,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // the screen's. This publishes where it actually landed; the panel stays
   // anchored to it and CSS narrows and clamps against these two numbers
   // (TAS-181).
-  useTriggerAnchor(notificationsOpen, notificationsRef);
+  useTriggerAnchor(notificationsOpen, notificationsRef, topbarRef);
 
   const project = projectQuery.data;
   // Memoized so the `?? []` fallback does not produce a new array identity on
@@ -443,7 +447,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
   return (
     <main className="board-shell">
-      <header className="board-topbar">
+      <header className="board-topbar" ref={topbarRef}>
         <button className="icon-button" onClick={() => navigate("/projects")} title="Back to projects" type="button">
           <ChevronLeft size={17} />
         </button>

@@ -2603,28 +2603,39 @@ h1 {
    holds when the property is missing, since `100vw` never wins the `min`.
    Measured: a full 312 down to 506px of viewport, 306.5 at 500, 196.5 at 390.
 
-   **186 is a floor, and past it the panel shifts instead of shrinking.** Width
-   swept against the panel's own contents: the header holds "Notifications" and
-   "Mark all read" on one line from 185px up and wraps to 60.34 below it, and
-   the rows hold a one-line body from 212. Narrowing without a floor put the
-   panel's own title on two lines at 375 — iPhone SE and 6/7/8, and what a 390
-   device gives at 125% zoom — which is worse than the row reflow it was
-   trading against. So the width stops at 186 and `right` goes negative by
-   exactly the overshoot, sliding the panel right until its left edge sits on
-   the same 12px gutter. 186 rather than 212 because a 212 floor binds at 390
-   too and takes the panel 15.5px off the bell there, and the anchor is the
-   thing this story is about; below 186 the rows reflow and the header does
-   not. The two declarations agree by construction — the same 186 in both — and
+   **`--pop-floor` is a floor, and past it the panel shifts instead of
+   shrinking.** Width swept against the panel's own contents: the header holds
+   "Notifications" and "Mark all read" on one line from 185px up and wraps to
+   60.34 below it, and the rows hold a one-line body from 212. Narrowing
+   without a floor put the panel's own title on two lines at 375 — iPhone SE
+   and 6/7/8, and what a 390 device gives at 125% zoom — which is worse than
+   the row reflow it was trading against. So the width stops at 186 and `right`
+   goes negative by exactly the overshoot, sliding the panel right until its
+   left edge sits on the same 12px gutter. 186 rather than 212 because a 212
+   floor binds at 390 too and takes the panel 15.48px off the bell there
+   (measured, with the floor temporarily raised), and the anchor is the thing
+   this story is about; below 186 the rows reflow and the header does not.
+
    `right` is 0 wherever the floor does not bind, so 1440, 820, 780 and 390 are
-   untouched. The floor binds at 379px of viewport and below, and the shift is
+   untouched. It binds at 379px of viewport and below, and the shift is
    continuous from there: 0.48px past the bell at 379, 4.48 at 375, 59.48 at
-   320. */
+   320. Because the shift is exactly what the width refused to give up, the
+   panel's right edge is pinned at 198 for every width below 379, and only a
+   viewport under 198 could push it past the screen — under every shipping
+   device and under Chrome's own minimum window. */
 .notifications-popover {
+  /* The floor is *named* for the same reason `--pop-radius` is, one panel up
+     the file: `right` has to slide by exactly the amount `width` refused to
+     give up, so these are one number used twice. Written out, they would be
+     two numbers that must agree — and two numbers in two places that must
+     agree is the shape of both defects this story was opened for. */
+  --pop-floor: 186px;
+
   position: absolute;
   top: 38px;
-  right: min(0px, calc(var(--trigger-right, 100vw) - 12px - 186px));
+  right: min(0px, calc(var(--trigger-right, 100vw) - 12px - var(--pop-floor)));
   z-index: 20;
-  width: max(186px, min(312px, calc(100vw - 24px), calc(var(--trigger-right, 100vw) - 12px)));
+  width: max(var(--pop-floor), min(312px, calc(100vw - 24px), calc(var(--trigger-right, 100vw) - 12px)));
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 13px;

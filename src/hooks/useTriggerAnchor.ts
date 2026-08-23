@@ -47,9 +47,20 @@ import { useLayoutEffect, type RefObject } from "react";
  * Observing the wrapper itself would not do: its size never changes, only its
  * position, and `ResizeObserver` reports the first and not the second. That is
  * also the residual — a trigger that moves while every observed box keeps its
- * size would still go unnoticed. On these two bars the trailing group is
- * `flex: none` and pinned right, so the bell moves only when the bar rewraps
- * or the viewport changes, and both are observed.
+ * size would still go unnoticed. On this bar it cannot: the trailing group is
+ * `flex: none` and pinned right, and sampling it every 150ms through a board
+ * load measured 201.48px at every sample, across `New` going disabled to
+ * enabled and the avatar going loading to loaded. The bell moves when the bar
+ * rewraps or the viewport changes, and both of those are observed.
+ *
+ * **The caller names the box that reflows; this hook does not go looking for
+ * it.** The first version took `element.closest("header")`, which reads as "the
+ * bar" only while no nearer `<header>` sits between the trigger and it — and
+ * `src/` has eight of them, six of which are section, card, modal and panel
+ * heads. It resolved correctly for the one caller there is, which is exactly
+ * what a latent wrong guarantee looks like before it fires. A parameter costs
+ * the call site one ref and makes the relationship a statement rather than a
+ * search.
  *
  * Both properties are removed on close: they describe a position that is only
  * true while the panel is open, and a stale one left on the element would be
@@ -60,6 +71,13 @@ export function useTriggerAnchor(
   open: boolean,
   /** The positioned wrapper the panel is anchored to — the trigger's box, not the panel's. */
   ref: RefObject<HTMLElement | null>,
+  /**
+   * The box whose resizing moves the trigger: the bar it sits in. Observed
+   * alongside the viewport, since the trigger's own box never changes size.
+   * A ref that is still empty when the panel opens is tolerated rather than
+   * required — the viewport is then the only thing that republishes.
+   */
+  reflows: RefObject<HTMLElement | null>,
 ) {
   useLayoutEffect(() => {
     const element = ref.current;
@@ -73,9 +91,7 @@ export function useTriggerAnchor(
 
     publish();
     const observer = new ResizeObserver(publish);
-    // Both bars are `<header>` elements — the shared `TopBar` and the board's
-    // own — so one selector reaches whichever one a caller's trigger lives in.
-    const bar = element.closest("header");
+    const bar = reflows.current;
     if (bar) observer.observe(bar);
     observer.observe(document.documentElement);
     return () => {
@@ -83,5 +99,5 @@ export function useTriggerAnchor(
       element.style.removeProperty("--trigger-right");
       element.style.removeProperty("--trigger-bottom");
     };
-  }, [open, ref]);
+  }, [open, ref, reflows]);
 }

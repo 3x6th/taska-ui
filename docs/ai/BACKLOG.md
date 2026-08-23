@@ -649,6 +649,10 @@ the next session in this image exactly as it bit this one.
   search panel: a square-cornered child sitting on a rounded clip. Left out
   deliberately — the story was about the two the owner reported, and the
   notifications rows want their own focus recipe rather than a corner patch.
+- **A notification body breaks an issue key across lines at its hyphen** — at 390
+  the narrowed panel splits `TAS-` from `103`. The width floor does not reach it
+  (at 375 the same string wraps cleanly, so it is not a width problem), and it
+  wants a non-breaking span around the key rather than more room.
 - **`scroll-padding-top` biases keyboard scrolling, not pointer scrolling.** A
   wheel-scrolled list that stops at an exact row boundary, with the pointer then
   hovering that top row, still puts a square ring corner in the panel's arc.
