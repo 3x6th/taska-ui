@@ -31,6 +31,8 @@ states are not.
 | [TAS-175](https://jira.ozero.dev/browse/TAS-175) | Bright avatar palette restored, glyph computed from the fill | Done | merged (PR #32) |
 | [TAS-177](https://jira.ozero.dev/browse/TAS-177) | Phone portrait: the projects list is clipped by the browser's own toolbar, and the board's "X of Y" counter stacks into a column | Done | merged (PR #34) |
 | [TAS-179](https://jira.ozero.dev/browse/TAS-179) | Connect `GET /issues/search`: description in the board's local filter, a server search under it, global issue search in the shared top bar, and a client-side project filter | Done | merged (PR #36) |
+| [TAS-181](https://jira.ozero.dev/browse/TAS-181) | The selection ring broke on the search panel's rounded corner, and the inbox left the bell when the bar wraps | Done | merged (PR #37) |
+| [TAS-182](https://jira.ozero.dev/browse/TAS-182) | Self-host Hanken Grotesk instead of linking Google Fonts with `display=swap` | To Do | filed from the TAS-181 CI failure, not started |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
