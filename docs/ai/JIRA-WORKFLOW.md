@@ -29,7 +29,7 @@ states are not.
 | [TAS-171](https://jira.ozero.dev/browse/TAS-171) | Deterministic colour for avatars and project key badges | Done | merged (PR #29) |
 | [TAS-174](https://jira.ozero.dev/browse/TAS-174) | Assignee filter buttons announce no accessible name (WCAG 4.1.2) | To Do | filed from the TAS-171 reviews, not started |
 | [TAS-175](https://jira.ozero.dev/browse/TAS-175) | Bright avatar palette restored, glyph computed from the fill | Done | merged (PR #32) |
-| [TAS-177](https://jira.ozero.dev/browse/TAS-177) | Phone portrait: the projects list is clipped by the browser's own toolbar, and the board's "X of Y" counter stacks into a column | To Do | in review (PR #34) |
+| [TAS-177](https://jira.ozero.dev/browse/TAS-177) | Phone portrait: the projects list is clipped by the browser's own toolbar, and the board's "X of Y" counter stacks into a column | To Do | merged (PR #34) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
