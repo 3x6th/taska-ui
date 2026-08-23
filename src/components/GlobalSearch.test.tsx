@@ -21,7 +21,7 @@ import { GlobalSearch } from "./GlobalSearch";
  * `issueKey` prefix against the projects list — and a prefix that resolves to
  * nothing must produce a row that is not a link rather than a guessed route.
  */
-const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, reset } = vi.hoisted(() => {
+const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, failProjects, reset } = vi.hoisted(() => {
   interface Hit {
     id: string;
     issueKey: string;
@@ -37,6 +37,7 @@ const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, reset } = vi.ho
     failure?: Error;
     held: boolean;
     projects: { id: string; projectKey: string }[];
+    projectsFailure?: Error;
   } = {
     hits: [],
     totalCount: 0,
@@ -53,15 +54,17 @@ const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, reset } = vi.ho
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
-    listProjects: async () =>
-      state.projects.map((project) => ({
+    listProjects: async () => {
+      if (state.projectsFailure) throw state.projectsFailure;
+      return state.projects.map((project) => ({
         ...project,
         name: project.projectKey,
         createdBy: "user-anna",
         createdAt: now,
         updatedAt: now,
         archivedAt: null,
-      })),
+      }));
+    },
     searchIssues: async () => {
       if (state.held) return new Promise(() => {});
       if (state.failure) throw state.failure;
@@ -84,11 +87,15 @@ const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, reset } = vi.ho
     seedProjects: (projects: { id: string; projectKey: string }[]) => {
       state.projects = projects;
     },
+    failProjects: (error: Error) => {
+      state.projectsFailure = error;
+    },
     reset: () => {
       state.hits = [];
       state.totalCount = 0;
       state.failure = undefined;
       state.held = false;
+      state.projectsFailure = undefined;
       state.projects = [
         { id: "project-tas", projectKey: "TAS" },
         { id: "project-kappa", projectKey: "kappa-test" },
@@ -228,6 +235,42 @@ describe("the top bar's global search", () => {
     // And Enter does not invent a route for it.
     fireEvent.keyDown(box, { key: "Enter" });
     expect(screen.getByTestId("address")).toHaveTextContent("/projects");
+  });
+
+  it("admits a project list that never answered rather than calling every project unknown", async () => {
+    failProjects(Object.assign(new Error("Internal error"), { status: 500, requestId: "5d21a7f0-1b44-4c02" }));
+    seedHits([hit("TAS-101", "Login form validation fails")]);
+    const box = renderSearch();
+
+    fireEvent.change(box, { target: { value: "board" } });
+
+    const option = await screen.findByRole("option");
+    // Not "Project unknown": that is a statement about TAS, and TAS is fine.
+    // The read is what failed, and the row says so.
+    expect(within(option).getByText("Project not loaded")).toBeVisible();
+    expect(within(option).queryByText("Project unknown")).not.toBeInTheDocument();
+    expect(option).toHaveAttribute("aria-disabled", "true");
+
+    // Said once above the rows, with the server's own words and its request id —
+    // on `/admin` nothing else on the screen reads the project list, so this is
+    // the only place it is ever stated.
+    expect(screen.getByText(/project list could not be read/i)).toBeVisible();
+    expect(screen.getByText("Internal error")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Copy request id 5d21a7f0-1b44-4c02/ })).toBeVisible();
+
+    // And Enter still refuses to invent a route.
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(screen.getByTestId("address")).toHaveTextContent("/projects");
+  });
+
+  it("keeps quiet about the project list when it answered", async () => {
+    seedHits([hit("TAS-101", "Login form validation fails")]);
+    const box = renderSearch();
+
+    fireEvent.change(box, { target: { value: "board" } });
+
+    await screen.findByRole("option");
+    expect(screen.queryByText(/project list could not be read/i)).not.toBeInTheDocument();
   });
 
   it("says a search failed rather than showing it as no results", async () => {

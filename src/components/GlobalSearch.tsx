@@ -79,6 +79,15 @@ export function GlobalSearch() {
   });
 
   const searchUnread = useUnanswered(searchQuery);
+  // The projects read gets the same instrument as the search, because a hit
+  // that cannot be opened has two very different causes and only one of them is
+  // a fact about the project. `listProjects` failing means we do not know which
+  // project `CRM-1` belongs to; it does not mean `CRM` is not a project. Saying
+  // "Project unknown" for both is the TAS-163 mistake in miniature — an
+  // admission about a request printed as a claim about the data.
+  const projectsUnread = useUnanswered(projectsQuery);
+  /** Whether there is a list to resolve a key against at all — as opposed to one that has not answered. */
+  const projectsAnswered = projectsQuery.data !== undefined;
   const hits = useMemo(() => searchQuery.data?.items ?? [], [searchQuery.data]);
   const totalCount = searchQuery.data?.totalCount;
   /** The panel is showing rows, as opposed to showing one of the other three answers. */
@@ -234,6 +243,15 @@ export function GlobalSearch() {
 
           {hits.length ? (
             <>
+              {/* Only when there are rows it explains. On `/projects` the same
+                  failure is already stated over the grid; on `/admin`, where
+                  nothing else reads the project list, this is the only place it
+                  is ever said — and that is the case that matters. */}
+              {projectsUnread.unanswered ? (
+                <ApiNotice error={projectsUnread.error} live="polite">
+                  The project list could not be read, so these results cannot be opened from here.
+                </ApiNotice>
+              ) : null}
               <ul aria-label="Issue search results" className="global-search-list" id={listId} role="listbox">
                 {hits.map((hit, index) => (
                   <GlobalSearchOption
@@ -241,7 +259,10 @@ export function GlobalSearch() {
                     hit={hit}
                     id={optionId(index)}
                     key={hit.id}
-                    linkable={routes[index] !== null}
+                    // Two different reasons a row is not a link, and they are
+                    // not the same sentence: a list we have and a key that is
+                    // not in it, against a list that never arrived.
+                    unlinkableNote={routes[index] !== null ? null : projectsAnswered ? "Project unknown" : "Project not loaded"}
                     onChoose={() => select(index)}
                     onHover={() => setActiveIndex(index)}
                   />
@@ -280,20 +301,21 @@ function GlobalSearchOption({
   active,
   hit,
   id,
-  linkable,
+  unlinkableNote,
   onChoose,
   onHover,
 }: {
   active: boolean;
   hit: IssueSearchHit;
   id: string;
-  linkable: boolean;
+  /** Why this row cannot be opened, or `null` when it can. */
+  unlinkableNote: string | null;
   onChoose: () => void;
   onHover: () => void;
 }) {
   return (
     <li
-      aria-disabled={linkable ? undefined : true}
+      aria-disabled={unlinkableNote ? true : undefined}
       aria-selected={active}
       className={`global-search-option ${active ? "is-active" : ""}`}
       id={id}
@@ -308,7 +330,7 @@ function GlobalSearchOption({
       <span className="visually-hidden">
         {typeMeta[hit.issueType].label}, {hit.priority.toLowerCase()} priority
       </span>
-      {linkable ? null : <span className="global-search-note">Project unknown</span>}
+      {unlinkableNote ? <span className="global-search-note">{unlinkableNote}</span> : null}
       <PriorityBars priority={hit.priority} />
     </li>
   );

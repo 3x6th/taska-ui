@@ -33,6 +33,26 @@ const {
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
+
+  const makeIssue = (id: string, issueKey: string, summary: string, description: string) => ({
+    id,
+    projectId: PROJECT_ID,
+    issueNumber: Number(issueKey.split("-")[1]),
+    issueKey,
+    issueType: "TASK" as const,
+    summary,
+    description,
+    status: "TODO" as const,
+    priority: "MEDIUM" as const,
+    assigneeId: null,
+    reporterId: "user-anna",
+    createdAt: now,
+    updatedAt: now,
+    version: 1,
+    deletedAt: null,
+    labels: [] as { id: string; name: string; color: string }[],
+  });
+
   const state: {
     membership: { role: "ADMIN" | "MEMBER" | "VIEWER"; isMember: boolean; projectExists: boolean };
     membershipFailure?: Error;
@@ -46,6 +66,9 @@ const {
     searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null }[];
     searchTotal: number;
     searchFailure?: Error;
+    /** Issues created during a test, and the ones deleted, so the list moves the way a server's would. */
+    created: ReturnType<typeof makeIssue>[];
+    deleted: Set<string>;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -54,6 +77,8 @@ const {
     labelCreateHeld: false,
     searchHits: [],
     searchTotal: 0,
+    created: [],
+    deleted: new Set<string>(),
   };
 
   const api = {
@@ -101,40 +126,34 @@ const {
     },
     listIssues: async () => {
       if (state.issuesFailure) throw state.issuesFailure;
-      return {
-        items: [
-          {
-            id: "issue-1",
-            projectId: PROJECT_ID,
-            issueNumber: 102,
-            issueKey: "TAS-102",
-            issueType: "TASK" as const,
-            summary: "Wire the board to the gateway",
-            // Not empty any more: the board's own box searches descriptions
-            // too, and a fixture with none could not tell whether it does.
-            description: "Point the columns at the deployed gateway.",
-            status: "TODO" as const,
-            priority: "MEDIUM" as const,
-            assigneeId: null,
-            reporterId: "user-anna",
-            createdAt: now,
-            updatedAt: now,
-            version: 1,
-            deletedAt: null,
-            labels: [],
-          },
-        ],
-        page: 0,
-        pageSize: 100,
-        totalCount: 1,
-      };
+      // The description is not empty: the board's own box searches descriptions
+      // too, and a fixture with none could not tell whether it does.
+      const seeded = makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", "Point the columns at the deployed gateway.");
+      const items = [seeded, ...state.created].filter((issue) => !state.deleted.has(issue.id));
+      return { items, page: 0, pageSize: 100, totalCount: items.length };
+    },
+    // Both of these move the issue list *and* the server's own match count, the
+    // way a server would. That pairing is the whole point: a fixture where only
+    // one of them moved could not tell a counter that invalidates its search
+    // from one that strands it.
+    createIssue: async (_projectId: string, input: { summary: string; description: string }) => {
+      const created = makeIssue(`issue-${state.created.length + 2}`, `TAS-20${state.created.length}`, input.summary, input.description);
+      state.created = [...state.created, created];
+      state.searchTotal += 1;
+      return created;
+    },
+    deleteIssue: async (_projectId: string, issueId: string) => {
+      state.deleted.add(issueId);
+      state.searchTotal = Math.max(0, state.searchTotal - 1);
     },
     // The search route answers with the short DTO — six fields, no status and
     // no projectId — so the fixture cannot accidentally hand the board an issue
     // where the gateway would hand it a hit.
     searchIssues: async () => {
       if (state.searchFailure) throw state.searchFailure;
-      return { items: state.searchHits, page: 0, pageSize: 50, totalCount: state.searchTotal };
+      // A deleted issue stops being a hit, the way it stops being a row.
+      const items = state.searchHits.filter((hit) => !state.deleted.has(hit.id));
+      return { items, page: 0, pageSize: 50, totalCount: state.searchTotal };
     },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
     // The board reads the project's labels for its filter. The tests about the
@@ -230,6 +249,8 @@ const {
       state.searchHits = [];
       state.searchTotal = 0;
       state.searchFailure = undefined;
+      state.created = [];
+      state.deleted = new Set<string>();
     },
   };
 });
@@ -237,7 +258,14 @@ const {
 vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
 
 function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // `staleTime` is the app's own (src/main.tsx), not react-query's default of
+  // 0. It matters more than it looks: at 0 every cache entry is refetched the
+  // moment anything observes it again, so a query that nothing invalidates
+  // still corrects itself — and a whole class of staleness defect becomes
+  // invisible to this file. The counter's stranded search total (TAS-179) was
+  // exactly that class, and a test written under the default passed against
+  // the bug.
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 20_000 } } });
   const board = <BoardScreen theme="light" toggleTheme={() => {}} onLogout={() => {}} logoutPending={false} />;
   render(
     <QueryClientProvider client={queryClient}>
@@ -551,6 +579,100 @@ describe("the board's search and the server's", () => {
     // The local result is still on screen throughout: the failure of the
     // supplement never blanks the board.
     expect(screen.getByRole("button", { name: /TAS-102/ })).toBeVisible();
+  });
+});
+
+/**
+ * The two halves of "X of Y" are read from two caches, and only one of them was
+ * ever invalidated. X comes live off the issues query, which every mutation
+ * here refreshes; Y is `totalCount` off a search answer held for `staleTime`
+ * under a key made of the query text and the filters — none of which a mutation
+ * changes. So creating a matching issue moved X and stranded Y at "2 of 1", and
+ * re-typing the same query could not correct it, because the key was already
+ * the one in the cache.
+ *
+ * The fix is one line in `invalidateBoard` and will be re-broken by the next
+ * person who adds a mutation, so what these two cases pin is the invariant
+ * rather than the line: **a mutation that changes what the search would match
+ * must move both halves of the counter, or neither.** The delete is here
+ * because it is the mirror image and the worse of the two — a stranded Y over a
+ * fallen X reads "0 of 1", which looks like a working empty state.
+ */
+describe("the counter after a mutation", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const search = async (text: string) => {
+    const box = await screen.findByPlaceholderText("Search issues");
+    fireEvent.change(box, { target: { value: text } });
+    return box;
+  };
+
+  /**
+   * The server's answer has to be *distinguishable* from the local fallback, or
+   * the precondition cannot be established at all: with a total equal to the
+   * loaded page's, "1 of 1" is what the counter reads both before the search
+   * has answered and after, and the first draft of this test asserted the
+   * before-state and then measured nothing. Two hits and a total of two — one
+   * of them a card already on the board, one of them not — make the answered
+   * counter read "2 of 2" and the unanswered one "1 of 1".
+   */
+  const seedAnsweredSearch = () =>
+    seedSearch(
+      [
+        // The card the board already holds: the search finds it too, and the
+        // group must not draw it twice.
+        { id: "issue-1", issueKey: "TAS-102", issueType: "TASK", summary: "Wire the board to the gateway", priority: "MEDIUM", assigneeId: null },
+        // And one it does not.
+        { id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Deployed gateway rejects an empty query", priority: "HIGH", assigneeId: null },
+      ],
+      2,
+    );
+
+  it("moves both halves when a matching issue is created, and does not strand the total", async () => {
+    seedAnsweredSearch();
+    renderBoard();
+    await screen.findByRole("region", { name: "To Do column" });
+    await search("deployed");
+    // One card plus one hit, out of the two the server says match. Reaching
+    // this string is what proves the server's answer is in the cache.
+    expect(await screen.findByText("2 of 2")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    // Scoped to the modal: each column head carries a "+" whose title is also
+    // "Create issue".
+    const dialog = await screen.findByRole("dialog", { name: "New issue" });
+    fireEvent.change(within(dialog).getByLabelText("Summary"), {
+      target: { value: "Second deployed gateway task" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create issue" }));
+
+    // Two cards and one hit, out of three. Before the fix this read "3 of 2"
+    // and stayed there: X is live off the issues query, Y was held for
+    // `staleTime` under a key the reader had not changed, so even re-typing the
+    // same query could not correct it.
+    expect(await screen.findByText("3 of 3")).toBeVisible();
+    expect(screen.queryByText("3 of 2")).not.toBeInTheDocument();
+  });
+
+  it("moves both halves when the matching issue is deleted, rather than leaving a total behind an emptier board", async () => {
+    seedAnsweredSearch();
+    // Straight at the issue route, which is how the app opens the panel: the
+    // board is underneath it with the search box still holding the query.
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("region", { name: "To Do column" });
+    await search("deployed");
+    expect(await screen.findByText("2 of 2")).toBeVisible();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+    // No cards and one hit, out of one. The mirror image of the create and the
+    // more dangerous of the two: a stale total over a board that has lost a
+    // card reads as a result set, not as a stale number.
+    expect(await screen.findByText("1 of 1")).toBeVisible();
+    expect(screen.queryByText("2 of 2")).not.toBeInTheDocument();
   });
 });
 

@@ -1125,8 +1125,21 @@ function IssuePanel({
   });
   const deleteIssue = useMutation({
     mutationFn: () => taskaApi.deleteIssue(projectId, issueId),
+    // Not `invalidateBoard`: this path deliberately does not touch
+    // `["issue", projectId, issueId]`, because this panel is still mounted for
+    // one more tick and refetching the issue that was just deleted would put a
+    // 404 on screen on the way out. The search is the other half of the board's
+    // counter and has to move with the issue list — same reasoning as the
+    // prefix in `invalidateBoard`, and the worse half of it: measured against
+    // the mock, deleting the only match left the counter reading "1 of 1" over
+    // an empty board, because the deleted issue stayed in the search answer and
+    // came back as a row in the group below, linking to a panel that no longer
+    // opens. A wrong number is noticed; a plausible one is not.
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["issue-search"] }),
+      ]);
       navigate(`/projects/${projectId}/board`);
     },
   });
@@ -2522,5 +2535,18 @@ async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, p
     // point at a panel that no longer opens.
     queryClient.invalidateQueries({ queryKey: ["issue-links", projectId] }),
     queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+    // The bare prefix, deliberately: it catches the board's own search — whose
+    // key carries the query text and the active filters — and the top bar's
+    // global one, which has no `projectId` in it at all and can therefore be
+    // changed by a mutation in any project.
+    //
+    // Without this the two halves of "X of Y" come from different moments. X is
+    // read live off the issues query, which every caller here invalidates; Y is
+    // `totalCount` off a search answer nothing invalidated, held for
+    // `staleTime` (src/main.tsx) and keyed by a query string the reader has not
+    // changed — so re-typing the same query cannot correct it either. Measured
+    // against the mock: creating a matching issue printed "2 of 1" and still
+    // said "2 of 1" four seconds later.
+    queryClient.invalidateQueries({ queryKey: ["issue-search"] }),
   ]);
 }
