@@ -639,6 +639,66 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### The webfont is a measurement hazard, not just a load-time one (TAS-181, 2026-08-24)
+
+Graduated to [TAS-182](https://jira.ozero.dev/browse/TAS-182) the moment it was
+understood; recorded here because the *method* outlives the fix.
+
+A green local gate and a red CI on the same commit were both honest. The suite
+runs against `localhost`, but the **product** links Hanken Grotesk from
+`fonts.googleapis.com` with `display=swap`, so a run without that request
+measures the fallback stack — a different product. Blocking the request
+reproduced the CI failure verbatim, first try.
+
+Two things fell out that are worth more than the fix:
+
+- **A test can pass on 1.5px of slack and read as robust.** The rewrap staging
+  had 100.52px of row for text that measures 99.03 with the webfont and 104.24
+  without. Six pixels of font decided it. The staging is now built to leave
+  ~91px, and every height in that test is measured from the page rather than
+  written as a constant.
+- **`document.fonts.check("13px 'Hanken Grotesk'")` returns `true` with the
+  stylesheet blocked.** It answers "can this text be rendered", and a family
+  nothing ever defined renders fine in the fallback — so the first gate written
+  against it passed while the assertion it guarded failed. The honest detector
+  asks the font set: `[...document.fonts].some(f => f.family.includes(…) &&
+  f.status === "loaded")`, which is false for absent *and* for still-loading and
+  therefore covers the block and the race with one poll.
+
+### Found while fixing the panels' presentation (TAS-181, 2026-08-24)
+
+- **The last `.notification-item` has no focus style of its own**, so it takes
+  Chromium's `auto` ring — and its bottom edge is exactly the panel's clip
+  boundary (measured 320.39 = 320.39, radius 13, `overflow: hidden`), so that
+  ring is cut off at the bottom and squared at the corners. Two defects in one
+  row, and the second is the same family as the one TAS-181 just fixed on the
+  search panel: a square-cornered child sitting on a rounded clip. Left out
+  deliberately — the story was about the two the owner reported, and the
+  notifications rows want their own focus recipe rather than a corner patch.
+- **A notification body breaks an issue key across lines at its hyphen** — at 390
+  the narrowed panel splits `TAS-` from `103`. The width floor does not reach it
+  (at 375 the same string wraps cleanly, so it is not a width problem), and it
+  wants a non-breaking span around the key rather than more room.
+- **`scroll-padding-top` biases keyboard scrolling, not pointer scrolling.** A
+  wheel-scrolled list that stops at an exact row boundary, with the pointer then
+  hovering that top row, still puts a square ring corner in the panel's arc.
+  Unreachable from the keyboard path, and not fixable in CSS without giving up
+  full-bleed rows.
+- ~~**The trigger's position is republished on `window.resize` only.** … Fonts
+  load long before the first click, so a `ResizeObserver` on the bar was judged
+  not worth the wiring.~~ **The judgement was wrong and the reasoning names the
+  wrong cause.** `art-director` measured it: the board bar grows **97 → 141** at
+  390 when the project data lands, which fires no resize event, so the published
+  `--trigger-bottom` stays at 42 while the bell moves to 86 — the clamp then
+  overstates the room by 44px and a full inbox runs 32px past the fold at
+  390×560. Not a webfont, and not hypothetical: it is the ordinary board-load
+  path. It was also a regression, because the CSS percentage it replaced
+  self-corrected on rewrap. Fixed inside TAS-181 with a `ResizeObserver` on the
+  bar and on `documentElement`. Kept struck through rather than deleted, because
+  the interesting part is not the defect but that a risk was recorded with a
+  plausible cause, and the plausible cause was the wrong one — which is what made
+  the judgement look safe.
+
 ### Found while clamping the panels (TAS-179, 2026-08-23)
 
 - **The notifications popover overflows a short desktop viewport.** At

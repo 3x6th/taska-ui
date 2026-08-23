@@ -29,3 +29,20 @@ if (typeof window !== "undefined" && !window.matchMedia) {
 if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
+
+// Same shape of gap, one API further: jsdom has no layout, so it has no
+// `ResizeObserver`, and `useTriggerAnchor` constructs one the moment the
+// notifications popover opens. The stub observes nothing and never calls back,
+// which is the honest behaviour here rather than a convenient one — a box that
+// is always 0x0 never changes size, so a real implementation would have
+// nothing to report either. What the observer is actually for is answered in a
+// browser, where `e2e/topbar-popovers.spec.ts` grows the bar under an open
+// panel and measures whether the clamp followed. Feature-detecting it in the
+// hook instead would be production code shaped by a test environment.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}

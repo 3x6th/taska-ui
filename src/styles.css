@@ -2398,6 +2398,12 @@ h1 {
    and `tk-pop` starts at .55 opacity, never 0, so a paused or reduced-motion
    render still shows the results (§3). */
 .global-search-pop {
+  /* §2.5's 13 for a popover, named rather than repeated because the row that
+     sits on this corner has to describe the same arc — see the first/last row
+     rule below. Two numbers in two rules that must agree is how the ring came
+     to be clipped in the first place. */
+  --pop-radius: 13px;
+
   position: absolute;
   top: 38px;
   right: 0;
@@ -2409,7 +2415,7 @@ h1 {
   width: min(420px, calc(100vw - 44px));
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: var(--pop-radius);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
   animation: tk-pop var(--dur-enter) var(--ease) forwards;
@@ -2425,6 +2431,51 @@ h1 {
   margin: 0;
   padding: 0;
   list-style: none;
+  /* Only ever consulted when the list is short enough to scroll, which below
+     820 and under 460px of viewport height it is (§4.20). `scrollIntoView`
+     aligns the active row flush with the scrollport's edge, and flush with
+     *this* edge means inside the panel's corner curve, where the rule below
+     cannot help: it can round the first row, not whichever row the scroll
+     happens to have put there. The panel's own radius is a pixel more than the
+     arc it clips to, so the row lands clear of it with a sliver of its
+     neighbour showing above — which is what a scrolled list should look like
+     anyway. */
+  scroll-padding-top: var(--pop-radius);
+}
+
+/* The panel clips to a 13px radius, its rows are square, and the first row's
+   top edge is exactly the panel's border — 1px — below the panel's top. So the
+   corner arc cut the top ~12px of the selection ring's left and right strokes
+   and the first ~6px of its top stroke, and the ring stopped reading as one
+   closed stroke. Worst on a single result, which is a whole panel with one row
+   in it.
+
+   That ring is not decoration: `aria-activedescendant` moves no DOM focus, so
+   nothing here is `:focus`ed and the fill plus this stroke are the entire
+   keyboard indicator (§4.20).
+
+   The fix is agreement rather than avoidance: the row that sits on the panel's
+   own corner takes the panel's *inner* curve — the outer radius less the 1px
+   border the clip is inset by — so row and clip describe the same arc and
+   `overflow: hidden` has nothing left to remove. Insetting the rows instead
+   would have cost the full-bleed separators and the full-bleed active fill,
+   which is a design change rather than a repair.
+
+   Scoped through `:first-child`/`:last-child` on the list *and* on the panel,
+   because the list is not always at the panel's edge: a failed projects read
+   puts an `.api-notice` above it, and the "N matches" foot is below it
+   whenever there are rows at all. A row rounded in the middle of a panel would
+   be the same defect with the sign flipped. The last-row half therefore never
+   matches today; it is here so that the pair stays true if the foot ever stops
+   being the panel's last child. */
+.global-search-pop > .global-search-list:first-child > .global-search-option:first-child {
+  border-top-left-radius: calc(var(--pop-radius) - 1px);
+  border-top-right-radius: calc(var(--pop-radius) - 1px);
+}
+
+.global-search-pop > .global-search-list:last-child > .global-search-option:last-child {
+  border-bottom-left-radius: calc(var(--pop-radius) - 1px);
+  border-bottom-right-radius: calc(var(--pop-radius) - 1px);
 }
 
 .global-search-option {
@@ -2540,12 +2591,51 @@ h1 {
   background: var(--accent);
 }
 
+/* §4.12's geometry, at every width: `top:38; right:0` from the bell itself.
+   The clamp is what lets that survive a narrow screen. The bar's trailing
+   controls are one group pinned right and the bell is its *first* child, so
+   the bell's right edge is 208.5 of 390 on a phone and a full-width 312 panel
+   hanging left from it would start 103.5px off the left of the screen.
+   `--trigger-right` is that 208.5, published by `useTriggerAnchor` while the
+   panel is open, and 12 is the board bar's own side padding at those widths
+   (§2.4) — so the panel narrows to end at the bell and begin on the bar's
+   inner edge, rather than moving to some other trigger's edge. The middle term
+   holds when the property is missing, since `100vw` never wins the `min`.
+   Measured: a full 312 down to 506px of viewport, 306.5 at 500, 196.5 at 390.
+
+   **`--pop-floor` is a floor, and past it the panel shifts instead of
+   shrinking.** Width swept against the panel's own contents: the header holds
+   "Notifications" and "Mark all read" on one line from 185px up and wraps to
+   60.34 below it, and the rows hold a one-line body from 212. Narrowing
+   without a floor put the panel's own title on two lines at 375 — iPhone SE
+   and 6/7/8, and what a 390 device gives at 125% zoom — which is worse than
+   the row reflow it was trading against. So the width stops at 186 and `right`
+   goes negative by exactly the overshoot, sliding the panel right until its
+   left edge sits on the same 12px gutter. 186 rather than 212 because a 212
+   floor binds at 390 too and takes the panel 15.48px off the bell there
+   (measured, with the floor temporarily raised), and the anchor is the thing
+   this story is about; below 186 the rows reflow and the header does not.
+
+   `right` is 0 wherever the floor does not bind, so 1440, 820, 780 and 390 are
+   untouched. It binds at 379px of viewport and below, and the shift is
+   continuous from there: 0.48px past the bell at 379, 4.48 at 375, 59.48 at
+   320. Because the shift is exactly what the width refused to give up, the
+   panel's right edge is pinned at 198 for every width below 379, and only a
+   viewport under 198 could push it past the screen — under every shipping
+   device and under Chrome's own minimum window. */
 .notifications-popover {
+  /* The floor is *named* for the same reason `--pop-radius` is, one panel up
+     the file: `right` has to slide by exactly the amount `width` refused to
+     give up, so these are one number used twice. Written out, they would be
+     two numbers that must agree — and two numbers in two places that must
+     agree is the shape of both defects this story was opened for. */
+  --pop-floor: 186px;
+
   position: absolute;
   top: 38px;
-  right: 0;
+  right: min(0px, calc(var(--trigger-right, 100vw) - 12px - var(--pop-floor)));
   z-index: 20;
-  width: min(312px, calc(100vw - 24px));
+  width: max(var(--pop-floor), min(312px, calc(100vw - 24px), calc(var(--trigger-right, 100vw) - 12px)));
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 13px;
@@ -4134,15 +4224,25 @@ button.issue-link-open:hover {
     padding: 6px 12px;
   }
 
-  /* Two panels here are anchored to triggers that are *not* the last thing on
-     the bar — §4.13 puts the search before the theme toggle, and the bell
-     before both it and "New" — so §4.12's "flush with the trigger's right
-     edge" leaves a 312px or 420px panel hanging off the left of a 390px
-     screen whatever the trigger's own alignment is. Below 820 they anchor to
-     the bar instead: both bars are `position: relative`, so `right: 0` lands
+  /* The search field is anchored to a trigger that is *not* the last thing on
+     the bar — §4.13 puts it before the theme toggle — so §4.12's "flush with
+     the trigger's right edge" leaves a 420px panel hanging off the left of a
+     390px screen whatever the trigger's own alignment is. Below 820 it anchors
+     to the bar instead: the bar is `position: relative`, so `right: 0` lands
      on the bar's content edge — the same edge the avatar sits on — and
-     `top: 100%` clears a bar whose height is now whatever its rows add up to.
-     Above 820 nothing moves and §4.12 stands as written.
+     `top: 100%` clears it. Above 820 nothing moves and §4.12 stands as
+     written.
+
+     §4.13's rule has a precondition, and this is the selector it turns on:
+     **a panel anchors to the bar only where the bar cannot wrap.** The shared
+     bar is fixed at 52 and never does, so `top: 100%` here is still the row
+     the field is on. The board bar wraps at exactly these widths, so the same
+     re-anchor dropped the notifications popover below *both* of its rows,
+     where it read as belonging to the search field under the bell — that
+     panel now keeps §4.12's anchor at every width and narrows against the
+     bell's measured position instead (TAS-181, base rule up the file). This
+     is a structural difference between the two bars, not a preference, and
+     `.global-search` is only ever rendered in the bar that cannot wrap.
 
      The profile popover needs none of this: it is last on the bar at every
      width, so its own right edge is already the bar's, and the width clamp
@@ -4231,25 +4331,26 @@ button.issue-link-open:hover {
     flex: none;
   }
 
-  .notification-wrap {
-    position: static;
-  }
+  /* The vertical half of §4.13's "a panel never crosses an edge", kept from
+     TAS-179 and re-expressed against the trigger rather than against the bar.
+     It is still needed with the panel back under the bell: at 820x420 the bell
+     ends at 42, the header is 45 and the list caps at 340, so a full inbox runs
+     to 435 — 15px past the fold, with `body{overflow:hidden}` and no gesture
+     that reaches it. Measured with the cap filled; the seed only ever holds
+     three.
 
-  /* Same measurement, the board bar's own 12 (§2.4). And the same vertical
-     clamp as the search panel, for a reason this story created: re-anchoring
-     this popover to the bar moved its top from roughly 48 (38 below a bell
-     sitting near the top of the bar) to 107 below a bar that wraps to two rows
-     at this width. Its list caps at 340 and its rows are 76, so a full inbox
-     at 820x420 would have run to 491 — 71px past the fold, unreachable for the
-     same reason. Measured with the cap filled; the seed only ever holds three.
-     `100%` here is the board bar's own height, which wraps, so the constant
-     cannot be shared with the search panel's. */
+     18 is the panel's own 6px offset below the trigger (`top:38` under a 32px
+     bell) plus 12 of clearance, which the 7px `tk-pop` start frame fits inside.
+     `100%` cannot be used here any more and should not be missed: it resolved
+     against whatever the containing block was, which is exactly the coupling
+     that put this panel under the wrapped bar. What the clamp needs is where
+     the bell ends in the viewport, and that is what `--trigger-bottom` says.
+
+     The list gives up the height and scrolls; the header does not (below). */
   .notifications-popover {
     display: flex;
-    max-height: calc(100vh - 100% - 12px);
+    max-height: calc(100vh - var(--trigger-bottom, 52px) - 18px);
     flex-direction: column;
-    top: calc(100% + 4px);
-    right: 12px;
   }
 
   .notifications-popover header {
