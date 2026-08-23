@@ -158,10 +158,40 @@ export function GlobalSearch() {
   // content. A header, a separator or a group label added there would silently
   // scroll to the wrong row rather than fail, so put them in the panel around
   // the list, not inside it.
+  //
+  // `listboxOpen` is a dependency because the `<ul>` outlives none of its
+  // closings but the selection outlives all of them: `Escape` closes the panel
+  // without unmounting this component, so `activeIndex` survives while the list
+  // that was scrolled to it does not. Reopening restored the one without the
+  // other — measured at 9.8% of the row inside the list at 820x420 and none of
+  // it at 667x375, with `aria-activedescendant` still naming it and Enter still
+  // opening it.
+  //
+  // The question is deliberately *not* a dependency, though the offset does
+  // belong to the pair (question, selection). Changing the query unmounts this
+  // list for the length of the fetch — the new key has no data, so there are no
+  // hits and no `<ul>` — and the one that comes back is a fresh element at
+  // scrollTop 0. Sampled every 50ms across a change: 8 rows at 40, then three
+  // samples with nothing mounted, then 8 rows at 0. A `debounced` dependency
+  // would have been a line with no case behind it. It becomes necessary the day
+  // this query keeps its previous answer on screen while fetching the next one
+  // (`placeholderData: keepPreviousData`), because then the list stops
+  // unmounting and nothing else resets the offset.
+  //
+  // The `< 0` branch is safe because that value never means a position.
+  // `move()` clamps to `hits.length - 1` or `0` from any input, so it cannot
+  // produce one; the only two writes of -1 are the reset when the question
+  // changes and the clear after navigating, and for both of those the top of
+  // the list is where the answer starts.
   useEffect(() => {
-    if (activeIndex < 0) return;
-    listRef.current?.children[activeIndex]?.scrollIntoView({ block: "nearest" });
-  }, [activeIndex]);
+    const list = listRef.current;
+    if (!list) return;
+    if (activeIndex < 0) {
+      list.scrollTop = 0;
+      return;
+    }
+    list.children[activeIndex]?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, listboxOpen]);
 
   const optionId = (index: number) => `${listId}-option-${index}`;
 

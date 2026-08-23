@@ -177,7 +177,13 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
 
     await signIn(page);
 
-    for (const [width, height] of [[820, 420], [390, 420], [820, 900]] as const) {
+    // 460 and 459 straddle the height at which the panel's clamp starts taking
+    // rows off the list: at 460 the eight-row page still fits exactly, at 459
+    // it does not. §4.20 names 460, and nothing failed when it moved — a change
+    // to the foot, to the clamp or to a border shifts it silently. Asserted
+    // from both sides, the same shape as the row-height/page-size pair the case
+    // above holds.
+    for (const [width, height] of [[820, 420], [390, 420], [820, 459], [820, 460], [820, 900]] as const) {
       await page.setViewportSize({ width, height });
 
       const field = page.getByRole("combobox", { name: /Search issues/ });
@@ -211,6 +217,7 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
           // would clip first; the rows can be scrolled, it cannot.
           footBottom: foot.getBoundingClientRect().bottom,
           activeIndex: [...list.children].indexOf(active),
+          listClient: list.clientHeight,
           // 1 when the whole row is inside the list, less when any of it is not.
           visibleFraction:
             (Math.min(rowBox.bottom, listBox.bottom) - Math.max(rowBox.top, listBox.top)) / rowBox.height,
@@ -226,6 +233,15 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
       // last option, which is the one a squeezed list hides. If it ever stops
       // landing there, this stops testing the case it was written for.
       expect(measured.activeIndex, `${width}x${height}: ArrowUp did not wrap to the last option`).toBe(7);
+      // The edge itself. `.global-search-list` caps at 352 — eight rows of the
+      // 44 that §7's touch floor gives them — and the panel's clamp takes that
+      // height back below 460.
+      if (height === 460) {
+        expect(measured.listClient, "460px tall: the eight-row page no longer fits exactly").toBe(352);
+      }
+      if (height === 459) {
+        expect(measured.listClient, "459px tall: the clamp has stopped binding").toBeLessThan(352);
+      }
       expect(
         measured.visibleFraction,
         `${width}x${height}: only ${(measured.visibleFraction * 100).toFixed(0)}% of the selected row is inside the list, and nothing can scroll to the rest`,
