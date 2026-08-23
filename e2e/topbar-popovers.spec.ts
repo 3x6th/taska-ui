@@ -187,16 +187,33 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
       // mid-animation is not the box the layout settles at.
       await page.waitForTimeout(300);
 
+      // The selection, not just the box. This assertion is here because its
+      // absence is what let the previous round go green: the panel was inside
+      // the viewport and the foot was visible at exactly these sizes, while the
+      // row ArrowUp lands on hung out of the squeezed list with nothing to
+      // scroll it — a clamp on the panel had taken height off the list without
+      // the page size that the list's cap came from following it.
+      await field.press("ArrowUp");
+      await page.waitForTimeout(120);
+
       const measured = await page.evaluate(() => {
         const pop = document.querySelector(".global-search-pop") as HTMLElement;
         const foot = document.querySelector(".global-search-foot") as HTMLElement;
+        const list = document.querySelector(".global-search-list") as HTMLElement;
+        const active = document.querySelector(".global-search-option.is-active") as HTMLElement;
         const box = pop.getBoundingClientRect();
+        const listBox = list.getBoundingClientRect();
+        const rowBox = active.getBoundingClientRect();
         return {
           bottom: box.bottom,
           viewport: window.innerHeight,
           // The foot carries "showing N of M" and is the line a squeezed panel
           // would clip first; the rows can be scrolled, it cannot.
           footBottom: foot.getBoundingClientRect().bottom,
+          activeIndex: [...list.children].indexOf(active),
+          // 1 when the whole row is inside the list, less when any of it is not.
+          visibleFraction:
+            (Math.min(rowBox.bottom, listBox.bottom) - Math.max(rowBox.top, listBox.top)) / rowBox.height,
         };
       });
 
@@ -205,9 +222,23 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
         `${width}x${height}: the panel runs ${(measured.bottom - measured.viewport).toFixed(1)}px past the bottom of the screen`,
       ).toBeLessThanOrEqual(measured.viewport);
       expect(measured.footBottom, `${width}x${height}: the panel's foot is below the fold`).toBeLessThanOrEqual(measured.viewport);
+      // Guards the guard: one ArrowUp from the unselected state wraps to the
+      // last option, which is the one a squeezed list hides. If it ever stops
+      // landing there, this stops testing the case it was written for.
+      expect(measured.activeIndex, `${width}x${height}: ArrowUp did not wrap to the last option`).toBe(7);
+      expect(
+        measured.visibleFraction,
+        `${width}x${height}: only ${(measured.visibleFraction * 100).toFixed(0)}% of the selected row is inside the list, and nothing can scroll to the rest`,
+      ).toBeCloseTo(1, 2);
 
       await field.press("Escape");
       await field.fill("");
+      // Long enough for the empty value to survive the 200ms debounce. Without
+      // the wait the query key never changes, so the selection is never reset
+      // and the next viewport's ArrowUp continues the walk from 7 to 6 instead
+      // of wrapping — which is what the assertion above caught on its first
+      // run, doing exactly the job it was added for.
+      await page.waitForTimeout(250);
     }
   });
 

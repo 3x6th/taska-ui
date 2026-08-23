@@ -4198,11 +4198,9 @@ button.issue-link-open:hover {
      448.7 against a 420 viewport: 28.7px of last row and foot under the fold,
      with `body { overflow: hidden }` and no gesture that could reach them.
 
-     Measured rather than reasoned. The panel's settled top is 55 — the bar's
-     51px padding box plus the 4px offset above — and its foot is 39.7, so a
-     cap on the *list* would need to subtract 94.7, or 101.7 counting the 7px
-     `tk-pop` start frame the panel animates in from. That is where 110 comes
-     from and 110 is right for a panel holding rows and a foot.
+     66 is measured, not derived: the panel's settled top is 55 — the bar's 51px
+     padding box plus the 4px offset above — and the remaining 11 is clearance,
+     which the 7px `tk-pop` start frame the panel animates in from fits inside.
 
      It is on the panel and not on the list because the list is not everything
      the panel holds: when the projects read fails, an `.api-notice` sits above
@@ -4210,8 +4208,16 @@ button.issue-link-open:hover {
      see and which put the foot 61.2px under the fold again. Capping the box
      that actually has the edge problem covers every arrangement of its
      contents, and the flex column is what lets the list give up the height
-     instead of the foot being clipped. 66 = the 55 top plus 11 of clearance,
-     which the entrance transform fits inside. */
+     instead of the foot being clipped.
+
+     What follows from it, because it is the number that decides whether the
+     page of eight still fits: `box-sizing` is border-box, so the panel's
+     content is `100vh - 68` and the list is that minus the 39.7 foot —
+     `min(352, 100vh - 107.7)`. The eight rows survive down to a **460px tall
+     viewport** and shrink a pixel per pixel below it. That is the band where
+     the list holds fewer rows than its own cap assumes, and it is why
+     `GlobalSearch` scrolls the active option into view rather than trusting
+     the cap: nothing else can, since the selection here moves no DOM focus. */
   .global-search-pop {
     display: flex;
     max-height: calc(100vh - 66px);

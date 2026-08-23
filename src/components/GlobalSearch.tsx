@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
 import type { KeyboardEvent } from "react";
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
@@ -50,6 +50,7 @@ export function GlobalSearch() {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
   const listId = useId();
 
   const trimmed = value.trim();
@@ -129,6 +130,38 @@ export function GlobalSearch() {
   // well: here that key has a second job — once the panel is gone, it clears
   // the question — and this hook only knows about the first.
   useDismissOnOutside(showPopup, rootRef, () => setOpen(false));
+
+  // The one thing this widget cannot do from CSS. A combobox keeps DOM focus on
+  // the input and names its selection with `aria-activedescendant`, so the
+  // browser has no focused element to scroll into view and never scrolls the
+  // list on its own — the neighbouring notifications popover survives the same
+  // squeeze only because its rows are real buttons that take focus.
+  //
+  // It matters because the list's height is not fixed: its cap is a page of
+  // eight rows, but the panel is clamped against short viewports and takes that
+  // height back off it, so below ~460px tall the page no longer fits and the
+  // row ArrowUp wraps onto is the one hanging past the bottom. At 667x375 that
+  // row was not on screen at all while `aria-activedescendant` named it and
+  // Enter opened it.
+  //
+  // `block: "nearest"` does nothing when the row is already fully visible, so
+  // every tall viewport and the whole desktop path are untouched; and no
+  // `behavior`, so the scroll is instant and there is no motion for
+  // `prefers-reduced-motion` to have an opinion about (§3). Both measured, not
+  // assumed — including that it never scrolls an ancestor: `.page-shell` and
+  // the panel itself are `overflow: hidden`, which is still programmatically
+  // scrollable, and shifting either would move content nothing could bring
+  // back.
+  //
+  // It indexes `children` positionally, which is only correct while every child
+  // of that `<ul>` is an option — true today because `hits.map` is its only
+  // content. A header, a separator or a group label added there would silently
+  // scroll to the wrong row rather than fail, so put them in the panel around
+  // the list, not inside it.
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    listRef.current?.children[activeIndex]?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
 
   const optionId = (index: number) => `${listId}-option-${index}`;
 
@@ -252,7 +285,7 @@ export function GlobalSearch() {
                   The project list could not be read, so these results cannot be opened from here.
                 </ApiNotice>
               ) : null}
-              <ul aria-label="Issue search results" className="global-search-list" id={listId} role="listbox">
+              <ul aria-label="Issue search results" className="global-search-list" id={listId} ref={listRef} role="listbox">
                 {hits.map((hit, index) => (
                   <GlobalSearchOption
                     active={index === activeIndex}
