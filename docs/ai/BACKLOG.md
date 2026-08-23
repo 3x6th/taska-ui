@@ -286,9 +286,14 @@ time.
   owner from an iPhone 17 Pro Max, and fixed on
   `claude/mobile-projects-tasks-layout-nq01aa`. The cause was `.counter` taking
   the default `flex-shrink: 1` in an overflowing bar and collapsing to the
-  min-content width of the word "of". **No `TAS` key beside it**: the Jira MCP
-  is not registered in the session that fixed it, so the story is still to be
-  filed — see the two environment lines at the foot of this section.
+  min-content width of the word "of". **Filed as
+  [TAS-177](https://jira.ozero.dev/browse/TAS-177)** after the fact, from a
+  later session that had Jira; the environment line at the foot of this section
+  says why the fixing session could not. **Confirmed on the device the same
+  day**: the owner re-checked the same iPhone 17 Pro Max once PR #34 was in —
+  the counter reads on one line and the projects list reaches its last card.
+  That confirmation is the one thing no test in this repository could give,
+  because headless Chromium has no toolbars to retract.
 - **`--font-mono` is specified in §2.3 and never declared in `styles.css`.**
   TAS-163 defines it and converts the copies it found; check for others.
 - **`listIssues` is still all-or-nothing internally.** Its N+1 hydration uses
@@ -350,7 +355,7 @@ time.
   instead. Re-measured after the spacer came out, the bar holds one row from
   ~791px and, with `Clear` showing, from ~883px (Taska Platform, 4 members,
   ADMIN); above 820 only the filtered bar wraps at all, in the band 821–882.
-  Same missing `TAS` key.
+  Same story, TAS-177.
 - **Opening an issue panel can now drive a full re-read of the issue page.**
   `IssueLinksSection`'s own observer on `["issues", projectId, "ALL"]` refetches
   on mount when the entry is stale (`staleTime` 20_000), where before the panel
@@ -592,9 +597,12 @@ the next session in this image exactly as it bit this one.
 
 - **The runtime has no Jira MCP.** `mcp-atlassian` is not registered, so the
   `TAS` backlog could not be searched, the story for the phone-portrait fixes
-  could not be filed, and nothing could be transitioned. Two graduated lines
-  above therefore carry no key, and `JIRA-WORKFLOW.md` holds the row that has
-  to be filed by hand. The browser MCP tools (`mcp__Claude_Browser__*`) and
+  could not be filed, and nothing could be transitioned. **Closed the same day**
+  from a session that had Jira: the backlog was searched — "mobile", "мобильн",
+  "counter", "100vh", "filter bar" — nothing already covered the two bugs,
+  [TAS-177](https://jira.ozero.dev/browse/TAS-177) was filed, both commits were
+  rewritten to carry the key, and the story was transitioned on merge. The line
+  stays because the next session in that image meets the same gap. The browser MCP tools (`mcp__Claude_Browser__*`) and
   `refero` are absent in the same session — the two read-only roles fell back
   to driving Playwright over `Bash`, which works and is not the same thing.
 - **The pinned Playwright and the image's browsers are a version apart.**
