@@ -272,22 +272,57 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
   // on a slow machine for the wrong reason. As far as layout is concerned the
   // two are the same event: the bar's content changes, the bar takes another
   // row, and nothing fires.
+  //
+  // The staging hides the whole of the bar's leading text rather than putting
+  // the placeholder name back, and that is not tidiness — it is the difference
+  // between passing here and passing anywhere. Restoring the placeholder left
+  // the first row 1.5px inside its 366px of content on this machine, and a
+  // font the width of the fallback stack spends that 1.5px twice over: with
+  // the webfont blocked the "pre-data" bar measures the same 141 as the
+  // settled one, so there was nothing to grow back from and the case failed on
+  // CI with the premise assertion below. Hiding the key badge, the name and
+  // the "Board" label leaves the back button, the spacer and the pinned group
+  // — 275 of 366 on the widest metrics measured, ~91px of slack instead of
+  // 1.5 — so the staged bar is two rows whatever font is active. The settled
+  // bar is three rows on every metric measured, and wider text can only make
+  // that more true.
   test("the height clamp follows the bar when it rewraps under an open panel", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport sizes regardless of project");
 
     await signIn(page);
     await page.getByRole("button", { name: /Taska Platform/ }).click();
     await expect(page.locator(".counter")).toHaveText(/^\d+ of \d+$/);
+    // The badge only exists once the project read has answered, and it is part
+    // of what makes the settled bar three rows, so this is what "settled" means
+    // here rather than a timeout.
+    await expect(page.locator(".board-topbar .key-badge")).toBeVisible();
     await page.setViewportSize({ width: 390, height: 560 });
 
-    // Back to the shape the bar has before the project read answers.
+    const barHeight = () => page.locator(".board-topbar").evaluate((bar) => bar.getBoundingClientRect().height);
+    // Measured, not assumed: every height below is compared against this page's
+    // own settled bar, so nothing here carries a number that a different font
+    // would move.
+    const settledBar = await barHeight();
+
+    // The bar as it is before the project read answers, and then some: no key
+    // badge, no name, no context label.
     await page.evaluate(() => {
-      const badge = document.querySelector(".board-topbar .key-badge") as HTMLElement | null;
-      if (badge) badge.style.display = "none";
-      const name = document.querySelector(".board-project-name") as HTMLElement;
-      name.dataset.settled = name.textContent ?? "";
-      name.textContent = "Project";
+      for (const selector of [".board-topbar .key-badge", ".board-project-name", ".board-topbar .muted-label"]) {
+        const element = document.querySelector(selector) as HTMLElement | null;
+        if (element) element.style.display = "none";
+      }
     });
+    await page.waitForTimeout(120);
+
+    // The premise, asserted before the panel is even open: if the staging did
+    // not take a row off the bar there is nothing for the clamp to follow, and
+    // this case would measure nothing while passing. It has to say that in
+    // those words rather than fail later as a mystery.
+    const stagedBar = await barHeight();
+    expect(
+      stagedBar,
+      `the staging did not shrink the bar: ${stagedBar}px against a settled ${settledBar}px, so there is no rewrap to follow`,
+    ).toBeLessThan(settledBar);
 
     await page.locator(".board-topbar").getByRole("button", { name: "Notifications" }).click();
     await page.waitForTimeout(300);
@@ -310,10 +345,10 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
 
     // The data arriving, in the only part of it the bar can see.
     await page.evaluate(() => {
-      const badge = document.querySelector(".board-topbar .key-badge") as HTMLElement | null;
-      if (badge) badge.style.display = "";
-      const name = document.querySelector(".board-project-name") as HTMLElement;
-      name.textContent = name.dataset.settled ?? "";
+      for (const selector of [".board-topbar .key-badge", ".board-project-name", ".board-topbar .muted-label"]) {
+        const element = document.querySelector(selector) as HTMLElement | null;
+        if (element) element.style.display = "";
+      }
     });
     await page.waitForTimeout(200);
     const after = await read();
@@ -324,6 +359,9 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
       after.barHeight,
       `the bar did not grow under the open panel: ${before.barHeight} then ${after.barHeight}`,
     ).toBeGreaterThan(before.barHeight);
+    // And it grew back to the shape the page actually has, rather than to some
+    // third height the staging invented.
+    expect(after.barHeight, "the restored bar is not the settled bar").toBe(settledBar);
     // The panel moved with its trigger, which it always did — `top: 38px` is
     // relative to the bell. The clamp is the half that used to stay behind.
     expect(after.popTop, "the panel did not follow the bell down").toBeGreaterThan(before.popTop);
@@ -547,12 +585,45 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
       await page.reload();
       await expect(page.locator(".counter")).toHaveText(/^\d+ of \d+$/);
 
+      // The floor this case pins was swept against DESIGN.md §2.3's UI font, and
+      // it is the one number here that a different font moves: on the fallback
+      // stack the same header wraps at 194.22px of panel, so 390 would fail as
+      // well as 375 and the failure would be about a font rather than about a
+      // layout. The link is `display=swap`, so the font can also arrive after
+      // the first paint — a race, not an absence — which is why this waits
+      // rather than reads once.
+      //
+      // Asked of the font set rather than of `document.fonts.check`, which
+      // answers "can this text be rendered" and so returns true for a family
+      // nothing has ever defined — with the stylesheet blocked it says yes
+      // while the page paints in the fallback, which is the one case worth
+      // catching.
+      await expect
+        .poll(
+          () =>
+            page.evaluate(() =>
+              [...document.fonts].some((face) => face.family.includes("Hanken Grotesk") && face.status === "loaded"),
+            ),
+          {
+            message: "the UI webfont never became available, so every width below would be measuring the fallback stack instead of the product",
+            timeout: 10_000,
+          },
+        )
+        .toBe(true);
+
       // 1440 is the shape the wrapped widths have to match; 780 is the window
       // the original report came from; 390 is the width where the bell's right
       // edge is 208.5 and the panel has to narrow to stay anchored; 375 is
       // where narrowing stops, because a panel thinner than 186 puts its own
       // header on two lines — iPhone SE and 6/7/8, and what a 390 device gives
       // at 125% zoom.
+      //
+      // 1440 is also the calibration: the panel is a full 312 there and its
+      // header cannot wrap, so its height is what one line measures on whatever
+      // font is actually active. Every narrower width is held against that
+      // rather than against a number written here.
+      let oneLineHeader: number | null = null;
+
       for (const width of [1440, 820, 780, 390, 375]) {
         await page.setViewportSize({ width, height: 844 });
 
@@ -602,10 +673,14 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
           `${where}: the panel starts at ${measured.pop.y.toFixed(1)}, below a ${measured.barHeight.toFixed(1)}px bar rather than under the bell`,
         ).toBeLessThan(measured.barBottom);
         // The panel's own header is the line that must never reflow: it carries
-        // the title and the only action the panel has. One line is 43.84 and
-        // the next is 60.34, so this catches a floor that stops holding as well
-        // as one that was never there.
-        expect(measured.header, `${where}: the panel's header has wrapped to ${measured.header.toFixed(2)}px`).toBeLessThan(50);
+        // the title and the only action the panel has. This catches a floor
+        // that stops holding as well as one that was never there — the second
+        // line costs 16.5px, far past the tolerance.
+        oneLineHeader ??= measured.header;
+        expect(
+          measured.header,
+          `${where}: the panel's header is ${measured.header.toFixed(2)}px against the ${oneLineHeader.toFixed(2)}px it measures unwrapped, so it has reflowed`,
+        ).toBeCloseTo(oneLineHeader, 1);
 
         const floorBinds = measured.pop.width > measured.anchored + 0.5;
         if (!floorBinds) {

@@ -639,6 +639,32 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### The webfont is a measurement hazard, not just a load-time one (TAS-181, 2026-08-24)
+
+Graduated to [TAS-182](https://jira.ozero.dev/browse/TAS-182) the moment it was
+understood; recorded here because the *method* outlives the fix.
+
+A green local gate and a red CI on the same commit were both honest. The suite
+runs against `localhost`, but the **product** links Hanken Grotesk from
+`fonts.googleapis.com` with `display=swap`, so a run without that request
+measures the fallback stack — a different product. Blocking the request
+reproduced the CI failure verbatim, first try.
+
+Two things fell out that are worth more than the fix:
+
+- **A test can pass on 1.5px of slack and read as robust.** The rewrap staging
+  had 100.52px of row for text that measures 99.03 with the webfont and 104.24
+  without. Six pixels of font decided it. The staging is now built to leave
+  ~91px, and every height in that test is measured from the page rather than
+  written as a constant.
+- **`document.fonts.check("13px 'Hanken Grotesk'")` returns `true` with the
+  stylesheet blocked.** It answers "can this text be rendered", and a family
+  nothing ever defined renders fine in the fallback — so the first gate written
+  against it passed while the assertion it guarded failed. The honest detector
+  asks the font set: `[...document.fonts].some(f => f.family.includes(…) &&
+  f.status === "loaded")`, which is false for absent *and* for still-loading and
+  therefore covers the block and the race with one poll.
+
 ### Found while fixing the panels' presentation (TAS-181, 2026-08-24)
 
 - **The last `.notification-item` has no focus style of its own**, so it takes
