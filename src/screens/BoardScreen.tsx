@@ -27,6 +27,7 @@ import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
+import { useTriggerAnchor } from "../hooks/useTriggerAnchor";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   Issue,
@@ -204,6 +205,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // and §7 carried the gap as a written defect.
   const closeNotifications = useCallback(() => setNotificationsOpen(false), []);
   useDismissOnOutside(notificationsOpen, notificationsRef, closeNotifications);
+  // The bell is the first control of a group pinned to the bar's right edge, so
+  // it is the one trigger on either bar whose own right edge is nowhere near
+  // the screen's. This publishes where it actually landed; the panel stays
+  // anchored to it and CSS narrows and clamps against these two numbers
+  // (TAS-181).
+  useTriggerAnchor(notificationsOpen, notificationsRef);
 
   const project = projectQuery.data;
   // Memoized so the `?? []` fallback does not produce a new array identity on

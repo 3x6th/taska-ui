@@ -639,6 +639,27 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### Found while fixing the panels' presentation (TAS-181, 2026-08-24)
+
+- **The last `.notification-item` has no focus style of its own**, so it takes
+  Chromium's `auto` ring — and its bottom edge is exactly the panel's clip
+  boundary (measured 320.39 = 320.39, radius 13, `overflow: hidden`), so that
+  ring is cut off at the bottom and squared at the corners. Two defects in one
+  row, and the second is the same family as the one TAS-181 just fixed on the
+  search panel: a square-cornered child sitting on a rounded clip. Left out
+  deliberately — the story was about the two the owner reported, and the
+  notifications rows want their own focus recipe rather than a corner patch.
+- **`scroll-padding-top` biases keyboard scrolling, not pointer scrolling.** A
+  wheel-scrolled list that stops at an exact row boundary, with the pointer then
+  hovering that top row, still puts a square ring corner in the panel's arc.
+  Unreachable from the keyboard path, and not fixable in CSS without giving up
+  full-bleed rows.
+- **The trigger's position is republished on `window.resize` only.** A layout
+  shift with the panel already open and no resize event — a late webfont
+  changing the "New" button's width — would leave `--trigger-right` stale. Fonts
+  load long before the first click, so a `ResizeObserver` on the bar was judged
+  not worth the wiring; recorded so the judgement is visible rather than assumed.
+
 ### Found while clamping the panels (TAS-179, 2026-08-23)
 
 - **The notifications popover overflows a short desktop viewport.** At
