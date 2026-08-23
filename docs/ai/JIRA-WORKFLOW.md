@@ -30,7 +30,7 @@ states are not.
 | [TAS-174](https://jira.ozero.dev/browse/TAS-174) | Assignee filter buttons announce no accessible name (WCAG 4.1.2) | To Do | filed from the TAS-171 reviews, not started |
 | [TAS-175](https://jira.ozero.dev/browse/TAS-175) | Bright avatar palette restored, glyph computed from the fill | Done | merged (PR #32) |
 | [TAS-177](https://jira.ozero.dev/browse/TAS-177) | Phone portrait: the projects list is clipped by the browser's own toolbar, and the board's "X of Y" counter stacks into a column | Done | merged (PR #34) |
-| [TAS-179](https://jira.ozero.dev/browse/TAS-179) | Connect `GET /issues/search`: description in the board's local filter, a server search under it, global issue search in the shared top bar, and a client-side project filter | To Do | `feat/TAS-179-issue-search` |
+| [TAS-179](https://jira.ozero.dev/browse/TAS-179) | Connect `GET /issues/search`: description in the board's local filter, a server search under it, global issue search in the shared top bar, and a client-side project filter | Done | merged (PR #36) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
