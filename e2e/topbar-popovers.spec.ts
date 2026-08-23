@@ -43,7 +43,13 @@ const widths = [390, 780];
 // and a token that only exists in one theme would show up here.
 const themes = ["light", "dark"] as const;
 
-test.describe("top bar popovers stay on screen when the bar wraps", () => {
+// Renamed from "stay on screen when the bar wraps": three of these are about a
+// panel crossing an edge of the viewport, and one is about a panel clipping its
+// own contents against a cap of its own. What they have in common is narrower
+// than the bar wrapping and wider than staying on screen — every one of them is
+// a way for something in the top bar to become unreachable at a narrow or short
+// viewport, with `body { overflow: hidden }` and no gesture that recovers it.
+test.describe("the top bar's panels stay reachable at narrow and short viewports", () => {
   test("on the projects bar: the profile menu and the global search dropdown", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport widths regardless of project");
 
@@ -123,10 +129,15 @@ test.describe("top bar popovers stay on screen when the bar wraps", () => {
 
       const field = page.getByRole("combobox", { name: /Search issues/ });
       await field.fill("tas-");
-      // Ten seeded issues carry this in their key, so the page fills to its
-      // eight. Waiting on the count rather than on the listbox: for the 200ms
-      // the field is debounced the query key has not changed yet, so the
-      // previous answer is legitimately still on screen.
+      // Ten seeded issues carry this in their key and a page is eight, so this
+      // fills the page — which is the whole premise: a query returning fewer
+      // than eight cannot reach the cap and would pass this test against a
+      // clipped list. "board", the obvious choice, returns five and did.
+      //
+      // Waiting on the count rather than on the listbox: for the 200ms the
+      // field is debounced the query key has not changed yet, so the previous
+      // answer is legitimately still on screen and a listbox assertion passes
+      // against it.
       await expect(page.getByRole("option")).toHaveCount(8);
 
       const measured = await page.evaluate(() => {
@@ -149,6 +160,51 @@ test.describe("top bar popovers stay on screen when the bar wraps", () => {
       // Guards the guard: if the rows ever stop meeting §7's touch floor the
       // assertion above goes quiet by getting easier.
       if (width <= 820) expect(measured.rowHeight, `${width}px: rows are under §7's 44`).toBeGreaterThanOrEqual(44);
+
+      await field.press("Escape");
+      await field.fill("");
+    }
+  });
+
+  // The other half of the same invariant, and the half nobody had written: the
+  // width clamp keeps a panel inside the left and right edges, and nothing kept
+  // it inside the bottom one. At 820x420 the search panel ran to 448.7 against
+  // a 420 viewport — the last row and the foot below the fold, unreachable,
+  // because the shell clips its own overflow and this panel is not in the
+  // scrolling region.
+  test("a panel never crosses the bottom edge of a short viewport either", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport sizes regardless of project");
+
+    await signIn(page);
+
+    for (const [width, height] of [[820, 420], [390, 420], [820, 900]] as const) {
+      await page.setViewportSize({ width, height });
+
+      const field = page.getByRole("combobox", { name: /Search issues/ });
+      await field.fill("tas-");
+      await expect(page.getByRole("option")).toHaveCount(8);
+      // Past the 160ms entrance: `tk-pop` starts 7px low, and a box measured
+      // mid-animation is not the box the layout settles at.
+      await page.waitForTimeout(300);
+
+      const measured = await page.evaluate(() => {
+        const pop = document.querySelector(".global-search-pop") as HTMLElement;
+        const foot = document.querySelector(".global-search-foot") as HTMLElement;
+        const box = pop.getBoundingClientRect();
+        return {
+          bottom: box.bottom,
+          viewport: window.innerHeight,
+          // The foot carries "showing N of M" and is the line a squeezed panel
+          // would clip first; the rows can be scrolled, it cannot.
+          footBottom: foot.getBoundingClientRect().bottom,
+        };
+      });
+
+      expect(
+        measured.bottom,
+        `${width}x${height}: the panel runs ${(measured.bottom - measured.viewport).toFixed(1)}px past the bottom of the screen`,
+      ).toBeLessThanOrEqual(measured.viewport);
+      expect(measured.footBottom, `${width}x${height}: the panel's foot is below the fold`).toBeLessThanOrEqual(measured.viewport);
 
       await field.press("Escape");
       await field.fill("");

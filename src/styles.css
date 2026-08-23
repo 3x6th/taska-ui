@@ -4186,17 +4186,68 @@ button.issue-link-open:hover {
      `scrollIntoView`. One ArrowUp from the unselected state wraps onto exactly
      that row, so the clipped one was the row the keyboard lands on first. */
   .global-search-list {
+    /* Shrinkable, so the panel rule below can take height off it. A flex item's
+       automatic minimum is its content, which would have made the cap
+       unenforceable from the outside. */
+    min-height: 0;
     max-height: 352px;
+  }
+
+  /* The vertical half of §4.13's "a panel never crosses an edge", which was
+     only ever written for the horizontal one. At 820x420 the panel ran to
+     448.7 against a 420 viewport: 28.7px of last row and foot under the fold,
+     with `body { overflow: hidden }` and no gesture that could reach them.
+
+     Measured rather than reasoned. The panel's settled top is 55 — the bar's
+     51px padding box plus the 4px offset above — and its foot is 39.7, so a
+     cap on the *list* would need to subtract 94.7, or 101.7 counting the 7px
+     `tk-pop` start frame the panel animates in from. That is where 110 comes
+     from and 110 is right for a panel holding rows and a foot.
+
+     It is on the panel and not on the list because the list is not everything
+     the panel holds: when the projects read fails, an `.api-notice` sits above
+     the rows and measures 69.5 with its margins, which a list-only cap cannot
+     see and which put the foot 61.2px under the fold again. Capping the box
+     that actually has the edge problem covers every arrangement of its
+     contents, and the flex column is what lets the list give up the height
+     instead of the foot being clipped. 66 = the 55 top plus 11 of clearance,
+     which the entrance transform fits inside. */
+  .global-search-pop {
+    display: flex;
+    max-height: calc(100vh - 66px);
+    flex-direction: column;
+  }
+
+  /* The foot states how many matches there are of how many. It is the one line
+     that must survive the panel being squeezed, so it does not shrink — the
+     rows do, and they can be scrolled. */
+  .global-search-foot {
+    flex: none;
   }
 
   .notification-wrap {
     position: static;
   }
 
-  /* Same measurement, the board bar's own 12 (§2.4). */
+  /* Same measurement, the board bar's own 12 (§2.4). And the same vertical
+     clamp as the search panel, for a reason this story created: re-anchoring
+     this popover to the bar moved its top from roughly 48 (38 below a bell
+     sitting near the top of the bar) to 107 below a bar that wraps to two rows
+     at this width. Its list caps at 340 and its rows are 76, so a full inbox
+     at 820x420 would have run to 491 — 71px past the fold, unreachable for the
+     same reason. Measured with the cap filled; the seed only ever holds three.
+     `100%` here is the board bar's own height, which wraps, so the constant
+     cannot be shared with the search panel's. */
   .notifications-popover {
+    display: flex;
+    max-height: calc(100vh - 100% - 12px);
+    flex-direction: column;
     top: calc(100% + 4px);
     right: 12px;
+  }
+
+  .notifications-popover header {
+    flex: none;
   }
 
   .projects-heading {

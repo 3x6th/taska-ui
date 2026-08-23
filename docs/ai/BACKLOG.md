@@ -639,6 +639,16 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### Found while clamping the panels (TAS-179, 2026-08-23)
+
+- **The notifications popover overflows a short desktop viewport.** At
+  **1440×420** with a full inbox it runs 13.3px past the bottom. Untouched by
+  TAS-179 — the vertical clamp added there is scoped to ≤820, and above the
+  breakpoint the popover keeps its original bell-relative top of 47.5 — so this
+  is a pre-existing defect of the desktop anchor rather than one that story
+  created. Measured while sweeping the same question the story fixed below the
+  breakpoint; recorded rather than widened into the diff.
+
 ### Left over from the TAS-179 design pass (`art-director`, 2026-08-23)
 
 Past the report's cap. Its four blocking findings were fixed in the story; these
