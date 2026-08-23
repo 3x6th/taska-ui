@@ -36,9 +36,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   as data. The mock cannot reproduce it: it derives `meta.columns` from the
   catalog. Fail-closed already holds at table granularity, not at column
   granularity.
-- **`IssuePriority` and `UserStatus` are closed unions over contract-open
-  strings**, with no narrowing at the mapper and no divergence entry. The
-  existing "status keys are open" entry covers only workflow `statusKey`.
+- ~~**`IssuePriority` and `UserStatus` are closed unions over contract-open
+  strings**, with no narrowing at the mapper and no divergence entry.~~
+  Graduated to [TAS-173](https://jira.ozero.dev/browse/TAS-173), which had
+  already been filed for the same defect from the crash side and asks for the
+  helper, the missing error boundary, and tests per enum. Two corrections this
+  line got wrong, both from `api-contract-guard` on 2026-08-23: it omits
+  `IssueType`, which is the one the search path newly reads, and it understates
+  the failure — an unrecognised value is not a missing colour, it is a throw out
+  of `typeMeta[value].label` with no error boundary anywhere in `src/` to catch
+  it. Since TAS-179 that throw reaches the shared top bar, so it takes every
+  screen rather than the board, on data from a project the reader never opened.
+  Recorded on TAS-173 rather than re-filed.
 - **The mock filters and sorts already-masked values** where the gateway
   operates on the underlying column. Unreachable from the console, since
   sensitive columns are stripped from both sort and filter — but the mock is the
@@ -629,6 +638,31 @@ the next session in this image exactly as it bit this one.
   now that the shell around it is `dvh`. On iOS the cap can exceed 34% of the
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
+
+### Left over from the TAS-179 contract pass (`api-contract-guard`, 2026-08-23)
+
+Measured against the deployed gateway without a token, which is what made the
+first two visible at all. Past the report's cap, so recorded rather than
+triaged.
+
+- **The gateway edge rejects `page < 0` and `pageSize` outside `1..100`
+  pre-auth; the mock validates neither**, and `page: -1` there silently yields
+  an empty slice. Unreachable today — the callers pass fixed sizes — but it is
+  the reference implementation being laxer than the thing it models, same class
+  as the membership scoping bug the same pass found and fixed.
+- **The mock trims a query before measuring its length; the gateway counts raw
+  characters.** Verified: `?query=%20%20` passes the edge. So `"ab "` is
+  refused locally and would be accepted-and-empty remotely. Deliberate, and in
+  a code comment, but not in `API-DIVERGENCE.md`.
+- **`BoardScreen.tsx:616` falls back from the server total to `issues.length`.**
+  Both implementations always set `totalCount`, so the branch is unreachable —
+  and if it were ever reached it would print a page size where a project total
+  belongs, which is the exact lie the story was written to remove. Worth
+  deleting rather than documenting.
+- The locally reproduced too-short message is the *service's* wording. For an
+  empty or one-character query the edge answers `"Invalid request parameters"`
+  instead, so `SEARCH_QUERY_TOO_SHORT_MESSAGE` is verbatim for one of the three
+  lengths it covers. Only a developer reading a thrown error sees it.
 
 ### Left over from the TAS-179 review (`release-reviewer`, 2026-08-23)
 
