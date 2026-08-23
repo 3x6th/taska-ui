@@ -123,3 +123,8 @@ separately:
   right edge and sent its `right: 0` popover off the left of the screen.
 - Verified at 390 and at the 760–820 band where the wrap begins, in both
   themes.
+- Every popover in the bar closes on a click outside it and on `Escape`, not
+  only on a second press of its own trigger. `DESIGN.md` §4.12 has required
+  both of the notifications popover since before it shipped;
+  `UserProfileMenu` was the only implementation of the pattern, so the three
+  call sites share one hook rather than three copies of the same effect.
