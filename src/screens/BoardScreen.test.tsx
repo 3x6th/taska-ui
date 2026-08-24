@@ -815,6 +815,12 @@ describe("the counter after a mutation", () => {
  * behaviour is `useDismissOnOutside`, shared with the profile menu and the
  * global search, so what these three assertions actually protect is the one
  * copy all of them use.
+ *
+ * The bell itself is `src/components/NotificationsBell.tsx` since TAS-185, and
+ * these stay here rather than moving with it: they are about the bell as it is
+ * mounted, and this file already has the fake `TaskaApi` and the router it
+ * needs. The shared bar mounts the same component, so a regression here is a
+ * regression on `/projects` and `/admin` too.
  */
 describe("the notifications popover", () => {
   beforeEach(() => {
@@ -866,6 +872,12 @@ describe("the notifications popover", () => {
  * in src/domain/notifications.test.ts. These are about what the popover then
  * does with it: one read to learn the project, one route, and the two ways that
  * can not happen.
+ *
+ * The popover lives in `src/components/NotificationsBell.tsx` since TAS-185 and
+ * is reached from two bars now. Nothing here depends on which one: the route is
+ * built from the issue's own `projectId`, never from the screen's. Following it
+ * from a screen that has no project is pinned in e2e/notifications.spec.ts,
+ * which is the only place a real router can say so.
  */
 describe("a notification that is pressed", () => {
   beforeEach(() => {

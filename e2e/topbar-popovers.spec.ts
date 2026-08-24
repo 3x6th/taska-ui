@@ -14,9 +14,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // crosses either edge of the viewport — so a future layout that moves a trigger
 // again fails here rather than in someone's window.
 
-async function signIn(page: Page) {
+async function signIn(page: Page, email = "anna@example.com") {
   await page.goto("/login");
-  await page.getByLabel("Email").fill("anna@example.com");
+  await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
@@ -73,6 +73,204 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
         await expectInsideViewport(page, page.locator(".global-search-pop"), `search dropdown, ${theme} ${width}px`);
         await field.press("Escape");
         await field.fill("");
+      }
+    }
+  });
+
+  // The bell moved into the shared bar in TAS-185, so the panel with the most
+  // geometry attached to it now opens on two bars with different padding —
+  // 22 here against the board's 12 below 820. Its width clamp was written with
+  // that 12 spelled out, which keeps a panel inside the *viewport* on either
+  // bar and inside the *bar* on only one: at 390 on `/projects` a 12 would have
+  // started the panel ten pixels outside the bar's own inner edge, level with
+  // nothing on the screen. §4.13 asks for the doubled padding "своего бара",
+  // and this is what says which bar that is.
+  //
+  // Both routes that use the shared bar, because `/admin` is the one with a
+  // second layout under the header and the one a reader reaches only as a
+  // GLOBAL_ADMIN. No webfont poll here, unlike the board case below: the width
+  // floor that a font can move only binds under 314 on this bar, far below
+  // anything measured.
+  test("on the shared bar: the notifications panel, on /projects and in /admin", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport widths regardless of project");
+
+    // Mark rather than Anna: `/admin` is behind `globalRole = GLOBAL_ADMIN`,
+    // and he sees the same seeded inbox — `listNotifications` is the current
+    // user's and the mock seeds one for whoever is signed in.
+    await signIn(page, "mark@example.com");
+
+    // The panel is a full 312 at 1440 and its header cannot wrap there, so the
+    // first measurement is what one line costs on whatever font is actually
+    // active. Every narrower width is held against that rather than against a
+    // number written here.
+    let oneLineHeader: number | null = null;
+
+    for (const theme of themes) {
+      await page.evaluate((value) => window.localStorage.setItem("taska.theme", value), theme);
+
+      for (const [route, settled] of [
+        ["/projects", page.getByRole("heading", { level: 1, name: "Projects" })],
+        ["/admin/data", page.getByRole("heading", { level: 1, name: "Data" })],
+      ] as const) {
+        await page.goto(route);
+        await expect(settled).toBeVisible();
+
+        // 320 is where the defect this case was extended for actually bites,
+        // and 401 is the tightest width above the mark-only breakpoint — the
+        // one place the wordmark is back and the field has the least room it
+        // ever has while carrying it.
+        for (const width of [1440, 820, 780, 420, 401, 390, 375, 320]) {
+          await page.setViewportSize({ width, height: 844 });
+
+          const where = `notifications panel, ${theme} ${route} ${width}px`;
+          // Scoped to the bar, and the assertion is that it is *there*: this is
+          // the story. `exact`, because a seeded issue card is titled
+          // "Notifications inbox: mark all as read".
+          const bell = page.locator(".topbar").getByRole("button", { name: "Notifications", exact: true });
+          await expect(bell, `${where}: the shared bar has no bell`).toBeVisible();
+          await bell.click();
+          // Past the 160ms entrance: `tk-pop` starts 7px low and mid-animation
+          // is not where the panel settles.
+          await page.waitForTimeout(300);
+
+          await expectInsideViewport(page, page.locator(".notifications-popover"), where);
+
+          const measured = await page.evaluate(() => {
+            const pop = document.querySelector(".notifications-popover") as HTMLElement;
+            const trigger = document.querySelector(".notification-wrap button") as HTMLElement;
+            const bar = document.querySelector(".topbar") as HTMLElement;
+            const home = document.querySelector(".topbar-home") as HTMLElement;
+            const wordmark = document.querySelector(".topbar .logo-text") as HTMLElement;
+            const input = document.querySelector(".global-search .search-box input") as HTMLInputElement;
+
+            // What the placeholder needs, measured in this page's own font
+            // rather than written down: the number moves with §2.3's webfont
+            // and with any future wording, and a literal here would quietly
+            // start testing the fallback stack.
+            const ruler = document.createElement("span");
+            ruler.textContent = input.placeholder;
+            ruler.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+            ruler.style.font = getComputedStyle(input).font;
+            document.body.append(ruler);
+            const placeholder = ruler.getBoundingClientRect().width;
+            ruler.remove();
+
+            return {
+              pop: pop.getBoundingClientRect().toJSON(),
+              bell: trigger.getBoundingClientRect().toJSON(),
+              barHeight: bar.getBoundingClientRect().height,
+              gutter: parseFloat(getComputedStyle(bar).paddingLeft),
+              header: (pop.querySelector("header") as HTMLElement).getBoundingClientRect().height,
+              // The control that pays for everything else in this bar, and the
+              // one the first version of this case was silent about.
+              input: input.getBoundingClientRect().width,
+              placeholder,
+              home: home.getBoundingClientRect().toJSON(),
+              wordmark: getComputedStyle(wordmark).display,
+              // The bar cannot wrap, so the only other way it runs out of room
+              // is sideways, into a scroll nothing offers a way to reach.
+              overflow: bar.scrollWidth - bar.clientWidth,
+              // NaN when the computed value is `none`, which is how a deleted
+              // clamp shows up here rather than as a quietly taller panel.
+              maxHeight: parseFloat(getComputedStyle(pop).maxHeight),
+              viewport: window.innerHeight,
+            };
+          });
+
+          // The premise of every number below: this bar is fixed at 52 and does
+          // not wrap (§2.7, §4.13). If it ever starts, the panel inherits the
+          // board bar's whole problem and this case is measuring something else.
+          expect(measured.barHeight, `${where}: the shared bar wrapped`).toBe(52);
+          expect(measured.overflow, `${where}: the bar overflows by ${measured.overflow.toFixed(1)}px`).toBeLessThanOrEqual(0);
+
+          // The bell is not free: this bar's only elastic child is the search
+          // field, so anything added to the pinned group comes out of the one
+          // control a reader types into. At 320 that took the input to **4.0px**
+          // — a query typed in answered correctly in the panel below with not
+          // one character of it visible — which is why the wordmark goes below
+          // 400 and the gaps tighten with it. Asserted here because the first
+          // version of this case measured the panel to four decimal places and
+          // said nothing at all about what paid for it.
+          //
+          // 44 is §7's touch floor used as a legibility floor, which is a
+          // borrowing and worth saying so: what it actually pins is "wide
+          // enough that a reader can see their own query". Measured after the
+          // fix: 54 at 320, 109 at 375, 124 at 390, 134 at 400, 81.55 at 401,
+          // 176 from 500 up.
+          expect(
+            measured.input,
+            `${where}: the search input is ${measured.input.toFixed(1)}px, too narrow to show a query`,
+          ).toBeGreaterThanOrEqual(44);
+          // And above the breakpoint the field still carries its own
+          // placeholder, which is the boundary's whole justification: 400 and
+          // not 420, so that a 412 or 414 phone keeps the wordmark rather than
+          // losing it to a clip that never happens there.
+          if (width >= 375) {
+            expect(
+              measured.input,
+              `${where}: the input is ${measured.input.toFixed(1)}px against a placeholder needing ${measured.placeholder.toFixed(1)}px, so it is clipped`,
+            ).toBeGreaterThanOrEqual(measured.placeholder);
+          }
+
+          // The breakpoint itself, from both sides — 401 is in the sweep for
+          // exactly this. A rule that stopped applying, or one that started
+          // applying too early, changes nothing a panel assertion can see.
+          expect(measured.wordmark, `${where}: the wordmark's display is ${measured.wordmark}`).toBe(width <= 400 ? "none" : "block");
+          if (width <= 767) {
+            // §7's 44x44, and the reason the mark-only logo is not a bare
+            // `display: none`: dropping the wordmark takes the hit box to 33
+            // wide, which trades one touch gap for another.
+            expect(measured.home.width, `${where}: the home link is ${measured.home.width.toFixed(1)} wide, under §7's 44`).toBeGreaterThanOrEqual(44);
+            expect(measured.home.height, `${where}: the home link is ${measured.home.height.toFixed(1)} tall, under §7's 44`).toBeGreaterThanOrEqual(44);
+          }
+          // §4.12's own offset: `top: 38` under a 32px trigger is 6 below it.
+          const gap = measured.pop.y - measured.bell.bottom;
+          expect(gap, `${where}: the panel's top is ${gap.toFixed(1)}px below the bell`).toBeGreaterThanOrEqual(0);
+          expect(gap, `${where}: the panel's top is ${gap.toFixed(1)}px below the bell`).toBeLessThanOrEqual(8);
+          const rightGap = measured.pop.x + measured.pop.width - measured.bell.right;
+          expect(
+            Math.abs(rightGap),
+            `${where}: the panel's right edge is ${rightGap.toFixed(1)}px from the bell's, so it is anchored to something else`,
+          ).toBeLessThanOrEqual(1);
+
+          // The half that a viewport check cannot see, and the one the moved
+          // bell put at risk: inside the *bar's* inner edge, not merely inside
+          // the screen. Whenever the panel came out under its full 312 it is
+          // the anchor clamp that sized it, and the clamp's whole job is to
+          // land the left edge exactly on the gutter it was given.
+          expect(
+            measured.pop.x,
+            `${where}: the panel starts at ${measured.pop.x.toFixed(1)} against a ${measured.gutter}px bar gutter`,
+          ).toBeGreaterThanOrEqual(measured.gutter - 0.5);
+          if (measured.pop.width < 311.5) {
+            expect(
+              measured.pop.x,
+              `${where}: the panel is ${measured.pop.width.toFixed(1)} wide, so the clamp sized it, but it starts at ${measured.pop.x.toFixed(1)} rather than on the bar's ${measured.gutter}px gutter`,
+            ).toBeCloseTo(measured.gutter, 0);
+          }
+
+          // The panel's own header is the line that must never reflow: it
+          // carries the title and the only action the panel has.
+          oneLineHeader ??= measured.header;
+          expect(
+            measured.header,
+            `${where}: the panel's header is ${measured.header.toFixed(2)}px against the ${oneLineHeader.toFixed(2)}px it measures unwrapped, so it has reflowed`,
+          ).toBeCloseTo(oneLineHeader, 1);
+
+          if (width <= 820) {
+            // The bottom edge is an edge too, and the clamp that holds it is
+            // written against the trigger rather than against the bar — which
+            // is what lets one rule serve both bars.
+            expect(measured.maxHeight, `${where}: the panel carries no height clamp at all`).toBeGreaterThan(0);
+            expect(
+              measured.pop.y + measured.maxHeight,
+              `${where}: a full inbox would reach ${(measured.pop.y + measured.maxHeight).toFixed(1)} against a ${measured.viewport}px viewport`,
+            ).toBeLessThanOrEqual(measured.viewport);
+          }
+
+          await page.keyboard.press("Escape");
+          await expect(page.locator(".notifications-popover")).toHaveCount(0);
+        }
       }
     }
   });
