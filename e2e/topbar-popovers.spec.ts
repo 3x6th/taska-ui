@@ -166,6 +166,9 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
               input: input.getBoundingClientRect().width,
               placeholder,
               home: home.getBoundingClientRect().toJSON(),
+              // Where the glyph is actually drawn, which is not where its hit
+              // box starts: the box is padded and, below 400, floored at 44.
+              mark: (document.querySelector(".topbar .logo-mark") as HTMLElement).getBoundingClientRect().x,
               wordmark: getComputedStyle(wordmark).display,
               // The bar cannot wrap, so the only other way it runs out of room
               // is sideways, into a scroll nothing offers a way to reach.
@@ -216,6 +219,16 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
           // exactly this. A rule that stopped applying, or one that started
           // applying too early, changes nothing a panel assertion can see.
           expect(measured.wordmark, `${where}: the wordmark's display is ${measured.wordmark}`).toBe(width <= 400 ? "none" : "block");
+          // The mark sits on the bar's gutter whether the wordmark is beside it
+          // or not, which is the line every other left edge on the screen uses
+          // — cards, headings, and this panel. The first mark-only rule centred
+          // the glyph inside its 44px target and put it on 27.5 while claiming
+          // to leave it where the wordmark started it; nothing pinned that, so
+          // nothing caught it.
+          expect(
+            measured.mark,
+            `${where}: the logo mark is drawn at ${measured.mark.toFixed(1)} against the bar's ${measured.gutter}px gutter`,
+          ).toBeCloseTo(measured.gutter, 0);
           if (width <= 767) {
             // §7's 44x44, and the reason the mark-only logo is not a bare
             // `display: none`: dropping the wordmark takes the hit box to 33

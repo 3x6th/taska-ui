@@ -382,10 +382,21 @@ textarea:disabled {
 
    Three details that are load-bearing rather than cosmetic:
 
-   - **`min-width: 44px` on the home link.** A bare `display: none` leaves the
-     hit box at 33 wide against §7's 44, which trades one touch gap for
-     another. The 44 is the target; `justify-content: center` keeps the mark
-     optically where the wordmark used to start it.
+   - **`min-width: 44px` on the home link, and the mark stays on the gutter.**
+     A bare `display: none` leaves the hit box at 33 wide against §7's 44,
+     which trades one touch gap for another. The 44 is the *target*, and it is
+     not where the mark is drawn: `justify-content` stays at `flex-start` so
+     the link's own `padding: 0 6px` puts the glyph on **22**, which is the
+     bar's gutter and the line every other left edge on the screen sits on —
+     measured at 320: the project cards at 22, the page heading at 22, the
+     notifications panel at 22. The box still spans 16–60 at 44×44, so nothing
+     about the touch target depends on this.
+
+     The first version of this rule centred the mark and claimed that kept it
+     "optically where the wordmark used to start it". Measured, the wordmark
+     version starts its glyph at 22 and the centred one at **27.5**, so the
+     claim was false by 5.5px and false in the way that is hardest to catch —
+     it read as a reason. Recorded rather than quietly replaced.
    - **400, not 420.** The clip boundary is `input = 100vw - 319.45`, under the
      75.89 the placeholder needs — so it bites below 395.3. A 420 breakpoint
      would strip the wordmark from 412 and 414 phones that never clip at all.
@@ -404,7 +415,7 @@ textarea:disabled {
 
   .topbar .topbar-home {
     min-width: 44px;
-    justify-content: center;
+    justify-content: flex-start;
   }
 
   .topbar {
@@ -2730,7 +2741,9 @@ h1 {
    Measured on the board bar: a full 312 down to 506px of viewport, 306.5 at
    500, 196.5 at 390. On the shared bar the group is one control shorter, so the
    bell ends further right and the panel is wider at the same width: 312 down to
-   434, then 292 at 420, 270 at 390, 255 at 375, 200 at 320. The last three are
+   440, then 292 at 420, 270 at 390, 255 at 375, 200 at 320. 440 rather than the
+   434 first written here: the third clamp term is `100vw - 128` on this bar, so
+   it is 306 at 434 and reaches 312 at 440 exactly — measured across 428–450. The last three are
    8px wider than they were before the mark-only rule at 400 tightened the
    group's own gap to 8 — the group is pinned by its *right* edge and the bell
    is its first child, so a narrower internal gap moves the bell right and the
@@ -3816,12 +3829,22 @@ button.issue-link-open:hover {
   cursor: default;
 }
 
-/* Scoped rather than global: neither `.icon-button` nor `.segmented button` has
-   a focus style anywhere in the app, and both still ride the browser default
-   (DESIGN.md §7 records that gap). Changing them product-wide is its own visual
-   check, so this story covers only the controls it adds — but it covers all
-   five of them, because a form whose ring changes shape halfway through a tab
-   run is worse than one that never had it. */
+/* Scoped rather than global, and half of the reason has since expired. When
+   this was written neither `.icon-button` nor `.segmented button` had a focus
+   style anywhere in the app and both rode the browser default; changing them
+   product-wide was its own visual check, so that story covered only the
+   controls it added — all five of them, because a form whose ring changes
+   shape halfway through a tab run is worse than one that never had it.
+
+   `.icon-button` is closed: TAS-185 gave it §4.1's ring product-wide, and
+   §7's amended entry records that half as done. `.segmented button` is still
+   open and still on the browser default, so this rule is still doing work
+   rather than repeating one up the file. Kept scoped for a second, measured
+   reason as well: `.issue-link-form .segmented button:focus-visible` loses
+   3.56px of ring to `.issue-panel-body`'s clip at 390 — the same shape as the
+   notifications rows, wanting the same `-2px`, and pre-existing since TAS-179.
+   It is in the backlog rather than fixed here, so nothing in this comment
+   should be read as saying the `.segmented` half is fine. */
 .issue-link-open:focus-visible,
 .issue-link-form .segmented button:focus-visible,
 .issue-link-form .secondary-button:focus-visible,
@@ -4477,10 +4500,19 @@ button.issue-link-open:hover {
      at 820 and 549 at 760 — a search box spanning nearly the whole header, with
      a 420px panel hanging off its right end and ~190px of empty field to the
      left of the panel. The field is the only thing in this bar that gives, so
-     it is what pays for anything added to the pinned group: 220 down to 500px
-     of viewport, then 158.5 at 390 before the bell moved in (TAS-185) and
-     114.5 after it, which is the field's own placeholder clipped. Recorded as
-     a measured cost rather than left to be discovered. */
+     it is what pays for anything added to the pinned group — and adding the
+     bell (TAS-185) is what made that worth writing down. Shipped, measured:
+     220 down to 500px of viewport, then 178 at 400, **168 at 390**, 153 at 375
+     and 98 at 320, with the input inside those at 134 / 124 / 109 / 54 against
+     the 75.05 its own placeholder needs. So the placeholder survives to 375 and
+     only 320 clips it, and even there the field shows a real query.
+
+     Those are post-fix numbers and the fix is the mark-only rule at 400 up the
+     file, not this one. Without it the bell took 390 to 114.5 of field and 320
+     to **4.0px of input** — a query typed in answered correctly in the panel
+     below with not one character of it visible. Both curves are kept because
+     the second is what the first one costs if anything is ever added to the
+     pinned group again. */
   .global-search {
     position: static;
   }

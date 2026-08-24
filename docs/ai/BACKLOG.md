@@ -639,6 +639,35 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### Left over from the TAS-185 reviews (2026-08-24)
+
+- **`.issue-link-form .segmented button:focus-visible` loses 3.56px of its ring**
+  to `.issue-panel-body`'s clip at 390 — measured by `release-reviewer` by real
+  keyboard traversal, not by reading. Same shape as the notification-row defect
+  TAS-185 fixed, and the same `-2px` answer applies. Pre-existing since TAS-179
+  and deliberately left out of that story, which covered only the controls it
+  touched. Two other positive cuts turned up in the same sweep and are also
+  pre-existing: `issue-card` (0.73) and `panel-backdrop` (1.0).
+- **`.segmented button` still has no focus style at all** — TAS-185 closed the
+  `.icon-button` half of §7's entry and left this one open. Recorded so the
+  half-closed register is not read as a closed one.
+- **The empty and loading inbox is a bare 45.8px strip**, with "Mark all read"
+  enabled over nothing (§5.6 wants four distinguishable states; §4.1 has a
+  `disabled` recipe). Unchanged by TAS-185, but its exposure changed in kind
+  rather than degree: on a board an empty inbox was something you reached after
+  opening a project, and on `/projects` it is what a new account meets on its
+  first screen. (`art-director`)
+- **The bell is 32×32 at every width** against §7's 44 touch floor, and its
+  accessible name still carries no unread count. Both pre-existing and both now
+  on three screens rather than one. The touch half folds into the pseudo-element
+  remedy §7 already commits to for the primary button and the search field —
+  worth doing as one pass over all of them rather than four entries.
+- **At 320 and 340 the search placeholder is still clipped** (needs 75.05, gets
+  54 and 74). Knowingly exempted from the spec's placeholder assertion below
+  375, and accepted by both reviewers: the defect TAS-185 fixed was "cannot see
+  your own query", which is gone. Recorded because the exemption is a decision,
+  not an oversight.
+
 ### Left over from the TAS-183 reviews (2026-08-24)
 
 - **`.primary-button` has no `:hover`, `:active` or `:focus-visible` rule
