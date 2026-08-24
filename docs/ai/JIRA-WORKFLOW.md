@@ -35,6 +35,7 @@ states are not.
 | [TAS-182](https://jira.ozero.dev/browse/TAS-182) | Self-host Hanken Grotesk instead of linking Google Fonts with `display=swap` | To Do | filed from the TAS-181 CI failure, not started |
 | [TAS-183](https://jira.ozero.dev/browse/TAS-183) | A notification click landed on not-found; the projects filter field was shorter than the button beside it | Done | merged (PR #38) |
 | [TAS-184](https://jira.ozero.dev/browse/TAS-184) | `notification.link` is a gateway API path, and empty for `ISSUE_ASSIGNED` / `ISSUE_TRANSITIONED` | To Do | backend ask; TAS-183 compensates |
+| [TAS-185](https://jira.ozero.dev/browse/TAS-185) | The notifications bell reached only from a project board, though the inbox is the user's; now in the shared bar too | Done | merged (PR #39) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
