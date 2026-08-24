@@ -1553,6 +1553,83 @@ Same rule as above: "Closed by" is settled, the rest is live.
   compensation above costs nothing. Recorded so the next agent does not
   discover the missing `projectId` from a broken link.
 
+### `NotificationResponseDto.link` is a gateway API path, and empty for the two types people read
+
+- **Endpoint:** `GET /api/v1/notifications`.
+- **Probed 2026-08-24** on the deployed gateway with a `GLOBAL_ADMIN` token
+  supplied by the owner, after they reported that clicking a notification
+  landed on the not-found screen. Connected by
+  [TAS-183](https://jira.ozero.dev/browse/TAS-183).
+  - `LABEL_ADDED` / `LABEL_REMOVED` → `link: "/issues/{uuid}"`.
+  - `ISSUE_ASSIGNED` → `link: ""`.
+  - `ISSUE_TRANSITIONED` → `link: ""`.
+- **`/issues/{uuid}` is the gateway's own REST path, not a route of this
+  application.** Ours is `/projects/{projectId}/issues/{issueId}`, because a
+  project board is an issue's context. `navigate()` on the value as sent
+  therefore matches nothing and renders the not-found screen — which is what
+  the owner saw.
+- **The contract is silent rather than violated.** `link` is a nullable string
+  with no stated format, so the two sides simply read the field differently.
+  That is why this is a gap to be agreed rather than a bug to be fixed on one
+  side, and it is filed as [TAS-184](https://jira.ozero.dev/browse/TAS-184).
+- **`link` is absent-capable, not merely nullable.** `NotificationResponseDto`'s
+  `required` list omits `link`, `readAt` and `userId`. The compensation covers
+  absent as well as null, so `link: string | null` must not be "tidied" to
+  `link: string` later.
+- **Compensation, in two halves.** `notificationTarget()`
+  (`src/domain/notifications.ts`) takes an issue id from a `/issues/{uuid}`
+  link, and failing that from the first UUID in the notification's `body` —
+  every body carries exactly one, because the gateway names issues by raw id.
+  The issue is then read to learn its `projectId` and the route is built from
+  that. A notification with no resolvable id marks read and does not navigate,
+  and stops presenting itself as something that opens.
+- **The residual everyone will forget to test.** The failed-read case is the
+  obvious one and it behaves: an unresolvable or non-issue UUID ends in an
+  honest error rather than a wrong destination. The case that does *not*
+  announce itself is a body carrying a UUID that is a **real but different**
+  issue — that navigates somewhere plausible and wrong, silently. Nothing in
+  the current wire data produces it; nothing prevents it either.
+- **The mock seed is part of the compensation.** Until this story the mock
+  seeded a real frontend route, which is the entire reason no test ever caught
+  this — the mock was reproducing the product we meant rather than the one that
+  ships. `MockTaskaApi`'s notification seed now mirrors the gateway, empty links
+  and raw UUIDs included. It comes out *together with* `notifications.ts`: a
+  revert of one without the other leaves a green suite proving shapes the
+  gateway no longer sends.
+- **Provenance, and its limits.** One sample, eight most recent notifications,
+  read as `GLOBAL_ADMIN` — an account that sees notifications an ordinary member
+  never would, so this is not a sample of a normal inbox. The token expired
+  within the session and `api-contract-guard` could not reproduce any of it.
+- **Removal:** TAS-184, and it has to be all-or-nothing. If the gateway starts
+  sending a usable target for *some* types only, the link branch silently takes
+  over while the body fallback keeps running for the rest, and the compensation
+  looks removed while half of it is still load-bearing.
+
+### The mock refuses an issue/project pair that the gateway answers
+
+- **Endpoint:** `GET /api/v1/issues/{issueId}`.
+- Found by `api-contract-guard` on 2026-08-24 while reviewing TAS-183;
+  pre-existing and never recorded. `MockTaskaStore.findIssue` matches on
+  `projectId && issueId`, so a mismatched pair throws `NOT_FOUND`; the REST
+  route is issue-scoped and never sends the project, so the same pair answers
+  `200`. The one input on which the two implementations disagree.
+- **This is why `getIssueById` exists as its own method** rather than being
+  folded into `getIssue`: a caller that has only an issue id — a notification —
+  must not go through the signature whose extra argument the two
+  implementations treat differently.
+- **Not an access check, in either implementation.** The mock's predicate is an
+  *issue-belongs-to-named-project* consistency check with no membership in it.
+  Access is the server's, as always.
+- **The gateway's scoping on this route is inferred, not measured.** Its
+  siblings `GET /projects/{id}` and `…/issues` answer `403` to a non-member
+  (observed 2026-08-18, above), and the contract declares only `200` and
+  `default` here. Nobody has probed this route with a non-member token, and
+  TAS-183 is the first feature that can reach a cross-project issue read from
+  a click rather than a hand-typed URL — so the mock now applies the membership
+  predicate the gateway is *assumed* to apply, and that assumption is stated
+  here rather than buried.
+- **Removal:** none filed. It is a mock-fidelity note, not a backend ask.
+
 ---
 
 ## Closed

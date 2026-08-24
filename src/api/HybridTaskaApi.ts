@@ -158,6 +158,10 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.getIssue(projectId, issueId);
   }
 
+  getIssueById(issueId: string): Promise<IssueWithHistory> {
+    return this.live.getIssueById(issueId);
+  }
+
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
     return this.live.createIssue(projectId, input);
   }

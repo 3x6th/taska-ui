@@ -606,6 +606,41 @@ describe("MockTaskaApi", () => {
     });
   });
 
+  /**
+   * `getIssueById` is the one issue read a project id does not already narrow
+   * (TAS-183), so it is the one that has to ask about membership itself. Before
+   * TAS-183 nothing called it; now a notification does, in one click, which is
+   * what turns a permissive read into a reachable one.
+   */
+  describe("reading an issue by id alone", () => {
+    it("answers for an issue in a project the current user is a member of", async () => {
+      const [issue] = (await api.listIssues(project.id, {})).items;
+      const byId = await api.getIssueById(issue.id);
+
+      expect(byId.issue.id).toBe(issue.id);
+      // The whole point of the method: the project comes back with the answer,
+      // because the caller had no way to name it.
+      expect(byId.issue.projectId).toBe(project.id);
+    });
+
+    it("refuses an issue in a project the current user is not a member of", async () => {
+      // MOB is seeded with Mark, Tom and Priya and deliberately without Anna,
+      // who is the default user here and the e2e login.
+      await api.login({ email: "mark@example.com", password: "mock-accepts-anything" });
+      const mob = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mob, "the seed no longer has a project Anna is not in").toBeDefined();
+      const [mobIssue] = (await api.listIssues(mob!.id, {})).items;
+      expect(mobIssue).toBeDefined();
+
+      await api.login({ email: "anna@example.com", password: "mock-accepts-anything" });
+      await expect(api.listProjects()).resolves.not.toContainEqual(expect.objectContaining({ projectKey: "MOB" }));
+
+      // NOT_FOUND rather than PERMISSION_DENIED: DESIGN.md §4.18 does not let
+      // the refusal itself confirm that someone else's project exists.
+      await expect(api.getIssueById(mobIssue.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+  });
+
   describe("notifications", () => {
     it("marks every notification read and reports how many changed", async () => {
       const before = await api.listNotifications({ unreadOnly: true });

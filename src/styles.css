@@ -1122,6 +1122,18 @@ h1 {
   order: 0;
 }
 
+/* Two controls centred on one row read as an accident when they are 2px apart,
+   and the field is not the one that moves: §4.14 pins it at 32 exactly, while
+   §4.1 gives a primary button the range 32-34, so the button is the one with
+   room. Scoped to this row rather than to `.primary-button`, whose 34 is right
+   in modal footers and forms and reaches every screen. `.board-new` is the same
+   rule for the same reason — a primary button sharing a row with a §4.14
+   field — and holds at every width, including the <=820 column below, where
+   both controls keep their heights and only the field's width grows. */
+.projects-heading-actions .primary-button {
+  height: 32px;
+}
+
 /* A filter that matched nothing, which is not an account with no projects
    (§5.6). No dashed frame — that belongs to an empty board column, and the
    primary action this state would otherwise offer is already in the heading
@@ -2683,6 +2695,28 @@ h1 {
   background: var(--surface-2);
 }
 
+/* A notification the gateway gave nothing to open — no link, no id in the body
+   (TAS-183). Pressing it still marks it read, so it stays a button and keeps
+   its hover and its focus ring; what goes is the pointer cursor, which is the
+   part that promised a destination. */
+.notification-item.is-inert {
+  cursor: default;
+}
+
+/* The one read between the press and the route. No spinner — this repository
+   keeps those for the case where there is genuinely nothing to show, and the
+   row is right there — so the cue is the row holding the state hover already
+   uses. Nothing moves, so `prefers-reduced-motion` has no opinion to have. */
+.notification-item[aria-busy="true"] {
+  background: var(--surface-2);
+}
+
+/* The panel's rows run edge to edge, and a banner that did the same would sit
+   in the corners the 13px radius has already cut. */
+.notifications-popover .api-notice {
+  margin: 10px 12px;
+}
+
 .read-dot {
   width: 7px;
   height: 7px;
@@ -2720,6 +2754,17 @@ h1 {
   margin-top: 3px;
   color: var(--fg-3);
   font-size: 10.5px;
+}
+
+/* On an inert row this line stops being meta and becomes the only thing saying
+   the row goes nowhere, so it answers to §7 as content. `--fg-3` measures
+   3.14:1 light and 3.05:1 dark at rest — over the 3:1 floor — but the row's
+   hover fills with `--surface-2` and it drops to 2.76:1, which is exactly the
+   state a reader is in while deciding whether to press. `--fg-2` is ~5:1 in
+   both themes on both backgrounds. Only the inert row: a timestamp on a row
+   that opens is still meta and keeps `--fg-3`. */
+.notification-item.is-inert small {
+  color: var(--fg-2);
 }
 
 /* Wraps at every width rather than only on a phone, and states §2.7's 46 as a

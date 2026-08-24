@@ -401,7 +401,17 @@ export class RestTaskaApi implements TaskaApi {
     };
   }
 
-  async getIssue(_projectId: string, issueId: string): Promise<IssueWithHistory> {
+  /**
+   * The project is not on the wire for this read — the route is
+   * `/issues/{issueId}` — so this is `getIssueById` with an argument the
+   * gateway never sees. It stays in the signature because the mock does need
+   * it; see `TaskaApi.getIssueById`.
+   */
+  getIssue(_projectId: string, issueId: string): Promise<IssueWithHistory> {
+    return this.getIssueById(issueId);
+  }
+
+  async getIssueById(issueId: string): Promise<IssueWithHistory> {
     const response = await this.request<RestIssueWithHistory>(`/issues/${this.segment(issueId)}`);
     return this.toIssueWithHistory(response);
   }
