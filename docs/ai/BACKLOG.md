@@ -658,9 +658,24 @@ the next session in this image exactly as it bit this one.
   navigation would make every successful click feel slower to protect a rare
   failure — but the trade is real and worth revisiting if the read gets slower.
   (`api-contract-guard`)
-- **`BoardScreen.test.tsx` seeds a `requestId` on a failed notification read and
-  never asserts it renders**, while the workflow test twenty lines below asserts
-  `Copy request id`. It does render; it is simply not locked. (`api-contract-guard`)
+- **A notification row's timestamp measures 2.76:1 on hover, in light only.**
+  At rest it is 3.14 light / 3.05 dark and clears §7's 3:1 meta floor; on
+  `--surface-2` the light value drops under it, and hover is exactly the state a
+  reader is in while deciding whether to press. TAS-183 promoted the *inert*
+  row's line to `--fg-2` (6.38 / 7.03) because that node became the only signal
+  an inert row carries — the ordinary rows were left as they were, which is why
+  this stays open rather than closed. Dark hover measures 3.18 and is fine, so
+  this is a single-theme gap. (`art-director` found it, `frontend-builder`
+  reproduced the figures independently.)
+- **Probe `GET /api/v1/issues/{issueId}` with a non-member token.** One curl
+  settles whether the mock's new membership predicate is fidelity or fiction:
+  the gateway's siblings (`GET /projects/{id}`, `…/issues`) answer `403` to a
+  non-member, the contract declares only `200` and `default` here, and nobody
+  has ever asked this route. If it answers `200`, the mock is now the *stricter*
+  of the two and the divergence runs the other way. Recorded because
+  `API-DIVERGENCE.md` files it with "Removal: none" — which leaves the
+  assumption permanent by default rather than pending. Any session holding two
+  tokens closes it in thirty seconds. (`api-contract-guard`)
 - **The body-UUID fallback takes the *first* UUID in the body**, so a body that
   led with a user or project id would 404 rather than resolve. Degrades to the
   `ApiNotice`, never to a wrong destination, and no current wire data does it.

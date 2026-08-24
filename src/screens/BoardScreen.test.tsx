@@ -1015,7 +1015,21 @@ describe("a notification that is pressed", () => {
     expect(where()).toBe(`/projects/${PROJECT_ID}/board`);
   });
 
-  it("goes where the last click asked, not where the last read happened to land", async () => {
+  /**
+   * What this pins is the behaviour — the destination is the row that was
+   * clicked last — and not either half of the machinery that produces it.
+   *
+   * Worth saying plainly, because the obvious next question is why there is no
+   * assertion aimed at the `awaited` ref specifically. There is nothing to aim
+   * at: `MutationObserver.mutate()` detaches the observer from the previous
+   * mutation before building the new one, so deleting the ref and keeping the
+   * per-call callback leaves this test green. Measured, by deleting it. Like
+   * the dismissal test below, this binds against the move from an
+   * options-level `onSuccess` to a per-call one; the ref is a backstop for a
+   * library internal changing, and a backstop that is currently unreachable is
+   * not a thing a test can observe.
+   */
+  it("goes to the row that was clicked last, whichever read answers first", async () => {
     const SECOND_ID = "7a1d9e30-55cc-4f0e-b2d3-8c6f41ab0e77";
     holdIssueById(true);
     seedNotifications([

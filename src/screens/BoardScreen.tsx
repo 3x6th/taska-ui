@@ -1083,19 +1083,33 @@ function NotificationsPopover({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["notifications"] }),
   });
 
-  // The row the reader is currently waiting on. Two mutation defects need it,
-  // and both are about a read landing after the moment that asked for it:
+  // The row the reader is currently waiting on. Two defects live here, and both
+  // are about a read landing after the moment that asked for it:
   //
   // 1. A click, then Escape or a press outside. TanStack Query calls an
   //    *options-level* `onSuccess` from `Mutation.execute()` with no observer
   //    guard — the `hasListeners()` check covers only the per-call form — so a
   //    navigation wired there fires after this panel has unmounted, and the
-  //    reader is moved by a click they cancelled. Everything below therefore
-  //    passes its callbacks to `mutate` rather than to `useMutation`.
+  //    reader is moved by a click they cancelled.
   // 2. Click row A, then row B before A answers. Both reads are in flight and
   //    the destination became whichever *resolved* last, which against a real
-  //    gateway is a coin flip. This makes it whichever was *clicked* last,
-  //    which is the one the reader asked for.
+  //    gateway is a coin flip. It should be whichever was *clicked* last.
+  //
+  // **Passing the callbacks to `mutate` rather than to `useMutation` is what
+  // fixes both**, and this ref fixes neither on its own. Per-call callbacks sit
+  // behind `hasListeners()`, which closes 1; and `MutationObserver.mutate()`
+  // runs `this.#currentMutation?.removeObserver(this)` before building the new
+  // mutation, so a superseded read can no longer reach `#notify()` and 2 closes
+  // with it. Deleting the ref and keeping the per-call form leaves every test
+  // here green — that was measured, not assumed.
+  //
+  // The ref stays as a backstop for the half of that which is a library
+  // internal rather than a documented guarantee: `removeObserver` on the
+  // previous mutation is an implementation detail that a version bump may
+  // revise, while `hasListeners()` is the documented behaviour. So if you are
+  // here to simplify, the ref is the removable half — **removing the per-call
+  // form and trusting the ref is the mistake this paragraph exists to prevent**,
+  // because the ref says nothing about whether this component is still mounted.
   //
   // A ref rather than state: nothing renders from it, and a re-render on click
   // would only re-run the guard it exists to hold still.

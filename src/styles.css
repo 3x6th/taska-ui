@@ -2756,6 +2756,17 @@ h1 {
   font-size: 10.5px;
 }
 
+/* On an inert row this line stops being meta and becomes the only thing saying
+   the row goes nowhere, so it answers to §7 as content. `--fg-3` measures
+   3.14:1 light and 3.05:1 dark at rest — over the 3:1 floor — but the row's
+   hover fills with `--surface-2` and it drops to 2.76:1, which is exactly the
+   state a reader is in while deciding whether to press. `--fg-2` is ~5:1 in
+   both themes on both backgrounds. Only the inert row: a timestamp on a row
+   that opens is still meta and keeps `--fg-3`. */
+.notification-item.is-inert small {
+  color: var(--fg-2);
+}
+
 /* Wraps at every width rather than only on a phone, and states §2.7's 46 as a
    floor rather than a fixed height. The bar is a row of content-sized controls,
    so there is always a width at which they stop fitting, and it is not a phone
