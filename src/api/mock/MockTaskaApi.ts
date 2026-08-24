@@ -688,10 +688,23 @@ export class MockTaskaStore {
       (this.labelIdsByIssue[target.id] ??= []).push(label.id);
     });
 
+    // The three shapes the deployed gateway actually sends, measured with a
+    // GLOBAL_ADMIN token (TAS-183). This seed used to carry frontend routes,
+    // which is why clicking a notification worked here and landed on not-found
+    // against the gateway — the one divergence a mock must not hide. It goes
+    // back to routes when TAS-184 lands.
     this.notifications = [
-      this.notification("ISSUE_ASSIGNED", "Issue assigned", "TAS-107 was assigned to you", `/projects/${TASKA_PROJECT_ID}/issues/${tas107?.id ?? ""}`, ts(25, 10), null),
-      this.notification("ISSUE_TRANSITIONED", "Status changed", "TAS-101 moved to In Progress", `/projects/${TASKA_PROJECT_ID}/issues/${tas101?.id ?? ""}`, ts(25, 7), null),
-      this.notification("ISSUE_UPDATED", "Mention in issue", "Sofia mentioned you on TAS-103", `/projects/${TASKA_PROJECT_ID}/board`, ts(24, 50), ts(25, 8)),
+      // `link` is the gateway's own API path, not a route this app has. The
+      // body deliberately carries no id, so this row can only be resolved by
+      // reading the link.
+      this.notification("ISSUE_ASSIGNED", "Issue assigned", "TAS-107 was assigned to you", `/issues/${tas107?.id ?? ""}`, ts(25, 10), null),
+      // No link at all, and the id sits in the prose exactly as the gateway
+      // writes it ("Вам назначена задача be54f4ca-…"). Ugly in the panel, and
+      // that ugliness is the gateway's, not this seed's.
+      this.notification("ISSUE_TRANSITIONED", "Status changed", `TAS-101 moved to In Progress ${tas101?.id ?? ""}`, "", ts(25, 7), null),
+      // Nothing to open: no link, no id, and no issue behind it. The row marks
+      // itself read and goes nowhere.
+      this.notification("MEMBER_ADDED", "Added to a project", "Sofia added you to Taska Platform", "", ts(24, 50), ts(25, 8)),
     ];
   }
 
@@ -868,7 +881,23 @@ export class MockTaskaStore {
   }
 
   getIssue(projectId: string, issueId: string): IssueWithHistory {
-    const issue = this.findIssue(projectId, issueId);
+    return this.withHistory(this.findIssue(projectId, issueId));
+  }
+
+  /**
+   * The project-less read. The gateway's route is issue-scoped, so this is what
+   * `RestTaskaApi` has always done; the mock had no way to answer it because
+   * `findIssue` matches on both ids. See `TaskaApi.getIssueById`.
+   */
+  getIssueById(issueId: string): IssueWithHistory {
+    const issue = this.issues.find((item) => item.id === issueId && item.deletedAt === null);
+    if (!issue) {
+      throw new MockApiError("NOT_FOUND", "Issue not found");
+    }
+    return this.withHistory(issue);
+  }
+
+  private withHistory(issue: Issue): IssueWithHistory {
     return {
       issue: this.issueView(issue),
       history: this.historyByIssue[issue.id] ?? [],
@@ -1838,6 +1867,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {
     return wait(this.store.getIssue(projectId, issueId));
+  }
+
+  async getIssueById(issueId: string): Promise<IssueWithHistory> {
+    return wait(this.store.getIssueById(issueId));
   }
 
   async createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {

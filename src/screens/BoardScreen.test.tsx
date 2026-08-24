@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import { BoardScreen } from "./BoardScreen";
@@ -16,11 +16,16 @@ import { BoardScreen } from "./BoardScreen";
  * attempt at saying it got the answer wrong.
  */
 const PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
+/** Somewhere other than the open board, so a route built from the board's own id would be visibly wrong. */
+const OTHER_PROJECT_ID = "9c3f7b18-6d21-4a55-8e0b-7f2a1d4c9e30";
 
 const {
   fakeApi,
   seedSearch,
   failSearch,
+  seedNotifications,
+  readNotifications,
+  failIssueById,
   setMembership,
   failMembership,
   holdMembership,
@@ -66,6 +71,10 @@ const {
     searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null }[];
     searchTotal: number;
     searchFailure?: Error;
+    /** The notifications popover: what the bell lists, what it managed to mark read, and a read that fails. */
+    notifications: { id: string; title: string; body: string; createdAt: string; readAt: string | null; link: string }[];
+    readNotifications: string[];
+    issueByIdFailure?: Error;
     /** Issues created during a test, the ones deleted and the fields edited, so the list moves the way a server's would. */
     created: ReturnType<typeof makeIssue>[];
     deleted: Set<string>;
@@ -78,6 +87,8 @@ const {
     labelCreateHeld: false,
     searchHits: [],
     searchTotal: 0,
+    notifications: [],
+    readNotifications: [],
     created: [],
     deleted: new Set<string>(),
     edits: {},
@@ -172,7 +183,23 @@ const {
       const items = state.searchHits.filter((hit) => !state.deleted.has(hit.id));
       return { items, page: 0, pageSize: 50, totalCount: state.searchTotal };
     },
-    listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
+    listNotifications: async () => ({ items: state.notifications, pageSize: 20, offset: 0 }),
+    markNotificationRead: async (notificationId: string) => {
+      state.readNotifications.push(notificationId);
+      return state.notifications.find((item) => item.id === notificationId);
+    },
+    // The project-less read the notifications popover uses. It answers with an
+    // issue in a *different* project than the board's on purpose: a
+    // notification names an issue and never its project, and a popover that
+    // reused the board's would look right in every test and be wrong on every
+    // cross-project notification.
+    getIssueById: async (issueId: string) => {
+      if (state.issueByIdFailure) throw state.issueByIdFailure;
+      return {
+        issue: { ...makeIssue(issueId, "OTH-9", "Something elsewhere", ""), projectId: OTHER_PROJECT_ID },
+        history: [],
+      };
+    },
     // The board reads the project's labels for its filter. The tests about the
     // five reads above say nothing about labels, so this answers successfully
     // with none — `seedLabels` is what the label tests use to put something in
@@ -254,6 +281,13 @@ const {
     failSearch: (error: Error) => {
       state.searchFailure = error;
     },
+    seedNotifications: (items: typeof state.notifications) => {
+      state.notifications = items;
+    },
+    readNotifications: () => state.readNotifications,
+    failIssueById: (error: Error) => {
+      state.issueByIdFailure = error;
+    },
     reset: () => {
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
@@ -267,6 +301,9 @@ const {
       state.searchHits = [];
       state.searchTotal = 0;
       state.searchFailure = undefined;
+      state.notifications = [];
+      state.readNotifications = [];
+      state.issueByIdFailure = undefined;
       state.created = [];
       state.deleted = new Set<string>();
       state.edits = {};
@@ -275,6 +312,10 @@ const {
 });
 
 vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
+
+function Whereabouts() {
+  return <span data-testid="whereabouts">{useLocation().pathname}</span>;
+}
 
 function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
   // `staleTime` is the app's own (src/main.tsx) rather than react-query's
@@ -300,6 +341,10 @@ function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialPath]}>
+        {/* Where the router actually went. The notification tests are about a
+            destination rather than about what renders there, and the
+            destination can be a project this fixture draws no board for. */}
+        <Whereabouts />
         <Routes>
           <Route path="/projects/:projectId/board" element={board} />
           {/* The same screen with the panel open, which is how the app routes
@@ -775,6 +820,102 @@ describe("the notifications popover", () => {
     fireEvent.click(bell);
     expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
     expect(bell).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+/**
+ * Clicking a notification landed on the not-found screen, for every notification
+ * the deployed gateway actually sends (TAS-183). `link` was handed straight to
+ * `navigate()`, and the gateway's two shapes are its own API path
+ * (`/issues/{uuid}`) and the empty string — neither of which is a route this app
+ * has. The mock seeded frontend routes, which is exactly why no test saw it.
+ *
+ * Which id comes out of which shape is `notificationTarget`'s job and is tested
+ * in src/domain/notifications.test.ts. These are about what the popover then
+ * does with it: one read to learn the project, one route, and the two ways that
+ * can not happen.
+ */
+describe("a notification that is pressed", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const ISSUE_ID = "be54f4ca-3b2f-4d81-9f0a-1c7c0a5e11d2";
+
+  const notification = (over: { id: string; link: string; body: string; title?: string }) => ({
+    title: over.title ?? "Issue assigned",
+    createdAt: "2026-08-01T08:00:00Z",
+    readAt: null,
+    ...over,
+  });
+
+  const openBell = async () => {
+    fireEvent.click(await screen.findByRole("button", { name: "Notifications" }));
+  };
+
+  const where = () => screen.getByTestId("whereabouts").textContent;
+
+  it("opens the issue named by the gateway's own /issues link, in the project the issue says it is in", async () => {
+    seedNotifications([notification({ id: "n1", link: `/issues/${ISSUE_ID}`, body: "TAS-107 was assigned to you" })]);
+    renderBoard();
+    await openBell();
+
+    fireEvent.click(await screen.findByText("TAS-107 was assigned to you"));
+
+    // The project comes out of the read, never out of the open board: the
+    // fixture answers with an issue in a different project precisely so a route
+    // built from `useParams` would fail here.
+    await waitFor(() => expect(where()).toBe(`/projects/${OTHER_PROJECT_ID}/issues/${ISSUE_ID}`));
+    expect(readNotifications()).toContain("n1");
+    // Navigating closes the panel, the way it always did.
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+  });
+
+  it("opens the issue whose id is only in the body, which is every ISSUE_ASSIGNED the gateway sends", async () => {
+    seedNotifications([
+      notification({ id: "n2", link: "", body: `Вам назначена задача ${ISSUE_ID}`, title: "Status changed" }),
+    ]);
+    renderBoard();
+    await openBell();
+
+    fireEvent.click(await screen.findByText(`Вам назначена задача ${ISSUE_ID}`));
+
+    await waitFor(() => expect(where()).toBe(`/projects/${OTHER_PROJECT_ID}/issues/${ISSUE_ID}`));
+    expect(readNotifications()).toContain("n2");
+  });
+
+  it("marks a notification with nothing behind it read and stays where it is", async () => {
+    seedNotifications([
+      notification({ id: "n3", link: "", body: "Sofia added you to Taska Platform", title: "Added to a project" }),
+    ]);
+    renderBoard();
+    await openBell();
+
+    const row = await screen.findByText("Sofia added you to Taska Platform");
+    fireEvent.click(row);
+
+    await waitFor(() => expect(readNotifications()).toContain("n3"));
+    // The defect in miniature: a row that navigates nowhere is right, a row
+    // that navigates to a screen saying the page does not exist is not.
+    expect(where()).toBe(`/projects/${PROJECT_ID}/board`);
+    // And it does not offer itself as something that opens.
+    expect(row.closest("button")).toHaveClass("is-inert");
+  });
+
+  it("says so when the read that resolves the project fails, instead of going quiet", async () => {
+    failIssueById(Object.assign(new Error("Internal error"), { status: 500, requestId: "3d9b7a12-44ef-4c08" }));
+    seedNotifications([notification({ id: "n4", link: `/issues/${ISSUE_ID}`, body: "TAS-107 was assigned to you" })]);
+    renderBoard();
+    await openBell();
+
+    fireEvent.click(await screen.findByText("TAS-107 was assigned to you"));
+
+    const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
+    expect(alert).toHaveTextContent(/could not be opened/i);
+    // The panel stays open to carry the failure, and the reader is not moved.
+    expect(screen.getByRole("button", { name: "Mark all read" })).toBeVisible();
+    expect(where()).toBe(`/projects/${PROJECT_ID}/board`);
   });
 });
 

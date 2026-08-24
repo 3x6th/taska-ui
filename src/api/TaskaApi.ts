@@ -202,6 +202,24 @@ export interface TaskaApi {
    */
   searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>>;
   getIssue(projectId: string, issueId: string): Promise<IssueWithHistory>;
+  /**
+   * The same read for a caller that has an issue id and *not* its project.
+   *
+   * The route is issue-scoped on the wire (`GET /issues/{issueId}`), so
+   * `RestTaskaApi.getIssue` already ignored its `projectId` argument and this
+   * costs it nothing — but the mock does not ignore it, it resolves an issue
+   * within a project, so a component calling `getIssue` with a project it had
+   * to guess would work against the gateway and fail against the mock. Stating
+   * the narrower read as its own method is what keeps the three
+   * implementations interchangeable instead of accidentally equivalent.
+   *
+   * Added for the notifications popover, whose notification names an issue and
+   * never its project (TAS-183, compensating TAS-184). Callers that hold both
+   * ids keep using `getIssue`: the project in the signature is what makes the
+   * mock able to answer NOT_FOUND for an issue in a project the caller cannot
+   * see, and that check is worth keeping wherever it can be made.
+   */
+  getIssueById(issueId: string): Promise<IssueWithHistory>;
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue>;
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue>;
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue>;

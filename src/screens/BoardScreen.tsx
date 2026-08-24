@@ -29,6 +29,7 @@ import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { useTriggerAnchor } from "../hooks/useTriggerAnchor";
 import { useUnanswered } from "../hooks/useUnanswered";
+import { notificationTarget } from "../domain/notifications";
 import type {
   Issue,
   IssueComment,
@@ -487,9 +488,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               <NotificationsPopover
                 notifications={notificationsQuery.data?.items ?? []}
                 onMarkAll={() => markAllRead.mutate()}
-                onOpen={(link) => {
+                onNavigate={(route) => {
                   setNotificationsOpen(false);
-                  navigate(link);
+                  navigate(route);
                 }}
               />
             ) : null}
@@ -1034,19 +1035,41 @@ function ColumnSkeleton({ status }: { status: WorkflowStatus }) {
   );
 }
 
+/**
+ * A row here used to hand `notification.link` straight to `navigate()`, which
+ * is right only while the link is one of this app's routes. The gateway sends
+ * its own API path or an empty string, so every real notification landed the
+ * reader on the not-found screen (TAS-183, compensating TAS-184).
+ *
+ * `notificationTarget` says which of the three cases a row is. Two of them are
+ * synchronous; the third has an issue id and no project, so it costs one read
+ * before there is a route to go to — and that read is why this component now
+ * has a pending row and a failure of its own.
+ */
 function NotificationsPopover({
   notifications,
   onMarkAll,
-  onOpen,
+  onNavigate,
 }: {
   notifications: Array<{ id: string; title: string; body: string; createdAt: string; readAt: string | null; link: string }>;
   onMarkAll: () => void;
-  onOpen: (link: string) => void;
+  onNavigate: (route: string) => void;
 }) {
   const queryClient = useQueryClient();
   const markRead = useMutation({
     mutationFn: (notificationId: string) => taskaApi.markNotificationRead(notificationId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+  });
+
+  // `getIssueById` rather than `getIssue`: the notification names an issue and
+  // never its project, and the issue may not even be in the board this popover
+  // is open on. The response's own `projectId` is what builds the route.
+  const openIssue = useMutation({
+    mutationFn: async ({ issueId }: { notificationId: string; issueId: string }) => {
+      const { issue } = await taskaApi.getIssueById(issueId);
+      return `/projects/${issue.projectId}/issues/${issue.id}`;
+    },
+    onSuccess: (route) => onNavigate(route),
   });
 
   return (
@@ -1057,25 +1080,48 @@ function NotificationsPopover({
           Mark all read
         </button>
       </header>
+      {/* The read that resolves the project can fail, and a click that quietly
+          does nothing is the defect this story fixed, not a smaller version of
+          it. The panel stays open to say so. */}
+      {openIssue.isError ? (
+        <ApiNotice error={openIssue.error}>This issue could not be opened.</ApiNotice>
+      ) : null}
       <div className="notification-list">
-        {notifications.map((notification) => (
-          <button
-            className="notification-item"
-            key={notification.id}
-            onClick={() => {
-              markRead.mutate(notification.id);
-              onOpen(notification.link);
-            }}
-            type="button"
-          >
-            <span className={`read-dot ${notification.readAt ? "" : "is-unread"}`} />
-            <span>
-              <strong>{notification.title}</strong>
-              <em>{notification.body}</em>
-              <small>{relativeTime(notification.createdAt)}</small>
-            </span>
-          </button>
-        ))}
+        {notifications.map((notification) => {
+          const target = notificationTarget(notification);
+          // No spinner: the row is still on screen and still readable, so the
+          // pending cue is the row holding itself lit. `aria-busy` is the half
+          // a screen reader gets.
+          const resolving = openIssue.isPending && openIssue.variables.notificationId === notification.id;
+          return (
+            <button
+              aria-busy={resolving}
+              // A row with nothing behind it still marks itself read, so it stays
+              // a button — it just stops claiming it opens something, which is
+              // what the pointer cursor was saying.
+              className={`notification-item${target.kind === "none" ? " is-inert" : ""}`}
+              key={notification.id}
+              onClick={() => {
+                markRead.mutate(notification.id);
+                if (target.kind === "route") {
+                  onNavigate(target.route);
+                  return;
+                }
+                if (target.kind === "issue") {
+                  openIssue.mutate({ notificationId: notification.id, issueId: target.issueId });
+                }
+              }}
+              type="button"
+            >
+              <span className={`read-dot ${notification.readAt ? "" : "is-unread"}`} />
+              <span>
+                <strong>{notification.title}</strong>
+                <em>{notification.body}</em>
+                <small>{relativeTime(notification.createdAt)}</small>
+              </span>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
