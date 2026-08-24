@@ -214,10 +214,22 @@ export interface TaskaApi {
    * implementations interchangeable instead of accidentally equivalent.
    *
    * Added for the notifications popover, whose notification names an issue and
-   * never its project (TAS-183, compensating TAS-184). Callers that hold both
-   * ids keep using `getIssue`: the project in the signature is what makes the
-   * mock able to answer NOT_FOUND for an issue in a project the caller cannot
-   * see, and that check is worth keeping wherever it can be made.
+   * never its project (TAS-183, compensating TAS-184).
+   *
+   * Callers that hold both ids keep using `getIssue`, but not because its
+   * `projectId` is an access check — it is not. `MockTaskaStore.findIssue`
+   * matches `projectId && id && deletedAt === null`, which asks whether *this
+   * issue belongs to the project you named*, and answers NOT_FOUND when it does
+   * not; membership never enters it. `RestTaskaApi` asks nothing at all,
+   * because the argument never reaches the wire.
+   *
+   * So on a mismatched `(projectId, issueId)` pair the two implementations
+   * disagree outright: the mock throws NOT_FOUND, the gateway answers 200 with
+   * the issue. That disagreement is the whole reason a project-less caller
+   * needs its own method rather than a guessed project — routing one through
+   * `getIssue` would work against the gateway and fail against the mock, which
+   * is the interchangeability rule broken on the one input that distinguishes
+   * them.
    */
   getIssueById(issueId: string): Promise<IssueWithHistory>;
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue>;

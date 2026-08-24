@@ -639,6 +639,33 @@ the next session in this image exactly as it bit this one.
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
 
+### Left over from the TAS-183 reviews (2026-08-24)
+
+- **`.primary-button` has no `:hover`, `:active` or `:focus-visible` rule
+  anywhere**, so §4.1's interaction recipe is missing entirely — and the focus
+  half fails light/dark parity rather than merely being weak: Chromium's UA ring
+  is `#005FCC` on `--accent #4f46e5`, **1.04:1 and invisible**, while dark gets
+  `#99C8FF` and reads fine. Sharpest on `/projects` now that the field beside it
+  matches in height, radius and centre line and shows a proper
+  `2px var(--accent)` outline on focus: two adjacent controls differing in
+  exactly one thing, and it is that the primary one is the one you cannot see
+  focus on. TAS-183 did not make it worse — identical ring at 34 — it removed
+  the last excuse for the pair looking different. (`art-director`)
+- **`markRead.mutate` fires before the notification's target resolves**, so a
+  notification whose issue read then fails is marked read and drops out of the
+  unread filter: the one thing the reader could not act on becomes the one they
+  cannot find again. Left as is on purpose — deferring mark-read until after the
+  navigation would make every successful click feel slower to protect a rare
+  failure — but the trade is real and worth revisiting if the read gets slower.
+  (`api-contract-guard`)
+- **`BoardScreen.test.tsx` seeds a `requestId` on a failed notification read and
+  never asserts it renders**, while the workflow test twenty lines below asserts
+  `Copy request id`. It does render; it is simply not locked. (`api-contract-guard`)
+- **The body-UUID fallback takes the *first* UUID in the body**, so a body that
+  led with a user or project id would 404 rather than resolve. Degrades to the
+  `ApiNotice`, never to a wrong destination, and no current wire data does it.
+  (`release-reviewer`)
+
 ### The webfont is a measurement hazard, not just a load-time one (TAS-181, 2026-08-24)
 
 Graduated to [TAS-182](https://jira.ozero.dev/browse/TAS-182) the moment it was

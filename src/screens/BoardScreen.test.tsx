@@ -26,6 +26,10 @@ const {
   seedNotifications,
   readNotifications,
   failIssueById,
+  holdIssueById,
+  releaseIssueById,
+  heldIssueByIdCount,
+  answeredIssueByIds,
   setMembership,
   failMembership,
   holdMembership,
@@ -75,6 +79,11 @@ const {
     notifications: { id: string; title: string; body: string; createdAt: string; readAt: string | null; link: string }[];
     readNotifications: string[];
     issueByIdFailure?: Error;
+    /** Reads held open one at a time, so a test can decide when each one lands and in what order. */
+    issueByIdHeld: boolean;
+    issueByIdReleases: (() => void)[];
+    /** Ids whose read has actually completed. Waiting on a *release* proves nothing: it is synchronous, and the promise it settles has not run its continuations yet. */
+    issueByIdAnswered: string[];
     /** Issues created during a test, the ones deleted and the fields edited, so the list moves the way a server's would. */
     created: ReturnType<typeof makeIssue>[];
     deleted: Set<string>;
@@ -89,6 +98,9 @@ const {
     searchTotal: 0,
     notifications: [],
     readNotifications: [],
+    issueByIdHeld: false,
+    issueByIdReleases: [],
+    issueByIdAnswered: [],
     created: [],
     deleted: new Set<string>(),
     edits: {},
@@ -195,6 +207,14 @@ const {
     // cross-project notification.
     getIssueById: async (issueId: string) => {
       if (state.issueByIdFailure) throw state.issueByIdFailure;
+      // A read that does not land until the test says so. The two defects
+      // below live entirely in the window between the click and the answer,
+      // and against a fake that resolves on the next tick that window is not
+      // something a test can stand in.
+      if (state.issueByIdHeld) {
+        await new Promise<void>((resolve) => state.issueByIdReleases.push(resolve));
+      }
+      state.issueByIdAnswered.push(issueId);
       return {
         issue: { ...makeIssue(issueId, "OTH-9", "Something elsewhere", ""), projectId: OTHER_PROJECT_ID },
         history: [],
@@ -288,6 +308,15 @@ const {
     failIssueById: (error: Error) => {
       state.issueByIdFailure = error;
     },
+    holdIssueById: (held: boolean) => {
+      state.issueByIdHeld = held;
+    },
+    /** Lands the oldest held read. Order is the point: it is how "resolved last" is told from "clicked last". */
+    releaseIssueById: () => {
+      state.issueByIdReleases.shift()?.();
+    },
+    heldIssueByIdCount: () => state.issueByIdReleases.length,
+    answeredIssueByIds: () => state.issueByIdAnswered,
     reset: () => {
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
@@ -304,6 +333,9 @@ const {
       state.notifications = [];
       state.readNotifications = [];
       state.issueByIdFailure = undefined;
+      state.issueByIdHeld = false;
+      state.issueByIdReleases = [];
+      state.issueByIdAnswered = [];
       state.created = [];
       state.deleted = new Set<string>();
       state.edits = {};
@@ -861,6 +893,8 @@ describe("a notification that is pressed", () => {
     renderBoard();
     await openBell();
 
+    // A resolvable row does not carry the dead-end line.
+    expect(screen.queryByText(/Nothing to open/)).not.toBeInTheDocument();
     fireEvent.click(await screen.findByText("TAS-107 was assigned to you"));
 
     // The project comes out of the read, never out of the open board: the
@@ -899,8 +933,15 @@ describe("a notification that is pressed", () => {
     // The defect in miniature: a row that navigates nowhere is right, a row
     // that navigates to a screen saying the page does not exist is not.
     expect(where()).toBe(`/projects/${PROJECT_ID}/board`);
-    // And it does not offer itself as something that opens.
-    expect(row.closest("button")).toHaveClass("is-inert");
+    // And it does not offer itself as something that opens. The class carries
+    // `cursor: default`, which is worth nothing on a phone or on the keyboard
+    // path, so the row says it in words — inside the button, where it reaches
+    // the accessible name.
+    const button = row.closest("button");
+    expect(button).toHaveClass("is-inert");
+    expect(button).toHaveTextContent(/Nothing to open/);
+    // A row that does go somewhere must not carry it.
+    expect(screen.getAllByText(/Nothing to open/)).toHaveLength(1);
   });
 
   it("says so when the read that resolves the project fails, instead of going quiet", async () => {
@@ -913,9 +954,94 @@ describe("a notification that is pressed", () => {
 
     const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
     expect(alert).toHaveTextContent(/could not be opened/i);
+    // A fault on the server keeps the server's own words and its request id:
+    // that half is useful and reveals nothing.
+    expect(screen.getByText("Internal error")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Copy request id 3d9b7a12-44ef-4c08/ })).toBeVisible();
     // The panel stays open to carry the failure, and the reader is not moved.
     expect(screen.getByRole("button", { name: "Mark all read" })).toBeVisible();
     expect(where()).toBe(`/projects/${PROJECT_ID}/board`);
+  });
+
+  /**
+   * DESIGN.md §4.18: "there is no such issue" and "that issue is not yours" are
+   * one sentence, because a UI that tells them apart confirms that someone
+   * else's project exists. The gateway does tell them apart — 404 against 403,
+   * with its own wording in each — so the sentence is only half of it; the
+   * server's words underneath are where the difference would leak out.
+   */
+  it.each([
+    ["missing", Object.assign(new Error("Issue not found"), { code: "NOT_FOUND", status: 404, requestId: "aa11bb22-cc33" })],
+    ["refused", Object.assign(new Error("Not a member of project MOB"), { code: "PERMISSION_DENIED", status: 403, requestId: "aa11bb22-cc33" })],
+  ])("reads the same whether the issue is missing or refused (%s)", async (_case, error) => {
+    failIssueById(error);
+    seedNotifications([notification({ id: "n5", link: `/issues/${ISSUE_ID}`, body: "TAS-107 was assigned to you" })]);
+    renderBoard();
+    await openBell();
+
+    fireEvent.click(await screen.findByText("TAS-107 was assigned to you"));
+
+    const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
+    expect(alert).toHaveTextContent(/doesn.t exist, or you don.t have access to it/i);
+    // Neither the wording that distinguishes them nor the one that names the
+    // project the reader was never told about.
+    expect(screen.queryByText("Issue not found")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Not a member of project/)).not.toBeInTheDocument();
+    // The id that finds this failure in the gateway log survives: it identifies
+    // the failure without saying which failure it was.
+    expect(screen.getByRole("button", { name: /Copy request id aa11bb22-cc33/ })).toBeVisible();
+  });
+
+  it("does not navigate when the popover is dismissed before the read lands", async () => {
+    holdIssueById(true);
+    seedNotifications([notification({ id: "n6", link: `/issues/${ISSUE_ID}`, body: "TAS-107 was assigned to you" })]);
+    renderBoard();
+    await openBell();
+
+    fireEvent.click(await screen.findByText("TAS-107 was assigned to you"));
+    await waitFor(() => expect(heldIssueByIdCount()).toBe(1));
+
+    // The reader changed their mind while the read was in flight.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+
+    releaseIssueById();
+
+    // An options-level `onSuccess` is called from `Mutation.execute()` with no
+    // observer guard, so the navigation used to land here — panel gone, reader
+    // moved by a click they had cancelled. Passing the callback to `mutate`
+    // puts it behind the library's own `hasListeners()` check.
+    await waitFor(() => expect(answeredIssueByIds()).toContain(ISSUE_ID));
+    expect(where()).toBe(`/projects/${PROJECT_ID}/board`);
+  });
+
+  it("goes where the last click asked, not where the last read happened to land", async () => {
+    const SECOND_ID = "7a1d9e30-55cc-4f0e-b2d3-8c6f41ab0e77";
+    holdIssueById(true);
+    seedNotifications([
+      notification({ id: "n7", link: `/issues/${ISSUE_ID}`, body: "First notification" }),
+      notification({ id: "n8", link: `/issues/${SECOND_ID}`, body: "Second notification" }),
+    ]);
+    renderBoard();
+    await openBell();
+
+    fireEvent.click(await screen.findByText("First notification"));
+    await waitFor(() => expect(heldIssueByIdCount()).toBe(1));
+    fireEvent.click(await screen.findByText("Second notification"));
+    await waitFor(() => expect(heldIssueByIdCount()).toBe(2));
+
+    // The first read lands first — the order a slower gateway would pick at
+    // random, and the order that used to decide the destination. Wait for the
+    // *answer*, not for the release: releasing is synchronous and settles a
+    // promise whose continuations have not run, so asserting straight after it
+    // measures a moment the navigation could not have happened in yet, and the
+    // test passes against the defect.
+    releaseIssueById();
+    await waitFor(() => expect(answeredIssueByIds()).toContain(ISSUE_ID));
+    expect(where()).toBe(`/projects/${PROJECT_ID}/board`);
+
+    releaseIssueById();
+    await waitFor(() => expect(where()).toBe(`/projects/${OTHER_PROJECT_ID}/issues/${SECOND_ID}`));
   });
 });
 

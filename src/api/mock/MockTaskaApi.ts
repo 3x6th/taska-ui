@@ -888,10 +888,27 @@ export class MockTaskaStore {
    * The project-less read. The gateway's route is issue-scoped, so this is what
    * `RestTaskaApi` has always done; the mock had no way to answer it because
    * `findIssue` matches on both ids. See `TaskaApi.getIssueById`.
+   *
+   * Membership is checked here and nowhere else in this file's issue reads,
+   * because this is the only one a project id does not already narrow. Without
+   * it the seed hands out a working answer for an issue the current user
+   * cannot see — MOB has Mark, Tom and Priya and not Anna, who is the default
+   * user and the e2e login — and a notification naming a MOB issue would walk
+   * her onto a board the gateway would refuse. Before TAS-183 reaching that
+   * state took a hand-typed URL.
+   *
+   * **The gateway's scoping on `GET /issues/{issueId}` is inferred from its
+   * siblings, not measured.** `GET /projects/{id}` and `…/issues` answer 403
+   * to a non-member (measured 2026-08-18, docs/ai/API-DIVERGENCE.md); the
+   * contract declares only `200` and `default` for this route and nobody has
+   * probed it with a non-member token. NOT_FOUND rather than PERMISSION_DENIED
+   * is DESIGN.md §4.18's rule — the two must not be distinguishable, or the
+   * refusal itself says someone else's project exists.
    */
   getIssueById(issueId: string): IssueWithHistory {
     const issue = this.issues.find((item) => item.id === issueId && item.deletedAt === null);
-    if (!issue) {
+    const project = issue && this.projects.find((item) => item.id === issue.projectId);
+    if (!issue || !project?.memberIds?.includes(this.currentUserId)) {
       throw new MockApiError("NOT_FOUND", "Issue not found");
     }
     return this.withHistory(issue);

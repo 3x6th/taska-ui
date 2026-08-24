@@ -51,6 +51,10 @@ test("a notification with nothing behind it marks read and leaves the reader whe
   const board = page.url();
   const row = page.locator(".notification-item").nth(2);
   await expect(row).toHaveClass(/is-inert/);
+  // `cursor: default` is the whole of what the class does, and there is no
+  // cursor at 390 or on the keyboard path, so the row has to say it in words.
+  await expect(row).toContainText("Nothing to open");
+  await expect(page.locator(".notification-item", { hasText: "Nothing to open" })).toHaveCount(1);
   await row.click();
 
   // Still on the board, and the panel is still open — a row that goes nowhere
