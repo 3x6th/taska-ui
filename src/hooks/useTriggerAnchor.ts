@@ -57,10 +57,17 @@ import { useLayoutEffect, type RefObject } from "react";
  * it.** The first version took `element.closest("header")`, which reads as "the
  * bar" only while no nearer `<header>` sits between the trigger and it — and
  * `src/` has eight of them, six of which are section, card, modal and panel
- * heads. It resolved correctly for the one caller there is, which is exactly
+ * heads. It resolved correctly for the one caller there was, which is exactly
  * what a latent wrong guarantee looks like before it fires. A parameter costs
  * the call site one ref and makes the relationship a statement rather than a
  * search.
+ *
+ * The second caller is what the parameter was for. TAS-185 put the same bell in
+ * the shared bar, and the two bars answer this differently: the board bar wraps
+ * and genuinely moves the bell, the shared bar is fixed at 52 and never does,
+ * so there the viewport observer below is the only thing that republishes.
+ * Both still pass their own `<header>` — a search would have found one of them
+ * and quietly guessed about the other.
  *
  * Both properties are removed on close: they describe a position that is only
  * true while the panel is open, and a stale one left on the element would be

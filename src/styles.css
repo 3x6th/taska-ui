@@ -260,19 +260,33 @@ textarea:disabled {
   background: var(--surface);
 }
 
-/* Positioned so the global search dropdown has something bar-shaped to anchor
+/* `--bar-gutter` is the bar's own side padding, named because a panel hanging
+   in the bar has to spend it: §4.13 says the viewport clamp of every popover in
+   the bar uses "удвоенный `padding` своего бара", so the panel comes inside both
+   edges rather than one. It was written out as a literal 12 while the
+   notifications popover only ever hung in the board bar; the bell now hangs in
+   both (TAS-185), and 12 against a 22px bar would start the panel ten pixels
+   outside the bar's own inner edge. One number per bar, used by the padding
+   that defines it and by the panel that answers to it — the `--pop-floor`
+   pattern further down this file, for the same reason it was adopted there.
+
+   Positioned so the global search dropdown has something bar-shaped to anchor
    to on a narrow viewport (see the 820 block at the foot of this file). No
    `z-index`, so no stacking context is created and the popovers inside it
    still paint above the page. */
 .topbar {
+  --bar-gutter: 22px;
+
   position: relative;
-  padding: 0 22px;
+  padding: 0 var(--bar-gutter);
 }
 
 .board-topbar {
+  --bar-gutter: 18px;
+
   position: relative;
   z-index: 3;
-  padding: 0 18px;
+  padding: 0 var(--bar-gutter);
 }
 
 .topbar-spacer {
@@ -348,6 +362,68 @@ textarea:disabled {
 @media (max-width: 767px) {
   .topbar-home {
     min-height: 44px;
+  }
+}
+
+/* The wordmark is what the search field pays for on a phone, so below 400 it
+   goes and the mark stays. The shared bar is fixed at 52 and cannot wrap
+   (§2.7), so its one elastic child is the field: everything else is
+   `flex: none` or already at min-content. Measured at 320 with the bell in the
+   bar (TAS-185) the input was **4.0px** — a query typed into it answered
+   correctly in the panel below with not one character of it visible. §4.14 is
+   untouched: it states the field's resting size, and the narrow-width
+   behaviour is §4.20's.
+
+   A `min-width` on the field cannot be the fix, and this was measured rather
+   than reasoned: at 320 the bar's flex line is fully compressed — logo at
+   min-content 77.45, spacer at its 8, actions `flex: none` at 116 — so a floor
+   on the field has nothing to take the pixels from and overflows the bar
+   instead.
+
+   Three details that are load-bearing rather than cosmetic:
+
+   - **`min-width: 44px` on the home link, and the mark stays on the gutter.**
+     A bare `display: none` leaves the hit box at 33 wide against §7's 44,
+     which trades one touch gap for another. The 44 is the *target*, and it is
+     not where the mark is drawn: `justify-content` stays at `flex-start` so
+     the link's own `padding: 0 6px` puts the glyph on **22**, which is the
+     bar's gutter and the line every other left edge on the screen sits on —
+     measured at 320: the project cards at 22, the page heading at 22, the
+     notifications panel at 22. The box still spans 16–60 at 44×44, so nothing
+     about the touch target depends on this.
+
+     The first version of this rule centred the mark and claimed that kept it
+     "optically where the wordmark used to start it". Measured, the wordmark
+     version starts its glyph at 22 and the centred one at **27.5**, so the
+     claim was false by 5.5px and false in the way that is hardest to catch —
+     it read as a reason. Recorded rather than quietly replaced.
+   - **400, not 420.** The clip boundary is `input = 100vw - 319.45`, under the
+     75.89 the placeholder needs — so it bites below 395.3. A 420 breakpoint
+     would strip the wordmark from 412 and 414 phones that never clip at all.
+   - **`gap: 8` is required, not tidying.** The wordmark alone leaves 320 at
+     34px of input, *worse* than the 44.5 it had before the bell arrived. The
+     four pixels off each of the bar's three gaps and the group's two are what
+     turn that into a field a reader can see their own query in. 8 is inside
+     §2.4's 5–8 for inline control groups.
+
+   Scoped to `.topbar`: the board bar wraps at these widths instead, and its
+   own search box goes full width on its own row. */
+@media (max-width: 400px) {
+  .topbar .logo-compact .logo-text {
+    display: none;
+  }
+
+  .topbar .topbar-home {
+    min-width: 44px;
+    justify-content: flex-start;
+  }
+
+  .topbar {
+    gap: 8px;
+  }
+
+  .topbar .topbar-actions {
+    gap: 8px;
   }
 }
 
@@ -809,6 +885,47 @@ h1 {
   border-radius: 8px;
   color: var(--fg-2);
   cursor: pointer;
+}
+
+/* §4.1's ring, because the browser's own is not a ring this design system can
+   describe: Chrome derives `outline: auto` from the **operating system's**
+   accent colour, so the bell drew `rgb(229, 151, 0) auto 1px` — 1px, no
+   offset, and whatever the reader set in System Settings. Twelve pixels away
+   `.topbar-home` draws `2px solid var(--accent)` with an offset, which made one
+   Tab pass across one bar show two focus treatments in two colours, one of them
+   outside §2 entirely.
+
+   Both selectors, because they are the same gap on the same surface: the
+   notification rows are real `<button>`s and had no `:focus-visible` rule
+   either, while the comment on `.notification-item.is-inert` says an inert row
+   "keeps its focus ring". This is the rule that makes that sentence true. It
+   also closes the theme toggle, the board's back button and every other
+   `.icon-button` in the product — the same recipe nine other selectors in this
+   file already write out, including the notice's dismiss, which sits on a
+   tinted plane where the UA outline is at its least visible and used to carry
+   its own copy of exactly these two declarations.
+
+   "Mark all read" is in the list because it is the **first** Tab stop inside
+   the panel the rest of this rule is about: closing the bar and leaving the
+   popover's own header on the UA outline would move the inconsistency rather
+   than end it. It keeps the outward offset, and that was measured against the
+   clip rather than assumed, because it is the one control here that sits in a
+   corner the panel rounds. The header's own padding (§4.12) insets it 14 from
+   the content edge, so the 4px ring stops **10px** short on the right and 8.08
+   below the top; and its top-right corner — the only corner of any ring here
+   that lands in a rounded quadrant at all — measures **4.40 from that arc's
+   centre against a radius of 12**, so `overflow: hidden` has nothing to take.
+   Identical in both themes and at 1440, 390 and 320.
+
+   The rows are the only thing here that is full-bleed, and the offset is
+   corrected to `-2px` for them alone, beside the rows themselves — see the note
+   there for what the clip removed. Everything else this rule reaches sits in
+   open bar space with nothing to clip it at all. */
+.icon-button:focus-visible,
+.notification-item:focus-visible,
+.notifications-popover header button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .icon-button.mini {
@@ -2603,17 +2720,35 @@ h1 {
   background: var(--accent);
 }
 
-/* §4.12's geometry, at every width: `top:38; right:0` from the bell itself.
-   The clamp is what lets that survive a narrow screen. The bar's trailing
-   controls are one group pinned right and the bell is its *first* child, so
-   the bell's right edge is 208.5 of 390 on a phone and a full-width 312 panel
-   hanging left from it would start 103.5px off the left of the screen.
-   `--trigger-right` is that 208.5, published by `useTriggerAnchor` while the
-   panel is open, and 12 is the board bar's own side padding at those widths
-   (§2.4) — so the panel narrows to end at the bell and begin on the bar's
-   inner edge, rather than moving to some other trigger's edge. The middle term
-   holds when the property is missing, since `100vw` never wins the `min`.
-   Measured: a full 312 down to 506px of viewport, 306.5 at 500, 196.5 at 390.
+/* §4.12's geometry, at every width and in either bar: `top:38; right:0` from
+   the bell itself. The clamp is what lets that survive a narrow screen. The
+   bar's trailing controls are one group pinned right and the bell is its
+   *first* child, so the bell's right edge is 208.5 of 390 on a phone board bar
+   and a full-width 312 panel hanging left from it would start 103.5px off the
+   left of the screen. `--trigger-right` is that 208.5, published by
+   `useTriggerAnchor` while the panel is open, and `--bar-gutter` is the side
+   padding of whichever bar the bell is in (§2.4, §4.13) — so the panel narrows
+   to end at the bell and begin on that bar's inner edge, rather than moving to
+   some other trigger's edge. The middle term holds when the property is
+   missing, since `100vw` never wins the `min`.
+
+   The gutter is read rather than written since TAS-185 put the bell in the
+   shared bar as well: that bar is 22 where the board bar is 12 at the widths
+   the clamp binds at, and a hardcoded 12 would have started the panel ten
+   pixels outside the shared bar's inner edge. The fallback is the board's 12
+   and exists only so a bell rendered outside a bar degrades to a narrow panel
+   rather than to `width: auto`.
+   Measured on the board bar: a full 312 down to 506px of viewport, 306.5 at
+   500, 196.5 at 390. On the shared bar the group is one control shorter, so the
+   bell ends further right and the panel is wider at the same width: 312 down to
+   440, then 292 at 420, 270 at 390, 255 at 375, 200 at 320. 440 rather than the
+   434 first written here: the third clamp term is `100vw - 128` on this bar, so
+   it is 306 at 434 and reaches 312 at 440 exactly — measured across 428–450. The last three are
+   8px wider than they were before the mark-only rule at 400 tightened the
+   group's own gap to 8 — the group is pinned by its *right* edge and the bell
+   is its first child, so a narrower internal gap moves the bell right and the
+   panel gains exactly what the gap gave up. Relational, so nothing about the
+   anchor changed: the panel's right edge is the bell's at all five.
 
    **`--pop-floor` is a floor, and past it the panel shifts instead of
    shrinking.** Width swept against the panel's own contents: the header holds
@@ -2623,18 +2758,21 @@ h1 {
    and 6/7/8, and what a 390 device gives at 125% zoom — which is worse than
    the row reflow it was trading against. So the width stops at 186 and `right`
    goes negative by exactly the overshoot, sliding the panel right until its
-   left edge sits on the same 12px gutter. 186 rather than 212 because a 212
+   left edge sits on the bar's own gutter. 186 rather than 212 because a 212
    floor binds at 390 too and takes the panel 15.48px off the bell there
    (measured, with the floor temporarily raised), and the anchor is the thing
    this story is about; below 186 the rows reflow and the header does not.
 
    `right` is 0 wherever the floor does not bind, so 1440, 820, 780 and 390 are
-   untouched. It binds at 379px of viewport and below, and the shift is
-   continuous from there: 0.48px past the bell at 379, 4.48 at 375, 59.48 at
-   320. Because the shift is exactly what the width refused to give up, the
-   panel's right edge is pinned at 198 for every width below 379, and only a
+   untouched. On the board bar it binds at 379px of viewport and below, and the
+   shift is continuous from there: 0.48px past the bell at 379, 4.48 at 375,
+   59.48 at 320. Because the shift is exactly what the width refused to give up,
+   the panel's right edge is pinned at 198 for every width below 379, and only a
    viewport under 198 could push it past the screen — under every shipping
-   device and under Chrome's own minimum window. */
+   device and under Chrome's own minimum window. The shared bar reaches the
+   floor later, at 306 and below, and pins its right edge at 208: one control
+   fewer in the pinned group, a wider gutter and the tighter gap below 400 move
+   the number, not the behaviour. */
 .notifications-popover {
   /* The floor is *named* for the same reason `--pop-radius` is, one panel up
      the file: `right` has to slide by exactly the amount `width` refused to
@@ -2642,18 +2780,52 @@ h1 {
      two numbers that must agree — and two numbers in two places that must
      agree is the shape of both defects this story was opened for. */
   --pop-floor: 186px;
+  /* §2.5's 13 for a popover, named for the same reason it is named one panel
+     down the file: the row that sits on this corner has to describe the same
+     arc as the clip, and two numbers in two rules that must agree is how the
+     search panel's selection ring came to be cut in the first place. */
+  --pop-radius: 13px;
 
   position: absolute;
   top: 38px;
-  right: min(0px, calc(var(--trigger-right, 100vw) - 12px - var(--pop-floor)));
+  right: min(0px, calc(var(--trigger-right, 100vw) - var(--bar-gutter, 12px) - var(--pop-floor)));
   z-index: 20;
-  width: max(var(--pop-floor), min(312px, calc(100vw - 24px), calc(var(--trigger-right, 100vw) - 12px)));
+  width: max(
+    var(--pop-floor),
+    min(
+      312px,
+      calc(100vw - var(--bar-gutter, 12px) * 2),
+      calc(var(--trigger-right, 100vw) - var(--bar-gutter, 12px))
+    )
+  );
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: var(--pop-radius);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
   animation: tk-pop var(--dur-enter) var(--ease) forwards;
+}
+
+/* Agreement rather than avoidance, and it is `.global-search-pop`'s own rule
+   applied to the panel that needed it second: the row sitting on the panel's
+   corner takes the panel's *inner* curve — the outer radius less the 1px border
+   the clip is inset by — so row and clip describe the same arc and
+   `overflow: hidden` has nothing left to remove.
+
+   Measured before it existed: the last row's focus ring, drawn inward at -2,
+   still put its two bottom corners **4.97px outside** the 12px arc, so the
+   ring a reader gets on the row they reach most often was the one missing its
+   corners. Insetting the rows instead would cost the full-bleed separators and
+   the full-bleed hover fill, which is a design change rather than a repair.
+
+   Only the bottom half, unlike the search panel's pair: this panel's header is
+   always its first child, so the list can never sit on the top corners, while
+   it is always the last child — an `.api-notice` goes *above* it and there is
+   no foot below. `:last-child` on both is what keeps that a statement rather
+   than an assumption. */
+.notifications-popover > .notification-list:last-child > .notification-item:last-child {
+  border-bottom-left-radius: calc(var(--pop-radius) - 1px);
+  border-bottom-right-radius: calc(var(--pop-radius) - 1px);
 }
 
 .notifications-popover header {
@@ -2695,10 +2867,35 @@ h1 {
   background: var(--surface-2);
 }
 
+/* The one-sign correction to the rule up the file, and it is not a preference.
+   These rows are full-bleed inside a panel that clips to a 13px radius, so an
+   outline pushed 2px *outward* lands outside the panel's content box on three
+   sides: measured 4px removed from the left, 4 from the right and 4 from the
+   bottom of the last row, leaving the top edge as the entire indicator. Drawn
+   inward it is four sides of ring on every row, at every scroll position, with
+   nothing to clip it.
+
+   Not a new idea, and the precedent is the nearest one there is: the profile
+   popover's own full-bleed rows — `.user-profile-admin` and
+   `.user-profile-logout` — already draw `2px solid` at `-2px` for exactly this
+   reason, in exactly this shape. `.global-search-option.is-active` solves the
+   same clip with `box-shadow: inset` instead, and that difference is
+   principled rather than inconsistent: it is a *selection* highlight with no
+   DOM focus behind it (`aria-activedescendant`), so a shadow is all it can be.
+   These rows are real `<button>`s that really take focus, and an `outline` is
+   the half of that which survives forced-colors mode, where a `box-shadow` is
+   dropped. */
+.notification-item:focus-visible {
+  outline-offset: -2px;
+}
+
 /* A notification the gateway gave nothing to open — no link, no id in the body
    (TAS-183). Pressing it still marks it read, so it stays a button and keeps
-   its hover and its focus ring; what goes is the pointer cursor, which is the
-   part that promised a destination. */
+   its hover and §4.1's focus ring — the ring is `.notification-item:focus-visible`
+   up the file, added in TAS-185 because until then this sentence was describing
+   the browser's default outline rather than anything this file had written.
+   What goes is the pointer cursor, which is the part that promised a
+   destination. */
 .notification-item.is-inert {
   cursor: default;
 }
@@ -2941,14 +3138,6 @@ h1 {
   width: 28px;
   height: 28px;
   margin: -2px -4px 0 0;
-}
-
-/* §7's ring rather than the browser default: this control sits on a tinted
-   plane where the UA outline is at its least visible, and it is the only way
-   to put a banner away from the keyboard. */
-.api-notice .icon-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 /* On the projects screen the notice is a child of the page column rather than
@@ -3640,12 +3829,22 @@ button.issue-link-open:hover {
   cursor: default;
 }
 
-/* Scoped rather than global: neither `.icon-button` nor `.segmented button` has
-   a focus style anywhere in the app, and both still ride the browser default
-   (DESIGN.md §7 records that gap). Changing them product-wide is its own visual
-   check, so this story covers only the controls it adds — but it covers all
-   five of them, because a form whose ring changes shape halfway through a tab
-   run is worse than one that never had it. */
+/* Scoped rather than global, and half of the reason has since expired. When
+   this was written neither `.icon-button` nor `.segmented button` had a focus
+   style anywhere in the app and both rode the browser default; changing them
+   product-wide was its own visual check, so that story covered only the
+   controls it added — all five of them, because a form whose ring changes
+   shape halfway through a tab run is worse than one that never had it.
+
+   `.icon-button` is closed: TAS-185 gave it §4.1's ring product-wide, and
+   §7's amended entry records that half as done. `.segmented button` is still
+   open and still on the browser default, so this rule is still doing work
+   rather than repeating one up the file. Kept scoped for a second, measured
+   reason as well: `.issue-link-form .segmented button:focus-visible` loses
+   3.56px of ring to `.issue-panel-body`'s clip at 390 — the same shape as the
+   notifications rows, wanting the same `-2px`, and pre-existing since TAS-179.
+   It is in the backlog rather than fixed here, so nothing in this comment
+   should be read as saying the `.segmented` half is fine. */
 .issue-link-open:focus-visible,
 .issue-link-form .segmented button:focus-visible,
 .issue-link-form .secondary-button:focus-visible,
@@ -4247,10 +4446,12 @@ button.issue-link-open:hover {
 
 @media (max-width: 820px) {
   .board-topbar {
+    --bar-gutter: 12px;
+
     flex-wrap: wrap;
     height: auto;
     min-height: 52px;
-    padding: 10px 12px;
+    padding: 10px var(--bar-gutter);
   }
 
   .search-box {
@@ -4298,8 +4499,20 @@ button.issue-link-open:hover {
      took the spacer away and let the field grow into it, which measured 609px
      at 820 and 549 at 760 — a search box spanning nearly the whole header, with
      a 420px panel hanging off its right end and ~190px of empty field to the
-     left of the panel. Shrinking from 220 to 158.5 at 390 is the whole of the
-     narrowing this bar needs. */
+     left of the panel. The field is the only thing in this bar that gives, so
+     it is what pays for anything added to the pinned group — and adding the
+     bell (TAS-185) is what made that worth writing down. Shipped, measured:
+     220 down to 500px of viewport, then 178 at 400, **168 at 390**, 153 at 375
+     and 98 at 320, with the input inside those at 134 / 124 / 109 / 54 against
+     the 75.05 its own placeholder needs. So the placeholder survives to 375 and
+     only 320 clips it, and even there the field shows a real query.
+
+     Those are post-fix numbers and the fix is the mark-only rule at 400 up the
+     file, not this one. Without it the bell took 390 to 114.5 of field and 320
+     to **4.0px of input** — a query typed in answered correctly in the panel
+     below with not one character of it visible. Both curves are kept because
+     the second is what the first one costs if anything is ever added to the
+     pinned group again. */
   .global-search {
     position: static;
   }
@@ -4383,6 +4596,12 @@ button.issue-link-open:hover {
      to 435 — 15px past the fold, with `body{overflow:hidden}` and no gesture
      that reaches it. Measured with the cap filled; the seed only ever holds
      three.
+
+     Written against the trigger rather than against the bar is also what makes
+     it hold in the shared bar, where the same bell hangs since TAS-185: that
+     bar is fixed at 52 and never wraps, so the bell always ends at 41.5 and one
+     rule serves both bars. Measured on `/projects` and `/admin` at 844 tall:
+     `max-height: 784.5px`, which is 100vh - 41.5 - 18.
 
      18 is the panel's own 6px offset below the trigger (`top:38` under a 32px
      bell) plus 12 of clearance, which the 7px `tk-pop` start frame fits inside.
