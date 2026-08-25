@@ -32,10 +32,14 @@ export interface AdminSection {
 
 export const adminSections: AdminSection[] = [
   { id: "data", label: "Data", path: "/admin/data", icon: Database, stories: [], readOnly: true },
+  // Read-only until TAS-106 brings retry, which is the story that flips this
+  // flag — and the summary the Problems view is built on arrives with TAS-105,
+  // which is a gap in the gateway rather than a placeholder here: the section
+  // works, and says so itself when the endpoint is not deployed yet.
+  { id: "events", label: "Events", path: "/admin/events", icon: Radio, stories: [], readOnly: true },
   // `read-only` is a claim about what a section does. A placeholder does
   // nothing, so claiming it only reads is noise beside "the gateway has no
   // endpoints for it yet" — the marker arrives with the section.
-  { id: "events", label: "Events", path: "/admin/events", icon: Radio, stories: ["TAS-105"], readOnly: false },
   {
     id: "users",
     label: "Users",

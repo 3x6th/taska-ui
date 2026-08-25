@@ -8,6 +8,9 @@ import { DEFAULT_SIGNED_IN_ROUTE, RequireSession } from "../components/RequireSe
 import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
 import { AdminDataSection } from "./admin/AdminDataSection";
+import { AdminEventsProblems } from "./admin/AdminEventsProblems";
+import { AdminEventsSection } from "./admin/AdminEventsSection";
+import { AdminOutboxSection } from "./admin/AdminOutboxSection";
 import { AdminScreen } from "./admin/AdminScreen";
 import { AdminSectionPlaceholder } from "./admin/AdminSectionPlaceholder";
 import { adminSections } from "./admin/sections";
@@ -123,6 +126,22 @@ export function App() {
             catalog column stay, so this is a deeper address rather than another
             screen. */}
         <Route path="/admin/data/:service/:table/:id" element={<AdminDataSection />} />
+        {/* The Events section has two views under one section head (§5.8), so
+            the head is a layout route and each view is a child of it: the
+            Problems / Outbox switch is then rendered once and `aria-current`
+            comes from the router rather than from a component asserting it.
+            Problems is the index — the section opens on the summary, and there
+            is no redirect because the summary *is* the root. */}
+        <Route path="/admin/events" element={<AdminEventsSection />}>
+          <Route index element={<AdminEventsProblems />} />
+          {/* The service is optional so that `/admin/events/outbox` is a real
+              address: it resolves into the first service with an outbox and
+              redirects there, in the bar rather than silently. */}
+          <Route path="/admin/events/outbox/:service?" element={<AdminOutboxSection />} />
+          {/* One event of that journal, by its id — the same section with the
+              card in place of the table. */}
+          <Route path="/admin/events/outbox/:service/:id" element={<AdminOutboxSection />} />
+        </Route>
         {/* Every section is drawn, including the ones with no endpoints yet
             (§4.19) — the shape of the area is itself information. */}
         {adminSections

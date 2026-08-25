@@ -5,7 +5,7 @@ import { taskaApi } from "../../api/client";
 import type { AdminTable } from "../../domain/types";
 import { useCopied } from "../../hooks/useCopied";
 import { AdminError } from "./AdminError";
-import { formatCell, isAlignedType, isWithheld } from "./columns";
+import { formatCell, formatJsonValue, isAlignedType, isJsonColumn, isWithheld } from "./columns";
 
 interface AdminRowCardProps {
   service: string;
@@ -17,8 +17,17 @@ interface AdminRowCardProps {
    * case: without the catalog nothing here knows which columns hold secrets.
    */
   catalogTable: AdminTable | undefined;
-  /** The table's own `page`/`sort`/`filter`, so Back returns to the view the reader left. */
-  backQuery: string;
+  /**
+   * Where the way out leads and what it is called — "‹ auth.sessions" back to
+   * the table with its own `page`/`sort`/`filter`, or "‹ Problems" back to the
+   * Events summary the row was opened from (§5.8).
+   *
+   * A prop rather than a path built here: this card serves two sections now, and
+   * the one thing they do not share is where a reader came from. Both spell the
+   * target as an address, never as a history step — a pasted link and a reload
+   * have to offer the same way back as the click did.
+   */
+  back: { to: string; label: string };
 }
 
 /**
@@ -29,7 +38,7 @@ interface AdminRowCardProps {
  * top of nothing. The rail and the catalog column stay where they are — the
  * reader has not left the table, they are looking at one of its rows.
  */
-export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }: AdminRowCardProps) {
+export function AdminRowCard({ service, table, rowId, catalogTable, back }: AdminRowCardProps) {
   const rowQuery = useQuery({
     queryKey: ["admin", "row", service, table, rowId],
     queryFn: () => taskaApi.getAdminRow({ service, table, id: rowId }),
@@ -39,7 +48,6 @@ export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }:
   });
 
   const name = `${service}.${table}`;
-  const backTo = `/admin/data/${service}/${table}${backQuery ? `?${backQuery}` : ""}`;
 
   return (
     <div className="admin-plane">
@@ -50,9 +58,9 @@ export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }:
             the link's whole accessible name is the table's, which is also the
             heading thirty pixels below — two identical words, neither of which
             says this one is the way out. The visible text stays the name. */}
-        <Link aria-label={`Back to ${name}`} className="admin-back-link" to={backTo}>
+        <Link aria-label={`Back to ${back.label}`} className="admin-back-link" to={back.to}>
           <ChevronLeft aria-hidden="true" size={14} />
-          {name}
+          {back.label}
         </Link>
       </div>
 
@@ -98,6 +106,12 @@ export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }:
           <dl className="admin-card-fields">
             {catalogTable.columns.map((column) => {
               const value = rowQuery.data?.[column.name];
+              // A JSON column that really holds a document is laid out to be
+              // read (§5.8); one that does not parse falls through to
+              // `formatCell` and is printed exactly as it arrived. The card is
+              // the only place with the width for this — the table's 30px rows
+              // stay one line each.
+              const json = isJsonColumn(column.type) ? formatJsonValue(value) : null;
               return (
                 <div className="admin-card-field" key={column.name}>
                   {/* The same split as the table: the term carries the lock
@@ -132,6 +146,8 @@ export function AdminRowCard({ service, table, rowId, catalogTable, backQuery }:
                       <span aria-label="withheld by the server" className="admin-hidden-cell">
                         hidden
                       </span>
+                    ) : json !== null ? (
+                      <pre className="admin-card-json">{json}</pre>
                     ) : (
                       formatCell(value)
                     )}

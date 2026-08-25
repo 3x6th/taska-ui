@@ -375,16 +375,19 @@ test("finds a table through the catalog search", async ({ page }) => {
   await expect(page.getByText("Nothing matches")).toBeVisible();
 });
 
+// Audit rather than Events: Events stopped being a placeholder with TAS-167,
+// and the placeholder is built from `sections.ts`'s `stories` — so a section
+// that still has none is what proves the placeholder still works.
 test("stands in for a section that has no endpoints yet", async ({ page }) => {
   await openConsole(page);
 
-  await page.getByRole("navigation", { name: "Administration" }).getByRole("link", { name: "Events" }).click();
+  await page.getByRole("navigation", { name: "Administration" }).getByRole("link", { name: "Audit" }).click();
 
-  await expect(page).toHaveURL(/\/admin\/events$/);
-  await expect(page.getByRole("heading", { name: "Events — under construction" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "TAS-105" })).toHaveAttribute(
+  await expect(page).toHaveURL(/\/admin\/audit$/);
+  await expect(page.getByRole("heading", { name: "Audit — under construction" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "TAS-160" })).toHaveAttribute(
     "href",
-    "https://jira.ozero.dev/browse/TAS-105",
+    "https://jira.ozero.dev/browse/TAS-160",
   );
 });
 

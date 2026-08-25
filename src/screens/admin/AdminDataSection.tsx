@@ -9,6 +9,7 @@ import { AdminFilterControl } from "./AdminFilterControl";
 import { AdminRowCard } from "./AdminRowCard";
 import { AdminRowsTable } from "./AdminRowsTable";
 import { defaultSelection, findTable, isAddressableKey } from "./columns";
+import { everyColumnIsSensitive, sensitiveColumnsOf, statedColumns } from "./masking";
 import type { AdminViewState } from "./urlState";
 import { readViewState, writeViewState } from "./urlState";
 
@@ -108,25 +109,10 @@ export function AdminDataSection() {
   // must not default to, because it is indistinguishable on screen from a
   // genuinely harmless table. No catalog entry, no values.
   const maskingIsKnown = !shown || shownTable !== undefined;
-  const sensitiveColumns = useMemo(
-    () => new Set(shownTable?.columns.filter((column) => column.sensitive).map((column) => column.name) ?? []),
-    [shownTable],
-  );
+  const sensitiveColumns = useMemo(() => sensitiveColumnsOf(shownTable), [shownTable]);
   // The other end of the same fail-closed rule, and the state it produces has
-  // to say so. `sensitive` is optional in the contract, and `RestTaskaApi`
-  // reads a missing flag as `true` — so a gateway that stops sending the field
-  // turns a *successful* read into a table where every column is locked, the
-  // key included, with no sort, no filter form and no row links. That is
-  // indistinguishable on screen from a table which genuinely holds nothing but
-  // secrets, and this file already argues four lines above that a state we
-  // cannot tell apart from a real one must not be entered silently.
-  //
-  // A real table whose every column — including its primary key — is a secret
-  // does not exist, so there is nothing to guard against a false positive here.
-  const everyColumnSensitive =
-    shownTable !== undefined &&
-    shownTable.columns.length > 0 &&
-    sensitiveColumns.size === shownTable.columns.length;
+  // to say so — see `everyColumnIsSensitive` for why it is loud.
+  const everyColumnSensitive = everyColumnIsSensitive(shownTable, sensitiveColumns);
 
   const update = (changes: Partial<AdminViewState>) => {
     // Replace rather than push: paging and sorting a table would otherwise pile
@@ -176,7 +162,10 @@ export function AdminDataSection() {
       <div className="admin-data">
         <AdminCatalogColumn services={services} />
         <AdminRowCard
-          backQuery={searchParams.toString()}
+          back={{
+            to: `/admin/data/${current.service}/${current.table}${searchParams.toString() ? `?${searchParams}` : ""}`,
+            label: `${current.service}.${current.table}`,
+          }}
           catalogTable={selectedTable}
           rowId={rowId}
           service={current.service}
@@ -221,19 +210,15 @@ export function AdminDataSection() {
     return <Navigate replace to={query ? `${path}?${query}` : path} />;
   }
   const columns = rows?.meta.columns ?? [];
-  // The gateway does not populate `sortableColumns`/`filterableColumns` yet —
-  // they are unfinished on the backend (docs/ai/API-DIVERGENCE.md), and taking
-  // the empty lists literally would mean no sorting and no filtering at all
-  // against a real gateway while both work fully against the mock. Falling back
-  // to every column is safe: the server validates the sort column itself and
-  // accepts a filter on any column it has. When it starts stating the lists,
-  // they win and this fallback stops applying on its own.
-  const stated = (list: string[] | undefined) => (list && list.length > 0 ? list : columns);
   // A column whose values we refuse to show must not be sortable or filterable
   // either: ordering by it leaks its order, and filtering on it turns the table
   // into a match oracle for the value we just hid.
-  const sortable = new Set(stated(rows?.meta.sortableColumns).filter((column) => !sensitiveColumns.has(column)));
-  const filterable = stated(rows?.meta.filterableColumns).filter((column) => !sensitiveColumns.has(column));
+  const sortable = new Set(
+    statedColumns(rows?.meta.sortableColumns, columns).filter((column) => !sensitiveColumns.has(column)),
+  );
+  const filterable = statedColumns(rows?.meta.filterableColumns, columns).filter(
+    (column) => !sensitiveColumns.has(column),
+  );
   // `isFetching`, not `isPending`: after the first load `placeholderData` keeps
   // the previous rows, so the query is never "pending" again and nothing would
   // otherwise say the table on screen is out of date.
@@ -351,7 +336,7 @@ export function AdminDataSection() {
  * copied, and only what we *ask for* is narrowed.
  */
 function withoutSensitive(view: AdminViewState, table: AdminTable | undefined): AdminViewState {
-  const sensitive = new Set(table?.columns.filter((column) => column.sensitive).map((column) => column.name) ?? []);
+  const sensitive = sensitiveColumnsOf(table);
   const known = table !== undefined;
   const sortAllowed = view.sort !== null && known && !sensitive.has(view.sort);
   const filterAllowed = view.filter !== null && known && !sensitive.has(view.filter.column);

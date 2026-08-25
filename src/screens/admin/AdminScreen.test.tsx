@@ -34,6 +34,7 @@ const {
   serveCatalog,
   failRows,
   failRow,
+  failSummary,
   setMetaMismatch,
   lastRowsQuery,
 } = vi.hoisted(() => {
@@ -49,6 +50,7 @@ const {
     catalogOverride?: typeof catalog;
     rowsFailure?: Error;
     rowFailure?: Error;
+    summaryFailure?: Error;
     metaMismatch?: boolean;
     rowsQuery?: AdminRowsQuery;
   } = {};
@@ -157,6 +159,54 @@ const {
     },
   };
 
+  /**
+   * The Events summary, shaped for the three things the Problems view decides
+   * on its own: a zero beside a non-zero in the matrix, a status the build has
+   * never heard of (which must render as itself and take nothing down), and a
+   * list the server cut short.
+   */
+  const summary = {
+    counts: [
+      { serviceKey: "auth", overdueNewCount: 0, stuckProcessingCount: 1, failedCount: 2 },
+      { serviceKey: "issue", overdueNewCount: 0, stuckProcessingCount: 0, failedCount: 0 },
+    ],
+    events: [
+      {
+        id: "e1",
+        aggregateType: "User",
+        aggregateId: "u1",
+        eventType: "user.registered",
+        payload: '{"userId":"u1"}',
+        status: "FAILED",
+        createdAt: "2026-08-20T09:00:00Z",
+        publishedAt: null,
+        attempts: 5,
+        lastErrorMessage: "Topic taska.auth.events not present in metadata after 60000 ms",
+        processingStartedAt: "2026-08-20T09:01:00Z",
+        requestId: null,
+        serviceKey: "auth",
+        reason: "Event processing failed",
+      },
+      {
+        id: "e2",
+        aggregateType: "User",
+        aggregateId: "u1",
+        eventType: "user.role_changed",
+        payload: "{}",
+        status: "QUARANTINED",
+        createdAt: "2026-08-20T10:00:00Z",
+        publishedAt: null,
+        attempts: 0,
+        lastErrorMessage: null,
+        processingStartedAt: null,
+        requestId: null,
+        serviceKey: "auth",
+        reason: "Something this build has never been told about",
+      },
+    ],
+    notAllShown: true,
+  };
+
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
@@ -239,6 +289,10 @@ const {
       }
       return row;
     },
+    getProblematicOutboxSummary: async () => {
+      if (state.summaryFailure) throw state.summaryFailure;
+      return summary;
+    },
   };
 
   return {
@@ -276,6 +330,10 @@ const {
     /** Fail the *single row* request, which is a different endpoint and a different card state. */
     failRow: (failure?: Error) => {
       state.rowFailure = failure;
+    },
+    /** Fail the Events summary — the one endpoint the deployed gateway cannot serve yet. */
+    failSummary: (failure?: Error) => {
+      state.summaryFailure = failure;
     },
     setMetaMismatch: (on: boolean) => {
       state.metaMismatch = on;
@@ -503,19 +561,6 @@ describe("/admin sections under construction", () => {
     window.localStorage.clear();
   });
 
-  it("stands in for Events with the story that will open it", async () => {
-    renderAdmin("/admin/events");
-
-    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Events/ })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Events — under construction" })).toBeVisible();
-    const story = screen.getByRole("link", { name: "TAS-105" });
-    expect(story).toHaveAttribute("href", "https://jira.ozero.dev/browse/TAS-105");
-    expect(story).toHaveAttribute("target", "_blank");
-    // The placeholder proposes nothing to do: the only sensible move is another
-    // section, and that is already in the rail.
-    expect(screen.queryByRole("button", { name: /retry|try again/i })).not.toBeInTheDocument();
-  });
-
   it("names both stories for Users", async () => {
     renderAdmin("/admin/users");
 
@@ -529,6 +574,19 @@ describe("/admin sections under construction", () => {
 
     expect(await screen.findByRole("heading", { name: "Audit — under construction" })).toBeVisible();
     expect(screen.getByRole("link", { name: "TAS-160" })).toBeVisible();
+  });
+
+  // Events left this list with TAS-167, and the placeholder has to be gone
+  // rather than merely unreachable: `sections.ts` states no stories for it, and
+  // the route table builds the placeholder routes from exactly that field.
+  it("no longer stands in for Events", async () => {
+    renderAdmin("/admin/events");
+
+    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Events/ })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /under construction/ })).not.toBeInTheDocument();
+    const views = screen.getByRole("navigation", { name: "Events views" });
+    expect(within(views).getByRole("link", { name: "Problems" })).toHaveAttribute("aria-current", "page");
+    expect(within(views).getByRole("link", { name: "Outbox" })).toHaveAttribute("href", "/admin/events/outbox");
   });
 
   // The section body is replaced under a keyboard that stayed in the rail, and
@@ -1371,5 +1429,88 @@ describe("/admin console error copy", () => {
     renderAdmin();
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/refused this/i);
+  });
+});
+
+/**
+ * The Events section's Problems view (TAS-167). Three of its decisions are made
+ * from the response alone and cannot be reached from the mock-backed e2e suite,
+ * which only ever gets a well-formed summary from a gateway that has the
+ * endpoint: a zero next to a non-zero, a `status` this build has never heard of,
+ * and the deployed gateway's own way of saying it does not serve this yet.
+ */
+describe("/admin/events problems", () => {
+  beforeEach(() => {
+    releaseMe();
+    failCatalog(undefined);
+    serveCatalog(undefined);
+    failSummary(undefined);
+    setCurrentUser(admin);
+    window.localStorage.clear();
+  });
+
+  it("draws the counts per service, with zero told apart from a count", async () => {
+    renderAdmin("/admin/events");
+
+    const matrix = await screen.findByRole("table", { name: "Problem counts by service" });
+    // The categories are columns and the services are rows, so a service is a
+    // row header rather than a cell — which is what lets a screen reader say
+    // "auth, Failed, 2" instead of reading three unlabelled numbers.
+    expect(within(matrix).getByRole("rowheader", { name: "auth" })).toBeVisible();
+    expect(within(matrix).getByRole("columnheader", { name: "Stuck processing" })).toBeVisible();
+
+    const zero = within(matrix).getAllByRole("cell", { name: "0" })[0];
+    const counted = within(matrix).getByRole("cell", { name: "2" });
+    // Told apart by weight and colour, never by a red or a green: a 2 under
+    // Failed is already the message (§1).
+    expect(zero.className).toContain("is-zero");
+    expect(counted.className).not.toContain("is-zero");
+  });
+
+  it("says the list was cut short, without calling it an error", async () => {
+    renderAdmin("/admin/events");
+
+    expect(await screen.findByText(/Showing the oldest 2 events/)).toBeVisible();
+    // A statement about this response, not a failure: an alert here would send
+    // the reader looking for something to fix in the UI.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("renders a status it has never seen without a category and without falling over", async () => {
+    renderAdmin("/admin/events");
+
+    const list = await screen.findByRole("table", { name: "Problematic events, oldest first" });
+    // The raw value survives in its own column …
+    expect(within(list).getByRole("cell", { name: "QUARANTINED" })).toBeVisible();
+    // … and the known one is still categorised beside it, so the unknown row
+    // cost the rest of the table nothing.
+    expect(within(list).getByRole("cell", { name: "Failed" })).toBeVisible();
+    expect(within(list).getAllByRole("link", { name: /^Open event / })).toHaveLength(2);
+  });
+
+  // The deployed gateway does not have this path and does not answer 404 for
+  // it: it reads `outbox` as a service key and rejects that. Measured
+  // 2026-08-25 — docs/ai/API-DIVERGENCE.md.
+  it("reads the gateway's unknown-service rejection as 'not deployed yet'", async () => {
+    failSummary(Object.assign(new Error("Unknown service: outbox"), { code: "INVALID_ARGUMENT", status: 400 }));
+    renderAdmin("/admin/events");
+
+    expect(await screen.findByText(/does not serve the problems summary yet/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "TAS-105" })).toHaveAttribute(
+      "href",
+      "https://jira.ozero.dev/browse/TAS-105",
+    );
+    // Quiet: this is the calendar, not a fault, and nothing here is broken.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("still treats every other rejection as a rejection", async () => {
+    // Same code, different sentence — which is the point of pinning the
+    // sentence: a real INVALID_ARGUMENT from this endpoint must not be dressed
+    // up as a missing deployment.
+    failSummary(Object.assign(new Error("Unknown service: nope"), { code: "INVALID_ARGUMENT", status: 400 }));
+    renderAdmin("/admin/events");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/would not accept this request/i);
   });
 });

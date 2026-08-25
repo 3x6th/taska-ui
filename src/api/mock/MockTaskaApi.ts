@@ -35,6 +35,9 @@ import type {
   Label,
   Notification,
   Page,
+  ProblematicOutboxCounts,
+  ProblematicOutboxEvent,
+  ProblematicOutboxSummary,
   Project,
   ProjectLabel,
   ProjectMember,
@@ -219,6 +222,115 @@ interface StoredIssueLink {
   createdAt: string;
 }
 
+/** The transactional outbox table, in every service that has one. */
+const OUTBOX_TABLE = "outbox_events";
+
+/**
+ * The `outbox_events` catalog entry, identical in each service that carries one
+ * — auth, project and issue today, and exactly those three, which is what makes
+ * the Events section's service selector a real filter over the catalog rather
+ * than a hardcoded list (DESIGN.md §5.8).
+ *
+ * The types are the **live catalog's own spellings**, read from
+ * `issue.outbox_events` on the deployed gateway on 2026-08-25 — `text` where
+ * the product tables in this seed say `character varying`, and `aggregate_id`
+ * a `uuid` rather than text. Both matter: the console picks a column's filter
+ * operators and its value control from this string, so a mock that guessed
+ * would offer controls the gateway then answers 400 for.
+ *
+ * No column is sensitive, which mirrors the deployed masking config. `payload`
+ * is `jsonb` and therefore OTHER to the classifier: no `contains`, no ranges,
+ * and the Events filter list does not offer it at all.
+ */
+function outboxTable(): AdminTable {
+  return {
+    name: OUTBOX_TABLE,
+    primaryKey: "id",
+    columns: [
+      { name: "id", type: "uuid", sensitive: false },
+      { name: "aggregate_type", type: "text", sensitive: false },
+      { name: "aggregate_id", type: "uuid", sensitive: false },
+      { name: "event_type", type: "text", sensitive: false },
+      { name: "payload", type: "jsonb", sensitive: false },
+      { name: "status", type: "text", sensitive: false },
+      { name: "created_at", type: "timestamp with time zone", sensitive: false },
+      { name: "published_at", type: "timestamp with time zone", sensitive: false },
+      { name: "attempts", type: "integer", sensitive: false },
+      { name: "last_error_message", type: "text", sensitive: false },
+      { name: "processing_started_at", type: "timestamp with time zone", sensitive: false },
+      { name: "request_id", type: "text", sensitive: false },
+    ],
+  };
+}
+
+/**
+ * How long a row may sit in each state before the backend calls it problematic.
+ * These are the *mock's* numbers, not the contract's: the real thresholds are
+ * server configuration, and the summary endpoint reports the answer rather than
+ * the rule. Minutes rather than the backend's hours so that a seeded row can be
+ * both plausibly recent and unambiguously stuck.
+ */
+const OUTBOX_PROCESSING_TIMEOUT_MINUTES = 5;
+const OUTBOX_NEW_OVERDUE_MINUTES = 10;
+
+/**
+ * How many events the mock's summary will list. The real default is 100; a
+ * small number here is legitimate because the limit is server config rather
+ * than contract, and it is the only way `notAllShown` — and the line the UI
+ * draws for it — is reachable from a seed anyone can read.
+ */
+const OUTBOX_SUMMARY_LIMIT = 5;
+
+/**
+ * The backend's own sentences for why a row is problematic, word for word
+ * (branch TAS-105). `reason` is prose, not an enum: the UI derives the category
+ * from `status` and never parses these — they are seeded verbatim so that what
+ * the card shows in mock mode is what it will show against the gateway.
+ */
+const OUTBOX_REASONS = {
+  FAILED: "Event processing failed",
+  PROCESSING: "Event stuck in PROCESSING state (exceeded processing timeout)",
+  NEW: "Event stuck in NEW state (not picked up for processing)",
+} as const;
+
+/** Which service occupies which id slot, so no two outbox rows share a key. */
+const OUTBOX_SERVICE_SLOTS = ["auth", "project", "issue"];
+
+/** A stable, uuid-shaped id: a row address has to survive a reload and a copied link. */
+const outboxUuid = (kind: string, slot: number, index: number) =>
+  `${kind}${slot}${String(index + 1).padStart(4, "0")}-0000-4000-8000-${slot}${String(index + 1).padStart(11, "0")}`;
+
+/** One seeded outbox row, before it is turned into columns. */
+interface OutboxSeed {
+  eventType: string;
+  aggregateType: string;
+  aggregateId: string;
+  status: "NEW" | "PROCESSING" | "PUBLISHED" | "FAILED";
+  /** Age of the row itself. Everything in this table is read by age. */
+  minutesAgo: number;
+  attempts: number;
+  payload: string;
+  processingMinutesAgo?: number;
+  publishedMinutesAgo?: number;
+  lastErrorMessage?: string;
+}
+
+/**
+ * Whichever of the three categories this row falls into, or `null` when it is
+ * healthy. The same reading the backend's query makes: `FAILED` always counts,
+ * and the other two only once they have been in that state too long.
+ */
+function outboxProblem(row: AdminRow, nowMs: number): keyof typeof OUTBOX_REASONS | null {
+  const olderThan = (value: unknown, minutes: number) =>
+    typeof value === "string" && nowMs - new Date(value).getTime() > minutes * 60_000;
+  if (row.status === "FAILED") return "FAILED";
+  if (row.status === "PROCESSING" && olderThan(row.processing_started_at, OUTBOX_PROCESSING_TIMEOUT_MINUTES)) {
+    return "PROCESSING";
+  }
+  if (row.status === "NEW" && olderThan(row.created_at, OUTBOX_NEW_OVERDUE_MINUTES)) return "NEW";
+  return null;
+}
+
 export class MockTaskaStore {
   private users: User[];
   private projects: Project[];
@@ -237,6 +349,15 @@ export class MockTaskaStore {
   private labelIdsByIssue: Record<string, string[]> = {};
   private notifications: Notification[];
   private workflow: Workflow;
+  /**
+   * The outbox rows, seeded once on first read rather than in the constructor.
+   * Their timestamps are relative to *now* — a row has to be genuinely three
+   * hours old for the summary's thresholds and the list's ages to say anything
+   * — and freezing them at first read is what keeps a row's `created_at` the
+   * same value in the journal, in the summary and on the card of the session
+   * that is reading them.
+   */
+  private outboxEvents: Record<string, AdminRow[]> | null = null;
   private currentUserId = ANNA_ID;
 
   constructor() {
@@ -1276,6 +1397,7 @@ export class MockTaskaStore {
                 { name: "expires_at", type: "timestamp with time zone", sensitive: false },
               ],
             },
+            outboxTable(),
           ],
         },
         {
@@ -1295,6 +1417,7 @@ export class MockTaskaStore {
                 { name: "created_at", type: "timestamp with time zone", sensitive: false },
               ],
             },
+            outboxTable(),
           ],
         },
         {
@@ -1316,6 +1439,7 @@ export class MockTaskaStore {
                 { name: "created_at", type: "timestamp with time zone", sensitive: false },
               ],
             },
+            outboxTable(),
           ],
         },
         {
@@ -1479,7 +1603,300 @@ export class MockTaskaStore {
     return table;
   }
 
+  /**
+   * The problems summary (`GET /readonly/outbox/problematic-summary`), derived
+   * from the same rows the Outbox journal reads — so the two views of the
+   * Events section can never contradict each other, which is the whole reason
+   * the mock computes this rather than seeding a second, independent answer.
+   *
+   * Not in the vendored contract: this is the TAS-105 branch's endpoint, and
+   * mock mode is the only place it answers today
+   * (docs/ai/API-DIVERGENCE.md).
+   */
+  problematicOutboxSummary(): ProblematicOutboxSummary {
+    const nowMs = Date.now();
+    const events: ProblematicOutboxEvent[] = [];
+    const counts: ProblematicOutboxCounts[] = [];
+
+    for (const serviceKey of OUTBOX_SERVICE_SLOTS) {
+      const count: ProblematicOutboxCounts = {
+        serviceKey,
+        overdueNewCount: 0,
+        stuckProcessingCount: 0,
+        failedCount: 0,
+      };
+      for (const row of this.outboxRowsFor(serviceKey)) {
+        const problem = outboxProblem(row, nowMs);
+        if (!problem) continue;
+        if (problem === "FAILED") count.failedCount += 1;
+        if (problem === "PROCESSING") count.stuckProcessingCount += 1;
+        if (problem === "NEW") count.overdueNewCount += 1;
+        events.push({
+          id: String(row.id),
+          aggregateType: String(row.aggregate_type),
+          aggregateId: String(row.aggregate_id),
+          eventType: String(row.event_type),
+          payload: String(row.payload),
+          status: String(row.status),
+          createdAt: String(row.created_at),
+          publishedAt: (row.published_at as string | null) ?? null,
+          attempts: Number(row.attempts),
+          lastErrorMessage: (row.last_error_message as string | null) ?? null,
+          processingStartedAt: (row.processing_started_at as string | null) ?? null,
+          requestId: (row.request_id as string | null) ?? null,
+          serviceKey,
+          reason: OUTBOX_REASONS[problem],
+        });
+      }
+      // Every service, counted in full, whether or not any of its rows made the
+      // list: the counts are the answer to "where is it broken" and the list is
+      // only the head of it.
+      counts.push(count);
+    }
+
+    // Oldest first — the list exists to say when this started — and cut to the
+    // server's limit afterwards, so the counts above still cover what was cut.
+    events.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    return {
+      events: events.slice(0, OUTBOX_SUMMARY_LIMIT),
+      counts,
+      notAllShown: events.length > OUTBOX_SUMMARY_LIMIT,
+    };
+  }
+
+  private outboxRowsFor(service: string): AdminRow[] {
+    this.outboxEvents ??= this.seedOutboxEvents();
+    return this.outboxEvents[service] ?? [];
+  }
+
+  /**
+   * Three services' worth of outbox rows: mostly published traffic, plus the
+   * three shapes the Events section exists to show — a NEW row the scheduler
+   * never picked up, a PROCESSING row past the timeout, and a FAILED row with
+   * its attempts exhausted and the kind of error string a broker actually
+   * writes.
+   *
+   * Two of the recent rows are deliberately *not* problematic: a NEW and a
+   * PROCESSING row a couple of minutes old. Without them nothing here would
+   * prove the summary applies a threshold rather than counting states.
+   *
+   * The payloads carry the two readings the row card has to survive: JSON that
+   * parses (including one whose values arrive masked, which is what TAS-105's
+   * masking does *inside* the document), and the broken `JsonByteArrayInput{…}`
+   * string admin-service writes today, which does not parse and is therefore
+   * printed exactly as it came. The client never repairs it — the defect is the
+   * backend's and has to stay visible until TAS-105 removes it.
+   */
+  private seedOutboxEvents(): Record<string, AdminRow[]> {
+    const base = Date.now();
+    const at = (minutesAgo: number) => {
+      const moment = new Date(base - minutesAgo * 60_000);
+      moment.setUTCSeconds(0, 0);
+      // The wire's own spelling in this section: full ISO-8601, no milliseconds.
+      return moment.toISOString().replace(/\.\d{3}Z$/, "Z");
+    };
+    const rowsOf = (serviceKey: string, seeds: OutboxSeed[]): AdminRow[] => {
+      const slot = OUTBOX_SERVICE_SLOTS.indexOf(serviceKey);
+      return seeds.map((seed, index) => ({
+        id: outboxUuid("7e0", slot, index),
+        aggregate_type: seed.aggregateType,
+        aggregate_id: seed.aggregateId,
+        event_type: seed.eventType,
+        payload: seed.payload,
+        status: seed.status,
+        created_at: at(seed.minutesAgo),
+        published_at: seed.publishedMinutesAgo === undefined ? null : at(seed.publishedMinutesAgo),
+        attempts: seed.attempts,
+        last_error_message: seed.lastErrorMessage ?? null,
+        processing_started_at: seed.processingMinutesAgo === undefined ? null : at(seed.processingMinutesAgo),
+        request_id: outboxUuid("a11", slot, index),
+      }));
+    };
+
+    const users = this.users;
+    const projects = this.projects;
+    const issues = this.issues;
+
+    const published = (
+      count: number,
+      aggregateType: string,
+      eventTypes: string[],
+      aggregateIds: string[],
+      firstMinutesAgo: number,
+    ): OutboxSeed[] =>
+      Array.from({ length: count }, (_, index) => {
+        const minutesAgo = firstMinutesAgo - index * 37;
+        const aggregateId = aggregateIds[index % aggregateIds.length] ?? ANNA_ID;
+        return {
+          eventType: eventTypes[index % eventTypes.length],
+          aggregateType,
+          aggregateId,
+          status: "PUBLISHED",
+          minutesAgo,
+          attempts: 1,
+          processingMinutesAgo: minutesAgo,
+          publishedMinutesAgo: minutesAgo,
+          payload: JSON.stringify({ aggregateId, occurredAt: at(minutesAgo) }),
+        };
+      });
+
+    return {
+      auth: rowsOf("auth", [
+        ...published(
+          8,
+          "User",
+          ["user.registered", "user.password_changed", "session.revoked", "user.role_changed"],
+          users.map((user) => user.id),
+          2160,
+        ),
+        {
+          eventType: "user.registered",
+          aggregateType: "User",
+          aggregateId: users[2]?.id ?? SOFIA_ID,
+          status: "NEW",
+          minutesAgo: 600,
+          attempts: 0,
+          // Valid JSON whose values arrived masked. The card pretty-prints it by
+          // the same rule as any other JSON — a masked document is still a
+          // document, and giving it a special case would be the client deciding
+          // what the server already decided.
+          payload: '{"userId":"16ad2404-96e3-4c51-b00d-55c5d1451d3c","email":"n****a@mail.ru","login":"s****a"}',
+        },
+        {
+          eventType: "session.revoked",
+          aggregateType: "Session",
+          aggregateId: users[1]?.id ?? MARK_ID,
+          status: "PROCESSING",
+          minutesAgo: 45,
+          processingMinutesAgo: 44,
+          attempts: 2,
+          payload: JSON.stringify({ sessionId: outboxUuid("9c1", 0, 3), reason: "USER_LOGOUT" }),
+        },
+        {
+          eventType: "user.password_changed",
+          aggregateType: "User",
+          aggregateId: users[0]?.id ?? ANNA_ID,
+          status: "FAILED",
+          minutesAgo: 180,
+          processingMinutesAgo: 178,
+          attempts: 5,
+          lastErrorMessage:
+            "org.apache.kafka.common.errors.TimeoutException: Expiring 1 record(s) for taska.auth.events-0: 60000 ms has passed since batch creation",
+          payload: JSON.stringify({ userId: users[0]?.id ?? ANNA_ID, changedAt: at(180) }),
+        },
+      ]),
+      project: rowsOf("project", [
+        ...published(
+          6,
+          "Project",
+          ["project.created", "project.updated", "project.member_added"],
+          projects.map((project) => project.id),
+          1980,
+        ),
+        {
+          eventType: "project.member_added",
+          aggregateType: "Project",
+          aggregateId: projects[1]?.id ?? WEB_PROJECT_ID,
+          status: "NEW",
+          minutesAgo: 300,
+          attempts: 0,
+          payload: JSON.stringify({ projectId: projects[1]?.id ?? WEB_PROJECT_ID, userId: SOFIA_ID, role: "MEMBER" }),
+        },
+        {
+          eventType: "project.archived",
+          aggregateType: "Project",
+          aggregateId: projects[3]?.id ?? OPS_PROJECT_ID,
+          status: "FAILED",
+          minutesAgo: 1500,
+          processingMinutesAgo: 1498,
+          attempts: 5,
+          lastErrorMessage: "Connection refused: schema-registry.taska.svc.cluster.local/10.0.4.11:8081",
+          payload: JSON.stringify({ projectId: projects[3]?.id ?? OPS_PROJECT_ID, archivedBy: MARK_ID }),
+        },
+      ]),
+      issue: rowsOf("issue", [
+        ...published(
+          20,
+          "Issue",
+          ["issue.created", "issue.status_changed", "issue.assigned", "issue.commented"],
+          issues.map((issue) => issue.id),
+          2400,
+        ),
+        // Young enough to be nobody's problem: a scheduler that runs every
+        // minute has not missed these yet, and the summary must not count them.
+        {
+          eventType: "issue.commented",
+          aggregateType: "Issue",
+          aggregateId: issues[0]?.id ?? ANNA_ID,
+          status: "NEW",
+          minutesAgo: 2,
+          attempts: 0,
+          payload: JSON.stringify({ issueId: issues[0]?.id ?? "", commentId: outboxUuid("cc1", 2, 0) }),
+        },
+        {
+          eventType: "issue.status_changed",
+          aggregateType: "Issue",
+          aggregateId: issues[1]?.id ?? ANNA_ID,
+          status: "PROCESSING",
+          minutesAgo: 2,
+          processingMinutesAgo: 1,
+          attempts: 1,
+          payload: JSON.stringify({ issueId: issues[1]?.id ?? "", from: "TODO", to: "IN_PROGRESS" }),
+        },
+        {
+          eventType: "issue.created",
+          aggregateType: "Issue",
+          aggregateId: issues[2]?.id ?? ANNA_ID,
+          status: "NEW",
+          minutesAgo: 30,
+          attempts: 0,
+          payload: JSON.stringify({ issueId: issues[2]?.id ?? "", projectId: TASKA_PROJECT_ID }),
+        },
+        {
+          eventType: "issue.assigned",
+          aggregateType: "Issue",
+          aggregateId: issues[3]?.id ?? ANNA_ID,
+          status: "PROCESSING",
+          minutesAgo: 900,
+          processingMinutesAgo: 898,
+          attempts: 3,
+          payload: JSON.stringify({ issueId: issues[3]?.id ?? "", assigneeId: MARK_ID }),
+        },
+        {
+          eventType: "issue.status_changed",
+          aggregateType: "Issue",
+          aggregateId: issues[4]?.id ?? ANNA_ID,
+          status: "FAILED",
+          minutesAgo: 420,
+          processingMinutesAgo: 418,
+          attempts: 5,
+          lastErrorMessage:
+            "org.apache.kafka.common.errors.RecordTooLargeException: The message is 2097244 bytes when serialized which is larger than 1048576",
+          // The defect as the gateway serves it today: admin-service prints the
+          // jsonb column through a wrapper's toString, so what arrives is not
+          // JSON at all. It stays exactly as it came — see the card's rule.
+          payload: `JsonByteArrayInput{{"issueId":"${issues[4]?.id ?? ""}","from":"IN_PROGRESS","to":"DONE"}}`,
+        },
+        {
+          eventType: "issue.commented",
+          aggregateType: "Issue",
+          aggregateId: issues[5]?.id ?? ANNA_ID,
+          status: "FAILED",
+          minutesAgo: 120,
+          processingMinutesAgo: 118,
+          attempts: 5,
+          lastErrorMessage: "Topic taska.issue.events not present in metadata after 60000 ms",
+          payload: JSON.stringify({ issueId: issues[5]?.id ?? "", authorId: SOFIA_ID }),
+        },
+      ]),
+    };
+  }
+
   private adminRowsFor(service: string, table: string): AdminRow[] {
+    // One table, three services — and the only one in this seed that is not
+    // per-service, which is exactly what the Events section's selector is for.
+    if (table === OUTBOX_TABLE) return this.outboxRowsFor(service);
+
     if (service === "auth" && table === "users") {
       return this.users.map((user, index) => ({
         id: user.id,
@@ -1998,5 +2415,9 @@ export class MockTaskaApi implements TaskaApi {
 
   async getAdminRow(query: AdminRowQuery): Promise<AdminRow> {
     return wait(this.store.adminRow(query));
+  }
+
+  async getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
+    return wait(this.store.problematicOutboxSummary());
   }
 }

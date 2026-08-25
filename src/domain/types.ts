@@ -401,3 +401,64 @@ export interface AdminRowQuery {
   table: string;
   id: string;
 }
+
+/**
+ * One problematic transactional-outbox event, as
+ * `GET /readonly/outbox/problematic-summary` reports it (the Events section,
+ * DESIGN.md §5.8).
+ *
+ * This is a row of `outbox_events` with two fields added by the summary —
+ * `serviceKey`, because the endpoint answers for every service at once, and
+ * `reason`. Unlike the generic admin reads above, the shape *is* known at build
+ * time here: the endpoint declares it.
+ *
+ * `status` stays an open `string` rather than a union. It is raw table data,
+ * the contract types it as a bare string with no enum, and the three values a
+ * problematic row can carry today (`FAILED`, `PROCESSING`, `NEW`) are a fact
+ * about the backend's query, not a promise. The UI derives the category from it
+ * and prints anything else verbatim.
+ *
+ * `reason` is a human-readable English sentence the backend writes, not a code.
+ * Nothing may parse or switch on it — the category comes from `status` — and it
+ * is shown in full on the event card.
+ */
+export interface ProblematicOutboxEvent {
+  id: string;
+  aggregateType: string;
+  aggregateId: string;
+  eventType: string;
+  payload: string;
+  status: string;
+  createdAt: string;
+  publishedAt: string | null;
+  attempts: number;
+  lastErrorMessage: string | null;
+  processingStartedAt: string | null;
+  requestId: string | null;
+  serviceKey: string;
+  reason: string;
+}
+
+/**
+ * How many problematic events one service has, by category. The counts cover
+ * every outbox service and every problematic row, including the ones the
+ * summary's own list was cut short of — which is what makes the matrix the
+ * answer to "what is broken and where" rather than a caption for the list.
+ */
+export interface ProblematicOutboxCounts {
+  serviceKey: string;
+  overdueNewCount: number;
+  stuckProcessingCount: number;
+  failedCount: number;
+}
+
+/**
+ * The whole summary. `events` arrives oldest first and is capped by the
+ * server's own limit; `notAllShown` says the cap was reached, which is a
+ * statement about this response rather than an error.
+ */
+export interface ProblematicOutboxSummary {
+  events: ProblematicOutboxEvent[];
+  counts: ProblematicOutboxCounts[];
+  notAllShown: boolean;
+}

@@ -118,6 +118,52 @@ export function isAlignedType(type?: string) {
   ].some((needle) => normalized.includes(needle));
 }
 
+/**
+ * Whether the catalog calls this column JSON. Exact, not a substring test: the
+ * two spellings `information_schema` produces are `json` and `jsonb`, and this
+ * answer decides whether a value gets reformatted, which is a thing to do only
+ * where the server said the column really is a document.
+ */
+export function isJsonColumn(type?: string): boolean {
+  const normalized = type?.trim().toLowerCase();
+  return normalized === "json" || normalized === "jsonb";
+}
+
+/**
+ * A JSON column's value laid out to be read (DESIGN.md §5.8), or `null` when it
+ * is not JSON at all and must be printed exactly as it arrived.
+ *
+ * The `null` branch is the important one. `admin-service` currently serves this
+ * column through a wrapper's `toString`, so what comes over the wire starts
+ * `JsonByteArrayInput{…}` and does not parse. That is a backend defect, fixed
+ * by TAS-105, and the client must not tidy it away: a repair here would survive
+ * the fix silently and hide the day the format changed. §5.8 says so in as many
+ * words — "срезать java-префикс руками запрещено".
+ *
+ * A masked payload needs no special case and gets none: `MASK_PARTIAL` stars
+ * the values *inside* the document, so it is still JSON and is printed as JSON,
+ * stars and all. A `MASK_FULL` or `HIDE` column never reaches here — the caller
+ * has already withheld it.
+ */
+export function formatJsonValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  // Already a document: some services answer this column as an object rather
+  // than as a string, and re-stringifying it to parse it back would be a
+  // round trip that can only lose.
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  if (typeof value !== "string") return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    // A bare scalar parses (`"12"`, `"null"`, `"true"`) and pretty-printing it
+    // changes nothing but the quotes, which would make the cell disagree with
+    // the same value in the table. Only a document is laid out.
+    if (parsed === null || typeof parsed !== "object") return null;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return null;
+  }
+}
+
 /** The catalog's first table, used only to put a real address in the bar. */
 export function defaultSelection(catalog?: AdminCatalog) {
   const service = catalog?.services?.find((item) => (item.tables ?? []).length > 0);
