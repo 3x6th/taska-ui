@@ -33,8 +33,12 @@ test("opens on the summary, with the counts and the oldest events", async ({ pag
   );
 
   const matrix = page.getByRole("table", { name: "Problem counts by service" });
-  // Services come from the response's own counts, not from the catalog.
-  await expect(matrix.getByRole("rowheader")).toHaveText(["auth", "project", "issue"]);
+  // Services come from the response's own counts, not from the catalog — and in
+  // the matrix's own order, sorted by key. The mock answers in catalog order
+  // (auth, project, issue), so alphabetical here is the sort doing its job: the
+  // response order is unspecified, and rows that reshuffle between refetches
+  // would be worse than any fixed order (§5.8).
+  await expect(matrix.getByRole("rowheader")).toHaveText(["auth", "issue", "project"]);
   await expect(matrix.getByRole("columnheader")).toHaveText([
     "service",
     "Failed",
@@ -185,11 +189,13 @@ test("reaches an event's link from the keyboard, visibly", async ({ page }) => {
 
   await expect(openLink).toBeFocused();
   expect(await openLink.evaluate((node) => getComputedStyle(node).outlineWidth)).not.toBe("0px");
-  const cell = page
-    .getByRole("table", { name: "Problematic events, oldest first" })
-    .locator("tbody tr")
-    .first()
-    .locator("td")
-    .first();
-  expect(await cell.evaluate((node) => getComputedStyle(node).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+
+  // Compared against the row *below* rather than against transparency: the
+  // service column is frozen now, so its cells carry an opaque background at
+  // rest and "not transparent" would pass whether or not the row lit up. What
+  // has to be true is that the focused row differs from an unfocused one.
+  const firstCells = page.getByRole("table", { name: "Problematic events, oldest first" }).locator("tbody tr td:first-child");
+  const background = (index: number) =>
+    firstCells.nth(index).evaluate((node) => getComputedStyle(node).backgroundColor);
+  expect(await background(0)).not.toBe(await background(1));
 });

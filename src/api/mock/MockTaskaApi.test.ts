@@ -742,12 +742,19 @@ describe("MockTaskaApi", () => {
     });
 
     it("answers an unknown service and an unserved table the way the gateway does", async () => {
-      // Unknown service is a 404 there; a table it will not serve is a refusal,
-      // not an absence. Both reach the UI through `isMissingOrForbidden`, but
-      // the mock is the reference implementation and should not teach the wrong
-      // shape to whoever reads it next.
+      // An unknown service key is a rejected argument there, not a missing
+      // resource: the gateway resolves the key before it looks for anything and
+      // answers `400 INVALID_ARGUMENT` with this exact sentence (measured
+      // 2026-08-25). A table it will not serve is a refusal rather than an
+      // absence. The mock is the reference implementation and should not teach
+      // the wrong shape to whoever reads it next.
+      //
+      // The wording is load-bearing beyond this test: the Events section tells
+      // "the gateway has not deployed the summary yet" from a real failure by
+      // this sentence and this code together.
       await expect(api.listAdminRows({ service: "no_such_service", table: "users" })).rejects.toMatchObject({
-        code: "NOT_FOUND",
+        code: "INVALID_ARGUMENT",
+        message: "Unknown service: no_such_service",
       });
       await expect(api.listAdminRows({ service: "auth", table: "no_such_table" })).rejects.toMatchObject({
         code: "PERMISSION_DENIED",

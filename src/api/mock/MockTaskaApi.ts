@@ -294,9 +294,6 @@ const OUTBOX_REASONS = {
   NEW: "Event stuck in NEW state (not picked up for processing)",
 } as const;
 
-/** Which service occupies which id slot, so no two outbox rows share a key. */
-const OUTBOX_SERVICE_SLOTS = ["auth", "project", "issue"];
-
 /** A stable, uuid-shaped id: a row address has to survive a reload and a copied link. */
 const outboxUuid = (kind: string, slot: number, index: number) =>
   `${kind}${slot}${String(index + 1).padStart(4, "0")}-0000-4000-8000-${slot}${String(index + 1).padStart(11, "0")}`;
@@ -1590,7 +1587,14 @@ export class MockTaskaStore {
   private adminTable(serviceName: string, tableName: string): AdminTable {
     const service = this.adminCatalog().services.find((item) => item.name === serviceName);
     if (!service) {
-      throw new MockApiError("NOT_FOUND", `Unknown service ${serviceName}`);
+      // Not NOT_FOUND, and the wording is not ours. The gateway resolves the
+      // service key before it looks for anything, and a key it does not know is
+      // a rejected *argument* rather than a missing resource: measured
+      // 2026-08-25, `400 INVALID_ARGUMENT` with exactly this sentence — which is
+      // also what the Events section reads to tell "TAS-105 has not deployed
+      // yet" from a real failure (`OUTBOX_SUMMARY_UNSERVED_MESSAGE`). The mock
+      // is the reference implementation, so it answers what the gateway answers.
+      throw new MockApiError("INVALID_ARGUMENT", `Unknown service: ${serviceName}`);
     }
     const table = service.tables.find((item) => item.name === tableName);
     if (!table) {
@@ -1619,7 +1623,7 @@ export class MockTaskaStore {
     const events: ProblematicOutboxEvent[] = [];
     const counts: ProblematicOutboxCounts[] = [];
 
-    for (const serviceKey of OUTBOX_SERVICE_SLOTS) {
+    for (const serviceKey of this.outboxServiceKeys()) {
       const count: ProblematicOutboxCounts = {
         serviceKey,
         overdueNewCount: 0,
@@ -1671,6 +1675,21 @@ export class MockTaskaStore {
   }
 
   /**
+   * Which services have an outbox — read back out of the catalog rather than
+   * listed a second time. The three `outboxTable()` calls up there are the
+   * statement; a parallel array beside them would be a second thing to keep
+   * true, and the day they disagreed the summary would count a service whose
+   * rows nothing seeds (or miss one it does).
+   *
+   * Its order is also the id slot, so no two outbox rows can share a key.
+   */
+  private outboxServiceKeys(): string[] {
+    return this.adminCatalog()
+      .services.filter((service) => service.tables.some((table) => table.name === OUTBOX_TABLE))
+      .map((service) => service.name);
+  }
+
+  /**
    * Three services' worth of outbox rows: mostly published traffic, plus the
    * three shapes the Events section exists to show — a NEW row the scheduler
    * never picked up, a PROCESSING row past the timeout, and a FAILED row with
@@ -1696,8 +1715,9 @@ export class MockTaskaStore {
       // The wire's own spelling in this section: full ISO-8601, no milliseconds.
       return moment.toISOString().replace(/\.\d{3}Z$/, "Z");
     };
+    const slots = this.outboxServiceKeys();
     const rowsOf = (serviceKey: string, seeds: OutboxSeed[]): AdminRow[] => {
-      const slot = OUTBOX_SERVICE_SLOTS.indexOf(serviceKey);
+      const slot = slots.indexOf(serviceKey);
       return seeds.map((seed, index) => ({
         id: outboxUuid("7e0", slot, index),
         aggregate_type: seed.aggregateType,

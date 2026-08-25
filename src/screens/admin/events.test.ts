@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AdminCatalog } from "../../domain/types";
 import {
   availableOutboxFilters,
+  eventAge,
   isSummaryNotDeployed,
   outboxCategory,
   outboxFilterChipLabel,
@@ -27,6 +28,45 @@ describe("outbox event categories", () => {
 
   it("reads the value the way a database would spell it", () => {
     expect(outboxCategory(" failed ")).toBe("Failed");
+  });
+});
+
+/**
+ * The age column is a **duration**, not the product's calendar voice (§5.8):
+ * the column is set in monospace with tabular figures so values compare down
+ * it, and "Yesterday" neither compares with "15h ago" nor distinguishes 13
+ * hours from 35 — on the top row, which is the one the list is sorted
+ * oldest-first to put there.
+ */
+describe("event age", () => {
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
+  it("counts minutes up to the hour", () => {
+    expect(eventAge(minutesAgo(0))).toBe("0m ago");
+    expect(eventAge(minutesAgo(1))).toBe("1m ago");
+    expect(eventAge(minutesAgo(59))).toBe("59m ago");
+  });
+
+  it("turns over to hours at exactly an hour", () => {
+    expect(eventAge(minutesAgo(60))).toBe("1h ago");
+    expect(eventAge(minutesAgo(90))).toBe("1h ago");
+  });
+
+  it("stays in hours right up to two days, then counts days", () => {
+    // The boundary the ruling names: 47 hours reads as hours because "1d ago"
+    // would round away half of the window this list exists to show, and 48 is
+    // where days start saying more than a three-digit hour count.
+    expect(eventAge(minutesAgo(47 * 60))).toBe("47h ago");
+    expect(eventAge(minutesAgo(47 * 60 + 59))).toBe("47h ago");
+    expect(eventAge(minutesAgo(48 * 60))).toBe("2d ago");
+    expect(eventAge(minutesAgo(71 * 60))).toBe("2d ago");
+    expect(eventAge(minutesAgo(72 * 60))).toBe("3d ago");
+  });
+
+  it("floors a moment in the future instead of counting backwards", () => {
+    // Clock skew between a service and the reader is not an error worth
+    // rendering as one, and "-3m ago" is nonsense in any theme.
+    expect(eventAge(minutesAgo(-3))).toBe("0m ago");
   });
 });
 

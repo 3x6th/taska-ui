@@ -223,6 +223,37 @@ everything else here is live.
 
 ---
 
+### `jsonb` values arrive as `JsonByteArrayInput{…}`, not as JSON
+
+- **Endpoints:** `GET /readonly/{service}/{table}` and
+  `GET /readonly/{service}/{table}/{id}` — every `jsonb` column,
+  `outbox_events.payload` most visibly.
+- **Observed:** admin-service's `ListTableRowsMapper.toGrpcValue` has no
+  branch for `io.r2dbc.postgresql.codec.Json`, so a jsonb value falls through
+  to `value.toString()` and reaches the client as `JsonByteArrayInput{{…}}`.
+  Verified twice on 2026-08-25: in the develop source (the fall-through
+  branch) and live (a probed `issue.outbox_events` payload begins
+  `JsonByteArrayInput{{"issue`). The fix — an `instanceof Json →
+  asString()` branch — is in
+  [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
+  (TAS-105), In Review.
+- **The UI instead:** prints it verbatim, never repaired. The card's jsonb
+  rule (`src/screens/admin/columns.ts`) is parse-as-JSON → pretty-print,
+  anything else → verbatim, so the broken format stays *visible* by design —
+  TAS-167's own instruction is to escalate, not to strip the java prefix
+  client-side. The mock deliberately seeds one such payload
+  (`src/api/mock/MockTaskaApi.ts`), with a test holding the case reachable,
+  so the verbatim branch is exercised until the backend fix lands.
+- **Switch-off:** nothing to switch — once the backend fix deploys, real
+  JSON flows into the same rule's pretty-print branch on its own.
+- **Removal:** TAS-105 merging and deploying, same as the summary entry
+  below — close the two together. When closing this one, also drop the
+  mock's malformed `JsonByteArrayInput` seed and the assertion that pins it
+  (`MockTaskaApi.test.ts`): after the fix they model a state the gateway can
+  no longer produce.
+
+---
+
 ## The contract is silent or lacks what the UI needs
 
 Same rule as above: "Closed by" is settled, the rest is live.
@@ -1669,9 +1700,10 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **Switch-off:** nothing to switch — the compensation is the honest note
   plus the mock, and `RestTaskaApi` already speaks the final shape.
 - **Removal:** TAS-105 merging and deploying closes it. Refresh
-  `docs/contract/openapi.yml` then, and close this entry with it. If review
-  changes the PR's contract before merge, the client follows the merged
-  version, not this entry.
+  `docs/contract/openapi.yml` then, and close this entry with it — together
+  with the `jsonb` serialisation entry above, whose mock seed and assertion
+  come out in the same pass. If review changes the PR's contract before
+  merge, the client follows the merged version, not this entry.
 
 ---
 

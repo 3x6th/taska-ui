@@ -3,9 +3,8 @@ import { ChevronRight } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { taskaApi } from "../../api/client";
 import type { ProblematicOutboxEvent } from "../../domain/types";
-import { relativeTime } from "../../lib/format";
 import { AdminError } from "./AdminError";
-import { isSummaryNotDeployed, outboxCategory } from "./events";
+import { eventAge, isSummaryNotDeployed, outboxCategory } from "./events";
 import { BACK_TO_PROBLEMS } from "./eventsUrlState";
 import { jiraUrl } from "./sections";
 
@@ -58,6 +57,13 @@ export function AdminEventsProblems() {
   }
 
   const { counts, events, notAllShown } = summaryQuery.data;
+  // Sorted by service key, here rather than in the API layer: the response's
+  // order is unspecified — the backend collects the counts per service
+  // concurrently — and a matrix that reshuffled its rows between two refetches
+  // would be worse than any fixed order. A presentation sort, not a data one,
+  // and deliberately *not* applied to the events list, whose order is the
+  // endpoint's own semantics: it says when this started (§5.8).
+  const sortedCounts = [...counts].sort((left, right) => left.serviceKey.localeCompare(right.serviceKey));
 
   return (
     <div className="admin-plane admin-events-plane">
@@ -82,7 +88,7 @@ export function AdminEventsProblems() {
                 </tr>
               </thead>
               <tbody>
-                {counts.map((count) => (
+                {sortedCounts.map((count) => (
                   <tr key={count.serviceKey}>
                     <th className="admin-cell-mono" scope="row">
                       {count.serviceKey}
@@ -118,7 +124,14 @@ export function AdminEventsProblems() {
             <table aria-label="Problematic events, oldest first" className="admin-table">
               <thead>
                 <tr>
-                  <th scope="col">service</th>
+                  {/* Frozen against the horizontal scroll, exactly as the Data
+                      table freezes its primary key (§5.8): this list is wider
+                      than the plane, and "where" is the answer this view
+                      exists to give — a row scrolled sideways past its service
+                      name has stopped answering it. */}
+                  <th className="admin-cell-frozen" scope="col">
+                    service
+                  </th>
                   <th scope="col">category</th>
                   <th scope="col">age</th>
                   <th scope="col">event type</th>
@@ -202,7 +215,7 @@ function EventRow({ event }: { event: ProblematicOutboxEvent }) {
         void navigate(href);
       }}
     >
-      <td className="admin-cell-mono">{event.serviceKey}</td>
+      <td className="admin-cell-mono admin-cell-frozen">{event.serviceKey}</td>
       {/* Derived from `status`, never from `reason` — and a status this build
           has never seen leaves the category blank rather than guessing. The raw
           value is two columns along, so nothing is lost by not naming it.
@@ -228,11 +241,12 @@ function EventRow({ event }: { event: ProblematicOutboxEvent }) {
         )}
       </td>
       <td className="admin-cell-mono">
-        {/* The relative age is what is read, but the exact instant is what gets
-            pasted into a query — so it stays in `title` for the pointer and in
-            the cell's accessible name for a screen reader (§5.8). */}
+        {/* A duration, not a calendar word (§5.8, `eventAge`). The age is what
+            is read down the column, but the exact instant is what gets pasted
+            into a query — so it stays in `title` for the pointer and in the
+            cell's accessible name for a screen reader. */}
         <time dateTime={event.createdAt} title={event.createdAt}>
-          <Spoken spoken={`${relativeTime(event.createdAt)}, ${event.createdAt}`} visible={relativeTime(event.createdAt)} />
+          <Spoken spoken={`${eventAge(event.createdAt)}, ${event.createdAt}`} visible={eventAge(event.createdAt)} />
         </time>
       </td>
       <td>{event.eventType}</td>

@@ -1871,7 +1871,11 @@ h1 {
   white-space: nowrap;
 }
 
-.admin-table tbody tr:last-child td {
+/* `th` as well as `td`: the counts matrix puts a row header in the first cell
+   of every row, and without this the last one kept a hairline hanging off the
+   bottom-left corner of an otherwise closed table. */
+.admin-table tbody tr:last-child td,
+.admin-table tbody tr:last-child th {
   border-bottom: 0;
 }
 
@@ -2394,6 +2398,23 @@ h1 {
   gap: 6px;
 }
 
+/* These two headings borrow `.admin-table-name` for its size and weight, and
+   that class sits in the shared monospace rule at the top of this file — which
+   is right for a table's *name* (`auth.users` is an identifier) and wrong for
+   English prose. "Counts by service" set in mono is atmosphere, which
+   docs/ai/REFERENCE-LOCK.md rules out by name.
+   `inherit`, not a font token: this file tokenises only `--font-mono`, and the
+   UI stack of §2.3 is declared on `body` — so inheriting is how the rest of
+   this section reaches it (`.admin-sort` and `.admin-key` both do). A
+   `var(--font-ui)` here would be an invalid value, the declaration would be
+   dropped, and the heading would stay mono while looking fixed. */
+.admin-events-block > h2 {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
 /* The one block allowed to shrink, because it is the one that scrolls. */
 .admin-events-list {
   flex: 0 1 auto;
@@ -2436,9 +2457,13 @@ h1 {
   font-size: 11.5px;
 }
 
+/* --fg-2, not --fg-3: this sentence is the whole answer when there is nothing
+   wrong, and --fg-3 measures 2.91:1 on --bg in the light theme against §7's 3:1
+   floor — the same argument that already put `.admin-note` at --fg-2 on this
+   plane (§5.8). */
 .admin-events-empty {
   margin: 0;
-  color: var(--fg-3);
+  color: var(--fg-2);
   font-size: 11.5px;
 }
 
@@ -2448,7 +2473,10 @@ h1 {
    `td` is ignored under `table-layout: auto`. */
 .admin-events-error > span {
   display: block;
-  max-width: 320px;
+  /* 220, not 320: with the service column frozen and nine columns before it,
+     320 pushed the ellipsis and the row's chevron past the right edge of the
+     plane at 1440 — the width this section is actually read at. */
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
 }

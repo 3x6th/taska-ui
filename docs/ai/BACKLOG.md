@@ -21,6 +21,24 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **The Events plane head stacks into three chrome rows at ≤1280**
+  (`art-director`, 2026-08-25, TAS-167 review): two identically styled §4.2
+  segmented controls (view, then service) sit flush-left one above the other,
+  told apart only by order, and a few applied filters make the chip band
+  louder than the one-row table under it — §1 wants pale chrome over
+  contrasty content, and here it inverts. The cheapest differentiator is
+  weight, not another label. A §5.8 spec-block question, not a patch.
+
+- **The journal's first screen shows no diagnostic column**
+  (`art-director`, 2026-08-25): the `payload` cell runs ~670px, pushing
+  `status`/`attempts`/`last_error_message` past the plane's right edge, so
+  the reader scrolls to learn whether anything failed. Inherited Data
+  rendering, first conspicuous here; the in-repo recipe is the capped span
+  plus full value in `title` already used for the summary's error column.
+  Belongs to a Data-table width-policy pass (jsonb cells capped), which
+  changes Data's observable behaviour and was out of TAS-167's scope by its
+  own constraint.
+
 - **`payload` is sortable in the outbox journal while unfilterable by
   design** (`release-reviewer`, 2026-08-25, TAS-167 review): the sortable set
   falls back to every column because the gateway states none

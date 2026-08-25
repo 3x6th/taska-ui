@@ -166,9 +166,12 @@ const {
    * list the server cut short.
    */
   const summary = {
+    // Deliberately not in alphabetical order: the gateway collects these per
+    // service concurrently and the response order is unspecified, so the matrix
+    // has to impose one of its own or its rows would shuffle between refetches.
     counts: [
-      { serviceKey: "auth", overdueNewCount: 0, stuckProcessingCount: 1, failedCount: 2 },
       { serviceKey: "issue", overdueNewCount: 0, stuckProcessingCount: 0, failedCount: 0 },
+      { serviceKey: "auth", overdueNewCount: 0, stuckProcessingCount: 1, failedCount: 2 },
     ],
     events: [
       {
@@ -1465,6 +1468,17 @@ describe("/admin/events problems", () => {
     // Failed is already the message (§1).
     expect(zero.className).toContain("is-zero");
     expect(counted.className).not.toContain("is-zero");
+  });
+
+  // The response arrives with `issue` before `auth`. Nothing in the contract
+  // fixes that order — the backend counts each service concurrently — so the
+  // matrix sorts by service key itself. A presentation sort, and pointedly not
+  // one the events list gets: there the order *is* the endpoint's semantics.
+  it("puts the matrix rows in a fixed order the response does not promise", async () => {
+    renderAdmin("/admin/events");
+
+    const matrix = await screen.findByRole("table", { name: "Problem counts by service" });
+    expect(within(matrix).getAllByRole("rowheader").map((cell) => cell.textContent)).toEqual(["auth", "issue"]);
   });
 
   it("says the list was cut short, without calling it an error", async () => {

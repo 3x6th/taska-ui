@@ -68,6 +68,34 @@ export function isSummaryNotDeployed(error: unknown): boolean {
   return code === "INVALID_ARGUMENT" && message === OUTBOX_SUMMARY_UNSERVED_MESSAGE;
 }
 
+/**
+ * How long ago this event was created, as a **duration** (DESIGN.md §5.8):
+ * minutes up to an hour, hours up to two days, days beyond that. `25h ago`,
+ * `3d ago`.
+ *
+ * Not `relativeTime` from `src/lib/format.ts`, which is the product's calendar
+ * voice and says "Yesterday". That voice is right in comments, notifications
+ * and card meta and wrong here for two reasons: this column is set in
+ * monospace with tabular figures precisely so values can be compared down it,
+ * and "Yesterday" does not compare with "15h ago"; and it covers twelve to
+ * thirty-six hours in one word, on the top row — the row the list is sorted
+ * oldest-first to put there. `relativeTime` and its other call sites are
+ * deliberately untouched.
+ *
+ * The boundaries are the ones the tests pin: 59 minutes is minutes, 60 is
+ * hours, 47 hours is hours, 48 is days. A moment in the future — a clock skew
+ * between the service and the reader — floors at `0m ago` rather than counting
+ * backwards.
+ */
+export function eventAge(iso: string): string {
+  const elapsed = Date.now() - new Date(iso).getTime();
+  const minutes = Math.max(0, Math.floor(elapsed / 60_000));
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 /** How the value of one named filter is typed in. */
 export type OutboxFilterControl = "text" | "select" | "datetime" | "integer";
 
