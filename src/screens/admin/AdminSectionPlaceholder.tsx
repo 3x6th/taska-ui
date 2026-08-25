@@ -37,7 +37,12 @@ export function AdminSectionPlaceholder({ section }: { section: AdminSection }) 
   );
 }
 
-/** «TAS-107 and TAS-108», each key a link into Jira. */
+/**
+ * «TAS-160», or «TAS-160 and TAS-161» for a section that waits on more than
+ * one, each key a link into Jira. Only Audit has any today — Events left this
+ * list with TAS-167 and Users with TAS-186 — and the multi-key form stays
+ * because the *next* empty section is as likely to need it as not.
+ */
 function storyList(stories: string[]) {
   return stories.map((key, index) => (
     <span key={key}>

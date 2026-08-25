@@ -22,6 +22,7 @@ import type {
   ProjectMember,
   ProjectMembership,
   User,
+  UserStatusChange,
   Workflow,
 } from "../domain/types";
 
@@ -73,6 +74,24 @@ export const SEARCH_QUERY_MIN_LENGTH = 3;
 
 /** The gateway's own wording for a query below that minimum, reproduced verbatim. */
 export const SEARCH_QUERY_TOO_SHORT_MESSAGE = `Search query must be at least ${SEARCH_QUERY_MIN_LENGTH} characters`;
+
+/**
+ * The longest `reason` the admin user writes accept — `maxLength: 550` in the
+ * contract branch that adds them, `@Size(max = 550)` in the service.
+ *
+ * Exported so that the field's own `maxLength`, the mock's refusal and the
+ * remaining-characters hint all read one number: a form that let 600 through
+ * would meet a `400` at the boundary and nowhere else.
+ */
+export const BLOCK_REASON_MAX_LENGTH = 550;
+
+/**
+ * What every implementation says when the reason is blank. The server answers
+ * `400` for it (`@NotBlank`), so mock and rest refuse it identically and
+ * before the request — the caller cannot tell which side stopped it, and
+ * nothing has to special-case the guard.
+ */
+export const BLOCK_REASON_REQUIRED_MESSAGE = "A reason is required";
 
 /**
  * Every parameter `GET /issues/search` takes, all AND-combined by the server.
@@ -325,6 +344,52 @@ export interface TaskaApi {
    * (`OUTBOX_SUMMARY_UNSERVED_MESSAGE` below, docs/ai/API-DIVERGENCE.md).
    */
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary>;
+
+  /**
+   * `POST /admin/users/{userId}/block` — the Users section's one write
+   * (DESIGN.md §5.8). `GLOBAL_ADMIN` only; the server is the permission
+   * control, and this section hiding a button is not.
+   *
+   * The `reason` is required by the server (1–550 characters) and must never
+   * reach the wire blank: a whitespace-only reason is a `400` at the boundary,
+   * which is the worst place for the reader to find out. Every implementation
+   * refuses it locally for that reason, exactly as `searchIssues` refuses a
+   * query below the runtime minimum.
+   *
+   * What the server refuses, and what the caller must therefore not assume:
+   *
+   * - a status the transition does not allow — block is legal from `ACTIVE`
+   *   and from `INVITED` and from nothing else. `DomainStatus.ABORTED` on the
+   *   backend, which `RestErrorMapper.mapGrpcCodeToHttpStatus` turns into
+   *   **409** with `"ABORTED"` in the body's `code`;
+   * - blocking the **last active `GLOBAL_ADMIN`**, which is a count only the
+   *   server can take. That is why nothing here is optimistic: the client
+   *   cannot predict the answer, so it waits for one (DESIGN.md §5.8). This one
+   *   is `DomainStatus.FAILED_PRECONDITION`, and the same mapper turns *that*
+   *   into **400** with `"FAILED_PRECONDITION"` in `code`.
+   *
+   * So the two refusals do **not** share a status, and the more important of
+   * them is not a 409 at all. `isConflict` (src/api/errors.ts) is what reads
+   * both, from either implementation, and it has to keep reading the `code` —
+   * that is the only half carrying the last-admin refusal on the wire.
+   *
+   * The endpoint is not on the deployed gateway yet — it exists only in the
+   * backend's TAS-107 branch — so against `rest` and `hybrid` it answers the
+   * undeployed-route signature below (docs/ai/API-DIVERGENCE.md).
+   */
+  blockUser(userId: string, reason: string): Promise<UserStatusChange>;
+
+  /**
+   * `POST /admin/users/{userId}/unblock`, with the same body, the same role
+   * gate and the same refusals as `blockUser`, except for the transition it
+   * allows: **only** `BLOCKED` → `ACTIVE`.
+   *
+   * The invite state is not restored by it. An `INVITED` account that was
+   * blocked comes back as `ACTIVE`, not as `INVITED` — that is the backend's
+   * own semantics, and the UI says so in the confirmation rather than working
+   * around it.
+   */
+  unblockUser(userId: string, reason: string): Promise<UserStatusChange>;
 }
 
 /**
@@ -345,3 +410,24 @@ export interface TaskaApi {
  * endpoint will answer 200.
  */
 export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";
+
+/**
+ * What the *deployed* gateway says when asked for a route it does not have —
+ * measured 2026-08-25 with a GLOBAL_ADMIN token against
+ * `POST /api/v1/admin/users/not-a-uuid/block`:
+ * `404 {"code":"NOT_FOUND","message":"No static resource
+ * api/v1/admin/users/not-a-uuid/block for request '…'"}`.
+ *
+ * That prefix is Spring's static-resource fallback, which is what an
+ * unmapped path falls through to, and it is what tells "TAS-107 has not
+ * deployed yet" apart from a deployed route's own
+ * `404 "User not found"`. Matched as a **substring** paired with the 404 —
+ * never by equality — because the tail carries the request path, so an equality
+ * check would never fire.
+ *
+ * Pinned here for the same reason `OUTBOX_SUMMARY_UNSERVED_MESSAGE` is: a
+ * gateway string the UI branches on is a measurement, and it belongs where the
+ * measurement can be read rather than inline in a component. It stops matching
+ * the day the endpoint deploys, because the route will answer for itself.
+ */
+export const UNDEPLOYED_ROUTE_MESSAGE = "No static resource";

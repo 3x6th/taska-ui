@@ -564,19 +564,24 @@ describe("/admin sections under construction", () => {
     window.localStorage.clear();
   });
 
-  it("names both stories for Users", async () => {
-    renderAdmin("/admin/users");
-
-    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Users/ })).toBeVisible();
-    expect(screen.getByRole("link", { name: "TAS-107" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "TAS-108" })).toBeVisible();
-  });
-
   it("stands in for Audit", async () => {
     renderAdmin("/admin/audit");
 
     expect(await screen.findByRole("heading", { name: "Audit — under construction" })).toBeVisible();
     expect(screen.getByRole("link", { name: "TAS-160" })).toBeVisible();
+  });
+
+  // Users left this list with TAS-186, the same way Events left it with
+  // TAS-167: the placeholder has to be *gone* rather than merely unreachable,
+  // because `sections.ts` states no stories for it and the route table builds
+  // the placeholder routes from exactly that field.
+  it("no longer stands in for Users", async () => {
+    renderAdmin("/admin/users");
+
+    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Users/ })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /under construction/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "TAS-107" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("columnheader", { name: "status" })).toBeVisible();
   });
 
   // Events left this list with TAS-167, and the placeholder has to be gone

@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { AdminRow, AdminRows, AdminSortOrder, AdminTable } from "../../domain/types";
 import { useCopied } from "../../hooks/useCopied";
+import { AdminPager } from "./AdminPager";
 import { formatCell, isAlignedType, isWithheld } from "./columns";
 
 interface AdminRowsTableProps {
@@ -215,37 +216,9 @@ export function AdminRowsTable({
         </tbody>
       </table>
 
-      {/* Always, even on a single page (§5.8): "Page 1 of 1" answers "am I
-          seeing all of it?", and a footer that comes and goes changes the
-          height of the working area every time a filter narrows the result.
-          Inside the scroll container and stuck to its bottom edge, so paging
-          does not require scrolling to the end of the rows first. */}
-      <div className="admin-pager">
-        <button
-          className="secondary-button"
-          disabled={!rows.pagination.hasPrev}
-          onClick={() => onPage(Math.max(1, rows.pagination.currentPage - 1))}
-          type="button"
-        >
-          Previous
-        </button>
-        {/* `Math.max(1, …)`: the gateway answers `totalPages: 0` for an empty
-            table, and "Page 1 of 0" reads as a rendering fault rather than as
-            an answer to "am I seeing all of it?", which is what §5.8 keeps this
-            footer for. An empty table is one page of nothing — the row count
-            beside the table name already says which. */}
-        <span aria-live="polite">
-          Page {rows.pagination.currentPage} of {Math.max(1, rows.pagination.totalPages)}
-        </span>
-        <button
-          className="secondary-button"
-          disabled={!rows.pagination.hasNext}
-          onClick={() => onPage(rows.pagination.currentPage + 1)}
-          type="button"
-        >
-          Next
-        </button>
-      </div>
+      {/* The section's shared footer, in its own component since TAS-186 so
+          the Users table can carry the same one (§5.8). */}
+      <AdminPager onPage={onPage} pagination={rows.pagination} />
     </div>
   );
 }

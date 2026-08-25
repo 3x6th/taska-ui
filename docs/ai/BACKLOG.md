@@ -493,11 +493,15 @@ time.
 - **`.compact-button` is radius 8 where §2.5 gives buttons 9.** Repo-wide and
   shared with the Links section's button, so the Labels "Add" matches its
   sibling; fixing one without the other would be worse.
-- **No modal in the product handles `Esc`.** DESIGN.md §4.11 specifies `Esc`
-  as cancel for every modal, and `src/components/Modal.tsx` implements none —
-  closing is by the backdrop or the Close button only. Pre-existing and not
-  TAS-169's doing; noticed by `frontend-builder` while driving the new
-  manage-labels dialog, which is simply the newest modal to inherit the gap.
+- **`src/components/Modal.tsx` still handles neither `Esc` nor
+  `Cmd/Ctrl+Enter`.** DESIGN.md §4.11 specifies both for every modal, and the
+  shared component implements neither — closing is by the backdrop or the Close
+  button. Pre-existing and not TAS-169's doing; noticed by `frontend-builder`
+  while driving the new manage-labels dialog, which was simply the newest modal
+  to inherit the gap. **Half-answered by TAS-186**, whose confirmation dialog
+  binds both itself rather than changing the shared component under a story
+  that is not about the board's two modals — so there is now a working
+  implementation to lift into `Modal`, and two callers still without it.
   Belongs to no story yet.
 - **The board's transition mutation options are defined inline, so the
   rollback key cannot be unit-tested.** TAS-169 fixed a real key-drift bug
@@ -672,6 +676,132 @@ the next session in this image exactly as it bit this one.
   now that the shell around it is `dvh`. On iOS the cap can exceed 34% of the
   shell's real height while the toolbars show. Cosmetic, and out of scope of
   the change that made it visible.
+
+### Left over from TAS-186 (2026-08-25)
+
+- ~~**`UserStatusResponseDto.updatedAt` arrives as the 1970 epoch.**~~ Struck:
+  it does not. The claim came from PR #134's *Известные проблемы*, which is
+  stale — backend commit `62c4c675` (2026-08-23) fixed it, and at branch head
+  `55203985` `AdminUserMapper` sets the field in both mappers
+  (`api-contract-guard`, TAS-186 review). Nothing was owed and nothing is. The
+  frontend still does not draw the field, for the reason that always mattered:
+  the time of a write is not the `updated_at` of the row it changed.
+- **Two status pills now exist for one enum.** The profile menu's
+  `.user-status` (§4.16) colours `ACTIVE` green and `INVITED` amber from four
+  literal hexes that are in no §2 palette; the admin Users pill keeps colour
+  for `BLOCKED` alone, per §1. The admin one is the reading DESIGN.md supports
+  and the profile one predates it, so this is not a defect introduced by
+  TAS-186 — but one enum wearing two visual languages in one product is worth
+  one pass, together with getting those four hexes out of `styles.css`.
+- **`Modal`'s `footer` prop has no caller and `.modal-footer` has no §4.11
+  fill.** §4.11 puts a modal's buttons in a footer on `--surface-2` with a top
+  border; every modal in the product instead ends its form with
+  `.modal-actions`, and TAS-186's dialog follows them rather than being the one
+  modal that looks different. Either implement the footer everywhere or write
+  the actual pattern into §4.11 — the current state is a spec no caller obeys.
+- **Answered during the TAS-186 review, kept because the answer is worth
+  keeping:** the admin user writes do **not** share one status.
+  `Cannot block/unblock user with current status: X` is `ABORTED` → 409, and
+  `Cannot block the last active global admin` is `FAILED_PRECONDITION` → **400**
+  (`RestErrorMapper.mapGrpcCodeToHttpStatus`, `GatewayErrorHandler`,
+  `DomainStatus` on `feature/TAS-107`, read by `release-reviewer`). The body
+  carries the gRPC code's own name, so `isConflict` reads both codes and the
+  status, and the code arms are load-bearing rather than a mock accommodation.
+  What is left is one probe on the day TAS-107 deploys, to confirm the table
+  against the running gateway rather than against the branch's source.
+- **`role="status"` on the Users section's announcement is never cleared.**
+  After a change is announced, the sentence stays in the accessibility tree for
+  as long as the section is mounted — harmless to a screen reader, which
+  announces the *change*, but it means a reader browsing the page later meets a
+  stale statement about an account. The fix is a timer like the copy
+  confirmation's, or clearing it when the list catches up; neither is obviously
+  right, which is why it is here rather than in the change.
+- **The 550-character ceiling is enforced in the mock and not in REST.** It is
+  the one place the three modes are not interchangeable, and it is deliberate:
+  the field carries `maxLength`, so the UI cannot produce an over-long reason,
+  and a second client-side length check would be a weaker copy of a rule the
+  server states. The mock has it because the mock is the reference
+  implementation and a hand-made call has to hit the same wall. Recorded so the
+  asymmetry reads as a decision rather than an oversight.
+- **The section holds one status override at a time.** A second write started
+  while a failed refetch is still holding the first drops the first: the state
+  is a single slot keyed by the last write. Bounded — the next successful list
+  read makes both moot — and it degrades to ordinary staleness rather than to a
+  contradiction, since what is dropped is a *correction* to a stale row, not a
+  claim of its own. A map keyed by user id would close it; not worth the second
+  data structure until somebody is blocking accounts two at a time through a
+  broken connection. (`release-reviewer`)
+- **The mock writes neither the audit row nor the outbox row a block does.**
+  The backend writes an `admin.audit_log` row and an `auth.outbox_events` row
+  (`USER_BLOCKED` / `USER_UNBLOCKED`) in the same transaction as the status
+  change; `MockTaskaStore.changeUserStatus` writes only the status. So after a
+  write in mock mode the Events journal and the future Audit section show
+  nothing, and against the gateway they will show two rows — the one place this
+  feature's mock is thinner than the server rather than merely different. It
+  costs nothing today because neither section is read after a write, and it will
+  cost something the moment Audit exists. (`api-contract-guard`)
+- **`TAS-108` is no longer recorded anywhere.** It was one of the two stories
+  the Users placeholder advertised; TAS-186 removed the placeholder and with it
+  the `stories: ["TAS-107", "TAS-108"]` line in `sections.ts`, and nothing in
+  this repository now says what TAS-108 was going to add to the section. Read
+  the story and either fold what it covers into a note here or let it speak for
+  itself in Jira — but the current state is a dropped reference, not a closed
+  one. (`api-contract-guard`)
+- **`.modal-layer` is `position: fixed` with no `overflow: auto`.** A modal
+  taller than roughly 89vh (the layer's `padding-top: 11vh` plus its own height)
+  has no scroll path at all and its footer is simply unreachable. Not triggered
+  today — the Users confirmation measures 559px at 1440 and 579px at 390 — but
+  it is now the tallest confirmation in the product, and the thing that would
+  push it over is a long gateway message in the failure block, which is the one
+  state where the buttons matter most. The fix is `overflow: auto` on the layer
+  plus `align-items: safe center` reasoning from §5.1's login card, and it is a
+  change to the shared component. (`art-director`)
+- **There is no global `.secondary-button:focus-visible`, so most of them have
+  no focus style at all.** The only two rules are scoped to `.issue-link-form`
+  and `.issue-label-form`; every other secondary button in the product falls
+  back to Chrome's `outline: auto` — the ring §7 already rejects by name for
+  `.icon-button`, because Chrome derives it from the reader's *system* accent
+  colour and it is therefore not a §2 value at all. Sharpest in the admin Users
+  section, where the pager's Previous/Next sit eight pixels below a control that
+  does draw `2px var(--accent)`: two buttons in one plane differing in exactly
+  one thing, and it is that one of them cannot be seen to have focus. TAS-186
+  kept a local rule on `.admin-user-action` for precisely this reason. Belongs
+  on §7's TAS-142 list as a named line rather than an implied one, together with
+  the `.segmented button` entry in the TAS-185 block below — the same gap in a
+  different control, and worth closing in one pass rather than two.
+  (`art-director`)
+- **The profile menu colours all three statuses; the admin section colours
+  one.** §4.16's `.user-status` gives `ACTIVE` a green pill and `INVITED` an
+  amber one from four literal hexes that are in no §2 palette, while §5.8's
+  Users pill keeps colour for `BLOCKED` alone per §1. One enum, two policies,
+  and the §5.8 one is the reading DESIGN.md supports. Deliberately out of
+  TAS-186's scope — it is §4.16 debt and predates the section — but it is now
+  visible in two places at once. Fold it in with getting those four hexes out of
+  `styles.css`. (`art-director`, raised again on the TAS-186 review)
+- **The Playwright suite times out under CPU contention, and it is not
+  understood.** Two occurrences, same signature, on `e2e/admin-console.spec.ts`
+  — the Data section's own pre-existing tests, untouched by TAS-186. First:
+  `frontend-builder`'s `npm run check` came back with 9 failures in a run that
+  took 2.9m against the usual 1.5m. Second: the orchestrator's post-fix run came
+  back with 6 failures, all on the `laptop` project, all 30-second timeouts on
+  `page.goto` / `click` / `fill`, in a 2.3m run — while other agents were
+  driving browsers. The file then passed 17/17 in isolation on both `laptop` and
+  `mobile`, and full re-runs were green each time. `release-reviewer` ruled out
+  the new seed as the cause: the orchestrator's own green pre-fix run already
+  contained both new accounts and the new spec. What is *not* established is
+  whether this is Playwright's own worker contention, the dev server the suite
+  starts, or the machine. Recorded as unexplained rather than as "flaky,
+  ignore", because the two runs that failed are the only evidence anyone has and
+  discarding them is how a real timing bug survives. Worth one deliberate
+  experiment — the same commit run with `--workers=1` under load — before
+  anybody adds a retry.
+
+- **The Users table's action column sits past the right edge at 390.** Same
+  shape as the Data table's open-row link, which §5.8 already accepts, and it
+  is reachable by scrolling the labelled, focusable region. Worth revisiting
+  with the rest of the area's phone story rather than on its own — §5.8 names
+  the real fix there (a collapsible catalog, and by extension a narrower
+  layout), and a one-off sticky column here would be a second pattern.
 
 ### Left over from the TAS-185 reviews (2026-08-24)
 

@@ -14,7 +14,12 @@ import type {
   UpdateIssueInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
-import { SEARCH_QUERY_MIN_LENGTH, SEARCH_QUERY_TOO_SHORT_MESSAGE } from "../TaskaApi";
+import {
+  BLOCK_REASON_MAX_LENGTH,
+  BLOCK_REASON_REQUIRED_MESSAGE,
+  SEARCH_QUERY_MIN_LENGTH,
+  SEARCH_QUERY_TOO_SHORT_MESSAGE,
+} from "../TaskaApi";
 import type {
   AdminCatalog,
   AdminRow,
@@ -43,6 +48,8 @@ import type {
   ProjectMember,
   ProjectMembership,
   User,
+  UserStatus,
+  UserStatusChange,
   Workflow,
 } from "../../domain/types";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
@@ -53,6 +60,12 @@ const MARK_ID = "e65186a2-b807-42ae-a66f-711be116a93b";
 const SOFIA_ID = "16ad2404-96e3-4c51-b00d-55c5d1451d3c";
 const TOM_ID = "1ab80365-0843-460a-b0a1-e6dd3e0f2a0d";
 const PRIYA_ID = "fdf35fa6-e68b-4dbe-8a48-5867d7f08ce9";
+// Added by TAS-186 rather than restyling one of the five above: the Users
+// section has to show all three account states at once, and moving an existing
+// person into INVITED or BLOCKED would have quietly changed what every other
+// screen and spec sees on the board.
+const LEO_ID = "b0e3d1c4-1f24-4a1a-9a3e-2ad0c9f7b511";
+const NINA_ID = "c47a9b21-6d5e-4f0b-8c72-9e13a4f8d602";
 
 const TASKA_PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
 const WEB_PROJECT_ID = "58e93598-ea1a-460d-9d72-f1f201c310e2";
@@ -117,6 +130,29 @@ const requireSearchQuery = (raw: string | undefined): string | null => {
     throw new MockApiError("INVALID_ARGUMENT", SEARCH_QUERY_TOO_SHORT_MESSAGE);
   }
   return query;
+};
+
+/**
+ * The reason both admin user writes require, checked the way the server checks
+ * it: `@NotBlank` first, then `@Size(max = 550)`.
+ *
+ * Whitespace-only is blank, which is why this measures the trimmed value — and
+ * the length is measured on it too, so a reason that is 550 characters of text
+ * plus a trailing newline is accepted rather than refused on a character
+ * nobody typed on purpose. Nothing in the UI can produce an over-long one (the
+ * field carries `maxLength`), so this half exists for the same reason the mock
+ * refuses a non-uuid row id: the mock is the reference implementation, and a
+ * hand-made call has to hit the same wall in both modes.
+ */
+const requireBlockReason = (raw: string): string => {
+  const reason = raw.trim();
+  if (reason === "") {
+    throw new MockApiError("INVALID_ARGUMENT", BLOCK_REASON_REQUIRED_MESSAGE);
+  }
+  if (reason.length > BLOCK_REASON_MAX_LENGTH) {
+    throw new MockApiError("INVALID_ARGUMENT", `A reason is at most ${BLOCK_REASON_MAX_LENGTH} characters`);
+  }
+  return reason;
 };
 
 /** Substring, case-insensitive, over `issue_key` OR `summary` OR `description` — the probe's own OR. */
@@ -436,6 +472,44 @@ export class MockTaskaStore {
         email: "priya@example.com",
         displayName: "Priya Nair",
         status: "ACTIVE",
+        globalRole: "USER",
+      },
+      // The two accounts that are not ACTIVE (TAS-186). Every status the admin
+      // Users section can draw is on screen without anybody having to change a
+      // row first, and both of its actions — Block and Unblock — are one click
+      // away in the only environment a reviewer or an e2e run can reach.
+      //
+      // Appended rather than inserted: `auth.users` derives its rows from this
+      // array by position, so a person added in the middle would have moved
+      // every seeded `failed_logins` and `created_at` beneath them.
+      //
+      // Appending is not free either, and the one thing it does move is worth
+      // naming. `seedOutboxEvents` hands `users.map(u => u.id)` to `published`,
+      // which round-robins the list across eight auth rows — seven ids instead
+      // of five means some of those rows now carry a different `aggregate_id`
+      // than before. Nothing asserts them and nothing derives from them: they
+      // are opaque uuids in a diagnostic table, the row count, the statuses and
+      // the ages are unchanged, and the problems summary counts states rather
+      // than aggregates. Recorded so the next reader does not go looking for a
+      // reason the journal's ids moved.
+      //
+      // Neither belongs to a project, which is the honest shape: an invitation
+      // that has not been accepted and an account that was shut off are exactly
+      // the two people a board does not have.
+      {
+        id: LEO_ID,
+        login: "leo",
+        email: "leo@example.com",
+        displayName: "Leo Fischer",
+        status: "INVITED",
+        globalRole: "USER",
+      },
+      {
+        id: NINA_ID,
+        login: "nina",
+        email: "nina@example.com",
+        displayName: "Nina Kowal",
+        status: "BLOCKED",
         globalRole: "USER",
       },
     ];
@@ -1613,6 +1687,96 @@ export class MockTaskaStore {
   }
 
   /**
+   * `POST /admin/users/{userId}/block` (TAS-186).
+   *
+   * Every refusal below is the backend's own, read out of
+   * `AdminUserManagementServiceImpl` on the TAS-107 branch and reproduced word
+   * for word — the mock is the reference implementation, and a mock that were
+   * the more permissive of the two would teach a screen the gateway cannot
+   * serve.
+   *
+   * The last-active-admin rule is the reason nothing about this operation is
+   * optimistic (DESIGN.md §5.8): it is a count across the whole table, and no
+   * client holds it.
+   */
+  blockUser(userId: string, reason: string): UserStatusChange {
+    const user = this.adminUser(userId, reason);
+    if (user.status !== "ACTIVE" && user.status !== "INVITED") {
+      // ABORTED, not FAILED_PRECONDITION, and the difference is the gateway's
+      // rather than a taste: `DomainStatus.ABORTED` is what auth-service raises
+      // for this one, and `RestErrorMapper` turns it into a 409 carrying the
+      // literal string "ABORTED". The refusal below is the other code and the
+      // other status. Emitting one code for both would make the mock the only
+      // place the two look alike.
+      throw new MockApiError("ABORTED", `Cannot block user with current status: ${user.status}`);
+    }
+    if (user.globalRole === "GLOBAL_ADMIN" && user.status === "ACTIVE" && this.activeGlobalAdmins() <= 1) {
+      // FAILED_PRECONDITION, which the gateway maps to **400** rather than 409.
+      // The section reads this refusal by its code, not by its status, and this
+      // line is why (`isConflict`, src/api/errors.ts).
+      throw new MockApiError("FAILED_PRECONDITION", "Cannot block the last active global admin");
+    }
+    return this.changeUserStatus(user, "BLOCKED");
+  }
+
+  /**
+   * `POST /admin/users/{userId}/unblock`. Legal from `BLOCKED` and from
+   * nothing else, and it always lands on `ACTIVE`.
+   *
+   * An `INVITED` account that was blocked therefore comes back **active**, not
+   * invited: the backend does not restore the invite state, and the section
+   * says so in the confirmation rather than pretending otherwise here.
+   */
+  unblockUser(userId: string, reason: string): UserStatusChange {
+    const user = this.adminUser(userId, reason);
+    if (user.status !== "BLOCKED") {
+      // ABORTED for the same reason as in `blockUser` above.
+      throw new MockApiError("ABORTED", `Cannot unblock user with current status: ${user.status}`);
+    }
+    return this.changeUserStatus(user, "ACTIVE");
+  }
+
+  /**
+   * Everything both writes check before they look at the transition, in the
+   * order the server checks it.
+   *
+   * The body first, because Spring validates `@Valid @RequestBody` before the
+   * controller method runs at all — so a blank reason on an account nobody has
+   * is a `400`, not a `404`. Then the path parameter, which is typed `UUID` and
+   * refused before auth-service ever sees it, exactly as `adminRow` refuses a
+   * non-uuid row id. Then the account itself.
+   *
+   * None of the three is reachable from the section, which sends a key it read
+   * out of the table and a reason the field would not let be blank. They are
+   * here because the mock is the reference implementation: a hand-made call has
+   * to hit the same wall in both modes.
+   */
+  private adminUser(userId: string, reason: string): User {
+    requireBlockReason(reason);
+    if (!UUID_PATTERN.test(userId)) {
+      throw new MockApiError("INVALID_ARGUMENT", `User id ${userId} is not a UUID`);
+    }
+    return this.getUser(userId);
+  }
+
+  /** How many accounts can administer this instance right now. */
+  private activeGlobalAdmins(): number {
+    return this.users.filter((user) => user.globalRole === "GLOBAL_ADMIN" && user.status === "ACTIVE").length;
+  }
+
+  /**
+   * The write itself, and the response it produces. `updatedAt` is a real
+   * instant here and a real instant on the gateway too since backend
+   * `62c4c675`; nothing draws either, because the time of a write is not the
+   * `updated_at` of the row it changed (see `UserStatusChange`).
+   */
+  private changeUserStatus(user: User, currentStatus: UserStatus): UserStatusChange {
+    const previousStatus = user.status;
+    user.status = currentStatus;
+    return { userId: user.id, previousStatus, currentStatus, updatedAt: now() };
+  }
+
+  /**
    * The problems summary (`GET /readonly/outbox/problematic-summary`), derived
    * from the same rows the Outbox journal reads — so the two views of the
    * Events section can never contradict each other, which is the whole reason
@@ -2444,5 +2608,13 @@ export class MockTaskaApi implements TaskaApi {
 
   async getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
     return wait(this.store.problematicOutboxSummary());
+  }
+
+  async blockUser(userId: string, reason: string): Promise<UserStatusChange> {
+    return wait(this.store.blockUser(userId, reason));
+  }
+
+  async unblockUser(userId: string, reason: string): Promise<UserStatusChange> {
+    return wait(this.store.unblockUser(userId, reason));
   }
 }

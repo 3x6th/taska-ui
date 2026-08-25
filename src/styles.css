@@ -2506,6 +2506,300 @@ h1 {
   white-space: pre-wrap;
 }
 
+/* ---------- Users section (§5.8, TAS-186) ---------- */
+
+/* The readable band, not the whole plane. Five named columns of short values
+   spread across 1740px at 1920 put the person at one edge and the only button
+   at the other, which is the complaint §5.8 already answers for the row card
+   ("without a cap the separators run across a thousand empty pixels"). 860 is
+   that same cap and for the same reason: unlike the Data grid, this table's
+   column set is known and finite, so it can be given a width.
+
+   It is the scroll container that is capped rather than the table, so the
+   sticky footer inside it stops at the same edge — a pager running the full
+   width under an 860px table would be the one element still crossing the
+   plane. */
+.admin-users-plane .admin-table-scroll {
+  max-width: 860px;
+  /* "There is more to the right", and nothing else says it. At 390 the table is
+     443 in a 360 container, arrives at `scrollLeft: 0`, and overlay scrollbars
+     draw nothing until you touch it — so the section reads as read-only until
+     the reader happens to swipe or Tab, and the action column is the part that
+     is off screen. §5.8 already accepts a fade for exactly this on the catalog's
+     bottom edge.
+
+     Two layers rather than that section's `mask-image`, and the difference is
+     the point: a mask fades the viewport edge unconditionally, so once the
+     reader *had* scrolled to the end it would fade out the Block button itself —
+     hiding the control it exists to advertise. This pair self-cancels instead.
+     The first layer is attached `local`, so it is painted at the right end of
+     the *content* and slides into place to cover the second exactly when there
+     is no more to scroll; the second is attached `scroll`, so it stays at the
+     box's own right edge while there is. A table that does not overflow at all
+     has its content end at the box edge, so the cover starts on top and no fade
+     is ever drawn — the rule needs no width query to know when it applies.
+
+     `color-mix` on `--fg` rather than a shadow token: it darkens in light and
+     lightens in dark, which is the direction "more content" wants on either
+     plane, and it is the same reasoning `.admin-key:hover` records below. */
+  background:
+    linear-gradient(to left, var(--surface), transparent) 100% 0 / 22px 100% no-repeat local,
+    linear-gradient(to left, color-mix(in oklab, var(--fg) 12%, transparent), transparent) 100% 0 / 22px 100%
+      no-repeat scroll,
+    var(--surface);
+}
+
+/* A row of this table carries two lines in its first cell — the name and the
+   address under it — so 30 is not the floor here that it is on the Data grid.
+   42 is what two lines at 1.3 plus §5.8's own 6px padding measure, stated
+   explicitly so a row whose email is missing does not come out shorter than
+   the rows around it. Everything else about the table — sticky head, the
+   footer, 11.5px base — is §5.8's. */
+.admin-users-table td {
+  height: 42px;
+}
+
+.admin-user-name {
+  display: block;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.3;
+}
+
+/* Not --fg-3: this line identifies the person as much as the name above it —
+   two people can share a display name and cannot share an address — so it is
+   content, not meta. 7.26:1 light / 6.75:1 dark on --surface. */
+.admin-user-email {
+  display: block;
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+/* §4.5's label-chip geometry (height 20, radius 20, 11.5/600) rather than the
+   28px status pill, which is drawn for the issue panel and would be taller than
+   the cell it sits in. Quiet by default: this is the shape a role and a normal
+   status wear, and §1 keeps colour for the one state that means something is
+   wrong. --fg-2 on --surface-2 measures 6.38:1 light / 7.03:1 dark.
+
+   ACTIVE has no modifier of its own and neither does a status this build does
+   not recognise: both wear exactly this, so a class for either would be a hook
+   with no rule behind it — which reads like a style and is not one. */
+.admin-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  border-radius: 20px;
+  padding: 0 8px;
+  background: var(--surface-2);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* Invited is told apart by an *edge*, not by a second hue: an account that has
+   been asked and has not answered is the same "not there yet" the unassigned
+   avatar wears (§4.4), and §7 asks that a difference never rest on colour
+   alone. 7.26:1 light / 6.75:1 dark. */
+.admin-pill.admin-status-invited {
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  /* The border would otherwise make this pill 2px taller than its neighbours. */
+  padding: 0 7px;
+}
+
+/* The one status that is a problem, so the one that is tinted (§4.5's recipe,
+   §1's rule about what colour is for).
+
+   The text is not bare --danger. §4.5 says a status pill prints its own colour,
+   and measured on this recipe that gives 3.10:1 in light — and 2.56:1 while the
+   row behind it is flashed, because the tint is translucent and composites over
+   whatever plane it lands on. Pulling the glyph 18% toward --fg reads 4.21:1 /
+   5.43:1 at rest and 3.47:1 / 4.59:1 on the flashed row, which clears §7's
+   floor in every one of the four. The 82/18 mix is the recipe the profile
+   menu's own pills already use; --fg rather than a literal is what makes it
+   darken in light and lighten in dark. */
+.admin-pill.admin-status-blocked {
+  background: color-mix(in oklab, var(--danger) 14%, transparent);
+  color: color-mix(in oklab, var(--danger) 82%, var(--fg));
+}
+
+/* The action column is as narrow as its button and right-aligned, like the
+   chevron column of the Data table: width here is width taken from the values. */
+.admin-users-table .admin-users-action-head,
+.admin-users-table .admin-users-action-cell {
+  width: 96px;
+  text-align: right;
+}
+
+/* §4.1's secondary button, sized for §5.8's density — *not* a second one built
+   beside it. The markup carries `.secondary-button` and this rule changes only
+   the three things the row decides; border, background, radius (9, §2.5) and
+   the hover recipe are inherited.
+
+   The previous version of this rule was a hand-rolled copy at 26px with radius
+   8 and `border-color: var(--fg-3)` on hover — the only such declaration in the
+   stylesheet, and §2.1 gives `--fg-3` to meta and disabled text, not to
+   borders. 28 is §7's floor for a dense target and it costs no layout: the row
+   is 42 with 6px of padding, so a 28px control has 2px to spare, exactly as the
+   Data table's own 28×28 row link does.
+
+   Hovering the button also hovers the row under it, so §4.1's `--surface-2`
+   lands on a `--surface-3` row: 1.06:1 light, 1.13:1 dark. Slight, and it is
+   the recipe rather than a choice — the Data table's chevron paints
+   `--surface-3` on a `--surface-3` row and has no delta at all. */
+.admin-user-action {
+  height: 28px;
+  padding: 0 11px;
+  font-size: 11.5px;
+}
+
+/* Kept, and not redundant: there is no global `.secondary-button:focus-visible`
+   in this stylesheet — only two form-scoped ones — so dropping this would leave
+   the control on the browser's default ring. That ring is what the row anchor
+   below is keyed to, so it is load-bearing twice over. */
+.admin-user-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The row anchor §5.8 requires of this component, and the same rule the Data
+   table carries for the same reason: "строка в фокусе подсвечивается так же,
+   как при наведении… без подсветки строки клавиатурный читатель видит кольцо,
+   но не видит, к какой строке оно относится".
+
+   It is not decoration here, it is identification. At 1440 the name sits at the
+   left of the 860 band and the button at the right, ~790px apart in a 42px lane
+   separated only by hairlines; at 390 tabbing to a Block button scrolls the
+   container sideways far enough to cut the person column down to the tail of an
+   email, so the focus ring names the control and nothing on screen names the
+   account it will act on. This is the only destructive write in the product
+   outside the board.
+
+   `--surface-3`, which §2.1 reserves for hover on a recessed plane, exactly as
+   the Data table's rule at the top of this section argues: against the table's
+   own `--surface`, `--surface-2` is a step down. Measured delta 1.21:1 light
+   and 1.08:1 dark — slight in dark, and the same slightness the Data table
+   already ships. Everything drawn on the row still clears §7 on the darker
+   plane: name 14.77 / 14.52, email and the quiet pills 6.00 / 6.23, and the
+   BLOCKED pill's glyph 3.53 / 4.96 (its tint is translucent, so it composites
+   over whichever of the two planes the row is on).
+
+   `:not(.is-changed)` is how the two-second confirmation below survives a
+   hover. Written without it, these selectors compute (0,2,3) and (0,3,2) and
+   would both outrank the flash at (0,2,2) — so pointing at a row that had just
+   changed would erase the only thing saying it had. Excluding the state is the
+   honest spelling of that: while a row is confirming, the confirmation is the
+   stronger signal and the hover has nothing to add. Ordering or a specificity
+   bump would leave the same trap for whoever edits these next. */
+.admin-users-table tbody tr:not(.is-changed):hover td,
+.admin-users-table tbody tr:not(.is-changed):has(.admin-user-action:focus-visible) td {
+  background: var(--surface-3);
+}
+
+/* The confirmation that a change landed, in the absence of a toast (§5.6 keeps
+   that gap). The same recipe and the same two seconds as the copy confirmation
+   on a primary key, so the product has one way of saying "that worked": a
+   translucent accent tint, which composites correctly over the row's own plane
+   in both themes. Nothing moves, so `prefers-reduced-motion` has no opinion
+   to have. */
+.admin-users-table tr.is-changed td {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+
+/* ---------- Users section: the confirmation dialog (§4.11) ---------- */
+
+/* Who this is about, above the reason field. A recessed block rather than loose
+   lines: the dialog is asking about one account, and the block is that account.
+
+   The border is not trim. In dark, `--surface-2` against the modal's own
+   `--surface` measures 1.018:1 — the plate is not a plate at all, it is a
+   caption that happens to have padding — and §1 rule 2 says separation comes
+   from space and a very faint border rather than from a fill. The same
+   correction this stylesheet already makes for the frozen column's edge. */
+.admin-user-target {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  padding: 10px 12px;
+}
+
+.admin-user-target p {
+  margin: 0;
+}
+
+.admin-user-target-name {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-user-target-line {
+  color: var(--fg-2);
+  font-size: 11.5px;
+}
+
+/* The transition, in the server's own values, so it is set the way this area
+   sets every other verbatim machine string (§2.3, §5.8). Two classes rather
+   than an `!important` (§8): `.admin-user-target p` above zeroes the margins,
+   and one extra class is what puts this rule over it. */
+.admin-user-target .admin-user-transition {
+  margin-top: 6px;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+}
+
+/* A fact the reader cannot see anywhere else — that unblocking will not restore
+   an invitation, or that this is their own account. Prose, not an alert: none
+   of it is a failure. */
+.admin-user-note {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* Why the button is off, and then how much room is left. --fg-2 rather than
+   --fg-3 for the same reason the error detail takes it: while the field is
+   empty this line is the only thing explaining a disabled control, which is not
+   meta. */
+.admin-user-hint {
+  margin: -7px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* A failure that keeps the dialog open (§5.8's taxonomy). A tint rather than
+   `.form-error`'s solid danger text, because this block is several lines — a
+   sentence, the server's own words, and the request id — and a whole paragraph
+   set in --danger would be shouting where it should be explaining. --fg on the
+   10% tint measures 15.83:1 light / 14.28:1 dark. */
+.admin-user-failure {
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--danger) 10%, transparent);
+  padding: 10px 12px;
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.admin-user-failure p {
+  margin: 0 0 6px;
+}
+
+.admin-user-failure p:last-child {
+  margin-bottom: 0;
+}
+
+.admin-user-failure .admin-error-detail {
+  font-size: 11.5px;
+}
+
 /* ---------- Section under construction (§4.19) ---------- */
 
 .admin-placeholder {

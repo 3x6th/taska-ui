@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestTaskaApi } from "./RestTaskaApi";
+import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 
 /**
  * The 401 path is the one piece of RestTaskaApi the UI cannot see for itself:
@@ -1193,5 +1194,134 @@ describe("RestTaskaApi labels", () => {
       { id: "label-1", name: "backend", color: "#0052cc" },
       { id: "label-2", name: "no colour", color: "" },
     ]);
+  });
+});
+
+/**
+ * The admin user writes (TAS-186). The gateway does not serve them yet — the
+ * backend change is unmerged — so nothing here has been observed on the wire;
+ * what these pin is the shape the client sends and the facts it reads back
+ * (docs/ai/API-DIVERGENCE.md).
+ */
+describe("RestTaskaApi admin user writes", () => {
+  // `_input` exists only so the stubs below declare the parameter they are
+  // asserted on; without it `mock.calls[0][0]` is not typed.
+  const answer = (status: number, body: unknown, requestId?: string, _input?: string) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name === "X-Request-Id" ? (requestId ?? null) : null) },
+      json: async () => body,
+    }) as unknown as Response;
+
+  // A real instant. This fixture used to carry the 1970 epoch, which encoded a
+  // belief about the backend — that it left the field unset — that turned out
+  // to be stale (backend `62c4c675` fills it). A fixture is data, not a claim,
+  // and one carrying a retired assumption is how the assumption gets read back
+  // as evidence.
+  const change = {
+    userId: "1cf0dc4e-0000-4000-8000-000000000001",
+    previousStatus: "ACTIVE",
+    currentStatus: "BLOCKED",
+    updatedAt: "2026-08-25T14:03:11Z",
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the reason to the block path and reads the transition back", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer(200, change, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().blockUser(change.userId, "Left the company");
+
+    const [url, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain(`/admin/users/${change.userId}/block`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body)) as unknown).toEqual({ reason: "Left the company" });
+    expect(result).toEqual(change);
+  });
+
+  it("posts to the unblock path, which is the same body and a different route", async () => {
+    const fetchStub = vi.fn(async (input: string) =>
+      answer(200, { ...change, previousStatus: "BLOCKED", currentStatus: "ACTIVE" }, undefined, input),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().unblockUser(change.userId, "Back from leave");
+
+    expect(String(fetchStub.mock.calls[0][0])).toContain(`/admin/users/${change.userId}/unblock`);
+    expect(result.currentStatus).toBe("ACTIVE");
+  });
+
+  it("trims the reason and never sends a blank one", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer(200, change, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+    const api = new RestTaskaApi();
+
+    await api.blockUser(change.userId, "  Left the company  ");
+    expect(JSON.parse(String((fetchStub.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as unknown).toEqual({
+      reason: "Left the company",
+    });
+
+    // Whitespace-only is `@NotBlank` on the server, so the request is not spent
+    // at all — and the refusal wears the same code and wording the mock uses,
+    // so a caller cannot tell which side stopped it.
+    await expect(api.blockUser(change.userId, "   ")).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: "A reason is required",
+    });
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("percent-encodes the user id rather than pasting it into the path", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer(200, change, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await new RestTaskaApi().blockUser("a/b?c", "Reason");
+
+    expect(String(fetchStub.mock.calls[0][0])).toContain("/admin/users/a%2Fb%3Fc/block");
+  });
+
+  it("carries the gateway's status, code, wording and request id up to the dialog", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer(409, { code: "FAILED_PRECONDITION", message: "Cannot block the last active global admin" }, "req-9"),
+      ),
+    );
+
+    await expect(new RestTaskaApi().blockUser(change.userId, "Testing the guard")).rejects.toMatchObject({
+      status: 409,
+      code: "FAILED_PRECONDITION",
+      message: "Cannot block the last active global admin",
+      requestId: "req-9",
+    });
+  });
+
+  it("passes the undeployed-route 404 through with its message intact", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer(404, {
+          code: "NOT_FOUND",
+          message: `No static resource api/v1/admin/users/${change.userId}/block for request '…'.`,
+        }),
+      ),
+    );
+
+    // The section tells "TAS-107 is not deployed" from "no such user" by the
+    // 404 *and* this message, so the message must not be replaced by a generic
+    // one on the way up (`isUndeployedRoute`).
+    await expect(new RestTaskaApi().blockUser(change.userId, "Reason")).rejects.toMatchObject({
+      status: 404,
+      message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE),
+    });
   });
 });

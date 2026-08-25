@@ -14,7 +14,7 @@ import type {
   UpdateIssueInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
-import { SEARCH_QUERY_MIN_LENGTH, SEARCH_QUERY_TOO_SHORT_MESSAGE } from "../TaskaApi";
+import { BLOCK_REASON_REQUIRED_MESSAGE, SEARCH_QUERY_MIN_LENGTH, SEARCH_QUERY_TOO_SHORT_MESSAGE } from "../TaskaApi";
 import { SessionExpiredSignal } from "../session";
 import type {
   AdminCatalog,
@@ -45,6 +45,7 @@ import type {
   ProjectMembership,
   User,
   UserStatus,
+  UserStatusChange,
   Workflow,
   IssueHistoryEvent,
 } from "../../domain/types";
@@ -91,6 +92,24 @@ interface RestAdminRows {
 /** `GET /readonly/{service}/{table}/{id}` — one row under the same `data` key. */
 interface RestAdminRow {
   data?: AdminRow;
+}
+
+/**
+ * `UserStatusResponseDto` — what both admin user writes answer with.
+ *
+ * Fields are typed as present, unlike the `/readonly` family above, because the
+ * contract declares this schema's four properties with an enum on the two
+ * statuses, the same standing `RestUser.status` has. `updatedAt` is read and
+ * carried and never drawn — not because it is empty (backend `62c4c675` fills
+ * it) but because it times this write, while the row it describes has an
+ * `updated_at` of its own. The refetched row is what carries the timestamp
+ * worth printing; see `UserStatusChange`.
+ */
+interface RestUserStatusChange {
+  userId: string;
+  previousStatus: UserStatus;
+  currentStatus: UserStatus;
+  updatedAt: string;
 }
 
 /** `GET /readonly/catalog`, with the same caveat. */
@@ -780,6 +799,46 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
+   * `POST /admin/users/{userId}/block`. The reason is the whole body, and it is
+   * checked here rather than at the boundary — the server answers `400` for a
+   * blank one, and the mock refuses it with the same code, so neither mode can
+   * quietly send one.
+   */
+  async blockUser(userId: string, reason: string): Promise<UserStatusChange> {
+    return this.toUserStatusChange(
+      await this.request<RestUserStatusChange>(`/admin/users/${this.segment(userId)}/block`, {
+        method: "POST",
+        body: { reason: requireBlockReason(reason) },
+      }),
+    );
+  }
+
+  /** `POST /admin/users/{userId}/unblock` — the same body and the same guard. */
+  async unblockUser(userId: string, reason: string): Promise<UserStatusChange> {
+    return this.toUserStatusChange(
+      await this.request<RestUserStatusChange>(`/admin/users/${this.segment(userId)}/unblock`, {
+        method: "POST",
+        body: { reason: requireBlockReason(reason) },
+      }),
+    );
+  }
+
+  /**
+   * Field by field rather than by spread, like `toIssueSearchHit`: the listing
+   * is the point. What must keep being provable about this response is that
+   * `updatedAt` is carried and nothing more — no screen may start drawing it
+   * because a spread happened to put it in scope.
+   */
+  private toUserStatusChange(response: RestUserStatusChange): UserStatusChange {
+    return {
+      userId: response.userId,
+      previousStatus: response.previousStatus,
+      currentStatus: response.currentStatus,
+      updatedAt: response.updatedAt,
+    };
+  }
+
+  /**
    * The wire's pagination on the domain's 1-based page, field by field: the
    * contract marks none of them required, and an all-or-nothing fallback would
    * turn one missing field into a fabricated single page.
@@ -1080,6 +1139,29 @@ function requireSearchQuery(raw: string | undefined): string | null {
     throw new ApiError(SEARCH_QUERY_TOO_SHORT_MESSAGE, "INVALID_ARGUMENT", 400);
   }
   return query;
+}
+
+/**
+ * The reason as the server would accept it, trimmed.
+ *
+ * `@NotBlank` on the backend means a whitespace-only reason is a `400`, and
+ * this is the same rule applied on this side of the wire so that a request
+ * which cannot succeed is never spent — the same shape as `requireSearchQuery`
+ * above, and the same wording the mock uses, so a caller cannot tell a reason
+ * stopped here from one stopped there.
+ *
+ * The upper bound is not checked. `maxLength` on the field is what keeps a
+ * reason under 550 characters, and a client-side length refusal here would be
+ * a second, weaker copy of a rule the server states — the direction this
+ * guard exists to avoid is a request that is certainly refused, and a blank
+ * one is the only shape the UI can produce.
+ */
+function requireBlockReason(raw: string): string {
+  const reason = raw.trim();
+  if (reason === "") {
+    throw new ApiError(BLOCK_REASON_REQUIRED_MESSAGE, "INVALID_ARGUMENT", 400);
+  }
+  return reason;
 }
 
 async function mapWithConcurrency<T, R>(

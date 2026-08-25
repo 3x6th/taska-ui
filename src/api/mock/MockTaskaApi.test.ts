@@ -825,8 +825,11 @@ describe("MockTaskaApi", () => {
       });
 
       // As text, "5" >= "10" — so the row with 5 came back from a filter that
-      // asked for 10 and up.
-      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20]);
+      // asked for 10 and up. The list runs to 30 since TAS-186 seeded a sixth
+      // and seventh account (`failed_logins` is `index * 5`), which is what
+      // makes the two-digit half of this assertion three values rather than
+      // one.
+      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20, 25, 30]);
 
       const to = await api.listAdminRows({
         service: "auth",
@@ -875,7 +878,7 @@ describe("MockTaskaApi", () => {
 
       // `localeCompare` put 10 before 5 here, and did it differently depending
       // on the machine's locale.
-      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20]);
+      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20, 25, 30]);
 
       const desc = await api.listAdminRows({
         service: "auth",
@@ -885,7 +888,7 @@ describe("MockTaskaApi", () => {
         order: "desc",
       });
 
-      expect(desc.rows.map((row) => row.failed_logins)).toEqual([20, 15, 10, 5, 0]);
+      expect(desc.rows.map((row) => row.failed_logins)).toEqual([30, 25, 20, 15, 10, 5, 0]);
     });
 
     it("applies each filter operator", async () => {
@@ -1032,6 +1035,161 @@ describe("MockTaskaApi", () => {
       const masked = rows.find((row) => String(row.payload).includes("****"));
       expect(masked).toBeDefined();
       expect(() => JSON.parse(String(masked!.payload)) as unknown).not.toThrow();
+    });
+  });
+
+  /**
+   * Blocking and unblocking an account (TAS-186). Every rule below is the
+   * backend's own, read out of `AdminUserManagementServiceImpl` on the TAS-107
+   * branch — the endpoints are not on the deployed gateway yet, so this is the
+   * only implementation of them that answers anything at all, and it has to
+   * answer exactly what the gateway will (docs/ai/API-DIVERGENCE.md).
+   */
+  describe("admin user block and unblock", () => {
+    /** Whoever the seed gave this status, found through the same table the section reads. */
+    const findByStatus = async (status: string) => {
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      const row = rows.find((candidate) => candidate.status === status);
+      expect(row, `the seed has nobody with status ${status}`).toBeDefined();
+      return String(row!.id);
+    };
+
+    it("seeds one account of every status, so the section can be seen whole", async () => {
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+
+      expect(new Set(rows.map((row) => row.status))).toEqual(new Set(["ACTIVE", "INVITED", "BLOCKED"]));
+      // And exactly one global admin, which is what makes the last-active-admin
+      // refusal reachable by clicking rather than only by unit test.
+      expect(rows.filter((row) => row.global_role === "GLOBAL_ADMIN")).toHaveLength(1);
+    });
+
+    it("blocks an active account and says what it changed", async () => {
+      const id = await findByStatus("ACTIVE");
+
+      await expect(api.blockUser(id, "Left the company")).resolves.toMatchObject({
+        userId: id,
+        previousStatus: "ACTIVE",
+        currentStatus: "BLOCKED",
+      });
+      // The list is what the section refetches, so the write has to be visible
+      // there and not only in the response.
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      expect(rows.find((row) => row.id === id)?.status).toBe("BLOCKED");
+    });
+
+    it("blocks an invited account, and unblocking it makes it active rather than invited", async () => {
+      const id = await findByStatus("INVITED");
+
+      await expect(api.blockUser(id, "Invitation sent to the wrong address")).resolves.toMatchObject({
+        previousStatus: "INVITED",
+        currentStatus: "BLOCKED",
+      });
+      // The backend does not restore the invite state, and the mock must not
+      // invent a kinder rule than the server's — the confirmation dialog says
+      // this out loud precisely because it is surprising.
+      await expect(api.unblockUser(id, "Address corrected")).resolves.toMatchObject({
+        previousStatus: "BLOCKED",
+        currentStatus: "ACTIVE",
+      });
+    });
+
+    it("unblocks a blocked account", async () => {
+      const id = await findByStatus("BLOCKED");
+
+      await expect(api.unblockUser(id, "Back from leave")).resolves.toMatchObject({
+        previousStatus: "BLOCKED",
+        currentStatus: "ACTIVE",
+      });
+    });
+
+    it("refuses a transition the current status does not allow, in the server's words and its code", async () => {
+      // `ABORTED`, which the gateway maps to 409 — and deliberately not the
+      // code the last-admin refusal below carries. The two are different
+      // `DomainStatus` values on the backend and land on different HTTP
+      // statuses, so a mock that gave them one code would be the only place
+      // they looked alike.
+      const blocked = await findByStatus("BLOCKED");
+      await expect(api.blockUser(blocked, "Again")).rejects.toMatchObject({
+        code: "ABORTED",
+        message: "Cannot block user with current status: BLOCKED",
+      });
+
+      const active = await findByStatus("ACTIVE");
+      await expect(api.unblockUser(active, "Again")).rejects.toMatchObject({
+        code: "ABORTED",
+        message: "Cannot unblock user with current status: ACTIVE",
+      });
+
+      const invited = await findByStatus("INVITED");
+      await expect(api.unblockUser(invited, "Again")).rejects.toMatchObject({
+        code: "ABORTED",
+        message: "Cannot unblock user with current status: INVITED",
+      });
+    });
+
+    it("refuses to block the last active global admin", async () => {
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      const admin = rows.find((row) => row.global_role === "GLOBAL_ADMIN");
+
+      // FAILED_PRECONDITION, which the gateway maps to **400**: this refusal
+      // reaches the dialog by its code and not by a 409.
+      await expect(api.blockUser(String(admin!.id), "Testing the guard")).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: "Cannot block the last active global admin",
+      });
+      // Refused, not partly applied.
+      const after = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      expect(after.rows.find((row) => row.id === admin!.id)?.status).toBe("ACTIVE");
+    });
+
+    it("refuses a user nobody has, and an id the gateway would not parse", async () => {
+      await expect(
+        api.blockUser("0f3d5cb0-0000-0000-0000-000000000000", "Nobody"),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", message: "User not found" });
+
+      // The path parameter is typed `UUID` on the gateway, so anything else is
+      // a 400 there before auth-service is reached — the same wall `adminRow`
+      // puts in front of a non-uuid row id.
+      await expect(api.blockUser("not-a-uuid", "Nobody")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("validates the body before it looks for the account, the way Spring does", async () => {
+      // `@Valid @RequestBody` runs before the controller method, so a blank
+      // reason on an account nobody has is a 400 and not a 404. Unreachable
+      // from the section, and pinned because the mock is what the two modes are
+      // compared against.
+      await expect(
+        api.blockUser("0f3d5cb0-0000-0000-0000-000000000000", "  "),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("refuses a blank reason, and one past the server's limit", async () => {
+      const id = await findByStatus("ACTIVE");
+
+      // Whitespace-only is blank to `@NotBlank`, and the gateway answers 400 —
+      // so the mock refuses it too, or the e2e suite would never see the rule.
+      await expect(api.blockUser(id, "   ")).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "A reason is required",
+      });
+      await expect(api.unblockUser(id, "")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(api.blockUser(id, "x".repeat(551))).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "A reason is at most 550 characters",
+      });
+      // 550 exactly is accepted: the bound is inclusive on the server.
+      await expect(api.blockUser(id, "x".repeat(550))).resolves.toMatchObject({ currentStatus: "BLOCKED" });
+    });
+
+    it("states an updatedAt the section is nonetheless not allowed to draw", async () => {
+      const id = await findByStatus("ACTIVE");
+      const change = await api.blockUser(id, "Left the company");
+
+      // A real instant, as the gateway's is too since backend `62c4c675`. What
+      // is pinned here is that the field is populated at all — nothing renders
+      // it, because the time of a write is not the `updated_at` of the row it
+      // changed, and the section refetches for that one instead.
+      expect(new Date(change.updatedAt).getUTCFullYear()).toBeGreaterThan(2000);
     });
   });
 });
