@@ -36,6 +36,9 @@ import type {
   Label,
   Notification,
   Page,
+  ProblematicOutboxCounts,
+  ProblematicOutboxEvent,
+  ProblematicOutboxSummary,
   Project,
   ProjectLabel,
   ProjectMember,
@@ -93,6 +96,20 @@ interface RestAdminRow {
 /** `GET /readonly/catalog`, with the same caveat. */
 interface RestAdminCatalog {
   services?: (Partial<Omit<AdminService, "tables">> & { tables?: AdminTable[] })[];
+}
+
+/**
+ * `GET /readonly/outbox/problematic-summary` —
+ * `ProblematicOutboxEventsSummaryResponseDto` and its two item schemas. Every
+ * field is optional for the same reason the reads above are: the contract
+ * declares no `required` block anywhere in this family, and this endpoint has
+ * additionally never answered this client (docs/ai/API-DIVERGENCE.md), so a
+ * guaranteed field here would be a claim rather than a fact.
+ */
+interface RestProblematicOutboxSummary {
+  events?: Partial<ProblematicOutboxEvent>[];
+  counts?: Partial<ProblematicOutboxCounts>[];
+  notAllShown?: boolean;
 }
 
 type RestIssue = Omit<Issue, "assigneeId" | "deletedAt" | "labels"> & {
@@ -716,6 +733,50 @@ export class RestTaskaApi implements TaskaApi {
     // as a card of dashes, which is what "the server returned nothing about
     // this row" honestly looks like.
     return response.data ?? {};
+  }
+
+  /**
+   * No query string at all: the UI never narrows this call, and the contract's
+   * optional `serviceKey` therefore has no caller (see `TaskaApi`).
+   */
+  async getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
+    const response = await this.request<RestProblematicOutboxSummary>("/readonly/outbox/problematic-summary");
+    return {
+      // Oldest first, exactly as the server ordered them. Nothing here sorts:
+      // the order is the endpoint's own semantics (§5.8), and re-sorting a list
+      // the server truncated would misrepresent what was cut.
+      events: (response.events ?? []).map((event) => ({
+        id: event.id ?? "",
+        aggregateType: event.aggregateType ?? "",
+        aggregateId: event.aggregateId ?? "",
+        eventType: event.eventType ?? "",
+        payload: event.payload ?? "",
+        status: event.status ?? "",
+        createdAt: event.createdAt ?? "",
+        // The four nullable ones keep `null` rather than "": an event that was
+        // never published and one published at an unstated time are the same
+        // fact to a reader — nothing to show — and the card prints the section's
+        // own dash for it. Empty strings would print as blanks instead.
+        publishedAt: event.publishedAt ?? null,
+        attempts: event.attempts ?? 0,
+        lastErrorMessage: event.lastErrorMessage ?? null,
+        processingStartedAt: event.processingStartedAt ?? null,
+        requestId: event.requestId ?? null,
+        serviceKey: event.serviceKey ?? "",
+        reason: event.reason ?? "",
+      })),
+      counts: (response.counts ?? []).map((count) => ({
+        serviceKey: count.serviceKey ?? "",
+        // Zero, not absent: the matrix is a grid of numbers and a hole in it
+        // would read as "unknown" while the service is in fact fine.
+        overdueNewCount: count.overdueNewCount ?? 0,
+        stuckProcessingCount: count.stuckProcessingCount ?? 0,
+        failedCount: count.failedCount ?? 0,
+      })),
+      // Absent means the server said nothing was cut, which is the only reading
+      // that does not put a truncation notice over a complete list.
+      notAllShown: response.notAllShown === true,
+    };
   }
 
   /**

@@ -16,6 +16,7 @@ import type {
   Label,
   Notification,
   Page,
+  ProblematicOutboxSummary,
   Project,
   ProjectLabel,
   ProjectMember,
@@ -307,4 +308,40 @@ export interface TaskaApi {
    * inside the card.
    */
   getAdminRow(query: AdminRowQuery): Promise<AdminRow>;
+
+  /**
+   * The problematic outbox events, all services at once
+   * (`GET /readonly/outbox/problematic-summary`) — the Events section's
+   * Problems view (DESIGN.md §5.8).
+   *
+   * **No `serviceKey` parameter on purpose**, though the wire contract accepts
+   * an optional one. The UI never narrows this call: the whole point of the
+   * view is "what is stuck, everywhere", and digging into one service is the
+   * Outbox journal's job, on the generic table reads above. A parameter with no
+   * caller is surface that has to be kept working for nobody.
+   *
+   * Not in the vendored contract yet — it exists only in the TAS-105 branch, and
+   * the deployed gateway answers `INVALID_ARGUMENT` for it
+   * (`OUTBOX_SUMMARY_UNSERVED_MESSAGE` below, docs/ai/API-DIVERGENCE.md).
+   */
+  getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary>;
 }
+
+/**
+ * What the *deployed* gateway says when asked for the problems summary, word
+ * for word — measured 2026-08-25 with a GLOBAL_ADMIN token.
+ *
+ * It does not answer 404. Not knowing the path, it routes
+ * `/readonly/outbox/problematic-summary` into the generic table read, takes
+ * `outbox` for a service key, and answers `400 INVALID_ARGUMENT` with this
+ * message. So this exact pairing — and nothing broader — is what "TAS-105 has
+ * not deployed yet" looks like on the wire, and the Problems view reads it as a
+ * quiet note rather than as a failure (docs/ai/API-DIVERGENCE.md).
+ *
+ * Pinned as one exported constant for the same reason
+ * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a
+ * measurement, and it belongs where the measurement can be read, not inline in
+ * a component. It stops being matched the day the endpoint deploys, because the
+ * endpoint will answer 200.
+ */
+export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";

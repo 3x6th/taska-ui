@@ -742,12 +742,19 @@ describe("MockTaskaApi", () => {
     });
 
     it("answers an unknown service and an unserved table the way the gateway does", async () => {
-      // Unknown service is a 404 there; a table it will not serve is a refusal,
-      // not an absence. Both reach the UI through `isMissingOrForbidden`, but
-      // the mock is the reference implementation and should not teach the wrong
-      // shape to whoever reads it next.
+      // An unknown service key is a rejected argument there, not a missing
+      // resource: the gateway resolves the key before it looks for anything and
+      // answers `400 INVALID_ARGUMENT` with this exact sentence (measured
+      // 2026-08-25). A table it will not serve is a refusal rather than an
+      // absence. The mock is the reference implementation and should not teach
+      // the wrong shape to whoever reads it next.
+      //
+      // The wording is load-bearing beyond this test: the Events section tells
+      // "the gateway has not deployed the summary yet" from a real failure by
+      // this sentence and this code together.
       await expect(api.listAdminRows({ service: "no_such_service", table: "users" })).rejects.toMatchObject({
-        code: "NOT_FOUND",
+        code: "INVALID_ARGUMENT",
+        message: "Unknown service: no_such_service",
       });
       await expect(api.listAdminRows({ service: "auth", table: "no_such_table" })).rejects.toMatchObject({
         code: "PERMISSION_DENIED",
@@ -904,6 +911,127 @@ describe("MockTaskaApi", () => {
       // An empty result is a real answer, not an error.
       expect(none.rows).toHaveLength(0);
       expect(none.pagination.totalRows).toBe(0);
+    });
+  });
+
+  /**
+   * The Events section (TAS-167). The summary endpoint exists only in the
+   * TAS-105 branch of the backend, so mock mode is the only place it answers at
+   * all — and it is derived from the very rows the Outbox journal reads, so the
+   * two views of the section can never disagree. That derivation is what these
+   * tests are about.
+   */
+  describe("problematic outbox summary", () => {
+    it("gives exactly auth, project and issue an outbox_events table", async () => {
+      const catalog = await api.getAdminCatalog();
+      const withOutbox = catalog.services
+        .filter((service) => service.tables.some((table) => table.name === "outbox_events"))
+        .map((service) => service.name);
+
+      // The Events service selector is built from this and nothing else, so a
+      // seed where every service had one would make that filter untestable.
+      expect(withOutbox).toEqual(["auth", "project", "issue"]);
+    });
+
+    it("counts what the journal's own rows say, service by service", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+
+      for (const count of summary.counts) {
+        const { rows } = await api.listAdminRows({
+          service: count.serviceKey,
+          table: "outbox_events",
+          pageSize: 500,
+        });
+        const failed = rows.filter((row) => row.status === "FAILED");
+        // The two other categories are thresholds rather than states, so the
+        // strong claim here is FAILED — and that every counted row is real.
+        expect(count.failedCount).toBe(failed.length);
+        const problematic = count.failedCount + count.stuckProcessingCount + count.overdueNewCount;
+        expect(problematic).toBeLessThanOrEqual(rows.length);
+        expect(problematic).toBeGreaterThan(0);
+      }
+    });
+
+    it("does not count a row that has not been waiting long enough", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+      const { rows } = await api.listAdminRows({ service: "issue", table: "outbox_events", pageSize: 500 });
+      const issue = summary.counts.find((count) => count.serviceKey === "issue")!;
+
+      // The seed carries a NEW and a PROCESSING row a couple of minutes old.
+      // Without them nothing would prove the summary applies a threshold rather
+      // than counting states.
+      expect(rows.filter((row) => row.status === "NEW").length).toBeGreaterThan(issue.overdueNewCount);
+      expect(rows.filter((row) => row.status === "PROCESSING").length).toBeGreaterThan(issue.stuckProcessingCount);
+    });
+
+    it("lists the oldest first and says when it had to stop", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+
+      const times = summary.events.map((event) => new Date(event.createdAt).getTime());
+      expect(times).toEqual([...times].sort((a, b) => a - b));
+
+      const total = summary.counts.reduce(
+        (sum, count) => sum + count.failedCount + count.stuckProcessingCount + count.overdueNewCount,
+        0,
+      );
+      // The list is capped and the counts are not, which is the whole reason
+      // `notAllShown` exists: the matrix still covers what was cut.
+      expect(summary.events.length).toBeLessThan(total);
+      expect(summary.notAllShown).toBe(true);
+    });
+
+    it("gives each event the backend's own sentence for why it is here", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+
+      for (const event of summary.events) {
+        // Prose, not an enum — the UI derives the category from `status` and
+        // never parses these. They are seeded word for word so that what the
+        // card shows in mock mode is what it will show against the gateway.
+        expect(event.reason).toBe(
+          event.status === "FAILED"
+            ? "Event processing failed"
+            : event.status === "PROCESSING"
+              ? "Event stuck in PROCESSING state (exceeded processing timeout)"
+              : "Event stuck in NEW state (not picked up for processing)",
+        );
+      }
+      // All three sentences are reachable from one read of the seed, or the
+      // card's own rendering would only ever be seen with one of them.
+      expect(new Set(summary.events.map((event) => event.status))).toEqual(new Set(["FAILED", "PROCESSING", "NEW"]));
+    });
+
+    it("names every listed event with a row the journal can open", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+
+      for (const event of summary.events) {
+        // The summary's row link goes straight to `GET /{service}/{table}/{id}`,
+        // so an id the journal cannot resolve would be a link to a 404.
+        await expect(
+          api.getAdminRow({ service: event.serviceKey, table: "outbox_events", id: event.id }),
+        ).resolves.toMatchObject({ id: event.id, status: event.status });
+      }
+    });
+
+    it("seeds a payload that parses and one that does not", async () => {
+      const { rows } = await api.listAdminRows({ service: "issue", table: "outbox_events", pageSize: 500 });
+      const payloads = rows.map((row) => String(row.payload));
+
+      // The defect admin-service ships today: the jsonb column comes through a
+      // wrapper's toString, so it is not JSON at all. The card prints it
+      // verbatim, and it must stay reachable until TAS-105 removes it.
+      expect(payloads.some((payload) => payload.startsWith("JsonByteArrayInput{"))).toBe(true);
+      expect(payloads.some((payload) => payload.startsWith("{"))).toBe(true);
+    });
+
+    it("seeds a payload whose values arrived masked", async () => {
+      const { rows } = await api.listAdminRows({ service: "auth", table: "outbox_events", pageSize: 500 });
+
+      // TAS-105 masks fields *inside* the document, so a masked payload is
+      // still valid JSON — which is what makes it fall out of the card's one
+      // rule with no special case.
+      const masked = rows.find((row) => String(row.payload).includes("****"));
+      expect(masked).toBeDefined();
+      expect(() => JSON.parse(String(masked!.payload)) as unknown).not.toThrow();
     });
   });
 });

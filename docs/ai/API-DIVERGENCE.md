@@ -223,6 +223,37 @@ everything else here is live.
 
 ---
 
+### `jsonb` values arrive as `JsonByteArrayInput{…}`, not as JSON
+
+- **Endpoints:** `GET /readonly/{service}/{table}` and
+  `GET /readonly/{service}/{table}/{id}` — every `jsonb` column,
+  `outbox_events.payload` most visibly.
+- **Observed:** admin-service's `ListTableRowsMapper.toGrpcValue` has no
+  branch for `io.r2dbc.postgresql.codec.Json`, so a jsonb value falls through
+  to `value.toString()` and reaches the client as `JsonByteArrayInput{{…}}`.
+  Verified twice on 2026-08-25: in the develop source (the fall-through
+  branch) and live (a probed `issue.outbox_events` payload begins
+  `JsonByteArrayInput{{"issue`). The fix — an `instanceof Json →
+  asString()` branch — is in
+  [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
+  (TAS-105), In Review.
+- **The UI instead:** prints it verbatim, never repaired. The card's jsonb
+  rule (`src/screens/admin/columns.ts`) is parse-as-JSON → pretty-print,
+  anything else → verbatim, so the broken format stays *visible* by design —
+  TAS-167's own instruction is to escalate, not to strip the java prefix
+  client-side. The mock deliberately seeds one such payload
+  (`src/api/mock/MockTaskaApi.ts`), with a test holding the case reachable,
+  so the verbatim branch is exercised until the backend fix lands.
+- **Switch-off:** nothing to switch — once the backend fix deploys, real
+  JSON flows into the same rule's pretty-print branch on its own.
+- **Removal:** TAS-105 merging and deploying, same as the summary entry
+  below — close the two together. When closing this one, also drop the
+  mock's malformed `JsonByteArrayInput` seed and the assertion that pins it
+  (`MockTaskaApi.test.ts`): after the fix they model a state the gateway can
+  no longer produce.
+
+---
+
 ## The contract is silent or lacks what the UI needs
 
 Same rule as above: "Closed by" is settled, the rest is live.
@@ -1629,6 +1660,50 @@ Same rule as above: "Closed by" is settled, the rest is live.
   predicate the gateway is *assumed* to apply, and that assumption is stated
   here rather than buried.
 - **Removal:** none filed. It is a mock-fidelity note, not a backend ask.
+
+---
+
+### The problems summary exists only in the TAS-105 branch contract
+
+- **Endpoint:** `GET /api/v1/readonly/outbox/problematic-summary` — the
+  stuck/failed outbox summary the Events section's Problems view is built on
+  (TAS-167).
+- **Observed:** the vendored snapshot (develop @ `4241be2`) has no such path,
+  and the deployed gateway does not serve it: the backend change is
+  [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
+  (TAS-105), In Review, unmerged. **Measured 2026-08-25** with a GLOBAL_ADMIN
+  token: the live gateway routes the path into the generic table read — the
+  `outbox` segment is taken for a service key — and answers
+  `400 INVALID_ARGUMENT` with `"Unknown service: outbox"`. That exact
+  signature, not a 404, is what "not deployed yet" looks like on the wire.
+  The shape the client is built to is the branch's `openapi.yml` — the path
+  above, `ProblematicOutboxEventsSummary` response of `events` + `counts` +
+  `notAllShown`, optional `serviceKey` query — plus three semantics read from
+  the branch's service code, because the contract does not state them:
+  `reason` is a human-readable English sentence, **not an enum** (the
+  category is derivable from `status`, which for a problematic row is exactly
+  `FAILED` / `PROCESSING` / `NEW`); `counts` always cover every outbox
+  service even when `serviceKey` narrows `events`; an unknown `serviceKey` is
+  INVALID_ARGUMENT.
+- **The UI instead:** `MockTaskaApi` implements the summary fully, derived
+  from the same mock `outbox_events` rows the Outbox journal reads, so the
+  two views of the section agree with each other. `HybridTaskaApi` passes the
+  call to REST like every other admin read — deliberately no mock fallback:
+  hybrid holds no mock store, and a synthesized summary beside a journal of
+  real rows would put two contradicting answers on one screen. Until the
+  backend deploys, the Problems view renders exactly the measured signature
+  above — INVALID_ARGUMENT with "Unknown service: outbox" — as "the gateway
+  does not serve this yet (TAS-105)": a note, not an error alert. Any other
+  error, a genuine NOT_FOUND included, keeps the ordinary error taxonomy
+  (`events.test.ts` asserts it is not swallowed). The signature disappears on
+  deploy, so the note heals itself.
+- **Switch-off:** nothing to switch — the compensation is the honest note
+  plus the mock, and `RestTaskaApi` already speaks the final shape.
+- **Removal:** TAS-105 merging and deploying closes it. Refresh
+  `docs/contract/openapi.yml` then, and close this entry with it — together
+  with the `jsonb` serialisation entry above, whose mock seed and assertion
+  come out in the same pass. If review changes the PR's contract before
+  merge, the client follows the merged version, not this entry.
 
 ---
 

@@ -1871,7 +1871,11 @@ h1 {
   white-space: nowrap;
 }
 
-.admin-table tbody tr:last-child td {
+/* `th` as well as `td`: the counts matrix puts a row header in the first cell
+   of every row, and without this the last one kept a hairline hanging off the
+   bottom-left corner of an otherwise closed table. */
+.admin-table tbody tr:last-child td,
+.admin-table tbody tr:last-child th {
   border-bottom: 0;
 }
 
@@ -2306,6 +2310,202 @@ h1 {
   font-size: 11px;
 }
 
+/* ---------- Events section (§5.8) ---------- */
+
+.admin-events {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The view switch and the service selector are both §4.2 segmented controls
+   made of links rather than buttons: a view and a service are addresses here,
+   so they have to be copyable and middle-clickable. `.segmented` cannot be
+   reused as it stands — its rules are written for `button` children and its
+   items are `flex: 1`, which would stretch three service names across the
+   plane head. `fit-content` instead: the control is as wide as its answers. */
+.admin-seg {
+  display: flex;
+  flex: none;
+  width: fit-content;
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  padding: 3px;
+}
+
+/* --fg-2 rather than the --fg-3 `.segmented button` uses: on --surface-2 that
+   token measures 2.76:1 in the light theme, under §7's 3:1 floor, and §4.2
+   itself specifies --fg-2. Height 26 is this area's density (§5.8), inside
+   §4.2's 24–30 band. */
+.admin-seg-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  border-radius: 7px;
+  padding: 0 11px;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.admin-seg-link:hover {
+  color: var(--fg);
+}
+
+.admin-seg-link[aria-current="page"] {
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: var(--shadow);
+}
+
+.admin-seg-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Under the section head, in the section's own inset. */
+.admin-events-views {
+  margin: 0 22px 13px;
+}
+
+/* A note that is the whole body of the section — the catalog failed, or the
+   gateway does not serve the summary yet — takes the section's inset, since
+   there is no plane around it to provide one. */
+.admin-events > .admin-note {
+  padding: 0 22px;
+}
+
+.admin-events-unserved {
+  max-width: 520px;
+}
+
+/* Two blocks under each other, each hugging its own content: the counters are
+   four rows and must not be stretched to fill the plane. */
+.admin-events-plane {
+  gap: 16px;
+}
+
+.admin-events-block {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  gap: 6px;
+}
+
+/* These two headings borrow `.admin-table-name` for its size and weight, and
+   that class sits in the shared monospace rule at the top of this file — which
+   is right for a table's *name* (`auth.users` is an identifier) and wrong for
+   English prose. "Counts by service" set in mono is atmosphere, which
+   docs/ai/REFERENCE-LOCK.md rules out by name.
+   `inherit`, not a font token: this file tokenises only `--font-mono`, and the
+   UI stack of §2.3 is declared on `body` — so inheriting is how the rest of
+   this section reaches it (`.admin-sort` and `.admin-key` both do). A
+   `var(--font-ui)` here would be an invalid value, the declaration would be
+   dropped, and the heading would stay mono while looking fixed. */
+.admin-events-block > h2 {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* The one block allowed to shrink, because it is the one that scrolls. */
+.admin-events-list {
+  flex: 0 1 auto;
+}
+
+/* Four narrow columns. Left to `.admin-table`'s full width it would stretch a
+   two-digit number across 1900px of empty row. */
+.admin-matrix-scroll {
+  flex: none;
+  max-width: 560px;
+}
+
+/* The service name is a row header, not a value, so it is a `th` — but it is
+   also the same monospace identifier the rest of this area prints, not a bold
+   caption. */
+.admin-matrix tbody th {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* §5.8: a count that is not zero is the content and takes --fg at 600; a zero
+   is the absence of content and takes --fg-3. Neither is coloured — a 3 under
+   Failed is already the message, and painting it red is decoration on top of a
+   fact (§1). */
+.admin-table td.admin-matrix-count {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.admin-table td.admin-matrix-count.is-zero {
+  color: var(--fg-3);
+  font-weight: 500;
+}
+
+/* Not an alert (§5.8): being cut short is what the endpoint does when a lot is
+   wrong, and the counters above have already covered the rest. */
+.admin-events-truncated {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+}
+
+/* --fg-2, not --fg-3: this sentence is the whole answer when there is nothing
+   wrong, and --fg-3 measures 2.91:1 on --bg in the light theme against §7's 3:1
+   floor — the same argument that already put `.admin-note` at --fg-2 on this
+   plane (§5.8). */
+.admin-events-empty {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+}
+
+/* A broker's error line can be a whole stack frame. It is truncated for width
+   with the whole of it in `title` and in the accessible name — and in full on
+   the event's own card. The span carries the width because `max-width` on a
+   `td` is ignored under `table-layout: auto`. */
+.admin-events-error > span {
+  display: block;
+  /* 220, not 320: with the service column frozen and nine columns before it,
+     320 pushed the ellipsis and the row's chevron past the right edge of the
+     plane at 1440 — the width this section is actually read at. */
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Several chips plus the add button, on a head that also carries the service
+   selector: they wrap rather than push the selector off the edge. */
+.admin-outbox-filter {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.admin-events-plane .admin-plane-head {
+  flex-wrap: wrap;
+}
+
+/* A JSON column laid out to be read (§5.8). Wraps rather than scrolling
+   sideways: the card is where a value is read in full, and a payload with one
+   long string in it would otherwise hide the rest of the document behind a
+   scrollbar. */
+.admin-card-json {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 /* ---------- Section under construction (§4.19) ---------- */
 
 .admin-placeholder {
@@ -2345,18 +2545,26 @@ h1 {
   text-wrap: pretty;
 }
 
-.admin-placeholder-link {
+/* A story key inside a sentence, in the two places this area names one: the
+   placeholder for a section with no endpoints, and the Events note for the one
+   endpoint the gateway has not deployed yet. One affordance, two names — each
+   says where it is, and neither pretends to be a general link style for an area
+   whose other links are all navigation. */
+.admin-placeholder-link,
+.admin-note-link {
   border-radius: 3px;
   color: var(--fg-2);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.admin-placeholder-link:hover {
+.admin-placeholder-link:hover,
+.admin-note-link:hover {
   color: var(--accent);
 }
 
-.admin-placeholder-link:focus-visible {
+.admin-placeholder-link:focus-visible,
+.admin-note-link:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -2433,8 +2641,13 @@ h1 {
     width: auto;
   }
 
-  .admin-section > .admin-note {
+  .admin-section > .admin-note,
+  .admin-events > .admin-note {
     padding: 0 14px;
+  }
+
+  .admin-events-views {
+    margin: 0 14px 11px;
   }
 }
 

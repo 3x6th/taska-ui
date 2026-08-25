@@ -758,6 +758,100 @@ describe("RestTaskaApi read-only admin", () => {
 
     expect(String(fetchStub.mock.calls[0][0])).not.toContain("/../");
   });
+
+  // The Events section's summary (TAS-167). Not in the vendored contract and
+  // not on the deployed gateway yet — this is the TAS-105 branch's shape, and
+  // these tests are the only thing standing between it and the first response
+  // (docs/ai/API-DIVERGENCE.md).
+  it("asks for the problems summary with no query at all", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer({ events: [], counts: [] }, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await new RestTaskaApi().getProblematicOutboxSummary();
+
+    const url = String(fetchStub.mock.calls[0][0]);
+    expect(url).toContain("/readonly/outbox/problematic-summary");
+    // The contract offers an optional `serviceKey` and the UI never narrows:
+    // the section is about every service at once, so a parameter here would be
+    // surface with no caller.
+    expect(url).not.toContain("?");
+  });
+
+  it("fills in every optional the summary's schema leaves out", async () => {
+    // Nothing in `ProblematicOutboxEventsSummaryResponseDto` is `required`, and
+    // a published event legitimately carries no error and no processing time.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer({
+          events: [{ id: "e1", status: "NEW", serviceKey: "auth", createdAt: "2026-08-20T09:00:00Z" }],
+          counts: [{ serviceKey: "auth" }],
+        }),
+      ),
+    );
+
+    const summary = await new RestTaskaApi().getProblematicOutboxSummary();
+
+    expect(summary.events[0]).toEqual({
+      id: "e1",
+      aggregateType: "",
+      aggregateId: "",
+      eventType: "",
+      payload: "",
+      status: "NEW",
+      createdAt: "2026-08-20T09:00:00Z",
+      // Absent stays absent: `null` prints as the section's dash, where "" would
+      // print as a blank cell that reads like a value nobody typed.
+      publishedAt: null,
+      attempts: 0,
+      lastErrorMessage: null,
+      processingStartedAt: null,
+      requestId: null,
+      serviceKey: "auth",
+      reason: "",
+    });
+    // A hole in the matrix would read as "unknown" for a service that is fine.
+    expect(summary.counts[0]).toEqual({
+      serviceKey: "auth",
+      overdueNewCount: 0,
+      stuckProcessingCount: 0,
+      failedCount: 0,
+    });
+    // Absent means nothing was cut, which is the only reading that does not put
+    // a truncation notice over a complete list.
+    expect(summary.notAllShown).toBe(false);
+  });
+
+  it("survives a summary that states nothing at all", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer({})));
+
+    await expect(new RestTaskaApi().getProblematicOutboxSummary()).resolves.toEqual({
+      events: [],
+      counts: [],
+      notAllShown: false,
+    });
+  });
+
+  it("keeps the server's order instead of sorting the events itself", async () => {
+    // Oldest first is the endpoint's own semantics: it says when this started,
+    // and re-sorting would misdescribe which events the server cut off the end.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer({
+          events: [
+            { id: "older", createdAt: "2026-08-01T00:00:00Z" },
+            { id: "newer", createdAt: "2026-08-09T00:00:00Z" },
+            { id: "oldest", createdAt: "2026-07-01T00:00:00Z" },
+          ],
+        }),
+      ),
+    );
+
+    const summary = await new RestTaskaApi().getProblematicOutboxSummary();
+
+    expect(summary.events.map((event) => event.id)).toEqual(["older", "newer", "oldest"]);
+  });
 });
 
 /**
