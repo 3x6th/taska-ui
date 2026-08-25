@@ -21,6 +21,13 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **The UI font stack is not a token** (`art-director`, 2026-08-25, TAS-167
+  re-verdict): `--font-mono` is tokenised, the UI stack is a literal on
+  `body`, so nothing like `--font-ui` exists for a rule that needs to name it
+  — the TAS-167 heading fix had to use `font-family: inherit`. Tokenising it
+  is a `:root` + DESIGN.md §2 change with product-wide reach; older than
+  TAS-167.
+
 - **The Events plane head stacks into three chrome rows at ≤1280**
   (`art-director`, 2026-08-25, TAS-167 review): two identically styled §4.2
   segmented controls (view, then service) sit flush-left one above the other,

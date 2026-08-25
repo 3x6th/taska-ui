@@ -1598,11 +1598,15 @@ export class MockTaskaStore {
     }
     const table = service.tables.find((item) => item.name === tableName);
     if (!table) {
-      // Not NOT_FOUND: the gateway permits or denies a table by config, so a
-      // table it will not serve comes back as PERMISSION_DENIED. Unreachable
-      // from the console, which only offers catalog tables, and
-      // `isMissingOrForbidden` treats both the same — but the mock is the
-      // reference implementation, so it should not teach the wrong shape.
+      // A different refusal from the one above, and deliberately so. The
+      // service key is resolved first and a key the gateway does not know is a
+      // rejected argument; a table is a later question, permitted or denied by
+      // the gateway's own config, so a table it will not serve comes back as
+      // PERMISSION_DENIED. Both are unreachable from the console, which only
+      // offers catalog tables — but the mock is the reference implementation,
+      // and the two answers are not interchangeable: `AdminError` sorts a
+      // refusal ("not this account, or not this table") from a rejected request
+      // ("read and refused, here is what to change") into different sentences.
       throw new MockApiError("PERMISSION_DENIED", `Table ${serviceName}.${tableName} is not served`);
     }
     return table;
