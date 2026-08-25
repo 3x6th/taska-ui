@@ -1632,6 +1632,47 @@ Same rule as above: "Closed by" is settled, the rest is live.
 
 ---
 
+### The problems summary exists only in the TAS-105 branch contract
+
+- **Endpoint:** `GET /api/v1/readonly/outbox/problematic-summary` — the
+  stuck/failed outbox summary the Events section's Problems view is built on
+  (TAS-167).
+- **Observed:** the vendored snapshot (develop @ `4241be2`) has no such path,
+  and the deployed gateway does not serve it: the backend change is
+  [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
+  (TAS-105), In Review, unmerged. **Measured 2026-08-25** with a GLOBAL_ADMIN
+  token: the live gateway routes the path into the generic table read — the
+  `outbox` segment is taken for a service key — and answers
+  `400 INVALID_ARGUMENT` with `"Unknown service: outbox"`. That exact
+  signature, not a 404, is what "not deployed yet" looks like on the wire.
+  The shape the client is built to is the branch's `openapi.yml` — the path
+  above, `ProblematicOutboxEventsSummary` response of `events` + `counts` +
+  `notAllShown`, optional `serviceKey` query — plus three semantics read from
+  the branch's service code, because the contract does not state them:
+  `reason` is a human-readable English sentence, **not an enum** (the
+  category is derivable from `status`, which for a problematic row is exactly
+  `FAILED` / `PROCESSING` / `NEW`); `counts` always cover every outbox
+  service even when `serviceKey` narrows `events`; an unknown `serviceKey` is
+  INVALID_ARGUMENT.
+- **The UI instead:** `MockTaskaApi` implements the summary fully, derived
+  from the same mock `outbox_events` rows the Outbox journal reads, so the
+  two views of the section agree with each other. `HybridTaskaApi` passes the
+  call to REST like every other admin read — deliberately no mock fallback:
+  hybrid holds no mock store, and a synthesized summary beside a journal of
+  real rows would put two contradicting answers on one screen. Until the
+  backend deploys, the Problems view renders the gateway's NOT_FOUND as "the
+  gateway does not serve this yet (TAS-105)" — a note, not an error alert. A
+  parameterless route has no legitimate 404 of its own, so the reading is
+  unambiguous and heals itself on deploy.
+- **Switch-off:** nothing to switch — the compensation is the honest note
+  plus the mock, and `RestTaskaApi` already speaks the final shape.
+- **Removal:** TAS-105 merging and deploying closes it. Refresh
+  `docs/contract/openapi.yml` then, and close this entry with it. If review
+  changes the PR's contract before merge, the client follows the merged
+  version, not this entry.
+
+---
+
 ## Closed
 
 Entries are closed **in place**, by re-heading them `### Closed by TAS-…` and
