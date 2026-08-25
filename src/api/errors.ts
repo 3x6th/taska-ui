@@ -43,3 +43,37 @@ export function isMissingOrForbidden(error: unknown): boolean {
   const { code, status } = apiErrorFacts(error);
   return code === "NOT_FOUND" || code === "PERMISSION_DENIED" || status === 404 || status === 403;
 }
+
+/**
+ * Whether the server read the request, understood it, and refused it because
+ * the *state* does not allow it — a business conflict rather than a bad
+ * request. The admin Users section has two of them: blocking the last active
+ * global admin, and a transition the account's current status does not permit
+ * (DESIGN.md §5.8).
+ *
+ * **The code arm is load-bearing, not a mock accommodation**, and this is the
+ * sentence that stops a future cleanup from breaking the feature's single most
+ * important refusal. The two refusals do not share a status. Read out of
+ * `RestErrorMapper.mapGrpcCodeToHttpStatus`, `GatewayErrorHandler` and
+ * `DomainStatus` on the backend's `feature/TAS-107`:
+ *
+ * - "Cannot block/unblock user with current status: X" is `ABORTED`, which
+ *   maps to HTTP **409**;
+ * - "Cannot block the last active global admin" is `FAILED_PRECONDITION`,
+ *   which maps to HTTP **400**.
+ *
+ * `GatewayErrorHandler` puts the gRPC code's own name in the response body, so
+ * on REST those `code` strings arrive verbatim. Match on the status alone and
+ * the last-admin refusal — the one this whole section is careful about — falls
+ * through to "the gateway would not accept this request", which is the wrong
+ * sentence about the wrong thing.
+ *
+ * The mock never went over a wire and carries only a code, and it emits the
+ * same two the gateway does, so one predicate serves both implementations
+ * (docs/ai/API-DIVERGENCE.md). The status arm stays for the case neither of
+ * these covers: a gateway that answers 409 with a code this build has not seen.
+ */
+export function isConflict(error: unknown): boolean {
+  const { code, status } = apiErrorFacts(error);
+  return status === 409 || code === "FAILED_PRECONDITION" || code === "ABORTED";
+}

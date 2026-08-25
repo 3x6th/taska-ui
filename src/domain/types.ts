@@ -44,6 +44,36 @@ export interface User {
   globalRole?: GlobalRole;
 }
 
+/**
+ * What `POST /admin/users/{userId}/block` and `.../unblock` answer with —
+ * `UserStatusResponseDto`. The server states the transition it performed, both
+ * ends of it, so the caller never has to infer what happened from what it
+ * asked for.
+ *
+ * `previousStatus` and `currentStatus` are the domain's own `UserStatus`
+ * because the contract declares them as that enum, exactly as it declares the
+ * status on `User` — this is not the open-string case of
+ * `IssueLink.viewLinkType`, where the contract types the field as a bare
+ * string.
+ *
+ * `updatedAt` is modelled because the contract declares it and **is not drawn
+ * anywhere**, which is a decision about *which* timestamp is worth printing
+ * rather than about whether this one is real. It is real: backend commit
+ * `62c4c675` fills it, and `AdminUserMapper` sets it in both mappers at branch
+ * head. But it times *this write*, and the row it describes is a row of
+ * `auth.users`, which has an `updated_at` of its own. Two clocks, and the row's
+ * is the one worth reading — so the list is refetched and the refetched row
+ * carries the timestamp. Deliberately not an argument about what is on screen:
+ * whether either column is drawn is a question for whichever section is drawing
+ * it, and this holds whatever that answer turns out to be.
+ */
+export interface UserStatusChange {
+  userId: string;
+  previousStatus: UserStatus;
+  currentStatus: UserStatus;
+  updatedAt: string;
+}
+
 export interface Project {
   id: string;
   projectKey: string;

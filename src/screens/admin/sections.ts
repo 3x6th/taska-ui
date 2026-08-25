@@ -22,10 +22,10 @@ export interface AdminSection {
   stories: string[];
   /**
    * Whether the section only reads (§5.8). Per section, not per area, because
-   * that is how it will stop being true: TAS-106 brings a retry to Events and
-   * TAS-107/TAS-108 bring block and unblock to Users, and each flips its own
-   * flag. Owning it at the area level would mean rewriting the shell under
-   * whichever story lands first.
+   * that is how it stops being true one section at a time: Users writes since
+   * TAS-186 and carries no marker, and TAS-106 will bring a retry to Events and
+   * take its marker off. Owning it at the area level would have meant rewriting
+   * the shell under whichever story landed first.
    */
   readOnly: boolean;
 }
@@ -37,17 +37,13 @@ export const adminSections: AdminSection[] = [
   // which is a gap in the gateway rather than a placeholder here: the section
   // works, and says so itself when the endpoint is not deployed yet.
   { id: "events", label: "Events", path: "/admin/events", icon: Radio, stories: [], readOnly: true },
-  // `read-only` is a claim about what a section does. A placeholder does
-  // nothing, so claiming it only reads is noise beside "the gateway has no
-  // endpoints for it yet" — the marker arrives with the section.
-  {
-    id: "users",
-    label: "Users",
-    path: "/admin/users",
-    icon: Users,
-    stories: ["TAS-107", "TAS-108"],
-    readOnly: false,
-  },
+  // No stories, so no placeholder: the section is built (TAS-186). It is also
+  // the one section in the area that writes, which is why it carries no
+  // `read-only` marker — blocking and unblocking an account are its whole
+  // point. The two writes come from the backend's TAS-107; against a gateway
+  // that has not deployed it yet the list still reads and the confirmation says
+  // so in its own words (docs/ai/API-DIVERGENCE.md).
+  { id: "users", label: "Users", path: "/admin/users", icon: Users, stories: [], readOnly: false },
   { id: "audit", label: "Audit", path: "/admin/audit", icon: ScrollText, stories: ["TAS-160"], readOnly: false },
 ];
 

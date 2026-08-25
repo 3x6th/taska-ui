@@ -37,6 +37,7 @@ states are not.
 | [TAS-184](https://jira.ozero.dev/browse/TAS-184) | `notification.link` is a gateway API path, and empty for `ISSUE_ASSIGNED` / `ISSUE_TRANSITIONED` | To Do | backend ask; TAS-183 compensates |
 | [TAS-185](https://jira.ozero.dev/browse/TAS-185) | The notifications bell reached only from a project board, though the inbox is the user's; now in the shared bar too | Done | merged (PR #39) |
 | [TAS-167](https://jira.ozero.dev/browse/TAS-167) | Admin Events section: problems summary over the TAS-105 endpoint, outbox journal on the generic readonly grid, event card with the jsonb rule | Done | merged (PR #40) |
+| [TAS-186](https://jira.ozero.dev/browse/TAS-186) | Admin Users section: the accounts list over `auth.users`, block and unblock behind a confirmation with a required reason | To Do | `feat/TAS-186-admin-users`, not committed |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
@@ -57,6 +58,7 @@ the story has drifted and should be transitioned rather than the table edited.
 | [TAS-156](https://jira.ozero.dev/browse/TAS-156) | nothing any more — measured fixed | Was: every table read 500s and the catalog states no `primaryKey`. Measured on the stand 2026-08-25 (TAS-167 pre-flight): rows answer 200 (`issue.outbox_events`, `project.projects`), `primaryKey` is stated, rows are addressable. No longer blocks TAS-155/TAS-161/TAS-167; row kept until the story is closed in Jira. |
 | [TAS-162](https://jira.ozero.dev/browse/TAS-162) | the board's core gesture | `GET /projects/{projectId}` 500s on every existing project. Via the membership synthesis this disables every drop target, so no card can be moved at all, and it zeroes every count on the projects screen. See `API-DIVERGENCE.md`. |
 | [TAS-178](https://jira.ozero.dev/browse/TAS-178) | label chips on board cards | `GET /issues/{issueId}` answers `labels: []` for an issue that has labels, so no card draws a chip against the gateway. The association exists — the issue-labels route returns both — so this is the detail DTO going unfilled, not missing data. Probed 2026-08-23. See `API-DIVERGENCE.md`. |
+| [TAS-107](https://jira.ozero.dev/browse/TAS-107) | the Users section's two buttons, not the section | `POST /admin/users/{userId}/block` and `…/unblock` exist only in backend PR #134 (`feature/TAS-107`, open). The list reads fine on the deployed gateway; the writes answer Spring's static-resource 404, which the confirmation dialog reads as "not deployed yet" rather than "no such user". Measured 2026-08-25. See `API-DIVERGENCE.md`. |
 | [TAS-180](https://jira.ozero.dev/browse/TAS-180) | removing the search compensation, not the search | `GET /issues/search` rejects a two-character query the contract permits, `400`s on the empty `query` its own generated spec offers as the default, and silently ignores a `priority` or `issueType` it does not recognise — answering with the full set instead of an error. The UI compensates on all three, so search ships; the constant and the enum guard come out when this closes. Probed 2026-08-23. See `API-DIVERGENCE.md`. |
 
 `TAS-147` was on this list until 2026-08-05 and is now Done: `globalRole` is in
@@ -134,3 +136,39 @@ separately:
   both of the notifications popover since before it shipped;
   `UserProfileMenu` was the only implementation of the pattern, so the three
   call sites share one hook rather than three copies of the same effect.
+
+### TAS-186 — the admin Users section
+
+- `/admin/users` lists every account of the instance with named columns —
+  person, login, global role, status — read from `auth.users` through the
+  existing read-only endpoint, replacing the §4.19 placeholder.
+- Status and role read as §4.5 pills, with colour reserved for `BLOCKED`; a
+  status this build does not recognise prints verbatim and offers no action.
+- Each row offers exactly one button: Block for `ACTIVE` and `INVITED`, Unblock
+  for `BLOCKED`, nothing otherwise.
+- The button opens a §4.11 confirmation naming the person and the transition
+  (`ACTIVE → BLOCKED`), with a required reason of at most 550 characters. A
+  blank or whitespace-only reason never reaches the wire: the submit stays
+  disabled and says why.
+- The confirmation says two things when they are true and only then: blocking
+  an `INVITED` account will not restore the invitation when it is unblocked,
+  and the target is the account the reader is signed in as. Neither is a
+  client-side prohibition — the server decides.
+- No optimistic update, deliberately and recorded in `DESIGN.md` §5.8: the
+  client cannot predict the last-active-admin count or the transition guard, so
+  the button waits and the row takes the status the *server* named.
+- On success the dialog closes, focus returns to the button, the row's pill
+  changes, the row is marked briefly and a visually-hidden live region says so
+  in words; the list is then refetched. `updatedAt` from the response is never
+  drawn.
+- On failure the dialog stays open with the §5.8 taxonomy — refusal, rejected
+  request, conflict, server fault, unreachable — the server's own sentence and
+  `X-Request-Id` beside it. An undeployed route gets its own sentence naming
+  TAS-107 rather than "user not found".
+- No filter and no sortable header, because the gateway states neither for this
+  table (measured 2026-08-25).
+- `mock`, `rest` and `hybrid` stay behaviourally interchangeable; the mock
+  reproduces every one of the server's refusals, and hybrid delegates the
+  writes with no compensation.
+- `npm run check` and `npm run build` pass, with browser evidence across the
+  three viewports in both themes.

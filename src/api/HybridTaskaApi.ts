@@ -35,6 +35,7 @@ import type {
   ProjectMember,
   ProjectMembership,
   User,
+  UserStatusChange,
   Workflow,
 } from "../domain/types";
 
@@ -290,5 +291,24 @@ export class HybridTaskaApi implements TaskaApi {
    */
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
     return this.live.getProblematicOutboxSummary();
+  }
+
+  /**
+   * Straight to the gateway, both of them, and deliberately with no fallback of
+   * any kind — even though these are the two calls the deployed gateway cannot
+   * answer yet (docs/ai/API-DIVERGENCE.md, TAS-107).
+   *
+   * They are *writes*. A compensation for a read can be a view over live data;
+   * a compensation for a write would be this class reporting a change that
+   * never happened, to a table it cannot alter, which is worse than the failure
+   * it would be hiding. So the section sees the gateway's own answer and says
+   * the operation is not deployed yet.
+   */
+  blockUser(userId: string, reason: string): Promise<UserStatusChange> {
+    return this.live.blockUser(userId, reason);
+  }
+
+  unblockUser(userId: string, reason: string): Promise<UserStatusChange> {
+    return this.live.unblockUser(userId, reason);
   }
 }

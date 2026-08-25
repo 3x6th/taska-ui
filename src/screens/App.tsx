@@ -13,6 +13,7 @@ import { AdminEventsSection } from "./admin/AdminEventsSection";
 import { AdminOutboxSection } from "./admin/AdminOutboxSection";
 import { AdminScreen } from "./admin/AdminScreen";
 import { AdminSectionPlaceholder } from "./admin/AdminSectionPlaceholder";
+import { AdminUsersSection } from "./admin/AdminUsersSection";
 import { adminSections } from "./admin/sections";
 import { BoardScreen } from "./BoardScreen";
 import { LoginScreen } from "./LoginScreen";
@@ -142,6 +143,11 @@ export function App() {
               card in place of the table. */}
           <Route path="/admin/events/outbox/:service/:id" element={<AdminOutboxSection />} />
         </Route>
+        {/* The one section of this area that writes (§5.8). No child routes:
+            an account is a row of a table the Data section already addresses,
+            so there is nothing here a deeper address would open — and the two
+            writes are dialogs over the list rather than pages of their own. */}
+        <Route path="/admin/users" element={<AdminUsersSection />} />
         {/* Every section is drawn, including the ones with no endpoints yet
             (§4.19) — the shape of the area is itself information. */}
         {adminSections

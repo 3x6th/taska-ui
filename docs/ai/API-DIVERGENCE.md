@@ -1705,6 +1705,155 @@ Same rule as above: "Closed by" is settled, the rest is live.
   come out in the same pass. If review changes the PR's contract before
   merge, the client follows the merged version, not this entry.
 
+### The admin user block/unblock endpoints exist only in the TAS-107 branch contract
+
+- **Endpoints:** `POST /api/v1/admin/users/{userId}/block` and
+  `POST /api/v1/admin/users/{userId}/unblock` — the two writes the Users
+  section of the admin console is built on (TAS-186).
+- **Observed:** the vendored snapshot (develop @ `4241be2`) has no such paths,
+  and the deployed gateway does not serve them: the backend change is
+  [backend PR #134](https://github.com/VladislavYurin/taska-backend/pull/134)
+  (TAS-107), branch `feature/TAS-107`, **open and unmerged**. **Measured
+  2026-08-25** with a GLOBAL_ADMIN token:
+  `POST /api/v1/admin/users/not-a-uuid/block` answers **404** with
+  `{"code":"NOT_FOUND","message":"No static resource
+  api/v1/admin/users/not-a-uuid/block for request '…'"}`. That message prefix
+  is Spring's static-resource fallback — what an unmapped path falls through to
+  — and it is what distinguishes "this route is not deployed" from a deployed
+  route's own `404 "User not found"`.
+
+  The shape the client is built to is the branch's `openapi.yml`: body
+  `{ reason: string }` with `minLength 1, maxLength 550`; `200` with
+  `UserStatusResponseDto { userId: uuid, previousStatus, currentStatus,
+  updatedAt: date-time }` where both statuses are the domain's existing
+  `UserStatus` (`INVITED | ACTIVE | BLOCKED`); `400` invalid uuid or missing
+  reason, `401`, `403` not GLOBAL_ADMIN, `404` user not found, `409` business
+  conflict. Plus five semantics read out of
+  `auth-service/.../AdminUserManagementServiceImpl.java` on that branch,
+  because the contract does not state them: block is legal from `ACTIVE` and
+  `INVITED` only (`"Cannot block user with current status: <STATUS>"`);
+  unblock only from `BLOCKED` and always to `ACTIVE`
+  (`"Cannot unblock user with current status: <STATUS>"`); blocking a
+  `GLOBAL_ADMIN` who is `ACTIVE` and the only such account is refused with
+  `"Cannot block the last active global admin"`; an unknown user is
+  `"User not found"`; a blank reason is rejected. **An `INVITED` account that
+  is blocked and then unblocked becomes `ACTIVE`** — the invite state is not
+  restored, which is the backend's semantics and not a bug to work around.
+- **The two refusals do not share a status, and the contract's "409" covers
+  only one of them.** Read out of `RestErrorMapper.mapGrpcCodeToHttpStatus`,
+  `GatewayErrorHandler` and `DomainStatus` on `feature/TAS-107` (found by
+  `release-reviewer` on the TAS-186 pass):
+
+  | Refusal | `DomainStatus` | HTTP | body `code` |
+  | --- | --- | --- | --- |
+  | `Cannot block/unblock user with current status: X` | `ABORTED` | **409** | `"ABORTED"` |
+  | `Cannot block the last active global admin` | `FAILED_PRECONDITION` | **400** | `"FAILED_PRECONDITION"` |
+
+  `GatewayErrorHandler` writes the gRPC code's own name into the body, so those
+  strings arrive verbatim — the gateway's code is **not** unknown, and an
+  earlier revision of this entry saying so was wrong. The consequence is
+  load-bearing: the last-active-admin refusal, the one this feature is most
+  careful about, is a **400**, and only its `code` tells it apart from a
+  genuinely bad request. `isConflict` (`src/api/errors.ts`) therefore reads
+  `status === 409 || code === "FAILED_PRECONDITION" || code === "ABORTED"`, and
+  the code arms are not a mock accommodation — trimming them to the status
+  would drop that refusal into "the gateway would not accept this request".
+  `MockTaskaApi` emits the same two codes for the same two refusals, so one
+  predicate serves both implementations; `users.test.ts` pins the 400 case.
+- **`X-Request-Id` is confirmed on these responses, and so is the CORS half
+  that makes it readable.** Measured without a token against the deployed
+  gateway: a 404 from `/api/v1/admin/users/…/block` carries `x-request-id` and
+  `access-control-expose-headers: X-Request-Id`, and the `OPTIONS` preflight
+  answers 200 with the same expose header. Both halves matter. Without the
+  expose header `response.headers.get("X-Request-Id")` returns `null` in a
+  browser however faithfully the server set it, and the dialog's request-id
+  line — the one thing in a failure that identifies it in the gateway log —
+  would silently never render.
+- **The UI instead:** `MockTaskaApi` implements both writes fully, with every
+  refusal above reproduced word for word, and seeds one `INVITED` and one
+  `BLOCKED` account so all three states and both actions are reachable by
+  clicking. `HybridTaskaApi` delegates straight to REST with **no**
+  compensation of any kind — these are writes, and a synthesised success would
+  report a change to a table this client cannot alter, which is worse than the
+  failure it would hide. Against a gateway that has not deployed them, the
+  confirmation dialog stays open and says the operation is not deployed yet,
+  naming TAS-107 — read from the 404 **and** the `No static resource`
+  substring together (`UNDEPLOYED_ROUTE_MESSAGE` in `src/api/TaskaApi.ts`,
+  `isUndeployedRoute` in `src/screens/admin/users.ts`). Any other failure keeps
+  the section's ordinary taxonomy; `users.test.ts` asserts that a deployed
+  route's `404 "User not found"` is *not* swallowed by it.
+- **`updatedAt` is mapped and never drawn — and an earlier revision of this
+  entry gave the wrong reason.** It said the backend leaves the field unset, so
+  it arrives as the 1970 epoch. That was taken from PR #134's *Известные
+  проблемы*, which is stale: backend commit `62c4c675` (2026-08-23,
+  «исправить updatedAt и actorRoles») fixed it, and at branch head `55203985`
+  `AdminUserMapper` calls `.setUpdatedAt(toTimestamp(dto.updatedAt()))` in both
+  mappers. Found by `api-contract-guard` on the TAS-186 review; recorded here
+  rather than quietly corrected, because a divergence file whose "Observed"
+  lines have gone stale is the same failure as a component that absorbed one.
+
+  The behaviour does not change, because the reason was never the only reason.
+  The response's `updatedAt` times *this write*; the row it describes is a row
+  of `auth.users`, which has an `updated_at` of its own. Two clocks, and the
+  row's is the one worth reading — so the section refetches and the refetched
+  row carries the timestamp. Note what this argument deliberately does **not**
+  rest on: whether either column is on screen. The Users section draws five
+  named columns and `updated_at` is not among them; the Data section's view of
+  the same table does draw it. The reasoning has to hold for both, and an
+  earlier revision of this paragraph that appealed to "the column the table
+  shows" was false of the section it was written about — the same overstatement,
+  one layer down, as the epoch claim it replaced.
+- **Switch-off:** nothing to switch — the compensation is the honest sentence
+  plus the mock, and `RestTaskaApi` already speaks the final shape.
+- **The uppercase status comparison is safe, and the contract is a trap about
+  it.** `actionFor` and `StatusPill` (`src/screens/admin/users.ts`) compare the
+  raw table value against `ACTIVE` / `INVITED` / `BLOCKED` exactly, with no case
+  folding. The vendored contract's own filter example writes the value
+  lowercase — `?status.equals=active`, `docs/contract/openapi.yml:1396` — which
+  reads as licence to expect either case. It is not: `develop`'s
+  `auth-service/.../0000-init.sql` declares
+  `status varchar(32) NOT NULL DEFAULT 'INVITED'` with
+  `CHECK (status IN ('INVITED','ACTIVE','BLOCKED'))`, and `global_role_chk`
+  constrains the role column the same way. The column cannot hold a lowercase
+  value, so the exact comparison is right and the example is simply wrong about
+  its own data. Recorded because the next reader will meet the example before
+  the DDL, and "make it case-insensitive" would be the wrong repair for two
+  reasons, the second stronger than the first. A lowercase `active` is a
+  spelling this build cannot tell apart from a state it has never seen, and
+  §5.8 already says what to do with one of those: print it verbatim and offer
+  no action. And `toUpperCase()` in `actionFor` would be a compensation for
+  gateway behaviour **nobody has observed** — added in this file, of all
+  files, whose entire job is to stop compensations from being invented for
+  problems that were never measured.
+- **Removal:** TAS-107 merging and deploying closes it. Refresh
+  `docs/contract/openapi.yml` then and close this entry with it; the
+  `UNDEPLOYED_ROUTE_MESSAGE` constant and `isUndeployedRoute` come out in the
+  same pass, and one probe at that point confirms the status/code table above
+  against the running gateway rather than against the branch's source. If
+  review changes the PR's contract before merge, the client follows the merged
+  version, not this entry.
+
+### `sortableColumns` and `filterableColumns` are empty for `auth.users`, which decides a section's controls
+
+- **Endpoint:** `GET /api/v1/readonly/auth/users`.
+- **Observed 2026-08-25**, GLOBAL_ADMIN token, deployed gateway: **200**, with
+  `meta.columns = [id, login, global_role, email, display_name, status,
+  created_at, updated_at]`, **none of them flagged sensitive**,
+  `primaryKey: id (uuid)`, rows under `data` and the usual `pagination` — and
+  `meta.filterableColumns` and `meta.sortableColumns` **both empty**.
+- **The UI instead:** the Users section (TAS-186) offers no filter chip and no
+  sortable header at all. This is not a simplification: the Data section
+  already reads both lists and hides what they omit, and offering either
+  control here would put a request on the wire the gateway refuses. Page is the
+  section's only view state and it stays in the URL.
+- **Not a divergence from the contract**, which says nothing about which
+  columns a table will serve — it is a measurement that decided a design, and
+  it is recorded so the next reader does not add a sort header and wonder why
+  it 400s.
+- **Removal:** if a future catalog marks columns on this table, the section can
+  grow the controls the Data section already has. Nothing has to be removed
+  first.
+
 ---
 
 ## Closed

@@ -14,11 +14,13 @@ import { adminSections, sectionForPath } from "./sections";
  * with sections: the rail on the left, the section's own body in the outlet.
  * It stays inside the app shell (§5.1); only the body below the top bar changes.
  *
- * Read-only is the whole design of what lives here today: nothing writes, and
- * no control implies it could. The role gate below hides the area; it does not
- * protect it. The server does that — `/api/v1/readonly/*` is `GLOBAL_ADMIN`-only
- * and enumerates 401/403 — so the sections render whatever the gateway answers
- * rather than assuming a refusal cannot arrive.
+ * Most of what lives here only reads, and the sections that do say so with the
+ * `read-only` marker below; Users is the exception since TAS-186, and blocking
+ * an account is its whole point. The role gate below hides the area, it does
+ * not protect it. The server does that — `/api/v1/readonly/*` and
+ * `/api/v1/admin/*` are both `GLOBAL_ADMIN`-only and both enumerate 401/403 —
+ * so the sections render whatever the gateway answers rather than assuming a
+ * refusal cannot arrive.
  */
 export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const location = useLocation();
@@ -136,11 +138,11 @@ export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               </span>
               <span className="admin-section-name">{section.label}</span>
             </h1>
-            {/* Not a request state and not decoration: this section only reads,
-                and TAS-106/107/108 bring writing to Events and Users. The
-                marker draws that line before the two get mixed, and leaves the
-                section that gains writes — which is why it is a field on the
-                section rather than a fixture of the shell. */}
+            {/* Not a request state and not decoration: it says this section
+                only reads, and it has already left one — Users writes since
+                TAS-186 and carries none — while TAS-106 will take it off
+                Events. That is why it is a field on the section rather than a
+                fixture of the shell. */}
             {section.readOnly ? <p className="admin-readonly">read-only</p> : null}
           </header>
           <Outlet />
