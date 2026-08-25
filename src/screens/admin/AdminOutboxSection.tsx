@@ -257,6 +257,9 @@ export function AdminOutboxSection() {
             filterableColumns={filterable}
             filters={view.filters}
             onChange={(filters) => update({ filters, page: 1 })}
+            // From the table the *rows* came from, like the masking above: it
+            // is the catalog entry that describes what is on screen.
+            typeOf={(column) => shownTable?.columns.find((item) => item.name === column)?.type}
           />
         ) : null}
       </div>

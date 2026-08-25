@@ -45,7 +45,16 @@ test("opens on the summary, with the counts and the oldest events", async ({ pag
   const list = page.getByRole("table", { name: "Problematic events, oldest first" });
   // Category is derived from status, and both are on screen: the raw value in
   // its own column, the reading of it beside the service.
-  await expect(list.getByRole("cell", { name: "Failed", exact: true }).first()).toBeVisible();
+  const category = list.getByRole("cell", { name: "Failed, Event processing failed", exact: true }).first();
+  await expect(category).toBeVisible();
+  // The visible word stays the one-word category; the server's own sentence is
+  // on the same cell, in `title` and in its accessible name, because it is a
+  // field of the summary with no column and no card to live in (§5.8). The
+  // exact name above is the assertion that matters: it pins the punctuation,
+  // which is not free — a hidden ", …" appended to visible text is announced
+  // with the space before the comma.
+  await expect(category.locator("[aria-hidden=true]")).toHaveText("Failed");
+  await expect(category).toHaveAttribute("title", "Event processing failed");
   await expect(list.getByRole("cell", { name: "FAILED", exact: true }).first()).toBeVisible();
   await expect(list.getByRole("cell", { name: "project", exact: true }).first()).toBeVisible();
 

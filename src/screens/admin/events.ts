@@ -1,6 +1,7 @@
 import { apiErrorFacts } from "../../api/errors";
 import { OUTBOX_SUMMARY_UNSERVED_MESSAGE } from "../../api/TaskaApi";
 import type { AdminCatalog, AdminFilter, AdminFilterOperator } from "../../domain/types";
+import { supportsOperator } from "./columns";
 
 /**
  * The table the Events section is about. One name, three services — every
@@ -136,6 +137,33 @@ export function findOutboxFilter(filter: {
 }): OutboxFilterDef | undefined {
   const key = outboxFilterKey(filter);
   return outboxFilters.find((candidate) => outboxFilterKey(candidate) === key);
+}
+
+/**
+ * Which of the nine this table can actually be asked for, given what the server
+ * says it will filter on and what the catalog says each column is.
+ *
+ * The nine pairings above are written against the columns `outbox_events` has
+ * today, and the type check is what keeps them honest if that stops being true.
+ * The gateway decides an operator's legality from the column's type and answers
+ * 400 for the rest — so a catalog that spells `created_at` as something the
+ * classifier does not recognise, or a service whose `attempts` is text, would
+ * otherwise leave this section drawing a filter that cannot succeed. The Data
+ * section applies the same guard to its own form; the two differ only in where
+ * the pairing comes from.
+ *
+ * A column with no stated type falls to `equals` alone, which is the safe
+ * direction: fewer filters, none of them refused.
+ */
+export function availableOutboxFilters(
+  filterableColumns: string[],
+  typeOf: (column: string) => string | undefined,
+): OutboxFilterDef[] {
+  return outboxFilters.filter(
+    (definition) =>
+      filterableColumns.includes(definition.column) &&
+      supportsOperator(typeOf(definition.column), definition.operator),
+  );
 }
 
 /**

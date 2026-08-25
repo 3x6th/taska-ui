@@ -284,8 +284,9 @@ const OUTBOX_SUMMARY_LIMIT = 5;
 /**
  * The backend's own sentences for why a row is problematic, word for word
  * (branch TAS-105). `reason` is prose, not an enum: the UI derives the category
- * from `status` and never parses these — they are seeded verbatim so that what
- * the card shows in mock mode is what it will show against the gateway.
+ * from `status` and never parses these — they are seeded verbatim so that the
+ * sentence the summary list carries on its category cell (in `title` and in the
+ * cell's accessible name) is in mock mode exactly what the gateway will send.
  */
 const OUTBOX_REASONS = {
   FAILED: "Event processing failed",

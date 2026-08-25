@@ -1484,8 +1484,30 @@ describe("/admin/events problems", () => {
     expect(within(list).getByRole("cell", { name: "QUARANTINED" })).toBeVisible();
     // … and the known one is still categorised beside it, so the unknown row
     // cost the rest of the table nothing.
-    expect(within(list).getByRole("cell", { name: "Failed" })).toBeVisible();
+    expect(within(list).getByRole("cell", { name: /^Failed,/ })).toBeVisible();
     expect(within(list).getAllByRole("link", { name: /^Open event / })).toHaveLength(2);
+  });
+
+  // The server's sentence is the one field of the summary with nowhere else to
+  // go: it is not a table column, so the event card cannot show it, and a
+  // column of its own would restate the category in more words. It rides on the
+  // category cell instead (§5.8).
+  it("carries the server's reason on the category cell, in title and in the accessible name", async () => {
+    renderAdmin("/admin/events");
+
+    const list = await screen.findByRole("table", { name: "Problematic events, oldest first" });
+    // The visible word is still the derived category; the sentence is only in
+    // the accessible name, which is why it reads as two things rather than one.
+    const categorised = within(list).getByRole("cell", { name: "Failed, Event processing failed" });
+    expect(categorised.querySelector("[aria-hidden=true]")).toHaveTextContent("Failed");
+    expect(categorised).toHaveAttribute("title", "Event processing failed");
+
+    // And a status with no category keeps the sentence, which is the case where
+    // it is the only explanation of why the row is in this list at all.
+    const uncategorised = within(list).getByRole("cell", {
+      name: /Something this build has never been told about/,
+    });
+    expect(uncategorised).toHaveAttribute("title", "Something this build has never been told about");
   });
 
   // The deployed gateway does not have this path and does not answer 404 for

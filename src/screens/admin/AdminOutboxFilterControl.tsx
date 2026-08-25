@@ -2,7 +2,7 @@ import { Plus, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { AdminFilter } from "../../domain/types";
 import type { OutboxFilterDef } from "./events";
-import { outboxFilterChipLabel, outboxFilterKey, outboxFilters } from "./events";
+import { availableOutboxFilters, outboxFilterChipLabel, outboxFilterKey, outboxFilters } from "./events";
 import { toIsoValue, toPickerValue } from "./utcField";
 
 interface AdminOutboxFilterControlProps {
@@ -14,6 +14,9 @@ interface AdminOutboxFilterControlProps {
    * value it just refused to show.
    */
   filterableColumns: string[];
+  /** The catalog's type for a column, which is what decides whether the gateway
+   *  will accept this filter's operator on it at all. */
+  typeOf: (column: string) => string | undefined;
   onChange: (filters: AdminFilter[]) => void;
 }
 
@@ -32,7 +35,12 @@ interface AdminOutboxFilterControlProps {
  * second `status.equals` would put a chip on screen that the wire silently
  * drops.
  */
-export function AdminOutboxFilterControl({ filters, filterableColumns, onChange }: AdminOutboxFilterControlProps) {
+export function AdminOutboxFilterControl({
+  filters,
+  filterableColumns,
+  typeOf,
+  onChange,
+}: AdminOutboxFilterControlProps) {
   const fieldId = useId();
   const popoverId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -73,13 +81,10 @@ export function AdminOutboxFilterControl({ filters, filterableColumns, onChange 
   }, [open]);
 
   const applied = new Set(filters.map((filter) => outboxFilterKey(filter)));
-  const offered = outboxFilters.filter(
-    (definition) =>
-      filterableColumns.includes(definition.column) &&
-      // Already applied ones are not offered again — except the one being
-      // edited, which has to stay in its own select or the field would show a
-      // blank.
-      (!applied.has(outboxFilterKey(definition)) || outboxFilterKey(definition) === editing),
+  const offered = availableOutboxFilters(filterableColumns, typeOf).filter(
+    // Already applied ones are not offered again — except the one being edited,
+    // which has to stay in its own select or the field would show a blank.
+    (definition) => !applied.has(outboxFilterKey(definition)) || outboxFilterKey(definition) === editing,
   );
   const definitionOf = (key: string) => offered.find((candidate) => outboxFilterKey(candidate) === key);
   const drafted = definitionOf(draft.key);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AdminCatalog } from "../../domain/types";
 import {
+  availableOutboxFilters,
   isSummaryNotDeployed,
   outboxCategory,
   outboxFilterChipLabel,
@@ -69,6 +70,70 @@ describe("the nine named filters", () => {
   // types.
   it("does not offer payload", () => {
     expect(outboxFilters.some((filter) => filter.column === "payload")).toBe(false);
+  });
+
+  // The nine pairings are written against the columns `outbox_events` has
+  // today. The gateway decides an operator's legality from the column's type
+  // and answers 400 for the rest, so a catalog that drifts must take filters
+  // away rather than leave the section drawing one that cannot succeed.
+  describe("against the catalog's own column types", () => {
+    const liveTypes: Record<string, string> = {
+      status: "text",
+      event_type: "text",
+      aggregate_type: "text",
+      aggregate_id: "uuid",
+      request_id: "text",
+      created_at: "timestamp with time zone",
+      last_error_message: "text",
+      attempts: "integer",
+    };
+    const columns = Object.keys(liveTypes);
+    const keysOf = (types: Record<string, string>) =>
+      availableOutboxFilters(columns, (column) => types[column]).map(
+        (filter) => `${filter.column}.${filter.operator}`,
+      );
+
+    it("offers all nine against the types the gateway serves today", () => {
+      expect(keysOf(liveTypes)).toHaveLength(9);
+    });
+
+    it("drops a range filter when the column stops being one the gateway can range over", () => {
+      // `created_at` spelled as something the classifier does not know is
+      // OTHER, and OTHER takes only `equals` — so both halves of the date range
+      // go, and nothing else does.
+      const keys = keysOf({ ...liveTypes, created_at: "timestamptz" });
+
+      expect(keys).not.toContain("created_at.from");
+      expect(keys).not.toContain("created_at.to");
+      expect(keys).toContain("status.equals");
+    });
+
+    it("drops Attempts ≥ when the column is not numeric, and Error contains when it is not text", () => {
+      expect(keysOf({ ...liveTypes, attempts: "character varying" })).not.toContain("attempts.from");
+      expect(keysOf({ ...liveTypes, last_error_message: "bytea" })).not.toContain("last_error_message.contains");
+    });
+
+    it("offers nothing for a column the server will not filter on", () => {
+      // Sensitive columns are stripped before this list is built, so a masked
+      // column cannot become a match oracle through the filter form.
+      expect(keysOf(liveTypes).filter((key) => key.startsWith("request_id"))).toHaveLength(1);
+      expect(
+        availableOutboxFilters(
+          columns.filter((column) => column !== "request_id"),
+          (column) => liveTypes[column],
+        ).map((filter) => filter.column),
+      ).not.toContain("request_id");
+    });
+
+    it("falls back to equals alone when the catalog states no type", () => {
+      expect(keysOf({})).toEqual([
+        "status.equals",
+        "event_type.equals",
+        "aggregate_type.equals",
+        "aggregate_id.equals",
+        "request_id.equals",
+      ]);
+    });
   });
 
   it("names the operator inside the label, so no Match control is needed", () => {

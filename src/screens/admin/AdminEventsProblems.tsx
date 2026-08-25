@@ -161,6 +161,27 @@ function Count({ value }: { value: number }) {
   return <td className={`admin-cell-mono admin-matrix-count${value === 0 ? " is-zero" : ""}`}>{value}</td>;
 }
 
+/**
+ * A cell that is read differently from how it is drawn: the short thing for the
+ * eye, the whole thing for a screen reader.
+ *
+ * The two strings are two separate elements rather than a visible word followed
+ * by a hidden tail, because the accessible name is assembled from the nodes and
+ * Chromium puts a space *between* them — a hidden `", …"` after visible text
+ * announces as "Failed , Event processing failed", with the pause in the wrong
+ * place. Building the spoken string in one node is what keeps the punctuation
+ * where it was written. Both cells that do this in this table go through here,
+ * so the trap is documented once instead of being rediscovered.
+ */
+function Spoken({ visible, spoken }: { visible: string; spoken: string }) {
+  return (
+    <>
+      <span aria-hidden="true">{visible}</span>
+      <span className="visually-hidden">{spoken}</span>
+    </>
+  );
+}
+
 function EventRow({ event }: { event: ProblematicOutboxEvent }) {
   const navigate = useNavigate();
   // The same card the journal opens, and it comes back here rather than to the
@@ -184,15 +205,34 @@ function EventRow({ event }: { event: ProblematicOutboxEvent }) {
       <td className="admin-cell-mono">{event.serviceKey}</td>
       {/* Derived from `status`, never from `reason` — and a status this build
           has never seen leaves the category blank rather than guessing. The raw
-          value is two columns along, so nothing is lost by not naming it. */}
-      <td className={category ? undefined : "admin-cell-null"}>{category ?? "—"}</td>
+          value is two columns along, so nothing is lost by not naming it.
+
+          The server's own sentence rides on this cell rather than in a column
+          of its own (§5.8): the three reasons restate the three categories
+          almost word for word, so a column would pay list width for a
+          duplicate — while `title` and the cell's accessible name cost nothing
+          and are where a reader goes when the one-word category is not enough.
+          The card is not an option: it renders the table's catalog columns, and
+          `reason` is a field of the summary that a row opened by its own
+          address does not have. An unknown status keeps the sentence the same
+          way, which is the case where it explains the most. */}
+      <td className={category ? undefined : "admin-cell-null"} title={event.reason || undefined}>
+        {event.reason ? (
+          // Announced as "Failed, Event processing failed": the category names
+          // the column, the sentence says what the server saw. Without a
+          // category there is no category to announce, so the sentence stands
+          // alone rather than being read out after a dash — the dash is chrome.
+          <Spoken spoken={category ? `${category}, ${event.reason}` : event.reason} visible={category ?? "—"} />
+        ) : (
+          (category ?? "—")
+        )}
+      </td>
       <td className="admin-cell-mono">
         {/* The relative age is what is read, but the exact instant is what gets
             pasted into a query — so it stays in `title` for the pointer and in
             the cell's accessible name for a screen reader (§5.8). */}
         <time dateTime={event.createdAt} title={event.createdAt}>
-          {relativeTime(event.createdAt)}
-          <span className="visually-hidden">, {event.createdAt}</span>
+          <Spoken spoken={`${relativeTime(event.createdAt)}, ${event.createdAt}`} visible={relativeTime(event.createdAt)} />
         </time>
       </td>
       <td>{event.eventType}</td>

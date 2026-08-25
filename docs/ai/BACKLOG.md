@@ -21,6 +21,15 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **`payload` is sortable in the outbox journal while unfilterable by
+  design** (`release-reviewer`, 2026-08-25, TAS-167 review): the sortable set
+  falls back to every column because the gateway states none
+  (`masking.ts` `statedColumns`), so the one conspicuous jsonb column draws a
+  sort button the filter popover deliberately refuses. Harmless — Postgres
+  does order jsonb — and pre-existing Data behaviour, first visible here.
+  Belongs to the `sortableColumns`/`filterableColumns` backend ask, not to a
+  client special-case.
+
 - **Record leftovers from the TAS-161 review** (`api-contract-guard`,
   2026-08-18), all in `docs/ai/API-DIVERGENCE.md` and all the same shape — a
   claim pinned to a state the 2026-08-18 stand session moved past:

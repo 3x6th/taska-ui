@@ -420,7 +420,12 @@ export interface AdminRowQuery {
  *
  * `reason` is a human-readable English sentence the backend writes, not a code.
  * Nothing may parse or switch on it — the category comes from `status` — and it
- * is shown in full on the event card.
+ * is rendered on the summary list's category cell, in `title` and in that
+ * cell's accessible name: the visible word is the derived category, the
+ * server's whole sentence is one hover or one screen reader away. Not a column
+ * of its own and not on the event card, which draws the table's catalog
+ * columns — `reason` is a field of the summary, and a row opened by its own
+ * address does not have one (§5.8).
  */
 export interface ProblematicOutboxEvent {
   id: string;

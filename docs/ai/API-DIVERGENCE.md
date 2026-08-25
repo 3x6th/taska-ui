@@ -1660,10 +1660,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
   call to REST like every other admin read — deliberately no mock fallback:
   hybrid holds no mock store, and a synthesized summary beside a journal of
   real rows would put two contradicting answers on one screen. Until the
-  backend deploys, the Problems view renders the gateway's NOT_FOUND as "the
-  gateway does not serve this yet (TAS-105)" — a note, not an error alert. A
-  parameterless route has no legitimate 404 of its own, so the reading is
-  unambiguous and heals itself on deploy.
+  backend deploys, the Problems view renders exactly the measured signature
+  above — INVALID_ARGUMENT with "Unknown service: outbox" — as "the gateway
+  does not serve this yet (TAS-105)": a note, not an error alert. Any other
+  error, a genuine NOT_FOUND included, keeps the ordinary error taxonomy
+  (`events.test.ts` asserts it is not swallowed). The signature disappears on
+  deploy, so the note heals itself.
 - **Switch-off:** nothing to switch — the compensation is the honest note
   plus the mock, and `RestTaskaApi` already speaks the final shape.
 - **Removal:** TAS-105 merging and deploying closes it. Refresh
