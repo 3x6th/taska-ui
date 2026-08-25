@@ -37,7 +37,7 @@ states are not.
 | [TAS-184](https://jira.ozero.dev/browse/TAS-184) | `notification.link` is a gateway API path, and empty for `ISSUE_ASSIGNED` / `ISSUE_TRANSITIONED` | To Do | backend ask; TAS-183 compensates |
 | [TAS-185](https://jira.ozero.dev/browse/TAS-185) | The notifications bell reached only from a project board, though the inbox is the user's; now in the shared bar too | Done | merged (PR #39) |
 | [TAS-167](https://jira.ozero.dev/browse/TAS-167) | Admin Events section: problems summary over the TAS-105 endpoint, outbox journal on the generic readonly grid, event card with the jsonb rule | Done | merged (PR #40) |
-| [TAS-186](https://jira.ozero.dev/browse/TAS-186) | Admin Users section: the accounts list over `auth.users`, block and unblock behind a confirmation with a required reason | To Do | `feat/TAS-186-admin-users`, not committed |
+| [TAS-186](https://jira.ozero.dev/browse/TAS-186) | Admin Users section: the accounts list over `auth.users`, block and unblock behind a confirmation with a required reason | Done | merged (PR #41) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
