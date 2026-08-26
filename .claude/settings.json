@@ -1,0 +1,7 @@
+{
+  "enabledPlugins": {
+    "voltagent-lang@voltagent-subagents": false,
+    "voltagent-data-ai@voltagent-subagents": false,
+    "voltagent-qa-sec@voltagent-subagents": false
+  }
+}
