@@ -38,6 +38,7 @@ states are not.
 | [TAS-185](https://jira.ozero.dev/browse/TAS-185) | The notifications bell reached only from a project board, though the inbox is the user's; now in the shared bar too | Done | merged (PR #39) |
 | [TAS-167](https://jira.ozero.dev/browse/TAS-167) | Admin Events section: problems summary over the TAS-105 endpoint, outbox journal on the generic readonly grid, event card with the jsonb rule | Done | merged (PR #40) |
 | [TAS-186](https://jira.ozero.dev/browse/TAS-186) | Admin Users section: the accounts list over `auth.users`, block and unblock behind a confirmation with a required reason | Done | merged (PR #41) |
+| [TAS-187](https://jira.ozero.dev/browse/TAS-187) | Disable the `voltagent` plugin packs for this repository so their 60 generic agents stay out of every session's context | Done | merged (PR #42) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
@@ -172,3 +173,32 @@ separately:
   writes with no compensation.
 - `npm run check` and `npm run build` pass, with browser evidence across the
   three viewports in both themes.
+
+### TAS-187 — the voltagent packs, off for this repository
+
+- `.claude/settings.json` is new and tracked: `enabledPlugins: false` for
+  `voltagent-lang`, `voltagent-data-ai` and `voltagent-qa-sec`, written by
+  `claude plugin disable -s project`. Project scope, so the rule travels with
+  the checkout rather than living on one machine.
+- The user-level install is untouched — the packs stay enabled in every other
+  project — and the merge is per-key, so `codex@openai-codex` survives here.
+- Measured on the live agent registry, not on the settings report: a session
+  opened in this checkout lists no `voltagent-*` type, one opened from the home
+  directory lists 60. A `git archive` of the commit into a bare directory
+  behaves the same, which is what "travels with the checkout" means.
+- 60, not the 63 first written into the story: the `agents` arrays in each
+  pack's `plugin.json` hold 30 + 13 + 17, and counting `*.md` on disk swept in
+  three `README.md` files that never load. The story summary is corrected; its
+  description still carries the wrong figure and the closing comment says so.
+- Worktrees pick the rule up only once their checkout carries the commit —
+  project settings are read from the session's own root and do not inherit from
+  a parent directory, so the worktrees that predate it keep the packs.
+- `AGENTS.md`'s *Plugins* bullet called these packs the best substitute for a
+  project role that cannot run. With them off that is false, and it read past
+  `CLAUDE.md`: such a role stops the run, and the substitute is the owner's
+  call after that report.
+- Residual, and not closed here: `.claude/settings.local.json` is git-ignored
+  and outranks the tracked file, so a later `claude plugin enable` without
+  `-s project` could re-enable the packs with no diff to review.
+- `npm run check` and `npm run build` pass. Neither says anything about the
+  plugin claims above; those rest on the registry probes.
