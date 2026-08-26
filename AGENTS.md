@@ -182,13 +182,15 @@ about it.
   of craft, never of direction, and never outranks `DESIGN.md` or the
   contract.
 - **Plugins** — the `voltagent-lang`, `voltagent-data-ai` and
-  `voltagent-qa-sec` packs enabled at user level are generic: they do not know
-  this repository's contract, its design system, or its roles, so the four
-  project agents come first for anything touching Taska. Do not read "generic"
-  as "irrelevant" — the packs ship `react-specialist`, `typescript-pro`,
-  `accessibility-tester`, `ui-ux-tester`, `code-reviewer` and
-  `security-auditor`, which are squarely on this repository's surface and are
-  the best substitutes available when a project role cannot run.
+  `voltagent-qa-sec` packs are enabled at user level and **disabled for this
+  repository** in `.claude/settings.json`. Between them they would put 60
+  generic agent descriptions into the context of every session here, and not
+  one of them knows this repository's contract, its design system, or its
+  roles. Do not re-enable them and do not read their absence as a gap to
+  fill: a project role that cannot run is the stop-and-report of *When the
+  harness cannot run a role*, and reaching for a generic substitute in its
+  place is the owner's call to make after that report, never yours before it.
+  `codex` stays enabled.
 - **MCP servers** — `refero` (project `.mcp.json`) for design references,
   under `docs/ai/REFERENCE-LOCK.md`'s rules. `mcp-atlassian` for Jira, which
   is registered at user level rather than in this repository, so confirm it is
