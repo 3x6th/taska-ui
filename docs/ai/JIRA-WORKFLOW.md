@@ -160,8 +160,9 @@ separately:
   the button waits and the row takes the status the *server* named.
 - On success the dialog closes, focus returns to the button, the row's pill
   changes, the row is marked briefly and a visually-hidden live region says so
-  in words; the list is then refetched. `updatedAt` from the response is never
-  drawn.
+  in words; the list is then refetched. The response's timestamp is never drawn
+  — and it is `changedAt`, not `updatedAt`; TAS-188 renamed it after reading the
+  mapper at backend PR #146's head.
 - On failure the dialog stays open with the §5.8 taxonomy — refusal, rejected
   request, conflict, server fault, unreachable — the server's own sentence and
   `X-Request-Id` beside it. An undeployed route gets its own sentence naming

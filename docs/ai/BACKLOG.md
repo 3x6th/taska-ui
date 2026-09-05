@@ -679,13 +679,29 @@ the next session in this image exactly as it bit this one.
 
 ### Left over from TAS-186 (2026-08-25)
 
-- ~~**`UserStatusResponseDto.updatedAt` arrives as the 1970 epoch.**~~ Struck:
-  it does not. The claim came from PR #134's *Известные проблемы*, which is
-  stale — backend commit `62c4c675` (2026-08-23) fixed it, and at branch head
-  `55203985` `AdminUserMapper` sets the field in both mappers
-  (`api-contract-guard`, TAS-186 review). Nothing was owed and nothing is. The
-  frontend still does not draw the field, for the reason that always mattered:
-  the time of a write is not the `updated_at` of the row it changed.
+- ~~**`UserStatusResponseDto.updatedAt` arrives as the 1970 epoch.**~~ Struck
+  twice over, and the second strike is the interesting one. It does not arrive
+  as the epoch — that came from PR #134's stale *Известные проблемы* — and the
+  field is not called `updatedAt` either: at backend PR #146's head `01a5af4`
+  it is **`changedAt`**, renamed by [TAS-188](https://jira.ozero.dev/browse/TAS-188)
+  through the domain type, both implementations and every fixture. The reason
+  given here for not drawing it was also wrong: `auth-service` builds
+  `.changedAt(savedUser.getUpdatedAt())` on a `@LastModifiedDate` column, so the
+  response timestamp *is* the row's `updated_at` rather than a second clock
+  beside it. It stays undrawn because the section has one source of values — the
+  refetched list. Three revisions of one line, and every wrong one was read out
+  of a PR body or a superseded branch head.
+- **The gateway disagrees with itself about the user status vocabulary**
+  (found on the TAS-188 contract read, 2026-09-05). At backend PR #146's head
+  `UserStatusDto` has four values including `LOCKED`, while the same service's
+  `GatewayUserStatus` — the enum behind `GET /users/me` — has only three plus
+  `UNSPECIFIED`, so `AuthMapper.toGatewayUserStatus` sends a locked account
+  through `default -> UNSPECIFIED`. A pre-lock token still works
+  (`validateUserStatus` rejects `BLOCKED` and `INVITED`, not `LOCKED`), so the
+  profile menu can be opened by an account whose status the gateway will not
+  name. The frontend guards the render; it cannot fix a value it is not sent.
+  A backend ask, and one for after PR #146 merges rather than a change to it —
+  filing it against an open PR would land on a moving branch.
 - **Two status pills now exist for one enum.** The profile menu's
   `.user-status` (§4.16) colours `ACTIVE` green and `INVITED` amber from four
   literal hexes that are in no §2 palette; the admin Users pill keeps colour

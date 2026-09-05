@@ -1722,11 +1722,14 @@ Same rule as above: "Closed by" is settled, the rest is live.
   — and it is what distinguishes "this route is not deployed" from a deployed
   route's own `404 "User not found"`.
 
-  The shape the client is built to is the branch's `openapi.yml`: body
+  The shape the client is built to is the branch's `openapi.yml` — **re-read at
+  backend PR #146's head `01a5af4` for TAS-188, where two things had moved since
+  the draft this paragraph was first written against.** Body
   `{ reason: string }` with `minLength 1, maxLength 550`; `200` with
   `UserStatusResponseDto { userId: uuid, previousStatus, currentStatus,
-  updatedAt: date-time }` where both statuses are the domain's existing
-  `UserStatus` (`INVITED | ACTIVE | BLOCKED`); `400` invalid uuid or missing
+  changedAt: date-time }` — `changedAt`, not `updatedAt` — where both statuses
+  are the domain's `UserStatus`, which now has a fourth value
+  (`INVITED | ACTIVE | BLOCKED | LOCKED`); `400` invalid uuid or missing
   reason, `401`, `403` not GLOBAL_ADMIN, `404` user not found, `409` business
   conflict. Plus five semantics read out of
   `auth-service/.../AdminUserManagementServiceImpl.java` on that branch,
@@ -1782,22 +1785,39 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `isUndeployedRoute` in `src/screens/admin/users.ts`). Any other failure keeps
   the section's ordinary taxonomy; `users.test.ts` asserts that a deployed
   route's `404 "User not found"` is *not* swallowed by it.
-- **`updatedAt` is mapped and never drawn — and an earlier revision of this
-  entry gave the wrong reason.** It said the backend leaves the field unset, so
-  it arrives as the 1970 epoch. That was taken from PR #134's *Известные
-  проблемы*, which is stale: backend commit `62c4c675` (2026-08-23,
-  «исправить updatedAt и actorRoles») fixed it, and at branch head `55203985`
-  `AdminUserMapper` calls `.setUpdatedAt(toTimestamp(dto.updatedAt()))` in both
-  mappers. Found by `api-contract-guard` on the TAS-186 review; recorded here
-  rather than quietly corrected, because a divergence file whose "Observed"
-  lines have gone stale is the same failure as a component that absorbed one.
+- **The response timestamp is `changedAt`, and this entry has now been wrong
+  about it twice.** The first revision said the backend leaves the field unset,
+  so it arrives as the 1970 epoch — taken from PR #134's *Известные проблемы*,
+  which was stale. The second said the field is `updatedAt` and is filled from
+  backend commit `62c4c675`. At backend PR #146's head `01a5af4` the field is
+  **`changedAt`**: `UserStatusResponseDto.required` lists it, and the gateway's
+  `AdminUserManagementMapper.toRestUserStatusResponse` calls
+  `restDto.setChangedAt(...)`. The client shipped in TAS-186 read `updatedAt`
+  and would have produced `undefined` in a field typed `string` on the day this
+  deployed — no error, no failing test, because the REST fixture pinned the old
+  name and so agreed with the bug. Renamed through the domain type, both
+  implementations and every fixture by TAS-188.
 
-  The behaviour does not change, because the reason was never the only reason.
-  The response's `updatedAt` times *this write*; the row it describes is a row
-  of `auth.users`, which has an `updated_at` of its own. Two clocks, and the
-  row's is the one worth reading — so the section refetches and the refetched
-  row carries the timestamp. Note what this argument deliberately does **not**
-  rest on: whether either column is on screen. The Users section draws five
+  Recorded rather than quietly corrected, twice over, because a divergence file
+  whose "Observed" lines have gone stale is the same failure as a component that
+  absorbed one — and because the lesson is now measurable: **both wrong
+  revisions were read out of a PR body or a superseded branch head.** The right
+  one was read out of the mapper at the head the frontend is actually built
+  against.
+
+  The behaviour does not change — the field is still drawn nowhere — but the
+  *argument* does, because it was also wrong. It said the response times "this
+  write" while the `auth.users` row has an `updated_at` of its own: two clocks,
+  and the row's is the one worth reading. There are not two clocks.
+  `auth-service`'s `AdminUserManagementServiceImpl` builds every one of the
+  three responses as `.changedAt(savedUser.getUpdatedAt())` on an entity whose
+  column carries `@LastModifiedDate`, so the response timestamp **is** the
+  row's `updated_at`, handed back early. The reason to leave it undrawn is
+  simpler and survives: the section has one source of values — the refetched
+  list — and a timestamp from the write response would be a second one, true
+  for the two seconds before the refetch lands. Note what this argument
+  deliberately does **not** rest on: whether either column is on screen. The
+  Users section draws five
   named columns and `updated_at` is not among them; the Data section's view of
   the same table does draw it. The reasoning has to hold for both, and an
   earlier revision of this paragraph that appealed to "the column the table
@@ -1832,6 +1852,90 @@ Same rule as above: "Closed by" is settled, the rest is live.
   against the running gateway rather than against the branch's source. If
   review changes the PR's contract before merge, the client follows the merged
   version, not this entry.
+
+### `UserStatus` grew a fourth value, and it arrives with the same PR the writes do
+
+`UserStatusDto` at backend PR #146's head `01a5af4` has four values —
+`INVITED`, `ACTIVE`, `BLOCKED`, `LOCKED` — against the three the domain modelled.
+`LOCKED` is a credential lockout: `AuthServiceImpl.handleFailedAttempt` sets it
+after `maxFailedAttempts` failed sign-ins and `resetFailedAttempts` restores
+`ACTIVE` on the next successful one. Nobody decides it, and it clears itself.
+
+**It does not exist on `develop`.** Measured at `ref=develop` on 2026-09-05:
+`auth-service`'s `UserStatus` entity declares exactly `ACTIVE`, `BLOCKED`,
+`INVITED`; `common.proto`'s `enum UserStatus` has no `USER_STATUS_LOCKED`; and
+`develop`'s `handleFailedAttempt(Credential)` takes no `User` and writes no
+status. The two-argument version that sets `LOCKED` is introduced by PR #146,
+so the whole lifecycle ships with the same unmerged change as the three writes.
+
+This is recorded because the first version of the TAS-188 brief asserted the
+opposite — that `LOCKED` was already arriving in `auth.users` rows the Users
+section prints — and the code was written with comments arguing from it. The
+claim came from reading the PR head and assuming it described today. An
+adversarial pass over the spec caught it by reading `develop`. The rule this
+buys: **a fact about what is deployed is read at `develop`, never at a PR head**,
+and the two are different sources even when they are the same file.
+
+Compensating UI behaviour: none is needed before the merge — no row can carry
+the value. After it, the union, the label, the pill and the third action all
+name it. Removed by: PR #146 merging and deploying, which retires the
+`develop`-versus-head distinction for this value entirely.
+
+### `GET /users/me` answers `UNSPECIFIED` for a locked account, not `LOCKED`
+
+A second-order effect of the entry above, and one the frontend cannot fix. The
+gateway's own `GatewayUserStatus` enum — the one behind `GET /users/me` — has
+only `UNSPECIFIED/INVITED/ACTIVE/BLOCKED` at PR #146's head, while the same
+service's `UserStatusDto` on the admin writes has four values. So the gateway
+now disagrees with itself about the status vocabulary, and
+`AuthMapper.toGatewayUserStatus` sends a locked account through
+`default -> UNSPECIFIED`. That account can still reach the profile menu:
+`AuthServiceImpl.validateUserStatus` rejects `BLOCKED` and `INVITED` and lets
+`LOCKED` through, so a token minted before the lock keeps working.
+
+Compensating UI behaviour: `UserProfileMenu` guards its label lookup so an
+unmodelled status prints as itself rather than as an empty badge. Note that
+widening the union does **not** cover this case — the value that arrives is
+`UNSPECIFIED`, which is not a `UserStatus` at all. Removed by: the gateway
+teaching `GatewayUserStatus` about `LOCKED`; there is a backlog line for it.
+
+### `reset-lockout` refuses with 400, and the backend's own test says 409
+
+`POST /admin/users/{userId}/reset-lockout` is legal only from `LOCKED`. Anything
+else raises `DomainStatus.FAILED_PRECONDITION("User is not in LOCKED status")`
+in `auth-service`'s `AdminUserManagementServiceImpl`, and
+`RestErrorMapper.mapGrpcCodeToHttpStatus` maps `FAILED_PRECONDITION` to **400**
+with `"FAILED_PRECONDITION"` in the body's `code` — re-verified unchanged at
+`01a5af4`, along with `ABORTED -> 409`.
+
+`AdminUserManagementControllerTest` in the same PR has a case named «должен
+вернуть 409 если пользователь не в статусе LOCKED» which stubs the gRPC client
+with a `ResponseStatusException(CONFLICT)` and then asserts 409. It measures its
+own stub. The client is built to 400, and `isConflict` reads the `code` rather
+than the status, so it classifies the refusal correctly either way — which is
+the same property that already carries the last-active-admin refusal.
+
+Compensating UI behaviour: none; the modal says "conflict" from the code.
+Removed by: the backend fixing either the mapping or the test. Raised on the PR
+and on TAS-108.
+
+### `mock` refused an over-long reason and `rest` sent it — closed by TAS-188
+
+Not a gateway divergence but an implementation one, and it belongs here because
+`AGENTS.md` makes mock/rest/hybrid interchangeability a constraint rather than a
+preference. `MockTaskaApi`'s reason guard refused anything past 550 characters;
+`RestTaskaApi`'s refused only a blank one, deliberately and with a comment
+saying a client-side length check "would be a second, weaker copy of a rule the
+server states". So a 600-character reason threw locally in mock mode and went to
+the wire in rest mode.
+
+The argument was wrong in its own terms: the 550 is enforced in exactly **one**
+place on the server — the gateway's generated DTO, from `maxLength` — because
+`auth-service` and `admin-service` validate only non-blank
+(`GrpcRequestValidators.requireNonBlank`). A single server-side check is not a
+rule the client is duplicating; it is one the client is relying on. Closed by
+giving the REST guard the same cap as the mock's, which costs nothing in
+practice because the field carries `maxLength={550}`.
 
 ### `sortableColumns` and `filterableColumns` are empty for `auth.users`, which decides a section's controls
 
