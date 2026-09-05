@@ -736,6 +736,22 @@ the next session in this image exactly as it bit this one.
   not-in-`LOCKED` refusals are both 400. The enumeration directly below it is
   unambiguous and the sentence is wording rather than a contract claim, which is
   why it was left rather than opening another builder pass for one word.
+- **A no-op update bumps `version` and `updatedAt` in the mock and not on the
+  server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
+  early without saving when the computed payload is empty; the mock always
+  writes. Pre-existing and identical for summary-only edits before this story,
+  so not introduced here — but it is a real mock/server divergence and the
+  interchangeability rule says it should either be closed or written up. This is
+  the writing-up.
+- **A planning edit writes the mock's generic history event, not the server's
+  per-field payload** (`frontend-builder`, TAS-189). Wants doing with the UI
+  half, where the activity feed will actually show one.
+- **`JSON.stringify({x: NaN})` emits `null`, and `null` means "clear the field"**
+  (`frontend-builder`, TAS-189). `Number("")` from an emptied numeric input
+  would therefore erase a value rather than fail. Guarded with `Number.isFinite`
+  in the API layer and tested on both implementations — the line is here because
+  the UI half will build the inputs that can produce it, and the guard must not
+  be read as belt-and-braces.
 - **A `LOCKED` account keeps full product access on a token minted before the
   lock** (`api-contract-guard`, TAS-188). Broader than the profile-menu line
   below it: `AuthServiceImpl.validateUserStatus` rejects `BLOCKED` and

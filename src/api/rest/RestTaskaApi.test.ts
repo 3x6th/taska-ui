@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
+import { STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
  * The 401 path is the one piece of RestTaskaApi the UI cannot see for itself:
@@ -982,6 +983,10 @@ describe("RestTaskaApi issue search", () => {
         issueType: "BUG",
         priority: "HIGH",
         assigneeId: "user-mark",
+        // Neither response states it — backend PR #148 adds `storyPoints` to
+        // `IssueShortResponseDto` and no deployed gateway carries it yet — so
+        // both hits read "not estimated" rather than `undefined`.
+        storyPoints: null,
       },
       {
         id: "issue-2",
@@ -990,6 +995,7 @@ describe("RestTaskaApi issue search", () => {
         issueType: "STORY",
         priority: "MEDIUM",
         assigneeId: null,
+        storyPoints: null,
       },
     ]);
     // The count is of the whole matching set, not of the page.
@@ -1444,5 +1450,308 @@ describe("RestTaskaApi admin user writes", () => {
       status: 404,
       message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE),
     });
+  });
+});
+
+/**
+ * The five planning fields (TAS-189) as `RestTaskaApi` puts them on the wire.
+ *
+ * The whole section is about one defect. `PUT /issues/{issueId}` is a **full
+ * replace**: `IssueServiceImpl.updateIssue` on backend `develop` writes all five
+ * unconditionally, the proto fields are `optional`, the gateway sets them with
+ * `setIfPresent` and `GrpcIssueService` resolves an unset optional with
+ * `.orElse(null)` — so a field the request omits is erased. The board sends
+ * `{summary}`, `{priority}` and `{description}` one at a time, and the day
+ * backend PR #148 exposes these fields those three edits would each wipe the
+ * story points and both dates.
+ *
+ * What is pinned here, and cannot be seen from the mock: the exact body. A
+ * partial edit re-sends the values it is keeping, a resolved `null` is omitted
+ * because omission is how this contract spells "not set", and against a gateway
+ * that carries no planning fields yet the body is byte for byte what it was
+ * before this story.
+ */
+describe("RestTaskaApi issue planning fields", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  interface Init {
+    method?: string;
+    body?: string;
+  }
+
+  const stubFetch = (route: (input: string, init?: Init) => unknown, status = 200) => {
+    const fetchStub = vi.fn(async (input: string, init?: Init) => answer(status, route(input, init)));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  /** The detail read, with whatever the gateway of the day carries on it. */
+  const storedIssue = (planning: Record<string, unknown> = {}) => ({
+    issue: {
+      id: "issue-1",
+      projectId: "project-1",
+      issueNumber: 101,
+      issueKey: "TAS-101",
+      issueType: "BUG",
+      summary: "Login form validation fails on empty email",
+      description: "Returns a 500 instead of a 400.",
+      status: "IN_PROGRESS",
+      priority: "HIGH",
+      assigneeId: "user-mark",
+      reporterId: "user-anna",
+      createdAt: "2026-06-12T09:10:00Z",
+      updatedAt: "2026-06-12T09:11:00Z",
+      version: 4,
+      deletedAt: null,
+      labels: [],
+      ...planning,
+    },
+    history: [],
+  });
+
+  /** A read and a write on the same path, told apart by the method. */
+  const stubIssue = (planning: Record<string, unknown> = {}, updateResponse: Record<string, unknown> = {}) =>
+    stubFetch((_input, init) =>
+      (init?.method ?? "GET") === "GET"
+        ? storedIssue(planning)
+        : {
+            id: "issue-1",
+            summary: "Login form validation fails on empty email",
+            description: "Returns a 500 instead of a 400.",
+            priority: "HIGH",
+            ...updateResponse,
+          },
+    );
+
+  const writtenBody = (fetchStub: ReturnType<typeof stubFetch>) => {
+    const put = fetchStub.mock.calls.find(([, init]) => init?.method === "PUT");
+    return JSON.parse(put?.[1]?.body ?? "{}") as Record<string, unknown>;
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("re-sends every planning field it is keeping when only the summary is edited", async () => {
+    const fetchStub = stubIssue({
+      storyPoints: 3,
+      startDate: "2026-06-15",
+      dueDate: "2026-06-26",
+      originalEstimateMinutes: 480,
+      remainingEstimateMinutes: 240,
+    });
+
+    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { summary: "Revisited" });
+
+    // The regression, stated on the request rather than on the answer: the four
+    // fields nobody touched are on the wire, so the full replace replaces them
+    // with themselves.
+    expect(writtenBody(fetchStub)).toEqual({
+      summary: "Revisited",
+      description: "Returns a 500 instead of a 400.",
+      priority: "HIGH",
+      storyPoints: 3,
+      startDate: "2026-06-15",
+      dueDate: "2026-06-26",
+      originalEstimateMinutes: 480,
+      remainingEstimateMinutes: 240,
+    });
+    expect(updated).toMatchObject({ storyPoints: 3, dueDate: "2026-06-26", remainingEstimateMinutes: 240 });
+  });
+
+  it("sends the same three keys it always did against a gateway that has no planning fields", async () => {
+    // Backend PR #148 has not merged, so the detail read carries none of the
+    // five, every one of them resolves to `null` and every one is omitted. This
+    // is why the fix can ship before the backend does: not one request byte
+    // changes.
+    const fetchStub = stubIssue();
+
+    await new RestTaskaApi().updateIssue("project-1", "issue-1", { priority: "LOW" });
+
+    expect(writtenBody(fetchStub)).toEqual({
+      summary: "Login form validation fails on empty email",
+      description: "Returns a 500 instead of a 400.",
+      priority: "LOW",
+    });
+  });
+
+  it("omits the key it was asked to clear and keeps sending the rest", async () => {
+    const fetchStub = stubIssue({ storyPoints: 3, dueDate: "2026-06-26", originalEstimateMinutes: 480 });
+
+    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { storyPoints: null });
+
+    const body = writtenBody(fetchStub);
+    expect(body).not.toHaveProperty("storyPoints");
+    expect(body).toMatchObject({ dueDate: "2026-06-26", originalEstimateMinutes: 480 });
+    expect(updated.storyPoints).toBeNull();
+  });
+
+  it("keeps a zero and a fraction on the wire, where a falsy check would drop them", async () => {
+    const fetchStub = stubIssue({ storyPoints: 0, originalEstimateMinutes: 0 });
+
+    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { summary: "Same" });
+
+    expect(writtenBody(fetchStub)).toMatchObject({ storyPoints: 0, originalEstimateMinutes: 0 });
+    expect(updated.storyPoints).toBe(0);
+    expect(updated.originalEstimateMinutes).toBe(0);
+
+    vi.unstubAllGlobals();
+    const halfStub = stubIssue({ storyPoints: 1.5 });
+    const half = await new RestTaskaApi().updateIssue("project-1", "issue-1", { summary: "Same" });
+    expect(writtenBody(halfStub)).toMatchObject({ storyPoints: 1.5 });
+    expect(half.storyPoints).toBe(1.5);
+  });
+
+  it("reads the answer as 'not set' where it states nothing, rather than as 'unchanged'", async () => {
+    // `UpdateIssueResponseDto` carries only the fields that are set, so the
+    // cleared one is simply absent from it. Spreading the response over the
+    // pre-edit issue would leave the old 3 standing on a field just cleared.
+    const fetchStub = stubIssue({ storyPoints: 3, dueDate: "2026-06-26" }, { dueDate: "2026-06-26" });
+
+    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { storyPoints: null });
+
+    expect(writtenBody(fetchStub)).not.toHaveProperty("storyPoints");
+    expect(updated.storyPoints).toBeNull();
+    expect(updated.dueDate).toBe("2026-06-26");
+  });
+
+  it("prefers a zero the server states over the value it was sent", async () => {
+    const fetchStub = stubIssue({ storyPoints: 5 }, { storyPoints: 0 });
+
+    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { storyPoints: 0 });
+
+    expect(writtenBody(fetchStub)).toMatchObject({ storyPoints: 0 });
+    expect(updated.storyPoints).toBe(0);
+  });
+
+  it("folds an absent planning field to null instead of leaving it undefined", async () => {
+    // The trap a spread hides: five members typed `number | null` that are
+    // actually `undefined`, which type-checks and renders "undefined".
+    stubFetch(() => storedIssue());
+
+    const { issue } = await new RestTaskaApi().getIssueById("issue-1");
+
+    expect(issue).toMatchObject({
+      storyPoints: null,
+      startDate: null,
+      dueDate: null,
+      originalEstimateMinutes: null,
+      remainingEstimateMinutes: null,
+    });
+    for (const key of ["storyPoints", "startDate", "dueDate", "originalEstimateMinutes", "remainingEstimateMinutes"]) {
+      expect(Object.values(issue)).not.toContain(undefined);
+      expect(issue).toHaveProperty(key);
+    }
+  });
+
+  it("refuses the values the gateway would refuse, without spending the write", async () => {
+    const api = new RestTaskaApi();
+    const refuse = async (input: Record<string, unknown>, message?: string) => {
+      vi.unstubAllGlobals();
+      const fetchStub = stubIssue({ storyPoints: 3, startDate: "2026-06-15", dueDate: "2026-06-26" });
+      await expect(api.updateIssue("project-1", "issue-1", input)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        status: 400,
+        ...(message === undefined ? {} : { message }),
+      });
+      // The read happened — the stored dates are half of what is checked — and
+      // the write did not.
+      expect(fetchStub.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+    };
+
+    // The same input the mock refuses, refused with the same sentence: both
+    // sides read it from src/api/planningFields.ts.
+    await refuse({ storyPoints: -0.5 }, STORY_POINTS_RANGE_MESSAGE);
+    await refuse({ storyPoints: 1000 });
+    await refuse({ storyPoints: 1.235 });
+    await refuse({ storyPoints: Number.NaN });
+    await refuse({ originalEstimateMinutes: -1 });
+    await refuse({ remainingEstimateMinutes: 30.5 });
+    await refuse({ startDate: "2026-13-01" });
+    await refuse({ startDate: "2026-02-30" });
+    await refuse({ startDate: "2026-08-02", dueDate: "2026-08-01" });
+    // The stored-date cross-check, both ways round. The second is refused even
+    // though the same request clears the due date it is being compared with.
+    await refuse({ startDate: "2026-07-01" });
+    await refuse({ startDate: "2026-07-01", dueDate: null });
+    await refuse({ dueDate: "2026-06-01" });
+  });
+
+  it("sends only the planning fields a create states", async () => {
+    const fetchStub = stubFetch(() => storedIssue({ storyPoints: 2.5 }).issue, 201);
+
+    await new RestTaskaApi().createIssue("project-1", {
+      issueType: "TASK",
+      summary: "Plan the migration",
+      description: "With dates.",
+      priority: "MEDIUM",
+      storyPoints: 2.5,
+      startDate: "2026-09-01",
+      // Explicitly nothing, and on a create that is the same as not saying it.
+      dueDate: null,
+    });
+
+    expect(JSON.parse(fetchStub.mock.calls[0][1]?.body ?? "{}")).toEqual({
+      issueType: "TASK",
+      summary: "Plan the migration",
+      description: "With dates.",
+      priority: "MEDIUM",
+      storyPoints: 2.5,
+      startDate: "2026-09-01",
+    });
+  });
+
+  it("refuses a create the gateway would refuse, without spending the request", async () => {
+    const fetchStub = stubFetch(() => storedIssue().issue, 201);
+
+    await expect(
+      new RestTaskaApi().createIssue("project-1", {
+        issueType: "TASK",
+        summary: "Backwards",
+        description: "",
+        priority: "LOW",
+        startDate: "2026-09-30",
+        dueDate: "2026-09-01",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400 });
+
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("carries storyPoints off a search hit and folds an absent one to null", async () => {
+    stubFetch(() => ({
+      items: [
+        { id: "issue-1", issueKey: "TAS-101", summary: "One", issueType: "BUG", priority: "HIGH", storyPoints: 0 },
+        { id: "issue-2", issueKey: "TAS-102", summary: "Two", issueType: "TASK", priority: "LOW" },
+      ],
+      totalCount: 2,
+    }));
+
+    const { items } = await new RestTaskaApi().searchIssues({ query: "form" });
+
+    // Zero is an estimate; the missing one is not.
+    expect(items[0].storyPoints).toBe(0);
+    expect(items[1].storyPoints).toBeNull();
+    // And the hit is still as narrow as `IssueShortResponseDto`.
+    expect(Object.keys(items[0]).sort()).toEqual([
+      "assigneeId",
+      "id",
+      "issueKey",
+      "issueType",
+      "priority",
+      "storyPoints",
+      "summary",
+    ]);
   });
 });

@@ -21,6 +21,8 @@ import {
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
+import type { PlanningFields, PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
+import { emptyPlanningFields, planningFieldRefusal, resolvePlanningFields } from "../planningFields";
 import type {
   AdminCatalog,
   AdminRow,
@@ -167,6 +169,20 @@ const requireAdminWriteReason = (raw: string): string => {
     throw new MockApiError("INVALID_ARGUMENT", ADMIN_WRITE_REASON_TOO_LONG_MESSAGE);
   }
   return reason;
+};
+
+/**
+ * The planning-field refusals, decided in src/api/planningFields.ts so that this
+ * side and `RestTaskaApi` cannot drift, and thrown here as the code the gateway
+ * answers with. `stored` is the issue as it stands — `null` on a create —
+ * because two of them compare the request against the stored row rather than
+ * against itself.
+ */
+const requirePlanningFields = (input: PlanningFieldsInput, stored: StoredPlanningDates | null): void => {
+  const refusal = planningFieldRefusal(input, stored);
+  if (refusal) {
+    throw new MockApiError(refusal.code, refusal.message);
+  }
 };
 
 /** Substring, case-insensitive, over `issue_key` OR `summary` OR `description` — the probe's own OR. */
@@ -649,6 +665,10 @@ export class MockTaskaStore {
       assigneeId: string | null,
       reporterId: string,
       day: number,
+      // The five planning fields, as one trailing bag rather than as five more
+      // positional arguments: most seeds state none of them, and the ones that
+      // do are worth being able to read.
+      planning: Partial<PlanningFields> = {},
     ): Issue => ({
       id: makeId(`issue-${key}-${number}`),
       projectId,
@@ -666,6 +686,14 @@ export class MockTaskaStore {
       version: 1,
       deletedAt: null,
       labels: [],
+      // `?? null` and not `||`: `storyPoints: 0` is one of the two seeded values
+      // this file exists to make clickable, and `0 || null` would seed it as
+      // "not estimated".
+      storyPoints: planning.storyPoints ?? null,
+      startDate: planning.startDate ?? null,
+      dueDate: planning.dueDate ?? null,
+      originalEstimateMinutes: planning.originalEstimateMinutes ?? null,
+      remainingEstimateMinutes: planning.remainingEstimateMinutes ?? null,
     });
 
     this.issues = [
@@ -681,6 +709,15 @@ export class MockTaskaStore {
         MARK_ID,
         ANNA_ID,
         12,
+        // The only seed carrying all five at once, so a reader can see the
+        // whole set on one issue: two days of work planned, half of it left.
+        {
+          storyPoints: 3,
+          startDate: "2026-06-15",
+          dueDate: "2026-06-26",
+          originalEstimateMinutes: 480,
+          remainingEstimateMinutes: 240,
+        },
       ),
       issue(
         TASKA_PROJECT_ID,
@@ -694,6 +731,10 @@ export class MockTaskaStore {
         ANNA_ID,
         ANNA_ID,
         13,
+        // Estimated at **nought**, which is not the same as unestimated. Seeded
+        // because every plausible implementation of "show the points if there
+        // are any" gets this one wrong and shows nothing.
+        { storyPoints: 0 },
       ),
       issue(
         TASKA_PROJECT_ID,
@@ -707,6 +748,10 @@ export class MockTaskaStore {
         SOFIA_ID,
         SOFIA_ID,
         14,
+        // Half a point. `format: double` permits it and the column stores it,
+        // so an integer-only formatter truncates this to "1" and nothing fails.
+        // The due date stands alone: one end of the window is a legal state.
+        { storyPoints: 1.5, dueDate: "2026-07-03" },
       ),
       issue(
         TASKA_PROJECT_ID,
@@ -733,6 +778,9 @@ export class MockTaskaStore {
         ANNA_ID,
         MARK_ID,
         15,
+        // The mirror of TAS-103: started, with no deadline. Between the two,
+        // both halves of the stored-date cross-check have something to fire on.
+        { startDate: "2026-06-20", originalEstimateMinutes: 120, remainingEstimateMinutes: 90 },
       ),
       issue(
         TASKA_PROJECT_ID,
@@ -759,6 +807,9 @@ export class MockTaskaStore {
         SOFIA_ID,
         ANNA_ID,
         16,
+        // Estimated but never scheduled, and not started against: the remaining
+        // estimate equals the original.
+        { storyPoints: 8, originalEstimateMinutes: 960, remainingEstimateMinutes: 960 },
       ),
       issue(
         TASKA_PROJECT_ID,
@@ -799,7 +850,7 @@ export class MockTaskaStore {
         MARK_ID,
         18,
       ),
-      issue(WEB_PROJECT_ID, "WEB", 12, "STORY", "Responsive board layout", "Board columns should collapse gracefully under 900px.", "TODO", "MEDIUM", SOFIA_ID, ANNA_ID, 11),
+      issue(WEB_PROJECT_ID, "WEB", 12, "STORY", "Responsive board layout", "Board columns should collapse gracefully under 900px.", "TODO", "MEDIUM", SOFIA_ID, ANNA_ID, 11, { storyPoints: 13, startDate: "2026-06-22", dueDate: "2026-07-10" }),
       issue(WEB_PROJECT_ID, "WEB", 13, "BUG", "Dark theme contrast on chips", "Type chips fail AA contrast on the dark surface.", "IN_PROGRESS", "HIGH", PRIYA_ID, SOFIA_ID, 12),
       issue(WEB_PROJECT_ID, "WEB", 14, "TASK", "Persist last opened project", "Remember the user's last project on reload.", "DONE", "LOW", ANNA_ID, ANNA_ID, 7),
       issue(MOB_PROJECT_ID, "MOB", 5, "TASK", "Push notification permission flow", "Ask for permission after the first assignment, not on launch.", "TODO", "MEDIUM", TOM_ID, MARK_ID, 10),
@@ -1145,6 +1196,10 @@ export class MockTaskaStore {
 
   createIssue(projectId: string, input: CreateIssueInput): Issue {
     const project = this.getProject(projectId);
+    // No stored record to compare against on a create, so the date cross-check
+    // has nothing to read and the two dates are only checked against each other.
+    requirePlanningFields(input, null);
+    const planning = resolvePlanningFields(input, emptyPlanningFields());
     const issueNumber =
       Math.max(0, ...this.issues.filter((item) => item.projectId === projectId).map((item) => item.issueNumber)) + 1;
     const issue: Issue = {
@@ -1164,6 +1219,7 @@ export class MockTaskaStore {
       version: 1,
       deletedAt: null,
       labels: [],
+      ...planning,
     };
     this.issues.push(issue);
     this.historyByIssue[issue.id] = [];
@@ -1174,11 +1230,33 @@ export class MockTaskaStore {
     return this.issueView(issue);
   }
 
+  /**
+   * The same read-modify-write `RestTaskaApi` does, for the same reason: the
+   * gateway's `PUT` is a full replace, so "leave it as it is" is a value the
+   * client resolves rather than a key it omits. Reproduced here so the two
+   * cannot answer a partial edit differently — which is the defect this whole
+   * story is about.
+   *
+   * `Object.assign(issue, { ...input })` is what this used to be, and it is
+   * wrong twice over now. It writes an explicit `undefined` over a stored value
+   * whenever a caller passes `{ storyPoints: undefined }` — which
+   * `RestTaskaApi` can never produce, because it resolves first, but which a
+   * component constructs by spreading a form state; and it cannot tell that
+   * `undefined` from the `null` that means "clear it". Both are resolved before
+   * anything is written.
+   */
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Issue {
     const issue = this.findIssue(projectId, issueId);
+    // Before any mutation, and against the issue as stored: two of the refusals
+    // compare the request with the record it is about, so a store that wrote
+    // first and checked afterwards would accept what the gateway refuses.
+    requirePlanningFields(input, issue);
     const changedPriority = input.priority && input.priority !== issue.priority;
     Object.assign(issue, {
-      ...input,
+      summary: input.summary ?? issue.summary,
+      description: input.description ?? issue.description,
+      priority: input.priority ?? issue.priority,
+      ...resolvePlanningFields(input, issue),
       updatedAt: now(),
       version: issue.version + 1,
     });
@@ -2307,10 +2385,12 @@ export class MockTaskaStore {
   }
 
   /**
-   * The issue as `IssueShortResponseDto` states it — six fields, listed one by
-   * one rather than spread, so the mock can never hand out a `status` or a
-   * `projectId` the gateway would not have sent. That narrowness is the whole
-   * reason `IssueSearchHit` exists.
+   * The issue as `IssueShortResponseDto` states it — seven fields since backend
+   * PR #148 added `storyPoints` to that DTO, listed one by one rather than
+   * spread, so the mock can never hand out a `status` or a `projectId` the
+   * gateway would not have sent. That narrowness is the whole reason
+   * `IssueSearchHit` exists, and adding the seventh field is the moment it was
+   * most likely to be lost.
    */
   private searchHit(issue: Issue): IssueSearchHit {
     return {
@@ -2320,6 +2400,10 @@ export class MockTaskaStore {
       summary: issue.summary,
       priority: issue.priority,
       assigneeId: issue.assigneeId || null,
+      // The seventh field, and the only planning field this DTO carries. Stated
+      // one by one like its neighbours so the mock can never hand out a date or
+      // an estimate the gateway would not have sent.
+      storyPoints: issue.storyPoints,
     };
   }
 

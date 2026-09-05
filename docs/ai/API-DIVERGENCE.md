@@ -1960,6 +1960,100 @@ rule the client is duplicating; it is one the client is relying on. Closed by
 giving the REST guard the same cap as the mock's, which costs nothing in
 practice because the field carries `maxLength={550}`.
 
+### `PUT /issues/{issueId}` is a full replace, and the contract does not say so
+
+The contract marks only `[summary, description, priority]` required on
+`UpdateIssueRequestDto` and says nothing about what an absent planning field
+means. Every normal reader takes that as "leave unchanged". It is not.
+
+Observed in the Java, on `develop` (TAS-115, already merged — this half is not
+waiting on backend PR #148): the proto fields are `optional`, the gateway sets
+them through `setIfPresent`, `GrpcIssueService.updateIssue` resolves an unset
+optional with `.orElse(null)`, and `IssueServiceImpl.updateIssue` then writes
+`updatingIssue.setStoryPoints(storyPoints)` and its four siblings
+**unconditionally**. So an omitted field is erased. The backend's own
+integration test names the behaviour outright: «Частичное обновление —
+непереданные planning fields затираются».
+
+`BoardScreen` sends three partial bodies today — `{summary}` on blur,
+`{priority}` from the picker, `{description}` on blur. Each one would wipe story
+points and both dates the day backend PR #148 makes the fields reachable.
+
+**The UI instead:** `UpdateIssueInput` gives `undefined` and `null` different
+meanings — absent means "leave it", explicit `null` means "clear it" — and both
+`RestTaskaApi` and `MockTaskaApi` re-read the issue and re-send the resolved
+current value for anything the caller left alone. Components keep the partial
+bodies they already write; the preservation lives in the API layer, where it can
+be tested, and the full-replace semantics never reach a screen.
+
+Against today's gateway every resolved planning value is `null`, so the request
+body is byte-identical to the one sent before this change — pinned by a REST
+test rather than assumed, which is what made it safe to ship ahead of the merge.
+
+**Removed by:** nothing on the client, unless the backend distinguishes "not
+sent" from "sent null". Asked on TAS-116; a client that always sends the
+resolved value stays correct either way, which is why the question did not gate
+the work. Note the re-read makes update a two-round-trip read-modify-write with
+no optimistic concurrency available — `IssueResponseDto` carries `version` but
+the update route accepts no `If-Match` and no expected version, so a concurrent
+edit between the read and the write is silently clobbered. That was already true
+for the three required fields; this widens it from three to eight.
+
+### The date cross-check compares against stored values, and refuses the ordinary case
+
+Not in the contract at all. `IssueServiceImpl.updateIssue` compares the
+*incoming* `startDate` against the **stored** `dueDate`, and the incoming
+`dueDate` against the **stored** `startDate`.
+
+The consequence is not exotic. Moving a whole window later in one request —
+`{startDate: 2026-07-01, dueDate: 2026-07-20}` over a stored `(06-15, 06-26)` —
+is refused, because the incoming start is past the stored due. That is dragging
+a task later, the ordinary edit. Two requests in the right order succeed: due
+first when moving later, start first when moving earlier.
+
+The refusal's message also has its two labels swapped — the value printed as
+"Due date" is the start date the caller sent — so it must never be shown
+verbatim. Both raised on TAS-116.
+
+**The UI instead:** the client validates only the fields the caller actually
+supplied and lets the server refuse a resolved pair, rather than refusing on the
+user's behalf about values they never typed. The mock reproduces both stored
+comparisons before any mutation, so the refusal is reachable without a gateway.
+Note `0007-issue-planing-fields.sql` adds `issues_dates_chk (start_date <=
+due_date)`, so a *stored* pair can never be inconsistent — which is why
+re-sending resolved values can never trip the check by itself.
+
+### `storyPoints` is `double` on one open PR and `int32` on another, and the column settles it
+
+Backend PR #148 declares `storyPoints` as `number` / `format: double` on the
+issue DTOs. Backend PR #118 declares the same field as `integer` / `format:
+int32` on `BoardIssueDto`. Two open PRs disagreeing with each other about one
+field.
+
+The database settles it: `0007-issue-planing-fields.sql` adds
+`story_points numeric(5, 2)`. Half points are a real value and `#118`'s board
+card would truncate them. The client models it as a float everywhere and the
+board DTO is treated as the narrower of the two, not as the definition.
+
+`numeric(5, 2)` also fixes two bounds the contract states nowhere. The **scale**
+does not error — Postgres rounds `1.235` to `1.23` silently — so the client
+refuses more than two decimals rather than storing a value the reader did not
+type. The **precision** does error: `1000` and above is `22003 numeric field
+overflow`, a 500 rather than a 400, which is not something a client should
+provoke when it can see the value. Both guards are the client's own rules and
+move if the column does.
+
+**Removed by:** the two PRs agreeing, and the contract stating the bounds.
+
+### `minimum: 0` is enforced as `>= 0` under a message that says "positive"
+
+`GrpcRequestValidators.requireOptionalPositiveZeroOrInvalidArgument` tests
+`value < 0` and refuses with `<field> must be positive`. So `0` is accepted —
+correctly, a zero-point issue and a zero-minute estimate are both real — and the
+message about it is wrong. The client uses its own wording and never shows the
+server's for this case; `0` is seeded in the mock precisely so that a mapper
+folding it to `null` fails a test rather than a review.
+
 ### `sortableColumns` and `filterableColumns` are empty for `auth.users`, which decides a section's controls
 
 - **Endpoint:** `GET /api/v1/readonly/auth/users`.

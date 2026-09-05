@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MockTaskaApi } from "./MockTaskaApi";
-import type { Project } from "../../domain/types";
+import type { Issue, Project } from "../../domain/types";
+import { STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
  * The mock is the reference implementation of the TaskaApi contract: it is what
@@ -309,6 +310,294 @@ describe("MockTaskaApi", () => {
   });
 
   /**
+   * The five planning fields (TAS-189), and mostly one defect:
+   * `PUT /issues/{issueId}` is a **full replace** on the gateway, so a field the
+   * request omits is erased rather than preserved
+   * (`IssueServiceImpl.updateIssue` on backend `develop`, read 2026-09-06). The
+   * board edits a summary, a description and a priority one at a time; the day
+   * backend PR #148 exposes these fields over REST, every one of those edits
+   * would wipe the story points and both dates unless the client re-sends what
+   * it is keeping.
+   *
+   * These cases pin that on the mock, which is the reference implementation and
+   * what the e2e suite runs against. `RestTaskaApi.test.ts` pins the same
+   * behaviour on the wire, including the body shape, and both sides share the
+   * rules in src/api/planningFields.ts so they cannot answer differently.
+   */
+  describe("planning fields", () => {
+    const issueByKey = async (key: string): Promise<Issue> => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const found = items.find((item) => item.issueKey === key);
+      if (!found) throw new Error(`the seed has no ${key}`);
+      return found;
+    };
+
+    it("seeds the two values a plausible reader gets wrong", async () => {
+      // Zero points is an estimate of nothing, not the absence of an estimate,
+      // and 1.5 is legal because the field is a double. Both are seeded so the
+      // UI half has something to be wrong about.
+      expect((await issueByKey("TAS-102")).storyPoints).toBe(0);
+      expect((await issueByKey("TAS-103")).storyPoints).toBe(1.5);
+
+      const full = await issueByKey("TAS-101");
+      expect(full).toMatchObject({
+        storyPoints: 3,
+        startDate: "2026-06-15",
+        dueDate: "2026-06-26",
+        originalEstimateMinutes: 480,
+        remainingEstimateMinutes: 240,
+      });
+    });
+
+    it("keeps all five when only the summary is edited — the regression this exists for", async () => {
+      const before = await issueByKey("TAS-101");
+
+      const updated = await api.updateIssue(project.id, before.id, { summary: "Login form validation, revisited" });
+
+      expect(updated.summary).toBe("Login form validation, revisited");
+      expect(updated).toMatchObject({
+        storyPoints: 3,
+        startDate: "2026-06-15",
+        dueDate: "2026-06-26",
+        originalEstimateMinutes: 480,
+        remainingEstimateMinutes: 240,
+      });
+      // And the store agrees with what the write answered.
+      const { issue } = await api.getIssue(project.id, before.id);
+      expect(issue).toMatchObject({
+        storyPoints: 3,
+        startDate: "2026-06-15",
+        dueDate: "2026-06-26",
+        originalEstimateMinutes: 480,
+        remainingEstimateMinutes: 240,
+      });
+    });
+
+    it("keeps zero and a fraction through an unrelated edit, rather than reading them as nothing", async () => {
+      const zero = await issueByKey("TAS-102");
+      const half = await issueByKey("TAS-103");
+
+      expect((await api.updateIssue(project.id, zero.id, { priority: "HIGH" })).storyPoints).toBe(0);
+      expect((await api.updateIssue(project.id, half.id, { description: "Rewritten." })).storyPoints).toBe(1.5);
+    });
+
+    it("clears the one field asked for by an explicit null and leaves the others standing", async () => {
+      const before = await issueByKey("TAS-101");
+
+      const updated = await api.updateIssue(project.id, before.id, { storyPoints: null });
+
+      expect(updated.storyPoints).toBeNull();
+      expect(updated).toMatchObject({
+        startDate: "2026-06-15",
+        dueDate: "2026-06-26",
+        originalEstimateMinutes: 480,
+        remainingEstimateMinutes: 240,
+      });
+    });
+
+    it("reads an explicitly undefined key as 'leave it alone', not as 'clear it'", async () => {
+      const before = await issueByKey("TAS-101");
+
+      // What a component produces by spreading a form state that has not been
+      // touched. `Object.assign(issue, { ...input })` used to write the
+      // `undefined` straight over the stored value.
+      const updated = await api.updateIssue(project.id, before.id, { storyPoints: undefined, dueDate: undefined });
+
+      expect(updated.storyPoints).toBe(3);
+      expect(updated.dueDate).toBe("2026-06-26");
+    });
+
+    it("sets and clears each of the five in turn", async () => {
+      const target = await issueByKey("TAS-104");
+
+      const set = await api.updateIssue(project.id, target.id, {
+        storyPoints: 0.25,
+        startDate: "2026-07-01",
+        dueDate: "2026-07-31",
+        originalEstimateMinutes: 0,
+        remainingEstimateMinutes: 45,
+      });
+      expect(set).toMatchObject({
+        storyPoints: 0.25,
+        startDate: "2026-07-01",
+        dueDate: "2026-07-31",
+        originalEstimateMinutes: 0,
+        remainingEstimateMinutes: 45,
+      });
+
+      const cleared = await api.updateIssue(project.id, target.id, {
+        storyPoints: null,
+        startDate: null,
+        dueDate: null,
+        originalEstimateMinutes: null,
+        remainingEstimateMinutes: null,
+      });
+      expect(cleared).toMatchObject({
+        storyPoints: null,
+        startDate: null,
+        dueDate: null,
+        originalEstimateMinutes: null,
+        remainingEstimateMinutes: null,
+      });
+    });
+
+    it("refuses a story-point value the column cannot hold", async () => {
+      const target = await issueByKey("TAS-104");
+      const refuse = (storyPoints: number) => api.updateIssue(project.id, target.id, { storyPoints });
+
+      // `>= 0` is what the server enforces even though its message says "must
+      // be positive", so 0 is accepted and -0.5 is not.
+      //
+      // The sentence is asserted here and on the same input in
+      // `RestTaskaApi.test.ts`: both read it from src/api/planningFields.ts, and
+      // pinning it on both sides is what makes "a caller cannot tell which
+      // implementation refused it" a test rather than a claim.
+      await expect(refuse(-0.5)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: STORY_POINTS_RANGE_MESSAGE,
+      });
+      // numeric(5,2): above this the database raises and the answer is a 500.
+      await expect(refuse(1000)).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      // Beyond the scale Postgres rounds silently — 1.235 would come back 1.23.
+      await expect(refuse(1.235)).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      // JSON.stringify writes NaN as null, and null on this wire means "clear
+      // it" — so an unguarded Number("") would erase the field it meant to set.
+      await expect(refuse(Number.NaN)).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+      await expect(refuse(999.99)).resolves.toMatchObject({ storyPoints: 999.99 });
+      await expect(refuse(0)).resolves.toMatchObject({ storyPoints: 0 });
+    });
+
+    it("refuses an estimate that is negative or is not a whole number of minutes", async () => {
+      const target = await issueByKey("TAS-104");
+
+      await expect(
+        api.updateIssue(project.id, target.id, { originalEstimateMinutes: -1 }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        api.updateIssue(project.id, target.id, { remainingEstimateMinutes: 30.5 }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        api.updateIssue(project.id, target.id, { remainingEstimateMinutes: 0 }),
+      ).resolves.toMatchObject({ remainingEstimateMinutes: 0 });
+    });
+
+    it("refuses a date that is not a real calendar day", async () => {
+      const target = await issueByKey("TAS-104");
+      const refuse = (startDate: string) => api.updateIssue(project.id, target.id, { startDate });
+
+      await expect(refuse("2026-13-01")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(refuse("2026-02-30")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(refuse("01-09-2026")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(refuse("2026-9-1")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      // A leap day that exists, against one that does not.
+      await expect(refuse("2028-02-29")).resolves.toMatchObject({ startDate: "2028-02-29" });
+      await expect(refuse("2027-02-29")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("refuses a start date later than the due date stated in the same request", async () => {
+      const target = await issueByKey("TAS-104");
+
+      await expect(
+        api.updateIssue(project.id, target.id, { startDate: "2026-08-02", dueDate: "2026-08-01" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        api.updateIssue(project.id, target.id, { startDate: "2026-08-01", dueDate: "2026-08-01" }),
+      ).resolves.toMatchObject({ startDate: "2026-08-01", dueDate: "2026-08-01" });
+    });
+
+    it("refuses a start date past the *stored* due date, even when the same request clears that due date", async () => {
+      // The check the contract does not state: `IssueServiceImpl` compares the
+      // incoming start date against the due date already on the record, so
+      // clearing the due date in the same breath does not help.
+      const target = await issueByKey("TAS-101");
+
+      await expect(
+        api.updateIssue(project.id, target.id, { startDate: "2026-07-01", dueDate: null }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+      // Nothing was written before the refusal.
+      const { issue } = await api.getIssue(project.id, target.id);
+      expect(issue).toMatchObject({ startDate: "2026-06-15", dueDate: "2026-06-26" });
+    });
+
+    it("refuses moving a whole window forward in one request, and accepts the same move in two", async () => {
+      const target = await issueByKey("TAS-101");
+
+      // The new pair is internally consistent, and it is still refused: the
+      // incoming start is after the *stored* due date. This is the case a
+      // reader meets first in practice, and the UI half has to lead with the
+      // due date because of it.
+      await expect(
+        api.updateIssue(project.id, target.id, { startDate: "2026-07-01", dueDate: "2026-07-20" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+      await api.updateIssue(project.id, target.id, { dueDate: "2026-07-20" });
+      await expect(
+        api.updateIssue(project.id, target.id, { startDate: "2026-07-01" }),
+      ).resolves.toMatchObject({ startDate: "2026-07-01", dueDate: "2026-07-20" });
+    });
+
+    it("refuses a due date earlier than the stored start date", async () => {
+      const target = await issueByKey("TAS-105");
+      expect(target.startDate).toBe("2026-06-20");
+
+      await expect(
+        api.updateIssue(project.id, target.id, { dueDate: "2026-06-01" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        api.updateIssue(project.id, target.id, { dueDate: "2026-06-20" }),
+      ).resolves.toMatchObject({ dueDate: "2026-06-20" });
+    });
+
+    it("accepts the five on a create and refuses the same values it refuses on an update", async () => {
+      const created = await api.createIssue(project.id, {
+        issueType: "TASK",
+        summary: "Plan the migration",
+        description: "With dates.",
+        priority: "MEDIUM",
+        storyPoints: 2.5,
+        startDate: "2026-09-01",
+        dueDate: "2026-09-30",
+        originalEstimateMinutes: 600,
+      });
+
+      expect(created).toMatchObject({
+        storyPoints: 2.5,
+        startDate: "2026-09-01",
+        dueDate: "2026-09-30",
+        originalEstimateMinutes: 600,
+        // Not stated on the create, and there is no prior value to keep.
+        remainingEstimateMinutes: null,
+      });
+
+      await expect(
+        api.createIssue(project.id, {
+          issueType: "TASK",
+          summary: "Backwards",
+          description: "",
+          priority: "LOW",
+          startDate: "2026-09-30",
+          dueDate: "2026-09-01",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("carries storyPoints on a search hit and still carries nothing else the short DTO lacks", async () => {
+      const { items } = await api.searchIssues({ query: "Login form validation" });
+      const hit = items.find((item) => item.issueKey === "TAS-101");
+
+      expect(hit).toBeDefined();
+      expect(hit?.storyPoints).toBe(3);
+      // The shape itself is pinned by the search section above; what this adds
+      // is that a *seeded* value survives the mapping rather than arriving as
+      // `undefined`, which is the failure a spread would have produced.
+      expect(hit).not.toHaveProperty("dueDate");
+      expect(hit).not.toHaveProperty("originalEstimateMinutes");
+    });
+  });
+
+  /**
    * `GET /issues/search` as the deployed gateway was measured behaving on
    * 2026-08-23, not as the contract describes it. Two of those measurements are
    * the reason these cases exist at all: the runtime refuses a query below
@@ -426,7 +715,7 @@ describe("MockTaskaApi", () => {
       expect(first.items.map((hit) => hit.id)).not.toEqual(second.items.map((hit) => hit.id));
     });
 
-    it("answers with the six fields of the short DTO and nothing else", async () => {
+    it("answers with the seven fields of the short DTO and nothing else", async () => {
       const created = await api.createIssue(project.id, {
         issueType: "TASK",
         summary: "Unassigned needle for the search",
@@ -440,15 +729,19 @@ describe("MockTaskaApi", () => {
       expect(hit).toBeDefined();
       // No status, no projectId, no description, no labels: a hit that carried
       // them would let a column or a card claim something the gateway never
-      // sent.
+      // sent. `storyPoints` is the seventh and last — backend PR #148 adds it
+      // to `IssueShortResponseDto` and adds no dates and no estimates with it.
       expect(Object.keys(hit ?? {}).sort()).toEqual([
         "assigneeId",
         "id",
         "issueKey",
         "issueType",
         "priority",
+        "storyPoints",
         "summary",
       ]);
+      // Created without one, so this states "not estimated" rather than a value.
+      expect(hit?.storyPoints).toBeNull();
       // `""` on the wire for nobody, `null` here, exactly as `Issue.assigneeId`.
       expect(hit?.assigneeId).toBeNull();
     });
