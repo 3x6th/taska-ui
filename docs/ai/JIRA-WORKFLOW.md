@@ -39,7 +39,7 @@ states are not.
 | [TAS-167](https://jira.ozero.dev/browse/TAS-167) | Admin Events section: problems summary over the TAS-105 endpoint, outbox journal on the generic readonly grid, event card with the jsonb rule | Done | merged (PR #40) |
 | [TAS-186](https://jira.ozero.dev/browse/TAS-186) | Admin Users section: the accounts list over `auth.users`, block and unblock behind a confirmation with a required reason | Done | merged (PR #41) |
 | [TAS-187](https://jira.ozero.dev/browse/TAS-187) | Disable the `voltagent` plugin packs for this repository so their 60 generic agents stay out of every session's context | Done | merged (PR #42) |
-| [TAS-188](https://jira.ozero.dev/browse/TAS-188) | Bring the admin user-status writes to backend PR #146's contract — `changedAt`, `LOCKED`, and the new reset-lockout write | To Do | in review |
+| [TAS-188](https://jira.ozero.dev/browse/TAS-188) | Bring the admin user-status writes to backend PR #146's contract — `changedAt`, `LOCKED`, and the new reset-lockout write | Done | merged (PR #43) |
 | [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | To Do | not started |
 | [TAS-190](https://jira.ozero.dev/browse/TAS-190) | Issue attachments over presigned S3 links (backend PR #147) | To Do | not started |
 | [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | To Do | not started |
@@ -178,6 +178,41 @@ separately:
   writes with no compensation.
 - `npm run check` and `npm run build` pass, with browser evidence across the
   three viewports in both themes.
+
+### TAS-188 — the admin user writes, brought to a contract that has not merged
+
+- Backend PR #146 (TAS-107 + TAS-108) changes a contract TAS-186 already
+  shipped against, from the draft in PR #134. Two changes, both silent:
+  `updatedAt` became `changedAt`, and `UserStatus` grew `LOCKED`. The shipped
+  REST mapper read the old name and the fixture pinned it, so the test agreed
+  with the bug — this is why it needed finding by reading the backend rather
+  than by running the app.
+- `LOCKED` arrives **with** that PR, not before it. `develop` has three values
+  in the entity, no `USER_STATUS_LOCKED` in the proto, and a
+  `handleFailedAttempt` that takes no `User`. The first brief said otherwise and
+  an adversarial pass over the contract caught it by reading `develop` where the
+  spec had read the PR head. The rule that buys — a fact about what is deployed
+  is read at `develop`, never at a PR head — is in `API-DIVERGENCE.md`.
+- Third write, `reset-lockout`: legal only from `LOCKED`, refusing everything
+  else with 400 carrying `FAILED_PRECONDITION`, not the 409 the backend's own
+  controller test asserts against its own stub.
+- `docs/contract/pending/` is new: one extract per open backend PR, pinned by
+  head commit, so read-only reviewers can audit work written ahead of a merge.
+  `npm run contract:pins` fails on a stale pin and is deliberately outside
+  `npm run check`, which has to stay offline.
+- Closes an interchangeability break inherited from TAS-186: the mock refused an
+  over-long reason and REST sent it.
+- Raised on the backend rather than absorbed: all three writes appear to answer
+  500 on success (a protobuf `.name()` round trip), on TAS-107 and TAS-108.
+- Found while measuring, older than this story: `BLOCKED` on the 22px scroll
+  wash with the row flash reads 2.82:1, under §7's floor. In `BACKLOG.md`.
+- Verdicts: `release-reviewer` ship; `api-contract-guard` do-not-ship on one
+  documentation finding, then ship; `art-director` ship the design with changes
+  to the measurement comment, then ship. `art-director` settled a contrast
+  dispute between the first two passes — the figures were right and the other
+  reviewer had measured against a plane the pill is never drawn on.
+- Nothing here has met a real gateway. All three routes stay undeployed until
+  PR #146 merges, so only the mock exercises the happy path.
 
 ### TAS-187 — the voltagent packs, off for this repository
 
