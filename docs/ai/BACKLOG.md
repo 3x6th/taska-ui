@@ -736,6 +736,23 @@ the next session in this image exactly as it bit this one.
   not-in-`LOCKED` refusals are both 400. The enumeration directly below it is
   unambiguous and the sentence is wording rather than a contract claim, which is
   why it was left rather than opening another builder pass for one word.
+- **`BoardScreen.test.tsx`'s `makeIssue` fixture omits the five planning fields**
+  (`release-reviewer`, TAS-189). The fake API is cast `as unknown as TaskaApi`,
+  so every issue that suite sees has `undefined` where the type says
+  `number | null`, and nothing can tell you: the cast defeats the typecheck by
+  construction. `??` treats the two alike but `=== null`, `in`, `typeof` and
+  `Object.entries` do not. Five `null` lines; do it with the UI half, which is
+  the code that will read them.
+- **Two refusal-set edges where the client and the server differ harmlessly**
+  (`release-reviewer`, TAS-189): the estimate rules test `Number.isInteger`
+  before `< 0`, so `-1.5` is reported as "not a whole number" rather than "cannot
+  be negative"; and `isDateOnly` refuses ISO expanded years (`+10000-01-01`) that
+  `LocalDate.parse` accepts. Both refuse the same inputs the server refuses, in a
+  different order or for a different stated reason.
+- **`createIssue` orders its refusals differently in the two implementations**
+  (`release-reviewer`, TAS-189): REST refuses a bad planning value before the
+  project is checked, the mock throws `NOT_FOUND` for an inaccessible project
+  first. Only observable on the pair "bad value on a project you cannot see".
 - **A no-op update bumps `version` and `updatedAt` in the mock and not on the
   server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
   early without saving when the computed payload is empty; the mock always

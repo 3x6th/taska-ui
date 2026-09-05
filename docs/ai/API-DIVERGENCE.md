@@ -1971,9 +1971,17 @@ waiting on backend PR #148): the proto fields are `optional`, the gateway sets
 them through `setIfPresent`, `GrpcIssueService.updateIssue` resolves an unset
 optional with `.orElse(null)`, and `IssueServiceImpl.updateIssue` then writes
 `updatingIssue.setStoryPoints(storyPoints)` and its four siblings
-**unconditionally**. So an omitted field is erased. The backend's own
-integration test names the behaviour outright: «Частичное обновление —
-непереданные planning fields затираются».
+**unconditionally**. So an omitted field is erased.
+
+Cite the right artifact for the right half of that, because the first draft of
+this entry did not. The `develop` evidence is `IssueServiceImpl.updateIssue`
+itself — five unconditional setters, read at `develop`. The backend test that
+names the behaviour in words, «Частичное обновление — непереданные planning
+fields затираются», is a **unit** test in
+`issue-service/src/test/java/ru/taska/service/IssuePlanningFieldsTest.java`, it
+is not `PlanningFieldsIT`, and it exists **only at backend PR #148's head** —
+the file 404s on `develop`. It corroborates; it cannot carry the claim that the
+behaviour is already merged, which is the claim this entry rests on.
 
 `BoardScreen` sends three partial bodies today — `{summary}` on blur,
 `{priority}` from the picker, `{description}` on blur. Each one would wipe story
@@ -1998,6 +2006,32 @@ no optimistic concurrency available — `IssueResponseDto` carries `version` but
 the update route accepts no `If-Match` and no expected version, so a concurrent
 edit between the read and the write is silently clobbered. That was already true
 for the three required fields; this widens it from three to eight.
+
+### `BigDecimal.equals` is scale-sensitive, so re-sending a story-point value looks like a change
+
+A consequence of the preservation above, and one the client cannot fix.
+
+`PayloadSerializer.createIssueUpdatedPayload` on `develop` decides both the
+`payload.isEmpty()` early return and every per-field old/new delta with
+`Objects.equals(storyPoints, issue.getStoryPoints())` on two `BigDecimal`s.
+`BigDecimal.equals` compares scale as well as value. The stored value comes back
+from a `numeric(5,2)` column at scale 2 (`3.00`); the incoming one is built by
+`BigDecimal.valueOf(double)` in `GrpcRequestValidators`, whose scale follows
+`Double.toString` (`3.0`). The two are never `equals` unless the double happens
+to print exactly two decimals.
+
+So from the day backend PR #148 merges, a summary-only edit on an issue that has
+story points will defeat the no-op early return and write
+`oldStoryPoints: 3.00 / newStoryPoints: 3.0` into the issue history and the
+`ISSUE_UPDATED` outbox event — a change entry for a value nobody changed.
+
+**The UI instead:** nothing, and nothing is possible — JSON numbers cannot carry
+`BigDecimal` scale, so no client can send a value that compares equal. Today the
+impact is zero because every resolved planning value is `null` on the wire, and
+the activity feed renders `UPDATED` as one sentence rather than per field, so no
+wrong sentence is shown. It becomes visible when the UI half lands and the feed
+starts naming fields. **Removed by:** the backend comparing with `compareTo` or
+normalising with `stripTrailingZeros`. Raised on TAS-116.
 
 ### The date cross-check compares against stored values, and refuses the ordinary case
 
