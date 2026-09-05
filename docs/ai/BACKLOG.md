@@ -708,11 +708,21 @@ the next session in this image exactly as it bit this one.
   control still work, so it is not a trap. Pre-existing — the block-an-`INVITED`
   dialog overflows at 561 — and it belongs to `Modal` rather than to any one
   dialog, which is why TAS-188 did not take it.
-- **The 22px scroll wash is the tightest plane in the Users table, and `BLOCKED`
-  meets it too** (`art-director`, TAS-188): 3.35:1 light at rest and about 3.0
-  with the row flash on top, closer to §7's floor than anything the new `LOCKED`
-  rule does. Not introduced by TAS-188 and not made worse by it. Worth a pass
-  over the wash itself rather than over each pill that crosses it.
+- **`BLOCKED` on the 22px scroll wash is below §7's contrast floor**
+  (`art-director`, TAS-188 re-verdict — an upgrade from the first pass, which
+  estimated "about 3.0"). Re-measured: **3.36:1** light at rest on that band and
+  **2.82:1** with the row flash over it. 2.82 is under the 3:1 floor, which
+  makes this an accessibility defect rather than a tight margin, and it is the
+  tightest place in the whole Users table — tighter than anything the new
+  `LOCKED` rule does, which bottoms out at 3.21 in the same worst case.
+
+  Older than TAS-188 and not made worse by it: the wash, the row flash and the
+  `BLOCKED` recipe all predate this story, which only measured the stack for the
+  first time. Worth a pass over **the wash itself** rather than over each pill
+  that crosses it — the band is a scroll affordance drawn over content, and any
+  status pill in the table meets it at some scroll position. Reachable only
+  where the table overflows, so phone portrait; at laptop and desktop the band
+  is never drawn.
 - **The reason counter measures the trimmed value while the textarea caps the
   raw one** (`api-contract-guard`, TAS-188 re-verdict).
   `AdminUserActionModal.tsx:182` sets `maxLength` from the raw length and `:195`

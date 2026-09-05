@@ -2522,7 +2522,7 @@ h1 {
 .admin-users-plane .admin-table-scroll {
   max-width: 860px;
   /* "There is more to the right", and nothing else says it. At 390 the table is
-     443 in a 360 container, arrives at `scrollLeft: 0`, and overlay scrollbars
+     471 in a 360 container, arrives at `scrollLeft: 0`, and overlay scrollbars
      draw nothing until you touch it — so the section reads as read-only until
      the reader happens to swipe or Tab, and the action column is the part that
      is off screen. §5.8 already accepts a fade for exactly this on the catalog's
