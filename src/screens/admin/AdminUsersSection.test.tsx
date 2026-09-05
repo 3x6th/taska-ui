@@ -211,7 +211,13 @@ describe("the admin Users section", () => {
     fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Left the company" } });
     expect(confirm).toBeEnabled();
     // The hint stops explaining and starts counting.
-    expect(within(dialog).getByText(/characters left/)).toBeVisible();
+    expect(within(dialog).getByText("534 of 550 characters left")).toBeVisible();
+
+    // And it counts the same value the guard reads and the request carries: a
+    // trailing space is not a character anybody spent, and a counter one short
+    // of the guard is a counter describing a different rule.
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Left the company " } });
+    expect(within(dialog).getByText("534 of 550 characters left")).toBeVisible();
   });
 
   it("names the transition, and the consequence peculiar to an invited account", async () => {
@@ -253,8 +259,12 @@ describe("the admin Users section", () => {
     // There is no toast in this product (§5.6), so the only thing a screen
     // reader would otherwise get is silence.
     expect(screen.getByRole("status")).toHaveTextContent("Nina Kowal is now active.");
-    // And the row now offers the other action.
-    expect(within(row).getByRole("button", { name: "Block Nina Kowal" })).toBeVisible();
+    // And the row now offers the other action — with focus on it, because the
+    // dialog that had it is gone. jsdom has no `:focus-visible`, so the ring
+    // itself is a browser check; this is the half that can be asserted here.
+    const back = within(row).getByRole("button", { name: "Block Nina Kowal" });
+    expect(back).toBeVisible();
+    expect(back).toHaveFocus();
   });
 
   it("offers the lockout reset on a locked account, and says what it does and does not touch", async () => {
@@ -265,9 +275,9 @@ describe("the admin Users section", () => {
     expect(within(row).getByText("Locked")).toBeVisible();
     // Not Block, which the server refuses from LOCKED, and not nothing, which
     // is what this row offered before the route existed.
-    fireEvent.click(within(row).getByRole("button", { name: "Reset lockout Omar Haddad" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Reset lockout for Omar Haddad" }));
 
-    const dialog = await screen.findByRole("dialog", { name: "Reset lockout Omar Haddad" });
+    const dialog = await screen.findByRole("dialog", { name: "Reset lockout for Omar Haddad" });
     expect(within(dialog).getByText("LOCKED → ACTIVE")).toBeVisible();
     // The two things an admin will otherwise assume, and both are wrong: that
     // somebody blocked this account, and that this hands out a new password.
@@ -293,8 +303,8 @@ describe("the admin Users section", () => {
     setWriteFailure(new ApiError("User is not in LOCKED status", "FAILED_PRECONDITION", 400, "req-7"));
     renderSection();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Reset lockout Omar Haddad" }));
-    const dialog = await screen.findByRole("dialog", { name: "Reset lockout Omar Haddad" });
+    fireEvent.click(await screen.findByRole("button", { name: "Reset lockout for Omar Haddad" }));
+    const dialog = await screen.findByRole("dialog", { name: "Reset lockout for Omar Haddad" });
     fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Worth a try" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Reset lockout" }));
 
@@ -356,7 +366,7 @@ describe("the admin Users section", () => {
   it("reads the last-active-admin refusal as a conflict even though it is a 400", async () => {
     // The gateway does not give the two refusals one status: the transition
     // guard is ABORTED → 409, and this one is FAILED_PRECONDITION → 400
-    // (`RestErrorMapper.mapGrpcCodeToHttpStatus`, backend `feature/TAS-107`).
+    // (`RestErrorMapper.mapGrpcCodeToHttpStatus`, backend at `01a5af4`).
     // So on REST it is the *code* that carries this sentence, and a cleanup
     // that trimmed `isConflict` to the status alone would drop the single most
     // important refusal in this feature into "rejected request".

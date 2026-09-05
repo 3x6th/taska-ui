@@ -701,6 +701,18 @@ the next session in this image exactly as it bit this one.
   justified by a value that never arrives. It also sits on hardcoded hex
   (`#22c55e`, `#f59e0b`), which no agent here may extend, so the arm and the
   tokenisation are one job. Wants the gateway fixed first, then both together.
+- **The admin user dialog never scrolls, so at a short viewport its buttons are
+  unreachable by pointer** (`art-director`, TAS-188). Measured: at 500px tall,
+  the reset dialog carrying a failure sentence is 579px starting at 11vh, so
+  Cancel and submit sit below the fold with no scroll. `Esc` and the close
+  control still work, so it is not a trap. Pre-existing — the block-an-`INVITED`
+  dialog overflows at 561 — and it belongs to `Modal` rather than to any one
+  dialog, which is why TAS-188 did not take it.
+- **The 22px scroll wash is the tightest plane in the Users table, and `BLOCKED`
+  meets it too** (`art-director`, TAS-188): 3.35:1 light at rest and about 3.0
+  with the row flash on top, closer to §7's floor than anything the new `LOCKED`
+  rule does. Not introduced by TAS-188 and not made worse by it. Worth a pass
+  over the wash itself rather than over each pill that crosses it.
 - **A `LOCKED` account keeps full product access on a token minted before the
   lock** (`api-contract-guard`, TAS-188). Broader than the profile-menu line
   below it: `AuthServiceImpl.validateUserStatus` rejects `BLOCKED` and

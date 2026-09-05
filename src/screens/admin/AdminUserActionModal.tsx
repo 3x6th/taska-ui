@@ -9,6 +9,7 @@ import type { UserStatusChange } from "../../domain/types";
 import { jiraUrl } from "./sections";
 import type { AdminUserTarget, UserAction } from "./users";
 import {
+  actionAccessibleName,
   actionGerunds,
   actionLabels,
   actionPendingLabels,
@@ -116,7 +117,7 @@ export function AdminUserActionModal({
   }, []);
 
   return (
-    <Modal onClose={onClose} title={`${verb} ${name}`}>
+    <Modal onClose={onClose} title={actionAccessibleName(action, name)}>
       <form
         className="form-stack"
         onSubmit={(event) => {
@@ -160,9 +161,8 @@ export function AdminUserActionModal({
             before REST — so the sentence is the whole of what can be said. */}
         {action === "reset" ? (
           <p className="admin-user-note">
-            This account locked itself after too many failed sign-ins. Resetting clears the failed-attempt count
-            and makes the account active again. It does <strong>not</strong> change the password — whoever signs in
-            next needs the existing one.
+            This account locked itself after too many failed sign-ins. Resetting clears the failed-attempt count.
+            It does <strong>not</strong> change the password — whoever signs in next needs the existing one.
           </p>
         ) : null}
         {currentUserId && user.id === currentUserId ? (
@@ -192,7 +192,7 @@ export function AdminUserActionModal({
             never be read — the explanation has to live beside the field. */}
         <p className="admin-user-hint" id={hintId}>
           {canSubmit
-            ? `${ADMIN_WRITE_REASON_MAX_LENGTH - reason.length} of ${ADMIN_WRITE_REASON_MAX_LENGTH} characters left`
+            ? `${ADMIN_WRITE_REASON_MAX_LENGTH - trimmed.length} of ${ADMIN_WRITE_REASON_MAX_LENGTH} characters left`
             : `A reason is required — the server refuses a change without one. Up to ${ADMIN_WRITE_REASON_MAX_LENGTH} characters.`}
         </p>
 

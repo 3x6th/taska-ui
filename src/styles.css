@@ -2618,11 +2618,14 @@ h1 {
    The text is not bare --danger. §4.5 says a status pill prints its own colour,
    and measured on this recipe that gives 3.10:1 in light — and 2.56:1 while the
    row behind it is flashed, because the tint is translucent and composites over
-   whatever plane it lands on. Pulling the glyph 18% toward --fg reads 4.21:1 /
-   5.43:1 at rest and 3.47:1 / 4.59:1 on the flashed row, which clears §7's
-   floor in every one of the four. The 82/18 mix is the recipe the profile
-   menu's own pills already use; --fg rather than a literal is what makes it
-   darken in light and lighten in dark. */
+   whatever plane it lands on. That plane is --surface, painted by
+   `.admin-table-scroll`: every `tr` and `td` over it is transparent, so this
+   pill is never drawn on the page's --bg and is never measured there. Pulling
+   the glyph 18% toward --fg reads 4.21:1 / 5.43:1 on --surface at rest and
+   3.47:1 / 4.59:1 on the flash tint over it, which clears §7's floor in every
+   one of the four. The 82/18 mix is the recipe the profile menu's own pills
+   already use; --fg rather than a literal is what makes it darken in light and
+   lighten in dark. */
 .admin-pill.admin-status-blocked {
   background: color-mix(in oklab, var(--danger) 14%, transparent);
   color: color-mix(in oklab, var(--danger) 82%, var(--fg));
@@ -2635,24 +2638,49 @@ h1 {
    the hue rides on the edge rather than in a fill. A fill would say "someone
    blocked this account", which is the one misreading this row must not invite.
 
-   Told apart from INVITED by more than hue, as §7 asks: solid against dashed,
-   at 1px and 11.5px. Told apart from BLOCKED by where the colour is.
+   Told apart from INVITED by more than hue, as §7 asks — the word first, the
+   glyph's darkness second, the edge style last. Solid against dashed is the
+   weakest of the three and is not what the separation rests on: on a 20px pill
+   with a 20px radius the dash is four short arcs, and at 11.5px what a reader
+   reads is "Locked" against "Invited". Told apart from BLOCKED by where the
+   colour is.
 
    The glyph is the same 82/18 mix BLOCKED uses, and here it is not a
-   preference. With no fill of its own the pill's interior *is* the row, so bare
-   --danger would measure 3.68:1 light and 2.98:1 over the light flash — under
-   §7's 3:1 floor. The 82/18 mix measures **5.00:1 light / 6.30:1 dark at rest
-   and 4.04:1 / 5.36:1 over the flash**; all four clear the floor, and row hover
-   (the third plane) is 4.13:1 / 5.81:1 and never the tight one. Measured in the
-   browser off this rule, not derived: the same script reproduces the BLOCKED
-   numbers above (4.21 / 5.43 / 3.44 / 4.61) and INVITED's (7.26 / 6.75).
+   preference: with no fill of its own the pill's interior *is* the plane behind
+   it, so every figure below has to name one. The plane is --surface — painted
+   by `.admin-table-scroll`, with every `tr` and `td` over it transparent — and
+   on it bare --danger measures 3.68:1 light and 2.98:1 over the flash tint,
+   both under §7's 3:1 floor. The 82/18 mix, light / dark, on each plane this
+   pill is actually drawn on:
 
-   The two flash figures are a bound rather than a state anybody can reach
-   today. Reset lockout paints the row ACTIVE from the server's answer before
-   the flash starts, so no LOCKED pill currently sits on a flashed row — they
-   are recorded because the row tint is not owned by this rule and the day
-   something flashes a row without changing its status, this pill has already
-   been measured there.
+     --surface, at rest                      5.00 / 6.30
+     .is-changed flash tint over --surface   4.04 / 5.35
+     --surface-3, row hover and focus        4.13 / 5.81
+     the 22px scroll wash, at full strength  3.90 / 4.64
+     that wash with the flash tint over it   3.21 / 3.94
+
+   So the tight plane is not row hover but the scroll affordance this file
+   installs above: at 390 the pill's right edge already crosses into its 22px
+   band at `scrollLeft: 0` — 4.7px of it, measured, and further in on a narrower
+   phone. The two wash figures are that band at its strong end, so they bound
+   the case rather than describe today's one pixel; 3.21 is the figure this rule
+   is judged by and the first to re-measure if anything here moves.
+
+   --bg is not a plane this pill is ever drawn on — the canvas is behind the
+   table, never under the pill — and measuring there reads 4.63 / 6.86 for a
+   stack nobody sees. Measured in Chromium off this rule at 1x by sampling the
+   pill's own interior, not derived: the same run reproduces the BLOCKED numbers
+   above (4.21 / 5.43 at rest, 3.47 / 4.59 over the flash) and INVITED's
+   (7.26 / 6.75). Two decimals is the resolution they have — one 8-bit step of
+   the plane moves a ratio by about 0.04, so a third digit would be sampling
+   noise.
+
+   The flash figures are a bound rather than a state anybody can reach today.
+   Reset lockout paints the row ACTIVE from the server's answer before the flash
+   starts, so no LOCKED pill currently sits on a flashed row — they are recorded
+   because the row tint is not owned by this rule and the day something flashes
+   a row without changing its status, this pill has already been measured
+   there.
 
    The edge at 45% of --danger measures 1.78:1 light / 1.92:1 dark against the
    plane on both sides of it — visible in both themes, more visible than the

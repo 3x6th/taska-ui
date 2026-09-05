@@ -63,9 +63,9 @@ test("resets the lockout on a locked account, which is the one action that row o
   // carries the third write or none at all.
   await expect(row.getByRole("button", { name: /^(Block|Unblock) Omar Haddad$/ })).toHaveCount(0);
 
-  await row.getByRole("button", { name: "Reset lockout Omar Haddad" }).click();
+  await row.getByRole("button", { name: "Reset lockout for Omar Haddad" }).click();
 
-  const dialog = page.getByRole("dialog", { name: "Reset lockout Omar Haddad" });
+  const dialog = page.getByRole("dialog", { name: "Reset lockout for Omar Haddad" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("LOCKED → ACTIVE")).toBeVisible();
   // The question an admin actually has, answered before they ask it.
@@ -77,8 +77,14 @@ test("resets the lockout on a locked account, which is the one action that row o
 
   await expect(dialog).toHaveCount(0);
   await expect(row.getByText("Active")).toBeVisible();
-  // And the row now offers what an active account offers.
-  await expect(row.getByRole("button", { name: "Block Omar Haddad" })).toBeVisible();
+  // And the row now offers what an active account offers, with focus back on
+  // it — *drawn*. The confirm was a pointer press, so a plain programmatic
+  // `focus()` here matches `:focus-visible` false and the operator would get
+  // focus back with nothing on screen saying where it went (§7).
+  const back = row.getByRole("button", { name: "Block Omar Haddad" });
+  await expect(back).toBeVisible();
+  await expect(back).toBeFocused();
+  expect(await page.evaluate(() => document.activeElement?.matches(":focus-visible"))).toBe(true);
 });
 
 test("refuses to block the last active global admin and keeps the dialog open", async ({ page }) => {

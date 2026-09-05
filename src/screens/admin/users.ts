@@ -199,6 +199,25 @@ export const actionLabels: Record<UserAction, string> = {
   reset: "Reset lockout",
 };
 
+/**
+ * How the row's button and the dialog it opens *name* the action, which is not
+ * the label with the person's name after it. "Block Nina Kowal" is a sentence;
+ * "Reset lockout Omar Haddad" is a fragment, because that label is already a
+ * verb plus its object and the person needs a preposition to hang on. One
+ * template per action rather than one concatenation for all three, and each
+ * visible label stays contained in the name it produces — which is what WCAG
+ * 2.5.3 requires of a control whose visible words are part of its name.
+ */
+const actionNames: Record<UserAction, (person: string) => string> = {
+  block: (person) => `Block ${person}`,
+  unblock: (person) => `Unblock ${person}`,
+  reset: (person) => `Reset lockout for ${person}`,
+};
+
+export function actionAccessibleName(action: UserAction, person: string): string {
+  return actionNames[action](person);
+}
+
 /** The same button while the server is answering. Not derivable: "Reseting" is not a word. */
 export const actionPendingLabels: Record<UserAction, string> = {
   block: "Blocking…",

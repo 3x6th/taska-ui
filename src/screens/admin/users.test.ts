@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../api/rest/RestTaskaApi";
 import {
+  actionAccessibleName,
   actionFor,
   actionLabels,
   globalRoleLabel,
@@ -121,6 +122,16 @@ describe("admin users, statuses and roles", () => {
     // not a difference a reader can rely on in the column where both appear.
     expect(actionLabels.reset).toBe("Reset lockout");
 
+    // The name a screen reader reads is a phrase per action, not the label with
+    // the person after it: "Reset lockout Omar Haddad" is a fragment. Each
+    // visible label is still contained in its name (WCAG 2.5.3).
+    expect(actionAccessibleName("block", "Nina Kowal")).toBe("Block Nina Kowal");
+    expect(actionAccessibleName("unblock", "Nina Kowal")).toBe("Unblock Nina Kowal");
+    expect(actionAccessibleName("reset", "Omar Haddad")).toBe("Reset lockout for Omar Haddad");
+    for (const action of ["block", "unblock", "reset"] as const) {
+      expect(actionAccessibleName(action, "Omar Haddad")).toContain(actionLabels[action]);
+    }
+
     expect(targetStatus("block")).toBe("BLOCKED");
     expect(targetStatus("unblock")).toBe("ACTIVE");
     // Always ACTIVE: auth-service sets the account active while it clears the
@@ -185,8 +196,8 @@ describe("admin users, telling one failure from another", () => {
   /**
    * The two refusals this section exists to word carefully do **not** share a
    * status. Read out of `RestErrorMapper.mapGrpcCodeToHttpStatus`,
-   * `GatewayErrorHandler` and `DomainStatus` on the backend's
-   * `feature/TAS-107`: the transition guard is `ABORTED` → **409**, and the
+   * `GatewayErrorHandler` and `DomainStatus` on the backend at
+   * `01a5af4`: the transition guard is `ABORTED` → **409**, and the
    * last-active-admin guard is `FAILED_PRECONDITION` → **400**, with the gRPC
    * code's own name in the response body.
    *
