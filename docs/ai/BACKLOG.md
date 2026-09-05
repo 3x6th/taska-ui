@@ -713,6 +713,19 @@ the next session in this image exactly as it bit this one.
   with the row flash on top, closer to §7's floor than anything the new `LOCKED`
   rule does. Not introduced by TAS-188 and not made worse by it. Worth a pass
   over the wash itself rather than over each pill that crosses it.
+- **The reason counter measures the trimmed value while the textarea caps the
+  raw one** (`api-contract-guard`, TAS-188 re-verdict).
+  `AdminUserActionModal.tsx:182` sets `maxLength` from the raw length and `:195`
+  counts from `trimmed.length`, so leading or trailing whitespace makes the hint
+  report room the field will not accept. The direction is safe — nothing
+  over-long can reach the wire — so it is cosmetic, and fixing it means deciding
+  whether the cap should trim too, which is a question about the field rather
+  than about the counter.
+- **`errors.ts:53` says "The three do not share a status" where two of the three
+  do** (`api-contract-guard`, TAS-188 re-verdict): the last-active-admin and
+  not-in-`LOCKED` refusals are both 400. The enumeration directly below it is
+  unambiguous and the sentence is wording rather than a contract claim, which is
+  why it was left rather than opening another builder pass for one word.
 - **A `LOCKED` account keeps full product access on a token minted before the
   lock** (`api-contract-guard`, TAS-188). Broader than the profile-menu line
   below it: `AuthServiceImpl.validateUserStatus` rejects `BLOCKED` and

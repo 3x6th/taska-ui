@@ -62,17 +62,29 @@ against one, and before merging work that was written against one.
 
 When a PR merges: refresh `docs/contract/openapi.yml` from `develop`, delete that
 PR's file here, and go through `docs/ai/API-DIVERGENCE.md` — striking **only the
-entries whose own "Removed by" names that merge**, and re-reading the rest.
+entries whose own `Removal:` or `Removed by` line names that merge**, and
+re-reading the rest.
 
-That clause is not pedantry. Writing against a pending contract turns up two
-different kinds of divergence, and only one of them is closed by the merge. The
-work for backend PR #146 produced three entries: the undeployed-route
-compensation, which the merge does close; a refusal the backend answers with
-`400` while its own test asserts `409`, which is closed by the backend fixing
-one or the other; and `GET /users/me` reporting `UNSPECIFIED` for a locked
-account, which is closed by a gateway change that is not in PR #146 at all. A
-mechanical strike-on-merge would have deleted two true divergences and orphaned
-the code compensating for them.
+Both labels, because the file uses both — `Removal:` in the older field-per-line
+entries and `Removed by` in the newer prose ones — and grepping for one of them
+misses entries written in the other style. That is not hypothetical: the first
+version of this paragraph named only `Removed by`, and the entry the merge
+actually closes is a `Removal:` one.
+
+The clause itself is not pedantry either. Writing against a pending contract
+turns up two kinds of divergence and the merge closes only one of them. Backend
+PR #146 is the worked example — four entries touch it, and they split two and
+two:
+
+- **Closed by the merge:** the undeployed-route compensation for the three
+  admin writes, and `UserStatus` growing a fourth value.
+- **Not closed by it:** a refusal the backend answers with `400` while its own
+  test asserts `409`, which needs the backend to fix one or the other; and
+  `GET /users/me` reporting `UNSPECIFIED` for a locked account, which needs a
+  gateway change that is not in PR #146 at all.
+
+A mechanical strike-on-merge would have deleted two true divergences and
+orphaned the code compensating for them.
 
 When a PR closes without merging: delete the file and say so in the story that
 was written against it.

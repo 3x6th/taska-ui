@@ -1715,10 +1715,15 @@ Same rule as above: "Closed by" is settled, the rest is live.
   greppable by any of them; an earlier revision named two, which is how a
   reader looking for `reset-lockout` found only the entry about *its refusal*
   and concluded the route was deployed.
-- **Observed:** the vendored snapshot (develop @ `4241be2`) has no such paths,
-  and the deployed gateway does not serve them: the backend change is
-  [backend PR #134](https://github.com/VladislavYurin/taska-backend/pull/134)
-  (TAS-107), branch `feature/TAS-107`, **open and unmerged**. **Measured
+- **Observed:** the vendored snapshot has no such paths, and the deployed
+  gateway does not serve them. The backend change was
+  [PR #134](https://github.com/VladislavYurin/taska-backend/pull/134)
+  (TAS-107, two routes) when this entry was written; it is now
+  [PR #146](https://github.com/VladislavYurin/taska-backend/pull/146)
+  (TAS-107 + TAS-108, **three** routes, head `01a5af4`), which supersedes it.
+  Both are open at the time of writing, which is why the older one is named
+  rather than deleted — a reader who finds #134 first should learn here that it
+  is not the one this client is built against. **Measured
   2026-08-25** with a GLOBAL_ADMIN token:
   `POST /api/v1/admin/users/not-a-uuid/block` answers **404** with
   `{"code":"NOT_FOUND","message":"No static resource
@@ -1747,10 +1752,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `"User not found"`; a blank reason is rejected. **An `INVITED` account that
   is blocked and then unblocked becomes `ACTIVE`** — the invite state is not
   restored, which is the backend's semantics and not a bug to work around.
-- **The two refusals do not share a status, and the contract's "409" covers
-  only one of them.** Read out of `RestErrorMapper.mapGrpcCodeToHttpStatus`,
-  `GatewayErrorHandler` and `DomainStatus` on `feature/TAS-107` (found by
-  `release-reviewer` on the TAS-186 pass):
+- **These refusals do not share a status, and the contract's "409" covers only
+  one of them.** Read out of `RestErrorMapper.mapGrpcCodeToHttpStatus`,
+  `GatewayErrorHandler` and `DomainStatus`, re-verified at `01a5af4` on the
+  TAS-188 pass and unchanged there (found by `release-reviewer` on the TAS-186
+  pass, when there were two of them; reset-lockout adds a third, in the entry
+  further down that gives it its own table):
 
   | Refusal | `DomainStatus` | HTTP | body `code` |
   | --- | --- | --- | --- |
