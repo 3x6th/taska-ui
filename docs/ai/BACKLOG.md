@@ -1122,6 +1122,40 @@ search endpoint is claimed; the other is not:
   `MEMBER_ROLE_CHANGED` was never in the enum the contract just deleted, so the
   union and the contract already disagreed before this.
 
+The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
+schema change. None is claimed, and none is on the four open PRs this refresh was
+done for — they landed on `develop` while this repository was looking elsewhere:
+
+- **Issue watchers, five routes.** `GET`/`POST
+  /projects/{projectId}/issues/{issueId}/watchers`, `PUT`/`DELETE` on
+  `.../watchers/me`, and `DELETE .../watchers/{userId}`. The `me` pair takes the
+  user from the JWT and needs no body; the other two are project-`ADMIN` only.
+  This is a real feature with a real UI (a watch toggle on the issue panel and a
+  watcher list beside the assignee), not a mapping job, so it wants its own
+  story rather than a corner of someone else's.
+- **`POST /admin/outbox/{service}/{eventId}/retry`.** The write half of TAS-106,
+  which the Events section has never had. `service` is a closed enum of `auth`,
+  `project`, `issue` — narrower than the service list the catalog returns, which
+  is itself worth noticing before a retry button is drawn next to a row the
+  endpoint cannot accept.
+- **`GET /readonly/outbox/problematic-summary` is real now.** `TaskaApi.ts`
+  documents it as existing "only in the TAS-105 branch", and the Problems view
+  reads `OUTBOX_SUMMARY_UNSERVED_MESSAGE` off the deployed gateway to say so.
+  The contract has it; whether the *deployed* gateway does is a separate
+  measurement, and the compensation must not be deleted until that measurement
+  is taken.
+- **`ListIssuesResponseDto.items` changed from `IssueShortResponseDto` to
+  `IssueResponseDto`.** The list endpoint now returns whole issues.
+  `RestTaskaApi.listIssues` hydrates every row from the detail endpoint because
+  the short DTO carried no labels — that N+1 may now be deletable. It is a
+  measurement against the deployed gateway, not a reading of the contract,
+  because the two have disagreed before. Sitting in TAS-189's scope as a
+  question, not as work.
+- **`NotificationTypeDto` reappears as a definition on two open PRs (#146,
+  #118) and nothing references it.** The `notificationType` field is still a
+  bare `type: string` with an `example`, so the entry above about the closed
+  union stands unchanged; the schema coming back is not the enum coming back.
+
 ### `--fg-3` on `--bg` is below the contrast floor, in two places TAS-161 did not touch
 
 Found while fixing the same defect on the admin error block (art-director,

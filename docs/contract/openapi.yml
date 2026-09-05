@@ -1,12 +1,16 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: 4241be2ec144 (develop, 2026-08-23)
-# Fetched: 2026-08-23
+# Backend commit: 8b8b3c5aca21 (develop, 2026-09-04)
+# Fetched: 2026-09-05
 #
 # The backend repository is the single source of truth for this contract.
 # This copy exists so read-only reviewers without network access can audit
 # against it and so the audited version is pinned in history. When it drifts
 # from develop, develop wins - refresh this file and update the commit above.
+#
+# Endpoints on open backend pull requests are NOT here, because they are not the
+# contract yet. They are extracted under docs/contract/pending/ - see the README
+# there for what that directory is and is not.
 
 openapi: 3.0.3
 info:
@@ -1323,6 +1327,238 @@ paths:
 
   ########################## Окончание API для project/issue меток ##################
 
+  ########################## Начало API watchers ##################
+  /api/v1/projects/{projectId}/issues/{issueId}/watchers:
+    get:
+      summary: Получение списка подписчиков задачи
+      operationId: listIssueWatchers
+      tags:
+        - watchers
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Список подписчиков задачи успешно получен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListIssueWatchersResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    post:
+      summary: Добавление подписчика на задачу (только project ADMIN)
+      description: |
+        Доступно только пользователю с ролью ADMIN в проекте.
+        Подписывает указанного пользователя (`userId` в body) на задачу.
+      operationId: addIssueWatcher
+      tags:
+        - watchers
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddIssueWatcherRequestDto'
+      responses:
+        '200':
+          description: Подписчик успешно добавлен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchIssueResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/issues/{issueId}/watchers/me:
+    put:
+      summary: Подписка текущего пользователя на задачу
+      description: userId берётся из Gateway context (JWT), не из тела запроса.
+      operationId: watchIssueMe
+      tags:
+        - watchers
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Пользователь подписан на задачу
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchIssueResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    delete:
+      summary: Отписка текущего пользователя от задачи
+      description: userId берётся из Gateway context (JWT), не из path.
+      operationId: unwatchIssueMe
+      tags:
+        - watchers
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Пользователь отписан от задачи
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnwatchIssueResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/issues/{issueId}/watchers/{userId}:
+    delete:
+      summary: Удаление подписчика задачи (только project ADMIN)
+      description: |
+        Доступно только пользователю с ролью ADMIN в проекте.
+        Viewer/MEMBER без роли ADMIN не может удалить чужого watcher.
+      operationId: removeIssueWatcher
+      tags:
+        - watchers
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: userId
+          in: path
+          required: true
+          description: Идентификатор пользователя, которого нужно отписать
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Подписчик успешно удалён
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnwatchIssueResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  ########################## Окончание API watchers ##################
+
   /api/v1/readonly/{service}/{table}:
     get:
       summary: Получение строк таблицы из сервисной БД (только для GLOBAL_ADMIN)
@@ -1470,6 +1706,34 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
+  /api/v1/readonly/outbox/problematic-summary:
+    get:
+      summary: Получение сводки проблемных outbox-событий (только для GLOBAL_ADMIN)
+      operationId: getProblematicOutboxEventsSummary
+      tags:
+        - admin
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: serviceKey
+          in: query
+          required: false
+          description: Ключ сервиса для фильтрации (если не указан — все сервисы)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Сводка проблемных outbox-событий
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblematicOutboxEventsSummaryResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
   /api/v1/readonly/catalog:
     get:
       summary: Получение каталога доступных сервисов и таблиц (только для GLOBAL_ADMIN)
@@ -1491,6 +1755,64 @@ paths:
         '401':
           $ref: '#/components/responses/ErrorResponse'
         '403':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/admin/outbox/{service}/{eventId}/retry:
+    post:
+      summary: Повторная обработка outbox-события (только для GLOBAL_ADMIN)
+      operationId: retryOutboxEvent
+      tags:
+        - admin
+      security:
+        - bearerAuth: [ ]
+
+      parameters:
+        - name: service
+          in: path
+          required: true
+          description: Сервис-владелец outbox-события
+          schema:
+            type: string
+            enum:
+              - auth
+              - project
+              - issue
+
+        - name: eventId
+          in: path
+          required: true
+          description: Идентификатор outbox-события
+          schema:
+            type: string
+            format: uuid
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryOutboxEventRequestDto'
+
+      responses:
+        '200':
+          description: Outbox-событие успешно отправлено на повторную обработку
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryOutboxEventResponseDto'
+
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
           $ref: '#/components/responses/ErrorResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
@@ -1683,7 +2005,7 @@ components:
         items:
           type: array
           items:
-            $ref: '#/components/schemas/IssueShortResponseDto'
+            $ref: '#/components/schemas/IssueResponseDto'
         totalCount:
           type: integer
 
@@ -1891,6 +2213,78 @@ components:
           format: date-time
 
     # ==================== END LABELS SCHEMAS ====================
+
+    # ==================== WATCHERS SCHEMAS ====================
+
+    ListIssueWatchersResponseDto:
+      type: object
+      properties:
+        watchers:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueWatcherResponseDto'
+        totalCount:
+          type: integer
+          description: Общее количество подписчиков задачи
+
+    IssueWatcherResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Идентификатор подписки
+        issueId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+          description: Подписанный пользователь
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          format: uuid
+          description: Кто создал подписку
+
+    AddIssueWatcherRequestDto:
+      type: object
+      required:
+        - userId
+      properties:
+        userId:
+          type: string
+          format: uuid
+          description: Пользователь, которого нужно подписать на задачу
+
+    WatchIssueResponseDto:
+      type: object
+      properties:
+        watcher:
+          $ref: '#/components/schemas/IssueWatcherResponseDto'
+        watchersCount:
+          type: integer
+          description: Количество подписчиков после операции
+
+    UnwatchIssueResponseDto:
+      type: object
+      properties:
+        issueId:
+          type: string
+          format: uuid
+        removed:
+          type: boolean
+          description: Была ли подписка фактически удалена
+        watchersCount:
+          type: integer
+          description: Количество подписчиков после операции
+
+    # ==================== END WATCHERS SCHEMAS ====================
 
     NotificationListResponseDto:
       type: object
@@ -2323,3 +2717,97 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    ProblematicOutboxEventsSummaryResponseDto:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProblematicOutboxEventDto'
+        counts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProblematicEventCountsByServiceDto'
+        notAllShown:
+          type: boolean
+
+    ProblematicOutboxEventDto:
+      type: object
+      properties:
+        id:
+          type: string
+        aggregateType:
+          type: string
+        aggregateId:
+          type: string
+        eventType:
+          type: string
+        payload:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        publishedAt:
+          type: string
+          format: date-time
+        attempts:
+          type: integer
+          format: int32
+        lastErrorMessage:
+          type: string
+        processingStartedAt:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+        serviceKey:
+          type: string
+        reason:
+          type: string
+
+    ProblematicEventCountsByServiceDto:
+      type: object
+      properties:
+        serviceKey:
+          type: string
+        overdueNewCount:
+          type: integer
+          format: int64
+        stuckProcessingCount:
+          type: integer
+          format: int64
+        failedCount:
+          type: integer
+          format: int64
+
+    RetryOutboxEventRequestDto:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Причина ручного retry outbox-события
+          example: Retry after Kafka incident
+
+    RetryOutboxEventResponseDto:
+      type: object
+      required:
+        - eventId
+        - status
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: Текущий статус outbox-события после retry
+        attempts:
+          type: integer
+          format: int32
+          nullable: true
