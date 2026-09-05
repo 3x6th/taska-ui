@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
+  "contract:pins": "node scripts/check-contract-pins.mjs",
     "check": "npm run typecheck && npm run lint && npm run test && npm run test:e2e"
   },
   "dependencies": {

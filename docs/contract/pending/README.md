@@ -41,6 +41,23 @@ the PR wins; where the PR's `openapi.yml` and the PR's Java disagree, the Java
 wins, because that is what goes on the wire. Both of those have already happened
 on this set, and both are recorded in `docs/ai/API-DIVERGENCE.md`.
 
+## Keeping the pins honest
+
+A pull-request head moves on every force-push and `develop` moves on every merge.
+When either happens, a file here quietly starts describing a commit nobody can
+see any more — while reading exactly as authoritative as it did the day it was
+written. `npm run contract:pins` is what makes that loud: it re-reads every
+header, asks GitHub for the live head of each pinned PR and for `develop`, and
+fails on a mismatch, on a PR that has merged or closed, and on a header it
+cannot parse.
+
+It is **not** part of `npm run check`, on purpose. The gate has to run offline
+and has to be deterministic, and this needs the network and an authenticated
+`gh`; worse, its answer changes when the *backend* changes rather than when this
+repository does, and a gate that goes red because someone else pushed is a gate
+people learn to ignore. Run it when refreshing a pin, before writing a story
+against one, and before merging work that was written against one.
+
 ## Housekeeping
 
 When a PR merges: refresh `docs/contract/openapi.yml` from `develop`, delete that
