@@ -61,7 +61,19 @@ against one, and before merging work that was written against one.
 ## Housekeeping
 
 When a PR merges: refresh `docs/contract/openapi.yml` from `develop`, delete that
-PR's file here, and strike the matching lines from `docs/ai/API-DIVERGENCE.md`.
+PR's file here, and go through `docs/ai/API-DIVERGENCE.md` — striking **only the
+entries whose own "Removed by" names that merge**, and re-reading the rest.
+
+That clause is not pedantry. Writing against a pending contract turns up two
+different kinds of divergence, and only one of them is closed by the merge. The
+work for backend PR #146 produced three entries: the undeployed-route
+compensation, which the merge does close; a refusal the backend answers with
+`400` while its own test asserts `409`, which is closed by the backend fixing
+one or the other; and `GET /users/me` reporting `UNSPECIFIED` for a locked
+account, which is closed by a gateway change that is not in PR #146 at all. A
+mechanical strike-on-merge would have deleted two true divergences and orphaned
+the code compensating for them.
+
 When a PR closes without merging: delete the file and say so in the story that
 was written against it.
 

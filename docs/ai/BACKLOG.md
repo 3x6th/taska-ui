@@ -701,6 +701,17 @@ the next session in this image exactly as it bit this one.
   justified by a value that never arrives. It also sits on hardcoded hex
   (`#22c55e`, `#f59e0b`), which no agent here may extend, so the arm and the
   tokenisation are one job. Wants the gateway fixed first, then both together.
+- **A `LOCKED` account keeps full product access on a token minted before the
+  lock** (`api-contract-guard`, TAS-188). Broader than the profile-menu line
+  below it: `AuthServiceImpl.validateUserStatus` rejects `BLOCKED` and
+  `INVITED` and does not reject `LOCKED`, and `AuthServiceImpl.refresh` does
+  not call it at all — so a locked account is stopped at the sign-in form and
+  nowhere else. A backend ask, and one for after PR #146 merges rather than a
+  change to it.
+- **`reset-lockout` declares no `default` response in its openapi block**
+  (`api-contract-guard`, TAS-188), so the 500 the status round trip currently
+  produces is an undeclared status on that route. Minor beside the 500 itself,
+  which is on TAS-107 and TAS-108.
 - **The gateway disagrees with itself about the user status vocabulary**
   (found on the TAS-188 contract read, 2026-09-05). At backend PR #146's head
   `UserStatusDto` has four values including `LOCKED`, while the same service's

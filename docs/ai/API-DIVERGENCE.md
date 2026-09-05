@@ -1705,11 +1705,16 @@ Same rule as above: "Closed by" is settled, the rest is live.
   come out in the same pass. If review changes the PR's contract before
   merge, the client follows the merged version, not this entry.
 
-### The admin user block/unblock endpoints exist only in the TAS-107 branch contract
+### The three admin user writes — block, unblock, reset-lockout — exist only on an open backend PR
 
-- **Endpoints:** `POST /api/v1/admin/users/{userId}/block` and
-  `POST /api/v1/admin/users/{userId}/unblock` — the two writes the Users
-  section of the admin console is built on (TAS-186).
+- **Endpoints:** `POST /api/v1/admin/users/{userId}/block`,
+  `POST /api/v1/admin/users/{userId}/unblock` and
+  `POST /api/v1/admin/users/{userId}/reset-lockout` — the writes the Users
+  section of the admin console is built on (TAS-186 for the first two, TAS-188
+  for the third). The heading and this list name all three so the entry is
+  greppable by any of them; an earlier revision named two, which is how a
+  reader looking for `reset-lockout` found only the entry about *its refusal*
+  and concluded the route was deployed.
 - **Observed:** the vendored snapshot (develop @ `4241be2`) has no such paths,
   and the deployed gateway does not serve them: the backend change is
   [backend PR #134](https://github.com/VladislavYurin/taska-backend/pull/134)
@@ -1772,19 +1777,21 @@ Same rule as above: "Closed by" is settled, the rest is live.
   browser however faithfully the server set it, and the dialog's request-id
   line — the one thing in a failure that identifies it in the gateway log —
   would silently never render.
-- **The UI instead:** `MockTaskaApi` implements both writes fully, with every
-  refusal above reproduced word for word, and seeds one `INVITED` and one
-  `BLOCKED` account so all three states and both actions are reachable by
-  clicking. `HybridTaskaApi` delegates straight to REST with **no**
-  compensation of any kind — these are writes, and a synthesised success would
-  report a change to a table this client cannot alter, which is worse than the
-  failure it would hide. Against a gateway that has not deployed them, the
-  confirmation dialog stays open and says the operation is not deployed yet,
-  naming TAS-107 — read from the 404 **and** the `No static resource`
-  substring together (`UNDEPLOYED_ROUTE_MESSAGE` in `src/api/TaskaApi.ts`,
-  `isUndeployedRoute` in `src/screens/admin/users.ts`). Any other failure keeps
-  the section's ordinary taxonomy; `users.test.ts` asserts that a deployed
-  route's `404 "User not found"` is *not* swallowed by it.
+- **The UI instead:** `MockTaskaApi` implements all three writes fully, with
+  every refusal above reproduced word for word, and seeds one `INVITED`, one
+  `BLOCKED` and one `LOCKED` account so all four states and all three actions
+  are reachable by clicking. `HybridTaskaApi` delegates straight to REST with
+  **no** compensation of any kind — these are writes, and a synthesised success
+  would report a change to a table this client cannot alter, which is worse
+  than the failure it would hide. Against a gateway that has not deployed them,
+  the confirmation dialog stays open and says the operation is not deployed
+  yet, naming the story the operation belongs to — TAS-108 for reset-lockout,
+  TAS-107 for the other two — read from the 404 **and** the `No static
+  resource` substring together (`UNDEPLOYED_ROUTE_MESSAGE` in
+  `src/api/TaskaApi.ts`, `isUndeployedRoute` in `src/screens/admin/users.ts`).
+  Any other failure keeps the section's ordinary taxonomy; `users.test.ts`
+  asserts that a deployed route's `404 "User not found"` is *not* swallowed by
+  it.
 - **The response timestamp is `changedAt`, and this entry has now been wrong
   about it twice.** The first revision said the backend leaves the field unset,
   so it arrives as the 1970 epoch — taken from PR #134's *Известные проблемы*,
@@ -1845,13 +1852,22 @@ Same rule as above: "Closed by" is settled, the rest is live.
   gateway behaviour **nobody has observed** — added in this file, of all
   files, whose entire job is to stop compensations from being invented for
   problems that were never measured.
-- **Removal:** TAS-107 merging and deploying closes it. Refresh
-  `docs/contract/openapi.yml` then and close this entry with it; the
-  `UNDEPLOYED_ROUTE_MESSAGE` constant and `isUndeployedRoute` come out in the
-  same pass, and one probe at that point confirms the status/code table above
-  against the running gateway rather than against the branch's source. If
-  review changes the PR's contract before merge, the client follows the merged
-  version, not this entry.
+- **Removal:** backend PR #146 merging and deploying closes it — **all three
+  routes, not two.** Refresh `docs/contract/openapi.yml` then and close this
+  entry with it; the `UNDEPLOYED_ROUTE_MESSAGE` constant and `isUndeployedRoute`
+  come out in the same pass, and one probe at that point confirms the
+  status/code table above against the running gateway rather than against the
+  branch's source.
+
+  The count is load-bearing, and this is why it is stated twice. That PR
+  carries two Jira stories, TAS-107 and TAS-108, and its own last sentence
+  contemplates review changing it before merge. If it is split, a reader
+  following the old instruction removes the compensation on TAS-107's
+  deployment while `reset-lockout` still needs it — and the modal then answers
+  a route that is merely undeployed with the `refused` sentence, which tells
+  the reader that account is no longer there. Deploy all three, or keep the
+  compensation. If review changes the PR's contract before merge, the client
+  follows the merged version, not this entry.
 
 ### `UserStatus` grew a fourth value, and it arrives with the same PR the writes do
 
