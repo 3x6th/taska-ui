@@ -1,4 +1,34 @@
-export type UserStatus = "INVITED" | "ACTIVE" | "BLOCKED";
+/**
+ * The four states an account can be in — `UserStatusDto` in the contract this
+ * story is written against (backend PR #146, extracted at
+ * docs/contract/pending/pr-146-TAS-108.yml), and `USER_STATUS_LOCKED = 4` in
+ * that PR's `common.proto`.
+ *
+ * `LOCKED` is not on `develop`, so nothing holds it yet. Measured at
+ * `ref=develop` on 2026-09-05: `auth-service`'s `UserStatus` enum declares
+ * `ACTIVE`, `BLOCKED` and `INVITED`; the proto enum stops at
+ * `USER_STATUS_BLOCKED = 3`; and `handleFailedAttempt(Credential)` touches the
+ * credential's counters and writes no status at all. The entity value, the
+ * proto value, the failed-login write and `resetFailedAttempts` restoring
+ * `ACTIVE` all ship with PR #146 — the same PR that brings the three admin
+ * writes TAS-188 is about. The union is widened now for that reason and no
+ * other: so this frontend is right on the day that PR merges rather than a
+ * build after it.
+ *
+ * What earns it a value of its own once it does ship: `LOCKED` is **not** an
+ * administrative state, and no write this client makes reaches it. An account
+ * locks itself after `maxFailedAttempts` failed sign-ins and the next
+ * successful one releases it, which is why `block` and `unblock` are both
+ * refused from it and `resetCredentialLockout` (src/api/TaskaApi.ts) is the
+ * only write that leaves it.
+ *
+ * A value outside this union can still arrive, and adding to the union is not
+ * what stops it: `GET /users/me` answers the gateway's own `GatewayUserStatus`,
+ * which has no `LOCKED` and reports `UNSPECIFIED` instead. So every reader
+ * still prints an unrecognised status verbatim rather than trusting the type
+ * (TAS-173, `userStatusLabel` in src/screens/admin/users.ts).
+ */
+export type UserStatus = "INVITED" | "ACTIVE" | "BLOCKED" | "LOCKED";
 /**
  * The account-wide role from `GET /users/me`, not a project role — `ProjectRole`
  * below is the per-project one and the two never substitute for each other.
@@ -45,10 +75,10 @@ export interface User {
 }
 
 /**
- * What `POST /admin/users/{userId}/block` and `.../unblock` answer with —
- * `UserStatusResponseDto`. The server states the transition it performed, both
- * ends of it, so the caller never has to infer what happened from what it
- * asked for.
+ * What `POST /admin/users/{userId}/block`, `.../unblock` and
+ * `.../reset-lockout` answer with — `UserStatusResponseDto`. The server states
+ * the transition it performed, both ends of it, so the caller never has to
+ * infer what happened from what it asked for.
  *
  * `previousStatus` and `currentStatus` are the domain's own `UserStatus`
  * because the contract declares them as that enum, exactly as it declares the
@@ -56,22 +86,28 @@ export interface User {
  * `IssueLink.viewLinkType`, where the contract types the field as a bare
  * string.
  *
- * `updatedAt` is modelled because the contract declares it and **is not drawn
- * anywhere**, which is a decision about *which* timestamp is worth printing
- * rather than about whether this one is real. It is real: backend commit
- * `62c4c675` fills it, and `AdminUserMapper` sets it in both mappers at branch
- * head. But it times *this write*, and the row it describes is a row of
- * `auth.users`, which has an `updated_at` of its own. Two clocks, and the row's
- * is the one worth reading — so the list is refetched and the refetched row
- * carries the timestamp. Deliberately not an argument about what is on screen:
- * whether either column is drawn is a question for whichever section is drawing
- * it, and this holds whatever that answer turns out to be.
+ * `changedAt` — **not** `updatedAt`, which is what this field was called until
+ * TAS-188. The gateway's `AdminUserManagementMapper.toRestUserStatusResponse`
+ * calls `setChangedAt`, and `UserStatusResponseDto` lists `changedAt` among its
+ * required properties, so the old name read `undefined` out of every successful
+ * response while the type still promised a `string`.
+ *
+ * It is modelled because the contract declares it, and it **is not drawn
+ * anywhere**. The reason it is not drawn is no longer that it is a second
+ * clock: auth-service builds the response as
+ * `.changedAt(savedUser.getUpdatedAt())` on an entity carrying
+ * `@LastModifiedDate`, so this *is* the `updated_at` of the `auth.users` row it
+ * changed, to the same instant. What it is not is the row itself. The list this
+ * value would decorate is refetched immediately after the write, and the
+ * refetched row carries its own `updated_at` — so the section reads one source
+ * for the whole table rather than patching one row's timestamp from a response
+ * and the rest from a list.
  */
 export interface UserStatusChange {
   userId: string;
   previousStatus: UserStatus;
   currentStatus: UserStatus;
-  updatedAt: string;
+  changedAt: string;
 }
 
 export interface Project {

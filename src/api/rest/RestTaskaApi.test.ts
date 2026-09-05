@@ -1214,16 +1214,18 @@ describe("RestTaskaApi admin user writes", () => {
       json: async () => body,
     }) as unknown as Response;
 
-  // A real instant. This fixture used to carry the 1970 epoch, which encoded a
-  // belief about the backend — that it left the field unset — that turned out
-  // to be stale (backend `62c4c675` fills it). A fixture is data, not a claim,
-  // and one carrying a retired assumption is how the assumption gets read back
-  // as evidence.
+  // A real instant, under the name the wire actually uses. This fixture used to
+  // carry the 1970 epoch, which encoded a belief about the backend — that it
+  // left the field unset — that turned out to be stale; and it then spelled the
+  // field `updatedAt`, which the gateway never sent
+  // (`AdminUserManagementMapper.setChangedAt`), so the test agreed with the
+  // bug. A fixture is data, not a claim, and one carrying a retired assumption
+  // is how the assumption gets read back as evidence.
   const change = {
     userId: "1cf0dc4e-0000-4000-8000-000000000001",
     previousStatus: "ACTIVE",
     currentStatus: "BLOCKED",
-    updatedAt: "2026-08-25T14:03:11Z",
+    changedAt: "2026-08-25T14:03:11Z",
   };
 
   beforeEach(() => {
@@ -1259,6 +1261,95 @@ describe("RestTaskaApi admin user writes", () => {
     expect(result.currentStatus).toBe("ACTIVE");
   });
 
+  it("reads the timestamp under the wire's name and does not fall back to the one it never sent", async () => {
+    // TAS-188's first fact. `AdminUserManagementMapper` calls `setChangedAt`
+    // and `UserStatusResponseDto` requires `changedAt`; this client read
+    // `updatedAt`, which produced `undefined` in a field typed `string` with no
+    // error and nothing on screen to notice.
+    //
+    // No fallback to the old name, and that is a decision rather than an
+    // omission: these routes have never been deployed, so no gateway has ever
+    // answered `updatedAt`, and accepting it would be a compatibility shim for
+    // a version of the backend that never existed.
+    const fetchStub = vi.fn(async (input: string) =>
+      answer(200, { userId: change.userId, previousStatus: "ACTIVE", currentStatus: "BLOCKED", updatedAt: change.changedAt }, undefined, input),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().blockUser(change.userId, "Left the company");
+
+    expect(result.changedAt).toBeUndefined();
+    expect(Object.keys(result).sort()).toEqual(["changedAt", "currentStatus", "previousStatus", "userId"]);
+  });
+
+  it("posts to the reset-lockout path, which is the third route and the same body", async () => {
+    const fetchStub = vi.fn(async (input: string) =>
+      answer(200, { ...change, previousStatus: "LOCKED", currentStatus: "ACTIVE" }, undefined, input),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().resetCredentialLockout(change.userId, "Called in, identity confirmed");
+
+    const [url, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain(`/admin/users/${change.userId}/reset-lockout`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body)) as unknown).toEqual({ reason: "Called in, identity confirmed" });
+    // The server always reports this transition for a successful reset, which
+    // is why the confirmation can name it before asking.
+    expect(result).toMatchObject({ previousStatus: "LOCKED", currentStatus: "ACTIVE" });
+  });
+
+  it("guards the reset-lockout reason on this side of the wire too", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer(200, change, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+    const api = new RestTaskaApi();
+
+    await expect(api.resetCredentialLockout(change.userId, " \n ")).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: "A reason is required",
+    });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("carries the reset-lockout refusal up as the 400 it is, code and wording intact", async () => {
+    // Measured off `AdminUserManagementServiceImpl.resetCredentialLockout` and
+    // `RestErrorMapper.mapGrpcCodeToHttpStatus`: FAILED_PRECONDITION maps to
+    // **400**, not to the 409 the backend PR's own gateway test asserts — that
+    // test mocks the client's error and measures nothing. The section reads
+    // this by its code (`isConflict`), which is the half that survives either
+    // answer.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => answer(400, { code: "FAILED_PRECONDITION", message: "User is not in LOCKED status" }, "req-4")),
+    );
+
+    await expect(new RestTaskaApi().resetCredentialLockout(change.userId, "Not locked")).rejects.toMatchObject({
+      status: 400,
+      code: "FAILED_PRECONDITION",
+      message: "User is not in LOCKED status",
+      requestId: "req-4",
+    });
+  });
+
+  it("passes both of reset-lockout's 404 sentences through as they arrived", async () => {
+    // One status and one code for two different things — no such user, and a
+    // locked account with no PASSWORD credential row. Nothing may branch on the
+    // wording, so nothing may replace it either.
+    for (const message of ["User not found", "Credential not found"]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => answer(404, { code: "NOT_FOUND", message })),
+      );
+
+      await expect(new RestTaskaApi().resetCredentialLockout(change.userId, "Reason")).rejects.toMatchObject({
+        status: 404,
+        code: "NOT_FOUND",
+        message,
+      });
+    }
+  });
+
   it("trims the reason and never sends a blank one", async () => {
     const fetchStub = vi.fn(async (input: string) => answer(200, change, undefined, input));
     vi.stubGlobal("fetch", fetchStub);
@@ -1278,6 +1369,36 @@ describe("RestTaskaApi admin user writes", () => {
       message: "A reason is required",
     });
     expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an over-long reason on this side too, exactly as the mock does", async () => {
+    // The interchangeability rule AGENTS.md states, pinned on the side that
+    // used to break it: the mock has always refused a reason past 550 and this
+    // implementation sent it, so the same call answered differently in the two
+    // modes. Same code, same status, same sentence, and no request spent.
+    const fetchStub = vi.fn(async (input: string) => answer(200, change, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+    const api = new RestTaskaApi();
+
+    for (const write of [
+      () => api.blockUser(change.userId, "x".repeat(551)),
+      () => api.unblockUser(change.userId, "x".repeat(600)),
+      () => api.resetCredentialLockout(change.userId, "x".repeat(551)),
+    ]) {
+      await expect(write()).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        status: 400,
+        message: "A reason is at most 550 characters",
+      });
+    }
+    expect(fetchStub).not.toHaveBeenCalled();
+
+    // 550 exactly goes out — the bound is inclusive, and it is measured on the
+    // trimmed value, so trailing whitespace is not what tips a reason over it.
+    await api.blockUser(change.userId, `  ${"x".repeat(550)}  `);
+    expect(JSON.parse(String((fetchStub.mock.calls[0] as unknown as [string, RequestInit])[1].body)) as unknown).toEqual({
+      reason: "x".repeat(550),
+    });
   });
 
   it("percent-encodes the user id rather than pasting it into the path", async () => {

@@ -14,7 +14,13 @@ import type {
   UpdateIssueInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
-import { BLOCK_REASON_REQUIRED_MESSAGE, SEARCH_QUERY_MIN_LENGTH, SEARCH_QUERY_TOO_SHORT_MESSAGE } from "../TaskaApi";
+import {
+  ADMIN_WRITE_REASON_MAX_LENGTH,
+  ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
+  ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
+  SEARCH_QUERY_MIN_LENGTH,
+  SEARCH_QUERY_TOO_SHORT_MESSAGE,
+} from "../TaskaApi";
 import { SessionExpiredSignal } from "../session";
 import type {
   AdminCatalog,
@@ -95,21 +101,24 @@ interface RestAdminRow {
 }
 
 /**
- * `UserStatusResponseDto` — what both admin user writes answer with.
+ * `UserStatusResponseDto` — what all three admin user writes answer with.
  *
  * Fields are typed as present, unlike the `/readonly` family above, because the
- * contract declares this schema's four properties with an enum on the two
- * statuses, the same standing `RestUser.status` has. `updatedAt` is read and
- * carried and never drawn — not because it is empty (backend `62c4c675` fills
- * it) but because it times this write, while the row it describes has an
- * `updated_at` of its own. The refetched row is what carries the timestamp
- * worth printing; see `UserStatusChange`.
+ * contract declares this schema's four properties as required, with an enum on
+ * the two statuses — the same standing `RestUser.status` has.
+ *
+ * `changedAt` is the wire's own spelling
+ * (`AdminUserManagementMapper.setChangedAt`, and `changedAt` in the DTO's
+ * `required` list). It was read here as `updatedAt` until TAS-188, which is a
+ * failure that would have shown up as `undefined` in a field typed `string` and
+ * as nothing at all on screen. It is read and carried and never drawn; see
+ * `UserStatusChange` for why the refetched row is what carries the timestamp.
  */
 interface RestUserStatusChange {
   userId: string;
   previousStatus: UserStatus;
   currentStatus: UserStatus;
-  updatedAt: string;
+  changedAt: string;
 }
 
 /** `GET /readonly/catalog`, with the same caveat. */
@@ -808,7 +817,7 @@ export class RestTaskaApi implements TaskaApi {
     return this.toUserStatusChange(
       await this.request<RestUserStatusChange>(`/admin/users/${this.segment(userId)}/block`, {
         method: "POST",
-        body: { reason: requireBlockReason(reason) },
+        body: { reason: requireAdminWriteReason(reason) },
       }),
     );
   }
@@ -818,7 +827,22 @@ export class RestTaskaApi implements TaskaApi {
     return this.toUserStatusChange(
       await this.request<RestUserStatusChange>(`/admin/users/${this.segment(userId)}/unblock`, {
         method: "POST",
-        body: { reason: requireBlockReason(reason) },
+        body: { reason: requireAdminWriteReason(reason) },
+      }),
+    );
+  }
+
+  /**
+   * `POST /admin/users/{userId}/reset-lockout` — the same body, the same guard
+   * and the same response as its two neighbours. What differs is entirely on
+   * the server: it is legal only from `LOCKED`, and the refusal for anything
+   * else is a 400 carrying `FAILED_PRECONDITION` (see `TaskaApi`).
+   */
+  async resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange> {
+    return this.toUserStatusChange(
+      await this.request<RestUserStatusChange>(`/admin/users/${this.segment(userId)}/reset-lockout`, {
+        method: "POST",
+        body: { reason: requireAdminWriteReason(reason) },
       }),
     );
   }
@@ -826,7 +850,7 @@ export class RestTaskaApi implements TaskaApi {
   /**
    * Field by field rather than by spread, like `toIssueSearchHit`: the listing
    * is the point. What must keep being provable about this response is that
-   * `updatedAt` is carried and nothing more — no screen may start drawing it
+   * `changedAt` is carried and nothing more — no screen may start drawing it
    * because a spread happened to put it in scope.
    */
   private toUserStatusChange(response: RestUserStatusChange): UserStatusChange {
@@ -834,7 +858,7 @@ export class RestTaskaApi implements TaskaApi {
       userId: response.userId,
       previousStatus: response.previousStatus,
       currentStatus: response.currentStatus,
-      updatedAt: response.updatedAt,
+      changedAt: response.changedAt,
     };
   }
 
@@ -1142,24 +1166,49 @@ function requireSearchQuery(raw: string | undefined): string | null {
 }
 
 /**
- * The reason as the server would accept it, trimmed.
+ * The reason as the server would accept it, trimmed. One guard for all three
+ * admin user writes, which all declare the same 1–550 `reason`.
  *
- * `@NotBlank` on the backend means a whitespace-only reason is a `400`, and
- * this is the same rule applied on this side of the wire so that a request
- * which cannot succeed is never spent — the same shape as `requireSearchQuery`
- * above, and the same wording the mock uses, so a caller cannot tell a reason
- * stopped here from one stopped there.
+ * A whitespace-only reason is a `400` on the backend — through
+ * `GrpcRequestValidators.requireNonBlankOrInvalidArgument` rather than through
+ * `@NotBlank`, since the generated DTO only carries `@Size(min = 1)`, which a
+ * single space passes. This is that rule applied on this side of the wire so
+ * that a request which cannot succeed is never spent — the same shape as
+ * `requireSearchQuery` above, and the same wording the mock uses, so a caller
+ * cannot tell a reason stopped here from one stopped there.
  *
- * The upper bound is not checked. `maxLength` on the field is what keeps a
- * reason under 550 characters, and a client-side length refusal here would be
- * a second, weaker copy of a rule the server states — the direction this
- * guard exists to avoid is a request that is certainly refused, and a blank
- * one is the only shape the UI can produce.
+ * The upper bound is checked here too, and that is the whole of what this
+ * function decides: `AGENTS.md` requires mock, rest and hybrid to stay
+ * behaviourally interchangeable, and the mock has always refused
+ * `reason.length > ADMIN_WRITE_REASON_MAX_LENGTH`. An earlier version of this
+ * comment argued the other way — that a client-side length refusal would be a
+ * second, weaker copy of a rule the server states — and the argument was both
+ * outranked and wrong. Outranked, because interchangeability is a constraint
+ * and that was a preference. Wrong, because there is no rule below the gateway
+ * to be a weaker copy of: the 550 is stated once, as `maxLength` in the
+ * contract and therefore `@Size(max = 550)` on the gateway's generated request
+ * DTO, and both `auth-service` and `admin-service` validate `body.reason` with
+ * `GrpcRequestValidators.requireNonBlank` alone.
+ *
+ * It costs nothing. The field carries `maxLength={ADMIN_WRITE_REASON_MAX_LENGTH}`
+ * (src/screens/admin/AdminUserActionModal.tsx), so the UI cannot produce an
+ * over-long reason; the guard is for a caller that bypasses the field, and both
+ * implementations owe that caller the same answer. Before this, a 600-character
+ * reason threw `INVALID_ARGUMENT` against the mock and went out on the wire
+ * against REST — the two modes disagreeing about a request, which is exactly
+ * what interchangeability names.
+ *
+ * The length is measured on the trimmed value, as the mock measures it, so 550
+ * characters plus a trailing newline is accepted rather than refused on a
+ * character nobody typed on purpose.
  */
-function requireBlockReason(raw: string): string {
+function requireAdminWriteReason(raw: string): string {
   const reason = raw.trim();
   if (reason === "") {
-    throw new ApiError(BLOCK_REASON_REQUIRED_MESSAGE, "INVALID_ARGUMENT", 400);
+    throw new ApiError(ADMIN_WRITE_REASON_REQUIRED_MESSAGE, "INVALID_ARGUMENT", 400);
+  }
+  if (reason.length > ADMIN_WRITE_REASON_MAX_LENGTH) {
+    throw new ApiError(ADMIN_WRITE_REASON_TOO_LONG_MESSAGE, "INVALID_ARGUMENT", 400);
   }
   return reason;
 }

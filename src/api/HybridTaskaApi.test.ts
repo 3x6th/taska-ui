@@ -144,6 +144,47 @@ describe("HybridTaskaApi", () => {
     await expect(hybrid.getMembership(project.id)).rejects.toThrow("Internal error");
   });
 
+  /**
+   * The three admin user writes are the calls this class is most tempted to
+   * compensate for — they are the ones the deployed gateway cannot answer — and
+   * it must not. A compensation for a write is a report of a change that never
+   * happened, so each one goes straight down and the refusal arrives intact.
+   */
+  it("passes all three admin user writes straight to the live api, refusals included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    const rowOf = async (status: string) => {
+      const { rows } = await live.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      return String(rows.find((row) => row.status === status)!.id);
+    };
+
+    const blockUser = vi.spyOn(live, "blockUser");
+    const unblockUser = vi.spyOn(live, "unblockUser");
+    const resetCredentialLockout = vi.spyOn(live, "resetCredentialLockout");
+
+    const active = await rowOf("ACTIVE");
+    await expect(hybrid.blockUser(active, "Left the company")).resolves.toMatchObject({ currentStatus: "BLOCKED" });
+    await expect(hybrid.unblockUser(active, "Came back")).resolves.toMatchObject({ currentStatus: "ACTIVE" });
+
+    const locked = await rowOf("LOCKED");
+    await expect(hybrid.resetCredentialLockout(locked, "Identity confirmed")).resolves.toMatchObject({
+      previousStatus: "LOCKED",
+      currentStatus: "ACTIVE",
+    });
+
+    expect(blockUser).toHaveBeenCalledWith(active, "Left the company");
+    expect(unblockUser).toHaveBeenCalledWith(active, "Came back");
+    expect(resetCredentialLockout).toHaveBeenCalledWith(locked, "Identity confirmed");
+
+    // And nothing here softens a refusal into a success: the second reset finds
+    // an account that is no longer locked and is refused by the same code the
+    // gateway would send.
+    await expect(hybrid.resetCredentialLockout(locked, "Again")).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+      message: "User is not in LOCKED status",
+    });
+  });
+
   // Search is a gateway route with no membership in it, so this class has
   // nothing to add to it — including the short-query guard, which belongs to
   // whichever implementation is underneath and must not be applied twice.

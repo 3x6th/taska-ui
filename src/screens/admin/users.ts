@@ -91,6 +91,13 @@ const userStatusLabels: Record<UserStatus, string> = {
   ACTIVE: "Active",
   BLOCKED: "Blocked",
   INVITED: "Invited",
+  // Not an administrative state (TAS-188): once backend PR #146 deploys,
+  // auth-service puts an account here after `maxFailedAttempts` failed sign-ins
+  // and takes it out again on the next successful one, so this word names
+  // something no administrator decided. It cannot appear before that PR — the
+  // value is not on `develop` at all, measured in `UserStatus`
+  // (src/domain/types.ts).
+  LOCKED: "Locked",
 };
 
 const globalRoleLabels: Record<GlobalRole, string> = {
@@ -99,20 +106,29 @@ const globalRoleLabels: Record<GlobalRole, string> = {
 };
 
 /**
- * Whether the table's raw value is one of the three the domain knows. Not
+ * Whether the table's raw value is one of the four the domain knows. Not
  * exported: the one caller is the label below, and a second reader of "is this
  * status known" elsewhere would be a screen deciding for itself what to do with
  * a value it has never seen.
  */
 function isKnownUserStatus(status: string | null): status is UserStatus {
-  return status === "ACTIVE" || status === "BLOCKED" || status === "INVITED";
+  return status === "ACTIVE" || status === "BLOCKED" || status === "INVITED" || status === "LOCKED";
 }
 
 /**
  * The written status, or the raw value for anything this build has never heard
  * of. `status` here is a column of a database table, not a contract enum, so a
- * service that grows a fourth state has to render as itself rather than take
- * the row down with it (TAS-173).
+ * service that grows a state has to render as itself rather than take the row
+ * down with it (TAS-173).
+ *
+ * The union growing a fourth value with TAS-188 does not retire that rule and
+ * must not be read as narrowing it. `LOCKED` is not the evidence for the rule —
+ * that value is not on the backend's `develop` yet, so no row has ever carried
+ * it. The evidence is the shape of the source: this is a database cell, and a
+ * fifth value can appear in it on the day a service grows one, with no contract
+ * change and no build of this frontend in between. Naming four values is as far
+ * as the union goes; the fallback below is what covers the rest, and it covers
+ * exactly as much as it did before the fourth was added.
  */
 export function userStatusLabel(status: string | null): string {
   return isKnownUserStatus(status) ? userStatusLabels[status] : (status ?? "—");
@@ -136,13 +152,19 @@ export function hasKey(user: AdminUserRow): user is AdminUserTarget {
   return user.id !== null;
 }
 
-/** Which of the two writes this row offers, or `null` for neither. */
-export type UserAction = "block" | "unblock";
+/** Which of the three writes this row offers, or `null` for none of them. */
+export type UserAction = "block" | "unblock" | "reset";
 
 /**
  * The one action a row offers, decided by the server's own transition rules
- * (`AdminUserManagementServiceImpl`, backend TAS-107): block is legal from
- * `ACTIVE` and `INVITED`, unblock only from `BLOCKED`.
+ * (`AdminUserManagementServiceImpl`, backend TAS-107 and TAS-108): block is
+ * legal from `ACTIVE` and `INVITED`, unblock only from `BLOCKED`, and
+ * reset-lockout only from `LOCKED`.
+ *
+ * `LOCKED` used to fall through to `null` here, which was right while the row
+ * had nothing to offer and became wrong the moment reset-lockout existed. It is
+ * emphatically not a case for `block`: the server refuses that from `LOCKED`
+ * with `ABORTED`, so the row would have carried a button certain to fail.
  *
  * `null` for a status this build does not recognise, and for a row with no key
  * — a button that is certain to be refused, or that has nothing to address, is
@@ -153,10 +175,16 @@ export function actionFor(user: AdminUserRow): UserAction | null {
   if (user.id === null) return null;
   if (user.status === "ACTIVE" || user.status === "INVITED") return "block";
   if (user.status === "BLOCKED") return "unblock";
+  if (user.status === "LOCKED") return "reset";
   return null;
 }
 
-/** What the status becomes if the server accepts this action. */
+/**
+ * What the status becomes if the server accepts this action. Both of the
+ * undoing actions land on `ACTIVE` — reset-lockout because auth-service sets
+ * the account active while clearing the credential's counters, which is why the
+ * confirmation can name the transition before asking for it.
+ */
 export function targetStatus(action: UserAction): UserStatus {
   return action === "block" ? "BLOCKED" : "ACTIVE";
 }
@@ -165,11 +193,30 @@ export function targetStatus(action: UserAction): UserStatus {
 export const actionLabels: Record<UserAction, string> = {
   block: "Block",
   unblock: "Unblock",
+  // "Reset lockout", not "Unlock": a one-letter difference from "Unblock" in a
+  // column where both appear is not a difference a reader can rely on, and this
+  // names what the server actually does (`resetCredentialLockout`).
+  reset: "Reset lockout",
+};
+
+/** The same button while the server is answering. Not derivable: "Reseting" is not a word. */
+export const actionPendingLabels: Record<UserAction, string> = {
+  block: "Blocking…",
+  unblock: "Unblocking…",
+  reset: "Resetting…",
+};
+
+/** Mid-sentence, for the failure that is the gateway's own fault: "failed while …ing this account". */
+export const actionGerunds: Record<UserAction, string> = {
+  block: "blocking",
+  unblock: "unblocking",
+  reset: "resetting the lockout on",
 };
 
 /**
  * Whether this failure means "the gateway does not have this route yet"
- * (TAS-107) rather than "there is no such user".
+ * (TAS-107 for block and unblock, TAS-108 for reset-lockout — one backend PR,
+ * so all three deploy on the same day) rather than "there is no such user".
  *
  * Both halves are required, and the pairing is narrow on purpose. An unmapped
  * path falls through to Spring's static-resource handler, which answers **404**
@@ -179,8 +226,10 @@ export const actionLabels: Record<UserAction, string> = {
  * status alone would read a missing account as a missing deployment.
  *
  * Matched as a substring rather than by equality because the tail of the
- * message is the request path, which differs per user id. It stops matching the
- * day TAS-107 deploys, so the note removes itself.
+ * message is the request path, which differs per user id — and by the same
+ * token it says nothing about *which* route was asked for, which is what lets
+ * one predicate serve all three. It stops matching the day the writes deploy,
+ * so the note removes itself.
  */
 export function isUndeployedRoute(error: unknown): boolean {
   const { status, message } = apiErrorFacts(error);

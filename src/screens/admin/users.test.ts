@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../api/rest/RestTaskaApi";
-import { actionFor, globalRoleLabel, isUndeployedRoute, personLabel, readUserRow, userStatusLabel, userWriteFailure } from "./users";
+import {
+  actionFor,
+  actionLabels,
+  globalRoleLabel,
+  isUndeployedRoute,
+  personLabel,
+  readUserRow,
+  targetStatus,
+  userStatusLabel,
+  userWriteFailure,
+} from "./users";
 
 /**
  * The Users section reads raw table rows, so every value it draws arrives as
@@ -64,11 +74,16 @@ describe("admin users, reading a row", () => {
 });
 
 describe("admin users, statuses and roles", () => {
-  it("writes the three statuses out and prints anything else verbatim", () => {
+  it("writes the four statuses out and prints anything else verbatim", () => {
     expect(userStatusLabel("ACTIVE")).toBe("Active");
     expect(userStatusLabel("INVITED")).toBe("Invited");
     expect(userStatusLabel("BLOCKED")).toBe("Blocked");
-    // TAS-173's rule: a value this build has never seen is the message.
+    // The fourth, added with TAS-188. `auth.users` could hold it before this
+    // build could name it — an account lands there by failing to sign in too
+    // many times, not by anything an administrator does.
+    expect(userStatusLabel("LOCKED")).toBe("Locked");
+    // TAS-173's rule, which widening the union must not close: a value this
+    // build has never seen is still the message.
     expect(userStatusLabel("QUARANTINED")).toBe("QUARANTINED");
     expect(userStatusLabel(null)).toBe("—");
   });
@@ -83,16 +98,34 @@ describe("admin users, statuses and roles", () => {
   it("offers the action the server's own transition rules allow, and no other", () => {
     const at = (status: string | null) => actionFor(readUserRow({ id: "u-1", status }));
 
-    // Block from ACTIVE and from INVITED; unblock only from BLOCKED.
+    // Block from ACTIVE and from INVITED; unblock only from BLOCKED;
+    // reset-lockout only from LOCKED.
     expect(at("ACTIVE")).toBe("block");
     expect(at("INVITED")).toBe("block");
     expect(at("BLOCKED")).toBe("unblock");
+    // Not `block`, which the server refuses from LOCKED with `ABORTED`, and no
+    // longer `null`, which is what this returned while the route did not exist.
+    expect(at("LOCKED")).toBe("reset");
     // An unknown status offers nothing rather than guessing, and neither does a
     // missing one — a button certain to be refused is worse than no button.
     expect(at("QUARANTINED")).toBeNull();
     expect(at(null)).toBeNull();
     // Nor a row with no key: there is nothing to put in the path.
     expect(actionFor(readUserRow({ status: "ACTIVE" }))).toBeNull();
+  });
+
+  it("names each action and the status the server would land on", () => {
+    expect(actionLabels.block).toBe("Block");
+    expect(actionLabels.unblock).toBe("Unblock");
+    // "Reset lockout" rather than "Unlock": one letter away from "Unblock" is
+    // not a difference a reader can rely on in the column where both appear.
+    expect(actionLabels.reset).toBe("Reset lockout");
+
+    expect(targetStatus("block")).toBe("BLOCKED");
+    expect(targetStatus("unblock")).toBe("ACTIVE");
+    // Always ACTIVE: auth-service sets the account active while it clears the
+    // credential's counters, so the confirmation can state the transition.
+    expect(targetStatus("reset")).toBe("ACTIVE");
   });
 });
 
@@ -116,6 +149,37 @@ describe("admin users, telling one failure from another", () => {
 
     // And the message alone, on any other status, is not the signature either.
     expect(isUndeployedRoute(restError(500, "INTERNAL", "No static resource"))).toBe(false);
+  });
+
+  it("reads the same signature for the reset-lockout route, which is as undeployed as the other two", () => {
+    // One predicate for all three: the fallback's message names the path it was
+    // asked for, so it says nothing about *which* route is missing — and all
+    // three arrive in one backend PR anyway.
+    const undeployed = restError(
+      404,
+      "NOT_FOUND",
+      "No static resource api/v1/admin/users/1/reset-lockout for request 'POST /api/v1/admin/users/1/reset-lockout'.",
+    );
+    expect(isUndeployedRoute(undeployed)).toBe(true);
+    expect(userWriteFailure(undeployed)).toBe("undeployed");
+
+    // Reset-lockout's own 404s — two sentences, one status, one code — stay
+    // "refused". Neither may read as a missing deployment.
+    for (const message of ["User not found", "Credential not found"]) {
+      expect(userWriteFailure(restError(404, "NOT_FOUND", message))).toBe("refused");
+    }
+  });
+
+  it("reads the reset-lockout refusal as a conflict, which it reaches only by its code", () => {
+    // `FAILED_PRECONDITION` → **400** (`RestErrorMapper.mapGrpcCodeToHttpStatus`),
+    // the shape the last-admin guard wears rather than the transition guard's
+    // 409 — so this arrives on the same status as a plainly bad request and is
+    // told apart from one by nothing but the code. The backend PR's own gateway
+    // test asserts 409 here; it mocks the client's error and measures nothing.
+    expect(userWriteFailure(restError(400, "FAILED_PRECONDITION", "User is not in LOCKED status"))).toBe("conflict");
+    // The mock carries a code and no status and must reach the same sentence.
+    const fromMock = Object.assign(new Error("User is not in LOCKED status"), { code: "FAILED_PRECONDITION" });
+    expect(userWriteFailure(fromMock)).toBe("conflict");
   });
 
   /**

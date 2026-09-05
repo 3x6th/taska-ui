@@ -50,6 +50,8 @@ const { fakeApi, useMock, setExtraRows, setWriteFailure, setRowsFailure, holdRow
       state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.blockUser(userId, reason),
     unblockUser: (userId: string, reason: string) =>
       state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.unblockUser(userId, reason),
+    resetCredentialLockout: (userId: string, reason: string) =>
+      state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.resetCredentialLockout(userId, reason),
   };
 
   return {
@@ -165,6 +167,33 @@ describe("the admin Users section", () => {
     expect(within(rowFor("No Key")).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("draws each status with the device DESIGN.md gives it, and an unknown one with none", async () => {
+    // The pill is the only place in this section where colour carries meaning,
+    // and §5.8 assigns the devices rather than the hues: fill for BLOCKED, a
+    // dashed edge for INVITED, a solid --danger edge for LOCKED, nothing for
+    // ACTIVE and nothing for a value this build cannot interpret. Pinning the
+    // class is how a fourth device gets noticed if someone adds one.
+    setExtraRows([
+      {
+        id: "9d0c2f11-0000-4000-8000-00000000000a",
+        login: "quinn",
+        email: "quinn@example.com",
+        display_name: "Quinn Ash",
+        status: "QUARANTINED",
+        global_role: "USER",
+      },
+    ]);
+    renderSection();
+    await screen.findByText("QUARANTINED");
+
+    const pillFor = (name: string, label: string) => within(rowFor(name)).getByText(label);
+    expect(pillFor("Anna Ivanova", "Active").className).toBe("admin-pill");
+    expect(pillFor("Leo Fischer", "Invited").className).toBe("admin-pill admin-status-invited");
+    expect(pillFor("Nina Kowal", "Blocked").className).toBe("admin-pill admin-status-blocked");
+    expect(pillFor("Omar Haddad", "Locked").className).toBe("admin-pill admin-status-locked");
+    expect(pillFor("Quinn Ash", "QUARANTINED").className).toBe("admin-pill");
+  });
+
   it("keeps the confirmation off until a reason is typed, and says why", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: "Block Anna Ivanova" }));
@@ -226,6 +255,54 @@ describe("the admin Users section", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Nina Kowal is now active.");
     // And the row now offers the other action.
     expect(within(row).getByRole("button", { name: "Block Nina Kowal" })).toBeVisible();
+  });
+
+  it("offers the lockout reset on a locked account, and says what it does and does not touch", async () => {
+    renderSection();
+
+    await screen.findByRole("table");
+    const row = rowFor("Omar Haddad");
+    expect(within(row).getByText("Locked")).toBeVisible();
+    // Not Block, which the server refuses from LOCKED, and not nothing, which
+    // is what this row offered before the route existed.
+    fireEvent.click(within(row).getByRole("button", { name: "Reset lockout Omar Haddad" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Reset lockout Omar Haddad" });
+    expect(within(dialog).getByText("LOCKED → ACTIVE")).toBeVisible();
+    // The two things an admin will otherwise assume, and both are wrong: that
+    // somebody blocked this account, and that this hands out a new password.
+    expect(within(dialog).getByText(/locked itself after too many failed sign-ins/i)).toBeVisible();
+    expect(within(dialog).getByText(/change the password/i)).toBeVisible();
+
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Called in, identity confirmed" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset lockout" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const after = rowFor("Omar Haddad");
+    expect(within(after).getByText("Active")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Omar Haddad is now active.");
+    // And the row now offers what an active account offers.
+    expect(within(after).getByRole("button", { name: "Block Omar Haddad" })).toBeVisible();
+  });
+
+  it("keeps the lockout dialog open on the server's not-locked refusal, which arrives as a 400", async () => {
+    // The refusal this section is careful about for the third write:
+    // `FAILED_PRECONDITION` on **400**, told from a plainly bad request by its
+    // code alone. Supplied here because the mock cannot produce it against a
+    // row that is genuinely locked.
+    setWriteFailure(new ApiError("User is not in LOCKED status", "FAILED_PRECONDITION", 400, "req-7"));
+    renderSection();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reset lockout Omar Haddad" }));
+    const dialog = await screen.findByRole("dialog", { name: "Reset lockout Omar Haddad" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Worth a try" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset lockout" }));
+
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent(/a lockout can only be reset while the account is locked/i);
+    expect(alert).toHaveTextContent("User is not in LOCKED status");
+    expect(dialog).toBeInTheDocument();
+    expect(within(rowFor("Omar Haddad")).getByText("Locked")).toBeVisible();
   });
 
   it("lets go of the row once the list has caught up, so a later change is not painted over", async () => {

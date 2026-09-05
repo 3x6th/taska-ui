@@ -294,15 +294,20 @@ export class HybridTaskaApi implements TaskaApi {
   }
 
   /**
-   * Straight to the gateway, both of them, and deliberately with no fallback of
-   * any kind — even though these are the two calls the deployed gateway cannot
-   * answer yet (docs/ai/API-DIVERGENCE.md, TAS-107).
+   * Straight to the gateway, all three of them, and deliberately with no
+   * fallback of any kind — even though these are the three calls the deployed
+   * gateway cannot answer yet (docs/ai/API-DIVERGENCE.md, TAS-107 and TAS-108,
+   * which arrive in one backend PR).
    *
    * They are *writes*. A compensation for a read can be a view over live data;
    * a compensation for a write would be this class reporting a change that
    * never happened, to a table it cannot alter, which is worse than the failure
    * it would be hiding. So the section sees the gateway's own answer and says
    * the operation is not deployed yet.
+   *
+   * `resetCredentialLockout` is the clearest case of the three: what it changes
+   * — a credential's failed-attempt counter — is not in any response this class
+   * can read, so there is not even a table to pretend against.
    */
   blockUser(userId: string, reason: string): Promise<UserStatusChange> {
     return this.live.blockUser(userId, reason);
@@ -310,5 +315,9 @@ export class HybridTaskaApi implements TaskaApi {
 
   unblockUser(userId: string, reason: string): Promise<UserStatusChange> {
     return this.live.unblockUser(userId, reason);
+  }
+
+  resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange> {
+    return this.live.resetCredentialLockout(userId, reason);
   }
 }

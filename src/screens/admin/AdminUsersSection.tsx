@@ -316,18 +316,34 @@ export function AdminUsersSection() {
  * The account's status as a §4.5 pill, sized for §5.8's table rather than for
  * the product's cards.
  *
- * Colour carries meaning here and decorates nothing (§1): `BLOCKED` is the only
- * state that is a problem, so it is the only one tinted. `ACTIVE` is the normal
- * state and stays quiet, and `INVITED` is told apart by a dashed edge rather
- * than by a second colour — the same "not there yet" the unassigned avatar
- * wears (§4.4). A value this build has never seen prints verbatim in the quiet
- * pill: it is a value, and the raw string is the whole message.
+ * Colour carries meaning here and decorates nothing (§1), and §5.8 gives the
+ * section three devices rather than four colours: a **fill** in `--danger` is a
+ * problem an administrator created (`BLOCKED`); an **edge** is a state that has
+ * not settled (`INVITED`, the same "not there yet" the unassigned avatar wears,
+ * §4.4); **nothing** is normal (`ACTIVE`).
+ *
+ * `LOCKED` is both at once and so composes them rather than introducing a
+ * fourth: the `--danger` hue on the edge instead of in the fill. The account
+ * cannot sign in, which is a problem — but nobody decided it and the next
+ * successful sign-in undoes it, so a fill saying "someone blocked this" would
+ * be the wrong sentence. Solid against `INVITED`'s dashed is what keeps the two
+ * edges apart without relying on hue (§7); the measurements are in styles.css
+ * beside the rule.
+ *
+ * A value this build has never seen prints verbatim in the quiet pill: it is a
+ * value, and the raw string is the whole message.
  */
 function StatusPill({ status }: { status: string }) {
-  // Only the two states that are drawn differently carry a modifier. `ACTIVE`
+  // Only the three states that are drawn differently carry a modifier. `ACTIVE`
   // and a value this build does not recognise both wear the quiet pill, so
   // neither needs one.
   const modifier =
-    status === "BLOCKED" ? " admin-status-blocked" : status === "INVITED" ? " admin-status-invited" : "";
+    status === "BLOCKED"
+      ? " admin-status-blocked"
+      : status === "INVITED"
+        ? " admin-status-invited"
+        : status === "LOCKED"
+          ? " admin-status-locked"
+          : "";
   return <span className={`admin-pill${modifier}`}>{userStatusLabel(status)}</span>;
 }

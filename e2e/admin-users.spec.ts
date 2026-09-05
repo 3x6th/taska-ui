@@ -7,8 +7,13 @@ import { expect, test, type Page } from "@playwright/test";
 // being the only one is also what makes the last-active-admin refusal reachable
 // by clicking.
 //
-// The seed carries one account of every status since TAS-186: Leo is INVITED,
-// Nina is BLOCKED, everybody else is ACTIVE.
+// The seed carries one account of every status: Leo is INVITED and Nina is
+// BLOCKED since TAS-186, Omar is LOCKED since TAS-188, and everybody else is
+// ACTIVE. Omar is the only row that offers the third action — the server
+// refuses Block from LOCKED, so nothing else can reach it. He is seeded rather
+// than produced: `LOCKED` is not on the backend's `develop` and arrives with
+// PR #146 alongside these three endpoints, so the mock is the only place the
+// state can be seen at all until that merges.
 
 async function openUsers(page: Page) {
   await page.goto("/login");
@@ -47,6 +52,33 @@ test("blocks an account with a reason and the row's status changes to the one th
   await expect(dialog).toHaveCount(0);
   await expect(row.getByText("Blocked")).toBeVisible();
   await expect(row.getByRole("button", { name: "Unblock Anna Ivanova" })).toBeVisible();
+});
+
+test("resets the lockout on a locked account, which is the one action that row offers", async ({ page }) => {
+  await openUsers(page);
+
+  const row = page.getByRole("row").filter({ hasText: "Omar Haddad" });
+  await expect(row.getByText("Locked")).toBeVisible();
+  // Not Block and not Unblock: the server refuses both from LOCKED, so the row
+  // carries the third write or none at all.
+  await expect(row.getByRole("button", { name: /^(Block|Unblock) Omar Haddad$/ })).toHaveCount(0);
+
+  await row.getByRole("button", { name: "Reset lockout Omar Haddad" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Reset lockout Omar Haddad" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText("LOCKED → ACTIVE")).toBeVisible();
+  // The question an admin actually has, answered before they ask it.
+  await expect(dialog.getByText(/does not change the password/i)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Reset lockout", exact: true })).toBeDisabled();
+
+  await dialog.getByLabel("Reason").fill("Called in, identity confirmed");
+  await dialog.getByRole("button", { name: "Reset lockout", exact: true }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(row.getByText("Active")).toBeVisible();
+  // And the row now offers what an active account offers.
+  await expect(row.getByRole("button", { name: "Block Omar Haddad" })).toBeVisible();
 });
 
 test("refuses to block the last active global admin and keeps the dialog open", async ({ page }) => {

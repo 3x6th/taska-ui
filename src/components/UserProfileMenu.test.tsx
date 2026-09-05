@@ -68,6 +68,32 @@ describe("UserProfileMenu", () => {
     expect(screen.queryByText("Your profile could not be loaded.")).not.toBeInTheDocument();
   });
 
+  it("prints a status it has never heard of instead of an empty badge", () => {
+    // `GET /users/me` answers the gateway's own `GatewayUserStatus`, which has
+    // no `LOCKED`. So once PR #146 deploys, an account locked by failed
+    // sign-ins whose pre-lock token still works will read back as `UNSPECIFIED`
+    // — a value the domain union does not carry and adding `LOCKED` to it does
+    // not cover. A bare lookup put `undefined` in the badge, which renders as
+    // nothing at all.
+    renderMenu({
+      user: { ...anna, status: "UNSPECIFIED" as User["status"] },
+      loading: false,
+      onLogout: vi.fn(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+    expect(screen.getByText("UNSPECIFIED")).toBeVisible();
+  });
+
+  it("writes the fourth status out now that the domain carries it", () => {
+    renderMenu({ user: { ...anna, status: "LOCKED" }, loading: false, onLogout: vi.fn() });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+    expect(screen.getByText("Locked")).toBeVisible();
+  });
+
   it("names the global role of an admin", () => {
     renderMenu({ user: { ...anna, globalRole: "GLOBAL_ADMIN" }, loading: false, onLogout: vi.fn() });
 

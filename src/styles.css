@@ -2605,7 +2605,10 @@ h1 {
 .admin-pill.admin-status-invited {
   border: 1px dashed var(--border-strong);
   background: transparent;
-  /* The border would otherwise make this pill 2px taller than its neighbours. */
+  /* The border would otherwise make this pill 2px wider than its neighbours.
+     Not taller, as this comment used to say: `box-sizing: border-box` puts the
+     edge inside the declared height, so 20 holds with or without it and only
+     the horizontal padding needs the 1px back. Measured, not reasoned. */
   padding: 0 7px;
 }
 
@@ -2623,6 +2626,50 @@ h1 {
 .admin-pill.admin-status-blocked {
   background: color-mix(in oklab, var(--danger) 14%, transparent);
   color: color-mix(in oklab, var(--danger) 82%, var(--fg));
+}
+
+/* LOCKED composes the two devices this section already has instead of adding a
+   fourth (DESIGN.md §5.8). It *is* a problem — the account cannot sign in — so
+   it carries the --danger hue; it is not an administrative one and it is not
+   settled — nobody decided it, and the next successful sign-in clears it — so
+   the hue rides on the edge rather than in a fill. A fill would say "someone
+   blocked this account", which is the one misreading this row must not invite.
+
+   Told apart from INVITED by more than hue, as §7 asks: solid against dashed,
+   at 1px and 11.5px. Told apart from BLOCKED by where the colour is.
+
+   The glyph is the same 82/18 mix BLOCKED uses, and here it is not a
+   preference. With no fill of its own the pill's interior *is* the row, so bare
+   --danger would measure 3.68:1 light and 2.98:1 over the light flash — under
+   §7's 3:1 floor. The 82/18 mix measures **5.00:1 light / 6.30:1 dark at rest
+   and 4.04:1 / 5.36:1 over the flash**; all four clear the floor, and row hover
+   (the third plane) is 4.13:1 / 5.81:1 and never the tight one. Measured in the
+   browser off this rule, not derived: the same script reproduces the BLOCKED
+   numbers above (4.21 / 5.43 / 3.44 / 4.61) and INVITED's (7.26 / 6.75).
+
+   The two flash figures are a bound rather than a state anybody can reach
+   today. Reset lockout paints the row ACTIVE from the server's answer before
+   the flash starts, so no LOCKED pill currently sits on a flashed row — they
+   are recorded because the row tint is not owned by this rule and the day
+   something flashes a row without changing its status, this pill has already
+   been measured there.
+
+   The edge at 45% of --danger measures 1.78:1 light / 1.92:1 dark against the
+   plane on both sides of it — visible in both themes, more visible than the
+   dashed INVITED edge it must not be confused with (1.37:1 / 1.55:1), and
+   nowhere near a fill. Nothing rests on the edge alone: the word "Locked" is
+   the state and clears §7 by itself.
+
+   `padding: 0 7px` for the same reason INVITED carries it: `box-sizing:
+   border-box` keeps the height at 20 either way, and the 1px edge would
+   otherwise make this pill 2px wider than a quiet one. Measured — with the
+   modifier the pill is 52.77x20, and the same word in the quiet pill is
+   52.77x20. */
+.admin-pill.admin-status-locked {
+  border: 1px solid color-mix(in oklab, var(--danger) 45%, transparent);
+  background: transparent;
+  color: color-mix(in oklab, var(--danger) 82%, var(--fg));
+  padding: 0 7px;
 }
 
 /* The action column is as narrow as its button and right-aligned, like the
@@ -2761,6 +2808,16 @@ h1 {
   font-size: 12px;
   line-height: 1.55;
   text-wrap: pretty;
+}
+
+/* One emphasised word, and it earns its place: the lockout reset does *not*
+   set a password, and a reader who skims the sentence and assumes it does will
+   tell somebody their password has been reset. Weight and colour are both
+   stated rather than inherited (§1), and the weight is §2.3's, not the
+   browser's 700 — the note is 12px prose, not a heading. */
+.admin-user-note strong {
+  color: var(--fg);
+  font-weight: 650;
 }
 
 /* Why the button is off, and then how much room is left. --fg-2 rather than

@@ -77,21 +77,54 @@ export const SEARCH_QUERY_TOO_SHORT_MESSAGE = `Search query must be at least ${S
 
 /**
  * The longest `reason` the admin user writes accept — `maxLength: 550` in the
- * contract branch that adds them, `@Size(max = 550)` in the service.
+ * contract branch that adds them, which becomes `@Size(max = 550)` on the
+ * gateway's generated request DTO and is checked nowhere else on the server
+ * (see `ADMIN_WRITE_REASON_TOO_LONG_MESSAGE` below).
  *
- * Exported so that the field's own `maxLength`, the mock's refusal and the
- * remaining-characters hint all read one number: a form that let 600 through
- * would meet a `400` at the boundary and nowhere else.
+ * Named for the family rather than for one member of it: the same rule governs
+ * `block`, `unblock` and `reset-lockout`, all three of which declare the same
+ * 1–550 `reason` and refuse a request without one.
+ *
+ * Exported so that the field's own `maxLength`, the remaining-characters hint
+ * and **both** implementations' refusals all read one number: a form that let
+ * 600 through would meet a `400` at the boundary and nowhere else.
  */
-export const BLOCK_REASON_MAX_LENGTH = 550;
+export const ADMIN_WRITE_REASON_MAX_LENGTH = 550;
 
 /**
- * What every implementation says when the reason is blank. The server answers
- * `400` for it (`@NotBlank`), so mock and rest refuse it identically and
- * before the request — the caller cannot tell which side stopped it, and
- * nothing has to special-case the guard.
+ * What every implementation says when the reason is longer than that, worded
+ * once here for the same reason `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: two copies
+ * of a sentence are two chances to drift, and the whole point of this pair of
+ * guards is that a caller cannot tell mock from rest.
+ *
+ * Not the server's own wording, because the server has none to reproduce. The
+ * 550 is stated in exactly one place on the backend — `maxLength` in the
+ * contract, which becomes `@Size(max = 550)` on the gateway's generated request
+ * DTO. Neither `auth-service` nor `admin-service` re-checks it: both validate
+ * `body.reason` with `GrpcRequestValidators.requireNonBlank` and nothing else
+ * (measured at backend PR #146's head, 2026-09-05). So this is not a weaker
+ * second copy of a rule the services state — below the gateway there is no such
+ * rule to copy.
  */
-export const BLOCK_REASON_REQUIRED_MESSAGE = "A reason is required";
+export const ADMIN_WRITE_REASON_TOO_LONG_MESSAGE = `A reason is at most ${ADMIN_WRITE_REASON_MAX_LENGTH} characters`;
+
+/**
+ * What every implementation says when the reason is blank, for all three admin
+ * user writes.
+ *
+ * The server answers `400` for a blank one, and **not** through `@NotBlank`:
+ * the generated request DTO carries `@Size(min = 1)` from the contract's
+ * `minLength`, which a single space satisfies. It is stopped one layer deeper,
+ * by `GrpcRequestValidators.requireNonBlankOrInvalidArgument`, and arrives as
+ * `400 INVALID_ARGUMENT` saying `body.reason must not be blank`. The guard on
+ * this side is unchanged by that — a whitespace-only reason is refused before
+ * the request either way — but the mechanism is worth stating correctly, since
+ * `@Size(min = 1)` alone would have let `" "` through.
+ *
+ * Mock and rest refuse it identically and before the request, so the caller
+ * cannot tell which side stopped it and nothing has to special-case the guard.
+ */
+export const ADMIN_WRITE_REASON_REQUIRED_MESSAGE = "A reason is required";
 
 /**
  * Every parameter `GET /issues/search` takes, all AND-combined by the server.
@@ -346,8 +379,8 @@ export interface TaskaApi {
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary>;
 
   /**
-   * `POST /admin/users/{userId}/block` — the Users section's one write
-   * (DESIGN.md §5.8). `GLOBAL_ADMIN` only; the server is the permission
+   * `POST /admin/users/{userId}/block` — one of the Users section's three
+   * writes (DESIGN.md §5.8). `GLOBAL_ADMIN` only; the server is the permission
    * control, and this section hiding a button is not.
    *
    * The `reason` is required by the server (1–550 characters) and must never
@@ -390,6 +423,56 @@ export interface TaskaApi {
    * around it.
    */
   unblockUser(userId: string, reason: string): Promise<UserStatusChange>;
+
+  /**
+   * `POST /admin/users/{userId}/reset-lockout` — `resetCredentialLockout`, the
+   * third of the Users section's writes and the only one that undoes something
+   * no administrator did. `EndpointSecurity.GLOBAL_ADMIN_REQUIRED`, the same
+   * 1–550 `reason` as its two neighbours, and the same
+   * `UserStatusResponseDto` back.
+   *
+   * `LOCKED` is where an account lands after `maxFailedAttempts` failed
+   * sign-ins — once this PR deploys, and not before: `develop`'s
+   * `handleFailedAttempt(Credential)` writes no status at all, so the state and
+   * this endpoint arrive together. That is what makes this the write that
+   * answers a forgotten password rather than a decision about a person. On
+   * success `AdminUserManagementServiceImpl.resetCredentialLockout` clears the
+   * credential's `failedAttempts`, `lockedUntil` and `lastFailedAt` and sets
+   * the account `ACTIVE`, which is why the transition it reports is always
+   * `LOCKED` → `ACTIVE` and the confirmation can state it before asking.
+   *
+   * What it does **not** touch is worth stating, because it is the question an
+   * administrator asks: the password hash, the hashing algorithm and the
+   * refresh tokens are all left alone. It also writes an audit row and **no**
+   * outbox event, so unlike block and unblock it notifies nobody.
+   *
+   * What the server refuses:
+   *
+   * - any status other than `LOCKED`, which is a refusal and not a no-op:
+   *   `DomainStatus.FAILED_PRECONDITION` with the message
+   *   `"User is not in LOCKED status"`. `RestErrorMapper.mapGrpcCodeToHttpStatus`
+   *   turns that into **400** carrying `"FAILED_PRECONDITION"` in the body's
+   *   `code` — the same shape as `blockUser`'s last-admin refusal and *not* the
+   *   409 its transition refusal wears. So `isConflict` (src/api/errors.ts)
+   *   reading the `code` is again the only half that works; the status alone
+   *   would file this under "the gateway would not accept this request".
+   * - `404 NOT_FOUND` in two different sentences: `"User not found"` for an
+   *   account nobody has, and `"Credential not found"` for a `LOCKED` account
+   *   with no `PASSWORD` credential row. One status, one code, two messages —
+   *   so nothing may branch on the wording, and the server's own sentence is
+   *   printed as it arrived.
+   *
+   * The failed-attempt count and the lock expiry are deliberately **not** in
+   * this signature. `UserCredentialStateResponseDto` carries them between
+   * auth-service and admin-service and is dropped before REST, so no client can
+   * show them; modelling them here would be inventing a field the wire has
+   * never had.
+   *
+   * Not on the deployed gateway either — it arrives with backend TAS-108 in the
+   * same PR as the other two, so against `rest` and `hybrid` it answers the
+   * undeployed-route signature below (docs/ai/API-DIVERGENCE.md).
+   */
+  resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange>;
 }
 
 /**
@@ -419,9 +502,11 @@ export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";
  * api/v1/admin/users/not-a-uuid/block for request '…'"}`.
  *
  * That prefix is Spring's static-resource fallback, which is what an
- * unmapped path falls through to, and it is what tells "TAS-107 has not
+ * unmapped path falls through to, and it is what tells "this write has not
  * deployed yet" apart from a deployed route's own
- * `404 "User not found"`. Matched as a **substring** paired with the 404 —
+ * `404 "User not found"`. All three admin user writes are undeployed together
+ * — they ship in one backend PR — so the same signature covers `reset-lockout`
+ * as covers `block`. Matched as a **substring** paired with the 404 —
  * never by equality — because the tail carries the request path, so an equality
  * check would never fire.
  *

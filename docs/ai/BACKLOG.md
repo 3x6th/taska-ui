@@ -691,6 +691,16 @@ the next session in this image exactly as it bit this one.
   beside it. It stays undrawn because the section has one source of values — the
   refetched list. Three revisions of one line, and every wrong one was read out
   of a PR body or a superseded branch head.
+- **The profile menu's status pill has no `LOCKED` arm, and cannot get one
+  honestly yet** (`frontend-builder`, TAS-188). §4.5's `.user-status` tints
+  `ACTIVE`, `BLOCKED` and `INVITED`; a `LOCKED` account falls back to the quiet
+  base pill even though the domain now models the value. Deliberately left:
+  `GET /users/me` cannot report `LOCKED` at all — the gateway's own
+  `GatewayUserStatus` sends it through `UNSPECIFIED` (see the line above and
+  `API-DIVERGENCE.md`) — so an arm added today would be unreachable code
+  justified by a value that never arrives. It also sits on hardcoded hex
+  (`#22c55e`, `#f59e0b`), which no agent here may extend, so the arm and the
+  tokenisation are one job. Wants the gateway fixed first, then both together.
 - **The gateway disagrees with itself about the user status vocabulary**
   (found on the TAS-188 contract read, 2026-09-05). At backend PR #146's head
   `UserStatusDto` has four values including `LOCKED`, while the same service's
