@@ -825,11 +825,11 @@ describe("MockTaskaApi", () => {
       });
 
       // As text, "5" >= "10" — so the row with 5 came back from a filter that
-      // asked for 10 and up. The list runs to 30 since TAS-186 seeded a sixth
-      // and seventh account (`failed_logins` is `index * 5`), which is what
-      // makes the two-digit half of this assertion three values rather than
-      // one.
-      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20, 25, 30]);
+      // asked for 10 and up. The list runs to 35 since TAS-186 seeded a sixth
+      // and seventh account and TAS-188 an eighth (`failed_logins` is
+      // `index * 5`), which is what makes the two-digit half of this assertion
+      // several values rather than one.
+      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20, 25, 30, 35]);
 
       const to = await api.listAdminRows({
         service: "auth",
@@ -878,7 +878,7 @@ describe("MockTaskaApi", () => {
 
       // `localeCompare` put 10 before 5 here, and did it differently depending
       // on the machine's locale.
-      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20, 25, 30]);
+      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20, 25, 30, 35]);
 
       const desc = await api.listAdminRows({
         service: "auth",
@@ -888,7 +888,7 @@ describe("MockTaskaApi", () => {
         order: "desc",
       });
 
-      expect(desc.rows.map((row) => row.failed_logins)).toEqual([30, 25, 20, 15, 10, 5, 0]);
+      expect(desc.rows.map((row) => row.failed_logins)).toEqual([35, 30, 25, 20, 15, 10, 5, 0]);
     });
 
     it("applies each filter operator", async () => {
@@ -1057,7 +1057,12 @@ describe("MockTaskaApi", () => {
     it("seeds one account of every status, so the section can be seen whole", async () => {
       const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
 
-      expect(new Set(rows.map((row) => row.status))).toEqual(new Set(["ACTIVE", "INVITED", "BLOCKED"]));
+      // All four since TAS-188. `LOCKED` is the one nobody in this product puts
+      // an account into — and, until backend PR #146 merges, the one nothing
+      // puts an account into at all — so without a seeded row the third action
+      // would be unreachable in the only environment a reviewer or an e2e run
+      // has.
+      expect(new Set(rows.map((row) => row.status))).toEqual(new Set(["ACTIVE", "INVITED", "BLOCKED", "LOCKED"]));
       // And exactly one global admin, which is what makes the last-active-admin
       // refusal reachable by clicking rather than only by unit test.
       expect(rows.filter((row) => row.global_role === "GLOBAL_ADMIN")).toHaveLength(1);
@@ -1127,6 +1132,65 @@ describe("MockTaskaApi", () => {
       });
     });
 
+    it("resets a lockout, which is the only way out of LOCKED and always lands on ACTIVE", async () => {
+      const id = await findByStatus("LOCKED");
+
+      await expect(api.resetCredentialLockout(id, "Called in, identity confirmed")).resolves.toMatchObject({
+        userId: id,
+        previousStatus: "LOCKED",
+        currentStatus: "ACTIVE",
+      });
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      expect(rows.find((row) => row.id === id)?.status).toBe("ACTIVE");
+    });
+
+    it("refuses a lockout reset on an account that is not locked, with a code the gateway sends as a 400", async () => {
+      // FAILED_PRECONDITION, not ABORTED: this refusal wears the shape of the
+      // last-active-admin guard rather than of the transition guard, so it
+      // reaches the dialog by its code and not by a 409. The sentence is the
+      // server's own (`AdminUserManagementServiceImpl.resetCredentialLockout`).
+      for (const status of ["ACTIVE", "INVITED", "BLOCKED"]) {
+        await expect(api.resetCredentialLockout(await findByStatus(status), "Just in case")).rejects.toMatchObject({
+          code: "FAILED_PRECONDITION",
+          message: "User is not in LOCKED status",
+        });
+      }
+    });
+
+    it("refuses the two transitions that are not legal from LOCKED either", async () => {
+      // The reason `actionFor` maps LOCKED to the reset action rather than to
+      // Block: the account is not blocked and cannot be unblocked, and blocking
+      // it is refused as a transition.
+      const locked = await findByStatus("LOCKED");
+
+      await expect(api.blockUser(locked, "Again")).rejects.toMatchObject({
+        code: "ABORTED",
+        message: "Cannot block user with current status: LOCKED",
+      });
+      await expect(api.unblockUser(locked, "Again")).rejects.toMatchObject({
+        code: "ABORTED",
+        message: "Cannot unblock user with current status: LOCKED",
+      });
+    });
+
+    it("checks a lockout reset's body and its user the way the other two writes do", async () => {
+      const locked = await findByStatus("LOCKED");
+
+      await expect(api.resetCredentialLockout(locked, "  ")).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "A reason is required",
+      });
+      await expect(
+        api.resetCredentialLockout("0f3d5cb0-0000-0000-0000-000000000000", "Nobody"),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", message: "User not found" });
+      await expect(api.resetCredentialLockout("not-a-uuid", "Nobody")).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      // Refused, not partly applied.
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
+      expect(rows.find((row) => row.id === locked)?.status).toBe("LOCKED");
+    });
+
     it("refuses to block the last active global admin", async () => {
       const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
       const admin = rows.find((row) => row.global_role === "GLOBAL_ADMIN");
@@ -1181,15 +1245,17 @@ describe("MockTaskaApi", () => {
       await expect(api.blockUser(id, "x".repeat(550))).resolves.toMatchObject({ currentStatus: "BLOCKED" });
     });
 
-    it("states an updatedAt the section is nonetheless not allowed to draw", async () => {
+    it("states a changedAt, under the name the wire uses, that the section is nonetheless not allowed to draw", async () => {
       const id = await findByStatus("ACTIVE");
       const change = await api.blockUser(id, "Left the company");
 
-      // A real instant, as the gateway's is too since backend `62c4c675`. What
-      // is pinned here is that the field is populated at all — nothing renders
-      // it, because the time of a write is not the `updated_at` of the row it
-      // changed, and the section refetches for that one instead.
-      expect(new Date(change.updatedAt).getUTCFullYear()).toBeGreaterThan(2000);
+      // `changedAt` and not `updatedAt`: the gateway's mapper calls
+      // `setChangedAt` and the DTO requires that name, so the old spelling read
+      // `undefined` out of every 200 while the type still promised a string.
+      // A real instant, and nothing renders it — the section refetches the list
+      // and reads the row's own timestamp there.
+      expect(Object.keys(change).sort()).toEqual(["changedAt", "currentStatus", "previousStatus", "userId"]);
+      expect(new Date(change.changedAt).getUTCFullYear()).toBeGreaterThan(2000);
     });
   });
 });

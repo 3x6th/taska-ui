@@ -15,8 +15,9 @@ import type {
   UpdateProjectLabelInput,
 } from "../TaskaApi";
 import {
-  BLOCK_REASON_MAX_LENGTH,
-  BLOCK_REASON_REQUIRED_MESSAGE,
+  ADMIN_WRITE_REASON_MAX_LENGTH,
+  ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
+  ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
@@ -61,11 +62,15 @@ const SOFIA_ID = "16ad2404-96e3-4c51-b00d-55c5d1451d3c";
 const TOM_ID = "1ab80365-0843-460a-b0a1-e6dd3e0f2a0d";
 const PRIYA_ID = "fdf35fa6-e68b-4dbe-8a48-5867d7f08ce9";
 // Added by TAS-186 rather than restyling one of the five above: the Users
-// section has to show all three account states at once, and moving an existing
+// section has to show all account states at once, and moving an existing
 // person into INVITED or BLOCKED would have quietly changed what every other
 // screen and spec sees on the board.
 const LEO_ID = "b0e3d1c4-1f24-4a1a-9a3e-2ad0c9f7b511";
 const NINA_ID = "c47a9b21-6d5e-4f0b-8c72-9e13a4f8d602";
+// The fourth status, added by TAS-188 on the same rule and for the same reason.
+// `LOCKED` is the one state nobody here put an account into: it is where
+// auth-service leaves a person who mistyped their password too many times.
+const OMAR_ID = "d58f0e73-4b2c-4c9d-8e15-3f6a70b2c9d4";
 
 const TASKA_PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
 const WEB_PROJECT_ID = "58e93598-ea1a-460d-9d72-f1f201c310e2";
@@ -133,24 +138,33 @@ const requireSearchQuery = (raw: string | undefined): string | null => {
 };
 
 /**
- * The reason both admin user writes require, checked the way the server checks
- * it: `@NotBlank` first, then `@Size(max = 550)`.
+ * The reason all three admin user writes require, checked the way the server
+ * checks it: blank first, then `@Size(max = 550)`.
  *
- * Whitespace-only is blank, which is why this measures the trimmed value — and
- * the length is measured on it too, so a reason that is 550 characters of text
- * plus a trailing newline is accepted rather than refused on a character
- * nobody typed on purpose. Nothing in the UI can produce an over-long one (the
- * field carries `maxLength`), so this half exists for the same reason the mock
- * refuses a non-uuid row id: the mock is the reference implementation, and a
- * hand-made call has to hit the same wall in both modes.
+ * The blank half is not `@NotBlank` on the backend — the generated DTO gets
+ * `@Size(min = 1)` from the contract's `minLength`, which a single space
+ * satisfies, and the refusal actually comes from
+ * `GrpcRequestValidators.requireNonBlankOrInvalidArgument` a layer deeper. The
+ * answer is the same `400 INVALID_ARGUMENT` either way, which is why this
+ * measures the trimmed value — and the length is measured on it too, so a
+ * reason that is 550 characters of text plus a trailing newline is accepted
+ * rather than refused on a character nobody typed on purpose.
+ *
+ * Nothing in the UI can produce an over-long one (the field carries
+ * `maxLength`), so the length half exists for the same reason the mock refuses
+ * a non-uuid row id: a hand-made call has to hit the same wall in both modes.
+ * `requireAdminWriteReason` in src/api/rest/RestTaskaApi.ts is the other half
+ * of that sentence and checks both bounds identically — this used to be the
+ * only side that capped, which meant a 600-character reason was refused here
+ * and sent there.
  */
-const requireBlockReason = (raw: string): string => {
+const requireAdminWriteReason = (raw: string): string => {
   const reason = raw.trim();
   if (reason === "") {
-    throw new MockApiError("INVALID_ARGUMENT", BLOCK_REASON_REQUIRED_MESSAGE);
+    throw new MockApiError("INVALID_ARGUMENT", ADMIN_WRITE_REASON_REQUIRED_MESSAGE);
   }
-  if (reason.length > BLOCK_REASON_MAX_LENGTH) {
-    throw new MockApiError("INVALID_ARGUMENT", `A reason is at most ${BLOCK_REASON_MAX_LENGTH} characters`);
+  if (reason.length > ADMIN_WRITE_REASON_MAX_LENGTH) {
+    throw new MockApiError("INVALID_ARGUMENT", ADMIN_WRITE_REASON_TOO_LONG_MESSAGE);
   }
   return reason;
 };
@@ -474,10 +488,11 @@ export class MockTaskaStore {
         status: "ACTIVE",
         globalRole: "USER",
       },
-      // The two accounts that are not ACTIVE (TAS-186). Every status the admin
-      // Users section can draw is on screen without anybody having to change a
-      // row first, and both of its actions — Block and Unblock — are one click
-      // away in the only environment a reviewer or an e2e run can reach.
+      // The three accounts that are not ACTIVE (TAS-186, and Omar with
+      // TAS-188). Every status the admin Users section can draw is on screen
+      // without anybody having to change a row first, and all three of its
+      // actions — Block, Unblock and Reset lockout — are one click away in the
+      // only environment a reviewer or an e2e run can reach.
       //
       // Appended rather than inserted: `auth.users` derives its rows from this
       // array by position, so a person added in the middle would have moved
@@ -485,17 +500,17 @@ export class MockTaskaStore {
       //
       // Appending is not free either, and the one thing it does move is worth
       // naming. `seedOutboxEvents` hands `users.map(u => u.id)` to `published`,
-      // which round-robins the list across eight auth rows — seven ids instead
-      // of five means some of those rows now carry a different `aggregate_id`
-      // than before. Nothing asserts them and nothing derives from them: they
-      // are opaque uuids in a diagnostic table, the row count, the statuses and
-      // the ages are unchanged, and the problems summary counts states rather
-      // than aggregates. Recorded so the next reader does not go looking for a
-      // reason the journal's ids moved.
+      // which round-robins the list across eight auth rows — every change to
+      // the length of this array means some of those rows carry a different
+      // `aggregate_id` than before. Nothing asserts them and nothing derives
+      // from them: they are opaque uuids in a diagnostic table, the row count,
+      // the statuses and the ages are unchanged, and the problems summary
+      // counts states rather than aggregates. Recorded so the next reader does
+      // not go looking for a reason the journal's ids moved.
       //
-      // Neither belongs to a project, which is the honest shape: an invitation
-      // that has not been accepted and an account that was shut off are exactly
-      // the two people a board does not have.
+      // None of the three belongs to a project, which is the honest shape: an
+      // invitation that has not been accepted, an account that was shut off and
+      // one that cannot get in are exactly the people a board does not have.
       {
         id: LEO_ID,
         login: "leo",
@@ -510,6 +525,20 @@ export class MockTaskaStore {
         email: "nina@example.com",
         displayName: "Nina Kowal",
         status: "BLOCKED",
+        globalRole: "USER",
+      },
+      // Locked by his own failed sign-ins rather than by an administrator, so
+      // he is the one account whose state nobody in this product created —
+      // which is exactly the row Reset lockout exists for. Seeded ahead of the
+      // backend on purpose: `LOCKED` ships with PR #146, so until that merges
+      // there is no live row anywhere that carries it and the third action
+      // would be unreachable in the only environment an e2e run has.
+      {
+        id: OMAR_ID,
+        login: "omar",
+        email: "omar@example.com",
+        displayName: "Omar Haddad",
+        status: "LOCKED",
         globalRole: "USER",
       },
     ];
@@ -1737,8 +1766,38 @@ export class MockTaskaStore {
   }
 
   /**
-   * Everything both writes check before they look at the transition, in the
-   * order the server checks it.
+   * `POST /admin/users/{userId}/reset-lockout` (TAS-188), read out of
+   * `AdminUserManagementServiceImpl.resetCredentialLockout` at the head of
+   * backend PR #146.
+   *
+   * `LOCKED` is not an administrative state — once that PR deploys an account
+   * arrives there by failing to sign in `maxFailedAttempts` times, and leaves
+   * on its next success — and this is the only *write* that leaves it. Legal
+   * from `LOCKED` and from nothing else, and it always
+   * lands on `ACTIVE`, which is why the confirmation can state the transition
+   * before asking for it.
+   *
+   * The refusal is `FAILED_PRECONDITION`, which the gateway maps to **400** —
+   * the shape `blockUser`'s last-admin guard wears, not the 409 of its
+   * transition guard. Reproduced with the server's own sentence, because the
+   * dialog prints it.
+   *
+   * What the server clears — `failedAttempts`, `lockedUntil`, `lastFailedAt` —
+   * has no representation in this store, and inventing one would be modelling
+   * state no client can read: `UserCredentialStateResponseDto` never reaches
+   * REST. The status is the whole of what a client can see change.
+   */
+  resetCredentialLockout(userId: string, reason: string): UserStatusChange {
+    const user = this.adminUser(userId, reason);
+    if (user.status !== "LOCKED") {
+      throw new MockApiError("FAILED_PRECONDITION", "User is not in LOCKED status");
+    }
+    return this.changeUserStatus(user, "ACTIVE");
+  }
+
+  /**
+   * Everything all three writes check before they look at the transition, in
+   * the order the server checks it.
    *
    * The body first, because Spring validates `@Valid @RequestBody` before the
    * controller method runs at all — so a blank reason on an account nobody has
@@ -1752,7 +1811,7 @@ export class MockTaskaStore {
    * to hit the same wall in both modes.
    */
   private adminUser(userId: string, reason: string): User {
-    requireBlockReason(reason);
+    requireAdminWriteReason(reason);
     if (!UUID_PATTERN.test(userId)) {
       throw new MockApiError("INVALID_ARGUMENT", `User id ${userId} is not a UUID`);
     }
@@ -1765,15 +1824,15 @@ export class MockTaskaStore {
   }
 
   /**
-   * The write itself, and the response it produces. `updatedAt` is a real
-   * instant here and a real instant on the gateway too since backend
-   * `62c4c675`; nothing draws either, because the time of a write is not the
-   * `updated_at` of the row it changed (see `UserStatusChange`).
+   * The write itself, and the response it produces. `changedAt` is a real
+   * instant here and on the gateway too, where it is the changed row's own
+   * `updated_at` (see `UserStatusChange`); nothing draws either, because the
+   * section refetches the list and reads the timestamp there.
    */
   private changeUserStatus(user: User, currentStatus: UserStatus): UserStatusChange {
     const previousStatus = user.status;
     user.status = currentStatus;
-    return { userId: user.id, previousStatus, currentStatus, updatedAt: now() };
+    return { userId: user.id, previousStatus, currentStatus, changedAt: now() };
   }
 
   /**
@@ -2616,5 +2675,9 @@ export class MockTaskaApi implements TaskaApi {
 
   async unblockUser(userId: string, reason: string): Promise<UserStatusChange> {
     return wait(this.store.unblockUser(userId, reason));
+  }
+
+  async resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange> {
+    return wait(this.store.resetCredentialLockout(userId, reason));
   }
 }

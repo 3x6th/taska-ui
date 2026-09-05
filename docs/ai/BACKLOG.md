@@ -679,13 +679,85 @@ the next session in this image exactly as it bit this one.
 
 ### Left over from TAS-186 (2026-08-25)
 
-- ~~**`UserStatusResponseDto.updatedAt` arrives as the 1970 epoch.**~~ Struck:
-  it does not. The claim came from PR #134's *Известные проблемы*, which is
-  stale — backend commit `62c4c675` (2026-08-23) fixed it, and at branch head
-  `55203985` `AdminUserMapper` sets the field in both mappers
-  (`api-contract-guard`, TAS-186 review). Nothing was owed and nothing is. The
-  frontend still does not draw the field, for the reason that always mattered:
-  the time of a write is not the `updated_at` of the row it changed.
+- ~~**`UserStatusResponseDto.updatedAt` arrives as the 1970 epoch.**~~ Struck
+  twice over, and the second strike is the interesting one. It does not arrive
+  as the epoch — that came from PR #134's stale *Известные проблемы* — and the
+  field is not called `updatedAt` either: at backend PR #146's head `01a5af4`
+  it is **`changedAt`**, renamed by [TAS-188](https://jira.ozero.dev/browse/TAS-188)
+  through the domain type, both implementations and every fixture. The reason
+  given here for not drawing it was also wrong: `auth-service` builds
+  `.changedAt(savedUser.getUpdatedAt())` on a `@LastModifiedDate` column, so the
+  response timestamp *is* the row's `updated_at` rather than a second clock
+  beside it. It stays undrawn because the section has one source of values — the
+  refetched list. Three revisions of one line, and every wrong one was read out
+  of a PR body or a superseded branch head.
+- **The profile menu's status pill has no `LOCKED` arm, and cannot get one
+  honestly yet** (`frontend-builder`, TAS-188). §4.5's `.user-status` tints
+  `ACTIVE`, `BLOCKED` and `INVITED`; a `LOCKED` account falls back to the quiet
+  base pill even though the domain now models the value. Deliberately left:
+  `GET /users/me` cannot report `LOCKED` at all — the gateway's own
+  `GatewayUserStatus` sends it through `UNSPECIFIED` (see the line above and
+  `API-DIVERGENCE.md`) — so an arm added today would be unreachable code
+  justified by a value that never arrives. It also sits on hardcoded hex
+  (`#22c55e`, `#f59e0b`), which no agent here may extend, so the arm and the
+  tokenisation are one job. Wants the gateway fixed first, then both together.
+- **The admin user dialog never scrolls, so at a short viewport its buttons are
+  unreachable by pointer** (`art-director`, TAS-188). Measured: at 500px tall,
+  the reset dialog carrying a failure sentence is 579px starting at 11vh, so
+  Cancel and submit sit below the fold with no scroll. `Esc` and the close
+  control still work, so it is not a trap. Pre-existing — the block-an-`INVITED`
+  dialog overflows at 561 — and it belongs to `Modal` rather than to any one
+  dialog, which is why TAS-188 did not take it.
+- **`BLOCKED` on the 22px scroll wash is below §7's contrast floor**
+  (`art-director`, TAS-188 re-verdict — an upgrade from the first pass, which
+  estimated "about 3.0"). Re-measured: **3.36:1** light at rest on that band and
+  **2.82:1** with the row flash over it. 2.82 is under the 3:1 floor, which
+  makes this an accessibility defect rather than a tight margin, and it is the
+  tightest place in the whole Users table — tighter than anything the new
+  `LOCKED` rule does, which bottoms out at 3.21 in the same worst case.
+
+  Older than TAS-188 and not made worse by it: the wash, the row flash and the
+  `BLOCKED` recipe all predate this story, which only measured the stack for the
+  first time. Worth a pass over **the wash itself** rather than over each pill
+  that crosses it — the band is a scroll affordance drawn over content, and any
+  status pill in the table meets it at some scroll position. Reachable only
+  where the table overflows, so phone portrait; at laptop and desktop the band
+  is never drawn.
+- **The reason counter measures the trimmed value while the textarea caps the
+  raw one** (`api-contract-guard`, TAS-188 re-verdict).
+  `AdminUserActionModal.tsx:182` sets `maxLength` from the raw length and `:195`
+  counts from `trimmed.length`, so leading or trailing whitespace makes the hint
+  report room the field will not accept. The direction is safe — nothing
+  over-long can reach the wire — so it is cosmetic, and fixing it means deciding
+  whether the cap should trim too, which is a question about the field rather
+  than about the counter.
+- **`errors.ts:53` says "The three do not share a status" where two of the three
+  do** (`api-contract-guard`, TAS-188 re-verdict): the last-active-admin and
+  not-in-`LOCKED` refusals are both 400. The enumeration directly below it is
+  unambiguous and the sentence is wording rather than a contract claim, which is
+  why it was left rather than opening another builder pass for one word.
+- **A `LOCKED` account keeps full product access on a token minted before the
+  lock** (`api-contract-guard`, TAS-188). Broader than the profile-menu line
+  below it: `AuthServiceImpl.validateUserStatus` rejects `BLOCKED` and
+  `INVITED` and does not reject `LOCKED`, and `AuthServiceImpl.refresh` does
+  not call it at all — so a locked account is stopped at the sign-in form and
+  nowhere else. A backend ask, and one for after PR #146 merges rather than a
+  change to it.
+- **`reset-lockout` declares no `default` response in its openapi block**
+  (`api-contract-guard`, TAS-188), so the 500 the status round trip currently
+  produces is an undeclared status on that route. Minor beside the 500 itself,
+  which is on TAS-107 and TAS-108.
+- **The gateway disagrees with itself about the user status vocabulary**
+  (found on the TAS-188 contract read, 2026-09-05). At backend PR #146's head
+  `UserStatusDto` has four values including `LOCKED`, while the same service's
+  `GatewayUserStatus` — the enum behind `GET /users/me` — has only three plus
+  `UNSPECIFIED`, so `AuthMapper.toGatewayUserStatus` sends a locked account
+  through `default -> UNSPECIFIED`. A pre-lock token still works
+  (`validateUserStatus` rejects `BLOCKED` and `INVITED`, not `LOCKED`), so the
+  profile menu can be opened by an account whose status the gateway will not
+  name. The frontend guards the render; it cannot fix a value it is not sent.
+  A backend ask, and one for after PR #146 merges rather than a change to it —
+  filing it against an open PR would land on a moving branch.
 - **Two status pills now exist for one enum.** The profile menu's
   `.user-status` (§4.16) colours `ACTIVE` green and `INVITED` amber from four
   literal hexes that are in no §2 palette; the admin Users pill keeps colour
@@ -1121,6 +1193,40 @@ search endpoint is claimed; the other is not:
   time is how a reviewable diff stops being one. Note the twelfth value —
   `MEMBER_ROLE_CHANGED` was never in the enum the contract just deleted, so the
   union and the contract already disagreed before this.
+
+The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
+schema change. None is claimed, and none is on the four open PRs this refresh was
+done for — they landed on `develop` while this repository was looking elsewhere:
+
+- **Issue watchers, five routes.** `GET`/`POST
+  /projects/{projectId}/issues/{issueId}/watchers`, `PUT`/`DELETE` on
+  `.../watchers/me`, and `DELETE .../watchers/{userId}`. The `me` pair takes the
+  user from the JWT and needs no body; the other two are project-`ADMIN` only.
+  This is a real feature with a real UI (a watch toggle on the issue panel and a
+  watcher list beside the assignee), not a mapping job, so it wants its own
+  story rather than a corner of someone else's.
+- **`POST /admin/outbox/{service}/{eventId}/retry`.** The write half of TAS-106,
+  which the Events section has never had. `service` is a closed enum of `auth`,
+  `project`, `issue` — narrower than the service list the catalog returns, which
+  is itself worth noticing before a retry button is drawn next to a row the
+  endpoint cannot accept.
+- **`GET /readonly/outbox/problematic-summary` is real now.** `TaskaApi.ts`
+  documents it as existing "only in the TAS-105 branch", and the Problems view
+  reads `OUTBOX_SUMMARY_UNSERVED_MESSAGE` off the deployed gateway to say so.
+  The contract has it; whether the *deployed* gateway does is a separate
+  measurement, and the compensation must not be deleted until that measurement
+  is taken.
+- **`ListIssuesResponseDto.items` changed from `IssueShortResponseDto` to
+  `IssueResponseDto`.** The list endpoint now returns whole issues.
+  `RestTaskaApi.listIssues` hydrates every row from the detail endpoint because
+  the short DTO carried no labels — that N+1 may now be deletable. It is a
+  measurement against the deployed gateway, not a reading of the contract,
+  because the two have disagreed before. Sitting in TAS-189's scope as a
+  question, not as work.
+- **`NotificationTypeDto` reappears as a definition on two open PRs (#146,
+  #118) and nothing references it.** The `notificationType` field is still a
+  bare `type: string` with an `example`, so the entry above about the closed
+  union stands unchanged; the schema coming back is not the enum coming back.
 
 ### `--fg-3` on `--bg` is below the contrast floor, in two places TAS-161 did not touch
 

@@ -8,6 +8,7 @@ import { AdminPager } from "./AdminPager";
 import { AdminUserActionModal } from "./AdminUserActionModal";
 import { readViewState } from "./urlState";
 import {
+  actionAccessibleName,
   actionFor,
   actionLabels,
   globalRoleLabel,
@@ -101,6 +102,38 @@ export function AdminUsersSection() {
   // dropped it, or a page change underneath.
   const trigger = useRef<HTMLButtonElement | null>(null);
 
+  /**
+   * Focus back on the trigger — and after a write, *drawn*.
+   *
+   * `Esc` and Cancel hand focus back inside the interaction that asked for it,
+   * so `:focus-visible` follows from the modality the browser has already
+   * recorded and the ring appears on its own. A write does not: focus returns
+   * from the mutation's callback, and what decides the ring by then is whatever
+   * the reader did last — most often a pointer press on the confirm button.
+   * Measured in Chromium: after a pointer interaction a plain programmatic
+   * `focus()` matches `:focus-visible` false, so the operator is handed focus
+   * with nothing on screen saying where it went, on a row that may now carry a
+   * different button. `focusVisible` asks for the ring regardless, which is the
+   * right answer for focus the reader did not move themselves (§7).
+   *
+   * The option is not implemented everywhere. Where it is ignored this is a
+   * plain `focus()`; where the argument is refused outright the fallback is what
+   * keeps focus from being lost altogether, which is worse than an undrawn ring.
+   */
+  const focusTrigger = (drawRing: boolean) => {
+    const button = trigger.current;
+    if (!button?.isConnected) return;
+    if (!drawRing) {
+      button.focus();
+      return;
+    }
+    try {
+      button.focus({ focusVisible: true });
+    } catch {
+      button.focus();
+    }
+  };
+
   useEffect(() => {
     if (flashed === null) return;
     const timer = window.setTimeout(() => setFlashed(null), FLASH_MS);
@@ -109,7 +142,13 @@ export function AdminUsersSection() {
 
   const closeDialog = () => {
     setPending(null);
-    if (trigger.current?.isConnected) trigger.current.focus();
+    focusTrigger(false);
+  };
+
+  /** The same close, after the server has answered — see `focusTrigger`. */
+  const closeAfterWrite = () => {
+    setPending(null);
+    focusTrigger(true);
   };
 
   const rows = rowsQuery.data;
@@ -256,9 +295,11 @@ export function AdminUsersSection() {
                       <button
                         // "Block Nina Kowal", not "Block": seven buttons in a
                         // list all called Block are seven buttons a screen
-                        // reader cannot tell apart. The visible word is
-                        // contained in the name, as WCAG 2.5.3 requires.
-                        aria-label={`${actionLabels[action]} ${name}`}
+                        // reader cannot tell apart. Built from a per-action
+                        // template rather than by concatenation, because
+                        // "Reset lockout Omar Haddad" is not a phrase — see
+                        // `actionAccessibleName`.
+                        aria-label={actionAccessibleName(action, name)}
                         // The product's secondary button (§4.1), sized down for
                         // this table rather than rebuilt: border, surface,
                         // radius and hover all come from `.secondary-button`,
@@ -300,7 +341,7 @@ export function AdminUsersSection() {
             setAnnouncement(
               `${personLabel(pending.user)} is now ${userStatusLabel(change.currentStatus).toLowerCase()}.`,
             );
-            closeDialog();
+            closeAfterWrite();
             // The server's answer paints the row; the list is still what the
             // section believes, so it is asked again.
             void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
@@ -316,18 +357,36 @@ export function AdminUsersSection() {
  * The account's status as a §4.5 pill, sized for §5.8's table rather than for
  * the product's cards.
  *
- * Colour carries meaning here and decorates nothing (§1): `BLOCKED` is the only
- * state that is a problem, so it is the only one tinted. `ACTIVE` is the normal
- * state and stays quiet, and `INVITED` is told apart by a dashed edge rather
- * than by a second colour — the same "not there yet" the unassigned avatar
- * wears (§4.4). A value this build has never seen prints verbatim in the quiet
- * pill: it is a value, and the raw string is the whole message.
+ * Colour carries meaning here and decorates nothing (§1), and §5.8 gives the
+ * section three devices rather than four colours: a **fill** in `--danger` is a
+ * problem an administrator created (`BLOCKED`); an **edge** is a state that has
+ * not settled (`INVITED`, the same "not there yet" the unassigned avatar wears,
+ * §4.4); **nothing** is normal (`ACTIVE`).
+ *
+ * `LOCKED` is both at once and so composes them rather than introducing a
+ * fourth: the `--danger` hue on the edge instead of in the fill. The account
+ * cannot sign in, which is a problem — but nobody decided it and the next
+ * successful sign-in undoes it, so a fill saying "someone blocked this" would
+ * be the wrong sentence. What keeps it apart from `INVITED` without relying on
+ * hue (§7) is the word first and the glyph's darkness second; solid against
+ * dashed is the last of the three, not the first, because at 11.5px on a 20px
+ * pill the dash is four short arcs. The measurements are in styles.css beside
+ * the rule.
+ *
+ * A value this build has never seen prints verbatim in the quiet pill: it is a
+ * value, and the raw string is the whole message.
  */
 function StatusPill({ status }: { status: string }) {
-  // Only the two states that are drawn differently carry a modifier. `ACTIVE`
+  // Only the three states that are drawn differently carry a modifier. `ACTIVE`
   // and a value this build does not recognise both wear the quiet pill, so
   // neither needs one.
   const modifier =
-    status === "BLOCKED" ? " admin-status-blocked" : status === "INVITED" ? " admin-status-invited" : "";
+    status === "BLOCKED"
+      ? " admin-status-blocked"
+      : status === "INVITED"
+        ? " admin-status-invited"
+        : status === "LOCKED"
+          ? " admin-status-locked"
+          : "";
   return <span className={`admin-pill${modifier}`}>{userStatusLabel(status)}</span>;
 }

@@ -2,13 +2,22 @@ import { useMutation } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { taskaApi } from "../../api/client";
 import { apiErrorFacts } from "../../api/errors";
-import { BLOCK_REASON_MAX_LENGTH } from "../../api/TaskaApi";
+import { ADMIN_WRITE_REASON_MAX_LENGTH } from "../../api/TaskaApi";
 import { Modal } from "../../components/Modal";
 import { RequestId } from "../../components/RequestId";
 import type { UserStatusChange } from "../../domain/types";
 import { jiraUrl } from "./sections";
 import type { AdminUserTarget, UserAction } from "./users";
-import { actionLabels, personLabel, targetStatus, userStatusLabel, userWriteFailure } from "./users";
+import {
+  actionAccessibleName,
+  actionGerunds,
+  actionLabels,
+  actionPendingLabels,
+  personLabel,
+  targetStatus,
+  userStatusLabel,
+  userWriteFailure,
+} from "./users";
 
 interface AdminUserActionModalProps {
   /** Narrowed to a row that has a key: a row with none offers no action at all. */
@@ -21,11 +30,12 @@ interface AdminUserActionModalProps {
 }
 
 /**
- * The confirmation for the Users section's one write (DESIGN.md §4.11, §5.8).
+ * The confirmation for each of the Users section's three writes (DESIGN.md
+ * §4.11, §5.8).
  *
- * It exists because neither operation can be undone by the reader — unblocking
- * an account that was `INVITED` does not restore the invitation — and because
- * the server requires a reason, which has to be typed somewhere.
+ * It exists because none of the operations can be undone by the reader —
+ * unblocking an account that was `INVITED` does not restore the invitation —
+ * and because the server requires a reason, which has to be typed somewhere.
  *
  * **Nothing here is optimistic**, which is a deliberate departure from
  * AGENTS.md's rule that mutations are optimistic with rollback, and is recorded
@@ -34,6 +44,11 @@ interface AdminUserActionModalProps {
  * taken across the whole table, and the legality of a transition is the
  * server's to decide. So the button waits, and on failure this modal stays open
  * with the answer in it rather than closing over a change that never happened.
+ *
+ * Reset-lockout does not weaken that. Its transition looks predictable — always
+ * `LOCKED` → `ACTIVE` — but the account may hold no `PASSWORD` credential at
+ * all, which the server answers with a 404 no client can foresee, and the row
+ * on screen may be stale in the direction that makes it refuse anyway.
  */
 export function AdminUserActionModal({
   user,
@@ -48,16 +63,21 @@ export function AdminUserActionModal({
   const from = user.status;
   const to = targetStatus(action);
   const verb = actionLabels[action];
-  // Whitespace-only is blank. The server answers 400 for it (`@NotBlank`) and
-  // every implementation refuses it before the request, so the only place it
-  // can be discovered is here — which is why the button is disabled and the
-  // hint says why, rather than leaving a control that answers with an error.
+  // Whitespace-only is blank. The server answers 400 for it — through
+  // `GrpcRequestValidators.requireNonBlankOrInvalidArgument` rather than the
+  // DTO's own `@Size(min = 1)`, which a single space passes — and every
+  // implementation refuses it before the request, so the only place it can be
+  // discovered is here. Which is why the button is disabled and the hint says
+  // why, rather than leaving a control that answers with an error.
   const trimmed = reason.trim();
   const canSubmit = trimmed !== "";
 
   const run = useMutation({
-    mutationFn: () =>
-      action === "block" ? taskaApi.blockUser(user.id, trimmed) : taskaApi.unblockUser(user.id, trimmed),
+    mutationFn: () => {
+      if (action === "block") return taskaApi.blockUser(user.id, trimmed);
+      if (action === "unblock") return taskaApi.unblockUser(user.id, trimmed);
+      return taskaApi.resetCredentialLockout(user.id, trimmed);
+    },
     onSuccess: onDone,
   });
 
@@ -97,7 +117,7 @@ export function AdminUserActionModal({
   }, []);
 
   return (
-    <Modal onClose={onClose} title={`${verb} ${name}`}>
+    <Modal onClose={onClose} title={actionAccessibleName(action, name)}>
       <form
         className="form-stack"
         onSubmit={(event) => {
@@ -126,18 +146,31 @@ export function AdminUserActionModal({
           </p>
         </div>
 
-        {/* Both sentences are facts the reader cannot see anywhere else, and
-            each is printed only when it is true. */}
+        {/* Every sentence here is a fact the reader cannot see anywhere else,
+            and each is printed only when it is true. */}
         {action === "block" && from === "INVITED" ? (
           <p className="admin-user-note">
             This account was invited and has never signed in. Unblocking it later makes it active — the invitation
             is not restored.
           </p>
         ) : null}
+        {/* What "locked" means, because nothing on screen says it and the two
+            things an admin will assume are both wrong: nobody blocked this
+            account, and this does not give it a new password. The failed-attempt
+            count and the lock expiry cannot be shown — the gateway drops them
+            before REST — so the sentence is the whole of what can be said. */}
+        {action === "reset" ? (
+          <p className="admin-user-note">
+            This account locked itself after too many failed sign-ins. Resetting clears the failed-attempt count.
+            It does <strong>not</strong> change the password — whoever signs in next needs the existing one.
+          </p>
+        ) : null}
         {currentUserId && user.id === currentUserId ? (
           <p className="admin-user-note">
-            This is the account you are signed in as. Whether that is allowed is the server&rsquo;s decision, and
-            the only rule it has is that the last active global admin cannot be blocked.
+            This is the account you are signed in as.{" "}
+            {action === "reset"
+              ? "Clearing its lockout leaves this session alone: no token is revoked by it."
+              : "Whether that is allowed is the server’s decision, and the only rule it has is that the last active global admin cannot be blocked."}
           </p>
         ) : null}
 
@@ -146,7 +179,7 @@ export function AdminUserActionModal({
           <textarea
             aria-describedby={hintId}
             autoFocus
-            maxLength={BLOCK_REASON_MAX_LENGTH}
+            maxLength={ADMIN_WRITE_REASON_MAX_LENGTH}
             onChange={(event) => setReason(event.target.value)}
             required
             rows={3}
@@ -159,18 +192,18 @@ export function AdminUserActionModal({
             never be read — the explanation has to live beside the field. */}
         <p className="admin-user-hint" id={hintId}>
           {canSubmit
-            ? `${BLOCK_REASON_MAX_LENGTH - reason.length} of ${BLOCK_REASON_MAX_LENGTH} characters left`
-            : `A reason is required — the server refuses a change without one. Up to ${BLOCK_REASON_MAX_LENGTH} characters.`}
+            ? `${ADMIN_WRITE_REASON_MAX_LENGTH - trimmed.length} of ${ADMIN_WRITE_REASON_MAX_LENGTH} characters left`
+            : `A reason is required — the server refuses a change without one. Up to ${ADMIN_WRITE_REASON_MAX_LENGTH} characters.`}
         </p>
 
-        {run.isError ? <ActionFailure error={run.error} verb={verb} /> : null}
+        {run.isError ? <ActionFailure action={action} error={run.error} /> : null}
 
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel
           </button>
           <button className="primary-button" disabled={!canSubmit || run.isPending} type="submit">
-            {run.isPending ? `${verb}ing…` : verb}
+            {run.isPending ? actionPendingLabels[action] : verb}
           </button>
         </div>
       </form>
@@ -188,27 +221,44 @@ export function AdminUserActionModal({
  * copy of the submit button one line below it. What is shared is the taxonomy,
  * the classifier and the request-id affordance, not the prose.
  */
-function ActionFailure({ error, verb }: { error: unknown; verb: string }) {
+function ActionFailure({ action, error }: { action: UserAction; error: unknown }) {
   const failure = userWriteFailure(error);
   const { message, requestId } = apiErrorFacts(error);
+  // The two undeployed routes ship in one backend PR under two stories, and the
+  // reader gets the one that removes the operation in front of them.
+  const story = action === "reset" ? "TAS-108" : "TAS-107";
 
   return (
     <div className="admin-user-failure" role="alert">
       <p>
         {failure === "undeployed" ? (
           <>
-            This gateway does not serve blocking and unblocking yet. They arrive with{" "}
-            <a className="admin-note-link" href={jiraUrl("TAS-107")} rel="noreferrer" target="_blank">
-              TAS-107
+            This gateway does not serve {action === "reset" ? "the lockout reset" : "blocking and unblocking"} yet.
+            {action === "reset" ? " It arrives with " : " They arrive with "}
+            <a className="admin-note-link" href={jiraUrl(story)} rel="noreferrer" target="_blank">
+              {story}
             </a>
             ; until then this section reads the table and cannot change it. It is not that the account is missing.
           </>
         ) : failure === "conflict" ? (
-          "The server would not make this change. Nothing is wrong with the request — the account's own status, or the number of active global admins left, does not allow it."
+          action === "reset" ? (
+            "The server would not make this change. Nothing is wrong with the request — a lockout can only be reset while the account is locked, and this one is not, or is no longer."
+          ) : (
+            "The server would not make this change. Nothing is wrong with the request — the account's own status, or the number of active global admins left, does not allow it."
+          )
         ) : failure === "refused" ? (
-          "The server refused this. Either this account is not a global admin as far as the gateway is concerned, or that user is no longer there."
+          action === "reset" ? (
+            // Reset-lockout answers 404 for two different things — no such
+            // user, and a locked account with no password credential behind it
+            // — with one status and one code. Neither is worth guessing at, so
+            // the sentence covers both and the server's own wording, printed
+            // below, says which.
+            "The server refused this. Either this account is not a global admin as far as the gateway is concerned, or what the reset needed — the account, or the password credential the lockout belongs to — is no longer there."
+          ) : (
+            "The server refused this. Either this account is not a global admin as far as the gateway is concerned, or that user is no longer there."
+          )
         ) : failure === "server" ? (
-          `The gateway failed while ${verb.toLowerCase()}ing this account. Nothing is wrong with what was asked for — this is a fault on the server, and the request id below is what identifies it in the gateway log.`
+          `The gateway failed while ${actionGerunds[action]} this account. Nothing is wrong with what was asked for — this is a fault on the server, and the request id below is what identifies it in the gateway log.`
         ) : failure === "rejected" ? (
           "The gateway would not accept this request. Nothing is down: it read what was asked for and refused it, and what to change is in its own words below."
         ) : (

@@ -1,0 +1,216 @@
+# Pending gateway contract — backend PR #148 (TAS-116)
+# Issue planning fields on the gateway REST DTOs
+#
+# Source: https://github.com/VladislavYurin/taska-backend/pull/148
+# Head commit: c01c7b960e973726d8c8891dd1119ad4d7a12041
+# PR state on 2026-09-05: open, checks green, review required
+# Base for this extract: develop @ 8b8b3c5aca210175322d5f1d092c61ffcd3cfeb3
+#
+# Adds no routes. Adds storyPoints, startDate, dueDate, originalEstimateMinutes and
+# remainingEstimateMinutes to five existing issue schemas.
+# storyPoints is number/double here and integer/int32 in PR #118 BoardIssueDto — the two open
+# PRs disagree with each other. Recorded in docs/ai/API-DIVERGENCE.md.
+#
+# This is NOT the contract. It is what the contract WILL say if this PR merges as it
+# stands. docs/contract/openapi.yml stays the authority until then; this file exists so a
+# reviewer without network access can audit frontend work written ahead of the merge, and
+# so the version that work was written against is pinned in history. Delete it when the PR
+# merges and the snapshot is refreshed.
+#
+# Extracted mechanically: every path and schema that is new in the PR, or whose text differs
+# from develop. Ordering follows the PR file.
+
+components:
+  schemas:
+
+    CreateIssueRequestDto:
+      type: object
+      required: [issueType, summary, description, priority]
+      properties:
+        issueType:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          description: Первоначальная оценка времени в минутах
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          description: Оставшееся время в минутах
+          minimum: 0
+
+    IssueResponseDto:
+      type: object
+      required: [id, projectId, issueNumber, issueKey, issueType, summary, description,
+                 priority, assigneeId, reporterId, createdAt, updatedAt,version, labels]
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        issueNumber:
+          type: integer
+        issueKey:
+          type: string
+        issueType:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        assigneeId:
+          type: string
+        reporterId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          description: Первоначальная оценка времени в минутах
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          description: Оставшееся время в минутах
+          minimum: 0
+        labels:
+          type: array
+          description: Метки задачи (краткая информация)
+          items:
+            $ref: '#/components/schemas/IssueLabelResponseDto'
+
+    IssueShortResponseDto:
+      type: object
+      required: [id, issueKey, summary, issueType, priority, assigneeId]
+      properties:
+        id:
+          type: string
+        issueKey:
+          type: string
+        summary:
+          type: string
+        issueType:
+          type: string
+        priority:
+          type: string
+        assigneeId:
+          type: string
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+
+    UpdateIssueRequestDto:
+      type: object
+      required: [summary, description, priority]
+      properties:
+        summary:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          description: Первоначальная оценка времени в минутах
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          description: Оставшееся время в минутах
+          minimum: 0
+
+    UpdateIssueResponseDto:
+      type: object
+      required: [id, summary, description, priority]
+      properties:
+        id:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          description: Первоначальная оценка времени в минутах
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          description: Оставшееся время в минутах
+          minimum: 0

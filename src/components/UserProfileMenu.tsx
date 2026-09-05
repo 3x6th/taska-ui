@@ -16,7 +16,29 @@ const statusLabels: Record<UserStatus, string> = {
   ACTIVE: "Active",
   BLOCKED: "Blocked",
   INVITED: "Invited",
+  LOCKED: "Locked",
 };
+
+/**
+ * The written status, or the raw value for anything this build has never heard
+ * of — the same rule `userStatusLabel` follows in the admin Users section, for
+ * a different reason. There the value is a database cell, so it was never
+ * promised to be an enum member. Here it is typed `UserStatus` and can still
+ * arrive outside it: `GET /users/me` answers the gateway's own
+ * `GatewayUserStatus`, which has **no** `LOCKED`. So once backend PR #146
+ * deploys and the state can exist, a locked account whose pre-lock token still
+ * works — `validateUserStatus` in that PR's `AuthServiceImpl` rejects `BLOCKED`
+ * and `INVITED`, and says nothing about `LOCKED` — will read back as
+ * `UNSPECIFIED`.
+ *
+ * A bare lookup printed an empty badge for that: `undefined` in a place typed
+ * `string`, which renders as nothing and says nothing. Adding `LOCKED` to the
+ * union does not fix it, because `LOCKED` is not the value that arrives.
+ */
+function statusLabel(status: string): string {
+  const labels: Record<string, string | undefined> = statusLabels;
+  return labels[status] ?? status;
+}
 
 // The account-wide role, not the project one. It is shown, never acted on.
 const globalRoleLabels: Record<GlobalRole, string> = {
@@ -80,7 +102,10 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                 <div>
                   <dt>Status</dt>
                   <dd>
-                    <span className={`user-status is-${user.status.toLowerCase()}`}>{statusLabels[user.status]}</span>
+                    {/* An unmodelled value keeps the quiet base pill: the
+                        modifier simply does not match a rule, which is the
+                        right answer for a status this build cannot interpret. */}
+                    <span className={`user-status is-${user.status.toLowerCase()}`}>{statusLabel(user.status)}</span>
                   </dd>
                 </div>
                 {/* A gateway that does not state the role gets no row at all:
