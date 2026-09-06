@@ -2084,13 +2084,23 @@ board DTO is treated as the narrower of the two, not as the definition.
 does not error — Postgres rounds `1.235` to `1.23` silently — so the client
 refuses more than two decimals rather than storing a value the reader did not
 type. The **precision** does error: `1000` and above is `22003 numeric field
-overflow` — and it surfaces as a **503**, not the 500 first written here.
-`GrpcExceptionHandler` matches `R2dbcException` before its catch-all and maps it
-to `DomainStatus.UNAVAILABLE` ("Database unavailable"), which
-`RestErrorMapper.mapGrpcCodeToHttpStatus` turns into `SERVICE_UNAVAILABLE`. So a
-value the client could have seen and refused instead tells the reader the
-database is down. That makes the client-side bound more justified than the
-first version of this entry argued, not less. Both guards are the client's own rules and
+overflow`. **What status that surfaces as has not been measured**, and this
+entry has now guessed at it twice — first `500`, then `503` — so it stops
+guessing and states the code read instead, marked as a read.
+
+The chain reads as `500`. `GrpcExceptionHandler` does test `R2dbcException`
+before its catch-all, and `RestErrorMapper` does map `UNAVAILABLE` to
+`SERVICE_UNAVAILABLE`, which is where the `503` came from — but no
+`R2dbcException` reaches that handler from a repository call. `issue-service`
+saves through Spring Data R2DBC, whose `DefaultDatabaseClient` carries
+`.onErrorMap(R2dbcException.class, ex -> ConnectionFactoryUtils.convertR2dbcException(...))`
+and hands on a `DataAccessException`. So the first branch does not match, the
+catch-all does, and `RestErrorMapper`'s default gives `500`. That branch is
+effectively dead for anything a repository raises.
+
+Either way the entry's argument is untouched: a value the client can see and
+refuse should not be sent to provoke a server fault, whichever fault it is.
+**Removed by:** one probe, once the fields are reachable. Both guards are the client's own rules and
 move if the column does.
 
 **Removed by:** the two PRs agreeing, and the contract stating the bounds.

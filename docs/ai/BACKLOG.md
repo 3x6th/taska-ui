@@ -774,6 +774,13 @@ the next session in this image exactly as it bit this one.
   it would never reach the gRPC validator the divergence entry credits. Cannot
   be settled without the generated sources. It does not change what this client
   refuses, only which layer the record names.
+- **`TaskaApi.ts:106` calls a code read "measured"** (`frontend-builder`,
+  TAS-189). It describes reading two backend services' source at PR #146's head,
+  not a probe. It was not wrong when TAS-188 wrote it — the word was not
+  reserved then. TAS-189 narrowed "measured" to mean observation and left every
+  other use of it honest, so this is the one straggler, and it is one word.
+  (`TaskaApi.ts:62`, `:542` and `:561` also say "measured" and are correct:
+  those are live probes against the deployed gateway.)
 - **A no-op update bumps `version` and `updatedAt` in the mock and not on the
   server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
   early without saving when the computed payload is empty; the mock always

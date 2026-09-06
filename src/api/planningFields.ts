@@ -16,7 +16,7 @@ import { isDateOnly } from "../domain/types";
  * code, `ApiError` carries a code and an HTTP status — so this module decides
  * *what* is refused and each implementation throws its own error with it.
  *
- * ## What the server does, measured rather than read off the contract
+ * ## What the server does, read from its code rather than off the contract
  *
  * `IssueServiceImpl.updateIssue` on backend `develop` (TAS-115, already merged;
  * read at `ref=develop` on 2026-09-06) writes all five fields unconditionally:
@@ -31,8 +31,12 @@ import { isDateOnly } from "../domain/types";
  * `setIfPresent` (`IssueMapper`, backend PR #148), and
  * `GrpcIssueService.updateIssue` resolves every unset optional with
  * `.orElse(null)`. So **`PUT /issues/{id}` is a full replace: a field the
- * request omits is erased, not preserved.** The backend's own integration test
- * names it — «Частичное обновление — непереданные planning fields затираются».
+ * request omits is erased, not preserved.** The backend's own *unit* test names
+ * it — «Частичное обновление — непереданные planning fields затираются», in
+ * `issue-service/src/test/java/ru/taska/service/IssuePlaningFieldsTest.java` on
+ * `develop` — one `n` in `Planing`, holding the class
+ * `PlanningFieldsServiceTest`, and renamed to the two-`n` spelling by backend
+ * PR #148. It is Mockito over a stubbed repository, not a database test.
  *
  * That is why `resolvePlanningFields` exists and why deleting the re-read that
  * feeds it silently destroys user data. See `UpdateIssueInput` in
@@ -54,11 +58,13 @@ import { isDateOnly } from "../domain/types";
  *   while it enforces `>= 0`, so **`0` is accepted** and is a count, not an
  *   absence. The server's wording is deliberately *not* reproduced here for that
  *   reason — it describes a rule the server does not have.
- * - **a malformed or impossible date** — refused by `LocalDate` binding in the
- *   gateway's own request body, *before* gRPC, so the message a REST caller
- *   would see is Spring's rather than the validator's
- *   ("Invalid date format, expected ISO yyyy-MM-dd"). Nothing here reproduces
- *   either: the wording below is this client's own.
+ * - **a malformed or impossible date** — the generated DTO's field is a
+ *   `LocalDate` (`format: date` in the contract), so the gateway binds the
+ *   string before gRPC sees it, and the validator that would otherwise answer —
+ *   `requireStartDateBeforeDueDate`, whose own message is "Invalid date format,
+ *   expected ISO yyyy-MM-dd" — is only ever handed a string that already
+ *   parsed. What a REST caller sees instead has **not** been observed. The
+ *   wording below is this client's own either way.
  * - **an estimate that is not a whole number** — same class as the date: the
  *   DTO's field is an `Integer` (`openapi-generator-maven-plugin` in
  *   `api-gateway/pom.xml` generates it from the contract's `format: int32`), so
@@ -81,12 +87,16 @@ import { isDateOnly } from "../domain/types";
  *   `2147483647` is the ceiling in all three places the field is described:
  *   `format: int32` in the pending contract (backend PR #148), `optional int32
  *   original_estimate_minutes` in `issue-service.proto`, and `integer` in the
- *   column (`0007-issue-planing-fields.sql`). A JSON number above it cannot go
- *   into the DTO's `Integer` at all — that is the Java type, not a mapper
- *   setting — so the gateway fails to bind the body and
- *   `requireOptionalPositiveZeroOrInvalidArgument` never runs. The reader would
- *   get a `400` about JSON rather than about estimates, which is why this is
- *   refused here in the estimate's own words.
+ *   column (`0007-issue-planing-fields.sql`). A JSON number above it cannot be
+ *   held by the DTO's `Integer` — that is the Java type, not a mapper setting —
+ *   so `requireOptionalPositiveZeroOrInvalidArgument` never sees the number the
+ *   reader typed. What the gateway does *instead* is the same unobserved
+ *   question as the fractional case above, on the same Jackson 3 stack, and this
+ *   bullet declines to answer it for the same reason: either the body fails to
+ *   bind and the reader gets a `400` written about JSON rather than about
+ *   estimates, or the value is narrowed to some other `int` and stored — a
+ *   number nobody typed, arriving back with no error anywhere. Refusing here in
+ *   the estimate's own words is right under both, so the answer is not needed.
  *
  *   There is deliberately no matching floor. `int32`'s is `-2147483648`, and
  *   every value below it is negative, so `< 0` already refuses the lot with a
@@ -109,12 +119,30 @@ import { isDateOnly } from "../domain/types";
  * - **story points outside 0…999.99, or beyond two decimals**, which no layer of
  *   the server states. The column is `numeric(5,2)`
  *   (`0007-issue-planing-fields.sql`): above 999.99 Postgres raises a numeric
- *   field overflow, which is a `500` and not something a client should provoke
- *   when it can see the value; beyond two decimals Postgres **rounds**, so
- *   `1.235` is accepted and stored as `1.23` — a value that is not the one the
- *   reader typed, arriving back on the next read with no error anywhere. Both
- *   are refused here, and the second is refused for the rounding rather than for
- *   a failure.
+ *   field overflow, so the write fails on a value the client could see was too
+ *   large — which is the whole reason to refuse it here, whatever status the
+ *   failure comes back as. **What that status is has not been measured.** No
+ *   deployed gateway accepts these fields, so no such write has ever been made,
+ *   and the number below is a *code read*, offered as one.
+ *
+ *   The read says `500`, and the step that decides it is easy to miss, so it is
+ *   written down rather than left to be re-derived. `GrpcExceptionHandler` does
+ *   open with `e instanceof R2dbcException || e instanceof TransactionException`
+ *   mapped to `UNAVAILABLE`, which `RestErrorMapper` turns into `503` — but no
+ *   `R2dbcException` reaches it. `issue-service` saves through Spring Data
+ *   R2DBC, whose `R2dbcEntityTemplate` runs every statement through
+ *   `DatabaseClient`, and `DefaultDatabaseClient` ends its execute path with
+ *   `.onErrorMap(R2dbcException.class, ex -> ConnectionFactoryUtils.convertR2dbcException(…))`,
+ *   which hands on a `DataAccessException` — neither disjunct. So the handler's
+ *   catch-all fires instead, `INTERNAL` comes out, and `RestErrorMapper`'s
+ *   `default` gives `500`. (Read at spring-r2dbc 7.0.5 and spring-data-r2dbc
+ *   4.0.3, the versions Spring Boot 4.0.3 resolves for this backend.)
+ *
+ *   Beyond two decimals Postgres **rounds** instead of raising, so `1.235` is
+ *   accepted and stored as `1.23` — a value that is not the one the reader
+ *   typed, arriving back on the next read with no error anywhere. Both are
+ *   refused here, and the second is refused for the rounding rather than for a
+ *   failure.
  * - **story points that are not a finite number.** `JSON.stringify` writes `NaN`
  *   and `Infinity` as `null`, and `null` on this wire means *clear the field*.
  *   So an unguarded `Number("")` from a form would not fail — it would silently
@@ -137,8 +165,9 @@ export const STORY_POINTS_DECIMALS = 2;
 /**
  * The largest value an `int32` holds, and so the ceiling on both estimates —
  * `format: int32` in the contract, `int32` in the proto, `integer` in the
- * column. Above it the gateway cannot bind the body into the DTO's `Integer`,
- * so the answer is a binding failure before any validator, not a refusal.
+ * column. Above it the value cannot be held by the DTO's `Integer`, so
+ * `requireOptionalPositiveZeroOrInvalidArgument` never sees it. What the
+ * gateway answers instead has not been observed — see the ceiling bullet above.
  */
 export const ESTIMATE_MINUTES_MAX = 2_147_483_647;
 
@@ -163,9 +192,10 @@ export const DATE_ORDER_MESSAGE = "The start date cannot be later than the due d
 /**
  * The stored-date cross-check, in words a reader can act on. The server's own
  * sentence for this prints the incoming start date under the label "Due date"
- * and says nothing about what to do next, so these are ours — and the
- * advice in them is checked: two requests in this order do succeed, because each
- * one is compared against the record as the previous one left it.
+ * and says nothing about what to do next, so these are ours. The advice they
+ * give is a read of `IssueServiceImpl`, which compares each request against the
+ * record as the previous one left it; no such pair has been run against a
+ * deployed gateway, and against the mock it would only re-run this module.
  */
 export const START_DATE_AFTER_STORED_DUE_MESSAGE =
   "The start date cannot be later than this issue's current due date — move the due date first";
@@ -244,12 +274,14 @@ export function planningFieldRefusal(
 
   for (const estimate of [input.originalEstimateMinutes, input.remainingEstimateMinutes]) {
     if (estimate === undefined || estimate === null) continue;
-    // Two server layers, in the order the server runs them. The gateway binds
-    // the JSON number into the DTO's `Integer` first, so "not whole" and "will
-    // not fit an int32" are both binding failures and both come before the
-    // negative check, which is the gRPC validator's. `Number.isInteger` alone
-    // would let 2_147_483_648 through — it is whole and it is not negative, and
-    // the mock would then store and display a value REST could never send.
+    // Two server layers, in the order the server runs them. The gateway has to
+    // put the JSON number into the DTO's `Integer` before anything reaches
+    // gRPC, so neither a fraction nor a value above the ceiling is ever seen by
+    // `requireOptionalPositiveZeroOrInvalidArgument` — which is why the negative
+    // check, that validator's own, is tried last of the three here.
+    // `Number.isInteger` alone would let 2_147_483_648 through: it is whole and
+    // it is not negative, and the mock would then store and display a value
+    // REST could never send.
     if (!Number.isInteger(estimate)) return refuse(ESTIMATE_WHOLE_MINUTES_MESSAGE);
     if (estimate > ESTIMATE_MINUTES_MAX) return refuse(ESTIMATE_MAX_MESSAGE);
     // No `< -2_147_483_648` to match: everything below the int32 floor is
@@ -317,6 +349,11 @@ export function resolvePlanningFields(input: PlanningFieldsInput, current: Plann
  * before backend PR #148 deploys: against today's gateway every one of these
  * resolves to `null` — the reads carry no planning fields — so the body is
  * exactly `{summary, description, priority}` and not one request byte changes.
+ * The second half of that is pinned rather than read: "sends the same three keys
+ * it always did against a gateway that has no planning fields", in
+ * src/api/rest/RestTaskaApi.test.ts, drives a detail read carrying none of the
+ * five and asserts the body with `toEqual` — so a fourth key on the wire fails
+ * the suite.
  */
 export function planningFieldsBody(fields: PlanningFields): Record<string, number | DateOnly> {
   const body: Record<string, number | DateOnly> = {};

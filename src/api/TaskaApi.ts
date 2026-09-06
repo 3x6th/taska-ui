@@ -195,7 +195,9 @@ export interface CreateIssueInput {
  * proto fields are `optional`, the gateway sets them through `setIfPresent`,
  * and `GrpcIssueService` resolves an unset optional with `.orElse(null)` — so a
  * field the request omits is **erased**, not preserved. The backend's own
- * integration test says so in its display name.
+ * *unit* test says so in its display name — «Частичное обновление —
+ * непереданные planning fields затираются», in `IssuePlaningFieldsTest.java`
+ * on `develop` (one `n`), which is Mockito over a stubbed repository.
  *
  * Every implementation therefore re-reads the issue and re-sends the value it
  * is keeping. That read is what makes "leave it as it is" true, and it is the
