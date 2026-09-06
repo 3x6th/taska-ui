@@ -2228,6 +2228,100 @@ compensation to remove — only this entry to delete.
 review, and the card DTO gaining what the card draws. All three, not any one.
 Raised on TAS-125.
 
+### One third of the attachment flow never touches the gateway, and nothing configures CORS for it
+
+`POST .../attachments/upload-url` answers with a presigned URL; the browser then
+PUTs the raw bytes **cross-origin, straight to the object store**; `POST
+.../attachments/confirm` persists the row. The middle leg is not a gateway
+request, so none of this client's auth, tracing, error mapping or mocking
+applies to it, and no frontend code can make it reachable if the store will not
+take it.
+
+Two things about that leg are unmeasured and neither is ours to fix:
+
+- **Nothing in the backend repository configures CORS on the bucket.**
+  `minio-init` in `docker-compose.yml` runs `mc alias set` and `mc mb` and
+  nothing else — no `mc anonymous`, no CORS rules, no
+  `MINIO_API_CORS_ALLOW_ORIGIN` in `.env.docker.example`, nothing under
+  `infra/`. A cross-origin PUT carrying a `Content-Type` always preflights, so
+  if the bucket states no allowed origin the upload cannot work from
+  `taska.ozero.dev` no matter what this client does.
+- **The host the browser is told to PUT to is a loopback address in every
+  checked-in configuration.** `storage.public-url` defaults to
+  `http://127.0.0.1:9000` and `.env.docker.example` repeats it;
+  `StorageAutoConfiguration.s3Presigner` uses it as `endpointOverride`. The
+  deployment's real `.env` is not in the repository, so whether production
+  overrides it with a reachable host is unknown.
+
+**The UI instead:** the panel distinguishes a blocked or unreachable PUT from an
+HTTP failure the store returned. A preflight refusal surfaces as a `TypeError`
+from `fetch` with **no status at all**, which is the signature to read; the
+store's own status, when there is one, is carried in a shape of its own and
+deliberately kept out of `ApiError.status`, because `src/api/errors.ts` reads
+that field and would classify a store 403 as a gateway permission failure. The
+mock plays the whole choreography without a network, so the feature is
+exercisable before any of this is settled.
+
+**Removed by:** a measurement, once the routes deploy — one upload attempt from
+the deployed origin says more than any amount of reading. Raised on TAS-131.
+
+### The attachment limits are pinned from the backend's YAML, not from the contract
+
+The contract states neither. `issue-service/src/main/resources/application.yml`
+does: a **2 MB** ceiling exactly (`2097152`), as a YAML literal with **no env
+override** unlike every neighbouring storage property, and a **thirteen-entry
+MIME allowlist** matched by exact string with no wildcards and no case folding.
+
+The allowlist refuses more than a reader expects: no `.docx` or `.xlsx`, no GIF,
+no SVG, no video or audio, nothing extensionless (browsers report
+`application/octet-stream`), and a `.zip` that some Windows browsers report as
+`application/x-zip-compressed` rather than the allowed `application/zip`.
+
+The presigned URL also carries a **15-minute TTL whose clock starts at the first
+leg**, and the `Content-Type` is part of the signed request, so the value sent on
+the PUT must be byte-identical to the one sent to `upload-url` — no
+normalisation, no added charset, no recomputing it from the extension.
+
+**The UI instead:** all four are client constants with their provenance in the
+comment. The picker states the ceiling and the accepted types *before* a file is
+chosen rather than refusing one after; the ticket is requested when the file is
+chosen rather than when the panel opens; and a 403 on the PUT is read as an
+expired window rather than as a permission failure.
+
+**Removed by:** the contract stating the limits. Until then each constant is a
+snapshot of a YAML line and says so — the 2 MB becomes a lie the moment that
+line changes, and nothing here would notice.
+
+### `projectId` in the attachment paths is not an access check, and the mock is stricter
+
+`IssueAttachmentController` says so in its own comment — *«projectId в пути
+используется только для REST-иерархии/читаемости URL и не участвует в
+авторизации»* — and forwards only `issueId` and `attachmentId`. The real gate is
+a project-role check inside issue-service: upload and confirm are ADMIN+MEMBER,
+list and download add VIEWER, and deleting **someone else's** attachment is
+ADMIN only.
+
+`MockTaskaStore` does scope by project, so a mismatched `(projectId, issueId)`
+pair diverges: the mock answers NOT_FOUND, the gateway answers 200. Exactly the
+shape already recorded for `getIssue`, and pinned by a test rather than left to
+be rediscovered.
+
+**The UI instead:** nothing — no screen constructs such a pair. **Removed by:**
+nothing; it is the mock resolving within a project and the gateway not caring.
+
+### `listAttachments` mints a presigned download URL per row and the gateway throws it away
+
+`AttachmentServiceImpl.listAttachments` builds a presigned URL for every
+attachment it returns. `IssueAttachmentMapper.toIssueAttachmentDto` reads eight
+of the ten proto fields and discards `url` and `object_key`. So the list read
+costs one `headObject` plus one presign per row for a value no client ever sees,
+and the separate `download-url` call is required anyway.
+
+**The UI instead:** call `download-url` when the reader asks for the file, which
+is what the contract describes. **Removed by:** the backend either surfacing the
+URL it already computes or not computing it. Raised on TAS-131; a backend
+efficiency defect, not a client compensation.
+
 ### `sortableColumns` and `filterableColumns` are empty for `auth.users`, which decides a section's controls
 
 - **Endpoint:** `GET /api/v1/readonly/auth/users`.

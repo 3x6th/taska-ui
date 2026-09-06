@@ -798,6 +798,27 @@ the next session in this image exactly as it bit this one.
   Belongs to whoever takes that measurement, which is the same one the
   2026-09-05 refresh entry files under `ListIssuesResponseDto.items` — one
   request answers both.
+- **Four issue history event types the backend already emits fall into
+  `historyText`'s catch-all** (`frontend-builder`, TAS-190). Our
+  `IssueEventType` is nine members; the backend enum is fourteen.
+  `LINK_CREATED`, `LINK_DELETED`, `LABEL_ADDED` and `LABEL_REMOVED` are emitted
+  today and every one of them renders as "updated this issue" in the activity
+  feed. TAS-190 added only the two attachment members it needed. This is a
+  feed-accuracy gap that predates it and wants doing as one pass over the union
+  and `historyText` together.
+- **Three attachment controls sit below §7's 44px touch target**
+  (`frontend-builder`, TAS-190): "Attach a file" at 109×29 and each delete at
+  32×32, at 390. They match their shipped neighbours exactly — `Link` is 47.9×29
+  and "Remove link" is 32×32 — so this is three more instances of a gap §7
+  already records rather than a new one, and fixing them alone would put a 44
+  control immediately above a 32 one, which is the paired mismatch §7 warns
+  about. Wants a pass over the panel's small controls together.
+- **A presigned download opens a tab rather than saving a file**
+  (`frontend-builder`, TAS-190). MinIO's presigned GET carries no
+  `Content-Disposition` and the `download` attribute is ignored cross-origin, so
+  images and PDFs render inline. `window.open` returning `null` is caught and the
+  row then offers the link directly, but that fallback has been exercised only
+  against a stub, never against a real popup blocker.
 - **A no-op update bumps `version` and `updatedAt` in the mock and not on the
   server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
   early without saving when the computed payload is empty; the mock always
