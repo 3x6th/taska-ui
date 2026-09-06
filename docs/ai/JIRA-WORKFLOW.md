@@ -42,7 +42,7 @@ states are not.
 | [TAS-188](https://jira.ozero.dev/browse/TAS-188) | Bring the admin user-status writes to backend PR #146's contract — `changedAt`, `LOCKED`, and the new reset-lockout write | Done | merged (PR #43) |
 | [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | In Progress | API layer merged (PR #45); UI half open |
 | [TAS-190](https://jira.ozero.dev/browse/TAS-190) | Issue attachments over presigned S3 links (backend PR #147) | To Do | not started |
-| [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | To Do | not started |
+| [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | In Progress | decided not to build a method yet, and why — `API-DIVERGENCE.md`, "The board route is declared, unimplemented, and narrower than the board it is named for" (PR #47) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
@@ -56,7 +56,8 @@ the story has drifted and should be transitioned rather than the table edited.
 | [TAS-137](https://jira.ozero.dev/browse/TAS-137) | full `rest` mode | No project membership or member reads. `hybrid` mode plus `VITE_TASKA_ASSUME_PROJECT_ADMIN` compensates. See `API-DIVERGENCE.md`. |
 | [TAS-139](https://jira.ozero.dev/browse/TAS-139) | verifying `TAS-136` | `GET /api/v1/issues/{issueId}` returns 500 once an issue has a comment; via the list hydration this makes the whole board fail against live data. |
 | [TAS-141](https://jira.ozero.dev/browse/TAS-141) | several UI affordances | Contract gaps: read-all, nullable assignee, comment ordering, CORS-exposed `X-Request-Id`, 404-on-empty-projects bug. |
-| [TAS-124](https://jira.ozero.dev/browse/TAS-124) / [TAS-125](https://jira.ozero.dev/browse/TAS-125) | removing the N+1 board hydration | Board API (TAS-125 in review). Covers the list-DTO gap that was dropped from TAS-141 as a duplicate. |
+| [TAS-124](https://jira.ozero.dev/browse/TAS-124) | any client use of the board route | The route's gRPC method is declared and unimplemented, so a merged and deployed gateway answers `501 UNIMPLEMENTED`. The implementation is on backend PR #142, itself open and CONFLICTING, and PR #118 is CHANGES_REQUESTED besides. Nothing is built against the route until both land — see TAS-191. |
+| [TAS-124](https://jira.ozero.dev/browse/TAS-124) / [TAS-125](https://jira.ozero.dev/browse/TAS-125) | ~~removing the N+1 board hydration~~ — **nothing any more** | **Withdrawn (TAS-191).** The board API does not cover the list-DTO gap: `BoardIssueDto` has no description and no `createdAt` either, and gives status only as a column position, so the detail read stays. What may remove it is `ListIssuesResponseDto.items` becoming `IssueResponseDto`, which it already has on `develop` — that wants one measurement against the deployed gateway, not a contract reading. |
 | [TAS-145](https://jira.ozero.dev/browse/TAS-145) | [TAS-148](https://jira.ozero.dev/browse/TAS-148) | No `PATCH /projects/{id}`, no `description` column and no `color` column. Until it ships, editing a project is mock-only. Widened 2026-08-21 to carry a nullable `color`, which is what makes the project half of TAS-171's compensation removable; the avatar half has no such story and is not meant to. |
 | [TAS-129](https://jira.ozero.dev/browse/TAS-129) | nothing here, listed so the citation is checkable | Avatar upload through the gateway (presigned URL to MinIO), on top of TAS-128 which is Done. Referenced by `API-DIVERGENCE.md`'s colour entry only to say what the computed avatar colour is a fallback *under* — it does not gate TAS-171 or anything else in this repository. |
 | [TAS-146](https://jira.ozero.dev/browse/TAS-146) | [TAS-149](https://jira.ozero.dev/browse/TAS-149) | Nothing sets `archived_at`, so archiving is mock-only and the read-only board state cannot be exercised against the gateway. |
@@ -251,6 +252,32 @@ separately:
   there is nothing visual in it.
 - Left for the second half: the planning block on the issue panel, editing, the
   create form, and two test fixtures that omit the five behind a cast.
+
+### TAS-191 — the board route, and the criterion this story declines to meet
+
+Mirrored here **because** it declines one, not despite it: the section exists so
+a reviewer without Jira can audit, and a story that did not meet its own
+criteria is the one that most needs the record.
+
+- The criterion was "the method exists in all three implementations and they are
+  interchangeable". Not met, deliberately. Four independent reasons, each
+  sufficient: the route's gRPC method is declared and unimplemented, so it
+  answers `501` (the implementation is on backend PR #142, open and
+  `CONFLICTING`); `BoardIssueDto` carries six of the nine fields the card draws,
+  and drag-and-drop needs `status` and `issueType` as values rather than as a
+  column position; `BoardServiceImpl` fails the whole board with a 500 on a
+  `statusKey` the workflow lacks, where today an unknown status silently places
+  no card; and `CHANGES_REQUESTED` stands on the access-control gap, so the fix
+  adds 403 and 404 cases the contract does not have.
+- The authority order settles it. The contract outranks the story, and a
+  criterion written when the route looked usable does not survive the route not
+  being usable. Writing the method anyway would put a `getBoard` on the
+  interface that a later contributor could wire the board onto — turning a
+  silent per-card degradation into a whole-board 500 while dropping six fields.
+- What shipped instead: the analysis, three document corrections, and four
+  findings on TAS-125, three of which its reviewers had not raised.
+- The story stays open with the blocking condition named, and
+  `npm run contract:pins` goes loud when PR #118 moves or merges.
 
 ### TAS-187 — the voltagent packs, off for this repository
 

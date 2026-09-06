@@ -1,16 +1,29 @@
 # Pending gateway contract — backend PR #118 (TAS-125)
-# Board API and readonly metadata
+# Board API — one route, despite what a diff against develop suggests
 #
 # Source: https://github.com/VladislavYurin/taska-backend/pull/118
 # Head commit: 8a8326e19f9f5eecaf17f01e4876f1fec1ab9560
 # PR state on 2026-09-05: open, CHANGES_REQUESTED
 # Base for this extract: develop @ 8b8b3c5aca210175322d5f1d092c61ffcd3cfeb3
 #
-# The branch is long out of date with develop (1794 lines against 2798), so a plain diff shows
-# labels, watchers, search and outbox as "removed" when they are only absent from a stale base.
-# This extract is therefore restricted to the two routes the PR actually adds and their schemas.
+# The branch is a thousand lines behind develop, so a plain diff shows labels, watchers,
+# search and outbox as "removed" when they are only absent from a stale base. This extract is
+# therefore restricted to what the PR actually adds.
+#
+# It adds exactly ONE route: GET /api/v1/projects/{projectId}/board. An earlier version of
+# this extract also carried GET /api/v1/readonly/metadata as new. It is not new and it is not
+# added: it is the PRE-RENAME NAME of develop's already-deployed /api/v1/readonly/catalog,
+# introduced by TAS-101 as getMetadata and renamed by TAS-103. This branch predates the rename,
+# so the old name shows up as an addition and the new one as a deletion. Its schema block here
+# was byte-identical to develop's, which is the tell. MetaInfoDto went with it: develop
+# describes readonly rows with ReadOnlyTableRowsResponseDto and ReadOnlySingleRowResponseDto,
+# so MetaInfoDto is this branch's older shape rather than a new schema.
+#
 # CHANGES_REQUESTED: the reviewer found no project-access check on the board query or the
-# workflow-service call, so this contract may still move.
+# workflow-service call, so this contract may still move. And it cannot answer at all yet -
+# the PR declares rpc ListIssuesForBoard in the proto and no service implements it, on this
+# branch or on develop, so a merged and deployed gateway would answer 501 UNIMPLEMENTED. The
+# implementation is on backend PR #142 (TAS-124), which is itself open and CONFLICTING.
 #
 # This is NOT the contract. It is what the contract WILL say if this PR merges as it
 # stands. docs/contract/openapi.yml stays the authority until then; this file exists so a
@@ -74,53 +87,8 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
-  /api/v1/readonly/metadata:
-    get:
-      summary: Получение каталога доступных сервисов и таблиц (только для GLOBAL_ADMIN)
-      operationId: getMetadata
-      tags:
-        - readonly
-      security:
-        - bearerAuth: [ ]
-      responses:
-        '200':
-          description: Метаданные успешно получены
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/X-RequestId-Header'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MetadataResponse'
-        '401':
-          $ref: '#/components/responses/ErrorResponse'
-        '403':
-          $ref: '#/components/responses/ErrorResponse'
-        default:
-          $ref: '#/components/responses/ErrorResponse'
-
 components:
   schemas:
-
-    MetaInfoDto:
-      type: object
-      properties:
-        service:
-          type: string
-        table:
-          type: string
-        columns:
-          type: array
-          items:
-            type: string
-        sortableColumns:
-          type: array
-          items:
-            type: string
-        filterableColumns:
-          type: array
-          items:
-            type: string
 
     BoardResponseDto:
       type: object

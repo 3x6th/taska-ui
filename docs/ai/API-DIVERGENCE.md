@@ -369,22 +369,45 @@ Same rule as above: "Closed by" is settled, the rest is live.
   default mode (after [TAS-137](https://jira.ozero.dev/browse/TAS-137)) and the
   e2e suite can run against a gateway that rejects tokens.
 
-### The issue list DTO cannot render a board
+### The board hydration outlived its contract reason
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/issues`
-- **Contract:** `IssueShortResponseDto` carries only `id`, `issueKey`,
-  `summary`, `issueType`, `priority`, `assigneeId` — no `status`, no dates, no
-  description. A kanban board cannot place a card in a column without
-  `status`.
+- **Contract:** *this bullet is out of date and the compensation now stands on
+  runtime grounds rather than contract ones.* When it was written,
+  `ListIssuesResponseDto.items` was `IssueShortResponseDto` — `id`, `issueKey`,
+  `summary`, `issueType`, `priority`, `assigneeId`, with no `status`, no dates
+  and no description — and a kanban board cannot place a card in a column
+  without `status`. On the vendored contract today (`develop 8b8b3c5`) that
+  `$ref` is **`IssueResponseDto`**, which carries `status`, `description` and
+  `createdAt`; `IssueShortResponseDto` survives only under
+  `SearchIssuesResponseDto`. So the contract no longer mandates the hydration.
+  What keeps it is that nobody has yet asked the deployed gateway whether it
+  agrees with its own contract — see the Removal note below.
 - **Compensation:** `RestTaskaApi.listIssues` follows the list call with
   `GET /issues/{issueId}` per item at concurrency 6; the first rejection fails
   the whole page. 4 projects × 100 issues is 400+ requests on the projects
   screen, and this is the multiplier that turns TAS-139 into a board-wide
   failure.
-- **Removal:** [TAS-124](https://jira.ozero.dev/browse/TAS-124) /
-  [TAS-125](https://jira.ozero.dev/browse/TAS-125) (Board API — already in
-  review on the backend). Dropped from TAS-141 as a duplicate at the
-  2026-08-04 dedup pass.
+
+  The heading used to read "The issue list DTO cannot render a board" — the
+  premise this entry now disowns. Renamed under TAS-191, so the most quotable
+  string in it is not the half that stopped being true.
+- **Removal:** ~~[TAS-124](https://jira.ozero.dev/browse/TAS-124) /
+  [TAS-125](https://jira.ozero.dev/browse/TAS-125) (Board API)~~ — **that promise
+  was wrong and is withdrawn (TAS-191, 2026-09-06).** The board API does not
+  remove this compensation. Its `BoardIssueDto` carries id, issueKey, summary,
+  storyPoints, an assignee id and name, and label *names*; the card also draws
+  issueType, priority, description and createdAt, and drag-and-drop needs
+  `status` and `issueType` as values rather than as a column position. The
+  hydration existed because the list DTO had no `status`, no `description` and no
+  `createdAt`, and the board DTO is missing two of those three as well — so the
+  detail read would still be needed, for the panel and for the lower half of the
+  card. Dropped from TAS-141 as a duplicate at the 2026-08-04 dedup pass.
+
+  What **may** remove it is unrelated and already noted in the 2026-09-05
+  backlog entry: `ListIssuesResponseDto.items` changed on `develop` from
+  `IssueShortResponseDto` to `IssueResponseDto`, which carries all three. That
+  needs one measurement against the deployed gateway, not a contract reading.
 
 ### No `read-all` for notifications
 
@@ -2151,6 +2174,59 @@ correctly, a zero-point issue and a zero-minute estimate are both real — and t
 message about it is wrong. The client uses its own wording and never shows the
 server's for this case; `0` is seeded in the mock precisely so that a mapper
 folding it to `null` fails a test rather than a review.
+
+### The board route is declared, unimplemented, and narrower than the board it is named for
+
+Nothing in this repository is built against `GET /api/v1/projects/{projectId}/board`
+(backend PR #118, TAS-125). Recorded here rather than in a story's comment
+because four independent reasons say "not yet", and each one is the kind that
+gets forgotten and re-litigated.
+
+**It cannot answer.** The PR adds `rpc ListIssuesForBoard` to
+`issue-service.proto` and **no service implements it** — no override on
+`GrpcIssueServiceAdapter`, no method on `GrpcIssueService`, neither at the PR's
+head nor on `develop`. A declared-but-unimplemented gRPC method answers
+`UNIMPLEMENTED`, which the gateway maps to **501**. The implementation is on
+backend PR #142 (TAS-124), open and `CONFLICTING`. So even merged and deployed,
+the route returns 501 until a second PR lands.
+
+**It draws less than the board does.** `BoardIssueDto` carries `id`,
+`issueKey`, `summary`, `storyPoints`, an assignee `{id, displayName}` and
+`labels` as bare strings. The card draws `issueType`, `priority`, `description`
+and `createdAt` as well, renders labels with their colours, and drag-and-drop
+needs `status` and `issueType` as values rather than as a column position. Six of
+the nine are absent. Adopting the route as the board's data source would be a
+visible regression bought with one request instead of several.
+
+**Its failure mode is worse than the one it would replace.** `BoardServiceImpl`
+fails the whole board with a 500 when any issue carries a `statusKey` the
+workflow does not have. Today an unknown status simply places no card — a silent
+per-card degradation, recorded elsewhere in this file. That is a strictly better
+failure than a blank screen.
+
+**And the contract is still moving.** `CHANGES_REQUESTED` stands on the
+access-control gap: the route is `EndpointSecurity.PROTECTED` — authentication
+only — and `BoardServiceImpl` calls neither service through
+`ProjectRoleChecker`. Fixing that adds 403 and 404 cases the contract does not
+have, so anything written now would be written against an error taxonomy about
+to gain two members.
+
+Three smaller things, worth stating so they are not rediscovered:
+`storyPoints` is `int32` here and `double` on backend PR #148 — two open PRs
+disagreeing, settled by the `numeric(5,2)` column in favour of `double`;
+`IssueMapper.toRestBoardIssue` calls `setStoryPoints(getStoryPoints())` with no
+`hasStoryPoints()` guard, so an unestimated issue serialises as `storyPoints: 0`
+and nothing on the wire tells "zero points" from "not estimated"; and
+`issueType` is a **required** query parameter, so one call cannot answer the
+board's own `ALL` filter.
+
+**The UI instead:** the board keeps composing from `getWorkflow` + `listIssues`
+with per-issue hydration. No client method exists for this route, so there is no
+compensation to remove — only this entry to delete.
+
+**Removed by:** backend PR #142 landing an implementation, PR #118 clearing its
+review, and the card DTO gaining what the card draws. All three, not any one.
+Raised on TAS-125.
 
 ### `sortableColumns` and `filterableColumns` are empty for `auth.users`, which decides a section's controls
 

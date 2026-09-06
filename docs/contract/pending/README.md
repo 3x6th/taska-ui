@@ -33,8 +33,11 @@ against `develop` block by block. Two things are deliberately not reported as
 changes: a block whose only difference is whitespace, and a trailing comment
 banner that belongs to the next section. A branch that is far behind `develop`
 also shows unrelated endpoints as "removed" when they are only absent from a
-stale base — `pr-118-TAS-125.yml` is restricted to the two routes its PR
-actually adds for that reason, and says so in its own header.
+stale base — `pr-118-TAS-125.yml` is restricted to the one route its PR actually
+adds for that reason, and says so in its own header. That extract first claimed
+two, and the second was a route the branch had merely not caught up on being
+renamed; the header carries the story, because a stale branch producing a
+plausible-looking addition is the trap this whole directory can walk into.
 
 The extract is a reading aid, not a source. Where an extract and the PR disagree,
 the PR wins; where the PR's `openapi.yml` and the PR's Java disagree, the Java
