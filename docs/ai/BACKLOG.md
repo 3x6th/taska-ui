@@ -798,6 +798,25 @@ the next session in this image exactly as it bit this one.
   Belongs to whoever takes that measurement, which is the same one the
   2026-09-05 refresh entry files under `ListIssuesResponseDto.items` — one
   request answers both.
+- **A third intermittent test signature, on `AdminScreen.test.tsx`**
+  (`release-reviewer`, TAS-190): "lands on the last page when the address names
+  one past the end" failed once in four `npm run check` runs with
+  `expected 999 to be 2`, and was green in the other three and in isolation.
+  Unrelated to attachments by subject; TAS-190 adds roughly 1.9k lines of tests
+  to the same parallel run and can only have raised contention rather than
+  caused it. Recorded beside the two Playwright flakes already here — three
+  signatures is the point at which the run's parallelism is worth looking at
+  rather than each test.
+- **A failed list read can turn a failed confirm into a false reassurance**
+  (`release-reviewer`, TAS-190). `BoardScreen` counts same-named attachments
+  from `queryClient.getQueryData`, which is `undefined` when the list read
+  failed. A failed read plus a failed confirm plus a pre-existing file of the
+  same name yields "it was attached after all" when it was not.
+- **Two attachment states ship having been rendered only under jsdom**
+  (`release-reviewer`, TAS-190): `.attachment-note`, the info tone, has no mock
+  trigger because the confirm-fails path throws before recording one; and a
+  successful upload announces nothing — the live region stays empty and only the
+  row appears.
 - **Four issue history event types the backend already emits fall into
   `historyText`'s catch-all** (`frontend-builder`, TAS-190). Our
   `IssueEventType` is nine members; the backend enum is fourteen.

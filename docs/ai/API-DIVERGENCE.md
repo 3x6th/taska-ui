@@ -1818,7 +1818,10 @@ Same rule as above: "Closed by" is settled, the rest is live.
   yet, naming the story the operation belongs to — TAS-108 for reset-lockout,
   TAS-107 for the other two — read from the 404 **and** the `No static
   resource` substring together (`UNDEPLOYED_ROUTE_MESSAGE` in
-  `src/api/TaskaApi.ts`, `isUndeployedRoute` in `src/screens/admin/users.ts`).
+  `src/api/TaskaApi.ts`, `isUndeployedRoute` in `src/api/errors.ts` — TAS-190
+  moved it out of `src/screens/admin/users.ts`, which now re-exports it, because
+  a second feature needed the same measured predicate and a fact about the
+  gateway belongs beside `isMissingOrForbidden`).
   Any other failure keeps the section's ordinary taxonomy; `users.test.ts`
   asserts that a deployed route's `404 "User not found"` is *not* swallowed by
   it.
@@ -2227,6 +2230,67 @@ compensation to remove — only this entry to delete.
 **Removed by:** backend PR #142 landing an implementation, PR #118 clearing its
 review, and the card DTO gaining what the card draws. All three, not any one.
 Raised on TAS-125.
+
+### The five attachment routes exist only on an open backend PR
+
+- **Endpoints:** `GET`/`POST` on
+  `/api/v1/projects/{projectId}/issues/{issueId}/attachments`, `POST
+  .../attachments/upload-url`, `POST .../attachments/confirm`, `GET
+  .../attachments/{attachmentId}/download-url` and `DELETE
+  .../attachments/{attachmentId}` — the whole of TAS-190.
+- **Observed, measured 2026-09-06 rather than read:** the vendored snapshot has
+  no such paths and the deployed gateway does not serve them. An unauthenticated
+  `GET .../issues/{uuid}/attachments` answers **404** with
+  `{"code":"NOT_FOUND","message":"No static resource api/v1/…"}`, while
+  `GET .../issues/{uuid}/comments` beside it answers **401**. The 401 is the
+  control: it proves the 404 is the route being unmapped rather than the request
+  being unauthenticated. The backend change is
+  [PR #147](https://github.com/VladislavYurin/taska-backend/pull/147), head
+  `f53dca38`, open.
+- **The UI instead:** the attachments section reads that pairing — the status
+  **and** the `No static resource` substring, never the status alone — through
+  `UNDEPLOYED_ROUTE_MESSAGE` in `src/api/TaskaApi.ts` and `isUndeployedRoute` in
+  `src/api/errors.ts`, and answers with its own sentence naming TAS-131 instead
+  of a failure. The upload control is suppressed in that state, because offering
+  a picker for a route that cannot accept a file is worse than offering nothing.
+  Any other failure keeps the ordinary taxonomy: a deployed route's own 404 must
+  not be swallowed by this.
+- **Removal:** PR #147 merging **and deploying** — not merging alone. When it
+  does: refresh `docs/contract/openapi.yml` from `develop`, delete
+  `docs/contract/pending/pr-147-TAS-131.yml`, delete the section's
+  undeployed-route branch, and re-probe once, because the measurement above is
+  what this entry rests on. `isUndeployedRoute` itself stays until the admin
+  writes deploy too — two features share it now.
+
+### `DELETE …/attachments/{id}` answers 204 for an attachment that is not there, and skips the role check
+
+The contract documents a 404. The implementation does not.
+`AttachmentServiceImpl.deleteAttachment` starts at
+`issueAttachmentRepository.findByIdAndDeletedAtIsNull(attachmentId)` with **no
+`switchIfEmpty`** — unlike the private `findActiveAttachment` two methods down,
+which has one and does raise `NOT_FOUND`. An empty result therefore skips both
+`flatMap`s, **including the `projectRoleChecker` call**, and
+`GrpcAttachmentService.deleteAttachment` closes with
+`.thenReturn(Empty.getDefaultInstance())`. So any authenticated caller gets 204
+for a missing or already-deleted attachment, and the role gate on that path
+never runs.
+
+**The UI instead:** the mock reproduces the 204 rather than the documented 404,
+and this entry is the other half of that decision — reproduce **and** flag,
+rather than choosing between them. The behavioural argument decided it: with a
+stale list, the server answers 204 and the row correctly stays gone, while a
+mock answering 404 rolls the optimistic removal back and makes a file that *is*
+deleted reappear under an error message. The mock would have been the worse of
+the two behaviours, not merely the different one.
+
+Note what is **not** made lenient: `getDownloadUrl` goes through
+`findActiveAttachment`, which does carry `switchIfEmpty(NOT_FOUND)`, so the
+download route genuinely 404s on a deleted attachment and the mock refuses there
+too. The leniency is one method wide.
+
+**Removed by:** the backend adding the `switchIfEmpty` or the contract dropping
+the 404 — one or the other, and the role-check gap wants fixing regardless of
+which. Raised on TAS-131.
 
 ### One third of the attachment flow never touches the gateway, and nothing configures CORS for it
 
