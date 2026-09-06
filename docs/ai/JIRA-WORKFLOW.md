@@ -41,7 +41,8 @@ states are not.
 | [TAS-187](https://jira.ozero.dev/browse/TAS-187) | Disable the `voltagent` plugin packs for this repository so their 60 generic agents stay out of every session's context | Done | merged (PR #42) |
 | [TAS-188](https://jira.ozero.dev/browse/TAS-188) | Bring the admin user-status writes to backend PR #146's contract — `changedAt`, `LOCKED`, and the new reset-lockout write | Done | merged (PR #43) |
 | [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | In Progress | API layer merged (PR #45); UI half open |
-| [TAS-190](https://jira.ozero.dev/browse/TAS-190) | Issue attachments over presigned S3 links (backend PR #147) | To Do | not started |
+| [TAS-190](https://jira.ozero.dev/browse/TAS-190) | Issue attachments over presigned S3 links (backend PR #147) | Done | merged (PR #48) |
+| [TAS-192](https://jira.ozero.dev/browse/TAS-192) | `.form-error` measures 3.17:1 in ten places; make the TAS-190 notice the product's error box | To Do | not started |
 | [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | In Progress | decided not to build a method yet, and why — `API-DIVERGENCE.md`, "The board route is declared, unimplemented, and narrower than the board it is named for" (PR #47) |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
@@ -278,6 +279,40 @@ criteria is the one that most needs the record.
   findings on TAS-125, three of which its reviewers had not raised.
 - The story stays open with the blocking condition named, and
   `npm run contract:pins` goes loud when PR #118 moves or merges.
+
+### TAS-190 — issue attachments, and the leg that is not a gateway request
+
+- Five routes, but the flow is three-legged and the middle leg is a cross-origin
+  PUT straight to the object store. A third of the feature is a request this
+  client's auth, tracing, error mapping and mock deliberately do not apply to.
+  The PUT bypasses `request()` entirely and carries its failures in a shape
+  outside the `ApiError` hierarchy, so a store's 403 cannot be classified as a
+  gateway permission failure.
+- Nothing in the backend repository configures CORS on the bucket and the host
+  the browser is told to PUT to is loopback in every checked-in config, so the
+  upload may not work from the deployed origin at all. The panel distinguishes
+  "the store said no" from "we could not reach the store" — the second arrives
+  as a `TypeError` with no status — and one upload attempt settles it.
+- Confirm is never retried (no unique key on `object_key`, unconditional
+  insert), and after any confirm failure the list is refetched before the reader
+  is told anything, because a confirm can succeed on the server and fail in
+  transit.
+- Three backend findings on TAS-131: delete answers 204 for a missing
+  attachment **and skips the role check**; the list mints a presigned URL per row
+  that the gateway discards; and an over-size file answers **500**, because
+  `RestErrorMapper` has no `OUT_OF_RANGE` row.
+- Three of our own comments claimed that last status was 400, citing a mapping
+  table in a library the gateway does not consult, with a test pinning it. One
+  was on the interface doc governing all three implementations.
+- Two rules came out of it and are now in `AGENTS.md`: when a mock/rest
+  divergence may wait, and when a non-gateway call may live on `TaskaApi`.
+- Verdicts: `release-reviewer` do-not-ship on two, then ship — it verified the
+  new tests by mutation rather than by reading them, five mutants all killed.
+  `art-director` do-not-ship on two measured findings in the failure notice,
+  then ship. `api-contract-guard` ship, then a separate fix-now ruling.
+- `.form-error`'s 3.17:1 graduated to TAS-192 rather than widening this story.
+- Nothing here has met a real gateway: all five routes answer the
+  undeployed-route 404, measured against a 401 control on the comment route.
 
 ### TAS-187 — the voltagent packs, off for this repository
 
