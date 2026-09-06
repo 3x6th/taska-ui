@@ -2092,18 +2092,29 @@ The chain reads as `500`. `GrpcExceptionHandler` does test `R2dbcException`
 before its catch-all, and `RestErrorMapper` does map `UNAVAILABLE` to
 `SERVICE_UNAVAILABLE`, which is where the `503` came from — but no
 `R2dbcException` reaches that handler from a repository call. `issue-service`
-saves through Spring Data R2DBC, whose `DefaultDatabaseClient` carries
-`.onErrorMap(R2dbcException.class, ex -> ConnectionFactoryUtils.convertR2dbcException(...))`
-and hands on a `DataAccessException`. So the first branch does not match, the
+saves through Spring Data R2DBC, whose statements run through **spring-r2dbc**'s
+`DefaultDatabaseClient` — the class is in `spring-r2dbc`, not in
+`spring-data-r2dbc`, which is where looking for it fails — and every exit there
+carries
+`.onErrorMap(R2dbcException.class, ex -> ConnectionFactoryUtils.convertR2dbcException(...))`,
+which is declared to return a `DataAccessException` and holds the
+`R2dbcException` only as a cause. So the first branch does not match, the
 catch-all does, and `RestErrorMapper`'s default gives `500`. That branch is
-effectively dead for anything a repository raises.
+effectively dead for anything a repository raises. Read at `spring-r2dbc`
+7.0.5 and `spring-data-r2dbc` 4.0.3, which is what `spring-boot-starter-parent`
+4.0.3 resolves — the read goes stale if the backend's Boot version moves.
+
+The one route that could still produce `503` is a rollback that itself fails,
+since `TransactionException` surfaces from the commit machinery rather than from
+a statement, and `22003` raises at statement execution. Nothing on the expected
+path reaches it.
 
 Either way the entry's argument is untouched: a value the client can see and
-refuse should not be sent to provoke a server fault, whichever fault it is.
-**Removed by:** one probe, once the fields are reachable. Both guards are the client's own rules and
-move if the column does.
+refuse should not be sent to provoke a server fault, whichever fault it is. Both
+guards are the client's own rules and move if the column does.
 
-**Removed by:** the two PRs agreeing, and the contract stating the bounds.
+**Removed by:** the two PRs agreeing and the contract stating the bounds; the
+status itself by one probe, once the fields are reachable.
 
 ### A fractional estimate is refused by the client and nobody knows what the server does
 

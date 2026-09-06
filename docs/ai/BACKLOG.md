@@ -774,6 +774,14 @@ the next session in this image exactly as it bit this one.
   it would never reach the gRPC validator the divergence entry credits. Cannot
   be settled without the generated sources. It does not change what this client
   refuses, only which layer the record names.
+- **Three planning-field claims want one probe each, once backend PR #148
+  deploys** (`api-contract-guard`, TAS-189): what status a story-points value at
+  or above 1000 actually produces (the record says 500 as a *code read* and has
+  guessed wrong twice already), what the gateway does with a fractional estimate
+  under Jackson 3, and which message a REST caller sees for a malformed date.
+  All three are unreachable today because the fields are unserved, all three are
+  written up as unobserved, and all three are one request each the day they are
+  reachable. Nothing else tracks them.
 - **`TaskaApi.ts:106` calls a code read "measured"** (`frontend-builder`,
   TAS-189). It describes reading two backend services' source at PR #146's head,
   not a probe. It was not wrong when TAS-188 wrote it — the word was not
