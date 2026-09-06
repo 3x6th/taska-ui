@@ -753,6 +753,27 @@ the next session in this image exactly as it bit this one.
   (`release-reviewer`, TAS-189): REST refuses a bad planning value before the
   project is checked, the mock throws `NOT_FOUND` for an inaccessible project
   first. Only observable on the pair "bad value on a project you cannot see".
+- **`GlobalSearch.test.tsx`'s `hit()` fixture omits `storyPoints`**
+  (`api-contract-guard`, TAS-189) — same class as the `BoardScreen.test.tsx`
+  line below, hidden by the same `as unknown as TaskaApi` cast. Fix both with
+  the UI half.
+- **`RestTaskaApi.updateIssue` does not bump `version` while the mock does**
+  (`api-contract-guard`, TAS-189): the update response DTO carries no `version`,
+  so REST cannot. Pre-existing parity drift, now over eight fields instead of
+  three.
+- **A `NaN` estimate is refused as "not a whole number of minutes"** rather than
+  as "not a number" (`api-contract-guard`, TAS-189): `storyPoints` gets an
+  explicit finite check and the estimates get one only as a side effect of
+  `Number.isInteger`.
+- **`isDateOnly` accepts `0000-01-01`**, which `LocalDate.parse` accepts and the
+  Postgres `date` type does not (`api-contract-guard`, TAS-189).
+- **Which server layer refuses a negative estimate is unsettled**
+  (`frontend-builder`, TAS-189). The pending contract gives both estimates
+  `minimum: 0` and the gateway's generator runs with `useValidation=true`, so a
+  generated `@Min(0)` on a `@Valid` body would refuse it in bean validation and
+  it would never reach the gRPC validator the divergence entry credits. Cannot
+  be settled without the generated sources. It does not change what this client
+  refuses, only which layer the record names.
 - **A no-op update bumps `version` and `updatedAt` in the mock and not on the
   server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
   early without saving when the computed payload is empty; the mock always

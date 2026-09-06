@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MockTaskaApi } from "./MockTaskaApi";
 import type { Issue, Project } from "../../domain/types";
-import { STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
+import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
  * The mock is the reference implementation of the TaskaApi contract: it is what
@@ -468,7 +468,7 @@ describe("MockTaskaApi", () => {
       await expect(refuse(0)).resolves.toMatchObject({ storyPoints: 0 });
     });
 
-    it("refuses an estimate that is negative or is not a whole number of minutes", async () => {
+    it("refuses an estimate that is negative, fractional, or larger than an int32", async () => {
       const target = await issueByKey("TAS-104");
 
       await expect(
@@ -477,9 +477,25 @@ describe("MockTaskaApi", () => {
       await expect(
         api.updateIssue(project.id, target.id, { remainingEstimateMinutes: 30.5 }),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+      // The bound the field has in all three descriptions of it — `format:
+      // int32`, `int32` in the proto, `integer` in the column. Without it the
+      // mock would store and display a value the gateway could not bind, which
+      // is the one way these two stop being interchangeable on this input.
+      // Asserted with the sentence, here and on the same input in
+      // `RestTaskaApi.test.ts`.
+      await expect(
+        api.updateIssue(project.id, target.id, { originalEstimateMinutes: 2_147_483_648 }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: ESTIMATE_MAX_MESSAGE });
+
+      // Both ends of what is still accepted: zero is an estimate of nothing,
+      // and the ceiling itself fits.
       await expect(
         api.updateIssue(project.id, target.id, { remainingEstimateMinutes: 0 }),
       ).resolves.toMatchObject({ remainingEstimateMinutes: 0 });
+      await expect(
+        api.updateIssue(project.id, target.id, { originalEstimateMinutes: 2_147_483_647 }),
+      ).resolves.toMatchObject({ originalEstimateMinutes: 2_147_483_647 });
     });
 
     it("refuses a date that is not a real calendar day", async () => {

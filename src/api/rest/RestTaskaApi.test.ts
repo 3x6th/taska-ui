@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
-import { STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
+import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
  * The 401 path is the one piece of RestTaskaApi the UI cannot see for itself:
@@ -1678,6 +1678,10 @@ describe("RestTaskaApi issue planning fields", () => {
     await refuse({ storyPoints: Number.NaN });
     await refuse({ originalEstimateMinutes: -1 });
     await refuse({ remainingEstimateMinutes: 30.5 });
+    // Above int32 the gateway cannot bind the body at all, so this one is
+    // refused before the write for a reason no validator states.
+    await refuse({ originalEstimateMinutes: 2_147_483_648 }, ESTIMATE_MAX_MESSAGE);
+    await refuse({ remainingEstimateMinutes: 2_147_483_648 }, ESTIMATE_MAX_MESSAGE);
     await refuse({ startDate: "2026-13-01" });
     await refuse({ startDate: "2026-02-30" });
     await refuse({ startDate: "2026-08-02", dueDate: "2026-08-01" });

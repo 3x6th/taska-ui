@@ -1973,15 +1973,26 @@ optional with `.orElse(null)`, and `IssueServiceImpl.updateIssue` then writes
 `updatingIssue.setStoryPoints(storyPoints)` and its four siblings
 **unconditionally**. So an omitted field is erased.
 
-Cite the right artifact for the right half of that, because the first draft of
-this entry did not. The `develop` evidence is `IssueServiceImpl.updateIssue`
-itself — five unconditional setters, read at `develop`. The backend test that
-names the behaviour in words, «Частичное обновление — непереданные planning
-fields затираются», is a **unit** test in
-`issue-service/src/test/java/ru/taska/service/IssuePlanningFieldsTest.java`, it
-is not `PlanningFieldsIT`, and it exists **only at backend PR #148's head** —
-the file 404s on `develop`. It corroborates; it cannot carry the claim that the
-behaviour is already merged, which is the claim this entry rests on.
+Cite the right artifact, because this paragraph has now been wrong twice about
+the citation and the second time is the more instructive.
+
+The `develop` evidence is `IssueServiceImpl.updateIssue` itself — five
+unconditional setters, read at `develop`, and that is what carries the claim.
+
+The backend test that names the behaviour in words, «Частичное обновление —
+непереданные planning fields затираются», is a **unit** test and not
+`PlanningFieldsIT`; the first draft called it an integration test. The
+correction then overshot: it said the file exists only at backend PR #148's head
+and 404s on `develop`. It does not. It is on `develop` as
+`issue-service/src/test/java/ru/taska/service/IssuePlaningFieldsTest.java` —
+**one `n`** — and PR #148 renames it to the two-`n` spelling. Checking the
+two-`n` name against `develop` returns a 404 that means "renamed", and it was
+read as "absent".
+
+Worth the space because the mechanism is the one this whole file exists to
+resist: a negative result from a lookup was treated as a fact about the world
+rather than as a fact about the lookup. Two independent readers made it in
+sequence, the second while correcting the first.
 
 `BoardScreen` sends three partial bodies today — `{summary}` on blur,
 `{priority}` from the picker, `{description}` on blur. Each one would wipe story
@@ -2073,11 +2084,43 @@ board DTO is treated as the narrower of the two, not as the definition.
 does not error — Postgres rounds `1.235` to `1.23` silently — so the client
 refuses more than two decimals rather than storing a value the reader did not
 type. The **precision** does error: `1000` and above is `22003 numeric field
-overflow`, a 500 rather than a 400, which is not something a client should
-provoke when it can see the value. Both guards are the client's own rules and
+overflow` — and it surfaces as a **503**, not the 500 first written here.
+`GrpcExceptionHandler` matches `R2dbcException` before its catch-all and maps it
+to `DomainStatus.UNAVAILABLE` ("Database unavailable"), which
+`RestErrorMapper.mapGrpcCodeToHttpStatus` turns into `SERVICE_UNAVAILABLE`. So a
+value the client could have seen and refused instead tells the reader the
+database is down. That makes the client-side bound more justified than the
+first version of this entry argued, not less. Both guards are the client's own rules and
 move if the column does.
 
 **Removed by:** the two PRs agreeing, and the contract stating the bounds.
+
+### A fractional estimate is refused by the client and nobody knows what the server does
+
+The two estimates are `format: int32` in the pending contract, `int32` in the
+proto and `integer` in the column, so a fractional value is not storable. What
+the gateway does with one is **not known and cannot be measured**: no deployed
+gateway accepts these fields, so no fractional estimate has ever been sent.
+
+The gateway is on Jackson 3 — `IssueMapper` imports
+`tools.jackson.databind.ObjectMapper`, `api-gateway/pom.xml` declares
+`tools.jackson.core:jackson-databind`, and the parent is
+`spring-boot-starter-parent` 4.0.3 — and `application.yml` carries no
+`spring.jackson` block at all, so the behaviour is Boot 4's default for Jackson 3
+and nothing in the backend names it. A remembered Jackson 2 default is not
+evidence about it. An earlier version of the client comment asserted truncation
+as though it had been observed; it had not.
+
+**The UI instead:** refused client-side, with the client's own wording, because
+both possible outcomes make that correct — a truncated `30.5` silently stores a
+number the reader did not type, and a refusal is a 400 with a binding message no
+reader should see. Also bounded above at `2_147_483_647`: without it the client
+would send a value `int32` cannot hold, which the mock stores happily and the
+REST path meets as a binding failure — a refusal the mock could not reproduce,
+which is the interchangeability rule broken in the one bound nobody had checked.
+
+**Removed by:** the contract stating the bounds, or one measurement once the
+fields are reachable.
 
 ### `minimum: 0` is enforced as `>= 0` under a message that says "positive"
 

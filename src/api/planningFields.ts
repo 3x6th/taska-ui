@@ -9,7 +9,7 @@ import { isDateOnly } from "../domain/types";
  * implementation, which is what `requireSearchQuery` and
  * `requireAdminWriteReason` are: those are three lines each, and the interesting
  * half of them is a constant already shared through `TaskaApi.ts`. This is not.
- * It is nine refusals, a resolution rule and a body-shaping rule, and mock and
+ * It is ten refusals, a resolution rule and a body-shaping rule, and mock and
  * rest have to agree on every one of them or they stop being interchangeable on
  * exactly the input this story is about (AGENTS.md, *Frontend constraints*). The
  * one thing the two cannot share is the error class — `MockApiError` carries a
@@ -40,12 +40,13 @@ import { isDateOnly } from "../domain/types";
  *
  * ## The refusals
  *
- * All nine are `INVALID_ARGUMENT` / `400`, and all nine are applied on this side
+ * All ten are `INVALID_ARGUMENT` / `400`, and all ten are applied on this side
  * of the wire so a request that cannot succeed is never spent. Five reproduce a
  * rule the server states — the negative bounds, the date format, the two dates
- * against each other, and the stored-date cross-check. The other four exist
+ * against each other, and the stored-date cross-check. The other five exist
  * because the server's answer to the input is *worse* than a refusal: it stores
- * something else, or it raises.
+ * something else, or it raises, or it fails to bind the body at all and answers
+ * with a message about JSON.
  *
  * - **negative story points or a negative estimate** —
  *   `GrpcRequestValidators.requireOptionalPositiveZeroOrInvalidArgument`, which
@@ -59,11 +60,38 @@ import { isDateOnly } from "../domain/types";
  *   ("Invalid date format, expected ISO yyyy-MM-dd"). Nothing here reproduces
  *   either: the wording below is this client's own.
  * - **an estimate that is not a whole number** — same class as the date: the
- *   generated DTO's field is an `Integer`, so this is decided by the gateway's
- *   body binding and not by any rule the services state. Refused locally rather
- *   than sent, because Jackson's `ACCEPT_FLOAT_AS_INT` is on by default and
- *   would truncate `30.5` to `30` instead of refusing it — a silently different
- *   value stored is worse than a `400`.
+ *   DTO's field is an `Integer` (`openapi-generator-maven-plugin` in
+ *   `api-gateway/pom.xml` generates it from the contract's `format: int32`), so
+ *   this is decided by the gateway's body binding and not by any rule the
+ *   services state. What that binding does with `30.5` has **not** been observed
+ *   and cannot be yet: no deployed gateway accepts these fields, so no
+ *   fractional estimate has ever been sent to one. It does not need to be
+ *   observed either, because both of the two possible answers make refusing
+ *   locally right — either the mapper coerces the value and stores `30`, which
+ *   is a number the reader did not type arriving back with no error anywhere,
+ *   or it refuses the body, which is a `400` carrying a deserialisation message
+ *   written for a Java developer. Which of the two it is, this module
+ *   deliberately does not claim: the gateway is on **Jackson 3**
+ *   (`tools.jackson.databind` in `IssueMapper`, under Spring Boot 4.0.3) and
+ *   sets no `spring.jackson` block in its `application.yml`, so the answer is
+ *   whatever that stack defaults to — and a remembered Jackson 2 default is not
+ *   evidence about it.
+ * - **an estimate that will not fit an `int32`** — the same binding, one bound
+ *   further out, and the only refusal here that a form can reach by accident.
+ *   `2147483647` is the ceiling in all three places the field is described:
+ *   `format: int32` in the pending contract (backend PR #148), `optional int32
+ *   original_estimate_minutes` in `issue-service.proto`, and `integer` in the
+ *   column (`0007-issue-planing-fields.sql`). A JSON number above it cannot go
+ *   into the DTO's `Integer` at all — that is the Java type, not a mapper
+ *   setting — so the gateway fails to bind the body and
+ *   `requireOptionalPositiveZeroOrInvalidArgument` never runs. The reader would
+ *   get a `400` about JSON rather than about estimates, which is why this is
+ *   refused here in the estimate's own words.
+ *
+ *   There is deliberately no matching floor. `int32`'s is `-2147483648`, and
+ *   every value below it is negative, so `< 0` already refuses the lot with a
+ *   sentence that is true of them and more use than "will not fit". The
+ *   asymmetry is the point rather than an omission.
  * - **`startDate` after `dueDate` in the same request** —
  *   `GrpcRequestValidators.requireStartDateBeforeDueDate`, and the database's
  *   own `issues_dates_chk` behind it.
@@ -106,11 +134,29 @@ export const STORY_POINTS_MAX = 999.99;
 /** `numeric(5,2)`'s scale. Beyond it Postgres rounds silently, which is why it is refused here. */
 export const STORY_POINTS_DECIMALS = 2;
 
+/**
+ * The largest value an `int32` holds, and so the ceiling on both estimates —
+ * `format: int32` in the contract, `int32` in the proto, `integer` in the
+ * column. Above it the gateway cannot bind the body into the DTO's `Integer`,
+ * so the answer is a binding failure before any validator, not a refusal.
+ */
+export const ESTIMATE_MINUTES_MAX = 2_147_483_647;
+
 export const STORY_POINTS_NUMBER_MESSAGE = "Story points must be a number";
 export const STORY_POINTS_RANGE_MESSAGE = `Story points must be between 0 and ${STORY_POINTS_MAX}`;
 export const STORY_POINTS_PRECISION_MESSAGE = `Story points are stored to ${STORY_POINTS_DECIMALS} decimal places`;
 export const ESTIMATE_WHOLE_MINUTES_MESSAGE = "An estimate is a whole number of minutes";
-export const ESTIMATE_RANGE_MESSAGE = "An estimate cannot be negative";
+/**
+ * Named for the bound it states rather than `…_RANGE_MESSAGE`, because it is not
+ * a range: it answers for the floor only, and `ESTIMATE_MAX_MESSAGE` answers for
+ * the ceiling. The two are separate sentences because they are separate server
+ * refusals — the floor is the gRPC validator's, the ceiling is the gateway's
+ * body binding — and folding them into one range sentence the way story points
+ * do would hide that, on top of putting a ten-digit number in front of every
+ * reader who merely typed `-5`.
+ */
+export const ESTIMATE_NEGATIVE_MESSAGE = "An estimate cannot be negative";
+export const ESTIMATE_MAX_MESSAGE = `An estimate cannot be more than ${ESTIMATE_MINUTES_MAX} minutes`;
 export const DATE_FORMAT_MESSAGE = "A date must be a real calendar day, written as YYYY-MM-DD";
 export const DATE_ORDER_MESSAGE = "The start date cannot be later than the due date";
 
@@ -198,8 +244,17 @@ export function planningFieldRefusal(
 
   for (const estimate of [input.originalEstimateMinutes, input.remainingEstimateMinutes]) {
     if (estimate === undefined || estimate === null) continue;
+    // Two server layers, in the order the server runs them. The gateway binds
+    // the JSON number into the DTO's `Integer` first, so "not whole" and "will
+    // not fit an int32" are both binding failures and both come before the
+    // negative check, which is the gRPC validator's. `Number.isInteger` alone
+    // would let 2_147_483_648 through — it is whole and it is not negative, and
+    // the mock would then store and display a value REST could never send.
     if (!Number.isInteger(estimate)) return refuse(ESTIMATE_WHOLE_MINUTES_MESSAGE);
-    if (estimate < 0) return refuse(ESTIMATE_RANGE_MESSAGE);
+    if (estimate > ESTIMATE_MINUTES_MAX) return refuse(ESTIMATE_MAX_MESSAGE);
+    // No `< -2_147_483_648` to match: everything below the int32 floor is
+    // negative, and the line below already refuses it for the truer reason.
+    if (estimate < 0) return refuse(ESTIMATE_NEGATIVE_MESSAGE);
   }
 
   // Last, because it is last on the server too: the gRPC validators run first
