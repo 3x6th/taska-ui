@@ -789,6 +789,13 @@ the next session in this image exactly as it bit this one.
   other use of it honest, so this is the one straggler, and it is one word.
   (`TaskaApi.ts:62`, `:542` and `:561` also say "measured" and are correct:
   those are live probes against the deployed gateway.)
+- **`RestTaskaApi.ts:438`'s comment carries the same staleness TAS-191 corrected
+  in the documents** (`release-reviewer`, TAS-191): it justifies the per-issue
+  hydration by saying the list DTO omits fields the board needs, and on the
+  vendored contract `ListIssuesResponseDto.items` is now `IssueResponseDto`,
+  which carries them. The hydration should stay until the deployed gateway is
+  measured — it is the comment's reason that is stale, not its conclusion.
+  Belongs to whoever takes that measurement.
 - **A no-op update bumps `version` and `updatedAt` in the mock and not on the
   server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
   early without saving when the computed payload is empty; the mock always

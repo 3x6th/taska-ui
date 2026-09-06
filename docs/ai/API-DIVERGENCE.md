@@ -372,10 +372,17 @@ Same rule as above: "Closed by" is settled, the rest is live.
 ### The issue list DTO cannot render a board
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/issues`
-- **Contract:** `IssueShortResponseDto` carries only `id`, `issueKey`,
-  `summary`, `issueType`, `priority`, `assigneeId` — no `status`, no dates, no
-  description. A kanban board cannot place a card in a column without
-  `status`.
+- **Contract:** *this bullet is out of date and the compensation now stands on
+  runtime grounds rather than contract ones.* When it was written,
+  `ListIssuesResponseDto.items` was `IssueShortResponseDto` — `id`, `issueKey`,
+  `summary`, `issueType`, `priority`, `assigneeId`, with no `status`, no dates
+  and no description — and a kanban board cannot place a card in a column
+  without `status`. On the vendored contract today (`develop 8b8b3c5`) that
+  `$ref` is **`IssueResponseDto`**, which carries `status`, `description` and
+  `createdAt`; `IssueShortResponseDto` survives only under
+  `SearchIssuesResponseDto`. So the contract no longer mandates the hydration.
+  What keeps it is that nobody has yet asked the deployed gateway whether it
+  agrees with its own contract — see the Removal note below.
 - **Compensation:** `RestTaskaApi.listIssues` follows the list call with
   `GET /issues/{issueId}` per item at concurrency 6; the first rejection fails
   the whole page. 4 projects × 100 issues is 400+ requests on the projects
