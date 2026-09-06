@@ -69,8 +69,16 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * about the *gateway*, in the same family as `isMissingOrForbidden`. It is
  * never true against the mock: `MockApiError` carries no HTTP status, so mock
  * mode cannot reproduce this signature at all and does not try to.
+ *
+ * `undeployedMessage` is **required and has no default**, which is the point of
+ * taking it as a parameter at all. The measured string is pinned once, as
+ * `UNDEPLOYED_ROUTE_MESSAGE` in src/api/TaskaApi.ts, beside the two other
+ * gateway sentences this build branches on; a default here would be a second
+ * copy of it, and two copies of a measurement are two chances to drift — which
+ * is the very thing moving this predicate out of the Users section was meant to
+ * stop. Every caller passes the constant, so the constant is what is matched.
  */
-export function isUndeployedRoute(error: unknown, undeployedMessage = "No static resource"): boolean {
+export function isUndeployedRoute(error: unknown, undeployedMessage: string): boolean {
   const { status, message } = apiErrorFacts(error);
   return status === 404 && message !== null && message.includes(undeployedMessage);
 }

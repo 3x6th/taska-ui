@@ -1654,9 +1654,14 @@ export class MockTaskaStore {
   }
 
   /**
-   * Leg 1. Refuses exactly what `S3StorageClient.validateFileParams` refuses,
-   * in the server's own words, and then mints a presigned-shaped URL on
-   * `storage.public-url`'s only checked-in value.
+   * Leg 1. Checks the upload role, refuses exactly what
+   * `S3StorageClient.validateFileParams` refuses, in the server's own words,
+   * and then mints a presigned-shaped URL on `storage.public-url`'s only
+   * checked-in value.
+   *
+   * The role goes first because it goes first on the server:
+   * `createUploadUrl` is `checkUserHasRoleForIssue(...).then(createPresignedUploadUrl(...))`,
+   * so a VIEWER is refused before the file is ever looked at.
    *
    * The URL is built to look like what the deployed stand would hand back —
    * host, bucket, a UUID key and the AWS SigV4 query parameters, including
@@ -1672,6 +1677,7 @@ export class MockTaskaStore {
     input: CreateAttachmentUploadUrlInput,
   ): AttachmentUploadTicket {
     const issue = this.findIssue(projectId, issueId);
+    this.requireUploadRole(projectId);
     const refusal = attachmentRefusal(input);
     if (refusal) {
       // Two codes, split the way the server splits them: an unusable type or a
@@ -1753,8 +1759,11 @@ export class MockTaskaStore {
   }
 
   /**
-   * Leg 3, in the server's own order: the object has to exist, it is
-   * re-measured against the ceiling, and only then is a row written.
+   * Leg 3, in the server's own order: the caller has to hold the upload role,
+   * the object has to exist, it is re-measured against the ceiling, and only
+   * then is a row written. `confirmUpload` re-checks the role rather than
+   * trusting leg 1 to have done it — a presigned URL is a bearer token for the
+   * bucket and says nothing about who may add a row — and so does this.
    *
    * The insert is **unconditional**, exactly like
    * `AttachmentTransactionExecutor.saveAttachment` against a table with no
@@ -1769,6 +1778,7 @@ export class MockTaskaStore {
     input: ConfirmAttachmentUploadInput,
   ): IssueAttachment {
     const issue = this.findIssue(projectId, issueId);
+    this.requireUploadRole(projectId);
     const ticket = [...this.uploadTickets.values()].find((item) => item.objectKey === input.objectKey);
     if (ticket?.behaviour === "confirmFails") {
       // The object is in the bucket and stays there: nothing sweeps it, and the
@@ -1831,22 +1841,53 @@ export class MockTaskaStore {
   }
 
   /**
-   * Soft delete, and the **only** place this mock enforces a project role.
+   * Soft delete: the split role rule the panel's per-row control is drawn from,
+   * and a lookup that refuses nothing.
    *
-   * The rest of this store is deliberately permissive — links, labels and
-   * comments all write without asking who is calling — and this one is not,
-   * because the rule it enforces is the rule that decides how the panel is
-   * *drawn*. `AttachmentServiceImpl.deleteAttachment` picks its allowed set by
-   * comparing `uploadedBy` with the caller: `delete-own-attachment-roles`
-   * (ADMIN, MEMBER) for your own file and `delete-attachment-roles` (ADMIN) for
-   * anybody else's. A per-row control is only correct if the row it is drawn on
-   * would actually accept it, and a mock that accepted everything could not
-   * tell a correct gate from a missing one.
+   * `AttachmentServiceImpl.deleteAttachment` picks its allowed set by comparing
+   * `uploadedBy` with the caller: `delete-own-attachment-roles` (ADMIN, MEMBER)
+   * for your own file and `delete-attachment-roles` (ADMIN) for anybody else's.
+   * A per-row control is only correct if the row it is drawn on would actually
+   * accept it, and a mock that accepted everything could not tell a correct gate
+   * from a missing one.
+   *
+   * **The lookup is lenient, and this method is the only place in the store
+   * that is.** The server opens on `findByIdAndDeletedAtIsNull` with **no**
+   * `switchIfEmpty`, so an attachment that is missing or already soft-deleted
+   * skips both `flatMap`s — the role check included — and
+   * `GrpcAttachmentService` closes with `.thenReturn(Empty)`, which the gateway
+   * renders as 204. The contract documents a 404 there; the implementation does
+   * not, and this reproduces the implementation. Reproduce **and** flag: the
+   * entry in docs/ai/API-DIVERGENCE.md is the other half of this decision.
+   *
+   * The behaviour decided it rather than the doctrine. Against a stale list —
+   * a second tab, or somebody else's delete — the server answers 204 and the
+   * row correctly stays gone, while a mock answering 404 would roll the
+   * optimistic removal back and make a file that *is* deleted reappear under an
+   * error message. That is the worse of the two behaviours, not merely a
+   * different one.
+   *
+   * **The leniency stops here, deliberately.** `getAttachmentDownloadUrl`
+   * resolves through `findAttachment`, which mirrors the server's private
+   * `findActiveAttachment` — and that one *does* carry
+   * `switchIfEmpty(NOT_FOUND)`. So the download route genuinely 404s on a
+   * deleted attachment, the mock is already right there, and pushing this
+   * leniency down into `findAttachment` would break it.
    *
    * The object in the bucket is untouched, like the server's.
    */
   deleteAttachment(projectId: string, issueId: string, attachmentId: string): void {
-    const attachment = this.findAttachment(projectId, issueId, attachmentId);
+    // Resolved by hand rather than through `findAttachment`, because every way
+    // this can come up empty — no such issue, no such attachment, deleted
+    // already — is a 204 on the server and none of them reaches the role check.
+    const issue = this.issues.find(
+      (item) => item.projectId === projectId && item.id === issueId && item.deletedAt === null,
+    );
+    const attachment = this.attachments.find(
+      (item) => item.id === attachmentId && item.issueId === issue?.id && item.deletedAt === null,
+    );
+    if (!attachment) return;
+
     const role = this.getMembership(projectId).role;
     const allowed = attachment.uploadedBy === this.currentUserId ? role === "ADMIN" || role === "MEMBER" : role === "ADMIN";
     if (!allowed) {
@@ -2895,6 +2936,24 @@ export class MockTaskaStore {
       throw new MockApiError("NOT_FOUND", "Attachment not found");
     }
     return attachment;
+  }
+
+  /**
+   * `upload-attachment-roles: ADMIN,MEMBER`, checked on both legs that reach
+   * the gateway — `createUploadUrl` and `confirmUpload` each open with their
+   * own `checkUserHasRoleForIssue` against that same set.
+   *
+   * Nothing in the UI can reach either leg as a VIEWER, because the picker is
+   * hidden. That is exactly why the mock enforces it: a hidden control is a
+   * courtesy and the server is the authority, so the only place this gate can
+   * be proved is the reference implementation — the same argument
+   * `deleteAttachment` is written on.
+   */
+  private requireUploadRole(projectId: string): void {
+    const { role } = this.getMembership(projectId);
+    if (role !== "ADMIN" && role !== "MEMBER") {
+      throw new MockApiError("PERMISSION_DENIED", "You do not have permission to attach files to this issue");
+    }
   }
 
   /**

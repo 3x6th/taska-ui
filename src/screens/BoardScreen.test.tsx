@@ -25,10 +25,15 @@ const {
   seedMembers,
   seedAttachments,
   failAttachmentsRead,
+  holdAttachmentsRead,
   failUpload,
   confirmCalls,
   listedAttachments,
   deletedAttachments,
+  failDelete,
+  holdDelete,
+  releaseDelete,
+  heldDeleteCount,
   seedSearch,
   failSearch,
   seedNotifications,
@@ -114,6 +119,8 @@ const {
       createdAt: string;
     }[];
     attachmentsFailure?: Error;
+    /** The list re-read held open, so a test can read the cache the mutation left rather than the answer that replaced it. */
+    attachmentsHeld: boolean;
     uploadUrlFailure?: Error;
     putFailure?: Error;
     /**
@@ -126,6 +133,15 @@ const {
     confirmCalls: number;
     downloadUrl: string;
     deleted_attachments: string[];
+    /**
+     * A delete that refuses, and one held open. Both are needed to reach the
+     * rollback: without the refusal `onError` never runs, and without the hold
+     * the optimistic window is one tick long and nothing can be asserted inside
+     * it.
+     */
+    deleteFailure?: Error;
+    deleteHeld: boolean;
+    deleteReleases: (() => void)[];
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -148,6 +164,9 @@ const {
     confirmCalls: 0,
     downloadUrl: "https://store.example/taska-attachments/obj?X-Amz-Signature=abc",
     deleted_attachments: [],
+    attachmentsHeld: false,
+    deleteHeld: false,
+    deleteReleases: [],
   };
 
   const api = {
@@ -309,6 +328,10 @@ const {
     // The attachments section's five reachable calls. `putAttachmentBytes`
     // takes a Blob and answers nothing, exactly as the real middle leg does.
     listAttachments: async () => {
+      // A re-read that never lands. `onSettled` invalidates this list after
+      // every delete, so a refetch would put a rolled-back row on screen by
+      // itself — and a test that let it would pass with the rollback deleted.
+      if (state.attachmentsHeld) return new Promise(() => {});
       if (state.attachmentsFailure) throw state.attachmentsFailure;
       return state.attachments.filter((item) => !state.deleted_attachments.includes(item.id));
     },
@@ -346,6 +369,10 @@ const {
     },
     getAttachmentDownloadUrl: async () => ({ downloadUrl: state.downloadUrl, checksum: null }),
     deleteAttachment: async (_projectId: string, _issueId: string, attachmentId: string) => {
+      if (state.deleteHeld) await new Promise<void>((resolve) => state.deleteReleases.push(resolve));
+      // Refused *before* the row is touched: a server that says no has removed
+      // nothing, which is what makes the reappearing row correct.
+      if (state.deleteFailure) throw state.deleteFailure;
       state.deleted_attachments.push(attachmentId);
     },
     listComments: async () => ({ items: [], page: 0, pageSize: 50, totalCount: 0 }),
@@ -386,6 +413,9 @@ const {
     failAttachmentsRead: (error: Error) => {
       state.attachmentsFailure = error;
     },
+    holdAttachmentsRead: (held: boolean) => {
+      state.attachmentsHeld = held;
+    },
     failUpload: (where: "sign" | "put" | "confirm", error: Error, landsAnyway = false) => {
       if (where === "sign") state.uploadUrlFailure = error;
       if (where === "put") state.putFailure = error;
@@ -397,6 +427,17 @@ const {
     confirmCalls: () => state.confirmCalls,
     listedAttachments: () => state.attachments.filter((item) => !state.deleted_attachments.includes(item.id)),
     deletedAttachments: () => state.deleted_attachments,
+    failDelete: (error: Error) => {
+      state.deleteFailure = error;
+    },
+    holdDelete: (held: boolean) => {
+      state.deleteHeld = held;
+    },
+    /** Lands the oldest held delete. */
+    releaseDelete: () => {
+      state.deleteReleases.shift()?.();
+    },
+    heldDeleteCount: () => state.deleteReleases.length,
     holdLabelCreate: (held: boolean) => {
       state.labelCreateHeld = held;
     },
@@ -448,12 +489,16 @@ const {
       state.members = [];
       state.attachments = [];
       state.attachmentsFailure = undefined;
+      state.attachmentsHeld = false;
       state.uploadUrlFailure = undefined;
       state.putFailure = undefined;
       state.confirmFailure = undefined;
       state.confirmLandsAnyway = false;
       state.confirmCalls = 0;
       state.deleted_attachments = [];
+      state.deleteFailure = undefined;
+      state.deleteHeld = false;
+      state.deleteReleases = [];
     },
   };
 });
@@ -1321,7 +1366,7 @@ describe("a label the server has not answered for yet", () => {
 
 
 /**
- * The attachments section (TAS-190). Four things are pinned here and nowhere
+ * The attachments section (TAS-190). Five things are pinned here and nowhere
  * else, because each of them is a sentence the panel says about a fact only the
  * panel can know:
  *
@@ -1331,7 +1376,9 @@ describe("a label the server has not answered for yet", () => {
  *   anybody is told the file was not attached;
  * - the middle leg does not touch Taska, so a failure with no HTTP status is
  *   named as the network-or-CORS problem it is;
- * - delete is drawn per row, on two different rules.
+ * - delete is drawn per row, on two different rules;
+ * - and a delete the server refuses puts the row back and says why, because a
+ *   file the reader believes is gone is worse than an error they can read.
  */
 describe("issue attachments", () => {
   const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
@@ -1531,15 +1578,64 @@ describe("issue attachments", () => {
     vi.unstubAllGlobals();
   });
 
-  it("removes an attachment optimistically and restores it when the server refuses", async () => {
+  it("removes an attachment optimistically", async () => {
     seedAttachments([attachment()]);
+    holdDelete(true);
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
-    fireEvent.click(await panel.findByRole("button", { name: "Delete login-500-trace.txt" }));
+    await panel.findByRole("button", { name: "Download login-500-trace.txt" });
+    fireEvent.click(panel.getByRole("button", { name: "Delete login-500-trace.txt" }));
+    await waitFor(() => expect(heldDeleteCount()).toBe(1));
 
-    await waitFor(() => expect(deletedAttachments()).toEqual(["attachment-seed"]));
+    // Gone while the delete is still in flight. Held on purpose: against a
+    // fake that answers on the next tick, the row would also have disappeared
+    // because the server no longer lists it, and the test could not tell an
+    // optimistic removal from a fast one.
     await waitFor(() => expect(panel.queryByRole("button", { name: "Download login-500-trace.txt" })).toBeNull());
+    expect(deletedAttachments()).toEqual([]);
+
+    releaseDelete();
+    await waitFor(() => expect(deletedAttachments()).toEqual(["attachment-seed"]));
+    expect(panel.queryByRole("button", { name: "Download login-500-trace.txt" })).toBeNull();
+  });
+
+  it("puts the row back and says why when the server refuses the delete", async () => {
+    seedAttachments([attachment()]);
+    // The refusal this can actually meet: `delete-attachment-roles` is ADMIN
+    // and `delete-own-attachment-roles` is ADMIN or MEMBER, so a role that
+    // changed between the list being drawn and the button being pressed is a
+    // 403 on a control that was correctly offered. The server is the authority
+    // either way — hiding the button is a courtesy, not the rule.
+    failDelete(
+      Object.assign(new Error("You do not have permission to delete this attachment"), {
+        status: 403,
+        code: "PERMISSION_DENIED",
+      }),
+    );
+    holdDelete(true);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    await panel.findByRole("button", { name: "Download login-500-trace.txt" });
+
+    // From here the list re-read never answers, so what is on screen below is
+    // the cache the mutation left behind. Without this the `onSettled`
+    // invalidation would restore the row on its own and this test would pass
+    // with `onError`'s rollback deleted — which is exactly what it is for.
+    holdAttachmentsRead(true);
+    fireEvent.click(panel.getByRole("button", { name: "Delete login-500-trace.txt" }));
+    await waitFor(() => expect(heldDeleteCount()).toBe(1));
+    await waitFor(() => expect(panel.queryByRole("button", { name: "Download login-500-trace.txt" })).toBeNull());
+
+    releaseDelete();
+
+    // Back, with the server's own sentence beside it. Both halves matter: a
+    // row that stayed gone would be a file the reader believes was deleted,
+    // and a row that came back silently would be one they think still is.
+    expect(await panel.findByRole("button", { name: "Download login-500-trace.txt" })).toBeVisible();
+    expect(await panel.findByText("You do not have permission to delete this attachment")).toBeVisible();
+    expect(deletedAttachments()).toEqual([]);
   });
 
   it("draws delete on your own row for a MEMBER and on nobody else's", async () => {

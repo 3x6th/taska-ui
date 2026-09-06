@@ -1879,6 +1879,121 @@ describe("MockTaskaApi", () => {
       await expect(api.deleteAttachment(project.id, issue.id, theirs.id)).resolves.toBeUndefined();
     });
 
+    it("answers a delete for an attachment that is not there, and refuses its download", async () => {
+      const issue = await openIssue("TAS-101");
+      const [attachment] = await api.listAttachments(project.id, issue.id);
+      const ghost = "00000000-0000-0000-0000-000000000000";
+
+      // `AttachmentServiceImpl.deleteAttachment` opens on
+      // `findByIdAndDeletedAtIsNull` with **no** `switchIfEmpty`, so an empty
+      // result skips both `flatMap`s and `GrpcAttachmentService` closes with
+      // `.thenReturn(Empty)` — 204, not the 404 the contract documents. The
+      // implementation is reproduced rather than the contract, and the gap is
+      // written down in docs/ai/API-DIVERGENCE.md rather than absorbed here.
+      await expect(api.deleteAttachment(project.id, issue.id, ghost)).resolves.toBeUndefined();
+
+      // The case a stale list actually produces — a second tab, or somebody
+      // else's delete. A 404 here would roll the panel's optimistic removal
+      // back and put a file that *is* deleted back on screen under an error
+      // message, which is worse than the divergence.
+      await api.deleteAttachment(project.id, issue.id, attachment.id);
+      await expect(api.deleteAttachment(project.id, issue.id, attachment.id)).resolves.toBeUndefined();
+
+      // Lenient, not silently repeated: the second call writes no second event.
+      const deletions = (await api.getIssue(project.id, issue.id)).history.filter(
+        (event) => event.eventType === "ATTACHMENT_DELETED",
+      );
+      expect(deletions).toHaveLength(1);
+
+      // And the leniency is one method wide. `getDownloadUrl` goes through the
+      // server's private `findActiveAttachment`, which *does* carry
+      // `switchIfEmpty(NOT_FOUND)`, so both of these are 404s — pinned here
+      // beside the 204s so nobody makes the lookup lenient for everyone.
+      await expect(api.getAttachmentDownloadUrl(project.id, issue.id, attachment.id)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+      await expect(api.getAttachmentDownloadUrl(project.id, issue.id, ghost)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("checks upload-attachment-roles on both legs that reach the gateway", async () => {
+      // `upload-attachment-roles: ADMIN,MEMBER`, checked once by
+      // `createUploadUrl` and again by `confirmUpload` — a presigned URL is a
+      // bearer token for the bucket and says nothing about who may add a row.
+      // Nothing in the UI can reach either leg as a VIEWER, because the picker
+      // is hidden; that is exactly why it is proved here, since a hidden
+      // control is a courtesy and the server stays the authority.
+      //
+      // Mark is a member of the Mobile project and Anna is not, so the two
+      // roles are two sign-ins on one issue — and the project id is read from
+      // his list rather than pasted in as a second copy of a seed literal.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+      const { items } = await api.listIssues(mobile.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === "MOB-5");
+      expect(issue).toBeDefined();
+      if (!issue) return;
+
+      // A MEMBER runs all three legs, so the gate is not one notch too tight.
+      const file = textFile("mark.txt");
+      const ticket = await api.createAttachmentUploadUrl(mobile.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+      await expect(
+        api.confirmAttachmentUpload(mobile.id, issue.id, {
+          objectKey: ticket.objectKey,
+          fileName: file.name,
+          contentType: file.type,
+        }),
+      ).resolves.toMatchObject({ fileName: "mark.txt" });
+
+      // Anna is not a member of MOB at all, so `getMembership` answers VIEWER.
+      await api.login({ email: "anna@example.com", password: "anything" });
+
+      // Reading stays hers: `view-attachment-roles` includes VIEWER.
+      const attachments = await api.listAttachments(mobile.id, issue.id);
+      const seeded = attachments.find((item) => item.fileName === "crash-report.json");
+      expect(seeded).toBeDefined();
+      if (!seeded) return;
+      await expect(api.getAttachmentDownloadUrl(mobile.id, issue.id, seeded.id)).resolves.toMatchObject({
+        downloadUrl: expect.stringContaining("X-Amz-Signature="),
+      });
+
+      await expect(
+        api.createAttachmentUploadUrl(mobile.id, issue.id, {
+          fileName: "notes.txt",
+          contentType: "text/plain",
+          sizeBytes: 10,
+        }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      // Refused before the object is looked for, the way the server refuses it:
+      // `confirmUpload` opens with its own role check, so this never reaches
+      // "Object not found in storage".
+      await expect(
+        api.confirmAttachmentUpload(mobile.id, issue.id, {
+          objectKey: "never-put-here",
+          fileName: "notes.txt",
+          contentType: "text/plain",
+        }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+
+      // Somebody else's file, and this reader is no ADMIN of MOB.
+      await expect(api.deleteAttachment(mobile.id, issue.id, seeded.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      // But an attachment that is not there is refused by nothing at all: the
+      // server's empty lookup skips the role check along with everything else.
+      await expect(
+        api.deleteAttachment(mobile.id, issue.id, "00000000-0000-0000-0000-000000000000"),
+      ).resolves.toBeUndefined();
+    });
+
     it("scopes every read to the project in the path, unlike the gateway", async () => {
       const issue = await openIssue("TAS-101");
       const other = (await api.listProjects()).find((item) => item.id !== project.id);
