@@ -817,6 +817,24 @@ the next session in this image exactly as it bit this one.
   trigger because the confirm-fails path throws before recording one; and a
   successful upload announces nothing — the live region stays empty and only the
   row appears.
+- **`IssueEventType` carries `PRIORITY`, which the backend enum does not have**
+  (`api-contract-guard`, TAS-190). A priority change is `UPDATED` on the server.
+  The mock emits `PRIORITY` and `historyText` gives it its own sentence, so that
+  sentence exists only in mock mode. Belongs with the four-missing-members line
+  below — and that line says "nine members", which was true when it was written
+  and is eleven now.
+- **`CreateAttachmentUploadUrlInput`'s comment says the gateway forwards
+  `fileName`** (`api-contract-guard`, TAS-190). It does not:
+  `GrpcIssueAttachmentServiceClient.createAttachmentUploadUrl` builds the body
+  from `contentType`, `sizeBytes`, `actorUserId` and `issueId`, and the field
+  dies at the gRPC boundary. The comment's conclusion — that it decides nothing
+  at leg one — is unaffected, only its reason.
+- **Every attachment failure surface drops the request id**
+  (`api-contract-guard`, TAS-190): the read error and the notice both print the
+  message alone, where `ApiNotice` and `AdminError` render `RequestId`. Matches
+  the comments, links and labels sections beside it, so it is panel-wide and
+  pre-existing rather than this story's — and it is the half of the toast gap
+  already recorded above that is actually cheap to close.
 - **Four issue history event types the backend already emits fall into
   `historyText`'s catch-all** (`frontend-builder`, TAS-190). Our
   `IssueEventType` is nine members; the backend enum is fourteen.

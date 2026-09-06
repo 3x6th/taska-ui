@@ -2370,8 +2370,35 @@ pair diverges: the mock answers NOT_FOUND, the gateway answers 200. Exactly the
 shape already recorded for `getIssue`, and pinned by a test rather than left to
 be rediscovered.
 
-**The UI instead:** nothing — no screen constructs such a pair. **Removed by:**
-nothing; it is the mock resolving within a project and the gateway not caring.
+**`DELETE` is the exception, and in the more dangerous direction.** Because the
+mock's delete resolves leniently (see the entry above), a mismatched pair there
+is a silent 204 no-op rather than a NOT_FOUND — while the gateway, which ignores
+the path segment entirely, performs a real delete. So on that one route the mock
+does *less* than the server rather than more.
+
+**Two more places the mock is looser than the gateway, both on reads.**
+`ProjectRoleChecker.validateAccess` refuses a non-member with
+`PERMISSION_DENIED "Access denied"` **before** it maps a role or consults
+`allowedRoles` at all — so `listAttachments` and `getAttachmentDownloadUrl`
+answer **403** to a non-member no matter that `view-attachment-roles` contains
+`VIEWER`. The mock membership-checks neither, following the same convention
+`getIssueById` already documents for project-scoped reads. And no seeded member
+holds `VIEWER` at all — the seed assigns `ADMIN` to the first member and
+`MEMBER` to the rest — so the upload gate is exercised against a *non-member
+standing in for* a VIEWER rather than against the role it names.
+
+**Attachment list order is the mock's invention.**
+`IssueAttachmentRepository.findAllByIssueIdAndDeletedAtIsNull` is a derived query
+with no `ORDER BY` and the contract promises nothing, so the gateway's order is
+physical-row order and can change under a `VACUUM`. The mock sorts by
+`createdAt` ascending. Same shape as the unmeasured search ordering recorded
+above.
+
+**The UI instead:** nothing — no screen constructs a mismatched pair, and a
+non-member never reaches the board at all, because the project read refuses
+first and lands them on the not-found screen. **Removed by:** nothing for the
+path segment; the read gaps by the mock membership-checking these two routes,
+which would cost the read-only seed the section currently demonstrates.
 
 ### `listAttachments` mints a presigned download URL per row and the gateway throws it away
 
