@@ -253,6 +253,32 @@ separately:
 - Left for the second half: the planning block on the issue panel, editing, the
   create form, and two test fixtures that omit the five behind a cast.
 
+### TAS-191 — the board route, and the criterion this story declines to meet
+
+Mirrored here **because** it declines one, not despite it: the section exists so
+a reviewer without Jira can audit, and a story that did not meet its own
+criteria is the one that most needs the record.
+
+- The criterion was "the method exists in all three implementations and they are
+  interchangeable". Not met, deliberately. Four independent reasons, each
+  sufficient: the route's gRPC method is declared and unimplemented, so it
+  answers `501` (the implementation is on backend PR #142, open and
+  `CONFLICTING`); `BoardIssueDto` carries six of the nine fields the card draws,
+  and drag-and-drop needs `status` and `issueType` as values rather than as a
+  column position; `BoardServiceImpl` fails the whole board with a 500 on a
+  `statusKey` the workflow lacks, where today an unknown status silently places
+  no card; and `CHANGES_REQUESTED` stands on the access-control gap, so the fix
+  adds 403 and 404 cases the contract does not have.
+- The authority order settles it. The contract outranks the story, and a
+  criterion written when the route looked usable does not survive the route not
+  being usable. Writing the method anyway would put a `getBoard` on the
+  interface that a later contributor could wire the board onto — turning a
+  silent per-card degradation into a whole-board 500 while dropping six fields.
+- What shipped instead: the analysis, three document corrections, and four
+  findings on TAS-125, three of which its reviewers had not raised.
+- The story stays open with the blocking condition named, and
+  `npm run contract:pins` goes loud when PR #118 moves or merges.
+
 ### TAS-187 — the voltagent packs, off for this repository
 
 - `.claude/settings.json` is new and tracked: `enabledPlugins: false` for

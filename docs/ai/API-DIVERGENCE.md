@@ -369,7 +369,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
   default mode (after [TAS-137](https://jira.ozero.dev/browse/TAS-137)) and the
   e2e suite can run against a gateway that rejects tokens.
 
-### The issue list DTO cannot render a board
+### The board hydration outlived its contract reason
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/issues`
 - **Contract:** *this bullet is out of date and the compensation now stands on
@@ -388,6 +388,10 @@ Same rule as above: "Closed by" is settled, the rest is live.
   the whole page. 4 projects × 100 issues is 400+ requests on the projects
   screen, and this is the multiplier that turns TAS-139 into a board-wide
   failure.
+
+  The heading used to read "The issue list DTO cannot render a board" — the
+  premise this entry now disowns. Renamed under TAS-191, so the most quotable
+  string in it is not the half that stopped being true.
 - **Removal:** ~~[TAS-124](https://jira.ozero.dev/browse/TAS-124) /
   [TAS-125](https://jira.ozero.dev/browse/TAS-125) (Board API)~~ — **that promise
   was wrong and is withdrawn (TAS-191, 2026-09-06).** The board API does not
@@ -395,7 +399,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
   storyPoints, an assignee id and name, and label *names*; the card also draws
   issueType, priority, description and createdAt, and drag-and-drop needs
   `status` and `issueType` as values rather than as a column position. The
-  hydration exists because the list DTO has no `status`, no `description` and no
+  hydration existed because the list DTO had no `status`, no `description` and no
   `createdAt`, and the board DTO is missing two of those three as well — so the
   detail read would still be needed, for the panel and for the lower half of the
   card. Dropped from TAS-141 as a duplicate at the 2026-08-04 dedup pass.

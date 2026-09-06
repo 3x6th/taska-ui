@@ -795,7 +795,9 @@ the next session in this image exactly as it bit this one.
   vendored contract `ListIssuesResponseDto.items` is now `IssueResponseDto`,
   which carries them. The hydration should stay until the deployed gateway is
   measured — it is the comment's reason that is stale, not its conclusion.
-  Belongs to whoever takes that measurement.
+  Belongs to whoever takes that measurement, which is the same one the
+  2026-09-05 refresh entry files under `ListIssuesResponseDto.items` — one
+  request answers both.
 - **A no-op update bumps `version` and `updatedAt` in the mock and not on the
   server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
   early without saving when the computed payload is empty; the mock always
@@ -1331,10 +1333,14 @@ is what recurs.
 - [TAS-141](https://jira.ozero.dev/browse/TAS-141) — contract gaps: read-all,
   nullable assignee, comment ordering, CORS-exposed `X-Request-Id`,
   404-on-empty-projects bug. (The board-capable list DTO was dropped from it
-  as a duplicate of TAS-124/125.)
-- [TAS-124](https://jira.ozero.dev/browse/TAS-124) /
+  as a duplicate of TAS-124/125 — which turned out not to cover it either;
+  see the struck line below.)
+- ~~[TAS-124](https://jira.ozero.dev/browse/TAS-124) /
   [TAS-125](https://jira.ozero.dev/browse/TAS-125) — Board API; removes the
-  N+1 hydration.
+  N+1 hydration.~~ **Withdrawn (TAS-191)** — it does not remove it. See
+  `API-DIVERGENCE.md`, "The board hydration outlived its contract reason".
+  The third place this promise was written and the last to be struck; the
+  other two are that entry and `JIRA-WORKFLOW.md`'s dependency table.
 - [TAS-145](https://jira.ozero.dev/browse/TAS-145) — `PATCH /projects/{id}`;
   `UpdateProject` does not exist and `taska.projects` has no `description`
   column, so the field the create form shows has nowhere to land yet. The
