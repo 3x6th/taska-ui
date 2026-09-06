@@ -841,18 +841,18 @@ the next session in this image exactly as it bit this one.
   `"File size must be positive, got: N"` is unreachable. Message-only, and the
   panel writes its own sentence anyway — but the comment claims a provenance it
   does not have, which is the class this story spent a round correcting.
-- **`.form-error` measures 3.17:1 in light, and every caller but one still uses
-  it** (`art-director` + `frontend-builder`, TAS-190). §7 wants 4.5:1 for
-  secondary text and reserves 3:1 for non-critical meta; a form refusal is not
-  that. The rule was drawn for a one-line validation string and now carries
-  prose. TAS-190 gave the attachments section its own notice box per §5.6 —
-  `--surface` ground, `--border`, `--danger` only in the stripe, measured 17.88:1
-  light and 15.73:1 dark — and scoped the fix there, because login, the
-  create-issue modal, and the links and labels sections in the *same slide-over*
-  belong to other stories. The cost of that scoping is real and worth naming: the
-  issue panel is now visibly inconsistent between its three sections. The fix is
-  to make the new notice the product's error box and retire the borrow, in one
-  pass with the gaps re-measured.
+- ~~**`.form-error` measures 3.17:1 in light, and every caller but one still
+  uses it.**~~ Graduated to
+  [TAS-192](https://jira.ozero.dev/browse/TAS-192) on 2026-09-06, on
+  `art-director`'s recommendation that it should not wait: it is a §7 contrast
+  failure in **ten** callers — eight in `BoardScreen`, plus login and projects,
+  and **five of the ten inside the issue panel alone** — which survives entirely
+  on its own and disappears with no mock or compensation, which is this
+  repository's test for a story over a line here. TAS-190 gave the attachments
+  section the §5.6 recipe and measured it at 17.88:1 light and 15.73:1 dark, so
+  the follow-up is mostly deletion. The reason not to wait is that two recipes
+  now coexist in one panel, and the longer they do the likelier the next feature
+  copies the wrong one.
 - **`RestTaskaApi` and the mock disagree on the code for an over-size file**
   (`frontend-builder`, TAS-190): `refuseAttachment` throws `INVALID_ARGUMENT`
   for all three arms while the mock throws `OUT_OF_RANGE` for the ceiling. Both

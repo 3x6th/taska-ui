@@ -212,6 +212,35 @@ Credentials for any of these are covered by *Safety* at the end of this file.
 - Every server call goes through the `TaskaApi` interface in `src/api/`. The
   three implementations — mock, rest, hybrid — must stay behaviourally
   interchangeable.
+
+  **When a divergence between them may wait, and when it may not** (the rule
+  `api-contract-guard` set on TAS-190, after this series had treated the
+  question three different ways): a divergence goes to `BACKLOG.md` when it is a
+  *documented compensation* — both implementations are right about the server
+  and differ because the server does not offer something, or because the
+  contract leaves the point free. It must be fixed **in the story that creates
+  it** when it is a *wrong claim about the server*: when a reader of either
+  implementation would come away believing something false about the gateway.
+
+  Reachability is not the test. The harm is not to today's user — it is to the
+  next reader, and code the UI cannot reach is exactly the code nobody
+  re-derives and everybody copies. `API-DIVERGENCE.md` is built on top of these
+  comments, so a false entry in that record is not a style preference and does
+  not age into one.
+
+- **A leg that is not a gateway request may live on `TaskaApi` only if its
+  failures cannot be mistaken for a gateway's.** TAS-190 put a cross-origin PUT
+  to an object store on the interface, because the seam that swaps mock for rest
+  has to sit at the same level as the thing it stands in for — otherwise the
+  end-to-end suite has no structural guarantee that it makes no real network
+  call. The cost is that the interface's implicit invariant, *every method is a
+  gateway route*, stops being true, and with it three properties callers infer:
+  token attached, `ApiError` on failure, request id recoverable.
+
+  The condition that makes it safe is testable, so state it as one: such a
+  method carries its own error type that the gateway-error predicates in
+  `src/api/errors.ts` provably do not match. Then a caller who treats it like
+  its neighbours fails loudly instead of misclassifying quietly.
 - Mutations are optimistic with rollback on failure. A spinner is only for the
   case where there is genuinely nothing to show.
 - Role gating (`ADMIN` / `MEMBER` / `VIEWER`) hides UI, and the server remains
