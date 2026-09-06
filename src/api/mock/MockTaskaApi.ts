@@ -1711,7 +1711,11 @@ export class MockTaskaStore {
     if (refusal) {
       // Two codes, split the way the server splits them: an unusable type or a
       // non-positive size is INVALID_ARGUMENT, and only the ceiling is
-      // OUT_OF_RANGE. Both are 400 over REST.
+      // OUT_OF_RANGE. They do not share an HTTP status either — the ceiling is
+      // a 500, because `RestErrorMapper` has no `OUT_OF_RANGE` row and falls to
+      // its INTERNAL_SERVER_ERROR default. `MockApiError` carries no status, so
+      // the code is the whole of what this side can express; `refuseAttachment`
+      // in RestTaskaApi.ts carries the status and states the chain.
       const code = attachmentRefusalKind(input) === "size" ? "OUT_OF_RANGE" : "INVALID_ARGUMENT";
       throw new MockApiError(code, refusal);
     }

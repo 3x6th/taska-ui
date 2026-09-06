@@ -466,8 +466,13 @@ export interface TaskaApi {
    * Refused before the request, identically by every implementation, by
    * `attachmentRefusal` in src/api/attachments.ts: a type outside the
    * thirteen-entry allowlist, an empty file, or one over 2 MB. Not politeness —
-   * the server answers `400` for exactly these, so a mock that accepted them
-   * would hide the failure from the e2e suite.
+   * the server refuses all three, so a mock that accepted them would hide the
+   * failure from the e2e suite.
+   *
+   * The three refusals do not share an answer: the first two are `400`
+   * `INVALID_ARGUMENT`, and the ceiling is `OUT_OF_RANGE` on **500**, because
+   * the gateway's `RestErrorMapper` has no `OUT_OF_RANGE` row. `refuseAttachment`
+   * in src/api/rest/RestTaskaApi.ts traces the whole chain and reproduces it.
    */
   createAttachmentUploadUrl(
     projectId: string,

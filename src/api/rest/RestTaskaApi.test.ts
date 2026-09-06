@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
-import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError } from "../attachments";
+import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError, attachmentSizeRefusalMessage } from "../attachments";
 import { isMissingOrForbidden, isUndeployedRoute } from "../errors";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
@@ -1850,20 +1850,39 @@ describe("RestTaskaApi attachments", () => {
     expect(ticket).toEqual({ uploadUrl: "https://store.example/obj?sig=1", objectKey: "obj" });
   });
 
-  it("refuses a bad file before any request, in the server's own words", async () => {
+  it("refuses a bad file before any request, with the code and status the gateway would answer", async () => {
     const fetchStub = vi.fn(async () => answer(200, {}));
     vi.stubGlobal("fetch", fetchStub);
     const api = new RestTaskaApi();
 
     await expect(
       api.createAttachmentUploadUrl(PROJECT, ISSUE, { fileName: "a.zip", contentType: "application/x-zip-compressed", sizeBytes: 10 }),
-    ).rejects.toMatchObject({ status: 400, message: "Content type not allowed: application/x-zip-compressed" });
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: "Content type not allowed: application/x-zip-compressed",
+    });
+    await expect(
+      api.createAttachmentUploadUrl(PROJECT, ISSUE, { fileName: "a.txt", contentType: "text/plain", sizeBytes: 0 }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400 });
+
+    // The odd one, and pinned as a fact about the deployed gateway rather than
+    // as a preference: `RestErrorMapper` has no `OUT_OF_RANGE` row, so a file
+    // one byte too large falls through its INTERNAL_SERVER_ERROR default. An
+    // earlier version of this test asserted 400 and was pinning a comment that
+    // had read the mapping table in `DomainStatus`'s javadoc — which the
+    // gateway does not consult — instead of the mapper it runs.
     await expect(
       api.createAttachmentUploadUrl(PROJECT, ISSUE, { fileName: "a.txt", contentType: "text/plain", sizeBytes: ATTACHMENT_MAX_SIZE_BYTES + 1 }),
-    ).rejects.toMatchObject({ status: 400 });
+    ).rejects.toMatchObject({
+      code: "OUT_OF_RANGE",
+      status: 500,
+      message: attachmentSizeRefusalMessage(ATTACHMENT_MAX_SIZE_BYTES + 1),
+    });
 
-    // Nothing went out. The refusal is the same one the mock gives, so the two
-    // modes cannot disagree about which files are uploadable.
+    // Nothing went out, and the codes are the ones MockTaskaApi throws for the
+    // same three files, so the two modes cannot disagree about which files are
+    // uploadable or about what refused them.
     expect(fetchStub).not.toHaveBeenCalled();
   });
 

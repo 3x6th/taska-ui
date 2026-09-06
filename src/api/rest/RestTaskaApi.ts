@@ -28,6 +28,7 @@ import {
   ATTACHMENT_STORE_UNREACHABLE_CODE,
   AttachmentStoreError,
   attachmentRefusal,
+  attachmentRefusalKind,
   requireUsableUploadUrl,
 } from "../attachments";
 import type { PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
@@ -1480,22 +1481,57 @@ function refusePlanningFields(input: PlanningFieldsInput, stored: StoredPlanning
 
 /**
  * The file refusals from src/api/attachments.ts, thrown as the gateway's own
- * answer so a file stopped here is indistinguishable from one stopped there.
+ * answer so a file stopped here is indistinguishable from one stopped there —
+ * which is why the over-size arm synthesises a **500** where its two siblings
+ * get a 400. That is not a typo, and the three arms genuinely do not share an
+ * answer. Read off backend PR #147's head `f53dca38`:
  *
- * `INVALID_ARGUMENT` on `400` for all three, which flattens one distinction the
- * server makes and does not act on: over-size is `DomainStatus.OUT_OF_RANGE`
- * below, and `DomainStatus`'s own mapping table sends `OUT_OF_RANGE` to **400**
- * as well, with the gRPC code's name in the body. So the status is right, the
- * message is the server's word for word, and only the `code` string differs on
- * a request that never left. Nothing in the UI branches on it — the sentence is
- * what is shown — and inventing an `OUT_OF_RANGE` here would claim a
- * `Status.Code` this client never received.
+ * - **disallowed type** — reaches `S3StorageClient.validateFileParams`, which
+ *   raises `DomainStatus.INVALID_ARGUMENT`. `RestErrorMapper` maps that to
+ *   **400** and `GatewayErrorHandler` writes the gRPC code's own name into
+ *   `code`, so `INVALID_ARGUMENT` on 400.
+ * - **empty file** — never reaches `validateFileParams` at all. `sizeBytes`
+ *   carries `minimum: 1` in the contract and the gateway generates its
+ *   interfaces with `useValidation`, so `@Min(1)` fails first and
+ *   `GatewayValidationExceptionHandler` answers **400** `INVALID_ARGUMENT`.
+ *   Same code, same status; only the *message* differs, because that handler
+ *   sends its fixed `"Invalid request parameters"` rather than
+ *   `validateFileParams`'s sentence. This throws the sentence, which is the one
+ *   part of the gateway's answer it does not reproduce — nobody reads it: the
+ *   panel refuses an empty file in its own words before this is reached.
+ * - **over-size** — the request DTO states no `maximum` and the value is
+ *   positive, so both earlier guards pass and `validateFileParams` raises
+ *   `DomainStatus.OUT_OF_RANGE`. `GrpcExceptionMapper` has an explicit
+ *   `case OUT_OF_RANGE -> Status.OUT_OF_RANGE`, so `code` is `"OUT_OF_RANGE"` —
+ *   and `RestErrorMapper.mapGrpcCodeToHttpStatus` **has no `OUT_OF_RANGE`
+ *   case**, so the status falls through its `default ->
+ *   INTERNAL_SERVER_ERROR`. A file one byte too large is a **500**.
+ *
+ * An earlier version of this comment cited the mapping table in `common-lib`'s
+ * `DomainStatus` javadoc, which sends `OUT_OF_RANGE` to 400, and concluded the
+ * flattened 400 was therefore right. That table is documentation of intent in a
+ * library the gateway does not consult; what the gateway executes is
+ * `RestErrorMapper`, and it does not implement that row. Reproducing an answer
+ * means reproducing the one that is served.
+ *
+ * Synthesising a 500 costs nothing here, and that was checked rather than
+ * assumed: no reader in the attachment path branches on `status` — the panel
+ * takes `apiErrorFacts(error).message` and prints it — and the only
+ * `status >= 500` readers in this build are `userWriteFailure`
+ * (src/screens/admin/users.ts) and `AdminError` (src/screens/admin/), neither
+ * of which any attachment failure reaches. `HybridTaskaApi` forwards this leg to `live` untouched.
+ *
+ * Recorded in docs/ai/API-DIVERGENCE.md, and it disappears when the backend
+ * adds the missing row — or a `maximum` to `sizeBytes`, which would move the
+ * ceiling into bean validation and make it a 400 like its siblings.
  */
 function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
   const refusal = attachmentRefusal(input);
-  if (refusal) {
-    throw new ApiError(refusal, "INVALID_ARGUMENT", 400);
-  }
+  if (!refusal) return;
+  // Split exactly as `MockTaskaApi.createAttachmentUploadUrl` splits it, so the
+  // two implementations answer the same file with the same code.
+  const overSize = attachmentRefusalKind(input) === "size";
+  throw new ApiError(refusal, overSize ? "OUT_OF_RANGE" : "INVALID_ARGUMENT", overSize ? 500 : 400);
 }
 
 /**
