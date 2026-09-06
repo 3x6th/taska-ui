@@ -32,7 +32,9 @@ import {
   ATTACHMENT_STORE_UNREACHABLE_CODE,
   AttachmentStoreError,
   attachmentRefusal,
+  attachmentRefusalKind,
   attachmentSizeRefusalMessage,
+  requireUsableUploadUrl,
 } from "../attachments";
 import type { PlanningFields, PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
 import { emptyPlanningFields, planningFieldRefusal, resolvePlanningFields } from "../planningFields";
@@ -718,6 +720,15 @@ export class MockTaskaStore {
       ]),
     ];
 
+    // ADMIN for the first member of each project and MEMBER for the rest, which
+    // means **no seeded member is a VIEWER anywhere**. `getMembership` answers
+    // `VIEWER` for a non-member instead (`member?.role ?? "VIEWER"`), so every
+    // VIEWER path in this store is exercised by a non-member standing in for
+    // one. Against the gateway those are two different answers — a non-member
+    // is refused by `ProjectRoleChecker` on `!isMember` before any role is
+    // looked at — and the mock is the looser of the two on the read routes.
+    // Recorded in docs/ai/API-DIVERGENCE.md; adding the membership check here
+    // would cost the read-only seed the attachments section demonstrates.
     this.membersByProject = Object.fromEntries(
       this.projects.map((project) => [
         project.id,
@@ -1654,14 +1665,34 @@ export class MockTaskaStore {
   }
 
   /**
-   * Leg 1. Checks the upload role, refuses exactly what
-   * `S3StorageClient.validateFileParams` refuses, in the server's own words,
-   * and then mints a presigned-shaped URL on `storage.public-url`'s only
-   * checked-in value.
+   * Leg 1. Refuses exactly what `S3StorageClient.validateFileParams` refuses,
+   * in the server's own words, then checks the upload role, then mints a
+   * presigned-shaped URL on `storage.public-url`'s only checked-in value.
    *
-   * The role goes first because it goes first on the server:
-   * `createUploadUrl` is `checkUserHasRoleForIssue(...).then(createPresignedUploadUrl(...))`,
-   * so a VIEWER is refused before the file is ever looked at.
+   * **The file is judged before the role, and that is the server's order even
+   * though the source reads the other way round.** `createUploadUrl` is
+   * `checkUserHasRoleForIssue(...).then(storageClient.createPresignedUploadUrl(...))`,
+   * and `Mono.then(Mono other)` evaluates its argument **at assembly** — while
+   * the chain is still being built, before anything subscribes. `S3StorageClient`
+   * calls `validateFileParams` synchronously at the top of
+   * `createPresignedUploadUrl`, before it returns a `Mono` at all, so the
+   * `DomainException` escapes into the enclosing `flatMap` in
+   * `GrpcAttachmentService` and becomes the answer; the role check never
+   * subscribes. Verified against backend `f53dca38`.
+   *
+   * So leg 1's real order is: field validation (the `Mono.zip` of
+   * `GrpcRequestValidators` — 400), then the file (400), then the issue
+   * (404, `findActiveIssueProjectId`), then the role (403,
+   * `ProjectRoleChecker`). `RestTaskaApi.createAttachmentUploadUrl` already
+   * refuses the file before it sends anything, so this ordering is what keeps
+   * the two answering the same code to the same input rather than `rest`
+   * saying `INVALID_ARGUMENT` where `mock` said `PERMISSION_DENIED`.
+   *
+   * **Leg 3 is genuinely the other way round** and `confirmAttachmentUpload`
+   * below is right to check the role first: `confirmUpload` passes no
+   * synchronously-validated argument to `.then`, so its role check does run
+   * first. The two legs differ, and reading one off the other is the mistake
+   * this comment used to make.
    *
    * The URL is built to look like what the deployed stand would hand back —
    * host, bucket, a UUID key and the AWS SigV4 query parameters, including
@@ -1676,16 +1707,16 @@ export class MockTaskaStore {
     issueId: string,
     input: CreateAttachmentUploadUrlInput,
   ): AttachmentUploadTicket {
-    const issue = this.findIssue(projectId, issueId);
-    this.requireUploadRole(projectId);
     const refusal = attachmentRefusal(input);
     if (refusal) {
       // Two codes, split the way the server splits them: an unusable type or a
       // non-positive size is INVALID_ARGUMENT, and only the ceiling is
       // OUT_OF_RANGE. Both are 400 over REST.
-      const code = refusal === attachmentSizeRefusalMessage(input.sizeBytes) ? "OUT_OF_RANGE" : "INVALID_ARGUMENT";
+      const code = attachmentRefusalKind(input) === "size" ? "OUT_OF_RANGE" : "INVALID_ARGUMENT";
       throw new MockApiError(code, refusal);
     }
+    const issue = this.findIssue(projectId, issueId);
+    this.requireUploadRole(projectId);
 
     const objectKey = makeId("object");
     const signedAt = new Date();
@@ -1724,6 +1755,12 @@ export class MockTaskaStore {
    * has to be able to tell.
    */
   putAttachmentBytes(uploadUrl: string, bytes: Uint8Array, contentType: string): void {
+    // Before the lookup, and for the same reason `RestTaskaApi` checks before
+    // its `fetch`: an unusable link is not a store that said no. Without this
+    // the mock would answer 403 to a `""` the REST adapter refuses without
+    // sending, and the two would stop being interchangeable on the one input
+    // a malformed gateway response can actually produce.
+    requireUsableUploadUrl(uploadUrl);
     const ticket = this.uploadTickets.get(uploadUrl);
     if (!ticket) {
       // A URL this store never signed. S3 answers 403 for an unparseable or
@@ -2948,6 +2985,16 @@ export class MockTaskaStore {
    * courtesy and the server is the authority, so the only place this gate can
    * be proved is the reference implementation — the same argument
    * `deleteAttachment` is written on.
+   *
+   * **The sentence below is this mock's, and it is kinder than the gateway's.**
+   * `ProjectRoleChecker.validateAccess` answers two different `PERMISSION_DENIED`
+   * strings and neither of them is this one: `"Access denied"` when the caller
+   * is not a member of the project, and `"Not allowed role"` when they are a
+   * member holding the wrong role. It refuses on `!isMember` **before** it maps
+   * a role or consults `allowedRoles`, so a non-member never reaches the second
+   * sentence. Named here so a future reader does not take this wording for the
+   * server's — the panel prints whatever comes back, and against the gateway
+   * that is one of those two.
    */
   private requireUploadRole(projectId: string): void {
     const { role } = this.getMembership(projectId);

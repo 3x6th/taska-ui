@@ -1889,6 +1889,29 @@ describe("RestTaskaApi attachments", () => {
     expect(init.credentials).toBeUndefined();
   });
 
+  it("sends nothing at all when the upload link is not an absolute http URL", async () => {
+    const fetchStub = vi.fn(async () => answer(200, undefined));
+    vi.stubGlobal("fetch", fetchStub);
+    const api = new RestTaskaApi();
+
+    // `createAttachmentUploadUrl` lands a missing `uploadUrl` as `""`, the way
+    // it lands every absent field — and `fetch("")` does not fail, it resolves
+    // against the document. Unguarded, a malformed gateway response would
+    // therefore PUT the file's bytes to this app's own origin, where
+    // `credentials: "same-origin"` stops being a no-op and attaches its
+    // cookies. A relative path is the same hazard spelled out loud, and a
+    // `javascript:` URL is absolute and still not somewhere to send a file.
+    for (const url of ["", "/api/v1/projects", "javascript:void 0"]) {
+      const error = await api.putAttachmentBytes(url, new Blob(["x"]), "text/plain").catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AttachmentStoreError);
+      expect(error).toMatchObject({ code: "STORAGE_URL_UNUSABLE", storeStatus: null });
+      // Store-shaped, so no `status` for `isMissingOrForbidden` to read: the
+      // gateway did answer, but it did not fail, and nothing was sent.
+      expect((error as { status?: unknown }).status).toBeUndefined();
+    }
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
   it("sends the content type it was given rather than the blob's, so the signature still matches", async () => {
     const fetchStub = vi.fn(async () => answer(200, undefined));
     vi.stubGlobal("fetch", fetchStub);

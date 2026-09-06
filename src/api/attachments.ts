@@ -158,23 +158,50 @@ export interface AttachmentCandidate {
   sizeBytes: number;
 }
 
+/** Which of `validateFileParams`'s three arms a file trips. */
+export type AttachmentRefusalKind = "type" | "empty" | "size";
+
 /**
- * The server's own sentence for why this file cannot be uploaded, or `null` if
- * it can — checked before any request, identically by every implementation, so
- * a bad file is refused in the same words in mock mode and against the gateway.
+ * Why this file cannot be uploaded, or `null` if it can — decided before any
+ * request and identically by every implementation, so the same file is refused
+ * in mock mode and against the gateway.
  *
  * Order matters and follows the server's: type first, then the empty file, then
  * the ceiling. A 3 MB `.docx` is refused for its *type*, which is the fact that
  * will not change if the person shrinks it.
+ *
+ * The **kind** is separate from the sentence because the two audiences are.
+ * `attachmentRefusal` below turns a kind into the server's own words, which is
+ * what the API layer throws so that a mock refusal and a gateway refusal read
+ * alike. The panel takes the kind and writes its own sentence instead: those
+ * two arms never travel over the wire, and a person holding a file is owed its
+ * name and a size they can compare with the limit the picker states, not
+ * `"File size 2097153 bytes exceeds maximum allowed size of 2097152 bytes"`.
+ */
+export function attachmentRefusalKind(candidate: AttachmentCandidate): AttachmentRefusalKind | null {
+  const allowed: readonly string[] = ATTACHMENT_ALLOWED_CONTENT_TYPES;
+  if (!allowed.includes(candidate.contentType)) return "type";
+  if (candidate.sizeBytes <= 0) return "empty";
+  if (candidate.sizeBytes > ATTACHMENT_MAX_SIZE_BYTES) return "size";
+  return null;
+}
+
+/**
+ * The same decision in `S3StorageClient.validateFileParams`'s own words, for
+ * the implementations that stand in for the server. A reader-facing sentence
+ * belongs to the panel, not here.
  */
 export function attachmentRefusal(candidate: AttachmentCandidate): string | null {
-  const allowed: readonly string[] = ATTACHMENT_ALLOWED_CONTENT_TYPES;
-  if (!allowed.includes(candidate.contentType)) {
-    return attachmentTypeRefusalMessage(candidate.contentType || "unknown");
+  switch (attachmentRefusalKind(candidate)) {
+    case "type":
+      return attachmentTypeRefusalMessage(candidate.contentType || "unknown");
+    case "empty":
+      return attachmentEmptyRefusalMessage(candidate.sizeBytes);
+    case "size":
+      return attachmentSizeRefusalMessage(candidate.sizeBytes);
+    default:
+      return null;
   }
-  if (candidate.sizeBytes <= 0) return attachmentEmptyRefusalMessage(candidate.sizeBytes);
-  if (candidate.sizeBytes > ATTACHMENT_MAX_SIZE_BYTES) return attachmentSizeRefusalMessage(candidate.sizeBytes);
-  return null;
 }
 
 /** The store could not be reached at all: no status, because no response came back. */
@@ -182,6 +209,12 @@ export const ATTACHMENT_STORE_UNREACHABLE_CODE = "STORAGE_UNREACHABLE";
 
 /** The store answered, and the answer was not a success. */
 export const ATTACHMENT_STORE_REJECTED_CODE = "STORAGE_REJECTED";
+
+/**
+ * Nothing was sent at all, because the link leg 1 handed back is not a link
+ * this browser may PUT to. See `requireUsableUploadUrl`.
+ */
+export const ATTACHMENT_STORE_UNUSABLE_URL_CODE = "STORAGE_URL_UNUSABLE";
 
 /**
  * A failure of the **middle leg** — the browser's own PUT straight to the
@@ -212,9 +245,52 @@ export class AttachmentStoreError extends Error {
 }
 
 /**
- * Which of the three ways the direct PUT can fail this was, or `null` if the
+ * The one thing every implementation of `putAttachmentBytes` has to check
+ * before it sends anything: that the link leg 1 handed back is an absolute
+ * `http(s)` URL.
+ *
+ * `RestTaskaApi` lands a response with no `uploadUrl` as `""`, the way it lands
+ * every other absent field, and `fetch("")` does not fail — it **resolves
+ * against the document**, so the PUT would go to the SPA's own URL. On that
+ * request `credentials: "same-origin"` stops being the no-op the leg-2 comment
+ * describes and attaches this app's cookies to a PUT of the file's bytes. A
+ * malformed gateway response must not be able to do that.
+ *
+ * Refused as an `AttachmentStoreError` rather than an `ApiError` even though a
+ * gateway answer is what produced it: nothing was sent, so there is no gateway
+ * *failure* to report, and the store-error shape is the one the panel already
+ * reads as "the middle leg did not happen". Its own code, because the sentence
+ * for it is neither "we could not reach the store" nor "the store said no" —
+ * nobody was asked.
+ *
+ * A relative or empty string throws out of `new URL`, so both land here; the
+ * protocol test then also refuses `javascript:`, `data:` and `blob:` links,
+ * which are absolute and are not somewhere to PUT a file.
+ */
+export function requireUsableUploadUrl(uploadUrl: string): void {
+  let parsed: URL | null;
+  try {
+    parsed = new URL(uploadUrl);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+    throw new AttachmentStoreError(
+      "The upload link was not usable, so nothing was sent.",
+      ATTACHMENT_STORE_UNUSABLE_URL_CODE,
+      null,
+    );
+  }
+}
+
+/**
+ * Which of the four ways the direct PUT can fail this was, or `null` if the
  * failure came from somewhere else.
  *
+ * - `unusable` — nothing was sent, because the link was not one. See
+ *   `requireUsableUploadUrl`. First, because it is the only one of the four
+ *   that is not a fact about the store, and it shares `blocked`'s absent
+ *   status.
  * - `blocked` — `fetch` rejected without a response. A cross-origin PUT stopped
  *   by CORS preflight surfaces exactly like this: a `TypeError`, no status, and
  *   by design no way for script to learn why. Being offline, DNS failing and
@@ -227,12 +303,14 @@ export class AttachmentStoreError extends Error {
  * - `rejected` — any other status the store returned.
  */
 export type AttachmentUploadFailure =
+  | { kind: "unusable" }
   | { kind: "blocked" }
   | { kind: "expired"; storeStatus: number }
   | { kind: "rejected"; storeStatus: number };
 
 export function attachmentUploadFailure(error: unknown): AttachmentUploadFailure | null {
   if (!(error instanceof AttachmentStoreError)) return null;
+  if (error.code === ATTACHMENT_STORE_UNUSABLE_URL_CODE) return { kind: "unusable" };
   if (error.storeStatus === null) return { kind: "blocked" };
   if (error.storeStatus === 403) return { kind: "expired", storeStatus: error.storeStatus };
   return { kind: "rejected", storeStatus: error.storeStatus };

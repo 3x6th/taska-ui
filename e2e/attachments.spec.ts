@@ -121,7 +121,12 @@ test("refuses a file the server's allowlist would refuse, without uploading anyt
     buffer: Buffer.from("PK"),
   });
 
-  await expect(attachments.getByText("Content type not allowed: application/x-zip-compressed")).toBeVisible();
+  // Named, and in a sentence — the refusal this side produces says which file
+  // and which types would have worked, rather than repeating the MIME string
+  // the server would have answered with.
+  await expect(
+    attachments.getByText("bundle.zip is not a type this issue accepts. Attach JPEG, PNG or WebP images"),
+  ).toBeVisible();
   await expect(attachments.getByRole("button", { name: "Download bundle.zip" })).toHaveCount(0);
   await expect(attachments.getByText("No attachments yet")).toBeVisible();
 });
@@ -136,7 +141,7 @@ test("names a blocked cross-origin upload as a network or CORS problem", async (
   // request was going and why nothing here can fix it.
   await attach(page, "cors-blocked.txt");
 
-  const message = attachments.locator(".form-error");
+  const message = attachments.locator(".attachment-note.is-error");
   await expect(message).toContainText("could not reach the file store");
   await expect(message).toContainText("straight to storage rather than through Taska");
   await expect(attachments.getByText("No attachments yet")).toBeVisible();
@@ -151,7 +156,7 @@ test("reads an expired upload link as expired rather than as a permission failur
   // uses for "not yours", about an entirely different thing.
   await attach(page, "expired-link.txt");
 
-  await expect(attachments.locator(".form-error")).toContainText("15 minutes from the moment the file is chosen");
+  await expect(attachments.locator(".attachment-note.is-error")).toContainText("15 minutes from the moment the file is chosen");
 });
 
 test("re-reads the list after a failed confirm instead of claiming the file was lost", async ({ page }) => {
@@ -164,7 +169,7 @@ test("re-reads the list after a failed confirm instead of claiming the file was 
   // attached and claims no tidying up.
   await attach(page, "confirm-fails.txt");
 
-  await expect(attachments.locator(".form-error")).toContainText("confirm-fails.txt was not attached");
+  await expect(attachments.locator(".attachment-note.is-error")).toContainText("confirm-fails.txt was not attached");
   await expect(attachments.getByRole("button", { name: "Download confirm-fails.txt" })).toHaveCount(0);
   await expect(attachments.getByText("No attachments yet")).toBeVisible();
 });

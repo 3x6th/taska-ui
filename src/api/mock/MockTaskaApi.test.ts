@@ -1925,9 +1925,18 @@ describe("MockTaskaApi", () => {
       // is hidden; that is exactly why it is proved here, since a hidden
       // control is a courtesy and the server stays the authority.
       //
-      // Mark is a member of the Mobile project and Anna is not, so the two
-      // roles are two sign-ins on one issue — and the project id is read from
-      // his list rather than pasted in as a second copy of a seed literal.
+      // Mark is a member of the Mobile project and Anna is not, so the gate is
+      // two sign-ins on one issue — and the project id is read from his list
+      // rather than pasted in as a second copy of a seed literal.
+      //
+      // Neither half is the role it stands for. The seed gives `memberIds[0]`
+      // ADMIN and everybody else MEMBER, and Mark is Mobile's first member, so
+      // the allowed side below is an ADMIN; and no seeded member is a VIEWER
+      // anywhere, so the refused side is a non-member that `getMembership`
+      // answers `VIEWER` for. Against the gateway that second substitution is
+      // not equivalent — a non-member is refused on `!isMember` before a role
+      // is read at all — which is why it is written down here and in
+      // docs/ai/API-DIVERGENCE.md rather than passed off as a VIEWER test.
       await api.login({ email: "mark@example.com", password: "anything" });
       const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
       expect(mobile).toBeDefined();
@@ -1937,7 +1946,8 @@ describe("MockTaskaApi", () => {
       expect(issue).toBeDefined();
       if (!issue) return;
 
-      // A MEMBER runs all three legs, so the gate is not one notch too tight.
+      // An allowed role runs all three legs, so the gate is not one notch too
+      // tight. `upload-attachment-roles` is ADMIN and MEMBER; this is the ADMIN.
       const file = textFile("mark.txt");
       const ticket = await api.createAttachmentUploadUrl(mobile.id, issue.id, {
         fileName: file.name,
@@ -1956,7 +1966,16 @@ describe("MockTaskaApi", () => {
       // Anna is not a member of MOB at all, so `getMembership` answers VIEWER.
       await api.login({ email: "anna@example.com", password: "anything" });
 
-      // Reading stays hers: `view-attachment-roles` includes VIEWER.
+      // Reading stays hers **in the mock, which is looser than the gateway
+      // here**. It is not that `view-attachment-roles` includes VIEWER:
+      // `ProjectRoleChecker.validateAccess` refuses a non-member with
+      // `PERMISSION_DENIED "Access denied"` before it maps a role or consults
+      // `allowedRoles`, so the gateway answers 403 to these two reads whatever
+      // that config contains. The mock membership-checks neither read, the
+      // same convention `getIssueById` already follows for project-scoped
+      // reads — recorded in docs/ai/API-DIVERGENCE.md, and left as it is
+      // because adding the check would cost the read-only seed this section
+      // demonstrates.
       const attachments = await api.listAttachments(mobile.id, issue.id);
       const seeded = attachments.find((item) => item.fileName === "crash-report.json");
       expect(seeded).toBeDefined();
@@ -1992,6 +2011,68 @@ describe("MockTaskaApi", () => {
       await expect(
         api.deleteAttachment(mobile.id, issue.id, "00000000-0000-0000-0000-000000000000"),
       ).resolves.toBeUndefined();
+    });
+
+    it("judges the file before the role at leg 1, and the role before the object at leg 3", async () => {
+      // Not symmetry, and not what this store used to assume. `createUploadUrl`
+      // is `checkUserHasRoleForIssue(...).then(createPresignedUploadUrl(...))`,
+      // and `Mono.then(Mono)` evaluates its argument at assembly — while
+      // `S3StorageClient.createPresignedUploadUrl` calls `validateFileParams`
+      // synchronously before it returns a Mono. So the file refusal escapes
+      // before the role check ever subscribes, and leg 1 answers 400 where a
+      // reader would expect 403. Verified against backend `f53dca38`.
+      //
+      // `confirmUpload` has no such argument and does check the role first,
+      // which is why the two assertions below differ.
+      // Mark's sign-in only to read the ids: `listProjects` answers a
+      // non-member nothing, so Anna cannot find MOB herself.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+      const issue = (await api.listIssues(mobile.id, { pageSize: 100 })).items.find(
+        (item) => item.issueKey === "MOB-5",
+      );
+      expect(issue).toBeDefined();
+      if (!issue) return;
+      await api.login({ email: "anna@example.com", password: "anything" });
+
+      // Anna may not upload here at all, and the file is unacceptable too. The
+      // server answers the file, so this does as well — and `RestTaskaApi`,
+      // which refuses before it sends anything, answers the same.
+      await expect(
+        api.createAttachmentUploadUrl(mobile.id, issue.id, {
+          fileName: "bundle.zip",
+          contentType: "application/x-zip-compressed",
+          sizeBytes: 10,
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+      // Same two problems on leg 3, opposite answer: the role goes first.
+      await expect(
+        api.confirmAttachmentUpload(mobile.id, issue.id, {
+          objectKey: "never-put-here",
+          fileName: "bundle.zip",
+          contentType: "application/x-zip-compressed",
+        }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    });
+
+    it("refuses an upload URL that is not one instead of PUTting to this origin", async () => {
+      // `RestTaskaApi` lands a response with no `uploadUrl` as `""`, and
+      // `fetch("")` resolves against the document rather than failing — so an
+      // unguarded leg 2 would PUT the file to the SPA's own origin with
+      // cookies attached. Refused by both implementations, in the store-error
+      // shape and with its own code, because nothing was sent and no store was
+      // asked.
+      const file = textFile("notes.txt");
+      for (const url of ["", "/api/v1/upload", "javascript:void 0"]) {
+        await expect(api.putAttachmentBytes(url, file, file.type)).rejects.toMatchObject({
+          name: "AttachmentStoreError",
+          code: "STORAGE_URL_UNUSABLE",
+          storeStatus: null,
+        });
+      }
     });
 
     it("scopes every read to the project in the path, unlike the gateway", async () => {

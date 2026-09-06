@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import { BoardScreen } from "./BoardScreen";
-import { AttachmentStoreError } from "../api/attachments";
+import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError } from "../api/attachments";
 
 /**
  * The board reads five things and used to show a failure in only one of them.
@@ -1410,10 +1410,13 @@ describe("issue attachments", () => {
    * button is — so it is reached by class rather than by role, which is the one
    * place in this file that is allowed to.
    */
-  const chooseFile = (name = "notes.txt", type = "text/plain") => {
+  const chooseFile = (name = "notes.txt", type = "text/plain", sizeBytes?: number) => {
     const fileInput = document.querySelector<HTMLInputElement>(".attachment-input");
     if (!fileInput) throw new Error("no file input");
-    fireEvent.change(fileInput, { target: { files: [new File(["trace body"], name, { type })] } });
+    // A real byte array when a size is asked for, because `File.size` is read
+    // off the parts and the size arm of the refusal is decided on it.
+    const parts = sizeBytes === undefined ? ["trace body"] : [new Uint8Array(sizeBytes)];
+    fireEvent.change(fileInput, { target: { files: [new File(parts, name, { type })] } });
   };
 
   beforeEach(() => {
@@ -1479,9 +1482,40 @@ describe("issue attachments", () => {
     chooseFile("bundle.zip", "application/x-zip-compressed");
 
     const panel = await section();
-    expect(await panel.findByText("Content type not allowed: application/x-zip-compressed")).toBeVisible();
+    // The file by name and the way out, not the MIME string the server would
+    // have answered with. This arm never reaches a server, so there is no
+    // wording to be verbatim with — see `refusalText`.
+    const refusal = await panel.findByText(/bundle\.zip is not a type this issue accepts/);
+    expect(refusal).toHaveTextContent(/Attach JPEG, PNG or WebP images, PDF/);
+    expect(refusal).not.toHaveTextContent(/application\/x-zip-compressed/);
     // Nothing was uploaded and nothing was confirmed.
     expect(confirmCalls()).toBe(0);
+  });
+
+  it("states an over-size file in the units the picker states the limit in", async () => {
+    renderBoard(ISSUE_PATH);
+    await section();
+    // One byte over, which is the likeliest way to meet this ceiling and the
+    // case that breaks the obvious sentence: `formatFileSize` prints both this
+    // file and the limit as "2 MB", so naming the two sizes would read "is 2
+    // MB. The largest … is 2 MB".
+    chooseFile("huge.png", "image/png", ATTACHMENT_MAX_SIZE_BYTES + 1);
+
+    const panel = await section();
+    const refusal = await panel.findByText(/huge\.png is just over 2 MB/);
+    expect(refusal).toHaveTextContent(/largest file this issue accepts/);
+    // Never the server's byte arithmetic, which contradicts the hint above it.
+    expect(refusal).not.toHaveTextContent(/2097153/);
+    expect(confirmCalls()).toBe(0);
+  });
+
+  it("names the size when it differs from the limit as printed", async () => {
+    renderBoard(ISSUE_PATH);
+    await section();
+    chooseFile("huge.png", "image/png", 3 * 1024 * 1024);
+
+    const panel = await section();
+    expect(await panel.findByText("huge.png is 3 MB. The largest file this issue accepts is 2 MB.")).toBeVisible();
   });
 
   it("runs the three legs and shows the new row", async () => {
@@ -1575,6 +1609,12 @@ describe("issue attachments", () => {
     const fallback = await panel.findByRole("link", { name: "Open" });
     expect(fallback).toHaveAttribute("href", expect.stringContaining("X-Amz-Signature="));
     expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
+    // And it is announced, because otherwise a keyboard reader presses Enter,
+    // nothing opens, and an unannounced tab stop appears in the row. The live
+    // region was emptied by `onMutate`, so silence here is the default.
+    expect(
+      await panel.findByText("Your browser blocked the download tab for login-500-trace.txt. Use the Open link beside it."),
+    ).toBeVisible();
     vi.unstubAllGlobals();
   });
 

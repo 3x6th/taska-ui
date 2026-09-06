@@ -835,6 +835,24 @@ the next session in this image exactly as it bit this one.
   the comments, links and labels sections beside it, so it is panel-wide and
   pre-existing rather than this story's — and it is the half of the toast gap
   already recorded above that is actually cheap to close.
+- **`.form-error` measures 3.17:1 in light, and every caller but one still uses
+  it** (`art-director` + `frontend-builder`, TAS-190). §7 wants 4.5:1 for
+  secondary text and reserves 3:1 for non-critical meta; a form refusal is not
+  that. The rule was drawn for a one-line validation string and now carries
+  prose. TAS-190 gave the attachments section its own notice box per §5.6 —
+  `--surface` ground, `--border`, `--danger` only in the stripe, measured 17.88:1
+  light and 15.73:1 dark — and scoped the fix there, because login, the
+  create-issue modal, and the links and labels sections in the *same slide-over*
+  belong to other stories. The cost of that scoping is real and worth naming: the
+  issue panel is now visibly inconsistent between its three sections. The fix is
+  to make the new notice the product's error box and retire the borrow, in one
+  pass with the gaps re-measured.
+- **`RestTaskaApi` and the mock disagree on the code for an over-size file**
+  (`frontend-builder`, TAS-190): `refuseAttachment` throws `INVALID_ARGUMENT`
+  for all three arms while the mock throws `OUT_OF_RANGE` for the ceiling. Both
+  are 400 and the picker refuses before either is reached, so nothing observable
+  depends on it — but it is the parity class this series has treated as
+  blocking everywhere else, and one of the two is wrong against the server.
 - **Four issue history event types the backend already emits fall into
   `historyText`'s catch-all** (`frontend-builder`, TAS-190). Our
   `IssueEventType` is nine members; the backend enum is fourteen.

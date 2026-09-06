@@ -28,6 +28,7 @@ import {
   ATTACHMENT_STORE_UNREACHABLE_CODE,
   AttachmentStoreError,
   attachmentRefusal,
+  requireUsableUploadUrl,
 } from "../attachments";
 import type { PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
 import {
@@ -772,9 +773,14 @@ export class RestTaskaApi implements TaskaApi {
    * been told to allow is one more way to be refused before the bytes move.
    *
    * `credentials` is left at its default (`same-origin`), so no cookie of this
-   * app's goes to the store.
+   * app's goes to the store — **as long as the store is a different origin**,
+   * which is why the URL is checked before it is used rather than trusted. See
+   * `requireUsableUploadUrl`: `createAttachmentUploadUrl` above lands a missing
+   * `uploadUrl` as `""`, and `fetch("")` resolves against the document, which
+   * would make this a same-origin PUT of the file with cookies attached.
    */
   async putAttachmentBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    requireUsableUploadUrl(uploadUrl);
     let response: Response;
     try {
       response = await fetch(uploadUrl, {

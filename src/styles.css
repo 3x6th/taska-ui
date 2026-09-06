@@ -4509,30 +4509,62 @@ button.issue-link-open:hover {
   display: none;
 }
 
-/* §2.3's meta row: 11.5 / --fg-3, and it stays readable at 480 and at 390
-   because it is allowed to wrap. */
+/* --fg-2, not the --fg-3 meta row this used to borrow. The line is the whole
+   pre-flight contract: it states the ceiling and the accepted list *before* a
+   file is chosen, which is this feature's own argument for why nobody should
+   have to be refused to learn them. At --fg-3 it measured 3.14:1 light /
+   3.05:1 dark — §7 allows that only for non-critical meta — and it read as a
+   caption of the row byline below it. On --fg-2 it measures 7.26 / 6.75.
+
+   The colour only, and **not** the 550 that comes with §2.3's field-label role
+   the token is borrowed from: that row is for the short word above an input,
+   and this is two wrapped lines of prose (§2.3 asks for `text-wrap: pretty` on
+   exactly those). Rendered at 550 it out-weighs the section heading above it
+   and the button it describes — measured at 1920 and 390, both themes — which
+   is the loudness §1 spends its budget avoiding. The contrast fix is the
+   colour; the weight would have been a second, separate claim. */
 .attachment-hint {
   margin: 0;
-  color: var(--fg-3);
+  color: var(--fg-2);
   font-size: 11.5px;
   line-height: 1.45;
   text-wrap: pretty;
 }
 
-/* The one non-error note this panel prints: the confirm that failed in transit
-   while succeeding on the server. Tinted from `--accent` through
-   `color-mix`, per §1's hard rule about new shades — not `--danger`, because
-   the sentence it carries is good news. */
+/* Both notices this panel prints, and deliberately one recipe with one colour
+   changed: the info tone (a confirm that failed in transit while succeeding on
+   the server) and the error tone (every other way an upload or a delete ends).
+
+   The error tone used to borrow `.form-error`, which is 12px/600 in `--danger`
+   on a 12% `--danger` tint — drawn for a one-line validation string, measuring
+   3.17:1 light / 4.38:1 dark, and asked here to carry four wrapped lines about
+   a blocked cross-origin PUT. §7 wants ≥4.5:1 for anything but non-critical
+   meta and §5.6's error recipe says the same thing from the other end:
+   `--surface` ground, `--border`, and `--danger` in the stripe only, precisely
+   so the sentence itself is not danger-coloured. It also carried `margin: 0`,
+   which put a failure about one file flush against the row of another.
+
+   Ground is `--surface` rather than a tint because that is §5.6's recipe and
+   because two structurally identical boxes differing only in stripe colour is
+   the quiet version of this (§1); the panel behind it is `--surface` too, so
+   the box is defined by its border and its stripe. Padding is on §2.4's scale
+   (7 / 11); the 10 this rule used to carry is not on it. */
 .attachment-note {
   margin: 0 0 12px;
-  border: 1px solid color-mix(in oklab, var(--accent) 28%, transparent);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
   border-radius: 9px;
-  padding: 7px 10px;
-  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  padding: 7px 11px;
+  background: var(--surface);
   color: var(--fg);
   font-size: 12.5px;
+  font-weight: 400;
   line-height: 1.45;
   text-wrap: pretty;
+}
+
+.attachment-note.is-error {
+  border-left-color: var(--danger);
 }
 
 .attachment-list {

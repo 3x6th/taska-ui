@@ -20,8 +20,9 @@ import {
   ATTACHMENT_ACCEPTED_SUMMARY,
   ATTACHMENT_ACCEPT_ATTRIBUTE,
   ATTACHMENT_MAX_SIZE_BYTES,
-  attachmentRefusal,
+  attachmentRefusalKind,
   attachmentUploadFailure,
+  type AttachmentRefusalKind,
 } from "../api/attachments";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isMissingOrForbidden, isUndeployedRoute } from "../api/errors";
@@ -1738,10 +1739,11 @@ const attachmentStepText: Record<AttachmentUploadStep, string> = {
 };
 
 /**
- * A sentence about an upload that has finished, and the tone it is said in.
- * `info` exists for exactly one outcome — the confirm that failed in transit
- * while succeeding on the server — because calling that an error would be
- * telling the reader the opposite of what happened.
+ * A sentence about something the reader just did, and the tone it is said in.
+ * `info` is for the two outcomes that are not failures: the confirm that failed
+ * in transit while succeeding on the server, and the download tab the browser
+ * refused to open when the link itself is fine. Calling either an error would
+ * tell the reader the opposite of what happened.
  */
 interface AttachmentNotice {
   tone: "error" | "info";
@@ -1857,7 +1859,17 @@ function IssueAttachmentsSection({
       // blocker saying no — the only reliable way to hear it — and the row then
       // offers the link as something to click directly.
       const opened = window.open(link.downloadUrl, "_blank", "noopener,noreferrer");
-      if (!opened) setBlockedDownload({ id: attachment.id, url: link.downloadUrl });
+      if (!opened) {
+        setBlockedDownload({ id: attachment.id, url: link.downloadUrl });
+        // Said out loud, because otherwise this is the one outcome nobody is
+        // told about: `onMutate` has just emptied the live region, pressing
+        // Enter opened nothing, and a new tab stop appeared in the row without
+        // a word. Not an error — the link is real and good for fifteen minutes.
+        setNotice({
+          tone: "info",
+          text: `Your browser blocked the download tab for ${attachment.fileName}. Use the Open link beside it.`,
+        });
+      }
     },
     onError: (error) => {
       setNotice({ tone: "error", text: apiErrorFacts(error).message ?? "The download link could not be created." });
@@ -1880,10 +1892,10 @@ function IssueAttachmentsSection({
     // and `File.type` is the browser's, so this is not a duplicate of it: a
     // `.zip` reported as `application/x-zip-compressed`, or an extensionless
     // file reported as `application/octet-stream`, gets past `accept` and is
-    // stopped here, before a request and in the server's own words.
-    const refusal = attachmentRefusal(candidate);
+    // stopped here, before a request.
+    const refusal = attachmentRefusalKind(candidate);
     if (refusal) {
-      setNotice({ tone: "error", text: refusal });
+      setNotice({ tone: "error", text: refusalText(refusal, file) });
       return;
     }
 
@@ -2035,7 +2047,7 @@ function IssueAttachmentsSection({
           the sentence always follows something the reader just did, and an
           `alert` would cut across whatever they are reading. Empty, it carries
           no class and takes no space. */}
-      <div aria-live="polite" className={notice ? (notice.tone === "error" ? "form-error" : "attachment-note") : ""}>
+      <div aria-live="polite" className={notice ? `attachment-note${notice.tone === "error" ? " is-error" : ""}` : ""}>
         {notice?.text ?? ""}
       </div>
 
@@ -2049,7 +2061,7 @@ function IssueAttachmentsSection({
           Attachments are not on this gateway yet, so this issue&rsquo;s files cannot be listed (backend TAS-131).
         </p>
       ) : null}
-      {readError && !undeployed ? <div className="form-error">{readError.message}</div> : null}
+      {readError && !undeployed ? <div className="attachment-note is-error">{readError.message}</div> : null}
 
       {attachmentsQuery.isPending ? <p className="issue-links-empty">Loading attachments</p> : null}
       {/* Only a successful empty answer may say there are none. */}
@@ -2134,6 +2146,46 @@ function IssueAttachmentsSection({
   );
 }
 
+/**
+ * What to say about a file this side refused **before leg 1** — the only
+ * failures in this section a reader meets without a server having spoken. Two
+ * of the three fire in practice: an unaccepted type, and a file over the
+ * ceiling.
+ *
+ * They get their own sentences rather than `attachmentRefusal`'s, which is the
+ * server's wording verbatim. Parity was the argument for reusing it and parity
+ * is not what it bought: these arms are produced here, and the same refusals
+ * arriving *from* the gateway come through `apiErrorFacts` under a
+ * `"<name> was not attached. "` prefix, so the two paths already read
+ * differently. What the verbatim strings cost is the reader —
+ * `"File size 2097153 bytes exceeds maximum allowed size of 2097152 bytes"`
+ * corrects in bytes a person who was told "Up to 2 MB" six lines above, and
+ * neither string names the file. Every other sentence in this section does.
+ *
+ * The accepted list is `ATTACHMENT_ACCEPTED_SUMMARY`, the same constant the
+ * hint above the picker prints, so the promise and the refusal cannot drift.
+ *
+ * **"Just over" is not a flourish.** `formatFileSize` is binary and rounds to
+ * one decimal, so a file one byte over the ceiling formats as "2 MB" — exactly
+ * the same string as the ceiling. Printing both would read "huge.png is 2 MB.
+ * The largest file this issue accepts is 2 MB", which is a sentence that
+ * argues with itself. The two are compared as they will be *printed*, and the
+ * one case where they agree gets a phrasing that is true.
+ */
+function refusalText(kind: AttachmentRefusalKind, file: File) {
+  if (kind === "type") {
+    return `${file.name} is not a type this issue accepts. Attach ${ATTACHMENT_ACCEPTED_SUMMARY}.`;
+  }
+  if (kind === "empty") {
+    return `${file.name} is empty, so there is nothing to attach.`;
+  }
+  const size = formatFileSize(file.size);
+  const ceiling = formatFileSize(ATTACHMENT_MAX_SIZE_BYTES);
+  return size === ceiling
+    ? `${file.name} is just over ${ceiling}, which is the largest file this issue accepts.`
+    : `${file.name} is ${size}. The largest file this issue accepts is ${ceiling}.`;
+}
+
 /** How many attachments in this list carry that file name. See the confirm path. */
 function countByName(attachments: IssueAttachment[] | undefined, fileName: string) {
   return (attachments ?? []).filter((item) => item.fileName === fileName).length;
@@ -2157,11 +2209,19 @@ function countByName(attachments: IssueAttachment[] | undefined, fileName: strin
  *   signed — either way, not a permission problem and not something the same
  *   link will ever survive. Choosing the file again mints a new one.
  * - **anything else.** The store's own status, printed as the store's.
+ *
+ * And one that is not a failure of the store at all: the link leg 1 handed back
+ * was not a link, so nothing was sent. It is here rather than at leg 1 because
+ * that is where it is caught — see `requireUsableUploadUrl` — and it must not
+ * borrow the CORS sentence, which would name a cause that was never reached.
  */
 function uploadFailureText(error: unknown, fileName: string) {
   const failure = attachmentUploadFailure(error);
   if (!failure) {
     return `${fileName} was not uploaded. ${apiErrorFacts(error).message ?? "The upload failed."}`;
+  }
+  if (failure.kind === "unusable") {
+    return `${fileName} was not uploaded: the upload link that came back was unusable, so nothing was sent. Choose the file again to retry.`;
   }
   if (failure.kind === "blocked") {
     return `${fileName} was not uploaded: the browser could not reach the file store. This upload goes straight to storage rather than through Taska, so a network problem or the storage server's cross-origin rules can stop it before it starts.`;

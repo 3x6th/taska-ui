@@ -264,11 +264,15 @@ export interface UpdateProjectLabelInput {
  * required by the contract, and the server validates two of them
  * (`S3StorageClient.validateFileParams`) before it will sign anything.
  *
- * `fileName` is the odd one out: the contract requires it, the gateway forwards
- * it, and `AttachmentServiceImpl.createUploadUrl` never reads it — the object
- * key is a fresh UUID and the name is only stored at leg 3, from that leg's own
- * copy. It is sent because the contract asks for it, not because it decides
- * anything here.
+ * `fileName` is the odd one out: the contract requires it and **the gateway
+ * drops it**. `GrpcIssueAttachmentServiceClient.createAttachmentUploadUrl`
+ * builds `CreateAttachmentUploadUrlRequestBody` from `contentType`,
+ * `sizeBytes`, `actorUserId` and `issueId` and nothing else, so the name dies
+ * at the gRPC boundary and `AttachmentServiceImpl.createUploadUrl` is never
+ * offered it. The conclusion is the one it always was — the object key is a
+ * fresh UUID and the name is only stored at leg 3, from that leg's own copy —
+ * so this field is sent because the contract asks for it, not because it
+ * decides anything here. Read at backend `f53dca38`.
  */
 export interface CreateAttachmentUploadUrlInput {
   fileName: string;
@@ -493,6 +497,11 @@ export interface TaskaApi {
    *
    * Failures arrive as `AttachmentStoreError`, never as an `ApiError`. See that
    * class for why the store's status must not travel in a field named `status`.
+   *
+   * `uploadUrl` is checked before it is used, by every implementation, through
+   * `requireUsableUploadUrl`: an empty or relative string would resolve against
+   * this app's own document and turn a malformed gateway response into a
+   * same-origin PUT of the file's bytes, with cookies.
    */
   putAttachmentBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void>;
 
