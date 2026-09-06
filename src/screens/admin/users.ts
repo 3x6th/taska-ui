@@ -1,4 +1,4 @@
-import { apiErrorFacts, isConflict, isMissingOrForbidden } from "../../api/errors";
+import { apiErrorFacts, isConflict, isMissingOrForbidden, isUndeployedRoute as isUndeployedGatewayRoute } from "../../api/errors";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../../api/TaskaApi";
 import type { AdminRow, GlobalRole, UserStatus } from "../../domain/types";
 
@@ -237,22 +237,16 @@ export const actionGerunds: Record<UserAction, string> = {
  * (TAS-107 for block and unblock, TAS-108 for reset-lockout — one backend PR,
  * so all three deploy on the same day) rather than "there is no such user".
  *
- * Both halves are required, and the pairing is narrow on purpose. An unmapped
- * path falls through to Spring's static-resource handler, which answers **404**
- * with a message beginning `No static resource …` — measured 2026-08-25 against
- * `POST /api/v1/admin/users/not-a-uuid/block`. A deployed route's own 404 says
- * `User not found`, so the message is the whole distinction; matching the
- * status alone would read a missing account as a missing deployment.
- *
- * Matched as a substring rather than by equality because the tail of the
- * message is the request path, which differs per user id — and by the same
- * token it says nothing about *which* route was asked for, which is what lets
- * one predicate serve all three. It stops matching the day the writes deploy,
- * so the note removes itself.
+ * The measurement and the reasoning moved to `isUndeployedRoute` in
+ * src/api/errors.ts when TAS-190 needed the same predicate for the attachment
+ * routes: it is a fact about the gateway rather than about this section, and
+ * two copies of a measured string are two chances to drift. Re-exported under
+ * the name this section already used, with `UNDEPLOYED_ROUTE_MESSAGE` passed
+ * explicitly so the constant stays visibly wired to the callers that depend on
+ * it.
  */
 export function isUndeployedRoute(error: unknown): boolean {
-  const { status, message } = apiErrorFacts(error);
-  return status === 404 && message !== null && message.includes(UNDEPLOYED_ROUTE_MESSAGE);
+  return isUndeployedGatewayRoute(error, UNDEPLOYED_ROUTE_MESSAGE);
 }
 
 /**

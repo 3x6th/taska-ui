@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { MockTaskaApi } from "./MockTaskaApi";
+import { MOCK_ATTACHMENT_TRIGGERS, MockTaskaApi } from "./MockTaskaApi";
 import type { Issue, Project } from "../../domain/types";
+import {
+  ATTACHMENT_MAX_SIZE_BYTES,
+  AttachmentStoreError,
+  attachmentSizeRefusalMessage,
+  attachmentTypeRefusalMessage,
+} from "../attachments";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
@@ -1565,6 +1571,326 @@ describe("MockTaskaApi", () => {
       // and reads the row's own timestamp there.
       expect(Object.keys(change).sort()).toEqual(["changedAt", "currentStatus", "previousStatus", "userId"]);
       expect(new Date(change.changedAt).getUTCFullYear()).toBeGreaterThan(2000);
+    });
+  });
+
+  /**
+   * The three-legged upload, every way it can be refused, and the two rules
+   * that decide what the panel is allowed to say afterwards. This is the only
+   * place the feature can be exercised at all until backend TAS-131 deploys, so
+   * the fidelity of these branches is the deliverable rather than scaffolding
+   * for it.
+   */
+  describe("attachments", () => {
+    /** A file the allowlist accepts, of a size the ceiling accepts. */
+    const textFile = (name: string, contents = "trace line\n") =>
+      new File([contents], name, { type: "text/plain" });
+
+    const openIssue = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+
+    /** The whole choreography, as the panel runs it. */
+    const upload = async (issueId: string, file: File) => {
+      const ticket = await api.createAttachmentUploadUrl(project.id, issueId, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+      return api.confirmAttachmentUpload(project.id, issueId, {
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: file.type,
+      });
+    };
+
+    beforeEach(async () => {
+      await api.login({ email: "anna@example.com", password: "anything" });
+    });
+
+    it("seeds an issue with two attachments from two different people", async () => {
+      const issue = await openIssue("TAS-101");
+      const attachments = await api.listAttachments(project.id, issue.id);
+
+      expect(attachments.map((item) => item.fileName)).toEqual([
+        "login-500-trace.txt",
+        "validation-error.png",
+      ]);
+      // Two uploaders on one issue is what makes the split delete rule visible:
+      // one row is the signed-in person's and one is not.
+      expect(new Set(attachments.map((item) => item.uploadedBy)).size).toBe(2);
+      // The gateway's mapper does not send the object key, so neither does this.
+      expect(Object.keys(attachments[0]).sort()).toEqual([
+        "checksum",
+        "contentType",
+        "createdAt",
+        "fileName",
+        "id",
+        "issueId",
+        "sizeBytes",
+        "uploadedBy",
+      ]);
+    });
+
+    it("runs the three legs and lands a row the list can see", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile("notes.txt", "one\ntwo\n");
+
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      // A presigned URL on the object store, not on the gateway — and the
+      // signature covers the content type, which is why leg 2 may not change it.
+      expect(ticket.uploadUrl).toContain("http://127.0.0.1:9000/taska-attachments/");
+      expect(ticket.uploadUrl).toContain("X-Amz-SignedHeaders=content-type%3Bhost");
+      expect(ticket.objectKey).toBeTruthy();
+
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+      const attachment = await api.confirmAttachmentUpload(project.id, issue.id, {
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: file.type,
+      });
+
+      expect(attachment).toMatchObject({ fileName: "notes.txt", contentType: "text/plain", sizeBytes: file.size });
+      // The checksum is a fact about the bytes that were actually sent.
+      expect(attachment.checksum).toMatch(/^[0-9a-f]{32}$/);
+      expect((await api.listAttachments(project.id, issue.id)).map((item) => item.fileName)).toEqual(["notes.txt"]);
+    });
+
+    it("writes the history event the activity feed reads", async () => {
+      const issue = await openIssue("TAS-102");
+      const attachment = await upload(issue.id, textFile("notes.txt"));
+
+      const afterUpload = (await api.getIssue(project.id, issue.id)).history.at(-1);
+      expect(afterUpload).toMatchObject({ eventType: "ATTACHMENT_UPLOADED" });
+      expect(afterUpload?.payload.fileName).toBe("notes.txt");
+
+      await api.deleteAttachment(project.id, issue.id, attachment.id);
+      expect((await api.getIssue(project.id, issue.id)).history.at(-1)).toMatchObject({
+        eventType: "ATTACHMENT_DELETED",
+        payload: { fileName: "notes.txt" },
+      });
+    });
+
+    it("refuses a type outside the thirteen-entry allowlist, in the server's own words", async () => {
+      const issue = await openIssue("TAS-102");
+      // The `.zip` that Windows browsers report differently, and the case-folded
+      // spelling of a type that *is* on the list: both are refused, because the
+      // server compares exact strings.
+      for (const contentType of ["application/x-zip-compressed", "IMAGE/PNG", "application/octet-stream", "image/gif"]) {
+        await expect(
+          api.createAttachmentUploadUrl(project.id, issue.id, { fileName: "f", contentType, sizeBytes: 10 }),
+        ).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: attachmentTypeRefusalMessage(contentType),
+        });
+      }
+    });
+
+    it("refuses an empty file and one over the 2 MB ceiling, and accepts the ceiling exactly", async () => {
+      const issue = await openIssue("TAS-102");
+      const ask = (sizeBytes: number) =>
+        api.createAttachmentUploadUrl(project.id, issue.id, {
+          fileName: "f.txt",
+          contentType: "text/plain",
+          sizeBytes,
+        });
+
+      await expect(ask(0)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "File size must be positive, got: 0",
+      });
+      await expect(ask(ATTACHMENT_MAX_SIZE_BYTES + 1)).rejects.toMatchObject({
+        code: "OUT_OF_RANGE",
+        message: attachmentSizeRefusalMessage(ATTACHMENT_MAX_SIZE_BYTES + 1),
+      });
+      // Inclusive: 2097152 is the largest accepted, not the smallest refused.
+      await expect(ask(ATTACHMENT_MAX_SIZE_BYTES)).resolves.toMatchObject({ objectKey: expect.any(String) });
+    });
+
+    it("answers a blocked cross-origin PUT with no status at all", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile(`${MOCK_ATTACHMENT_TRIGGERS.storeUnreachable}.txt`);
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+
+      const error = await api.putAttachmentBytes(ticket.uploadUrl, file, file.type).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AttachmentStoreError);
+      // The whole point of the shape: no `status`, so nothing in
+      // src/api/errors.ts reads a store failure as a gateway one.
+      expect(error).toMatchObject({ code: "STORAGE_UNREACHABLE", storeStatus: null });
+      expect((error as { status?: unknown }).status).toBeUndefined();
+    });
+
+    it("carries a store's own status in storeStatus and never in status", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile(`${MOCK_ATTACHMENT_TRIGGERS.storeRefused}.txt`);
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+
+      const error = await api.putAttachmentBytes(ticket.uploadUrl, file, file.type).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "STORAGE_REJECTED", storeStatus: 500 });
+      expect((error as { status?: unknown }).status).toBeUndefined();
+    });
+
+    it("answers 403 for an expired link and for a content type that was not the one signed", async () => {
+      const issue = await openIssue("TAS-102");
+
+      const stale = textFile(`${MOCK_ATTACHMENT_TRIGGERS.expiredTicket}.txt`);
+      const staleTicket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: stale.name,
+        contentType: stale.type,
+        sizeBytes: stale.size,
+      });
+      await expect(api.putAttachmentBytes(staleTicket.uploadUrl, stale, stale.type)).rejects.toMatchObject({
+        code: "STORAGE_REJECTED",
+        storeStatus: 403,
+      });
+
+      // The signature covers `Content-Type`, so "text/plain; charset=utf-8" is
+      // a different request from "text/plain" and the store says so.
+      const file = textFile("ok.txt");
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await expect(
+        api.putAttachmentBytes(ticket.uploadUrl, file, "text/plain; charset=utf-8"),
+      ).rejects.toMatchObject({ storeStatus: 403 });
+    });
+
+    it("leaves the object in the bucket when the confirm fails, and lists nothing", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile(`${MOCK_ATTACHMENT_TRIGGERS.confirmFails}.txt`);
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      // Leg 2 succeeds: the bytes are in the bucket.
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+
+      await expect(
+        api.confirmAttachmentUpload(project.id, issue.id, {
+          objectKey: ticket.objectKey,
+          fileName: file.name,
+          contentType: file.type,
+        }),
+      ).rejects.toMatchObject({ code: "UNAVAILABLE" });
+
+      // No row — which is exactly the orphan: an object nothing points at, and
+      // nothing on either side can remove it.
+      expect(await api.listAttachments(project.id, issue.id)).toEqual([]);
+    });
+
+    it("refuses a confirm for an object nobody uploaded", async () => {
+      const issue = await openIssue("TAS-102");
+      await expect(
+        api.confirmAttachmentUpload(project.id, issue.id, {
+          objectKey: "never-put-here",
+          fileName: "ghost.txt",
+          contentType: "text/plain",
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", message: "Object not found in storage" });
+    });
+
+    it("creates a second row when a confirm is repeated, which is why it is never retried", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile("duplicate.txt");
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+
+      const body = { objectKey: ticket.objectKey, fileName: file.name, contentType: file.type };
+      const first = await api.confirmAttachmentUpload(project.id, issue.id, body);
+      const second = await api.confirmAttachmentUpload(project.id, issue.id, body);
+
+      // `object_key` has no unique constraint on the server and the insert is
+      // unconditional, so a repeat is a duplicate row rather than a no-op. Two
+      // ids, two rows, two history events. Pinned so nobody "helpfully" adds a
+      // retry to the confirm.
+      expect(first.id).not.toBe(second.id);
+      expect(await api.listAttachments(project.id, issue.id)).toHaveLength(2);
+    });
+
+    it("gives a fresh presigned download link per call, carrying the checksum", async () => {
+      const issue = await openIssue("TAS-101");
+      const [attachment] = await api.listAttachments(project.id, issue.id);
+
+      const link = await api.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
+      expect(link.downloadUrl).toContain("http://127.0.0.1:9000/taska-attachments/");
+      expect(link.downloadUrl).toContain("X-Amz-Signature=");
+      expect(link.checksum).toBe(attachment.checksum);
+
+      await expect(
+        api.getAttachmentDownloadUrl(project.id, issue.id, "00000000-0000-0000-0000-000000000000"),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("soft-deletes: the row leaves the list and the id stops resolving", async () => {
+      const issue = await openIssue("TAS-101");
+      const before = await api.listAttachments(project.id, issue.id);
+
+      await api.deleteAttachment(project.id, issue.id, before[0].id);
+
+      const after = await api.listAttachments(project.id, issue.id);
+      expect(after.map((item) => item.id)).not.toContain(before[0].id);
+      expect(after).toHaveLength(before.length - 1);
+      await expect(api.getAttachmentDownloadUrl(project.id, issue.id, before[0].id)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("lets a MEMBER delete their own attachment and refuses somebody else's", async () => {
+      // Mark is a MEMBER of TAS; Anna is its ADMIN. The seed puts one file from
+      // each on TAS-101 precisely so this rule has both cases to answer.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const issue = await openIssue("TAS-101");
+      const attachments = await api.listAttachments(project.id, issue.id);
+      const mine = attachments.find((item) => item.fileName === "validation-error.png");
+      const theirs = attachments.find((item) => item.fileName === "login-500-trace.txt");
+      expect(mine && theirs).toBeTruthy();
+      if (!mine || !theirs) return;
+
+      await expect(api.deleteAttachment(project.id, issue.id, theirs.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      await expect(api.deleteAttachment(project.id, issue.id, mine.id)).resolves.toBeUndefined();
+
+      // And an ADMIN may remove the one they did not upload.
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.deleteAttachment(project.id, issue.id, theirs.id)).resolves.toBeUndefined();
+    });
+
+    it("scopes every read to the project in the path, unlike the gateway", async () => {
+      const issue = await openIssue("TAS-101");
+      const other = (await api.listProjects()).find((item) => item.id !== project.id);
+      expect(other).toBeDefined();
+      if (!other) return;
+
+      // The gateway forwards only `issueId` and says in its own comment that
+      // `projectId` takes no part in authorisation, so it would answer this.
+      // The mock resolves an issue *within* a project and refuses — the same
+      // known divergence `getIssue` carries, recorded here rather than found by
+      // somebody at a boundary.
+      await expect(api.listAttachments(other.id, issue.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
   });
 });

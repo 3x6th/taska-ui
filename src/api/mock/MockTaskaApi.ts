@@ -1,6 +1,8 @@
 import type {
   AcceptInvitationInput,
   AuthTokens,
+  ConfirmAttachmentUploadInput,
+  CreateAttachmentUploadUrlInput,
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
@@ -21,6 +23,17 @@ import {
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
+import {
+  ATTACHMENT_BUCKET,
+  ATTACHMENT_MAX_SIZE_BYTES,
+  ATTACHMENT_PRESIGNED_TTL_MS,
+  ATTACHMENT_STORE_ORIGIN,
+  ATTACHMENT_STORE_REJECTED_CODE,
+  ATTACHMENT_STORE_UNREACHABLE_CODE,
+  AttachmentStoreError,
+  attachmentRefusal,
+  attachmentSizeRefusalMessage,
+} from "../attachments";
 import type { PlanningFields, PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
 import { emptyPlanningFields, planningFieldRefusal, resolvePlanningFields } from "../planningFields";
 import type {
@@ -30,7 +43,10 @@ import type {
   AdminRows,
   AdminRowsQuery,
   AdminTable,
+  AttachmentDownloadUrl,
+  AttachmentUploadTicket,
   Issue,
+  IssueAttachment,
   IssueComment,
   IssueHistoryEvent,
   IssueLink,
@@ -87,6 +103,107 @@ const WORKFLOW_ID = "11111111-1111-1111-1111-111111111111";
 const TODO_STATUS_ID = "22222222-2222-2222-2222-222222222222";
 const IN_PROGRESS_STATUS_ID = "33333333-3333-3333-3333-333333333333";
 const DONE_STATUS_ID = "44444444-4444-4444-4444-444444444444";
+
+/**
+ * File names that steer this mock down a failure branch, matched
+ * case-insensitively as a substring of the name. **A mock-only seam**, and the
+ * only one in this file — but the alternative was a feature whose four
+ * interesting failures could not be reached by anybody, in the one environment
+ * where the feature can be reached at all.
+ *
+ * Three of the four are unreachable by any other means today. The middle leg of
+ * an upload goes to an object store that is not deployed, is not CORS-configured
+ * and has no browser-reachable address, so "the store refused it", "the store
+ * could not be reached" and "the link expired" cannot be produced by using the
+ * product — and the fourth, a confirm that fails after the bytes landed, is the
+ * one that orphans an object and states the most important sentence in the
+ * panel.
+ *
+ * Triggering on the file name rather than on a flag keeps the seam out of the
+ * production API surface: nothing on `TaskaApi` grows a test parameter, and a
+ * reader can exercise a failure by renaming a file on their desktop.
+ *
+ * Not in this list, because this mock structurally cannot produce it: the
+ * undeployed-route signature. That is a **404 with `No static resource` in the
+ * message**, and `MockApiError` carries no HTTP status at all — by design, see
+ * src/api/errors.ts. It only exists against `rest` and `hybrid`.
+ */
+export const MOCK_ATTACHMENT_TRIGGERS = {
+  /** Leg 2 rejects with no response at all, the way a blocked CORS preflight does. */
+  storeUnreachable: "cors-blocked",
+  /** Leg 2 answers 500. */
+  storeRefused: "store-500",
+  /** Leg 1 mints a ticket that is already past its fifteen minutes, so leg 2 answers 403. */
+  expiredTicket: "expired-link",
+  /** Legs 1 and 2 succeed and leg 3 fails — the case that orphans an object. */
+  confirmFails: "confirm-fails",
+} as const;
+
+type MockUploadBehaviour = "ok" | "storeUnreachable" | "storeRefused" | "confirmFails";
+
+/** One presigned upload this mock has handed out and is still willing to honour. */
+interface MockUploadTicket {
+  objectKey: string;
+  issueId: string;
+  projectId: string;
+  /** Exactly the value signed at leg 1. Leg 2 compares byte for byte, as S3 does. */
+  contentType: string;
+  /** Epoch ms. Past it, leg 2 answers 403 — the store's answer for a stale signature. */
+  expiresAt: number;
+  behaviour: MockUploadBehaviour;
+}
+
+/** An object that has actually been PUT into this mock's stand-in bucket. */
+interface MockStoredObject {
+  contentType: string;
+  sizeBytes: number;
+  checksum: string;
+}
+
+interface StoredAttachment {
+  id: string;
+  issueId: string;
+  uploadedBy: string;
+  objectKey: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  checksum: string;
+  createdAt: string;
+  /** Soft delete, like the server's: the row stays and stops being listed. */
+  deletedAt: string | null;
+}
+
+/**
+ * An ETag-shaped checksum: 32 lowercase hex characters, deterministic in the
+ * bytes. **Not MD5** — the server's value is the object's real ETag and this is
+ * an FNV-1a variant, because nothing in the product compares one to the other
+ * and shipping a hash implementation to make a mock's field look authentic
+ * would be code with no reader. What matters is that it is stable for the same
+ * bytes and different for different ones, which is what any consumer of a
+ * checksum relies on.
+ */
+const mockChecksum = (bytes: Uint8Array) => {
+  let out = "";
+  for (let round = 0; round < 4; round += 1) {
+    let hash = 0x811c9dc5 ^ (round * 0x01000193);
+    for (let i = 0; i < bytes.length; i += 1) {
+      hash ^= bytes[i];
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    out += hash.toString(16).padStart(8, "0");
+  }
+  return out;
+};
+
+/** Which failure this file name asks for, or a plain upload. */
+const uploadBehaviourFor = (fileName: string): MockUploadBehaviour => {
+  const name = fileName.toLowerCase();
+  if (name.includes(MOCK_ATTACHMENT_TRIGGERS.storeUnreachable)) return "storeUnreachable";
+  if (name.includes(MOCK_ATTACHMENT_TRIGGERS.storeRefused)) return "storeRefused";
+  if (name.includes(MOCK_ATTACHMENT_TRIGGERS.confirmFails)) return "confirmFails";
+  return "ok";
+};
 
 class MockApiError extends Error {
   constructor(
@@ -403,6 +520,17 @@ export class MockTaskaStore {
   private historyByIssue: Record<string, IssueHistoryEvent[]>;
   private commentsByIssue: Record<string, IssueComment[]>;
   private links: StoredIssueLink[] = [];
+  /** Attachment rows, soft-deleted in place exactly as the server's are. */
+  private attachments: StoredAttachment[] = [];
+  /**
+   * The stand-in bucket: object key to what was PUT under it. Separate from
+   * `attachments` on purpose — an object with no row is precisely the orphan a
+   * failed confirm leaves behind, and one store that held both could not
+   * represent it.
+   */
+  private storeObjects = new Map<string, MockStoredObject>();
+  /** Presigned uploads handed out and not yet spent, keyed by the URL itself. */
+  private uploadTickets = new Map<string, MockUploadTicket>();
   private projectLabels: ProjectLabel[];
   /**
    * Which labels an issue carries, held as ids against `projectLabels` rather
@@ -961,6 +1089,80 @@ export class MockTaskaStore {
       (this.labelIdsByIssue[target.id] ??= []).push(label.id);
     });
 
+    // Attachments, seeded so the section is not empty on first load and so all
+    // three of its interesting states are reachable by signing in as somebody:
+    //
+    // - Anna is ADMIN of TAS, so on TAS-101 she sees a delete on **both** rows,
+    //   including Mark's — `delete-attachment-roles: ADMIN`;
+    // - Mark is a MEMBER of TAS, so signing in as `mark@example.com` (this mock
+    //   takes any password) leaves him a delete on his own row and none on
+    //   Anna's — `delete-own-attachment-roles: ADMIN,MEMBER`. That contrast is
+    //   the whole reason two rows are seeded on one issue and why they have
+    //   different uploaders;
+    // - Anna is not a member of MOB at all, so MOB-5's attachment is the
+    //   read-only view: listed, downloadable, with no upload control and no
+    //   delete.
+    //
+    // Sizes are real-looking and all comfortably under the 2 MB ceiling; the
+    // checksums are ETag-shaped literals. No object is seeded into
+    // `storeObjects`, because these rows stand for files uploaded long before
+    // this session — the bucket is not part of the seed and a download link is
+    // signed from the key regardless, exactly as `createPresignedDownloadUrl`
+    // would.
+    const attachmentSeed: [string, string, string, string, number, string][] = [
+      [
+        "TAS-101",
+        ANNA_ID,
+        "login-500-trace.txt",
+        "text/plain",
+        2411,
+        "8f14e45fceea167a5a36dedd4bea2543",
+      ],
+      [
+        "TAS-101",
+        MARK_ID,
+        "validation-error.png",
+        "image/png",
+        184320,
+        "c9f0f895fb98ab9159f51fd0297e236d",
+      ],
+      [
+        "MOB-5",
+        PRIYA_ID,
+        "crash-report.json",
+        "application/json",
+        14877,
+        "45c48cce2e2d7fbdea1afc51c7c6ad26",
+      ],
+    ];
+    attachmentSeed.forEach(([issueKey, uploadedBy, fileName, contentType, sizeBytes, checksum], index) => {
+      const target = this.issues.find((item) => item.issueKey === issueKey);
+      if (!target) return;
+      const createdAt = ts(20, 10 + index);
+      this.attachments.push({
+        id: makeId("attachment"),
+        issueId: target.id,
+        uploadedBy,
+        objectKey: makeId("object"),
+        fileName,
+        contentType,
+        sizeBytes,
+        checksum,
+        createdAt,
+        deletedAt: null,
+      });
+      // The history row the server writes in the same transaction, so the
+      // activity feed's two new sentences are on screen without uploading
+      // anything.
+      this.pushHistory(
+        target.id,
+        "ATTACHMENT_UPLOADED",
+        uploadedBy,
+        { issueId: target.id, uploadedBy, fileName, contentType, sizeBytes },
+        createdAt,
+      );
+    });
+
     // The three shapes the deployed gateway actually sends, measured with a
     // GLOBAL_ADMIN token (TAS-183). This seed used to carry frontend routes,
     // which is why clicking a notification worked here and landed on not-found
@@ -1441,6 +1643,223 @@ export class MockTaskaStore {
     }
     this.labelIdsByIssue[issue.id] = attached.filter((id) => id !== labelId);
     this.pushHistory(issue.id, "UPDATED", this.currentUserId, { field: "labels" });
+  }
+
+  listAttachments(projectId: string, issueId: string): IssueAttachment[] {
+    const issue = this.findIssue(projectId, issueId);
+    return this.attachments
+      .filter((item) => item.issueId === issue.id && item.deletedAt === null)
+      .sort(byCreatedAt)
+      .map((item) => this.attachmentView(item));
+  }
+
+  /**
+   * Leg 1. Refuses exactly what `S3StorageClient.validateFileParams` refuses,
+   * in the server's own words, and then mints a presigned-shaped URL on
+   * `storage.public-url`'s only checked-in value.
+   *
+   * The URL is built to look like what the deployed stand would hand back —
+   * host, bucket, a UUID key and the AWS SigV4 query parameters, including
+   * `X-Amz-SignedHeaders=content-type;host`, which is the visible trace of the
+   * fact that leg 2 must resend the very same `Content-Type`. It points at a
+   * host nothing here serves, and that is the honest shape: this leg does not
+   * go through the gateway and no browser on the deployed site can reach it
+   * either.
+   */
+  createAttachmentUploadUrl(
+    projectId: string,
+    issueId: string,
+    input: CreateAttachmentUploadUrlInput,
+  ): AttachmentUploadTicket {
+    const issue = this.findIssue(projectId, issueId);
+    const refusal = attachmentRefusal(input);
+    if (refusal) {
+      // Two codes, split the way the server splits them: an unusable type or a
+      // non-positive size is INVALID_ARGUMENT, and only the ceiling is
+      // OUT_OF_RANGE. Both are 400 over REST.
+      const code = refusal === attachmentSizeRefusalMessage(input.sizeBytes) ? "OUT_OF_RANGE" : "INVALID_ARGUMENT";
+      throw new MockApiError(code, refusal);
+    }
+
+    const objectKey = makeId("object");
+    const signedAt = new Date();
+    const behaviour = uploadBehaviourFor(input.fileName);
+    const query = new URLSearchParams({
+      "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+      "X-Amz-Credential": `minioadmin/${signedAt.toISOString().slice(0, 10).replace(/-/g, "")}/us-east-1/s3/aws4_request`,
+      "X-Amz-Date": `${signedAt.toISOString().replace(/[-:]/g, "").slice(0, 15)}Z`,
+      "X-Amz-Expires": String(Math.round(ATTACHMENT_PRESIGNED_TTL_MS / 1000)),
+      "X-Amz-SignedHeaders": "content-type;host",
+      "X-Amz-Signature": mockChecksum(new TextEncoder().encode(`${objectKey}:${input.contentType}`)),
+    });
+    const uploadUrl = `${ATTACHMENT_STORE_ORIGIN}/${ATTACHMENT_BUCKET}/${objectKey}?${query.toString()}`;
+
+    this.uploadTickets.set(uploadUrl, {
+      objectKey,
+      issueId: issue.id,
+      projectId,
+      contentType: input.contentType,
+      // A file whose name asks for it gets a ticket that expired a minute ago,
+      // which is the only way anybody can see what a stale link looks like
+      // without waiting a quarter of an hour.
+      expiresAt: input.fileName.toLowerCase().includes(MOCK_ATTACHMENT_TRIGGERS.expiredTicket)
+        ? Date.now() - 60_000
+        : Date.now() + ATTACHMENT_PRESIGNED_TTL_MS,
+      behaviour,
+    });
+
+    return { uploadUrl, objectKey };
+  }
+
+  /**
+   * Leg 2 — the browser's own PUT, standing in for a server this app cannot
+   * reach. Every refusal here is an `AttachmentStoreError` rather than a
+   * `MockApiError`, because the thing refusing is not the gateway and the panel
+   * has to be able to tell.
+   */
+  putAttachmentBytes(uploadUrl: string, bytes: Uint8Array, contentType: string): void {
+    const ticket = this.uploadTickets.get(uploadUrl);
+    if (!ticket) {
+      // A URL this store never signed. S3 answers 403 for an unparseable or
+      // unknown signature, not 404 — the object is not the thing being denied.
+      throw new AttachmentStoreError("The file store answered 403.", ATTACHMENT_STORE_REJECTED_CODE, 403);
+    }
+    if (ticket.behaviour === "storeUnreachable") {
+      throw new AttachmentStoreError(
+        "The file store could not be reached: Failed to fetch",
+        ATTACHMENT_STORE_UNREACHABLE_CODE,
+        null,
+      );
+    }
+    if (ticket.behaviour === "storeRefused") {
+      throw new AttachmentStoreError("The file store answered 500.", ATTACHMENT_STORE_REJECTED_CODE, 500);
+    }
+    if (Date.now() > ticket.expiresAt) {
+      throw new AttachmentStoreError("The file store answered 403.", ATTACHMENT_STORE_REJECTED_CODE, 403);
+    }
+    // The signature covers `Content-Type`, so a value that differs by so much
+    // as a charset is a signature mismatch and a 403. Reproduced because it is
+    // the single easiest rule in this feature to break from the UI side, and
+    // the only place it can ever be caught before production.
+    if (ticket.contentType !== contentType) {
+      throw new AttachmentStoreError("The file store answered 403.", ATTACHMENT_STORE_REJECTED_CODE, 403);
+    }
+
+    this.storeObjects.set(ticket.objectKey, {
+      contentType,
+      sizeBytes: bytes.length,
+      checksum: mockChecksum(bytes),
+    });
+  }
+
+  /**
+   * Leg 3, in the server's own order: the object has to exist, it is
+   * re-measured against the ceiling, and only then is a row written.
+   *
+   * The insert is **unconditional**, exactly like
+   * `AttachmentTransactionExecutor.saveAttachment` against a table with no
+   * unique key on `object_key`. So confirming the same object twice produces
+   * two rows here as well — deliberately, because that is the hazard the
+   * "never retry a confirm" rule exists for, and a mock that quietly
+   * de-duplicated would make the rule look like superstition.
+   */
+  confirmAttachmentUpload(
+    projectId: string,
+    issueId: string,
+    input: ConfirmAttachmentUploadInput,
+  ): IssueAttachment {
+    const issue = this.findIssue(projectId, issueId);
+    const ticket = [...this.uploadTickets.values()].find((item) => item.objectKey === input.objectKey);
+    if (ticket?.behaviour === "confirmFails") {
+      // The object is in the bucket and stays there: nothing sweeps it, and the
+      // delete route does not touch storage. This is the orphan.
+      throw new MockApiError("UNAVAILABLE", "The attachment could not be recorded. Please try again.");
+    }
+
+    const stored = this.storeObjects.get(input.objectKey);
+    if (!stored) {
+      throw new MockApiError("NOT_FOUND", "Object not found in storage");
+    }
+    if (stored.sizeBytes > ATTACHMENT_MAX_SIZE_BYTES) {
+      // The server deletes the oversized object before refusing, so the key
+      // stops resolving for a second attempt too.
+      this.storeObjects.delete(input.objectKey);
+      throw new MockApiError("OUT_OF_RANGE", attachmentSizeRefusalMessage(stored.sizeBytes));
+    }
+
+    const attachment: StoredAttachment = {
+      id: makeId("attachment"),
+      issueId: issue.id,
+      uploadedBy: this.currentUserId,
+      objectKey: input.objectKey,
+      fileName: input.fileName,
+      // The stored row keeps the *request's* content type, not the object's:
+      // `saveAttachment` is handed `contentType` from the confirm body and the
+      // metadata only contributes size and checksum.
+      contentType: input.contentType,
+      sizeBytes: stored.sizeBytes,
+      checksum: stored.checksum,
+      createdAt: now(),
+      deletedAt: null,
+    };
+    this.attachments.push(attachment);
+    this.pushHistory(issue.id, "ATTACHMENT_UPLOADED", this.currentUserId, {
+      attachmentId: attachment.id,
+      issueId: issue.id,
+      uploadedBy: attachment.uploadedBy,
+      fileName: attachment.fileName,
+      contentType: attachment.contentType,
+      sizeBytes: attachment.sizeBytes,
+      createdAt: attachment.createdAt,
+    });
+    return this.attachmentView(attachment);
+  }
+
+  getAttachmentDownloadUrl(projectId: string, issueId: string, attachmentId: string): AttachmentDownloadUrl {
+    const attachment = this.findAttachment(projectId, issueId, attachmentId);
+    const query = new URLSearchParams({
+      "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+      "X-Amz-Expires": String(Math.round(ATTACHMENT_PRESIGNED_TTL_MS / 1000)),
+      "X-Amz-SignedHeaders": "host",
+      "X-Amz-Signature": mockChecksum(new TextEncoder().encode(`${attachment.objectKey}:get:${Date.now()}`)),
+      "response-content-disposition": `attachment; filename="${attachment.fileName}"`,
+    });
+    return {
+      downloadUrl: `${ATTACHMENT_STORE_ORIGIN}/${ATTACHMENT_BUCKET}/${attachment.objectKey}?${query.toString()}`,
+      checksum: attachment.checksum,
+    };
+  }
+
+  /**
+   * Soft delete, and the **only** place this mock enforces a project role.
+   *
+   * The rest of this store is deliberately permissive — links, labels and
+   * comments all write without asking who is calling — and this one is not,
+   * because the rule it enforces is the rule that decides how the panel is
+   * *drawn*. `AttachmentServiceImpl.deleteAttachment` picks its allowed set by
+   * comparing `uploadedBy` with the caller: `delete-own-attachment-roles`
+   * (ADMIN, MEMBER) for your own file and `delete-attachment-roles` (ADMIN) for
+   * anybody else's. A per-row control is only correct if the row it is drawn on
+   * would actually accept it, and a mock that accepted everything could not
+   * tell a correct gate from a missing one.
+   *
+   * The object in the bucket is untouched, like the server's.
+   */
+  deleteAttachment(projectId: string, issueId: string, attachmentId: string): void {
+    const attachment = this.findAttachment(projectId, issueId, attachmentId);
+    const role = this.getMembership(projectId).role;
+    const allowed = attachment.uploadedBy === this.currentUserId ? role === "ADMIN" || role === "MEMBER" : role === "ADMIN";
+    if (!allowed) {
+      throw new MockApiError("PERMISSION_DENIED", "You do not have permission to delete this attachment");
+    }
+    attachment.deletedAt = now();
+    this.pushHistory(attachment.issueId, "ATTACHMENT_DELETED", this.currentUserId, {
+      attachmentId: attachment.id,
+      issueId: attachment.issueId,
+      deletedBy: this.currentUserId,
+      fileName: attachment.fileName,
+      deletedAt: attachment.deletedAt,
+    });
   }
 
   listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Page<IssueComment> {
@@ -2467,6 +2886,38 @@ export class MockTaskaStore {
     return issue;
   }
 
+  private findAttachment(projectId: string, issueId: string, attachmentId: string): StoredAttachment {
+    const issue = this.findIssue(projectId, issueId);
+    const attachment = this.attachments.find(
+      (item) => item.id === attachmentId && item.issueId === issue.id && item.deletedAt === null,
+    );
+    if (!attachment) {
+      throw new MockApiError("NOT_FOUND", "Attachment not found");
+    }
+    return attachment;
+  }
+
+  /**
+   * The row as the gateway serves it. `objectKey` is dropped here rather than
+   * never stored, because that is the shape of the real thing:
+   * `IssueAttachmentMapper.toIssueAttachmentDto` reads eight fields off an
+   * `AttachmentResponse` that carries ten, leaving the object key and the
+   * presigned download URL behind. A mock that exposed the key would let a
+   * component be written against a field the gateway does not send.
+   */
+  private attachmentView(attachment: StoredAttachment): IssueAttachment {
+    return {
+      id: attachment.id,
+      issueId: attachment.issueId,
+      fileName: attachment.fileName,
+      contentType: attachment.contentType,
+      sizeBytes: attachment.sizeBytes,
+      uploadedBy: attachment.uploadedBy,
+      checksum: attachment.checksum,
+      createdAt: attachment.createdAt,
+    };
+  }
+
   /**
    * The stored link as the given issue sees it. Only `viewLinkType` depends on
    * the viewer: `sourceIssueId` and `targetIssueId` keep naming the ends the
@@ -2705,6 +3156,54 @@ export class MockTaskaApi implements TaskaApi {
 
   async removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
     this.store.removeIssueLabel(projectId, issueId, labelId);
+    await wait(null);
+  }
+
+  async listAttachments(projectId: string, issueId: string): Promise<IssueAttachment[]> {
+    return wait(this.store.listAttachments(projectId, issueId));
+  }
+
+  async createAttachmentUploadUrl(
+    projectId: string,
+    issueId: string,
+    input: CreateAttachmentUploadUrlInput,
+  ): Promise<AttachmentUploadTicket> {
+    return wait(this.store.createAttachmentUploadUrl(projectId, issueId, input));
+  }
+
+  /**
+   * Reads the blob here rather than in the store because this is the only layer
+   * that may be asynchronous — and it reads the *bytes*, not just `size`, so
+   * the checksum the confirm reports is a fact about what was actually sent.
+   *
+   * `wait` is skipped for the failure paths only in the sense that the throw
+   * happens before it; there is no artificial slowness here beyond the store's
+   * own, which is the same 140ms every other call takes.
+   */
+  async putAttachmentBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    const bytes = new Uint8Array(await body.arrayBuffer());
+    this.store.putAttachmentBytes(uploadUrl, bytes, contentType);
+    await wait(null);
+  }
+
+  async confirmAttachmentUpload(
+    projectId: string,
+    issueId: string,
+    input: ConfirmAttachmentUploadInput,
+  ): Promise<IssueAttachment> {
+    return wait(this.store.confirmAttachmentUpload(projectId, issueId, input));
+  }
+
+  async getAttachmentDownloadUrl(
+    projectId: string,
+    issueId: string,
+    attachmentId: string,
+  ): Promise<AttachmentDownloadUrl> {
+    return wait(this.store.getAttachmentDownloadUrl(projectId, issueId, attachmentId));
+  }
+
+  async deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {
+    this.store.deleteAttachment(projectId, issueId, attachmentId);
     await wait(null);
   }
 

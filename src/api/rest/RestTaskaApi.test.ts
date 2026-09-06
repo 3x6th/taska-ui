@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
+import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError } from "../attachments";
+import { isMissingOrForbidden, isUndeployedRoute } from "../errors";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
@@ -1757,5 +1759,274 @@ describe("RestTaskaApi issue planning fields", () => {
       "storyPoints",
       "summary",
     ]);
+  });
+});
+
+
+/**
+ * The attachment routes (TAS-190) as `RestTaskaApi` puts them on the wire.
+ *
+ * Two things here cannot be seen from the mock and are the reason this block
+ * exists. The **middle leg** is a raw cross-origin PUT that must carry the
+ * signed `Content-Type` and *nothing else* — no bearer token, no request id, no
+ * `Accept` — because a presigned URL authenticates itself and every extra
+ * header is one more thing a preflight has to have been told to allow. And its
+ * failures must arrive in a shape that `src/api/errors.ts` cannot mistake for a
+ * gateway answer.
+ */
+describe("RestTaskaApi attachments", () => {
+  const PROJECT = "5b1e6f30-0000-4000-8000-000000000001";
+  const ISSUE = "5b1e6f30-0000-4000-8000-000000000002";
+  const ATTACHMENT = "5b1e6f30-0000-4000-8000-000000000003";
+
+  const answer = (status: number, body: unknown, requestId?: string) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name === "X-Request-Id" ? (requestId ?? null) : null) },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const row = {
+    id: ATTACHMENT,
+    issueId: ISSUE,
+    fileName: "login-500-trace.txt",
+    contentType: "text/plain",
+    sizeBytes: 2411,
+    uploadedBy: "1cf0dc4e-0000-4000-8000-000000000001",
+    checksum: "8f14e45fceea167a5a36dedd4bea2543",
+    createdAt: "2026-09-01T09:10:00Z",
+  };
+
+  const calls = (stub: ReturnType<typeof vi.fn>) =>
+    stub.mock.calls as unknown as [string, RequestInit][];
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the list from the project-scoped path and normalises what the response left out", async () => {
+    const fetchStub = vi.fn(async () => answer(200, { items: [row, { fileName: "half.txt" }] }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const attachments = await new RestTaskaApi().listAttachments(PROJECT, ISSUE);
+
+    expect(calls(fetchStub)[0][0]).toBe(`/api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments`);
+    expect(attachments[0]).toEqual(row);
+    // A row the response only half-filled is still drawable: an empty id (so the
+    // controls that need one can tell), and the issue the caller asked about.
+    expect(attachments[1]).toEqual({
+      id: "",
+      issueId: ISSUE,
+      fileName: "half.txt",
+      contentType: "",
+      sizeBytes: 0,
+      uploadedBy: "",
+      checksum: null,
+      createdAt: "",
+    });
+  });
+
+  it("posts the three fields leg 1 requires and reads the ticket back", async () => {
+    const fetchStub = vi.fn(async () => answer(200, { uploadUrl: "https://store.example/obj?sig=1", objectKey: "obj" }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const ticket = await new RestTaskaApi().createAttachmentUploadUrl(PROJECT, ISSUE, {
+      fileName: "notes.txt",
+      contentType: "text/plain",
+      sizeBytes: 12,
+    });
+
+    expect(calls(fetchStub)[0][0]).toBe(`/api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments/upload-url`);
+    expect(JSON.parse(String(calls(fetchStub)[0][1].body)) as unknown).toEqual({
+      fileName: "notes.txt",
+      contentType: "text/plain",
+      sizeBytes: 12,
+    });
+    expect(ticket).toEqual({ uploadUrl: "https://store.example/obj?sig=1", objectKey: "obj" });
+  });
+
+  it("refuses a bad file before any request, in the server's own words", async () => {
+    const fetchStub = vi.fn(async () => answer(200, {}));
+    vi.stubGlobal("fetch", fetchStub);
+    const api = new RestTaskaApi();
+
+    await expect(
+      api.createAttachmentUploadUrl(PROJECT, ISSUE, { fileName: "a.zip", contentType: "application/x-zip-compressed", sizeBytes: 10 }),
+    ).rejects.toMatchObject({ status: 400, message: "Content type not allowed: application/x-zip-compressed" });
+    await expect(
+      api.createAttachmentUploadUrl(PROJECT, ISSUE, { fileName: "a.txt", contentType: "text/plain", sizeBytes: ATTACHMENT_MAX_SIZE_BYTES + 1 }),
+    ).rejects.toMatchObject({ status: 400 });
+
+    // Nothing went out. The refusal is the same one the mock gives, so the two
+    // modes cannot disagree about which files are uploadable.
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("PUTs the bytes to the presigned URL with the signed content type and nothing else", async () => {
+    const fetchStub = vi.fn(async () => answer(200, undefined));
+    vi.stubGlobal("fetch", fetchStub);
+    window.localStorage.setItem("taska.accessToken", "a-real-token");
+
+    const body = new Blob(["trace"], { type: "text/plain" });
+    await new RestTaskaApi().putAttachmentBytes("https://store.example/obj?X-Amz-Signature=abc", body, "text/plain");
+
+    const [url, init] = calls(fetchStub)[0];
+    // Absolute, and untouched by the gateway base path.
+    expect(url).toBe("https://store.example/obj?X-Amz-Signature=abc");
+    expect(init.method).toBe("PUT");
+    // Exactly one header. A bearer token sent alongside a query-string
+    // signature can itself fail the signature, and any header beyond the CORS
+    // safelist has to be in `Access-Control-Allow-Headers` to survive preflight.
+    expect(init.headers).toEqual({ "Content-Type": "text/plain" });
+    expect(init.body).toBe(body);
+    // Not routed through `request()`, so none of its machinery applies.
+    expect(String(JSON.stringify(init.headers))).not.toContain("Bearer");
+    expect(init.credentials).toBeUndefined();
+  });
+
+  it("sends the content type it was given rather than the blob's, so the signature still matches", async () => {
+    const fetchStub = vi.fn(async () => answer(200, undefined));
+    vi.stubGlobal("fetch", fetchStub);
+
+    // A blob whose own type carries a charset — which is what several file
+    // pickers produce — signed as the bare type. The signed value wins.
+    const body = new Blob(["x"], { type: "text/plain;charset=utf-8" });
+    await new RestTaskaApi().putAttachmentBytes("https://store.example/obj", body, "text/plain");
+
+    expect(calls(fetchStub)[0][1].headers).toEqual({ "Content-Type": "text/plain" });
+  });
+
+  it("reports a blocked preflight as unreachable, with no status anywhere on the error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+
+    const error = await new RestTaskaApi()
+      .putAttachmentBytes("https://store.example/obj", new Blob(["x"]), "text/plain")
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AttachmentStoreError);
+    expect(error).toMatchObject({ code: "STORAGE_UNREACHABLE", storeStatus: null });
+    // The load-bearing assertion of this whole block: `isMissingOrForbidden`
+    // and `isConflict` read `status` and `code` off any Error, so a store
+    // failure wearing either would be classified as a gateway answer.
+    expect((error as { status?: unknown }).status).toBeUndefined();
+    expect(isMissingOrForbidden(error)).toBe(false);
+  });
+
+  it("carries a store's 403 in storeStatus and in the message, never in status", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(403, undefined)));
+
+    const error = await new RestTaskaApi()
+      .putAttachmentBytes("https://store.example/obj", new Blob(["x"]), "text/plain")
+      .catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ code: "STORAGE_REJECTED", storeStatus: 403, message: "The file store answered 403." });
+    expect((error as { status?: unknown }).status).toBeUndefined();
+    // A gateway 403 means "not yours"; a store 403 means "this signature is no
+    // longer accepted". Reading the second as the first is the bug this pins.
+    expect(isMissingOrForbidden(error)).toBe(false);
+  });
+
+  it("does not sign a store 401 out of the app", async () => {
+    // `request()` treats a 401 as a dead session and clears the tokens. This
+    // leg must not: the 401 is somebody else's server talking about a signature.
+    window.localStorage.setItem("taska.accessToken", "still-good");
+    window.localStorage.setItem("taska.refreshToken", "still-good");
+    const fetchStub = vi.fn(async () => answer(401, undefined));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const api = new RestTaskaApi();
+    const expired = vi.fn();
+    api.onSessionExpired(expired);
+
+    await expect(api.putAttachmentBytes("https://store.example/obj", new Blob(["x"]), "text/plain")).rejects.toMatchObject({
+      storeStatus: 401,
+    });
+
+    expect(expired).not.toHaveBeenCalled();
+    expect(api.hasSession()).toBe(true);
+    // One call: no refresh, no retry.
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirms with the three fields the contract asks for, once, and reads the 201 back", async () => {
+    const fetchStub = vi.fn(async () => answer(201, row));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const attachment = await new RestTaskaApi().confirmAttachmentUpload(PROJECT, ISSUE, {
+      objectKey: "obj",
+      fileName: "login-500-trace.txt",
+      contentType: "text/plain",
+    });
+
+    expect(calls(fetchStub)[0][0]).toBe(`/api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments/confirm`);
+    expect(JSON.parse(String(calls(fetchStub)[0][1].body)) as unknown).toEqual({
+      objectKey: "obj",
+      fileName: "login-500-trace.txt",
+      contentType: "text/plain",
+    });
+    // No `Idempotency-Key`: the route does not read one, and this is precisely
+    // the call that must not be repeated.
+    expect(JSON.stringify(calls(fetchStub)[0][1].headers)).not.toContain("Idempotency-Key");
+    expect(attachment).toEqual(row);
+  });
+
+  it("does not retry a failed confirm", async () => {
+    const fetchStub = vi.fn(async () => answer(503, { code: "UNAVAILABLE", message: "Service unavailable" }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await expect(
+      new RestTaskaApi().confirmAttachmentUpload(PROJECT, ISSUE, { objectKey: "obj", fileName: "f.txt", contentType: "text/plain" }),
+    ).rejects.toMatchObject({ status: 503 });
+
+    // Exactly one. `object_key` has no unique constraint and the insert is
+    // unconditional, so a second attempt is a second row plus a second history
+    // and outbox event.
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks for a download link per attachment and percent-encodes the ids", async () => {
+    const fetchStub = vi.fn(async () => answer(200, { downloadUrl: "https://store.example/get?sig=2", checksum: null }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const link = await new RestTaskaApi().getAttachmentDownloadUrl(PROJECT, ISSUE, "a/b?c");
+
+    expect(calls(fetchStub)[0][0]).toBe(
+      `/api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments/a%2Fb%3Fc/download-url`,
+    );
+    expect(link).toEqual({ downloadUrl: "https://store.example/get?sig=2", checksum: null });
+  });
+
+  it("deletes by id and accepts the 204", async () => {
+    const fetchStub = vi.fn(async () => answer(204, undefined));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await expect(new RestTaskaApi().deleteAttachment(PROJECT, ISSUE, ATTACHMENT)).resolves.toBeUndefined();
+
+    expect(calls(fetchStub)[0][0]).toBe(`/api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments/${ATTACHMENT}`);
+    expect(calls(fetchStub)[0][1].method).toBe("DELETE");
+  });
+
+  it("passes the undeployed-route 404 through so the panel can say which 404 it is", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer(404, {
+          code: "NOT_FOUND",
+          message: `No static resource api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments for request '…'.`,
+        }),
+      ),
+    );
+
+    const error = await new RestTaskaApi().listAttachments(PROJECT, ISSUE).catch((e: unknown) => e);
+
+    // Measured against the deployed gateway on 2026-09-06: these routes answer
+    // this, while `…/comments` answers 401 for the same unauthenticated call.
+    expect(error).toMatchObject({ status: 404, message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE) });
+    expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
   });
 });

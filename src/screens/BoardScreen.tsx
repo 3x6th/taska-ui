@@ -11,13 +11,20 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronLeft, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, Download, Paperclip, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
 import { useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput } from "../api/TaskaApi";
-import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
+import { SEARCH_QUERY_MIN_LENGTH, UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
+import {
+  ATTACHMENT_ACCEPTED_SUMMARY,
+  ATTACHMENT_ACCEPT_ATTRIBUTE,
+  ATTACHMENT_MAX_SIZE_BYTES,
+  attachmentRefusal,
+  attachmentUploadFailure,
+} from "../api/attachments";
 import { taskaApi } from "../api/client";
-import { isMissingOrForbidden } from "../api/errors";
+import { apiErrorFacts, isMissingOrForbidden, isUndeployedRoute } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
@@ -30,6 +37,7 @@ import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   Issue,
+  IssueAttachment,
   IssueComment,
   IssueHistoryEvent,
   IssueLink,
@@ -50,6 +58,7 @@ import type {
 import {
   formatDateTime,
   formatDay,
+  formatFileSize,
   isLabelColor,
   issueLinkTypeLabel,
   issueLinkTypes,
@@ -699,6 +708,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           members={members}
           userById={userById}
           canEdit={canEdit}
+          isProjectAdmin={isProjectAdmin}
           currentUserId={meQuery.data?.id}
           workflows={workflowQuery.data}
           workflowUnknown={workflowUnknown}
@@ -992,6 +1002,7 @@ function IssuePanel({
   members,
   userById,
   canEdit,
+  isProjectAdmin,
   currentUserId,
   workflows,
   workflowUnknown,
@@ -1002,6 +1013,15 @@ function IssuePanel({
   members: ProjectMember[];
   userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
   canEdit: boolean;
+  /**
+   * Narrower than `canEdit`, and only the attachments section reads it: an
+   * attachment somebody *else* uploaded may be deleted by an `ADMIN` and by
+   * nobody else (`delete-attachment-roles` in issue-service's own config),
+   * while your own needs only `ADMIN` or `MEMBER`. Same shape as the label
+   * writes TAS-119 gated, and the same standing: hiding the control is
+   * presentation, the server decides.
+   */
+  isProjectAdmin: boolean;
   currentUserId?: string;
   workflows?: WorkflowsByIssueType;
   /** The workflow read failed; these buttons are the keyboard path a drag has. */
@@ -1200,6 +1220,15 @@ function IssuePanel({
           <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
           <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
+
+          <IssueAttachmentsSection
+            projectId={projectId}
+            issueId={issueId}
+            canEdit={canEdit}
+            isProjectAdmin={isProjectAdmin}
+            currentUserId={currentUserId}
+            userById={userById}
+          />
 
           <CommentsSection
             projectId={projectId}
@@ -1696,6 +1725,451 @@ function IssueLinksSection({
  */
 function otherEndOf(link: IssueLink, issueId: string) {
   return link.targetIssueId === issueId ? link.sourceIssueId : link.targetIssueId;
+}
+
+/** Which leg of the three-legged upload is in flight, for the row that stands in for it. */
+type AttachmentUploadStep = "signing" | "uploading" | "confirming";
+
+/** What that row says while each leg runs. Named for what is happening, not for a percentage. */
+const attachmentStepText: Record<AttachmentUploadStep, string> = {
+  signing: "Preparing…",
+  uploading: "Uploading…",
+  confirming: "Saving…",
+};
+
+/**
+ * A sentence about an upload that has finished, and the tone it is said in.
+ * `info` exists for exactly one outcome — the confirm that failed in transit
+ * while succeeding on the server — because calling that an error would be
+ * telling the reader the opposite of what happened.
+ */
+interface AttachmentNotice {
+  tone: "error" | "info";
+  text: string;
+}
+
+/**
+ * `GET/POST/DELETE /projects/{projectId}/issues/{issueId}/attachments` and the
+ * two extra routes the upload needs — plus one leg that is not a route at all.
+ *
+ * Three things make this section different from the links and labels sections
+ * it sits beside, and each of them shows in the code:
+ *
+ * 1. **An upload is three calls, and the middle one does not touch Taska.** The
+ *    browser PUTs the bytes straight to the object store at a presigned URL. So
+ *    a failure has to say *which* leg failed, and a failure with no HTTP status
+ *    at all — the shape a blocked cross-origin preflight takes — has to be
+ *    named as the network-or-CORS problem it is rather than reported as
+ *    "upload failed".
+ * 2. **The confirm is not retryable and not optimistic.** `object_key` has no
+ *    unique constraint and the insert is unconditional, so a repeat is a
+ *    duplicate row, a duplicate history entry and a duplicate outbox event. The
+ *    control is disabled for the duration and the call is wrapped in no retry —
+ *    and after *any* confirm failure the list is re-read before anybody is told
+ *    the file was not attached, because a confirm can succeed on the server and
+ *    fail on the way back.
+ * 3. **Delete is gated per row, not per section.** Your own attachment needs
+ *    `ADMIN` or `MEMBER`; somebody else's needs `ADMIN`.
+ *
+ * Deletes *are* optimistic with rollback, like every other mutation here: that
+ * one is a single call whose outcome the client can predict.
+ */
+function IssueAttachmentsSection({
+  projectId,
+  issueId,
+  canEdit,
+  isProjectAdmin,
+  currentUserId,
+  userById,
+}: {
+  projectId: string;
+  issueId: string;
+  canEdit: boolean;
+  isProjectAdmin: boolean;
+  currentUserId?: string;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+}) {
+  const queryClient = useQueryClient();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [pending, setPending] = useState<{ fileName: string; sizeBytes: number; step: AttachmentUploadStep } | null>(null);
+  const [notice, setNotice] = useState<AttachmentNotice | null>(null);
+  /**
+   * A resolved download link the browser would not open for us. Only ever set
+   * when `window.open` came back `null`, which is the popup blocker's one
+   * honest signal — so the fallback anchor appears exactly when it is needed
+   * and never clutters a row that worked.
+   */
+  const [blockedDownload, setBlockedDownload] = useState<{ id: string; url: string } | null>(null);
+
+  const attachmentsKey = useMemo(() => ["issue-attachments", projectId, issueId], [projectId, issueId]);
+  const attachmentsQuery = useQuery({
+    queryKey: attachmentsKey,
+    queryFn: () => taskaApi.listAttachments(projectId, issueId),
+    retry: retryUnlessMissing,
+  });
+  const attachments = useMemo(() => attachmentsQuery.data ?? [], [attachmentsQuery.data]);
+
+  /**
+   * The list, and the panel's issue read for the sake of the activity feed: an
+   * upload and a delete each write an `ATTACHMENT_UPLOADED` /
+   * `ATTACHMENT_DELETED` history row, so leaving the issue query alone would
+   * leave the feed one event behind the list directly above it.
+   */
+  const settle = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: attachmentsKey }),
+      queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }),
+    ]);
+
+  const deleteAttachment = useMutation({
+    mutationFn: (attachmentId: string) => taskaApi.deleteAttachment(projectId, issueId, attachmentId),
+    onMutate: async (attachmentId) => {
+      setNotice(null);
+      await queryClient.cancelQueries({ queryKey: attachmentsKey });
+      const previous = queryClient.getQueryData<IssueAttachment[]>(attachmentsKey);
+      queryClient.setQueryData<IssueAttachment[]>(attachmentsKey, (current) =>
+        (current ?? []).filter((item) => item.id !== attachmentId),
+      );
+      return { previous };
+    },
+    onError: (error, _attachmentId, context) => {
+      if (context?.previous) queryClient.setQueryData(attachmentsKey, context.previous);
+      setNotice({ tone: "error", text: apiErrorFacts(error).message ?? "The attachment could not be removed." });
+    },
+    onSettled: settle,
+  });
+
+  const download = useMutation({
+    mutationFn: (attachment: IssueAttachment) =>
+      taskaApi.getAttachmentDownloadUrl(projectId, issueId, attachment.id),
+    onMutate: () => {
+      setNotice(null);
+      setBlockedDownload(null);
+    },
+    onSuccess: (link, attachment) => {
+      if (!link.downloadUrl) {
+        setNotice({ tone: "error", text: `No download link came back for ${attachment.fileName}.` });
+        return;
+      }
+      // A presigned GET on the object store, so this leaves the app rather than
+      // fetching bytes here: `noopener,noreferrer` because the destination is a
+      // server we do not control. `window.open` returning `null` is the popup
+      // blocker saying no — the only reliable way to hear it — and the row then
+      // offers the link as something to click directly.
+      const opened = window.open(link.downloadUrl, "_blank", "noopener,noreferrer");
+      if (!opened) setBlockedDownload({ id: attachment.id, url: link.downloadUrl });
+    },
+    onError: (error) => {
+      setNotice({ tone: "error", text: apiErrorFacts(error).message ?? "The download link could not be created." });
+    },
+  });
+
+  /**
+   * The whole upload, written out rather than wrapped in a mutation, because
+   * its outcomes do not fit "resolved or rejected": one of them is *"the file
+   * was attached even though this failed"*, and another is *"nobody can say
+   * either way"*. Each leg is awaited on its own so the sentence names the leg
+   * that failed.
+   */
+  const runUpload = async (file: File) => {
+    setNotice(null);
+    setBlockedDownload(null);
+    const candidate = { fileName: file.name, contentType: file.type, sizeBytes: file.size };
+
+    // The picker's `accept` filters by the operating system's idea of a type
+    // and `File.type` is the browser's, so this is not a duplicate of it: a
+    // `.zip` reported as `application/x-zip-compressed`, or an extensionless
+    // file reported as `application/octet-stream`, gets past `accept` and is
+    // stopped here, before a request and in the server's own words.
+    const refusal = attachmentRefusal(candidate);
+    if (refusal) {
+      setNotice({ tone: "error", text: refusal });
+      return;
+    }
+
+    setPending({ fileName: file.name, sizeBytes: file.size, step: "signing" });
+
+    let ticket;
+    try {
+      // Leg 1, and the moment the fifteen-minute clock starts. Asked for now
+      // rather than when the panel opened, precisely so that clock is short.
+      ticket = await taskaApi.createAttachmentUploadUrl(projectId, issueId, candidate);
+    } catch (error) {
+      setPending(null);
+      setNotice({
+        tone: "error",
+        text: `${file.name} was not attached. ${apiErrorFacts(error).message ?? "The upload could not be prepared."}`,
+      });
+      return;
+    }
+
+    setPending((current) => (current ? { ...current, step: "uploading" } : current));
+    try {
+      // Leg 2. `candidate.contentType` and not `file.type` re-read — same value
+      // today, but this is the one place where sending something even slightly
+      // different from what was signed produces a 403 nobody can diagnose.
+      await taskaApi.putAttachmentBytes(ticket.uploadUrl, file, candidate.contentType);
+    } catch (error) {
+      setPending(null);
+      setNotice({ tone: "error", text: uploadFailureText(error, file.name) });
+      return;
+    }
+
+    setPending((current) => (current ? { ...current, step: "confirming" } : current));
+    // Counted before the confirm, so the check afterwards asks "is there one
+    // *more* of these" rather than "is there one at all" — attachments with the
+    // same name are allowed, and the server itself creates duplicates.
+    const before = countByName(queryClient.getQueryData<IssueAttachment[]>(attachmentsKey), file.name);
+    try {
+      // Leg 3. No retry, here or anywhere below it: a repeat is a second row.
+      await taskaApi.confirmAttachmentUpload(projectId, issueId, {
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: candidate.contentType,
+      });
+      setPending(null);
+      await settle();
+      return;
+    } catch (error) {
+      setPending(null);
+      // The confirm failed — but a confirm can succeed on the server and fail
+      // on the way back, so nobody is told the file was not attached until the
+      // list has been re-read and looked at. Getting this wrong states a
+      // falsehood about a file that is sitting right there.
+      let landed: IssueAttachment[] | null;
+      try {
+        landed = await queryClient.fetchQuery({
+          queryKey: attachmentsKey,
+          queryFn: () => taskaApi.listAttachments(projectId, issueId),
+          staleTime: 0,
+        });
+      } catch {
+        landed = null;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] });
+
+      if (landed === null) {
+        // Two unknowns and no way to resolve either. Claiming failure here
+        // would be a guess with a one-in-two chance of being a lie.
+        setNotice({
+          tone: "error",
+          text: `${file.name} may or may not have been attached: the confirmation failed and the list could not be re-read. Reopen this issue to check.`,
+        });
+        return;
+      }
+      if (countByName(landed, file.name) > before) {
+        setNotice({
+          tone: "info",
+          text: `${file.name} was attached after all — the confirmation did not reach us, but the server recorded it.`,
+        });
+        return;
+      }
+      setNotice({
+        tone: "error",
+        text: `${file.name} was not attached. ${apiErrorFacts(error).message ?? "The upload could not be confirmed."}`,
+      });
+    }
+  };
+
+  /**
+   * Mutations and the upload first, the query second — the same ordering rule
+   * the labels section states: an observer can hold data *and* a failed
+   * background refetch at once, and in that state a message about the refetch
+   * would explain an action the reader just took.
+   */
+  const readError = attachmentsQuery.error;
+  const undeployed = isUndeployedRoute(readError, UNDEPLOYED_ROUTE_MESSAGE);
+
+  return (
+    <section className="issue-attachments">
+      <h3>
+        Attachments
+        {attachments.length ? <span className="count-pill">{attachments.length}</span> : null}
+      </h3>
+
+      {canEdit && !undeployed ? (
+        <div className="attachment-picker">
+          {/* Driven by the button beside it rather than styled directly: a
+              `::file-selector-button` keeps the browser's own "No file chosen"
+              text, and a visually-hidden but focusable input puts a tab stop
+              where nothing is visible. `hidden` takes it out of the tab order
+              entirely, and the button is a real button with §4.1's focus ring. */}
+          <input
+            accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
+            className="attachment-input"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              // Cleared straight away so choosing the same file twice — after a
+              // failure, which is exactly when someone would — still fires a
+              // change event.
+              event.target.value = "";
+              if (file) void runUpload(file);
+            }}
+            ref={fileInput}
+            type="file"
+          />
+          <button
+            className="secondary-button compact-button"
+            disabled={pending !== null}
+            onClick={() => fileInput.current?.click()}
+            type="button"
+          >
+            <Paperclip size={13} />
+            Attach a file
+          </button>
+          {/* Said before a file is chosen, not after it is refused. The list is
+              stricter than people expect — no .docx, no GIF, no SVG, nothing
+              without an extension — and the picker's own filter cannot be
+              trusted to enforce it. */}
+          <p className="attachment-hint">
+            Up to {formatFileSize(ATTACHMENT_MAX_SIZE_BYTES)}. {ATTACHMENT_ACCEPTED_SUMMARY}.
+          </p>
+        </div>
+      ) : null}
+
+      {/* One live region that stays mounted and changes its text, rather than a
+          region that appears together with what it has to announce — §7 records
+          the second shape as depending on screen-reader timing, and this
+          section is new enough not to have to inherit it. Polite, not assertive:
+          the sentence always follows something the reader just did, and an
+          `alert` would cut across whatever they are reading. Empty, it carries
+          no class and takes no space. */}
+      <div aria-live="polite" className={notice ? (notice.tone === "error" ? "form-error" : "attachment-note") : ""}>
+        {notice?.text ?? ""}
+      </div>
+
+      {/* A 404 from this list has more than one cause — a missing issue, a
+          soft-deleted one, and a gateway that has not deployed these routes —
+          so it is never read as "this issue is gone" and never hides the
+          section. Only the undeployed signature gets its own quiet sentence;
+          everything else is shown as the failure it was. */}
+      {undeployed ? (
+        <p className="issue-links-empty">
+          Attachments are not on this gateway yet, so this issue&rsquo;s files cannot be listed (backend TAS-131).
+        </p>
+      ) : null}
+      {readError && !undeployed ? <div className="form-error">{readError.message}</div> : null}
+
+      {attachmentsQuery.isPending ? <p className="issue-links-empty">Loading attachments</p> : null}
+      {/* Only a successful empty answer may say there are none. */}
+      {attachmentsQuery.isSuccess && attachments.length === 0 && !pending ? (
+        <p className="issue-links-empty">No attachments yet</p>
+      ) : null}
+
+      {attachments.length || pending ? (
+        <ul className="attachment-list">
+          {attachments.map((attachment) => {
+            const uploader = userById.get(attachment.uploadedBy);
+            // Two rules, not one. Your own file needs ADMIN or MEMBER; somebody
+            // else's needs ADMIN. An attachment whose uploader the response left
+            // blank is treated as somebody else's, which is the safer of the two
+            // readings. The server checks all of this again regardless.
+            const mine = Boolean(currentUserId) && attachment.uploadedBy === currentUserId;
+            const canDelete = mine ? canEdit : isProjectAdmin;
+            const removing = deleteAttachment.isPending && deleteAttachment.variables === attachment.id;
+            return (
+              <li className="attachment-row" key={attachment.id || attachment.fileName}>
+                <button
+                  aria-label={`Download ${attachment.fileName}`}
+                  className="attachment-open"
+                  // An attachment the response left unaddressable cannot be
+                  // asked for: the request would name no attachment. The row
+                  // still shows — the file is on the issue either way.
+                  disabled={!attachment.id || (download.isPending && download.variables?.id === attachment.id)}
+                  onClick={() => download.mutate(attachment)}
+                  type="button"
+                >
+                  <Download className="attachment-icon" size={14} />
+                  <span className="attachment-name">{attachment.fileName || "Unnamed file"}</span>
+                  <span className="attachment-meta">
+                    {formatFileSize(attachment.sizeBytes)}
+                    {uploader ? ` · ${uploader.displayName}` : ""}
+                    {attachment.createdAt ? ` · ${formatDateTime(attachment.createdAt)}` : ""}
+                  </span>
+                </button>
+                {blockedDownload?.id === attachment.id ? (
+                  // The browser refused to open the tab for us. The link is
+                  // real and good for fifteen minutes, so it is offered rather
+                  // than swallowed.
+                  <a className="attachment-blocked-link" href={blockedDownload.url} rel="noopener noreferrer" target="_blank">
+                    Open
+                  </a>
+                ) : null}
+                {canDelete ? (
+                  <button
+                    aria-label={`Delete ${attachment.fileName}`}
+                    className="icon-button"
+                    disabled={!attachment.id || removing}
+                    onClick={() => deleteAttachment.mutate(attachment.id)}
+                    type="button"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                ) : null}
+              </li>
+            );
+          })}
+
+          {pending ? (
+            // The optimistic row. Not put in the query cache like the label and
+            // link sections do, because there is nothing server-shaped to put
+            // there yet: no id, no object key, and — until leg 3 answers — no
+            // row on the server to reconcile with. DESIGN.md §5.6 asks for no
+            // spinner in content, and a named leg says more than a bar that
+            // fills instantly under a 2 MB ceiling would.
+            <li className="attachment-row is-pending" key="attachment-pending">
+              <span className="attachment-open is-inert">
+                <Paperclip className="attachment-icon" size={14} />
+                <span className="attachment-name">{pending.fileName}</span>
+                <span className="attachment-meta">
+                  {formatFileSize(pending.sizeBytes)} · {attachmentStepText[pending.step]}
+                </span>
+              </span>
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+/** How many attachments in this list carry that file name. See the confirm path. */
+function countByName(attachments: IssueAttachment[] | undefined, fileName: string) {
+  return (attachments ?? []).filter((item) => item.fileName === fileName).length;
+}
+
+/**
+ * What to say when the **middle** leg failed — the PUT that goes straight to
+ * the object store and never reaches Taska.
+ *
+ * The three cases are genuinely different problems and reading them as one
+ * "upload failed" is what this function exists to prevent:
+ *
+ * - **no status at all.** `fetch` rejected without a response, which is what a
+ *   cross-origin preflight refusal looks like from script — the spec gives the
+ *   page no way to learn that is what happened. Being offline looks identical,
+ *   so the sentence names the possibilities instead of choosing one, and says
+ *   where the request was going, because "storage" being a different server
+ *   from Taska is the fact that makes it make sense.
+ * - **403.** The signature stopped being accepted. Fifteen minutes from the
+ *   moment the file was chosen, or a `Content-Type` that did not match what was
+ *   signed — either way, not a permission problem and not something the same
+ *   link will ever survive. Choosing the file again mints a new one.
+ * - **anything else.** The store's own status, printed as the store's.
+ */
+function uploadFailureText(error: unknown, fileName: string) {
+  const failure = attachmentUploadFailure(error);
+  if (!failure) {
+    return `${fileName} was not uploaded. ${apiErrorFacts(error).message ?? "The upload failed."}`;
+  }
+  if (failure.kind === "blocked") {
+    return `${fileName} was not uploaded: the browser could not reach the file store. This upload goes straight to storage rather than through Taska, so a network problem or the storage server's cross-origin rules can stop it before it starts.`;
+  }
+  if (failure.kind === "expired") {
+    return `${fileName} was not uploaded: the file store would not accept the upload link. A link lasts 15 minutes from the moment the file is chosen — choose it again to retry.`;
+  }
+  return `${fileName} was not uploaded: the file store answered ${failure.storeStatus}.`;
 }
 
 function CommentsSection({
@@ -2401,6 +2875,20 @@ function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, 
   if (event.eventType === "COMMENT_CREATED") return "commented on this issue";
   if (event.eventType === "COMMENT_UPDATED") return "edited a comment";
   if (event.eventType === "COMMENT_DELETED") return "deleted a comment";
+  // `PayloadSerializer` puts `fileName` in both attachment payloads, so the
+  // sentence can name the file. It is typed `unknown` through the payload's
+  // index signature until it is checked, and a payload without it still gets a
+  // true sentence rather than the word "undefined".
+  if (event.eventType === "ATTACHMENT_UPLOADED") {
+    return typeof event.payload.fileName === "string" && event.payload.fileName
+      ? `attached ${event.payload.fileName}`
+      : "attached a file";
+  }
+  if (event.eventType === "ATTACHMENT_DELETED") {
+    return typeof event.payload.fileName === "string" && event.payload.fileName
+      ? `removed ${event.payload.fileName}`
+      : "removed a file";
+  }
   return "updated this issue";
 }
 

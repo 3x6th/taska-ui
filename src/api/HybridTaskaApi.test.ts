@@ -248,4 +248,76 @@ describe("HybridTaskaApi", () => {
       code: "INVALID_ARGUMENT",
     });
   });
+
+  /**
+   * The attachment family, delegated whole — including the leg that does not go
+   * to the gateway at all. Nothing here is synthesised, and this pins that:
+   * a compensation for `putAttachmentBytes` would mean this class reporting
+   * bytes into a bucket it has no credentials for, which the very next call
+   * would then be contradicted about by the real server.
+   */
+  it("delegates all six attachment calls untouched, the direct-to-store PUT included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const [project] = await hybrid.listProjects();
+    const { items } = await hybrid.listIssues(project.id, { pageSize: 100 });
+    const issue = items.find((item) => item.issueKey === "TAS-101");
+    expect(issue).toBeDefined();
+    if (!issue) return;
+
+    const listAttachments = vi.spyOn(live, "listAttachments");
+    const createUrl = vi.spyOn(live, "createAttachmentUploadUrl");
+    const putBytes = vi.spyOn(live, "putAttachmentBytes");
+    const confirm = vi.spyOn(live, "confirmAttachmentUpload");
+    const downloadUrl = vi.spyOn(live, "getAttachmentDownloadUrl");
+    const remove = vi.spyOn(live, "deleteAttachment");
+
+    const before = await hybrid.listAttachments(project.id, issue.id);
+    expect(listAttachments).toHaveBeenCalledWith(project.id, issue.id);
+
+    const file = new File(["hybrid"], "hybrid.txt", { type: "text/plain" });
+    const input = { fileName: file.name, contentType: file.type, sizeBytes: file.size };
+    const ticket = await hybrid.createAttachmentUploadUrl(project.id, issue.id, input);
+    expect(createUrl).toHaveBeenCalledWith(project.id, issue.id, input);
+
+    await hybrid.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+    expect(putBytes).toHaveBeenCalledWith(ticket.uploadUrl, file, file.type);
+
+    const confirmBody = { objectKey: ticket.objectKey, fileName: file.name, contentType: file.type };
+    const attachment = await hybrid.confirmAttachmentUpload(project.id, issue.id, confirmBody);
+    expect(confirm).toHaveBeenCalledWith(project.id, issue.id, confirmBody);
+    expect(attachment.fileName).toBe("hybrid.txt");
+    expect(await hybrid.listAttachments(project.id, issue.id)).toHaveLength(before.length + 1);
+
+    await hybrid.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
+    expect(downloadUrl).toHaveBeenCalledWith(project.id, issue.id, attachment.id);
+
+    await hybrid.deleteAttachment(project.id, issue.id, attachment.id);
+    expect(remove).toHaveBeenCalledWith(project.id, issue.id, attachment.id);
+  });
+
+  it("passes a store failure straight up rather than compensating for it", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const [project] = await hybrid.listProjects();
+    const { items } = await hybrid.listIssues(project.id, { pageSize: 100 });
+    const issue = items[0];
+
+    // The mock's stand-in for a blocked cross-origin PUT. Whatever this class
+    // did with it, the object would not be in the bucket — so there is nothing
+    // to do with it but say so.
+    const file = new File(["x"], "cors-blocked.txt", { type: "text/plain" });
+    const ticket = await hybrid.createAttachmentUploadUrl(project.id, issue.id, {
+      fileName: file.name,
+      contentType: file.type,
+      sizeBytes: file.size,
+    });
+
+    await expect(hybrid.putAttachmentBytes(ticket.uploadUrl, file, file.type)).rejects.toMatchObject({
+      code: "STORAGE_UNREACHABLE",
+      storeStatus: null,
+    });
+  });
 });

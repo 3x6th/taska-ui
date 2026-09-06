@@ -103,6 +103,32 @@ export const formatDateTime = (iso: string) =>
     hour12: false,
   }).format(new Date(iso));
 
+/**
+ * A file size a person can read, for the attachment rows and for the limit the
+ * picker states before a file is chosen.
+ *
+ * Binary units, because that is what the server's ceiling is expressed in:
+ * 2097152 bytes is exactly "2 MB" here, and a decimal-megabyte formatter would
+ * print "2.1 MB" for the largest file the server accepts — a limit stated in
+ * one place and contradicted in another.
+ *
+ * One decimal at most, and a trailing `.0` is dropped: "1.5 KB", "2 MB",
+ * "870 B". Bytes are never fractional, so the smallest unit prints whole.
+ */
+export const formatFileSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rounded = Math.round(value * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)} ${units[unit]}`;
+};
+
 export const relativeTime = (iso: string) => {
   const diffMs = Date.now() - new Date(iso).getTime();
   const minutes = Math.max(1, Math.round(diffMs / 60000));

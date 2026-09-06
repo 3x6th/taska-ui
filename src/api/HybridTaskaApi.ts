@@ -1,6 +1,8 @@
 import type {
   AcceptInvitationInput,
   AuthTokens,
+  ConfirmAttachmentUploadInput,
+  CreateAttachmentUploadUrlInput,
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
@@ -20,7 +22,10 @@ import type {
   AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
+  AttachmentDownloadUrl,
+  AttachmentUploadTicket,
   Issue,
+  IssueAttachment,
   IssueComment,
   IssueLink,
   IssueSearchHit,
@@ -230,6 +235,71 @@ export class HybridTaskaApi implements TaskaApi {
 
   removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
     return this.live.removeIssueLabel(projectId, issueId, labelId);
+  }
+
+  /**
+   * All six delegated whole, including the direct-to-store PUT — and for this
+   * family "no compensation" is a stronger statement than it is for links or
+   * labels, so it is worth saying why rather than reusing the sentence above.
+   *
+   * This class synthesises project membership out of `GET /projects/{id}` and
+   * `GET /users/me`, and that is the only thing it can synthesise: it holds no
+   * store, no seeded data and no bucket. The five gateway routes are ordinary
+   * routes with their own role rules — if the gateway has not deployed them the
+   * caller sees that, which is the honest answer
+   * (docs/ai/API-DIVERGENCE.md).
+   *
+   * The middle leg is where compensation stops being merely absent and becomes
+   * impossible. `putAttachmentBytes` puts bytes on a **different server**: a
+   * presigned S3 host that this class has no credentials for, no route to and
+   * no substitute for. There is nothing to fall back to and nothing to fake —
+   * a synthesised success would be this class reporting that a file is in a
+   * bucket it never wrote to, and the next call, `confirmAttachmentUpload`,
+   * would then be told by the *real* server that no such object exists. So the
+   * failure travels up exactly as it arrived and the panel says what actually
+   * happened.
+   *
+   * Which matters more here than anywhere else in this class, because this is
+   * the one leg that may be blocked by something no code on this side can fix:
+   * nothing in the backend repository configures CORS on the bucket
+   * (`minio-init` runs `mc alias set` and `mc mb`, and there is no
+   * `MINIO_API_CORS_ALLOW_ORIGIN` anywhere), and a PUT is never a simple
+   * request, so a browser will always preflight it.
+   */
+  listAttachments(projectId: string, issueId: string): Promise<IssueAttachment[]> {
+    return this.live.listAttachments(projectId, issueId);
+  }
+
+  createAttachmentUploadUrl(
+    projectId: string,
+    issueId: string,
+    input: CreateAttachmentUploadUrlInput,
+  ): Promise<AttachmentUploadTicket> {
+    return this.live.createAttachmentUploadUrl(projectId, issueId, input);
+  }
+
+  putAttachmentBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    return this.live.putAttachmentBytes(uploadUrl, body, contentType);
+  }
+
+  confirmAttachmentUpload(
+    projectId: string,
+    issueId: string,
+    input: ConfirmAttachmentUploadInput,
+  ): Promise<IssueAttachment> {
+    return this.live.confirmAttachmentUpload(projectId, issueId, input);
+  }
+
+  getAttachmentDownloadUrl(
+    projectId: string,
+    issueId: string,
+    attachmentId: string,
+  ): Promise<AttachmentDownloadUrl> {
+    return this.live.getAttachmentDownloadUrl(projectId, issueId, attachmentId);
+  }
+
+  deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {
+    return this.live.deleteAttachment(projectId, issueId, attachmentId);
   }
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

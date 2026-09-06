@@ -4,8 +4,11 @@ import type {
   AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
+  AttachmentDownloadUrl,
+  AttachmentUploadTicket,
   DateOnly,
   Issue,
+  IssueAttachment,
   IssueComment,
   IssueLink,
   IssueLinkType,
@@ -256,6 +259,41 @@ export interface UpdateProjectLabelInput {
   color: string;
 }
 
+/**
+ * Leg 1's request — `CreateAttachmentUploadUrlRequestDto`. All three fields are
+ * required by the contract, and the server validates two of them
+ * (`S3StorageClient.validateFileParams`) before it will sign anything.
+ *
+ * `fileName` is the odd one out: the contract requires it, the gateway forwards
+ * it, and `AttachmentServiceImpl.createUploadUrl` never reads it — the object
+ * key is a fresh UUID and the name is only stored at leg 3, from that leg's own
+ * copy. It is sent because the contract asks for it, not because it decides
+ * anything here.
+ */
+export interface CreateAttachmentUploadUrlInput {
+  fileName: string;
+  /**
+   * The browser's own `File.type`, passed through untouched. This exact string
+   * is what gets signed into the presigned URL, so whatever is sent here must
+   * be sent again, byte for byte, on the PUT.
+   */
+  contentType: string;
+  sizeBytes: number;
+}
+
+/**
+ * Leg 3's request — `ConfirmAttachmentUploadRequestDto`. Note what is *not*
+ * here: no size. The server re-measures the object it finds in the bucket
+ * rather than believing the client, which is also how an over-size upload is
+ * still refused after a PUT the presigned URL did not size-limit.
+ */
+export interface ConfirmAttachmentUploadInput {
+  objectKey: string;
+  fileName: string;
+  /** The same value sent at leg 1. Stored as the attachment's `contentType`. */
+  contentType: string;
+}
+
 export interface ListCommentsParams {
   page?: number;
   pageSize?: number;
@@ -390,6 +428,119 @@ export interface TaskaApi {
    */
   addIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void>;
   removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void>;
+
+  /**
+   * The five attachment routes, plus the one leg of the upload that is not a
+   * route at all.
+   *
+   * All five gateway routes are `EndpointSecurity.PROTECTED` — authenticated,
+   * and with **no role check at the gateway**. The gate is a project-role check
+   * inside issue-service, from `issue.allowed-roles` in its `application.yml`:
+   * `upload-attachment-roles: ADMIN,MEMBER` covers leg 1 and leg 3,
+   * `view-attachment-roles: ADMIN,MEMBER,VIEWER` covers the list and the
+   * download link, and delete is split in two —
+   * `delete-own-attachment-roles: ADMIN,MEMBER` when the caller uploaded it and
+   * `delete-attachment-roles: ADMIN` when somebody else did. Hiding a control
+   * on those rules is presentation; the server decides.
+   *
+   * `projectId` is in every signature because it is in every path, but it is
+   * **not** an access check on the wire: `IssueAttachmentController` says so in
+   * its own comment — "projectId в пути используется только для
+   * REST-иерархии/читаемости URL и не участвует в авторизации" — and forwards
+   * only `issueId` (or `attachmentId`) over gRPC. The mock resolves an issue
+   * *within* a project and so does enforce it, which is a known divergence of
+   * the same shape as `getIssue`'s.
+   */
+  listAttachments(projectId: string, issueId: string): Promise<IssueAttachment[]>;
+
+  /**
+   * **Leg 1 of three.** Asks the gateway to sign an upload, and starts the
+   * fifteen-minute clock on `ATTACHMENT_PRESIGNED_TTL_MS` — which is why this
+   * belongs to the moment a file is chosen rather than to the moment the panel
+   * opens.
+   *
+   * Refused before the request, identically by every implementation, by
+   * `attachmentRefusal` in src/api/attachments.ts: a type outside the
+   * thirteen-entry allowlist, an empty file, or one over 2 MB. Not politeness —
+   * the server answers `400` for exactly these, so a mock that accepted them
+   * would hide the failure from the e2e suite.
+   */
+  createAttachmentUploadUrl(
+    projectId: string,
+    issueId: string,
+    input: CreateAttachmentUploadUrlInput,
+  ): Promise<AttachmentUploadTicket>;
+
+  /**
+   * **Leg 2 of three, and the only method on this interface that does not talk
+   * to the gateway.** The browser PUTs the bytes straight to the object store
+   * at the presigned URL, cross-origin, with no bearer token and no request id.
+   *
+   * It is on the interface — rather than being done inline wherever an upload
+   * happens — for one reason: the mock has to be able to stand in for it. This
+   * is the leg that cannot be exercised against a real store from a browser
+   * today (nothing in the backend repository configures CORS on the bucket), so
+   * if it were not swappable, the choreography could not be clicked through or
+   * end-to-end tested at all.
+   *
+   * `contentType` is passed separately from the blob on purpose. It must be
+   * **byte-identical** to the value given to `createAttachmentUploadUrl`,
+   * because `S3StorageClient.createPresignedUploadUrl` calls `.contentType(…)`
+   * on the presign request, which puts `Content-Type` into the signed headers.
+   * Reading it back off a `File` would work; recomputing it, normalising its
+   * case or appending a charset would produce a signature mismatch that the
+   * store answers with a 403 nobody can explain.
+   *
+   * Failures arrive as `AttachmentStoreError`, never as an `ApiError`. See that
+   * class for why the store's status must not travel in a field named `status`.
+   */
+  putAttachmentBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void>;
+
+  /**
+   * **Leg 3 of three.** Tells the gateway the object is there; the server heads
+   * it in the bucket, re-measures it, writes the row, the history event and the
+   * outbox event, and answers **201** with the persisted attachment.
+   *
+   * **Never retry this call.** There is no unique constraint on `object_key`
+   * (`0001-issue-attachments.sql` declares one primary key and one foreign key
+   * and nothing else) and `AttachmentTransactionExecutor.saveAttachment` calls
+   * `repository.save` unconditionally, so a second confirm for the same object
+   * inserts a **second row**, plus a second `ATTACHMENT_UPLOADED` history entry
+   * and a second outbox event. A failure in transit is indistinguishable from a
+   * failure on the server, and only one of those is safe to repeat — so after
+   * any failure here the correct move is to re-read the list and look, never to
+   * send it again.
+   *
+   * A successful leg 2 followed by a failed leg 3 leaves the object in the
+   * bucket with no row pointing at it. Nothing sweeps those, and the delete
+   * route is a soft delete that does not touch the store either, so no client
+   * can clean it up. Say the file was not attached; do not pretend to have
+   * tidied up.
+   */
+  confirmAttachmentUpload(
+    projectId: string,
+    issueId: string,
+    input: ConfirmAttachmentUploadInput,
+  ): Promise<IssueAttachment>;
+
+  /**
+   * A presigned GET, freshly signed per call and good for the same fifteen
+   * minutes. Asked for on demand rather than per row on load, because a link
+   * minted when the panel opened would be dead by the time anybody clicked it.
+   */
+  getAttachmentDownloadUrl(
+    projectId: string,
+    issueId: string,
+    attachmentId: string,
+  ): Promise<AttachmentDownloadUrl>;
+
+  /**
+   * Soft delete: `deleted_at` is stamped and the row stops being listed. **The
+   * object itself is left in the bucket** — `AttachmentTransactionExecutor`
+   * writes the row, the history event and the outbox event, and calls nothing
+   * on the storage client. The UI must not describe this as removing the file.
+   */
+  deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void>;
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
   addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;
