@@ -21,6 +21,13 @@ import {
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
+import type { PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
+import {
+  emptyPlanningFields,
+  planningFieldRefusal,
+  planningFieldsBody,
+  resolvePlanningFields,
+} from "../planningFields";
 import { SessionExpiredSignal } from "../session";
 import type {
   AdminCatalog,
@@ -32,6 +39,7 @@ import type {
   AdminRowsQuery,
   AdminService,
   AdminTable,
+  DateOnly,
   GlobalRole,
   Issue,
   IssueComment,
@@ -140,12 +148,33 @@ interface RestProblematicOutboxSummary {
   notAllShown?: boolean;
 }
 
-type RestIssue = Omit<Issue, "assigneeId" | "deletedAt" | "labels"> & {
+type RestIssue = Omit<
+  Issue,
+  | "assigneeId"
+  | "deletedAt"
+  | "labels"
+  | "storyPoints"
+  | "startDate"
+  | "dueDate"
+  | "originalEstimateMinutes"
+  | "remainingEstimateMinutes"
+> & {
   assigneeId?: string | null;
   deletedAt?: string | null;
   // Absent on every gateway built before TAS-120, and absent again the moment
   // this app talks to one. `toIssue` turns that into `[]` so no card has to.
   labels?: RestLabel[];
+  // The five planning fields, restated as optional rather than inherited as
+  // required. `Issue` promises them because the domain does; the *wire* does
+  // not, and will not until backend PR #148 deploys — until then every response
+  // this adapter reads is missing all five. Inheriting them as required would
+  // be a promise about a gateway that has never sent them, and `toIssue` would
+  // then be typed as if it had nothing to fold.
+  storyPoints?: number | null;
+  startDate?: DateOnly | null;
+  dueDate?: DateOnly | null;
+  originalEstimateMinutes?: number | null;
+  remainingEstimateMinutes?: number | null;
 };
 
 /**
@@ -191,6 +220,10 @@ interface RestIssueListItem {
   issueType: IssueType;
   priority: Issue["priority"];
   assigneeId?: string | null;
+  // The only planning field `IssueShortResponseDto` grows in backend PR #148.
+  // No dates and no estimates: see `IssueSearchHit` in src/domain/types.ts for
+  // why this must not be widened to match `RestIssue` above.
+  storyPoints?: number | null;
 }
 
 interface RestListIssuesResponse {
@@ -214,6 +247,16 @@ interface RestUpdateIssueResponse {
   summary: string;
   description: string;
   priority: Issue["priority"];
+  // `UpdateIssueResponseDto` carries all five after backend PR #148 and none of
+  // them before it, and even afterwards it states only the ones that are set —
+  // the gateway's mapper writes a field only when the proto optional is
+  // present. So an absent key here is "not set", never "unchanged", which is
+  // what `updateIssue` folds against the value it just sent.
+  storyPoints?: number | null;
+  startDate?: DateOnly | null;
+  dueDate?: DateOnly | null;
+  originalEstimateMinutes?: number | null;
+  remainingEstimateMinutes?: number | null;
 }
 
 /**
@@ -461,10 +504,23 @@ export class RestTaskaApi implements TaskaApi {
     return this.toIssueWithHistory(response);
   }
 
+  /**
+   * The body is built key by key rather than by passing `input` through: the
+   * five planning fields have to be omitted when they are not set, and a
+   * create has nothing to resolve them against, so `null` and `undefined`
+   * collapse to the same omission here.
+   */
   async createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
+    refusePlanningFields(input, null);
     const response = await this.request<RestIssue>(`/projects/${this.segment(projectId)}/issues`, {
       method: "POST",
-      body: input,
+      body: {
+        issueType: input.issueType,
+        summary: input.summary,
+        description: input.description,
+        priority: input.priority,
+        ...planningFieldsBody(resolvePlanningFields(input, emptyPlanningFields())),
+      },
       headers: {
         "Idempotency-Key": this.createIdempotencyKey(),
       },
@@ -472,19 +528,54 @@ export class RestTaskaApi implements TaskaApi {
     return this.toIssue(response);
   }
 
+  /**
+   * Read, modify, write — and the read is load-bearing rather than defensive.
+   * `PUT /issues/{issueId}` replaces the whole issue: the three required fields
+   * have always had to be re-sent, and since TAS-115 the five planning fields
+   * do too, because a field the request omits is erased on the server rather
+   * than preserved (see `UpdateIssueInput` and src/api/planningFields.ts).
+   *
+   * So every value the caller did not state is resolved from `current` and sent
+   * back unchanged, which makes the write a no-op for the fields nobody
+   * touched. A resolved `null` is *omitted* from the body, because omission is
+   * how this contract spells "not set" — which is also why, against a gateway
+   * that does not carry the planning fields yet, this sends the same three keys
+   * it always did and changes nothing on the wire.
+   *
+   * The refusals are checked against the values the caller supplied and against
+   * the issue as stored, before the request, so mock and rest answer a bad
+   * value identically. What is *not* checked is the resolved pair: an issue
+   * whose stored dates already disagree must still be editable by its summary,
+   * and the server is the one entitled to refuse that.
+   */
   async updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
     const current = (await this.getIssue(projectId, issueId)).issue;
+    refusePlanningFields(input, current);
+    const planning = resolvePlanningFields(input, current);
     const updated = await this.request<RestUpdateIssueResponse>(`/issues/${this.segment(issueId)}`, {
       method: "PUT",
       body: {
         summary: input.summary ?? current.summary,
         description: input.description ?? current.description,
         priority: input.priority ?? current.priority,
+        ...planningFieldsBody(planning),
       },
     });
     return {
       ...current,
       ...updated,
+      // Folded after the spread, and against `planning` — the values this
+      // request just sent — rather than against `current`. The response states
+      // only the fields that are set, so an absent key means "not set", and the
+      // spread alone would leave the *old* value standing on a field this very
+      // request cleared. `??` reads a stated `null` the same way as an absent
+      // key, which is safe because the only thing it falls back to is what was
+      // just asked for: a cleared field falls back to `null` either way.
+      storyPoints: updated.storyPoints ?? planning.storyPoints,
+      startDate: updated.startDate ?? planning.startDate,
+      dueDate: updated.dueDate ?? planning.dueDate,
+      originalEstimateMinutes: updated.originalEstimateMinutes ?? planning.originalEstimateMinutes,
+      remainingEstimateMinutes: updated.remainingEstimateMinutes ?? planning.remainingEstimateMinutes,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -976,12 +1067,28 @@ export class RestTaskaApi implements TaskaApi {
     };
   }
 
+  /**
+   * The five planning fields are folded one by one rather than left to the
+   * spread. A spread of a response that carries none of them — which is every
+   * response until backend PR #148 deploys — produces five members that are
+   * `undefined` while their type says `number | null`: it type-checks by
+   * structural accident and renders the string "undefined" on the card.
+   *
+   * `?? null` and never `||`. `0` is a legal story-point count and a legal
+   * estimate, and `0 || null` is `null` — the one substitution that turns a
+   * value into an absence without failing anywhere.
+   */
   private toIssue(issue: RestIssue): Issue {
     return {
       ...issue,
       assigneeId: issue.assigneeId || null,
       deletedAt: issue.deletedAt ?? null,
       labels: (issue.labels ?? []).map((label) => toLabel(label)),
+      storyPoints: issue.storyPoints ?? null,
+      startDate: issue.startDate ?? null,
+      dueDate: issue.dueDate ?? null,
+      originalEstimateMinutes: issue.originalEstimateMinutes ?? null,
+      remainingEstimateMinutes: issue.remainingEstimateMinutes ?? null,
     };
   }
 
@@ -1019,6 +1126,8 @@ export class RestTaskaApi implements TaskaApi {
       // `""` for unassigned, exactly as the list endpoint answers — same
       // normalisation as `toIssue`, so one shape of "nobody" reaches the UI.
       assigneeId: item.assigneeId || null,
+      // `??`, not `||`: an issue estimated at zero points has been estimated.
+      storyPoints: item.storyPoints ?? null,
     };
   }
 
@@ -1163,6 +1272,23 @@ function requireSearchQuery(raw: string | undefined): string | null {
     throw new ApiError(SEARCH_QUERY_TOO_SHORT_MESSAGE, "INVALID_ARGUMENT", 400);
   }
   return query;
+}
+
+/**
+ * The planning-field refusals, decided in src/api/planningFields.ts and
+ * thrown here as the gateway's own answer: `INVALID_ARGUMENT` on `400`, the
+ * same shape as `requireSearchQuery` above and the same wording the mock uses,
+ * so a caller cannot tell a value stopped here from one stopped there.
+ *
+ * `stored` is the issue as it stands, and `null` on a create. The server's
+ * date cross-check reads the stored row rather than the request, so a guard
+ * without it would let through a write the gateway refuses.
+ */
+function refusePlanningFields(input: PlanningFieldsInput, stored: StoredPlanningDates | null): void {
+  const refusal = planningFieldRefusal(input, stored);
+  if (refusal) {
+    throw new ApiError(refusal.message, refusal.code, 400);
+  }
 }
 
 /**

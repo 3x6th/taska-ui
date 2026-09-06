@@ -197,6 +197,66 @@ export interface ProjectLabel extends Label {
   deletedAt: string | null;
 }
 
+/**
+ * A calendar date with no time and no zone — `YYYY-MM-DD`, the contract's
+ * `format: date`, a `LocalDate` on the gateway and a `date` column in
+ * `taska.issues`.
+ *
+ * **It is a `string` and it must never become a `Date`.** `new Date("2026-09-01")`
+ * is parsed by the spec as UTC midnight, and every formatter this app owns
+ * prints in the viewer's zone — so anyone west of UTC reads *2026-08-31* for a
+ * due date the server, the database and the person who typed it all call the
+ * 1st. There is no formatting option that repairs it after the fact, because by
+ * then the value is an instant and the day has already been chosen. That is the
+ * trap this alias exists to close: keep the wire's three fields as text, split
+ * them when they need to be drawn, and never hand one to the `Date`
+ * constructor.
+ *
+ * Two more things follow from it being text, and both are worth having:
+ * ISO-8601 dates sort and compare correctly as strings (`"2026-01-02" <
+ * "2026-03-01"`), so every comparison in the API layer is a string comparison;
+ * and equality is exact, with no instant to round.
+ *
+ * The alias is not branded. A brand would make every literal need a cast for a
+ * guarantee TypeScript cannot keep anyway — the value arrives from the network
+ * — so the guarantee is `isDateOnly` below, applied where a value enters.
+ */
+export type DateOnly = string;
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+const isLeapYear = (year: number) => (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+
+/**
+ * Whether a string is a date the wire would accept: four-digit year, two-digit
+ * month, two-digit day, and a day that exists.
+ *
+ * The shape check alone is not enough, which is the whole reason this is a
+ * function rather than a regular expression at each call site. `2026-13-01`
+ * and `2026-02-30` both match `\d{4}-\d{2}-\d{2}` and both are refused by
+ * `LocalDate.parse` on the gateway with a `400` — so they are refused here
+ * too, before a request is spent on them.
+ *
+ * Written as arithmetic rather than through `Date`, deliberately. Checking a
+ * date by constructing one and reading the parts back is the same UTC-midnight
+ * trap the alias above is about, and it also silently accepts overflow in some
+ * engines. A leap-year rule is four lines and cannot drift with a zone.
+ *
+ * This is the one runtime export in this file. It lives here because it is the
+ * type's own definition of validity, and a caller that has a `DateOnly` in hand
+ * should not have to know which module remembers what one is.
+ */
+export function isDateOnly(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12) return false;
+  const lastDay = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+  return day >= 1 && day <= lastDay;
+}
+
 export interface Issue {
   id: string;
   projectId: string;
@@ -221,13 +281,40 @@ export interface Issue {
    * (`RestTaskaApi`), which is where the board's chips come from.
    */
   labels: Label[];
+  /**
+   * The five planning fields — `IssueResponseDto`'s `storyPoints`, `startDate`,
+   * `dueDate`, `originalEstimateMinutes` and `remainingEstimateMinutes`, added
+   * by backend PR #148 (TAS-116, extracted at
+   * docs/contract/pending/pr-148-TAS-116.yml).
+   *
+   * **`null` is the only "not set", for all five.** The wire cannot tell an
+   * absent key from a JSON `null` and the server never means the difference:
+   * the gateway's mapper writes a field only when the proto optional is
+   * present, and an unset optional resolves to a Java `null`. Making them
+   * `number | null` rather than optional is what stops a reader from having to
+   * ask which of two spellings of nothing arrived.
+   *
+   * `storyPoints` is `format: double`, so **0.5 is a legal value** and this is
+   * never an integer. The column is `numeric(5,2)` (`0007-issue-planing-fields.sql`),
+   * which is where the 0…999.99 bound in src/api/planningFields.ts comes from.
+   * `0` is legal too, and is a count rather than an absence — the one
+   * distinction an `||` anywhere near this field would erase.
+   *
+   * The two estimates are `int32` minutes, whole numbers, `>= 0`.
+   */
+  storyPoints: number | null;
+  startDate: DateOnly | null;
+  dueDate: DateOnly | null;
+  originalEstimateMinutes: number | null;
+  remainingEstimateMinutes: number | null;
 }
 
 /**
  * One result of `GET /issues/search` — the contract's `IssueShortResponseDto`,
  * and **not** an `Issue`.
  *
- * Six fields is everything the search route is ever told. There is no `status`,
+ * Seven fields is everything the search route is ever told — six until backend
+ * PR #148 added `storyPoints` to `IssueShortResponseDto`. There is no `status`,
  * no `projectId`, no `description`, no `labels`, no `updatedAt` and no
  * `version`, which is why this is its own type rather than a `Partial<Issue>`
  * or an `Issue` with holes punched in it: a hit that was typed as an issue
@@ -253,6 +340,17 @@ export interface IssueSearchHit {
   priority: IssuePriority;
   /** `""` on the wire for an unassigned issue; normalised to `null` like `Issue.assigneeId`. */
   assigneeId: string | null;
+  /**
+   * The **one** planning field the search DTO carries: backend PR #148 adds
+   * `storyPoints` to `IssueShortResponseDto` and adds nothing else to it — no
+   * dates, no estimates.
+   *
+   * Do not widen this type past it. The narrowness is the point — a hit that
+   * grew a `dueDate` the server never sent would be drawn as an empty date on
+   * every search result, which reads as "no due date" rather than as "not
+   * asked for".
+   */
+  storyPoints: number | null;
 }
 
 export type IssueEventType =

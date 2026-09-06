@@ -736,6 +736,75 @@ the next session in this image exactly as it bit this one.
   not-in-`LOCKED` refusals are both 400. The enumeration directly below it is
   unambiguous and the sentence is wording rather than a contract claim, which is
   why it was left rather than opening another builder pass for one word.
+- **`BoardScreen.test.tsx`'s `makeIssue` fixture omits the five planning fields**
+  (`release-reviewer`, TAS-189). The fake API is cast `as unknown as TaskaApi`,
+  so every issue that suite sees has `undefined` where the type says
+  `number | null`, and nothing can tell you: the cast defeats the typecheck by
+  construction. `??` treats the two alike but `=== null`, `in`, `typeof` and
+  `Object.entries` do not. Five `null` lines; do it with the UI half, which is
+  the code that will read them.
+- **Two refusal-set edges where the client and the server differ harmlessly**
+  (`release-reviewer`, TAS-189): the estimate rules test `Number.isInteger`
+  before `< 0`, so `-1.5` is reported as "not a whole number" rather than "cannot
+  be negative"; and `isDateOnly` refuses ISO expanded years (`+10000-01-01`) that
+  `LocalDate.parse` accepts. Both refuse the same inputs the server refuses, in a
+  different order or for a different stated reason.
+- **`createIssue` orders its refusals differently in the two implementations**
+  (`release-reviewer`, TAS-189): REST refuses a bad planning value before the
+  project is checked, the mock throws `NOT_FOUND` for an inaccessible project
+  first. Only observable on the pair "bad value on a project you cannot see".
+- **`GlobalSearch.test.tsx`'s `hit()` fixture omits `storyPoints`**
+  (`api-contract-guard`, TAS-189) — same class as the `BoardScreen.test.tsx`
+  line below, hidden by the same `as unknown as TaskaApi` cast. Fix both with
+  the UI half.
+- **`RestTaskaApi.updateIssue` does not bump `version` while the mock does**
+  (`api-contract-guard`, TAS-189): the update response DTO carries no `version`,
+  so REST cannot. Pre-existing parity drift, now over eight fields instead of
+  three.
+- **A `NaN` estimate is refused as "not a whole number of minutes"** rather than
+  as "not a number" (`api-contract-guard`, TAS-189): `storyPoints` gets an
+  explicit finite check and the estimates get one only as a side effect of
+  `Number.isInteger`.
+- **`isDateOnly` accepts `0000-01-01`**, which `LocalDate.parse` accepts and the
+  Postgres `date` type does not (`api-contract-guard`, TAS-189).
+- **Which server layer refuses a negative estimate is unsettled**
+  (`frontend-builder`, TAS-189). The pending contract gives both estimates
+  `minimum: 0` and the gateway's generator runs with `useValidation=true`, so a
+  generated `@Min(0)` on a `@Valid` body would refuse it in bean validation and
+  it would never reach the gRPC validator the divergence entry credits. Cannot
+  be settled without the generated sources. It does not change what this client
+  refuses, only which layer the record names.
+- **Three planning-field claims want one probe each, once backend PR #148
+  deploys** (`api-contract-guard`, TAS-189): what status a story-points value at
+  or above 1000 actually produces (the record says 500 as a *code read* and has
+  guessed wrong twice already), what the gateway does with a fractional estimate
+  under Jackson 3, and which message a REST caller sees for a malformed date.
+  All three are unreachable today because the fields are unserved, all three are
+  written up as unobserved, and all three are one request each the day they are
+  reachable. Nothing else tracks them.
+- **`TaskaApi.ts:106` calls a code read "measured"** (`frontend-builder`,
+  TAS-189). It describes reading two backend services' source at PR #146's head,
+  not a probe. It was not wrong when TAS-188 wrote it — the word was not
+  reserved then. TAS-189 narrowed "measured" to mean observation and left every
+  other use of it honest, so this is the one straggler, and it is one word.
+  (`TaskaApi.ts:62`, `:542` and `:561` also say "measured" and are correct:
+  those are live probes against the deployed gateway.)
+- **A no-op update bumps `version` and `updatedAt` in the mock and not on the
+  server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
+  early without saving when the computed payload is empty; the mock always
+  writes. Pre-existing and identical for summary-only edits before this story,
+  so not introduced here — but it is a real mock/server divergence and the
+  interchangeability rule says it should either be closed or written up. This is
+  the writing-up.
+- **A planning edit writes the mock's generic history event, not the server's
+  per-field payload** (`frontend-builder`, TAS-189). Wants doing with the UI
+  half, where the activity feed will actually show one.
+- **`JSON.stringify({x: NaN})` emits `null`, and `null` means "clear the field"**
+  (`frontend-builder`, TAS-189). `Number("")` from an emptied numeric input
+  would therefore erase a value rather than fail. Guarded with `Number.isFinite`
+  in the API layer and tested on both implementations — the line is here because
+  the UI half will build the inputs that can produce it, and the guard must not
+  be read as belt-and-braces.
 - **A `LOCKED` account keeps full product access on a token minted before the
   lock** (`api-contract-guard`, TAS-188). Broader than the profile-menu line
   below it: `AuthServiceImpl.validateUserStatus` rejects `BLOCKED` and

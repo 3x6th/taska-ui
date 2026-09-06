@@ -205,9 +205,47 @@ describe("HybridTaskaApi", () => {
       "issueKey",
       "issueType",
       "priority",
+      "storyPoints",
       "summary",
     ]);
 
     await expect(hybrid.searchIssues({ query: "bo" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  });
+
+  /**
+   * TAS-189 adds no method for this class to route, so what has to be checked is
+   * that it still routes the *meaning*: `UpdateIssueInput` now uses `undefined`
+   * and `null` for two different things — leave it alone, and clear it — and a
+   * pass-through that normalised either one would turn a partial edit into data
+   * loss one layer above the adapter that was careful about it.
+   */
+  it("passes a planning-field edit through with its nulls and its absences intact", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    const [project] = await hybrid.listProjects();
+    const { items } = await hybrid.listIssues(project.id, { pageSize: 100 });
+    const full = items.find((issue) => issue.issueKey === "TAS-101");
+    expect(full).toBeDefined();
+    if (!full) return;
+
+    const updateIssue = vi.spyOn(live, "updateIssue");
+
+    // `storyPoints: null` means clear it; the four fields not mentioned mean
+    // leave them alone. Both halves have to survive the delegation.
+    const updated = await hybrid.updateIssue(project.id, full.id, { storyPoints: null });
+
+    expect(updateIssue).toHaveBeenCalledWith(project.id, full.id, { storyPoints: null });
+    expect(updated.storyPoints).toBeNull();
+    expect(updated).toMatchObject({
+      startDate: full.startDate,
+      dueDate: full.dueDate,
+      originalEstimateMinutes: full.originalEstimateMinutes,
+      remainingEstimateMinutes: full.remainingEstimateMinutes,
+    });
+
+    // And a refusal is a refusal here too, with the same code either side.
+    await expect(hybrid.updateIssue(project.id, full.id, { storyPoints: -1 })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
   });
 });

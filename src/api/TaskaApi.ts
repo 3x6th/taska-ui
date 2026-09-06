@@ -4,6 +4,7 @@ import type {
   AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
+  DateOnly,
   Issue,
   IssueComment,
   IssueLink,
@@ -161,12 +162,73 @@ export interface CreateIssueInput {
   summary: string;
   description: string;
   priority: IssuePriority;
+  /**
+   * The five planning fields, all optional — `CreateIssueRequestDto` in backend
+   * PR #148 (docs/contract/pending/pr-148-TAS-116.yml).
+   *
+   * `undefined` and `null` mean the same thing here, unlike on the update
+   * below: a create has no prior value to leave alone, so both spellings of
+   * nothing produce a body with the key omitted. `null` is accepted so a caller
+   * holding a form value that is already `number | null` does not have to strip
+   * it on the way in.
+   *
+   * Refused before the request, identically by every implementation, by
+   * `planningFieldRefusal` in src/api/planningFields.ts — which is also where
+   * the reasons are written down.
+   */
+  storyPoints?: number | null;
+  startDate?: DateOnly | null;
+  dueDate?: DateOnly | null;
+  originalEstimateMinutes?: number | null;
+  remainingEstimateMinutes?: number | null;
 }
 
+/**
+ * A partial edit of one issue. **`undefined` and `null` are different answers
+ * here, and the difference is the whole reason this type has a comment.**
+ *
+ * - a key left `undefined`, or absent altogether, means **leave it as it is**;
+ * - a key set to `null` means **clear it**.
+ *
+ * `PUT /issues/{issueId}` is a *full replace*. `IssueServiceImpl.updateIssue`
+ * on backend `develop` writes all five planning fields unconditionally, the
+ * proto fields are `optional`, the gateway sets them through `setIfPresent`,
+ * and `GrpcIssueService` resolves an unset optional with `.orElse(null)` — so a
+ * field the request omits is **erased**, not preserved. The backend's own
+ * *unit* test says so in its display name — «Частичное обновление —
+ * непереданные planning fields затираются», in `IssuePlaningFieldsTest.java`
+ * on `develop` (one `n`), which is Mockito over a stubbed repository.
+ *
+ * Every implementation therefore re-reads the issue and re-sends the value it
+ * is keeping. That read is what makes "leave it as it is" true, and it is the
+ * single most deletable-looking line in this API layer: it is one extra `GET`
+ * before a `PUT`, it changes no visible behaviour when it is removed, and
+ * removing it turns editing a summary into a write that wipes the story points,
+ * both dates and both estimates of the issue being edited. Nothing in the type
+ * system will notice. If you are reading this while deleting a redundant
+ * re-read, this is the one that is not redundant.
+ *
+ * The three original fields keep the meaning they always had — `undefined`
+ * leaves them alone — and they have no `null` case at all, because the contract
+ * marks all three `required` and the server refuses a blank summary or
+ * description outright.
+ *
+ * The alternative design, exposing the full replace to callers by requiring all
+ * eight fields on every edit, was not chosen: it makes every component that
+ * edits one field responsible for knowing the other seven, which is the same
+ * data loss one layer up and in five more places.
+ */
 export interface UpdateIssueInput {
   summary?: string;
   description?: string;
   priority?: IssuePriority;
+  /** `undefined` keeps the stored value; `null` clears it; a number sets it. `0` is a value. */
+  storyPoints?: number | null;
+  /** `undefined` keeps the stored value; `null` clears it. Never a `Date` — see `DateOnly`. */
+  startDate?: DateOnly | null;
+  dueDate?: DateOnly | null;
+  originalEstimateMinutes?: number | null;
+  remainingEstimateMinutes?: number | null;
 }
 
 export interface CreateIssueLinkInput {
