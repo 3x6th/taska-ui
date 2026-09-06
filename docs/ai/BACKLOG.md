@@ -798,6 +798,88 @@ the next session in this image exactly as it bit this one.
   Belongs to whoever takes that measurement, which is the same one the
   2026-09-05 refresh entry files under `ListIssuesResponseDto.items` — one
   request answers both.
+- **A third intermittent test signature, on `AdminScreen.test.tsx`**
+  (`release-reviewer`, TAS-190): "lands on the last page when the address names
+  one past the end" failed once in four `npm run check` runs with
+  `expected 999 to be 2`, and was green in the other three and in isolation.
+  Unrelated to attachments by subject; TAS-190 adds roughly 1.9k lines of tests
+  to the same parallel run and can only have raised contention rather than
+  caused it. Recorded beside the two Playwright flakes already here — three
+  signatures is the point at which the run's parallelism is worth looking at
+  rather than each test.
+- **A failed list read can turn a failed confirm into a false reassurance**
+  (`release-reviewer`, TAS-190). `BoardScreen` counts same-named attachments
+  from `queryClient.getQueryData`, which is `undefined` when the list read
+  failed. A failed read plus a failed confirm plus a pre-existing file of the
+  same name yields "it was attached after all" when it was not.
+- **Two attachment states ship having been rendered only under jsdom**
+  (`release-reviewer`, TAS-190): `.attachment-note`, the info tone, has no mock
+  trigger because the confirm-fails path throws before recording one; and a
+  successful upload announces nothing — the live region stays empty and only the
+  row appears.
+- **`IssueEventType` carries `PRIORITY`, which the backend enum does not have**
+  (`api-contract-guard`, TAS-190). A priority change is `UPDATED` on the server.
+  The mock emits `PRIORITY` and `historyText` gives it its own sentence, so that
+  sentence exists only in mock mode. Belongs with the four-missing-members line
+  below — and that line says "nine members", which was true when it was written
+  and is eleven now.
+- **`CreateAttachmentUploadUrlInput`'s comment says the gateway forwards
+  `fileName`** (`api-contract-guard`, TAS-190). It does not:
+  `GrpcIssueAttachmentServiceClient.createAttachmentUploadUrl` builds the body
+  from `contentType`, `sizeBytes`, `actorUserId` and `issueId`, and the field
+  dies at the gRPC boundary. The comment's conclusion — that it decides nothing
+  at leg one — is unaffected, only its reason.
+- **Every attachment failure surface drops the request id**
+  (`api-contract-guard`, TAS-190): the read error and the notice both print the
+  message alone, where `ApiNotice` and `AdminError` render `RequestId`. Matches
+  the comments, links and labels sections beside it, so it is panel-wide and
+  pre-existing rather than this story's — and it is the half of the toast gap
+  already recorded above that is actually cheap to close.
+- **`attachmentEmptyRefusalMessage` is called the server's own words and is not**
+  (`api-contract-guard`, TAS-190). For this route the gateway's `@Min(1)` answers
+  `"Invalid request parameters"` and `validateFileParams`'s
+  `"File size must be positive, got: N"` is unreachable. Message-only, and the
+  panel writes its own sentence anyway — but the comment claims a provenance it
+  does not have, which is the class this story spent a round correcting.
+- ~~**`.form-error` measures 3.17:1 in light, and every caller but one still
+  uses it.**~~ Graduated to
+  [TAS-192](https://jira.ozero.dev/browse/TAS-192) on 2026-09-06, on
+  `art-director`'s recommendation that it should not wait: it is a §7 contrast
+  failure in **ten** callers — eight in `BoardScreen`, plus login and projects,
+  and **five of the ten inside the issue panel alone** — which survives entirely
+  on its own and disappears with no mock or compensation, which is this
+  repository's test for a story over a line here. TAS-190 gave the attachments
+  section the §5.6 recipe and measured it at 17.88:1 light and 15.73:1 dark, so
+  the follow-up is mostly deletion. The reason not to wait is that two recipes
+  now coexist in one panel, and the longer they do the likelier the next feature
+  copies the wrong one.
+- **`RestTaskaApi` and the mock disagree on the code for an over-size file**
+  (`frontend-builder`, TAS-190): `refuseAttachment` throws `INVALID_ARGUMENT`
+  for all three arms while the mock throws `OUT_OF_RANGE` for the ceiling. Both
+  are 400 and the picker refuses before either is reached, so nothing observable
+  depends on it — but it is the parity class this series has treated as
+  blocking everywhere else, and one of the two is wrong against the server.
+- **Four issue history event types the backend already emits fall into
+  `historyText`'s catch-all** (`frontend-builder`, TAS-190). Our
+  `IssueEventType` is nine members; the backend enum is fourteen.
+  `LINK_CREATED`, `LINK_DELETED`, `LABEL_ADDED` and `LABEL_REMOVED` are emitted
+  today and every one of them renders as "updated this issue" in the activity
+  feed. TAS-190 added only the two attachment members it needed. This is a
+  feed-accuracy gap that predates it and wants doing as one pass over the union
+  and `historyText` together.
+- **Three attachment controls sit below §7's 44px touch target**
+  (`frontend-builder`, TAS-190): "Attach a file" at 109×29 and each delete at
+  32×32, at 390. They match their shipped neighbours exactly — `Link` is 47.9×29
+  and "Remove link" is 32×32 — so this is three more instances of a gap §7
+  already records rather than a new one, and fixing them alone would put a 44
+  control immediately above a 32 one, which is the paired mismatch §7 warns
+  about. Wants a pass over the panel's small controls together.
+- **A presigned download opens a tab rather than saving a file**
+  (`frontend-builder`, TAS-190). MinIO's presigned GET carries no
+  `Content-Disposition` and the `download` attribute is ignored cross-origin, so
+  images and PDFs render inline. `window.open` returning `null` is caught and the
+  row then offers the link directly, but that fallback has been exercised only
+  against a stub, never against a real popup blocker.
 - **A no-op update bumps `version` and `updatedAt` in the mock and not on the
   server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
   early without saving when the computed payload is empty; the mock always

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   avatarColor,
   avatarColorChoices,
+  formatFileSize,
   issueLinkTypeLabel,
   issueLinkTypes,
   keyBadgeStyle,
@@ -327,5 +328,37 @@ describe("projectKeyFromIssueKey", () => {
     ["TAS-", ""],
   ])("reads %s as no key at all", (issueKey, expected) => {
     expect(projectKeyFromIssueKey(issueKey)).toBe(expected);
+  });
+});
+
+
+/**
+ * The attachment rows and the sentence the picker prints before a file is
+ * chosen read the same formatter, so the limit is stated once and cannot be
+ * contradicted a line later.
+ */
+describe("formatFileSize", () => {
+  it.each([
+    [0, "0 B"],
+    [1, "1 B"],
+    [1023, "1023 B"],
+    [1024, "1 KB"],
+    [1536, "1.5 KB"],
+    [2411, "2.4 KB"],
+    [184320, "180 KB"],
+    // The ceiling, and the reason the units are binary: a decimal-megabyte
+    // formatter prints "2.1 MB" here, and the picker would then offer a limit
+    // one number larger than the one the server enforces.
+    [2097152, "2 MB"],
+    [1610612736, "1.5 GB"],
+  ])("prints %i as %s", (bytes, expected) => {
+    expect(formatFileSize(bytes)).toBe(expected);
+  });
+
+  it("says nothing rather than something wrong about a size it was not given", () => {
+    // `RestTaskaApi.toAttachment` folds a missing `sizeBytes` to 0, so negatives
+    // and NaN only arrive from a caller that has no number at all.
+    expect(formatFileSize(-1)).toBe("");
+    expect(formatFileSize(Number.NaN)).toBe("");
   });
 });

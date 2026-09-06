@@ -45,6 +45,45 @@ export function isMissingOrForbidden(error: unknown): boolean {
 }
 
 /**
+ * Whether this failure means "the gateway does not have this route yet" rather
+ * than "the thing you asked for is not there".
+ *
+ * Both halves are required, and the pairing is narrow on purpose. An unmapped
+ * path falls through to Spring's static-resource handler, which answers **404**
+ * with a message beginning `No static resource …` — measured 2026-08-25 against
+ * `POST /api/v1/admin/users/not-a-uuid/block`, and again on 2026-09-06 against
+ * `GET /api/v1/projects/{uuid}/issues/{uuid}/attachments`, where a deployed
+ * neighbour (`…/comments`) answers `401` for the same unauthenticated request
+ * and the attachment routes answer this. A deployed route's own 404 says
+ * something about the resource — `User not found`, `Issue not found` — so the
+ * message is the whole distinction; matching the status alone would read a
+ * missing issue as a missing deployment.
+ *
+ * Matched as a substring rather than by equality because the tail of the
+ * message is the request path, which differs per call — and by the same token
+ * it says nothing about *which* route was asked for, which is what lets one
+ * predicate serve every undeployed family at once. Each stops matching the day
+ * its routes deploy, so the notes remove themselves.
+ *
+ * It lives here rather than beside either of its callers because it is a fact
+ * about the *gateway*, in the same family as `isMissingOrForbidden`. It is
+ * never true against the mock: `MockApiError` carries no HTTP status, so mock
+ * mode cannot reproduce this signature at all and does not try to.
+ *
+ * `undeployedMessage` is **required and has no default**, which is the point of
+ * taking it as a parameter at all. The measured string is pinned once, as
+ * `UNDEPLOYED_ROUTE_MESSAGE` in src/api/TaskaApi.ts, beside the two other
+ * gateway sentences this build branches on; a default here would be a second
+ * copy of it, and two copies of a measurement are two chances to drift — which
+ * is the very thing moving this predicate out of the Users section was meant to
+ * stop. Every caller passes the constant, so the constant is what is matched.
+ */
+export function isUndeployedRoute(error: unknown, undeployedMessage: string): boolean {
+  const { status, message } = apiErrorFacts(error);
+  return status === 404 && message !== null && message.includes(undeployedMessage);
+}
+
+/**
  * Whether the server read the request, understood it, and refused it because
  * the *state* does not allow it — a business conflict rather than a bad
  * request. The admin Users section has three of them: blocking the last active

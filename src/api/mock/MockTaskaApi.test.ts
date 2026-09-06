@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { MockTaskaApi } from "./MockTaskaApi";
+import { MOCK_ATTACHMENT_TRIGGERS, MockTaskaApi } from "./MockTaskaApi";
 import type { Issue, Project } from "../../domain/types";
+import {
+  ATTACHMENT_MAX_SIZE_BYTES,
+  AttachmentStoreError,
+  attachmentSizeRefusalMessage,
+  attachmentTypeRefusalMessage,
+} from "../attachments";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
@@ -1565,6 +1571,522 @@ describe("MockTaskaApi", () => {
       // and reads the row's own timestamp there.
       expect(Object.keys(change).sort()).toEqual(["changedAt", "currentStatus", "previousStatus", "userId"]);
       expect(new Date(change.changedAt).getUTCFullYear()).toBeGreaterThan(2000);
+    });
+  });
+
+  /**
+   * The three-legged upload, every way it can be refused, and the two rules
+   * that decide what the panel is allowed to say afterwards. This is the only
+   * place the feature can be exercised at all until backend TAS-131 deploys, so
+   * the fidelity of these branches is the deliverable rather than scaffolding
+   * for it.
+   */
+  describe("attachments", () => {
+    /** A file the allowlist accepts, of a size the ceiling accepts. */
+    const textFile = (name: string, contents = "trace line\n") =>
+      new File([contents], name, { type: "text/plain" });
+
+    const openIssue = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+
+    /** The whole choreography, as the panel runs it. */
+    const upload = async (issueId: string, file: File) => {
+      const ticket = await api.createAttachmentUploadUrl(project.id, issueId, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+      return api.confirmAttachmentUpload(project.id, issueId, {
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: file.type,
+      });
+    };
+
+    beforeEach(async () => {
+      await api.login({ email: "anna@example.com", password: "anything" });
+    });
+
+    it("seeds an issue with two attachments from two different people", async () => {
+      const issue = await openIssue("TAS-101");
+      const attachments = await api.listAttachments(project.id, issue.id);
+
+      expect(attachments.map((item) => item.fileName)).toEqual([
+        "login-500-trace.txt",
+        "validation-error.png",
+      ]);
+      // Two uploaders on one issue is what makes the split delete rule visible:
+      // one row is the signed-in person's and one is not.
+      expect(new Set(attachments.map((item) => item.uploadedBy)).size).toBe(2);
+      // The gateway's mapper does not send the object key, so neither does this.
+      expect(Object.keys(attachments[0]).sort()).toEqual([
+        "checksum",
+        "contentType",
+        "createdAt",
+        "fileName",
+        "id",
+        "issueId",
+        "sizeBytes",
+        "uploadedBy",
+      ]);
+    });
+
+    it("runs the three legs and lands a row the list can see", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile("notes.txt", "one\ntwo\n");
+
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      // A presigned URL on the object store, not on the gateway — and the
+      // signature covers the content type, which is why leg 2 may not change it.
+      expect(ticket.uploadUrl).toContain("http://127.0.0.1:9000/taska-attachments/");
+      expect(ticket.uploadUrl).toContain("X-Amz-SignedHeaders=content-type%3Bhost");
+      expect(ticket.objectKey).toBeTruthy();
+
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+      const attachment = await api.confirmAttachmentUpload(project.id, issue.id, {
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: file.type,
+      });
+
+      expect(attachment).toMatchObject({ fileName: "notes.txt", contentType: "text/plain", sizeBytes: file.size });
+      // The checksum is a fact about the bytes that were actually sent.
+      expect(attachment.checksum).toMatch(/^[0-9a-f]{32}$/);
+      expect((await api.listAttachments(project.id, issue.id)).map((item) => item.fileName)).toEqual(["notes.txt"]);
+    });
+
+    it("writes the history event the activity feed reads", async () => {
+      const issue = await openIssue("TAS-102");
+      const attachment = await upload(issue.id, textFile("notes.txt"));
+
+      const afterUpload = (await api.getIssue(project.id, issue.id)).history.at(-1);
+      expect(afterUpload).toMatchObject({ eventType: "ATTACHMENT_UPLOADED" });
+      expect(afterUpload?.payload.fileName).toBe("notes.txt");
+
+      await api.deleteAttachment(project.id, issue.id, attachment.id);
+      expect((await api.getIssue(project.id, issue.id)).history.at(-1)).toMatchObject({
+        eventType: "ATTACHMENT_DELETED",
+        payload: { fileName: "notes.txt" },
+      });
+    });
+
+    it("refuses a type outside the thirteen-entry allowlist, in the server's own words", async () => {
+      const issue = await openIssue("TAS-102");
+      // The `.zip` that Windows browsers report differently, and the case-folded
+      // spelling of a type that *is* on the list: both are refused, because the
+      // server compares exact strings.
+      for (const contentType of ["application/x-zip-compressed", "IMAGE/PNG", "application/octet-stream", "image/gif"]) {
+        await expect(
+          api.createAttachmentUploadUrl(project.id, issue.id, { fileName: "f", contentType, sizeBytes: 10 }),
+        ).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: attachmentTypeRefusalMessage(contentType),
+        });
+      }
+    });
+
+    it("refuses an empty file and one over the 2 MB ceiling, and accepts the ceiling exactly", async () => {
+      const issue = await openIssue("TAS-102");
+      const ask = (sizeBytes: number) =>
+        api.createAttachmentUploadUrl(project.id, issue.id, {
+          fileName: "f.txt",
+          contentType: "text/plain",
+          sizeBytes,
+        });
+
+      await expect(ask(0)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "File size must be positive, got: 0",
+      });
+      await expect(ask(ATTACHMENT_MAX_SIZE_BYTES + 1)).rejects.toMatchObject({
+        code: "OUT_OF_RANGE",
+        message: attachmentSizeRefusalMessage(ATTACHMENT_MAX_SIZE_BYTES + 1),
+      });
+      // Inclusive: 2097152 is the largest accepted, not the smallest refused.
+      await expect(ask(ATTACHMENT_MAX_SIZE_BYTES)).resolves.toMatchObject({ objectKey: expect.any(String) });
+    });
+
+    it("answers a blocked cross-origin PUT with no status at all", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile(`${MOCK_ATTACHMENT_TRIGGERS.storeUnreachable}.txt`);
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+
+      const error = await api.putAttachmentBytes(ticket.uploadUrl, file, file.type).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AttachmentStoreError);
+      // The whole point of the shape: no `status`, so nothing in
+      // src/api/errors.ts reads a store failure as a gateway one.
+      expect(error).toMatchObject({ code: "STORAGE_UNREACHABLE", storeStatus: null });
+      expect((error as { status?: unknown }).status).toBeUndefined();
+    });
+
+    it("carries a store's own status in storeStatus and never in status", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile(`${MOCK_ATTACHMENT_TRIGGERS.storeRefused}.txt`);
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+
+      const error = await api.putAttachmentBytes(ticket.uploadUrl, file, file.type).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "STORAGE_REJECTED", storeStatus: 500 });
+      expect((error as { status?: unknown }).status).toBeUndefined();
+    });
+
+    it("answers 403 for an expired link and for a content type that was not the one signed", async () => {
+      const issue = await openIssue("TAS-102");
+
+      const stale = textFile(`${MOCK_ATTACHMENT_TRIGGERS.expiredTicket}.txt`);
+      const staleTicket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: stale.name,
+        contentType: stale.type,
+        sizeBytes: stale.size,
+      });
+      await expect(api.putAttachmentBytes(staleTicket.uploadUrl, stale, stale.type)).rejects.toMatchObject({
+        code: "STORAGE_REJECTED",
+        storeStatus: 403,
+      });
+
+      // The signature covers `Content-Type`, so "text/plain; charset=utf-8" is
+      // a different request from "text/plain" and the store says so.
+      const file = textFile("ok.txt");
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await expect(
+        api.putAttachmentBytes(ticket.uploadUrl, file, "text/plain; charset=utf-8"),
+      ).rejects.toMatchObject({ storeStatus: 403 });
+    });
+
+    it("leaves the object in the bucket when the confirm fails, and lists nothing", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile(`${MOCK_ATTACHMENT_TRIGGERS.confirmFails}.txt`);
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      // Leg 2 succeeds: the bytes are in the bucket.
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+
+      await expect(
+        api.confirmAttachmentUpload(project.id, issue.id, {
+          objectKey: ticket.objectKey,
+          fileName: file.name,
+          contentType: file.type,
+        }),
+      ).rejects.toMatchObject({ code: "UNAVAILABLE" });
+
+      // No row — which is exactly the orphan: an object nothing points at, and
+      // nothing on either side can remove it.
+      expect(await api.listAttachments(project.id, issue.id)).toEqual([]);
+    });
+
+    it("refuses a confirm for an object nobody uploaded", async () => {
+      const issue = await openIssue("TAS-102");
+      await expect(
+        api.confirmAttachmentUpload(project.id, issue.id, {
+          objectKey: "never-put-here",
+          fileName: "ghost.txt",
+          contentType: "text/plain",
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", message: "Object not found in storage" });
+    });
+
+    it("creates a second row when a confirm is repeated, which is why it is never retried", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile("duplicate.txt");
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+
+      const body = { objectKey: ticket.objectKey, fileName: file.name, contentType: file.type };
+      const first = await api.confirmAttachmentUpload(project.id, issue.id, body);
+      const second = await api.confirmAttachmentUpload(project.id, issue.id, body);
+
+      // `object_key` has no unique constraint on the server and the insert is
+      // unconditional, so a repeat is a duplicate row rather than a no-op. Two
+      // ids, two rows, two history events. Pinned so nobody "helpfully" adds a
+      // retry to the confirm.
+      expect(first.id).not.toBe(second.id);
+      expect(await api.listAttachments(project.id, issue.id)).toHaveLength(2);
+    });
+
+    it("gives a fresh presigned download link per call, carrying the checksum", async () => {
+      const issue = await openIssue("TAS-101");
+      const [attachment] = await api.listAttachments(project.id, issue.id);
+
+      const link = await api.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
+      expect(link.downloadUrl).toContain("http://127.0.0.1:9000/taska-attachments/");
+      expect(link.downloadUrl).toContain("X-Amz-Signature=");
+      expect(link.checksum).toBe(attachment.checksum);
+
+      await expect(
+        api.getAttachmentDownloadUrl(project.id, issue.id, "00000000-0000-0000-0000-000000000000"),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("soft-deletes: the row leaves the list and the id stops resolving", async () => {
+      const issue = await openIssue("TAS-101");
+      const before = await api.listAttachments(project.id, issue.id);
+
+      await api.deleteAttachment(project.id, issue.id, before[0].id);
+
+      const after = await api.listAttachments(project.id, issue.id);
+      expect(after.map((item) => item.id)).not.toContain(before[0].id);
+      expect(after).toHaveLength(before.length - 1);
+      await expect(api.getAttachmentDownloadUrl(project.id, issue.id, before[0].id)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("lets a MEMBER delete their own attachment and refuses somebody else's", async () => {
+      // Mark is a MEMBER of TAS; Anna is its ADMIN. The seed puts one file from
+      // each on TAS-101 precisely so this rule has both cases to answer.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const issue = await openIssue("TAS-101");
+      const attachments = await api.listAttachments(project.id, issue.id);
+      const mine = attachments.find((item) => item.fileName === "validation-error.png");
+      const theirs = attachments.find((item) => item.fileName === "login-500-trace.txt");
+      expect(mine && theirs).toBeTruthy();
+      if (!mine || !theirs) return;
+
+      await expect(api.deleteAttachment(project.id, issue.id, theirs.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      await expect(api.deleteAttachment(project.id, issue.id, mine.id)).resolves.toBeUndefined();
+
+      // And an ADMIN may remove the one they did not upload.
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.deleteAttachment(project.id, issue.id, theirs.id)).resolves.toBeUndefined();
+    });
+
+    it("answers a delete for an attachment that is not there, and refuses its download", async () => {
+      const issue = await openIssue("TAS-101");
+      const [attachment] = await api.listAttachments(project.id, issue.id);
+      const ghost = "00000000-0000-0000-0000-000000000000";
+
+      // `AttachmentServiceImpl.deleteAttachment` opens on
+      // `findByIdAndDeletedAtIsNull` with **no** `switchIfEmpty`, so an empty
+      // result skips both `flatMap`s and `GrpcAttachmentService` closes with
+      // `.thenReturn(Empty)` — 204, not the 404 the contract documents. The
+      // implementation is reproduced rather than the contract, and the gap is
+      // written down in docs/ai/API-DIVERGENCE.md rather than absorbed here.
+      await expect(api.deleteAttachment(project.id, issue.id, ghost)).resolves.toBeUndefined();
+
+      // The case a stale list actually produces — a second tab, or somebody
+      // else's delete. A 404 here would roll the panel's optimistic removal
+      // back and put a file that *is* deleted back on screen under an error
+      // message, which is worse than the divergence.
+      await api.deleteAttachment(project.id, issue.id, attachment.id);
+      await expect(api.deleteAttachment(project.id, issue.id, attachment.id)).resolves.toBeUndefined();
+
+      // Lenient, not silently repeated: the second call writes no second event.
+      const deletions = (await api.getIssue(project.id, issue.id)).history.filter(
+        (event) => event.eventType === "ATTACHMENT_DELETED",
+      );
+      expect(deletions).toHaveLength(1);
+
+      // And the leniency is one method wide. `getDownloadUrl` goes through the
+      // server's private `findActiveAttachment`, which *does* carry
+      // `switchIfEmpty(NOT_FOUND)`, so both of these are 404s — pinned here
+      // beside the 204s so nobody makes the lookup lenient for everyone.
+      await expect(api.getAttachmentDownloadUrl(project.id, issue.id, attachment.id)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+      await expect(api.getAttachmentDownloadUrl(project.id, issue.id, ghost)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("checks upload-attachment-roles on both legs that reach the gateway", async () => {
+      // `upload-attachment-roles: ADMIN,MEMBER`, checked once by
+      // `createUploadUrl` and again by `confirmUpload` — a presigned URL is a
+      // bearer token for the bucket and says nothing about who may add a row.
+      // Nothing in the UI can reach either leg as a VIEWER, because the picker
+      // is hidden; that is exactly why it is proved here, since a hidden
+      // control is a courtesy and the server stays the authority.
+      //
+      // Mark is a member of the Mobile project and Anna is not, so the gate is
+      // two sign-ins on one issue — and the project id is read from his list
+      // rather than pasted in as a second copy of a seed literal.
+      //
+      // Neither half is the role it stands for. The seed gives `memberIds[0]`
+      // ADMIN and everybody else MEMBER, and Mark is Mobile's first member, so
+      // the allowed side below is an ADMIN; and no seeded member is a VIEWER
+      // anywhere, so the refused side is a non-member that `getMembership`
+      // answers `VIEWER` for. Against the gateway that second substitution is
+      // not equivalent — a non-member is refused on `!isMember` before a role
+      // is read at all — which is why it is written down here and in
+      // docs/ai/API-DIVERGENCE.md rather than passed off as a VIEWER test.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+      const { items } = await api.listIssues(mobile.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === "MOB-5");
+      expect(issue).toBeDefined();
+      if (!issue) return;
+
+      // An allowed role runs all three legs, so the gate is not one notch too
+      // tight. `upload-attachment-roles` is ADMIN and MEMBER; this is the ADMIN.
+      const file = textFile("mark.txt");
+      const ticket = await api.createAttachmentUploadUrl(mobile.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+      await expect(
+        api.confirmAttachmentUpload(mobile.id, issue.id, {
+          objectKey: ticket.objectKey,
+          fileName: file.name,
+          contentType: file.type,
+        }),
+      ).resolves.toMatchObject({ fileName: "mark.txt" });
+
+      // Anna is not a member of MOB at all, so `getMembership` answers VIEWER.
+      await api.login({ email: "anna@example.com", password: "anything" });
+
+      // Reading stays hers **in the mock, which is looser than the gateway
+      // here**. It is not that `view-attachment-roles` includes VIEWER:
+      // `ProjectRoleChecker.validateAccess` refuses a non-member with
+      // `PERMISSION_DENIED "Access denied"` before it maps a role or consults
+      // `allowedRoles`, so the gateway answers 403 to these two reads whatever
+      // that config contains. The mock membership-checks neither read, the
+      // same convention `getIssueById` already follows for project-scoped
+      // reads — recorded in docs/ai/API-DIVERGENCE.md, and left as it is
+      // because adding the check would cost the read-only seed this section
+      // demonstrates.
+      const attachments = await api.listAttachments(mobile.id, issue.id);
+      const seeded = attachments.find((item) => item.fileName === "crash-report.json");
+      expect(seeded).toBeDefined();
+      if (!seeded) return;
+      await expect(api.getAttachmentDownloadUrl(mobile.id, issue.id, seeded.id)).resolves.toMatchObject({
+        downloadUrl: expect.stringContaining("X-Amz-Signature="),
+      });
+
+      await expect(
+        api.createAttachmentUploadUrl(mobile.id, issue.id, {
+          fileName: "notes.txt",
+          contentType: "text/plain",
+          sizeBytes: 10,
+        }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      // Refused before the object is looked for, the way the server refuses it:
+      // `confirmUpload` opens with its own role check, so this never reaches
+      // "Object not found in storage".
+      await expect(
+        api.confirmAttachmentUpload(mobile.id, issue.id, {
+          objectKey: "never-put-here",
+          fileName: "notes.txt",
+          contentType: "text/plain",
+        }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+
+      // Somebody else's file, and this reader is no ADMIN of MOB.
+      await expect(api.deleteAttachment(mobile.id, issue.id, seeded.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      // But an attachment that is not there is refused by nothing at all: the
+      // server's empty lookup skips the role check along with everything else.
+      await expect(
+        api.deleteAttachment(mobile.id, issue.id, "00000000-0000-0000-0000-000000000000"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("judges the file before the role at leg 1, and the role before the object at leg 3", async () => {
+      // Not symmetry, and not what this store used to assume. `createUploadUrl`
+      // is `checkUserHasRoleForIssue(...).then(createPresignedUploadUrl(...))`,
+      // and `Mono.then(Mono)` evaluates its argument at assembly — while
+      // `S3StorageClient.createPresignedUploadUrl` calls `validateFileParams`
+      // synchronously before it returns a Mono. So the file refusal escapes
+      // before the role check ever subscribes, and leg 1 answers 400 where a
+      // reader would expect 403. Verified against backend `f53dca38`.
+      //
+      // `confirmUpload` has no such argument and does check the role first,
+      // which is why the two assertions below differ.
+      // Mark's sign-in only to read the ids: `listProjects` answers a
+      // non-member nothing, so Anna cannot find MOB herself.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+      const issue = (await api.listIssues(mobile.id, { pageSize: 100 })).items.find(
+        (item) => item.issueKey === "MOB-5",
+      );
+      expect(issue).toBeDefined();
+      if (!issue) return;
+      await api.login({ email: "anna@example.com", password: "anything" });
+
+      // Anna may not upload here at all, and the file is unacceptable too. The
+      // server answers the file, so this does as well — and `RestTaskaApi`,
+      // which refuses before it sends anything, answers the same.
+      await expect(
+        api.createAttachmentUploadUrl(mobile.id, issue.id, {
+          fileName: "bundle.zip",
+          contentType: "application/x-zip-compressed",
+          sizeBytes: 10,
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+      // Same two problems on leg 3, opposite answer: the role goes first.
+      await expect(
+        api.confirmAttachmentUpload(mobile.id, issue.id, {
+          objectKey: "never-put-here",
+          fileName: "bundle.zip",
+          contentType: "application/x-zip-compressed",
+        }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    });
+
+    it("refuses an upload URL that is not one instead of PUTting to this origin", async () => {
+      // `RestTaskaApi` lands a response with no `uploadUrl` as `""`, and
+      // `fetch("")` resolves against the document rather than failing — so an
+      // unguarded leg 2 would PUT the file to the SPA's own origin with
+      // cookies attached. Refused by both implementations, in the store-error
+      // shape and with its own code, because nothing was sent and no store was
+      // asked.
+      const file = textFile("notes.txt");
+      for (const url of ["", "/api/v1/upload", "javascript:void 0"]) {
+        await expect(api.putAttachmentBytes(url, file, file.type)).rejects.toMatchObject({
+          name: "AttachmentStoreError",
+          code: "STORAGE_URL_UNUSABLE",
+          storeStatus: null,
+        });
+      }
+    });
+
+    it("scopes every read to the project in the path, unlike the gateway", async () => {
+      const issue = await openIssue("TAS-101");
+      const other = (await api.listProjects()).find((item) => item.id !== project.id);
+      expect(other).toBeDefined();
+      if (!other) return;
+
+      // The gateway forwards only `issueId` and says in its own comment that
+      // `projectId` takes no part in authorisation, so it would answer this.
+      // The mock resolves an issue *within* a project and refuses — the same
+      // known divergence `getIssue` carries, recorded here rather than found by
+      // somebody at a boundary.
+      await expect(api.listAttachments(other.id, issue.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
   });
 });

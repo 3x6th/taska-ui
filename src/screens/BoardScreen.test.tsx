@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import { BoardScreen } from "./BoardScreen";
+import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError } from "../api/attachments";
 
 /**
  * The board reads five things and used to show a failure in only one of them.
@@ -21,6 +22,18 @@ const OTHER_PROJECT_ID = "9c3f7b18-6d21-4a55-8e0b-7f2a1d4c9e30";
 
 const {
   fakeApi,
+  seedMembers,
+  seedAttachments,
+  failAttachmentsRead,
+  holdAttachmentsRead,
+  failUpload,
+  confirmCalls,
+  listedAttachments,
+  deletedAttachments,
+  failDelete,
+  holdDelete,
+  releaseDelete,
+  heldDeleteCount,
   seedSearch,
   failSearch,
   seedNotifications,
@@ -88,6 +101,47 @@ const {
     created: ReturnType<typeof makeIssue>[];
     deleted: Set<string>;
     edits: Record<string, { summary?: string; description?: string }>;
+    /** The panel's attachments section: what it lists, and how each leg answers. */
+    /**
+     * `GET /projects/{id}/members`. Empty for every other case here — the
+     * assignee row is not what they are about — and seeded only where a name
+     * has to be resolved from an id, which is how an attachment's byline works.
+     */
+    members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER"; addedAt: string; addedBy: string; user: { displayName: string; email: string } }[];
+    attachments: {
+      id: string;
+      issueId: string;
+      fileName: string;
+      contentType: string;
+      sizeBytes: number;
+      uploadedBy: string;
+      checksum: string | null;
+      createdAt: string;
+    }[];
+    attachmentsFailure?: Error;
+    /** The list re-read held open, so a test can read the cache the mutation left rather than the answer that replaced it. */
+    attachmentsHeld: boolean;
+    uploadUrlFailure?: Error;
+    putFailure?: Error;
+    /**
+     * A confirm that rejects. `landsAnyway` is the case the panel exists to get
+     * right: the row *is* on the server and only the answer was lost, so the
+     * list has to be re-read before anybody is told otherwise.
+     */
+    confirmFailure?: Error;
+    confirmLandsAnyway: boolean;
+    confirmCalls: number;
+    downloadUrl: string;
+    deleted_attachments: string[];
+    /**
+     * A delete that refuses, and one held open. Both are needed to reach the
+     * rollback: without the refusal `onError` never runs, and without the hold
+     * the optimistic window is one tick long and nothing can be asserted inside
+     * it.
+     */
+    deleteFailure?: Error;
+    deleteHeld: boolean;
+    deleteReleases: (() => void)[];
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -104,6 +158,15 @@ const {
     created: [],
     deleted: new Set<string>(),
     edits: {},
+    members: [],
+    attachments: [],
+    confirmLandsAnyway: false,
+    confirmCalls: 0,
+    downloadUrl: "https://store.example/taska-attachments/obj?X-Amz-Signature=abc",
+    deleted_attachments: [],
+    attachmentsHeld: false,
+    deleteHeld: false,
+    deleteReleases: [],
   };
 
   const api = {
@@ -136,7 +199,7 @@ const {
       if (state.membershipFailure) throw state.membershipFailure;
       return state.membership;
     },
-    listMembers: async () => [],
+    listMembers: async () => state.members,
     getWorkflow: async () => {
       if (state.workflowFailure) throw state.workflowFailure;
       return {
@@ -262,6 +325,56 @@ const {
     }),
     listIssueLabels: async () => [],
     listIssueLinks: async () => [],
+    // The attachments section's five reachable calls. `putAttachmentBytes`
+    // takes a Blob and answers nothing, exactly as the real middle leg does.
+    listAttachments: async () => {
+      // A re-read that never lands. `onSettled` invalidates this list after
+      // every delete, so a refetch would put a rolled-back row on screen by
+      // itself — and a test that let it would pass with the rollback deleted.
+      if (state.attachmentsHeld) return new Promise(() => {});
+      if (state.attachmentsFailure) throw state.attachmentsFailure;
+      return state.attachments.filter((item) => !state.deleted_attachments.includes(item.id));
+    },
+    createAttachmentUploadUrl: async () => {
+      if (state.uploadUrlFailure) throw state.uploadUrlFailure;
+      return { uploadUrl: "https://store.example/obj?X-Amz-Signature=abc", objectKey: "obj-1" };
+    },
+    putAttachmentBytes: async () => {
+      if (state.putFailure) throw state.putFailure;
+    },
+    confirmAttachmentUpload: async (
+      _projectId: string,
+      issueId: string,
+      input: { objectKey: string; fileName: string; contentType: string },
+    ) => {
+      state.confirmCalls += 1;
+      const created = {
+        id: `attachment-${state.attachments.length + 1}`,
+        issueId,
+        fileName: input.fileName,
+        contentType: input.contentType,
+        sizeBytes: 11,
+        uploadedBy: "user-anna",
+        checksum: null,
+        createdAt: now,
+      };
+      if (state.confirmFailure) {
+        // The server-side half of the write happening while the answer is lost
+        // — the only way to reach the panel's "attached after all" sentence.
+        if (state.confirmLandsAnyway) state.attachments = [...state.attachments, created];
+        throw state.confirmFailure;
+      }
+      state.attachments = [...state.attachments, created];
+      return created;
+    },
+    getAttachmentDownloadUrl: async () => ({ downloadUrl: state.downloadUrl, checksum: null }),
+    deleteAttachment: async (_projectId: string, _issueId: string, attachmentId: string) => {
+      if (state.deleteHeld) await new Promise<void>((resolve) => state.deleteReleases.push(resolve));
+      // Refused *before* the row is touched: a server that says no has removed
+      // nothing, which is what makes the reappearing row correct.
+      if (state.deleteFailure) throw state.deleteFailure;
+      state.deleted_attachments.push(attachmentId);
+    },
     listComments: async () => ({ items: [], page: 0, pageSize: 50, totalCount: 0 }),
   };
 
@@ -291,6 +404,40 @@ const {
     seedLabels: (labels: { id: string; name: string; color: string }[]) => {
       state.labels = labels;
     },
+    seedMembers: (members: typeof state.members) => {
+      state.members = members;
+    },
+    seedAttachments: (attachments: typeof state.attachments) => {
+      state.attachments = attachments;
+    },
+    failAttachmentsRead: (error: Error) => {
+      state.attachmentsFailure = error;
+    },
+    holdAttachmentsRead: (held: boolean) => {
+      state.attachmentsHeld = held;
+    },
+    failUpload: (where: "sign" | "put" | "confirm", error: Error, landsAnyway = false) => {
+      if (where === "sign") state.uploadUrlFailure = error;
+      if (where === "put") state.putFailure = error;
+      if (where === "confirm") {
+        state.confirmFailure = error;
+        state.confirmLandsAnyway = landsAnyway;
+      }
+    },
+    confirmCalls: () => state.confirmCalls,
+    listedAttachments: () => state.attachments.filter((item) => !state.deleted_attachments.includes(item.id)),
+    deletedAttachments: () => state.deleted_attachments,
+    failDelete: (error: Error) => {
+      state.deleteFailure = error;
+    },
+    holdDelete: (held: boolean) => {
+      state.deleteHeld = held;
+    },
+    /** Lands the oldest held delete. */
+    releaseDelete: () => {
+      state.deleteReleases.shift()?.();
+    },
+    heldDeleteCount: () => state.deleteReleases.length,
     holdLabelCreate: (held: boolean) => {
       state.labelCreateHeld = held;
     },
@@ -339,6 +486,19 @@ const {
       state.created = [];
       state.deleted = new Set<string>();
       state.edits = {};
+      state.members = [];
+      state.attachments = [];
+      state.attachmentsFailure = undefined;
+      state.attachmentsHeld = false;
+      state.uploadUrlFailure = undefined;
+      state.putFailure = undefined;
+      state.confirmFailure = undefined;
+      state.confirmLandsAnyway = false;
+      state.confirmCalls = 0;
+      state.deleted_attachments = [];
+      state.deleteFailure = undefined;
+      state.deleteHeld = false;
+      state.deleteReleases = [];
     },
   };
 });
@@ -1201,5 +1361,370 @@ describe("a label the server has not answered for yet", () => {
     // label: once the create settles, both pickers carry it.
     await waitFor(() => expect(optionNames(boardPicker)).toEqual(["All", "backend", "release"]));
     await waitFor(() => expect(optionNames(panelPicker)).toEqual(["Select a label", "backend", "release"]));
+  });
+});
+
+
+/**
+ * The attachments section (TAS-190). Five things are pinned here and nowhere
+ * else, because each of them is a sentence the panel says about a fact only the
+ * panel can know:
+ *
+ * - a 404 from the list has more than one cause, so it must not be read as
+ *   "this issue is gone" and must not take the section off the screen;
+ * - a confirm that fails is never repeated, and the list is re-read before
+ *   anybody is told the file was not attached;
+ * - the middle leg does not touch Taska, so a failure with no HTTP status is
+ *   named as the network-or-CORS problem it is;
+ * - delete is drawn per row, on two different rules;
+ * - and a delete the server refuses puts the row back and says why, because a
+ *   file the reader believes is gone is worse than an error they can read.
+ */
+describe("issue attachments", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+
+  const attachment = (over: Partial<ReturnType<typeof baseAttachment>> = {}) => ({ ...baseAttachment(), ...over });
+  function baseAttachment() {
+    return {
+      id: "attachment-seed",
+      issueId: "issue-1",
+      fileName: "login-500-trace.txt",
+      contentType: "text/plain",
+      sizeBytes: 2411,
+      uploadedBy: "user-anna",
+      checksum: null as string | null,
+      createdAt: "2026-08-01T09:00:00Z",
+    };
+  }
+
+  const section = async () => {
+    const heading = await screen.findByRole("heading", { name: /attachments/i });
+    const found = heading.closest("section");
+    if (!found) throw new Error("no attachments section");
+    return within(found);
+  };
+
+  /**
+   * Hands a file to the input the "Attach a file" button drives. The input is
+   * `hidden` and has no accessible name on purpose — it is not a tab stop, the
+   * button is — so it is reached by class rather than by role, which is the one
+   * place in this file that is allowed to.
+   */
+  const chooseFile = (name = "notes.txt", type = "text/plain", sizeBytes?: number) => {
+    const fileInput = document.querySelector<HTMLInputElement>(".attachment-input");
+    if (!fileInput) throw new Error("no file input");
+    // A real byte array when a size is asked for, because `File.size` is read
+    // off the parts and the size arm of the refusal is decided on it.
+    const parts = sizeBytes === undefined ? ["trace body"] : [new Uint8Array(sizeBytes)];
+    fireEvent.change(fileInput, { target: { files: [new File(parts, name, { type })] } });
+  };
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("lists what is attached, with its size, uploader and time", async () => {
+    // The byline resolves a user id through the project's member list, like
+    // every other name in the panel. Without a member list there is no name to
+    // print, and the row prints the size and the time rather than "Unknown" —
+    // which is the state `hybrid` mode is in for anybody but the reader
+    // themselves (DESIGN.md §6, TAS-137).
+    seedMembers([
+      { userId: "user-anna", role: "ADMIN", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
+    ]);
+    seedAttachments([attachment()]);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const row = await panel.findByRole("button", { name: "Download login-500-trace.txt" });
+    expect(row).toHaveTextContent("login-500-trace.txt");
+    expect(row).toHaveTextContent("2.4 KB");
+    expect(row).toHaveTextContent("Anna Ivanova");
+  });
+
+  it("says the routes are not deployed rather than hiding itself, on the gateway's own 404", async () => {
+    // The undeployed signature: a 404 whose message is Spring's static-resource
+    // fallback. Measured against the deployed gateway on 2026-09-06.
+    failAttachmentsRead(
+      Object.assign(new Error(`No static resource api/v1/projects/${PROJECT_ID}/issues/issue-1/attachments for request '…'.`), {
+        status: 404,
+        code: "NOT_FOUND",
+      }),
+    );
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText(/not on this gateway yet/i, undefined, AFTER_RETRY)).toBeVisible();
+    // The section stays, and the upload control is not offered for a route that
+    // does not exist.
+    expect(panel.queryByRole("button", { name: /attach a file/i })).toBeNull();
+  });
+
+  it("keeps the section and shows the failure for a 404 that is not the undeployed one", async () => {
+    // "Issue not found" is a deployed route's own 404. Reading it as "this
+    // issue is gone" and dropping the section would hide a whole feature over a
+    // failure that may be about one read.
+    failAttachmentsRead(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND" }));
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText("Issue not found", undefined, AFTER_RETRY)).toBeVisible();
+    expect(panel.queryByText(/not on this gateway yet/i)).toBeNull();
+    expect(panel.getByRole("heading", { name: /attachments/i })).toBeVisible();
+  });
+
+  it("refuses a file the server's allowlist would refuse, before any request", async () => {
+    renderBoard(ISSUE_PATH);
+    await section();
+    // The `.zip` Windows browsers report differently. `accept` lets it through
+    // the picker; the allowlist does not.
+    chooseFile("bundle.zip", "application/x-zip-compressed");
+
+    const panel = await section();
+    // The file by name and the way out, not the MIME string the server would
+    // have answered with. This arm never reaches a server, so there is no
+    // wording to be verbatim with — see `refusalText`.
+    const refusal = await panel.findByText(/bundle\.zip is not a type this issue accepts/);
+    expect(refusal).toHaveTextContent(/Attach JPEG, PNG or WebP images, PDF/);
+    expect(refusal).not.toHaveTextContent(/application\/x-zip-compressed/);
+    // Nothing was uploaded and nothing was confirmed.
+    expect(confirmCalls()).toBe(0);
+  });
+
+  it("states an over-size file in the units the picker states the limit in", async () => {
+    renderBoard(ISSUE_PATH);
+    await section();
+    // One byte over, which is the likeliest way to meet this ceiling and the
+    // case that breaks the obvious sentence: `formatFileSize` prints both this
+    // file and the limit as "2 MB", so naming the two sizes would read "is 2
+    // MB. The largest … is 2 MB".
+    chooseFile("huge.png", "image/png", ATTACHMENT_MAX_SIZE_BYTES + 1);
+
+    const panel = await section();
+    const refusal = await panel.findByText(/huge\.png is just over 2 MB/);
+    expect(refusal).toHaveTextContent(/largest file this issue accepts/);
+    // Never the server's byte arithmetic, which contradicts the hint above it.
+    expect(refusal).not.toHaveTextContent(/2097153/);
+    expect(confirmCalls()).toBe(0);
+  });
+
+  it("names the size when it differs from the limit as printed", async () => {
+    renderBoard(ISSUE_PATH);
+    await section();
+    chooseFile("huge.png", "image/png", 3 * 1024 * 1024);
+
+    const panel = await section();
+    expect(await panel.findByText("huge.png is 3 MB. The largest file this issue accepts is 2 MB.")).toBeVisible();
+  });
+
+  it("runs the three legs and shows the new row", async () => {
+    renderBoard(ISSUE_PATH);
+    await section();
+    chooseFile();
+
+    const panel = await section();
+    expect(await panel.findByRole("button", { name: "Download notes.txt" })).toBeVisible();
+    expect(confirmCalls()).toBe(1);
+  });
+
+  it("names a blocked cross-origin PUT as a network-or-CORS problem, not as 'upload failed'", async () => {
+    // The shape a refused preflight takes: no status anywhere, because the
+    // browser does not tell script why.
+    failUpload("put", new AttachmentStoreError("The file store could not be reached: Failed to fetch", "STORAGE_UNREACHABLE", null));
+    renderBoard(ISSUE_PATH);
+    await section();
+    chooseFile();
+
+    const panel = await section();
+    const message = await panel.findByText(/could not reach the file store/i);
+    expect(message).toHaveTextContent(/straight to storage rather than through Taska/i);
+    expect(confirmCalls()).toBe(0);
+  });
+
+  it("reads a store 403 as an expired upload link rather than as a permission failure", async () => {
+    failUpload("put", new AttachmentStoreError("The file store answered 403.", "STORAGE_REJECTED", 403));
+    renderBoard(ISSUE_PATH);
+    await section();
+    chooseFile();
+
+    const panel = await section();
+    expect(await panel.findByText(/15 minutes from the moment the file is chosen/i)).toBeVisible();
+  });
+
+  it("re-reads the list after a failed confirm and does not claim the file was lost when it was not", async () => {
+    // The confirm succeeded on the server and the answer never came back. This
+    // is the sentence the whole "refetch before speaking" rule exists for.
+    failUpload("confirm", Object.assign(new Error("Service unavailable"), { status: 503, code: "UNAVAILABLE" }), true);
+    renderBoard(ISSUE_PATH);
+    await section();
+    chooseFile();
+
+    const panel = await section();
+    expect(await panel.findByText(/was attached after all/i)).toBeVisible();
+    // And the row it is telling the truth about is on screen.
+    expect(await panel.findByRole("button", { name: "Download notes.txt" })).toBeVisible();
+    // Never repeated: a second confirm is a second row on the server.
+    expect(confirmCalls()).toBe(1);
+  });
+
+  it("says the file was not attached only when the re-read agrees", async () => {
+    failUpload("confirm", Object.assign(new Error("Service unavailable"), { status: 503, code: "UNAVAILABLE" }), false);
+    renderBoard(ISSUE_PATH);
+    await section();
+    chooseFile();
+
+    const panel = await section();
+    expect(await panel.findByText(/notes\.txt was not attached/i)).toBeVisible();
+    expect(confirmCalls()).toBe(1);
+    expect(listedAttachments()).toHaveLength(0);
+  });
+
+  it("opens a download link in a new tab and asks for it per click", async () => {
+    seedAttachments([attachment()]);
+    // Typed with the parameters so the assertions below can read them: a bare
+    // `vi.fn(() => …)` infers an empty argument tuple.
+    const open = vi.fn((_url: string, _target: string, _features: string) => ({}) as Window);
+    vi.stubGlobal("open", open);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
+
+    await waitFor(() => expect(open).toHaveBeenCalled());
+    expect(open.mock.calls[0][0]).toContain("X-Amz-Signature=");
+    expect(open.mock.calls[0][2]).toBe("noopener,noreferrer");
+    vi.unstubAllGlobals();
+  });
+
+  it("offers the link to click when the browser refused to open it", async () => {
+    seedAttachments([attachment()]);
+    // `window.open` returning null is the popup blocker's one honest signal.
+    vi.stubGlobal("open", vi.fn(() => null));
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
+
+    const fallback = await panel.findByRole("link", { name: "Open" });
+    expect(fallback).toHaveAttribute("href", expect.stringContaining("X-Amz-Signature="));
+    expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
+    // And it is announced, because otherwise a keyboard reader presses Enter,
+    // nothing opens, and an unannounced tab stop appears in the row. The live
+    // region was emptied by `onMutate`, so silence here is the default.
+    expect(
+      await panel.findByText("Your browser blocked the download tab for login-500-trace.txt. Use the Open link beside it."),
+    ).toBeVisible();
+    vi.unstubAllGlobals();
+  });
+
+  it("removes an attachment optimistically", async () => {
+    seedAttachments([attachment()]);
+    holdDelete(true);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    await panel.findByRole("button", { name: "Download login-500-trace.txt" });
+    fireEvent.click(panel.getByRole("button", { name: "Delete login-500-trace.txt" }));
+    await waitFor(() => expect(heldDeleteCount()).toBe(1));
+
+    // Gone while the delete is still in flight. Held on purpose: against a
+    // fake that answers on the next tick, the row would also have disappeared
+    // because the server no longer lists it, and the test could not tell an
+    // optimistic removal from a fast one.
+    await waitFor(() => expect(panel.queryByRole("button", { name: "Download login-500-trace.txt" })).toBeNull());
+    expect(deletedAttachments()).toEqual([]);
+
+    releaseDelete();
+    await waitFor(() => expect(deletedAttachments()).toEqual(["attachment-seed"]));
+    expect(panel.queryByRole("button", { name: "Download login-500-trace.txt" })).toBeNull();
+  });
+
+  it("puts the row back and says why when the server refuses the delete", async () => {
+    seedAttachments([attachment()]);
+    // The refusal this can actually meet: `delete-attachment-roles` is ADMIN
+    // and `delete-own-attachment-roles` is ADMIN or MEMBER, so a role that
+    // changed between the list being drawn and the button being pressed is a
+    // 403 on a control that was correctly offered. The server is the authority
+    // either way — hiding the button is a courtesy, not the rule.
+    failDelete(
+      Object.assign(new Error("You do not have permission to delete this attachment"), {
+        status: 403,
+        code: "PERMISSION_DENIED",
+      }),
+    );
+    holdDelete(true);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    await panel.findByRole("button", { name: "Download login-500-trace.txt" });
+
+    // From here the list re-read never answers, so what is on screen below is
+    // the cache the mutation left behind. Without this the `onSettled`
+    // invalidation would restore the row on its own and this test would pass
+    // with `onError`'s rollback deleted — which is exactly what it is for.
+    holdAttachmentsRead(true);
+    fireEvent.click(panel.getByRole("button", { name: "Delete login-500-trace.txt" }));
+    await waitFor(() => expect(heldDeleteCount()).toBe(1));
+    await waitFor(() => expect(panel.queryByRole("button", { name: "Download login-500-trace.txt" })).toBeNull());
+
+    releaseDelete();
+
+    // Back, with the server's own sentence beside it. Both halves matter: a
+    // row that stayed gone would be a file the reader believes was deleted,
+    // and a row that came back silently would be one they think still is.
+    expect(await panel.findByRole("button", { name: "Download login-500-trace.txt" })).toBeVisible();
+    expect(await panel.findByText("You do not have permission to delete this attachment")).toBeVisible();
+    expect(deletedAttachments()).toEqual([]);
+  });
+
+  it("draws delete on your own row for a MEMBER and on nobody else's", async () => {
+    setMembership("MEMBER");
+    seedAttachments([
+      attachment(),
+      attachment({ id: "attachment-mark", fileName: "validation-error.png", uploadedBy: "user-mark" }),
+    ]);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    // `delete-own-attachment-roles: ADMIN,MEMBER` — Anna uploaded this one.
+    expect(await panel.findByRole("button", { name: "Delete login-500-trace.txt" })).toBeVisible();
+    // `delete-attachment-roles: ADMIN` — and this reader is not one.
+    expect(panel.queryByRole("button", { name: "Delete validation-error.png" })).toBeNull();
+  });
+
+  it("draws delete on both rows for an ADMIN", async () => {
+    setMembership("ADMIN");
+    seedAttachments([
+      attachment(),
+      attachment({ id: "attachment-mark", fileName: "validation-error.png", uploadedBy: "user-mark" }),
+    ]);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByRole("button", { name: "Delete login-500-trace.txt" })).toBeVisible();
+    expect(panel.getByRole("button", { name: "Delete validation-error.png" })).toBeVisible();
+  });
+
+  it("offers a VIEWER the list and the download and neither write", async () => {
+    setMembership("VIEWER");
+    seedAttachments([attachment()]);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByRole("button", { name: "Download login-500-trace.txt" })).toBeVisible();
+    expect(panel.queryByRole("button", { name: /attach a file/i })).toBeNull();
+    expect(panel.queryByRole("button", { name: /^Delete / })).toBeNull();
+  });
+
+  it("states the limit and the accepted types before a file is chosen", async () => {
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const hint = await panel.findByText(/Up to 2 MB\./);
+    // The list refuses more than people expect, so it is on screen rather than
+    // discovered by being refused.
+    expect(hint).toHaveTextContent(/JPEG, PNG or WebP images, PDF/);
+    expect(hint).toHaveTextContent(/ZIP/);
   });
 });

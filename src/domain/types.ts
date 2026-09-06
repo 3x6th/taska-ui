@@ -362,7 +362,31 @@ export type IssueEventType =
   | "DELETED"
   | "COMMENT_CREATED"
   | "COMMENT_UPDATED"
-  | "COMMENT_DELETED";
+  | "COMMENT_DELETED"
+  /**
+   * The two the attachment routes write, both already on backend `develop`:
+   * `AttachmentTransactionExecutor` saves an `ATTACHMENT_UPLOADED` history row
+   * inside the same transaction as the insert, and an `ATTACHMENT_DELETED` one
+   * inside the soft delete (read at PR #147's head `f53dca38`, where
+   * `issue-service/.../domain/IssueEventType.java` lists fourteen members).
+   *
+   * Added because the union being closed is not what protects the activity
+   * feed — `historyText` ends in a catch-all `return "updated this issue"`, so
+   * before this every upload rendered as *"Anna updated this issue"*, a
+   * sentence about the wrong event with nothing on screen to contradict it.
+   * Widening the type is only half the fix; the branch in `historyText` is the
+   * other half, and neither works alone.
+   *
+   * The gateway does **not** constrain this field — `IssueHistoryResponseDto`
+   * types `eventType` as a bare `type: string` with no enum — so this union is
+   * a statement about the values this build can *name*, never a guarantee about
+   * what arrives. Four more the backend already emits (`LINK_CREATED`,
+   * `LINK_DELETED`, `LABEL_ADDED`, `LABEL_REMOVED`) are still missing from it
+   * and still land in the catch-all; they are out of this story's scope and are
+   * recorded rather than quietly added here.
+   */
+  | "ATTACHMENT_UPLOADED"
+  | "ATTACHMENT_DELETED";
 
 export interface IssueHistoryEvent {
   id: string;
@@ -380,8 +404,79 @@ export interface IssueHistoryEvent {
     previousAssigneeId?: string | null;
     oldPriority?: IssuePriority;
     newPriority?: IssuePriority;
+    /**
+     * `PayloadSerializer.createAttachmentUploadedPayload` and
+     * `createAttachmentDeletedPayload` both put the file name here, and it is
+     * the only field of either payload the activity feed prints. The rest —
+     * `attachmentId`, `uploadedBy`, `deletedBy`, `contentType`, `sizeBytes` —
+     * arrive too and are reachable through the index signature; they are not
+     * declared because nothing draws them, and a declared field nobody reads is
+     * a promise about a payload this app has never seen.
+     */
+    fileName?: string;
     [key: string]: unknown;
   };
+}
+
+/**
+ * One file attached to an issue — `IssueAttachmentDto` in backend PR #147
+ * (`docs/contract/pending/pr-147-TAS-131.yml`), field for field.
+ *
+ * `sizeBytes` is `format: int64` on the wire and a `number` here, and that is
+ * safe rather than convenient: the server refuses anything above
+ * `ATTACHMENT_MAX_SIZE_BYTES` (2097152) at leg 1 *and* re-measures the stored
+ * object at leg 3, so no row this type describes can hold a value within eleven
+ * orders of magnitude of `Number.MAX_SAFE_INTEGER`. A `bigint` would buy
+ * nothing and would cost every caller an arithmetic conversion to divide by
+ * 1024.
+ *
+ * `objectKey` is deliberately absent: the gateway's mapper
+ * (`IssueAttachmentMapper.toIssueAttachmentDto`) never sets it, so no client
+ * has ever seen one on a listed attachment. It exists only inside one upload,
+ * as the value leg 1 hands to leg 3, and that is where it stays.
+ *
+ * A presigned download URL is absent for the same reason and it is worth
+ * stating, because the service one layer down *does* mint one per row:
+ * `AttachmentServiceImpl.listAttachments` builds a presigned GET for every
+ * attachment and the gateway's mapper drops it. So `GET .../download-url` is
+ * not a redundant second call — it is the only way this contract offers a link.
+ */
+export interface IssueAttachment {
+  id: string;
+  issueId: string;
+  fileName: string;
+  /** Exactly as it was signed. Never normalised, never recomputed from the extension. */
+  contentType: string;
+  sizeBytes: number;
+  uploadedBy: string;
+  /**
+   * The object's ETag with its quotes stripped, which for a single-part PUT is
+   * the MD5 of the bytes. `nullable: true` in the contract and blank-to-`null`
+   * in the gateway's mapper, though the column itself is `NOT NULL` — so a
+   * `null` here means "the gateway sent an empty string", not "the row has no
+   * checksum".
+   */
+  checksum: string | null;
+  createdAt: string;
+}
+
+/** What leg 1 hands back: where to PUT the bytes, and what to call the object at leg 3. */
+export interface AttachmentUploadTicket {
+  /**
+   * A presigned S3 URL on `storage.public-url`, **not on the gateway**. The
+   * signature is in the query string, it covers the `Content-Type` header, and
+   * it is honoured for `ATTACHMENT_PRESIGNED_TTL_MS` from the moment this
+   * ticket was minted.
+   */
+  uploadUrl: string;
+  /** Opaque; a bare UUID today. The only thing leg 3 identifies the object by. */
+  objectKey: string;
+}
+
+/** `GetAttachmentDownloadUrlResponseDto` — a presigned GET, and the checksum again. */
+export interface AttachmentDownloadUrl {
+  downloadUrl: string;
+  checksum: string | null;
 }
 
 export interface IssueWithHistory {

@@ -4318,7 +4318,8 @@ h1 {
 }
 
 .issue-labels,
-.issue-links {
+.issue-links,
+.issue-attachments {
   margin-top: 24px;
 }
 
@@ -4485,12 +4486,207 @@ button.issue-link-open:hover {
   white-space: nowrap;
 }
 
+/* ==================== Attachments (TAS-190) ====================
+   Geometry only, and mostly borrowed: the row is `.issue-link-row`'s shape with
+   a second line, because an attachment and a link are the same kind of thing in
+   this panel — one addressable object per row, an optional remove beside it.
+   Every colour is a §2.1 token; nothing here is a new shade.
+
+   The section itself takes its top margin and its heading from the shared
+   `.issue-links` rules above, for the same reason `.issue-labels` does. */
+.attachment-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+/* The input is `hidden` in the markup, so this is belt and braces: a stylesheet
+   that ever loses that attribute must not put an unstyled file field in the
+   panel. The button beside it is the control. */
+.attachment-input {
+  display: none;
+}
+
+/* --fg-2, not the --fg-3 meta row this used to borrow. The line is the whole
+   pre-flight contract: it states the ceiling and the accepted list *before* a
+   file is chosen, which is this feature's own argument for why nobody should
+   have to be refused to learn them. At --fg-3 it measured 3.14:1 light /
+   3.05:1 dark — §7 allows that only for non-critical meta — and it read as a
+   caption of the row byline below it. On --fg-2 it measures 7.26 / 6.75.
+
+   The colour only, and **not** the 550 that comes with §2.3's field-label role
+   the token is borrowed from: that row is for the short word above an input,
+   and this is two wrapped lines of prose (§2.3 asks for `text-wrap: pretty` on
+   exactly those). Rendered at 550 it out-weighs the section heading above it
+   and the button it describes — measured at 1920 and 390, both themes — which
+   is the loudness §1 spends its budget avoiding. The contrast fix is the
+   colour; the weight would have been a second, separate claim. */
+.attachment-hint {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* Both notices this panel prints, and deliberately one recipe with one colour
+   changed: the info tone (a confirm that failed in transit while succeeding on
+   the server) and the error tone (every other way an upload or a delete ends).
+
+   The error tone used to borrow `.form-error`, which is 12px/600 in `--danger`
+   on a 12% `--danger` tint — drawn for a one-line validation string, measuring
+   3.17:1 light / 4.38:1 dark, and asked here to carry four wrapped lines about
+   a blocked cross-origin PUT. §7 wants ≥4.5:1 for anything but non-critical
+   meta and §5.6's error recipe says the same thing from the other end:
+   `--surface` ground, `--border`, and `--danger` in the stripe only, precisely
+   so the sentence itself is not danger-coloured. It also carried `margin: 0`,
+   which put a failure about one file flush against the row of another.
+
+   Ground is `--surface` rather than a tint because that is §5.6's recipe and
+   because two structurally identical boxes differing only in stripe colour is
+   the quiet version of this (§1); the panel behind it is `--surface` too, so
+   the box is defined by its border and its stripe. Padding is on §2.4's scale
+   (7 / 11); the 10 this rule used to carry is not on it. */
+.attachment-note {
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 9px;
+  padding: 7px 11px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.attachment-note.is-error {
+  border-left-color: var(--danger);
+}
+
+.attachment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attachment-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Two lines under one icon: the name reads first, the size, the person and the
+   time sit under it as meta. A grid rather than nested flexes so the icon spans
+   both rows and the name column can be the only thing that ellipsizes. */
+.attachment-open {
+  display: grid;
+  flex: 1;
+  grid-template-areas:
+    "icon name"
+    "icon meta";
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-hover) var(--ease), background-color var(--dur-hover) var(--ease);
+}
+
+button.attachment-open:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+/* The pending row is a span, not a button: there is nothing to download yet. */
+.attachment-open.is-inert {
+  cursor: default;
+}
+
+.attachment-icon {
+  grid-area: icon;
+  color: var(--fg-2);
+}
+
+/* A file name is what a person recognises, so it gets the readable size and the
+   whole width the row can spare; only it ellipsizes, and the meta under it is
+   short enough not to need to. */
+.attachment-name {
+  grid-area: name;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-meta {
+  grid-area: meta;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The step name ("Uploading…") is status rather than metadata, so it takes
+   `--fg-2` instead of the `--fg-3` a finished row's size and byline use. No
+   pulse and no spinner: §5.6 asks for neither, and the text changes three times
+   on its own. */
+.attachment-row.is-pending .attachment-meta {
+  color: var(--fg-2);
+}
+
+/* Only rendered when the browser refused to open the tab, so it is never in the
+   way. Sized like the compact controls beside it (§2.7's 28 floor for a dense
+   toolbar) rather than as inline text. */
+.attachment-blocked-link {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 0 10px;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 550;
+  text-decoration: none;
+}
+
+.attachment-blocked-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* §4.1's ring, scoped for the same reason the link section scopes its own: the
+   controls here are new, and giving `.secondary-button` a ring product-wide is
+   a separate visual check. `.icon-button` already has one from TAS-185. */
+.attachment-open:focus-visible,
+.attachment-picker .secondary-button:focus-visible,
+.attachment-blocked-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .comments {
   margin-top: 24px;
 }
 
 .issue-labels h3,
 .issue-links h3,
+.issue-attachments h3,
 .comments h3,
 .activity h3 {
   display: flex;

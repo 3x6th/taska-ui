@@ -1,6 +1,8 @@
 import type {
   AcceptInvitationInput,
   AuthTokens,
+  ConfirmAttachmentUploadInput,
+  CreateAttachmentUploadUrlInput,
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
@@ -21,6 +23,14 @@ import {
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
+import {
+  ATTACHMENT_STORE_REJECTED_CODE,
+  ATTACHMENT_STORE_UNREACHABLE_CODE,
+  AttachmentStoreError,
+  attachmentRefusal,
+  attachmentRefusalKind,
+  requireUsableUploadUrl,
+} from "../attachments";
 import type { PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
 import {
   emptyPlanningFields,
@@ -39,9 +49,12 @@ import type {
   AdminRowsQuery,
   AdminService,
   AdminTable,
+  AttachmentDownloadUrl,
+  AttachmentUploadTicket,
   DateOnly,
   GlobalRole,
   Issue,
+  IssueAttachment,
   IssueComment,
   IssueLink,
   IssueSearchHit,
@@ -279,6 +292,39 @@ interface RestIssueLink {
 
 interface RestListIssueLinksResponse {
   items?: RestIssueLink[];
+}
+
+/**
+ * `IssueAttachmentDto`. Optional throughout, like `RestIssueLink` above and for
+ * the same reason: the extract in `docs/contract/pending/pr-147-TAS-131.yml`
+ * does mark seven of the eight `required`, but this endpoint family has never
+ * answered this client — it is not on the deployed gateway — so a field typed
+ * as guaranteed here would be a claim rather than a measurement. `toAttachment`
+ * turns each blank into the domain's own spelling of "not stated".
+ */
+interface RestIssueAttachment {
+  id?: string;
+  issueId?: string;
+  fileName?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  uploadedBy?: string;
+  checksum?: string | null;
+  createdAt?: string;
+}
+
+interface RestListAttachmentsResponse {
+  items?: RestIssueAttachment[];
+}
+
+interface RestAttachmentUploadTicket {
+  uploadUrl?: string;
+  objectKey?: string;
+}
+
+interface RestAttachmentDownloadUrl {
+  downloadUrl?: string;
+  checksum?: string | null;
 }
 
 type RestComment = Omit<IssueComment, "updatedAt"> & {
@@ -683,6 +729,124 @@ export class RestTaskaApi implements TaskaApi {
     });
   }
 
+  async listAttachments(projectId: string, issueId: string): Promise<IssueAttachment[]> {
+    const response = await this.request<RestListAttachmentsResponse>(this.attachmentsPath(projectId, issueId));
+    return (response.items ?? []).map((attachment) => this.toAttachment(attachment, issueId));
+  }
+
+  async createAttachmentUploadUrl(
+    projectId: string,
+    issueId: string,
+    input: CreateAttachmentUploadUrlInput,
+  ): Promise<AttachmentUploadTicket> {
+    refuseAttachment(input);
+    const response = await this.request<RestAttachmentUploadTicket>(
+      `${this.attachmentsPath(projectId, issueId)}/upload-url`,
+      {
+        method: "POST",
+        body: { fileName: input.fileName, contentType: input.contentType, sizeBytes: input.sizeBytes },
+      },
+    );
+    return { uploadUrl: response.uploadUrl ?? "", objectKey: response.objectKey ?? "" };
+  }
+
+  /**
+   * **The one call in this class that does not go through `request()`, and it
+   * must stay that way.**
+   *
+   * `request()` prefixes the gateway base URL, attaches the bearer token,
+   * refreshes the session on a 401, sets `Accept: application/json` and parses
+   * the body as JSON. Every one of those is wrong here:
+   *
+   * - the URL is absolute and points at the object store, not at the gateway;
+   * - a presigned URL carries its own credentials in the query string, and
+   *   sending an `Authorization` header alongside them makes some S3
+   *   implementations authenticate *that* instead and fail the signature — so
+   *   the token would not merely be useless, it would be harmful;
+   * - a 401 from a bucket says nothing about this app's session, and routing it
+   *   into `tryRefresh` would sign the person out over somebody else's server;
+   * - the store answers XML, and a 204 or an empty 200 on success.
+   *
+   * The headers are therefore exactly one: the `Content-Type` that was signed.
+   * Nothing else is added — no `X-Request-Id`, no `Accept` — because every
+   * header beyond the CORS-safelist has to be named in the preflight's
+   * `Access-Control-Allow-Headers`, and asking for headers the bucket has not
+   * been told to allow is one more way to be refused before the bytes move.
+   *
+   * `credentials` is left at its default (`same-origin`), so no cookie of this
+   * app's goes to the store — **as long as the store is a different origin**,
+   * which is why the URL is checked before it is used rather than trusted. See
+   * `requireUsableUploadUrl`: `createAttachmentUploadUrl` above lands a missing
+   * `uploadUrl` as `""`, and `fetch("")` resolves against the document, which
+   * would make this a same-origin PUT of the file with cookies attached.
+   */
+  async putAttachmentBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    requireUsableUploadUrl(uploadUrl);
+    let response: Response;
+    try {
+      response = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": contentType },
+        body,
+      });
+    } catch (cause) {
+      // `fetch` rejects without a response for a blocked CORS preflight, and
+      // gives script no way to learn that is what happened — the spec is
+      // explicit that the reason is not exposed. Being offline and a dead host
+      // land here too, so this carries no status and claims no cause.
+      throw new AttachmentStoreError(
+        cause instanceof Error && cause.message ? `The file store could not be reached: ${cause.message}` : "The file store could not be reached.",
+        ATTACHMENT_STORE_UNREACHABLE_CODE,
+        null,
+      );
+    }
+    if (!response.ok) {
+      // The store's status goes in the message and in `storeStatus`, never in a
+      // field called `status`: see AttachmentStoreError.
+      throw new AttachmentStoreError(
+        `The file store answered ${response.status}.`,
+        ATTACHMENT_STORE_REJECTED_CODE,
+        response.status,
+      );
+    }
+  }
+
+  async confirmAttachmentUpload(
+    projectId: string,
+    issueId: string,
+    input: ConfirmAttachmentUploadInput,
+  ): Promise<IssueAttachment> {
+    // No `Idempotency-Key` and no retry wrapper, deliberately. The route does
+    // not read one, and the insert underneath is unconditional against a table
+    // with no unique key on `object_key`, so a repeat is a duplicate row rather
+    // than a no-op. See `confirmAttachmentUpload` on TaskaApi.
+    const response = await this.request<RestIssueAttachment>(
+      `${this.attachmentsPath(projectId, issueId)}/confirm`,
+      {
+        method: "POST",
+        body: { objectKey: input.objectKey, fileName: input.fileName, contentType: input.contentType },
+      },
+    );
+    return this.toAttachment(response, issueId);
+  }
+
+  async getAttachmentDownloadUrl(
+    projectId: string,
+    issueId: string,
+    attachmentId: string,
+  ): Promise<AttachmentDownloadUrl> {
+    const response = await this.request<RestAttachmentDownloadUrl>(
+      `${this.attachmentsPath(projectId, issueId)}/${this.segment(attachmentId)}/download-url`,
+    );
+    return { downloadUrl: response.downloadUrl ?? "", checksum: response.checksum ?? null };
+  }
+
+  async deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {
+    await this.request<void>(`${this.attachmentsPath(projectId, issueId)}/${this.segment(attachmentId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Promise<Page<IssueComment>> {
     const search = new URLSearchParams();
     if (params.page !== undefined) search.set("page", String(params.page));
@@ -1051,6 +1215,10 @@ export class RestTaskaApi implements TaskaApi {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/comments`;
   }
 
+  private attachmentsPath(projectId: string, issueId: string) {
+    return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/attachments`;
+  }
+
   private createIdempotencyKey() {
     return globalThis.crypto?.randomUUID?.() ?? `taska-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
@@ -1157,6 +1325,26 @@ export class RestTaskaApi implements TaskaApi {
       viewLinkType: typeof link.viewLinkType === "string" ? link.viewLinkType : "",
       createdBy: link.createdBy ?? "",
       createdAt: link.createdAt ?? "",
+    };
+  }
+
+  /**
+   * `issueId` is defaulted from the request rather than left blank: the caller
+   * asked about one issue, so an attachment that arrived without one belongs to
+   * that issue and nothing is being invented. Everything else keeps the shape
+   * `toLabel` uses — an unaddressable row is still drawn, and the id it did not
+   * carry stays empty so the controls that need one can tell.
+   */
+  private toAttachment(attachment: RestIssueAttachment, issueId: string): IssueAttachment {
+    return {
+      id: attachment.id ?? "",
+      issueId: attachment.issueId ?? issueId,
+      fileName: attachment.fileName ?? "",
+      contentType: attachment.contentType ?? "",
+      sizeBytes: typeof attachment.sizeBytes === "number" ? attachment.sizeBytes : 0,
+      uploadedBy: attachment.uploadedBy ?? "",
+      checksum: attachment.checksum ?? null,
+      createdAt: attachment.createdAt ?? "",
     };
   }
 
@@ -1289,6 +1477,61 @@ function refusePlanningFields(input: PlanningFieldsInput, stored: StoredPlanning
   if (refusal) {
     throw new ApiError(refusal.message, refusal.code, 400);
   }
+}
+
+/**
+ * The file refusals from src/api/attachments.ts, thrown as the gateway's own
+ * answer so a file stopped here is indistinguishable from one stopped there —
+ * which is why the over-size arm synthesises a **500** where its two siblings
+ * get a 400. That is not a typo, and the three arms genuinely do not share an
+ * answer. Read off backend PR #147's head `f53dca38`:
+ *
+ * - **disallowed type** — reaches `S3StorageClient.validateFileParams`, which
+ *   raises `DomainStatus.INVALID_ARGUMENT`. `RestErrorMapper` maps that to
+ *   **400** and `GatewayErrorHandler` writes the gRPC code's own name into
+ *   `code`, so `INVALID_ARGUMENT` on 400.
+ * - **empty file** — never reaches `validateFileParams` at all. `sizeBytes`
+ *   carries `minimum: 1` in the contract and the gateway generates its
+ *   interfaces with `useValidation`, so `@Min(1)` fails first and
+ *   `GatewayValidationExceptionHandler` answers **400** `INVALID_ARGUMENT`.
+ *   Same code, same status; only the *message* differs, because that handler
+ *   sends its fixed `"Invalid request parameters"` rather than
+ *   `validateFileParams`'s sentence. This throws the sentence, which is the one
+ *   part of the gateway's answer it does not reproduce — nobody reads it: the
+ *   panel refuses an empty file in its own words before this is reached.
+ * - **over-size** — the request DTO states no `maximum` and the value is
+ *   positive, so both earlier guards pass and `validateFileParams` raises
+ *   `DomainStatus.OUT_OF_RANGE`. `GrpcExceptionMapper` has an explicit
+ *   `case OUT_OF_RANGE -> Status.OUT_OF_RANGE`, so `code` is `"OUT_OF_RANGE"` —
+ *   and `RestErrorMapper.mapGrpcCodeToHttpStatus` **has no `OUT_OF_RANGE`
+ *   case**, so the status falls through its `default ->
+ *   INTERNAL_SERVER_ERROR`. A file one byte too large is a **500**.
+ *
+ * An earlier version of this comment cited the mapping table in `common-lib`'s
+ * `DomainStatus` javadoc, which sends `OUT_OF_RANGE` to 400, and concluded the
+ * flattened 400 was therefore right. That table is documentation of intent in a
+ * library the gateway does not consult; what the gateway executes is
+ * `RestErrorMapper`, and it does not implement that row. Reproducing an answer
+ * means reproducing the one that is served.
+ *
+ * Synthesising a 500 costs nothing here, and that was checked rather than
+ * assumed: no reader in the attachment path branches on `status` — the panel
+ * takes `apiErrorFacts(error).message` and prints it — and the only
+ * `status >= 500` readers in this build are `userWriteFailure`
+ * (src/screens/admin/users.ts) and `AdminError` (src/screens/admin/), neither
+ * of which any attachment failure reaches. `HybridTaskaApi` forwards this leg to `live` untouched.
+ *
+ * Recorded in docs/ai/API-DIVERGENCE.md, and it disappears when the backend
+ * adds the missing row — or a `maximum` to `sizeBytes`, which would move the
+ * ceiling into bean validation and make it a 400 like its siblings.
+ */
+function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
+  const refusal = attachmentRefusal(input);
+  if (!refusal) return;
+  // Split exactly as `MockTaskaApi.createAttachmentUploadUrl` splits it, so the
+  // two implementations answer the same file with the same code.
+  const overSize = attachmentRefusalKind(input) === "size";
+  throw new ApiError(refusal, overSize ? "OUT_OF_RANGE" : "INVALID_ARGUMENT", overSize ? 500 : 400);
 }
 
 /**

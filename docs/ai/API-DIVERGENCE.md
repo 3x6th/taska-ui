@@ -1818,7 +1818,10 @@ Same rule as above: "Closed by" is settled, the rest is live.
   yet, naming the story the operation belongs to — TAS-108 for reset-lockout,
   TAS-107 for the other two — read from the 404 **and** the `No static
   resource` substring together (`UNDEPLOYED_ROUTE_MESSAGE` in
-  `src/api/TaskaApi.ts`, `isUndeployedRoute` in `src/screens/admin/users.ts`).
+  `src/api/TaskaApi.ts`, `isUndeployedRoute` in `src/api/errors.ts` — TAS-190
+  moved it out of `src/screens/admin/users.ts`, which now re-exports it, because
+  a second feature needed the same measured predicate and a fact about the
+  gateway belongs beside `isMissingOrForbidden`).
   Any other failure keeps the section's ordinary taxonomy; `users.test.ts`
   asserts that a deployed route's `404 "User not found"` is *not* swallowed by
   it.
@@ -2227,6 +2230,230 @@ compensation to remove — only this entry to delete.
 **Removed by:** backend PR #142 landing an implementation, PR #118 clearing its
 review, and the card DTO gaining what the card draws. All three, not any one.
 Raised on TAS-125.
+
+### The five attachment routes exist only on an open backend PR
+
+- **Endpoints:** `GET`/`POST` on
+  `/api/v1/projects/{projectId}/issues/{issueId}/attachments`, `POST
+  .../attachments/upload-url`, `POST .../attachments/confirm`, `GET
+  .../attachments/{attachmentId}/download-url` and `DELETE
+  .../attachments/{attachmentId}` — the whole of TAS-190.
+- **Observed, measured 2026-09-06 rather than read:** the vendored snapshot has
+  no such paths and the deployed gateway does not serve them. An unauthenticated
+  `GET .../issues/{uuid}/attachments` answers **404** with
+  `{"code":"NOT_FOUND","message":"No static resource api/v1/…"}`, while
+  `GET .../issues/{uuid}/comments` beside it answers **401**. The 401 is the
+  control: it proves the 404 is the route being unmapped rather than the request
+  being unauthenticated. The backend change is
+  [PR #147](https://github.com/VladislavYurin/taska-backend/pull/147), head
+  `f53dca38`, open.
+- **The UI instead:** the attachments section reads that pairing — the status
+  **and** the `No static resource` substring, never the status alone — through
+  `UNDEPLOYED_ROUTE_MESSAGE` in `src/api/TaskaApi.ts` and `isUndeployedRoute` in
+  `src/api/errors.ts`, and answers with its own sentence naming TAS-131 instead
+  of a failure. The upload control is suppressed in that state, because offering
+  a picker for a route that cannot accept a file is worse than offering nothing.
+  Any other failure keeps the ordinary taxonomy: a deployed route's own 404 must
+  not be swallowed by this.
+- **Removal:** PR #147 merging **and deploying** — not merging alone. When it
+  does: refresh `docs/contract/openapi.yml` from `develop`, delete
+  `docs/contract/pending/pr-147-TAS-131.yml`, delete the section's
+  undeployed-route branch, and re-probe once, because the measurement above is
+  what this entry rests on. `isUndeployedRoute` itself stays until the admin
+  writes deploy too — two features share it now.
+
+### `DELETE …/attachments/{id}` answers 204 for an attachment that is not there, and skips the role check
+
+The contract documents a 404. The implementation does not.
+`AttachmentServiceImpl.deleteAttachment` starts at
+`issueAttachmentRepository.findByIdAndDeletedAtIsNull(attachmentId)` with **no
+`switchIfEmpty`** — unlike the private `findActiveAttachment` two methods down,
+which has one and does raise `NOT_FOUND`. An empty result therefore skips both
+`flatMap`s, **including the `projectRoleChecker` call**, and
+`GrpcAttachmentService.deleteAttachment` closes with
+`.thenReturn(Empty.getDefaultInstance())`. So any authenticated caller gets 204
+for a missing or already-deleted attachment, and the role gate on that path
+never runs.
+
+**The UI instead:** the mock reproduces the 204 rather than the documented 404,
+and this entry is the other half of that decision — reproduce **and** flag,
+rather than choosing between them. The behavioural argument decided it: with a
+stale list, the server answers 204 and the row correctly stays gone, while a
+mock answering 404 rolls the optimistic removal back and makes a file that *is*
+deleted reappear under an error message. The mock would have been the worse of
+the two behaviours, not merely the different one.
+
+Note what is **not** made lenient: `getDownloadUrl` goes through
+`findActiveAttachment`, which does carry `switchIfEmpty(NOT_FOUND)`, so the
+download route genuinely 404s on a deleted attachment and the mock refuses there
+too. The leniency is one method wide.
+
+**Removed by:** the backend adding the `switchIfEmpty` or the contract dropping
+the 404 — one or the other, and the role-check gap wants fixing regardless of
+which. Raised on TAS-131.
+
+### One third of the attachment flow never touches the gateway, and nothing configures CORS for it
+
+`POST .../attachments/upload-url` answers with a presigned URL; the browser then
+PUTs the raw bytes **cross-origin, straight to the object store**; `POST
+.../attachments/confirm` persists the row. The middle leg is not a gateway
+request, so none of this client's auth, tracing, error mapping or mocking
+applies to it, and no frontend code can make it reachable if the store will not
+take it.
+
+Two things about that leg are unmeasured and neither is ours to fix:
+
+- **Nothing in the backend repository configures CORS on the bucket.**
+  `minio-init` in `docker-compose.yml` runs `mc alias set` and `mc mb` and
+  nothing else — no `mc anonymous`, no CORS rules, no
+  `MINIO_API_CORS_ALLOW_ORIGIN` in `.env.docker.example`, nothing under
+  `infra/`. A cross-origin PUT carrying a `Content-Type` always preflights, so
+  if the bucket states no allowed origin the upload cannot work from
+  `taska.ozero.dev` no matter what this client does.
+- **The host the browser is told to PUT to is a loopback address in every
+  checked-in configuration.** `storage.public-url` defaults to
+  `http://127.0.0.1:9000` and `.env.docker.example` repeats it;
+  `StorageAutoConfiguration.s3Presigner` uses it as `endpointOverride`. The
+  deployment's real `.env` is not in the repository, so whether production
+  overrides it with a reachable host is unknown.
+
+**The UI instead:** the panel distinguishes a blocked or unreachable PUT from an
+HTTP failure the store returned. A preflight refusal surfaces as a `TypeError`
+from `fetch` with **no status at all**, which is the signature to read; the
+store's own status, when there is one, is carried in a shape of its own and
+deliberately kept out of `ApiError.status`, because `src/api/errors.ts` reads
+that field and would classify a store 403 as a gateway permission failure. The
+mock plays the whole choreography without a network, so the feature is
+exercisable before any of this is settled.
+
+**Removed by:** a measurement, once the routes deploy — one upload attempt from
+the deployed origin says more than any amount of reading. Raised on TAS-131.
+
+### An over-size attachment answers 500, because `RestErrorMapper` has no `OUT_OF_RANGE` row
+
+The three pre-flight refusals do not share a status, and the one a reader is
+most likely to meet is the odd one.
+
+- **disallowed type** — `validateFileParams` raises
+  `DomainStatus.INVALID_ARGUMENT`, mapped to **400** with
+  `code: "INVALID_ARGUMENT"`.
+- **empty file** — never reaches `validateFileParams` at all. The generated DTO
+  carries `@Min(1)` from the contract's `minimum: 1` and the gateway answers
+  **400** `"Invalid request parameters"` in bean validation; behind it
+  `GrpcRequestValidators.requirePositiveOrInvalidArgument` would answer the same
+  code. `validateFileParams`'s own `sizeBytes <= 0` arm is dead code for this
+  route.
+- **over-size** — no `maximum` in the DTO and the value is positive, so both
+  earlier guards pass and `validateFileParams` raises
+  `DomainStatus.OUT_OF_RANGE`. `GrpcExceptionMapper` has an explicit
+  `case OUT_OF_RANGE -> Status.OUT_OF_RANGE`, so the body's `code` is
+  `"OUT_OF_RANGE"` — and `RestErrorMapper.mapGrpcCodeToHttpStatus` has **no
+  `OUT_OF_RANGE` case**, so it falls to `default -> INTERNAL_SERVER_ERROR`.
+  The reader gets **500** for a file that is one byte too large.
+
+`common-lib`'s `DomainStatus` javadoc carries a mapping table that sends
+`OUT_OF_RANGE` to 400, and an earlier version of the client comment cited it and
+concluded the status was right. That table is documentation of intent in a
+library the gateway does not consult; what the gateway executes is
+`RestErrorMapper`, and it does not implement that row. A test pinned the false
+conclusion. Both are corrected — the citation as much as the number, because
+this file is built on the API layer's comments and a false entry in that record
+does not age into a style preference.
+
+**The UI instead:** the picker refuses an over-size file before a byte is sent,
+so nobody meets the 500 through the product; and both implementations synthesise
+the same code and status locally, so a caller cannot tell which one refused. The
+same `OUT_OF_RANGE` arrives from leg three's re-measurement
+(`validateAndGetUploadedObjectMetadata`), which is the path a file that grew
+between the ticket and the upload would take.
+
+**Removed by:** the backend adding the row to `RestErrorMapper`, or a `maximum`
+to `sizeBytes` so the refusal happens in bean validation as a 400 like its two
+siblings. Raised on TAS-131.
+
+### The attachment limits are pinned from the backend's YAML, not from the contract
+
+The contract states neither. `issue-service/src/main/resources/application.yml`
+does: a **2 MB** ceiling exactly (`2097152`), as a YAML literal with **no env
+override** unlike every neighbouring storage property, and a **thirteen-entry
+MIME allowlist** matched by exact string with no wildcards and no case folding.
+
+The allowlist refuses more than a reader expects: no `.docx` or `.xlsx`, no GIF,
+no SVG, no video or audio, nothing extensionless (browsers report
+`application/octet-stream`), and a `.zip` that some Windows browsers report as
+`application/x-zip-compressed` rather than the allowed `application/zip`.
+
+The presigned URL also carries a **15-minute TTL whose clock starts at the first
+leg**, and the `Content-Type` is part of the signed request, so the value sent on
+the PUT must be byte-identical to the one sent to `upload-url` — no
+normalisation, no added charset, no recomputing it from the extension.
+
+**The UI instead:** all four are client constants with their provenance in the
+comment. The picker states the ceiling and the accepted types *before* a file is
+chosen rather than refusing one after; the ticket is requested when the file is
+chosen rather than when the panel opens; and a 403 on the PUT is read as an
+expired window rather than as a permission failure.
+
+**Removed by:** the contract stating the limits. Until then each constant is a
+snapshot of a YAML line and says so — the 2 MB becomes a lie the moment that
+line changes, and nothing here would notice.
+
+### `projectId` in the attachment paths is not an access check, and the mock is stricter
+
+`IssueAttachmentController` says so in its own comment — *«projectId в пути
+используется только для REST-иерархии/читаемости URL и не участвует в
+авторизации»* — and forwards only `issueId` and `attachmentId`. The real gate is
+a project-role check inside issue-service: upload and confirm are ADMIN+MEMBER,
+list and download add VIEWER, and deleting **someone else's** attachment is
+ADMIN only.
+
+`MockTaskaStore` does scope by project, so a mismatched `(projectId, issueId)`
+pair diverges: the mock answers NOT_FOUND, the gateway answers 200. Exactly the
+shape already recorded for `getIssue`, and pinned by a test rather than left to
+be rediscovered.
+
+**`DELETE` is the exception, and in the more dangerous direction.** Because the
+mock's delete resolves leniently (see the entry above), a mismatched pair there
+is a silent 204 no-op rather than a NOT_FOUND — while the gateway, which ignores
+the path segment entirely, performs a real delete. So on that one route the mock
+does *less* than the server rather than more.
+
+**Two more places the mock is looser than the gateway, both on reads.**
+`ProjectRoleChecker.validateAccess` refuses a non-member with
+`PERMISSION_DENIED "Access denied"` **before** it maps a role or consults
+`allowedRoles` at all — so `listAttachments` and `getAttachmentDownloadUrl`
+answer **403** to a non-member no matter that `view-attachment-roles` contains
+`VIEWER`. The mock membership-checks neither, following the same convention
+`getIssueById` already documents for project-scoped reads. And no seeded member
+holds `VIEWER` at all — the seed assigns `ADMIN` to the first member and
+`MEMBER` to the rest — so the upload gate is exercised against a *non-member
+standing in for* a VIEWER rather than against the role it names.
+
+**Attachment list order is the mock's invention.**
+`IssueAttachmentRepository.findAllByIssueIdAndDeletedAtIsNull` is a derived query
+with no `ORDER BY` and the contract promises nothing, so the gateway's order is
+physical-row order and can change under a `VACUUM`. The mock sorts by
+`createdAt` ascending. Same shape as the unmeasured search ordering recorded
+above.
+
+**The UI instead:** nothing — no screen constructs a mismatched pair, and a
+non-member never reaches the board at all, because the project read refuses
+first and lands them on the not-found screen. **Removed by:** nothing for the
+path segment; the read gaps by the mock membership-checking these two routes,
+which would cost the read-only seed the section currently demonstrates.
+
+### `listAttachments` mints a presigned download URL per row and the gateway throws it away
+
+`AttachmentServiceImpl.listAttachments` builds a presigned URL for every
+attachment it returns. `IssueAttachmentMapper.toIssueAttachmentDto` reads eight
+of the ten proto fields and discards `url` and `object_key`. So the list read
+costs one `headObject` plus one presign per row for a value no client ever sees,
+and the separate `download-url` call is required anyway.
+
+**The UI instead:** call `download-url` when the reader asks for the file, which
+is what the contract describes. **Removed by:** the backend either surfacing the
+URL it already computes or not computing it. Raised on TAS-131; a backend
+efficiency defect, not a client compensation.
 
 ### `sortableColumns` and `filterableColumns` are empty for `auth.users`, which decides a section's controls
 
