@@ -40,7 +40,7 @@ states are not.
 | [TAS-186](https://jira.ozero.dev/browse/TAS-186) | Admin Users section: the accounts list over `auth.users`, block and unblock behind a confirmation with a required reason | Done | merged (PR #41) |
 | [TAS-187](https://jira.ozero.dev/browse/TAS-187) | Disable the `voltagent` plugin packs for this repository so their 60 generic agents stay out of every session's context | Done | merged (PR #42) |
 | [TAS-188](https://jira.ozero.dev/browse/TAS-188) | Bring the admin user-status writes to backend PR #146's contract — `changedAt`, `LOCKED`, and the new reset-lockout write | Done | merged (PR #43) |
-| [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | To Do | not started |
+| [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | In Progress | API layer merged (PR #45); UI half open |
 | [TAS-190](https://jira.ozero.dev/browse/TAS-190) | Issue attachments over presigned S3 links (backend PR #147) | To Do | not started |
 | [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | To Do | not started |
 
@@ -213,6 +213,44 @@ separately:
   reviewer had measured against a plane the pill is never drawn on.
 - Nothing here has met a real gateway. All three routes stay undeployed until
   PR #146 merges, so only the mock exercises the happy path.
+
+### TAS-189 — planning fields, first half: the preservation, without the UI
+
+- Split deliberately, and the split is the point. `PUT /issues/{issueId}` is a
+  full replace and the contract does not say so: it marks three fields required
+  and is silent about the five planning ones, which reads as "leave unchanged".
+  The proto fields are optional, the gateway sets them with `setIfPresent`,
+  `GrpcIssueService` resolves an unset optional with `.orElse(null)`, and
+  `IssueServiceImpl` writes all five setters unconditionally. That code is on
+  `develop` through TAS-115 — it is not waiting on backend PR #148.
+- `BoardScreen` sends three partial bodies. Each erases story points and both
+  dates the day #148 makes the fields reachable, with no error shown. So the
+  API layer had to land **before** that merge, and it costs nothing to land
+  early: every resolved value is `null` against today's gateway and the request
+  body is byte-identical, pinned by an exact-body test rather than claimed.
+- `UpdateIssueInput` gives `undefined` and `null` different meanings — absent
+  leaves a field alone, explicit `null` clears it — so components keep the
+  partial bodies they already write and full-replace never reaches a screen.
+- Validation refuses only what the caller supplied. Validating the resolved
+  pair would refuse a summary edit over stored dates the user never typed.
+- `src/api/planningFields.ts` is shared by mock and rest, with
+  `api-contract-guard`'s precedent for the stories after it: **share the
+  decision, never the throw, never the test, and cite every rule to a backend
+  artifact.**
+- Five corrections from the builder, two of which would have shipped as
+  defects: `JSON.stringify` turns `NaN` into `null`, which here means "clear the
+  field"; and the stored-date cross-check refuses moving a whole window later in
+  one request, which is the ordinary edit rather than an edge case.
+- Three inference-stated-as-observation defects in the documents, one of them a
+  correction that itself needed correcting: a 404 from the two-`n` spelling of a
+  renamed backend test was read as the file being absent, by two readers in
+  sequence. Both the module and `API-DIVERGENCE.md` now reserve "measured" for
+  observation and mark every code read as a read.
+- Verdicts: `release-reviewer` ship; `api-contract-guard` ship, then do-not-ship
+  on one documentation paragraph, then closed. No `art-director` pass, because
+  there is nothing visual in it.
+- Left for the second half: the planning block on the issue panel, editing, the
+  create form, and two test fixtures that omit the five behind a cast.
 
 ### TAS-187 — the voltagent packs, off for this repository
 
