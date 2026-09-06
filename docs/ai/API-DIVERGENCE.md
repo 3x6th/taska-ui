@@ -2329,6 +2329,48 @@ exercisable before any of this is settled.
 **Removed by:** a measurement, once the routes deploy — one upload attempt from
 the deployed origin says more than any amount of reading. Raised on TAS-131.
 
+### An over-size attachment answers 500, because `RestErrorMapper` has no `OUT_OF_RANGE` row
+
+The three pre-flight refusals do not share a status, and the one a reader is
+most likely to meet is the odd one.
+
+- **disallowed type** — `validateFileParams` raises
+  `DomainStatus.INVALID_ARGUMENT`, mapped to **400** with
+  `code: "INVALID_ARGUMENT"`.
+- **empty file** — never reaches `validateFileParams` at all. The generated DTO
+  carries `@Min(1)` from the contract's `minimum: 1` and the gateway answers
+  **400** `"Invalid request parameters"` in bean validation; behind it
+  `GrpcRequestValidators.requirePositiveOrInvalidArgument` would answer the same
+  code. `validateFileParams`'s own `sizeBytes <= 0` arm is dead code for this
+  route.
+- **over-size** — no `maximum` in the DTO and the value is positive, so both
+  earlier guards pass and `validateFileParams` raises
+  `DomainStatus.OUT_OF_RANGE`. `GrpcExceptionMapper` has an explicit
+  `case OUT_OF_RANGE -> Status.OUT_OF_RANGE`, so the body's `code` is
+  `"OUT_OF_RANGE"` — and `RestErrorMapper.mapGrpcCodeToHttpStatus` has **no
+  `OUT_OF_RANGE` case**, so it falls to `default -> INTERNAL_SERVER_ERROR`.
+  The reader gets **500** for a file that is one byte too large.
+
+`common-lib`'s `DomainStatus` javadoc carries a mapping table that sends
+`OUT_OF_RANGE` to 400, and an earlier version of the client comment cited it and
+concluded the status was right. That table is documentation of intent in a
+library the gateway does not consult; what the gateway executes is
+`RestErrorMapper`, and it does not implement that row. A test pinned the false
+conclusion. Both are corrected — the citation as much as the number, because
+this file is built on the API layer's comments and a false entry in that record
+does not age into a style preference.
+
+**The UI instead:** the picker refuses an over-size file before a byte is sent,
+so nobody meets the 500 through the product; and both implementations synthesise
+the same code and status locally, so a caller cannot tell which one refused. The
+same `OUT_OF_RANGE` arrives from leg three's re-measurement
+(`validateAndGetUploadedObjectMetadata`), which is the path a file that grew
+between the ticket and the upload would take.
+
+**Removed by:** the backend adding the row to `RestErrorMapper`, or a `maximum`
+to `sizeBytes` so the refusal happens in bean validation as a 400 like its two
+siblings. Raised on TAS-131.
+
 ### The attachment limits are pinned from the backend's YAML, not from the contract
 
 The contract states neither. `issue-service/src/main/resources/application.yml`

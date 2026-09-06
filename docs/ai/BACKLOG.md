@@ -835,6 +835,12 @@ the next session in this image exactly as it bit this one.
   the comments, links and labels sections beside it, so it is panel-wide and
   pre-existing rather than this story's — and it is the half of the toast gap
   already recorded above that is actually cheap to close.
+- **`attachmentEmptyRefusalMessage` is called the server's own words and is not**
+  (`api-contract-guard`, TAS-190). For this route the gateway's `@Min(1)` answers
+  `"Invalid request parameters"` and `validateFileParams`'s
+  `"File size must be positive, got: N"` is unreachable. Message-only, and the
+  panel writes its own sentence anyway — but the comment claims a provenance it
+  does not have, which is the class this story spent a round correcting.
 - **`.form-error` measures 3.17:1 in light, and every caller but one still uses
   it** (`art-director` + `frontend-builder`, TAS-190). §7 wants 4.5:1 for
   secondary text and reserves 3:1 for non-critical meta; a form refusal is not
