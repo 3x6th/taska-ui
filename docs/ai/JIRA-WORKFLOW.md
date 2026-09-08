@@ -75,15 +75,19 @@ the story has drifted and should be transitioned rather than the table edited.
 | [TAS-107](https://jira.ozero.dev/browse/TAS-107) / [TAS-108](https://jira.ozero.dev/browse/TAS-108) | nothing any more — measured deployed | Was: the three admin writes existed only on an open backend PR and answered Spring's static-resource 404, which the confirmation dialog read as "not deployed yet". Backend PR #146 merged 2026-09-07. Probed 2026-09-08 with an invalid uuid so nothing could be mutated: `block`, `unblock` and `reset-lockout` all answer `400 INVALID_ARGUMENT`, and a control path on the same prefix still answers the static-resource 404, so the 400 is the mapping rather than a uuid filter. The compensation came out in [TAS-196](https://jira.ozero.dev/browse/TAS-196); the divergence entry is closed in place in `API-DIVERGENCE.md`. Row kept until the two Jira stories are closed. |
 | [TAS-180](https://jira.ozero.dev/browse/TAS-180) | removing the search compensation, not the search | `GET /issues/search` rejects a two-character query the contract permits, `400`s on the empty `query` its own generated spec offers as the default, and silently ignores a `priority` or `issueType` it does not recognise — answering with the full set instead of an error. The UI compensates on all three, so search ships; the constant and the enum guard come out when this closes. Probed 2026-08-23 and **re-probed 2026-09-08 — all three still reproduce**: `?query=ap` → `400`, `?query=` → `400`, no `query` → `200` with 18 items, and `priority=NOT_A_PRIORITY` → `200` with six results instead of an error. See `API-DIVERGENCE.md`. |
 
-**Re-measure this table, do not read it.** On 2026-09-08 five of its nine live
-rows were probed in one pass, and **four of those five had already been fixed by
-the backend without anyone noticing** — TAS-139, TAS-162, TAS-172 and TAS-178,
-including the row this table described as disabling the board's core gesture and
-the one that called an issue permanently unreadable. The row that survived,
-TAS-180, survived every clause, and TAS-137 was re-probed the same day and still
-answers `405` on `/members` and a static-resource `404` on `/membership`.
-TAS-141, TAS-124, TAS-145 and TAS-146 carry no 2026-09-08 measurement and were
-not covered — say so rather than letting "the table was probed" cover them. A blocker is a claim about a running system
+**Re-measure this table, do not read it.** On 2026-09-08 six rows were probed
+in one pass — TAS-137, TAS-139, TAS-162, TAS-172, TAS-178, TAS-180 — and **four
+of the six had already been fixed by the backend without anyone noticing**:
+TAS-139, TAS-162, TAS-172 and TAS-178, including the row this table described as
+disabling the board's core gesture and the one that called an issue permanently
+unreadable. TAS-137 and TAS-180 survived every clause and now carry the date
+they were re-checked. **TAS-141, TAS-124, TAS-145 and TAS-146 were not covered**
+and carry no 2026-09-08 measurement — say so rather than letting "the table was
+probed" cover them.
+
+The counts in this paragraph were wrong twice before they were right, which is
+its own small lesson: an exact claim about coverage is worth more than a round
+one, and both reviewers checked the arithmetic. Prefer naming the keys. A blocker is a claim about a running system
 and it decays silently: nothing fires when it stops being true, because a
 compensation that is no longer needed is a compensation that never complains.
 The same failure, in the same session, cost `API-DIVERGENCE.md` a twelve-day-old

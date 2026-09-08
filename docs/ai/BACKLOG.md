@@ -31,6 +31,17 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   neighbouring one in the same diff makes the removal harder to review, not
   easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
   named the account being blocked where it meant the reader.
+- **`RestIssue` tells the truth about seven fields and lies about the rest**
+  (`api-contract-guard`, 2026-09-08, TAS-195 re-verdict). It is
+  `Omit<Issue, seven fields> & { those seven restated optional }`, so the type
+  already promises the other thirteen are guaranteed while the deployed spec
+  types every one of them `["string","null"]` with no `required` block. TAS-195
+  added `description` to the restated block, which makes the type wrong about
+  twelve instead of thirteen. Making it systematically partial — so `toIssue`
+  has to justify every field it passes through — is the change that would have
+  caught the render-path hazard in [TAS-173](https://jira.ozero.dev/browse/TAS-173)
+  at compile time instead of leaving it to a reviewer. Its own story, not a line
+  in someone else's.
 - **Nothing in `src` is an error boundary, and the gateway declares every issue
   field nullable** (`release-reviewer`, 2026-09-08, TAS-195 verdict). The
   deployed gateway's own generated spec — `https://api.taska.ozero.dev/v3/api-docs`,
@@ -44,9 +55,25 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   row as unplaceable — and it is a product decision, not a mapper default.
   Separately: `grep` finds no `ErrorBoundary`, `componentDidCatch` or
   `getDerivedStateFromError` anywhere in `src`, so any render-time throw blanks
-  the whole application rather than one panel. That is what made the `null`
-  description case (fixed in TAS-195 at the mapper) an app-wide hazard rather
-  than a board-wide one.
+  the whole application rather than one panel. That is what sets the scale of
+  [TAS-173](https://jira.ozero.dev/browse/TAS-173), where an unrecognised
+  `issueType` or `priority` throws on the first paint of every card. **That
+  story stood in `Done` with none of its acceptance criteria met** — no helper,
+  no error boundary, no tests, and the unguarded lookups still in place at seven
+  sites rather than the six it lists. Found 2026-09-08 while filing a duplicate
+  for the same defect; the duplicate was closed and TAS-173 returned to `To Do`.
+  Worth knowing as a class: a story can be `Done` in Jira and absent from the
+  code, and neither the ledger nor a green gate will say so — `git log --grep`
+  on the key is the cheap check.
+
+  Note what this line first claimed and got wrong, because the correction is the
+  useful part: the `null` description TAS-195 defaulted at the mapper is **not**
+  the app-blanking case. The board's filter reads `summary` before `description`,
+  and `summary` is undefined on the same bare row — so a row that could reach
+  that filter without a description would already have thrown one field earlier.
+  The default is right for a duller reason the release reviewer supplied:
+  `PUT /issues/{issueId}` is a full replace and `UpdateIssueRequestDto` requires
+  `description`, so an undefined one would go out as a missing required key.
 - **Two ways to prove a rest-mode claim without a credential**
   (`release-reviewer`, 2026-09-08, TAS-195 verdict). TAS-195 could not produce
   the evidence that would have settled it best — a network trace showing one

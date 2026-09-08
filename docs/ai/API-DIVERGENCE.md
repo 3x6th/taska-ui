@@ -1364,7 +1364,7 @@ Everything below is the entry as it stood, in the past tense.
 
 ---
 
-### Closed by observation: the label routes answer exactly as the contract says — and writing one breaks the issue read
+### Closed by observation: the label routes answer exactly as the contract says — and writing one used to break the issue read, fixed and measured 2026-09-08
 
 - **Endpoints:** the seven `labels` routes added by
   [TAS-120](https://jira.ozero.dev/browse/TAS-120) — project labels
@@ -1426,23 +1426,26 @@ Everything below is the entry as it stood, in the past tense.
   either. And `IssueResponseDto.labels` could not be checked at all, for the
   reason immediately below.
 - **Writing a label makes the issue permanently unreadable
-  ([TAS-172](https://jira.ozero.dev/browse/TAS-172)) — **fixed, measured
-  2026-09-08; see the bullet below**.** This was the finding that mattered, and
-  it was not in the label routes — they are clean.
-  `GET /api/v1/issues/{issueId}` answers `500` for any issue a label has ever
-  touched: `{"code":"INTERNAL_SERVER_ERROR","message":"Unknown event type:
+  ([TAS-172](https://jira.ozero.dev/browse/TAS-172)) — fixed, measured
+  2026-09-08, see the bullet below.** This was the finding that mattered, and
+  it was not in the label routes — they are clean. `GET /api/v1/issues/{issueId}`
+  **used to answer** `500` for any issue a label had ever touched:
+  `{"code":"INTERNAL_SERVER_ERROR","message":"Unknown event type:
   ISSUE_EVENT_TYPE_LABEL_ADDED"}`. TAS-119 taught issue-service to write
   `LABEL_ADDED` and `LABEL_REMOVED` history events; the gateway's history
-  mapper does not know them and throws.
-  - It does not heal. Detaching the label changes the message to
-    `LABEL_REMOVED` and keeps the `500`; deleting the label from the project
-    entirely leaves the issue `500` still, because the history event is
-    already written and nothing on the client can retract it.
+  mapper did not know them and threw.
+  - It did not heal, which is why the fix had to come from the gateway.
+    Detaching the label changed the message to `LABEL_REMOVED` and kept the
+    `500`; deleting the label from the project entirely left the issue `500`
+    still, because the history event was already written and nothing on the
+    client could retract it. That is also why the measurement below is
+    conclusive: the broken row is still in the database, and it reads.
   - **FIXED. Measured 2026-09-08 on the issue this entry names.**
     `GET /api/v1/issues/09bf59ad-82e6-4650-992a-5d7c0dfadea9` — `kappa-test-1`,
     the live reproduction deliberately left broken by the verification pass —
-    answers **`200`**. Its history carries `CREATED`, `LABEL_ADDED` and
-    `LABEL_REMOVED`, and the issue carries one label. So the two events are
+    answers **`200`**. Its history is four events carrying the types `CREATED`,
+    `LABEL_ADDED` and `LABEL_REMOVED` — one of them repeats — and the issue
+    carries one label. So the two events are
     **mapped**, not merely tolerated: the gateway did not fix the `500` by
     dropping what it could not name, which was the reading this entry would
     otherwise have had to rule out.

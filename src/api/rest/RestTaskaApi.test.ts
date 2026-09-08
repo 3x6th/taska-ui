@@ -1122,9 +1122,13 @@ describe("RestTaskaApi issue list", () => {
     // `""` is how the gateway spells "nobody"; one shape of it reaches the UI.
     expect(issue.assigneeId).toBeNull();
     expect(issue.deletedAt).toBeNull();
-    // The board's filter lowercases this during render and nothing in `src`
-    // catches what it throws, so an absent description is the one field below
-    // that may not stay absent.
+    // Defaulted for the write path: `UpdateIssueRequestDto` requires
+    // `description` and `updateIssue` sends `current.description`, which is a
+    // row this mapper produced — so an `undefined` here leaves a full-replace
+    // PUT missing a required key. Not for the board's filter, which tests
+    // `summary` first — and the block below pins `summary` as `undefined` on
+    // this very row, so that filter would have thrown before reaching this
+    // field at all.
     expect(issue.description).toBe("");
     expect(issue).toMatchObject({
       storyPoints: null,

@@ -165,6 +165,7 @@ type RestIssue = Omit<
   Issue,
   | "assigneeId"
   | "deletedAt"
+  | "description"
   | "labels"
   | "storyPoints"
   | "startDate"
@@ -174,6 +175,17 @@ type RestIssue = Omit<
 > & {
   assigneeId?: string | null;
   deletedAt?: string | null;
+  // Neither spec puts this field in a `required` block, and the deployed
+  // gateway's generated spec types it `["string", "null"]`, so the wire may
+  // state `null` or omit the key outright. Restated so that `toIssue`'s
+  // `?? ""` is code with a reason a reader can check, rather than a guard
+  // against a case the type says cannot happen.
+  //
+  // Restating it does not newly imply that the rest are guaranteed: an `Omit`
+  // of nine fields already says the other twelve arrive exactly as `Issue`
+  // states them, on no better evidence than this one had. Typing the whole
+  // schema honestly is its own story; see docs/ai/BACKLOG.md.
+  description?: string | null;
   // Absent on every gateway built before TAS-120, and absent again the moment
   // this app talks to one. `toIssue` turns that into `[]` so no card has to.
   labels?: RestLabel[];
@@ -255,7 +267,10 @@ interface RestIssueShortItem {
  * TAS-195 delete the per-row hydration `listIssues` used to pay.
  */
 interface RestListIssuesResponse {
-  items: RestIssue[];
+  // Optional, unlike `RestSearchIssuesResponse` below: `ListIssuesResponseDto`
+  // declares no `required` block in either spec, so a `200` carrying no `items`
+  // is a legal answer. `listIssues` reads it with `?? []` and a test pins that.
+  items?: RestIssue[];
   totalCount: number;
 }
 
@@ -1295,21 +1310,37 @@ export class RestTaskaApi implements TaskaApi {
    * `required` block, so `null` here is a server-declared value rather than a
    * hypothesis. The difference is what a substitute costs.
    *
-   * For `description`, `""` is the value the UI already means by "no
-   * description" — it is what the issue panel writes back, and what the board's
-   * filter needs, because that filter calls `.toLowerCase()` on it inside a
-   * `useMemo` during render and there is no error boundary in `src`: one `null`
-   * blanks the whole application on the first keystroke, and again after a
-   * reload on the next one.
+   * `description` is defaulted for the *write* path, not the read one.
+   * `PUT /issues/{issueId}` is a full replace and `UpdateIssueRequestDto`
+   * requires `summary`, `description` and `priority`; `updateIssue` fills that
+   * body with `input.description ?? current.description`, and `current` is a
+   * row this method produced. An `undefined` there is dropped by
+   * `JSON.stringify`, so the PUT leaves out a required key — refused, or taken
+   * as a clear of the field nobody asked to edit. `""` is also what the rest of
+   * the UI already means by "no description" and what the issue panel writes
+   * back, so nothing downstream has to learn a second spelling of empty.
+   *
+   * It is **not** the field that blanks the application, and an earlier version
+   * of this paragraph said it was. The board's filter tests
+   * `issue.summary.toLowerCase()` before it reaches the description, so a row
+   * bare enough to be missing one has already thrown on the summary; and an
+   * absent description renders as `<p>{undefined}</p>`, which draws nothing and
+   * throws nothing. The dereferences that really do take the whole app need no
+   * keystroke and are not in this mapper — `Record` lookups on `issueType` and
+   * `priority` in the card render path, over two fields no spec constrains to
+   * an enum. They are their own defect with their own line in
+   * `docs/ai/BACKLOG.md`; this default neither causes nor fixes them.
    *
    * For `status` there is no such harmless value. Every candidate is a real
    * column, so an invented one puts the card under a heading the server does not
    * agree with, and the drag out of that column then asks for a transition from
    * a status the issue was never in. A statusless card matches no column and
-   * simply does not appear (`BoardScreen` groups by `issue.status ===
-   * status.statusKey`), which is the recoverable failure of the two. That half
-   * is in `docs/ai/BACKLOG.md` with this reasoning rather than papered over
-   * here.
+   * does not appear (`BoardScreen` groups by `issue.status ===
+   * status.statusKey`) — while still being counted at *both* ends of that
+   * screen's "X of Y" header, since `filteredIssues` and `issues` each hold it.
+   * The board reads "10 of 10" over nine cards. That is still the recoverable
+   * failure of the two, and its visible half is in `docs/ai/BACKLOG.md` with
+   * this reasoning rather than papered over here with an invented column.
    */
   private toIssue(issue: RestIssue): Issue {
     return {
