@@ -165,9 +165,14 @@ is cheaper than splitting an entry and the reader has to be told which.
   the gateway's `IssueMapper.toRestIssueEventType` does not map the comment
   event types that `TAS-109` introduced.
 - **Compensation:** none. The frontend does not work around this.
-- **User-visible effect:** because of the N+1 hydration below, one commented
-  issue anywhere in a project makes the whole board fail to load, and the
-  projects screen loses every card's issue count and member row with it.
+- **User-visible effect (both halves have since changed):** while the N+1
+  hydration existed, one commented issue anywhere in a project made the whole
+  board fail to load, and the projects screen lost every card's issue count and
+  member row with it. TAS-195 removed that multiplier — the board no longer
+  reads the detail route — so the blast radius is now the issue panel alone.
+  And the fault itself no longer reproduces: **measured 2026-09-08**, three
+  issues carrying 1, 1 and 4 comments each answered `200` from
+  `GET /issues/{issueId}`, one of them carrying a label as well.
 - **Not observed on 2026-08-12, but that is not an all-clear.** Hydrating every
   issue in all seven projects — 19 `GET /issues/{id}` calls, the exact path that
   used to fail — returned `200` every time. What was *not* established is
@@ -395,7 +400,25 @@ Same rule as above: "Closed by" is settled, the rest is live.
   default mode (after [TAS-137](https://jira.ozero.dev/browse/TAS-137)) and the
   e2e suite can run against a gateway that rejects tokens.
 
-### The board hydration outlived its contract reason
+### Closed by TAS-195: the board hydration outlived its contract reason, and then its runtime one
+
+**The measurement this entry asked for was taken on 2026-09-08 and the answer
+was yes.** Against the deployed gateway with a `GLOBAL_ADMIN` token,
+`GET /api/v1/projects/{id}/issues?page=0&pageSize=3` returned items carrying
+`status` (`"IN_PROGRESS"`), `description`, `createdAt` and a **populated**
+`labels` array — 1, 2 and 1 label across the three rows. Re-checked across three
+more projects the same day: list label counts matched the detail read on every
+row compared. The hydration came out in TAS-195; `listIssues` maps the page
+directly and the board load is one request instead of up to 101.
+
+The two response types stopped sharing an interface in the same change, which is
+the part worth remembering: `ListIssuesResponseDto.items` is `IssueResponseDto`
+and `SearchIssuesResponseDto.items` is still `IssueShortResponseDto`. A comment
+in `RestTaskaApi.ts` had warned that one name for two contract schemas would
+hide the day either grew a field. That day was this one.
+
+Everything below is the entry as it stood, in the past tense.
+
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/issues`
 - **Contract:** *this bullet is out of date and the compensation now stands on
@@ -409,11 +432,13 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `SearchIssuesResponseDto`. So the contract no longer mandates the hydration.
   What keeps it is that nobody has yet asked the deployed gateway whether it
   agrees with its own contract — see the Removal note below.
-- **Compensation:** `RestTaskaApi.listIssues` follows the list call with
-  `GET /issues/{issueId}` per item at concurrency 6; the first rejection fails
-  the whole page. 4 projects × 100 issues is 400+ requests on the projects
-  screen, and this is the multiplier that turns TAS-139 into a board-wide
-  failure.
+- **Compensation (removed by TAS-195):** `RestTaskaApi.listIssues` followed the
+  list call with `GET /issues/{issueId}` per item at concurrency 6; the first
+  rejection failed the whole page. 4 projects × 100 issues was 400+ requests on
+  the projects screen, and this was the multiplier that turned TAS-139 into a
+  board-wide failure. That multiplier is gone: the board no longer reads the
+  detail route at all, so a detail-route fault can now cost the issue panel and
+  not the board.
 
   The heading used to read "The issue list DTO cannot render a board" — the
   premise this entry now disowns. Renamed under TAS-191, so the most quotable
@@ -430,10 +455,17 @@ Same rule as above: "Closed by" is settled, the rest is live.
   detail read would still be needed, for the panel and for the lower half of the
   card. Dropped from TAS-141 as a duplicate at the 2026-08-04 dedup pass.
 
-  What **may** remove it is unrelated and already noted in the 2026-09-05
-  backlog entry: `ListIssuesResponseDto.items` changed on `develop` from
-  `IssueShortResponseDto` to `IssueResponseDto`, which carries all three. That
-  needs one measurement against the deployed gateway, not a contract reading.
+  What **did** remove it is unrelated to the board API and was noted in the
+  2026-09-05 backlog entry: `ListIssuesResponseDto.items` changed on `develop`
+  from `IssueShortResponseDto` to `IssueResponseDto`, which carries all three.
+  That needed one measurement against the deployed gateway rather than a
+  contract reading — and this entry is the one place in the repository that said
+  so before it was taken. It was right to insist: the measurement is what closed
+  this, not the `$ref`.
+
+- **What is still owed here.** The detail read stays for the issue panel and for
+  the lower half of the card, exactly as the withdrawn TAS-124/125 promise
+  above says. Nothing in TAS-195 touches it.
 
 ### No `read-all` for notifications
 
@@ -1392,11 +1424,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
     `LABEL_REMOVED` and keeps the `500`; deleting the label from the project
     entirely leaves the issue `500` still, because the history event is
     already written and nothing on the client can retract it.
-  - **It takes the whole board with it, not just the panel.**
-    `RestTaskaApi.listIssues` hydrates every row through `getIssue`, because
-    the list DTO omits fields the card needs. One labelled issue therefore
-    fails the project's entire issue read — measured: the list answers `200`,
-    the single row's hydration answers `500`, the whole call rejects.
+  - ~~**It takes the whole board with it, not just the panel.**~~ **No longer
+    true, twice over.** It did: `listIssues` hydrated every row through
+    `getIssue` because the list DTO omitted fields the card needs, so one
+    labelled issue failed the project's entire issue read — measured then as
+    list `200`, row hydration `500`, whole call rejected. TAS-195 removed the
+    hydration, and the 2026-09-08 probe could not reproduce the `500` at all.
   - **Compensation: none, and the UI ships the writes anyway** — the owner's
     call, made knowing the above, so the backend team can work the bug against
     a real reproduction. What that means in practice: attaching a label on the
@@ -1443,7 +1476,23 @@ Same rule as above: "Closed by" is settled, the rest is live.
   ordering, `totalCount`, and `IssueResponseDto.labels`, which cannot be seen
   until the issue read stops answering `500`.
 
-### `IssueResponseDto.labels` comes back empty, so no card on the board draws a label
+### Closed by measurement (TAS-195 pass): `IssueResponseDto.labels` comes back populated
+
+**Measured 2026-09-08** with a `GLOBAL_ADMIN` token, on three projects: for each
+one, a list row carrying labels was read back through
+`GET /api/v1/issues/{issueId}`, and the detail `labels` matched the list — API-2
+1 and 1, PCAI-5 1 and 1, CRM-2 1 and 1, the last of those also carrying four
+comments. The field the detail DTO declares is filled.
+
+Backend [TAS-178](https://jira.ozero.dev/browse/TAS-178) carries the same
+measurement as a comment; its status is the backend owner's to move, so the
+story may still read open while this entry does not. The frontend never
+compensated for this — see the compensation line below — so nothing comes out
+with the closure. The list route carries labels too, which is a separate fact
+and the one [TAS-195](https://jira.ozero.dev/browse/TAS-195) stands on.
+
+The entry as it stood:
+
 
 - **Endpoint:** `GET /api/v1/issues/{issueId}` — the detail read, and the only
   route the board has for a card's labels. Note the shape: `RestTaskaApi.getIssue`
@@ -1460,8 +1509,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **Why that pins it to the response rather than the UI.** `IssueCardContent`
   renders `{issue.labels.length ? … : null}` (`src/screens/BoardScreen.tsx:770`),
   so an empty array draws nothing at all — which is what a reader sees. The board
-  gets its cards from `listIssues`, which hydrates every row through `getIssue`
-  and maps `labels: (issue.labels ?? []).map(toLabel)`
+  gets its cards from `listIssues`, which since TAS-195 maps the list row
+  directly and reads `labels: (issue.labels ?? []).map(toLabel)` off it
   (`src/api/rest/RestTaskaApi.ts:777`). There is no fallback and no filter in
   between: a populated `labels` on the wire reaches the chip. The same card draws
   labels correctly against the mock, which is the control.
@@ -1623,11 +1672,13 @@ Same rule as above: "Closed by" is settled, the rest is live.
     here establishes that the gateway's order is stable across pages — the
     mock imposes `createdAt` ascending and the contract promises nothing. Both
     callers read page 0 only, so this is latent rather than live.
-- **Why not hydrate.** `RestTaskaApi.listIssues` already pays an N+1 through
-  `getIssue` for exactly this reason, and the owner settled the general
-  question on 2026-08-23 while deciding TAS-178: fix the backend, do not
-  hydrate on the frontend. Hydrating search would be that same N+1 on every
-  keystroke, which is the version of it that cannot be afforded.
+- **Why not hydrate.** The owner settled the general question on 2026-08-23
+  while deciding TAS-178: fix the backend, do not hydrate on the frontend.
+  `listIssues` used to be the standing exception — it paid an N+1 through
+  `getIssue` for exactly this reason — and TAS-195 removed it once the gateway
+  started sending whole issues, so the rule now has no exception at all.
+  Hydrating search would be that same N+1 on every keystroke, which is the
+  version of it that was never affordable.
 - **Removal:** none filed, and none should be until the board itself is the
   thing being changed — the short DTO is the contract's own design, and the
   compensation above costs nothing. Recorded so the next agent does not

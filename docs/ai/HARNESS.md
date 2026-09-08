@@ -84,7 +84,12 @@ on `GET /issues/{issueId}` for any issue with a comment; the board hydrates
 every listed issue through that endpoint; therefore one comment in a project
 makes that project's board fail to load on production, and push to `main`
 deploys. The orchestrator surfaced all of this and recommended waiting for the
-gateway fix; the owner chose to merge anyway. Recorded as an owner decision —
+gateway fix; the owner chose to merge anyway. *(Postscript, 2026-09-08: both halves
+of the risk have since gone. The board no longer hydrates — TAS-195 removed it
+once the list DTO began carrying whole issues — and the `500` itself no longer
+reproduces: three issues with 1, 1 and 4 comments each answered `200`. The
+paragraph above is left as it was, because it records what was known at the
+moment of the decision, which is the only thing that can judge the decision.)* Recorded as an owner decision —
 not softened into agreement — and reversible: the fix is `TAS-139` on the
 backend, no frontend change is required to recover.
 

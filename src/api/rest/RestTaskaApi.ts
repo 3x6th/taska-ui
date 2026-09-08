@@ -226,7 +226,13 @@ interface RestIssueWithHistory {
   history: RestIssueHistoryEvent[];
 }
 
-interface RestIssueListItem {
+/**
+ * `IssueShortResponseDto`, which since TAS-195 is the *search* DTO and nothing
+ * else — hence the name. It used to be called `RestIssueListItem` and used by
+ * both response types below, until `ListIssuesResponseDto.items` became
+ * `IssueResponseDto` and the list stopped being short.
+ */
+interface RestIssueShortItem {
   id: string;
   issueKey: string;
   summary: string;
@@ -239,19 +245,36 @@ interface RestIssueListItem {
   storyPoints?: number | null;
 }
 
+/**
+ * `ListIssuesResponseDto`, whose `items` is a whole `IssueResponseDto` — the
+ * same schema `GET /issues/{issueId}` answers with, `status` and `labels`
+ * included. Measured on the deployed gateway on 2026-09-08 rather than read
+ * off the contract, because the two have disagreed here before: every row of
+ * `GET /projects/{id}/issues?page=0&pageSize=3` carried all fifteen fields,
+ * `status` as a key and `labels` populated. That measurement is what let
+ * TAS-195 delete the per-row hydration `listIssues` used to pay.
+ */
 interface RestListIssuesResponse {
-  items: RestIssueListItem[];
+  items: RestIssue[];
   totalCount: number;
 }
 
 /**
- * `SearchIssuesResponseDto`. The same two fields as `ListIssuesResponseDto`
- * above and deliberately not an alias for it: they are two schemas in the
- * contract, and one name would hide the day either of them grows a field.
- * Both are `required` here, which the list response's schema does not say.
+ * `SearchIssuesResponseDto`. Two fields with the same names as
+ * `ListIssuesResponseDto` above, and deliberately not an alias for it: they are
+ * two schemas in the contract, and one name would hide the day either of them
+ * grows a field.
+ *
+ * That day was TAS-195. The list's `items` became `IssueResponseDto` and this
+ * one stayed `IssueShortResponseDto` (openapi.yml, `SearchIssuesResponseDto`),
+ * so the shared `RestIssueListItem` split in two rather than widening a search
+ * hit into an issue it never was.
+ *
+ * Both fields are `required` here, which the list response's schema still does
+ * not say.
  */
 interface RestSearchIssuesResponse {
-  items: RestIssueListItem[];
+  items: RestIssueShortItem[];
   totalCount: number;
 }
 
@@ -481,12 +504,16 @@ export class RestTaskaApi implements TaskaApi {
       `/projects/${this.segment(projectId)}/issues${this.query(search)}`,
     );
 
-    // The gateway list DTO omits fields required by the board (including status),
-    // so hydrate the page with the detail endpoint until the REST contract grows.
-    const items = await mapWithConcurrency(response.items, 6, async (item) => {
-      const details = await this.getIssue(projectId, item.id);
-      return details.issue;
-    });
+    // One request per page, and the same mapping the detail read uses, because
+    // the list and the detail answer with the same DTO. Until TAS-195 this
+    // followed the list with `GET /issues/{issueId}` per row at concurrency 6 —
+    // up to a hundred extra requests for the board's `pageSize: 100` — because
+    // `ListIssuesResponseDto.items` was the short DTO and a kanban card cannot
+    // choose a column without `status`. It is `IssueResponseDto` now, measured
+    // on the deployed gateway (see `RestListIssuesResponse`), so the reason is
+    // gone. Nothing else went with it: `getIssue` still backs the issue panel,
+    // and the fan-out was the multiplier that made TAS-139 fail a whole board.
+    const items = response.items.map((item) => this.toIssue(item));
 
     return {
       items,
@@ -522,10 +549,12 @@ export class RestTaskaApi implements TaskaApi {
     if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
 
     const response = await this.request<RestSearchIssuesResponse>(`/issues/search${this.query(search)}`);
-    // No hydration, on purpose: `listIssues` above pays an N+1 through
-    // `getIssue` because the board needs a status, and doing the same here
-    // would be that N+1 on every keystroke. A hit stays as short as the
-    // contract made it (docs/ai/API-DIVERGENCE.md, TAS-178).
+    // No hydration, on purpose, and the reason outlived the N+1 in `listIssues`
+    // above: the search DTO is still `IssueShortResponseDto`, so filling in a
+    // status here would mean a `getIssue` per hit on every keystroke. The owner
+    // settled that on 2026-08-23 — fix the backend, do not hydrate on the
+    // frontend (docs/ai/API-DIVERGENCE.md, TAS-178). A hit stays as short as
+    // the contract made it.
     const items = (response.items ?? []).map((item) => this.toIssueSearchHit(item));
     return {
       items,
@@ -1236,6 +1265,11 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
+   * `IssueResponseDto` → `Issue`, for the detail read *and*, since TAS-195,
+   * for every row of `listIssues`: the two routes answer with the same schema,
+   * so a field this method forgets to default is a hundred cards rather than
+   * one panel.
+   *
    * The five planning fields are folded one by one rather than left to the
    * spread. A spread of a response that carries none of them — which is every
    * response until backend PR #148 deploys — produces five members that are
@@ -1284,7 +1318,7 @@ export class RestTaskaApi implements TaskaApi {
    * day the DTO grows a field, and the one thing this type must keep proving is
    * that it carries no status and no project.
    */
-  private toIssueSearchHit(item: RestIssueListItem): IssueSearchHit {
+  private toIssueSearchHit(item: RestIssueShortItem): IssueSearchHit {
     return {
       id: item.id,
       issueKey: item.issueKey,

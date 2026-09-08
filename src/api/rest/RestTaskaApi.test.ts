@@ -1013,9 +1013,10 @@ describe("RestTaskaApi issue search", () => {
 
     await new RestTaskaApi().searchIssues({ query: "one" });
 
-    // `listIssues` pays an N+1 through `getIssue` because the board needs a
-    // status. On a search that would be the same N+1 on every keystroke, and
-    // the owner ruled against it on 2026-08-23 (TAS-178).
+    // The search DTO is still `IssueShortResponseDto`, so filling in a status
+    // would mean a `getIssue` per hit on every keystroke — and the owner ruled
+    // against hydrating on the frontend on 2026-08-23 (TAS-178). `listIssues`
+    // needs none of this any more: its own DTO is a whole issue (TAS-195).
     expect(fetchStub).toHaveBeenCalledTimes(1);
   });
 
@@ -1026,6 +1027,133 @@ describe("RestTaskaApi issue search", () => {
       items: [],
       totalCount: 0,
     });
+  });
+});
+
+/**
+ * `GET /projects/{projectId}/issues`, which until TAS-195 followed itself with
+ * one `GET /issues/{issueId}` per row because `ListIssuesResponseDto.items` was
+ * the short DTO and a kanban card cannot pick a column without a `status`. The
+ * items are `IssueResponseDto` now — measured on the deployed gateway on
+ * 2026-09-08, `status` a key and `labels` populated — so what these cases pin is
+ * that the board still gets a whole card, and gets it from one request.
+ */
+describe("RestTaskaApi issue list", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  const row = {
+    id: "issue-1",
+    projectId: "project-1",
+    issueNumber: 101,
+    issueKey: "TAS-101",
+    issueType: "BUG",
+    summary: "Login form validation fails on empty email",
+    description: "Submitting an empty email shows no error",
+    status: "IN_PROGRESS",
+    priority: "HIGH",
+    assigneeId: "user-mark",
+    reporterId: "user-anna",
+    createdAt: "2026-08-20T09:00:00Z",
+    updatedAt: "2026-08-21T10:00:00Z",
+    version: 3,
+    labels: [{ id: "label-1", name: "backend", color: "#0052cc" }],
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("builds a whole board card out of the one list request", async () => {
+    const fetchStub = stubFetch({ items: [row], totalCount: 1 });
+
+    const page = await new RestTaskaApi().listIssues("project-1", { pageSize: 100 });
+
+    // One request for a hundred cards. The assertion is the story: the same
+    // page used to cost up to a hundred and one.
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(String(fetchStub.mock.calls[0][0])).toContain("/projects/project-1/issues?");
+
+    const [issue] = page.items;
+    // The two fields the N+1 existed for. A card without them cannot be drawn
+    // in a column or given its chips, so they are asserted by value rather than
+    // through a `toMatchObject` that would pass on an absent one.
+    expect(issue.status).toBe("IN_PROGRESS");
+    expect(issue.labels).toEqual([{ id: "label-1", name: "backend", color: "#0052cc" }]);
+    // And the rest of what DESIGN.md §4.8 puts on the card.
+    expect(issue).toMatchObject({
+      id: "issue-1",
+      issueKey: "TAS-101",
+      issueType: "BUG",
+      priority: "HIGH",
+      summary: "Login form validation fails on empty email",
+      description: "Submitting an empty email shows no error",
+      assigneeId: "user-mark",
+      createdAt: "2026-08-20T09:00:00Z",
+    });
+    expect(page).toMatchObject({ page: 0, pageSize: 100, totalCount: 1 });
+  });
+
+  it("defaults every field the list DTO may leave out, exactly as the detail read does", async () => {
+    // `ListIssuesResponseDto` marks nothing required and the five planning
+    // fields land only with backend PR #148, so a row this bare is legal — and
+    // a card that renders "undefined" for a story-point count is the failure.
+    stubFetch({ items: [{ id: "issue-2", issueKey: "TAS-102", assigneeId: "" }], totalCount: 1 });
+
+    const [issue] = (await new RestTaskaApi().listIssues("project-1")).items;
+
+    expect(issue.labels).toEqual([]);
+    // `""` is how the gateway spells "nobody"; one shape of it reaches the UI.
+    expect(issue.assigneeId).toBeNull();
+    expect(issue.deletedAt).toBeNull();
+    expect(issue).toMatchObject({
+      storyPoints: null,
+      startDate: null,
+      dueDate: null,
+      originalEstimateMinutes: null,
+      remainingEstimateMinutes: null,
+    });
+  });
+
+  it("pages exactly as it did before, and carries the server-side filters", async () => {
+    const fetchStub = stubFetch({ items: [row], totalCount: 42 });
+
+    const stated = await new RestTaskaApi().listIssues("project-1", {
+      status: "IN_PROGRESS",
+      assigneeId: "user-mark",
+      page: 2,
+      pageSize: 20,
+    });
+
+    const url = String(fetchStub.mock.calls[0][0]);
+    expect(url).toContain("status=IN_PROGRESS");
+    expect(url).toContain("assigneeId=user-mark");
+    expect(url).toContain("page=2");
+    expect(url).toContain("pageSize=20");
+    // The page echoes what was asked; the count is of the whole set.
+    expect(stated).toMatchObject({ page: 2, pageSize: 20, totalCount: 42 });
+
+    // With nothing stated, the page falls back to the first one and to the
+    // number of items that actually came back — unchanged by TAS-195.
+    vi.unstubAllGlobals();
+    stubFetch({ items: [row], totalCount: 1 });
+    await expect(new RestTaskaApi().listIssues("project-1")).resolves.toMatchObject({ page: 0, pageSize: 1 });
   });
 });
 
@@ -1161,18 +1289,18 @@ describe("RestTaskaApi labels", () => {
   });
 
   it("carries the label filter into the issue list query", async () => {
-    const fetchStub = stubFetch((input) =>
-      input.includes("/issues/")
-        ? { issue: { id: "issue-1", labels: [{ id: "label-1", name: "backend", color: "#0052cc" }] }, history: [] }
-        : { items: [{ id: "issue-1" }], totalCount: 1 },
-    );
+    const fetchStub = stubFetch(() => ({
+      items: [{ id: "issue-1", labels: [{ id: "label-1", name: "backend", color: "#0052cc" }] }],
+      totalCount: 1,
+    }));
 
     const page = await new RestTaskaApi().listIssues("project-1", { labelId: "label-1", pageSize: 100 });
 
     expect(String(fetchStub.mock.calls[0][0])).toContain("labelId=label-1");
-    // The list DTO carries no labels, so the board's chips come from the detail
-    // read this method hydrates each row with.
+    // The list DTO carries the labels itself since TAS-195, so the board's chips
+    // come out of this one response — no detail read behind it.
     expect(page.items[0].labels).toEqual([{ id: "label-1", name: "backend", color: "#0052cc" }]);
+    expect(fetchStub).toHaveBeenCalledTimes(1);
   });
 
   it("gives an issue an empty label list when the gateway sends none", async () => {

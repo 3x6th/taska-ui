@@ -371,10 +371,12 @@ time.
   because headless Chromium has no toolbars to retract.
 - **`--font-mono` is specified in §2.3 and never declared in `styles.css`.**
   TAS-163 defines it and converts the copies it found; check for others.
-- **`listIssues` is still all-or-nothing internally.** Its N+1 hydration uses
-  `Promise.all`, so one unreadable issue still zeroes its own project's count.
-  TAS-163 contained the blast radius to a single card; it did not remove it,
-  and TAS-124/125 is what actually does.
+- ~~**`listIssues` is still all-or-nothing internally.**~~ **Gone with the
+  hydration (TAS-195, 2026-09-08.)** It used `Promise.all` over a per-row
+  `getIssue`, so one unreadable issue zeroed its own project's count. There are
+  no per-row reads left to fail. Note which prediction was wrong: this line said
+  TAS-124/125 is what removes it. The board API never did — what did was the
+  list DTO growing whole issues, measured rather than read off the contract.
 - ~~No test proves a real `VIEWER` cannot drag.~~ **Withdrawn the same day it
   was written.** It rested on "the mock seeds no VIEWER project", which is
   false: Anna is not a member of `MOB`, and a non-member gets `VIEWER`. TAS-163
@@ -435,8 +437,9 @@ time.
   `IssueLinksSection`'s own observer on `["issues", projectId, "ALL"]` refetches
   on mount when the entry is stale (`staleTime` 20_000), where before the panel
   added no observer at all. Against the real gateway that is not one call:
-  `RestTaskaApi.listIssues` hydrates every item with a per-issue `getIssue` at
-  concurrency 6. Nothing required — if it shows as load, the smallest change is
+  `RestTaskaApi.listIssues` hydrated every item with a per-issue `getIssue` at
+  concurrency 6 until TAS-195 removed it, so whatever load this line was about
+  is now one request per page. Nothing required — if it shows as load, the smallest change is
   `refetchOnMount: false` on that one observer, which consumes the cached page
   without ever driving a fetch of it.
 - **Pressing "Add" by keyboard drops focus to `<body>`,** because the button
@@ -825,11 +828,9 @@ the next session in this image exactly as it bit this one.
   in the documents** (`release-reviewer`, TAS-191): it justifies the per-issue
   hydration by saying the list DTO omits fields the board needs, and on the
   vendored contract `ListIssuesResponseDto.items` is now `IssueResponseDto`,
-  which carries them. The hydration should stay until the deployed gateway is
-  measured — it is the comment's reason that is stale, not its conclusion.
-  Belongs to whoever takes that measurement, which is the same one the
-  2026-09-05 refresh entry files under `ListIssuesResponseDto.items` — one
-  request answers both.
+  which carries them. **Both halves closed by TAS-195**: the measurement was
+  taken on 2026-09-08, the gateway agreed with its own contract, and the
+  hydration came out with the comment that justified it.
 - **A third intermittent test signature, on `AdminScreen.test.tsx`**
   (`release-reviewer`, TAS-190): "lands on the last page when the address names
   one past the end" failed once in four `npm run check` runs with
@@ -1447,11 +1448,10 @@ again to `96408229c1e4` and the deployed gateway was measured directly:
   detail endpoint and got a non-empty `labels` back, which is the bug
   [TAS-178](https://jira.ozero.dev/browse/TAS-178) is about; that wants its own
   confirmation before the Jira story is closed.
-  `RestTaskaApi.listIssues` hydrates every row from the detail endpoint because
-  the short DTO carried no labels — that N+1 may now be deletable. It is a
-  measurement against the deployed gateway, not a reading of the contract,
-  because the two have disagreed before. Sitting in TAS-189's scope as a
-  question, not as work.
+  `RestTaskaApi.listIssues` hydrated every row from the detail endpoint because
+  the short DTO carried no labels. The measurement was taken on 2026-09-08, the
+  gateway agreed with its own contract, and the N+1 came out — a story of its
+  own rather than a question in TAS-189's margin.
 - **`NotificationTypeDto` is back in the vendored contract, and nothing
   references it.** It reappeared as a definition on two then-open PRs (#146,
   #118); #146 merged 2026-09-07, so the schema is now on `develop` and in the
