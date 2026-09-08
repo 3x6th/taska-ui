@@ -60,13 +60,21 @@ describe("isUndeployedRoute", () => {
   // issue as a missing deployment.
   //
   // **The status arm is the one a future simplification will delete**, because
-  // the message looks specific enough to stand by itself. It is not. A 500
-  // carrying this string is a gateway that is broken, not a gateway that is
-  // incomplete, and the attachments panel answers the two differently: on
-  // "undeployed" it says this gateway does not serve attachments yet and takes
-  // the upload control away. Relax this to a message-only match and every
-  // other test in this repository still passes, while a user whose gateway is
-  // merely down is told the feature does not exist.
+  // the message looks specific enough to stand by itself. It is not, and the
+  // reason is a rule rather than an anecdote: a predicate may match the
+  // signature that was measured and must not be widened past it. What was
+  // measured is the pair — Spring's static-resource fallback raises
+  // `NoResourceFoundException`, a 404 by construction, so this string has only
+  // ever been seen with that status. Dropping the status arm does not simplify
+  // the measurement, it generalises beyond it: the predicate would then fire on
+  // any future response that happens to carry the string, and a 5xx is the
+  // example that would hurt, because the attachments panel answers "broken" and
+  // "incomplete" differently — on "undeployed" it says this gateway does not
+  // serve attachments yet and takes the upload control away. Relax this to a
+  // message-only match and every other test in this repository still passes.
+  // Compensating for behaviour nobody has observed is the thing
+  // docs/ai/API-DIVERGENCE.md exists to refuse; matching only what was observed
+  // is the same rule read forwards.
   it("wants the 404 and the message together, and refuses either one alone", () => {
     expect(isUndeployedRoute(new ApiError(staticResource, "NOT_FOUND", 404), UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
     expect(isUndeployedRoute(new ApiError("Issue not found", "NOT_FOUND", 404), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);

@@ -30,7 +30,9 @@ it. Entries are deleted only when the compensating code is deleted.
 ## Runtime differs from the contract
 
 Headings starting with "Closed by" are settled and kept for their history;
-everything else here is live.
+everything else here is live. A closed entry may still carry a live sub-fact —
+it says so in its own first paragraph when it does, because closing a heading
+is cheaper than splitting an entry and the reader has to be told which.
 
 
 ### Closed by TAS-154: `GET /projects/{projectId}` answers 200
@@ -236,7 +238,11 @@ everything else here is live.
   `JsonByteArrayInput{{"issue`). The fix — an `instanceof Json →
   asString()` branch — is in
   [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
-  (TAS-105), In Review.
+  (TAS-105), **merged 2026-08-27** — the fall-through branch is gone on
+  `develop`. Whether a real `jsonb` payload now arrives as JSON is a separate
+  measurement and has not been taken: the summary route out of the same PR is
+  live (see the entry below), which makes deployment likely rather than
+  established. Probe one `issue.outbox_events` row before closing this.
 - **The UI instead:** prints it verbatim, never repaired. The card's jsonb
   rule (`src/screens/admin/columns.ts`) is parse-as-JSON → pretty-print,
   anything else → verbatim, so the broken format stays *visible* by design —
@@ -246,8 +252,11 @@ everything else here is live.
   so the verbatim branch is exercised until the backend fix lands.
 - **Switch-off:** nothing to switch — once the backend fix deploys, real
   JSON flows into the same rule's pretty-print branch on its own.
-- **Removal:** TAS-105 merging and deploying, same as the summary entry
-  below — close the two together. When closing this one, also drop the
+- **Removal:** [TAS-194](https://jira.ozero.dev/browse/TAS-194), same as the
+  summary entry below — close the two together. The trigger the old wording
+  named, "TAS-105 merging and deploying", happened on 2026-08-27 and closed
+  nothing, because a compensation that renders as a quiet note is one nobody
+  reports; a probe is what closes this, not a merge date. When closing this one, also drop the
   mock's malformed `JsonByteArrayInput` seed and the assertion that pins it
   (`MockTaskaApi.test.ts`): after the fix they model a state the gateway can
   no longer produce.
@@ -1686,15 +1695,34 @@ Same rule as above: "Closed by" is settled, the rest is live.
 
 ---
 
-### The problems summary exists only in the TAS-105 branch contract
+### The problems summary was TAS-105-only; the endpoint now answers and the compensation has not come out
+
+**Still open, and read the next two paragraphs in order — the divergence
+inverted rather than closed.** The endpoint is deployed; what remains is a
+compensation in the code for a gateway that no longer behaves that way, and an
+entry is deleted only when the compensating code is.
+
+**Measured 2026-09-08** with a GLOBAL_ADMIN token:
+`GET /api/v1/readonly/outbox/problematic-summary` answers **200** with
+`{counts, events, notAllShown}` — two real `FAILED` events on `project`,
+`attempts: 5`, `lastErrorMessage: "Failed to construct kafka producer"`. Backend
+[PR #141](https://github.com/VladislavYurin/taska-backend/pull/141) (TAS-105)
+merged **2026-08-27**, and the refreshed snapshot carries the path.
+`isSummaryNotDeployed` (`src/screens/admin/events.ts`) matches its signature by
+exact equality, so against a 200 it is inert rather than wrong — which is why
+this was invisible until someone re-read the file.
+
+Everything below was written before that and describes the gateway as it was.
+It is kept because the compensation it explains is still in the tree.
 
 - **Endpoint:** `GET /api/v1/readonly/outbox/problematic-summary` — the
   stuck/failed outbox summary the Events section's Problems view is built on
   (TAS-167).
-- **Observed:** the vendored snapshot (develop @ `4241be2`) has no such path,
-  and the deployed gateway does not serve it: the backend change is
+- **Observed (superseded, see above):** the vendored snapshot (develop @
+  `4241be2`) had no such path, and the deployed gateway did not serve it: the
+  backend change was
   [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
-  (TAS-105), In Review, unmerged. **Measured 2026-08-25** with a GLOBAL_ADMIN
+  (TAS-105), then In Review. **Measured 2026-08-25** with a GLOBAL_ADMIN
   token: the live gateway routes the path into the generic table read — the
   `outbox` segment is taken for a service key — and answers
   `400 INVALID_ARGUMENT` with `"Unknown service: outbox"`. That exact
@@ -1722,11 +1750,20 @@ Same rule as above: "Closed by" is settled, the rest is live.
   deploy, so the note heals itself.
 - **Switch-off:** nothing to switch — the compensation is the honest note
   plus the mock, and `RestTaskaApi` already speaks the final shape.
-- **Removal:** TAS-105 merging and deploying closes it. Refresh
-  `docs/contract/openapi.yml` then, and close this entry with it — together
-  with the `jsonb` serialisation entry above, whose mock seed and assertion
-  come out in the same pass. If review changes the PR's contract before
-  merge, the client follows the merged version, not this entry.
+- **Removal:** [TAS-194](https://jira.ozero.dev/browse/TAS-194), which opens the
+  Events section for the retry write and takes the note out with it —
+  `OUTBOX_SUMMARY_UNSERVED_MESSAGE`, `isSummaryNotDeployed`, the comments in
+  `src/screens/admin/sections.ts`, `src/api/HybridTaskaApi.ts` and the mock, and
+  the `TAS-105` link pinned by `src/screens/admin/AdminScreen.test.tsx`. The
+  `jsonb` serialisation entry above comes out in the same pass, as it always
+  said it would; its own text still calls PR #141 In Review and is corrected
+  here only on that point.
+
+  The old wording said "TAS-105 merging and deploying closes it". It merged on
+  2026-08-27 and nothing closed, because nothing was looking: the compensation is
+  a note rather than an error, and a note that never fires is a note nobody
+  reports. That is the argument for re-reading this file on every snapshot
+  refresh rather than only when a story touches an entry.
 
 ### Closed by TAS-196: the three admin user writes — block, unblock, reset-lockout — are deployed
 
@@ -1744,6 +1781,7 @@ deployment and is compensated for today:
 - the `reset-lockout` refusal that arrives as `400` where the backend's own test
   asserts `409`, which has its own open entry further down.
 
+The entry itself, in the past tense:
 
 - **Endpoints:** `POST /api/v1/admin/users/{userId}/block`,
   `POST /api/v1/admin/users/{userId}/unblock` and

@@ -140,9 +140,10 @@ export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             </h1>
             {/* Not a request state and not decoration: it says this section
                 only reads, and it has already left one — Users writes since
-                TAS-186 and carries none — while TAS-106 will take it off
-                Events. That is why it is a field on the section rather than a
-                fixture of the shell. */}
+                TAS-186 and carries none — while TAS-194 will take it off
+                Events once the retry write lands there (the gateway already
+                serves that route; backend TAS-106 shipped it). That is why it
+                is a field on the section rather than a fixture of the shell. */}
             {section.readOnly ? <p className="admin-readonly">read-only</p> : null}
           </header>
           <Outlet />
