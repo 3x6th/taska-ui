@@ -248,10 +248,13 @@ export const actionGerunds: Record<UserAction, string> = {
  * shared predicate it used is still in src/api/errors.ts and still has a live
  * caller: the attachment routes, which really are unmapped.
  *
- * Order matters, and the reason is `isConflict` rather than any 404.
- * `FAILED_PRECONDITION` — the last-active-admin guard and the not-locked
- * refusal — arrives on **400**, so it has to be asked before the `>= 400` arm
- * below, which would otherwise call it a rejected request.
+ * Order matters, and two constraints hold it rather than one. `isConflict`
+ * must come before the `>= 400 && < 500` arm because `FAILED_PRECONDITION` —
+ * the last-active-admin guard and the not-locked refusal — arrives on **400**,
+ * which that arm would otherwise call a rejected request. `isMissingOrForbidden`
+ * must come before it too, or every 404 and every 403 would classify as
+ * `rejected` instead of `refused` — the gateway blamed for not accepting a
+ * request it read and refused.
  */
 export type UserWriteFailure = "conflict" | "refused" | "server" | "rejected" | "unreachable";
 

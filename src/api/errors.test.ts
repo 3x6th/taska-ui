@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isMissingOrForbidden } from "./errors";
+import { isMissingOrForbidden, isUndeployedRoute } from "./errors";
+import { UNDEPLOYED_ROUTE_MESSAGE } from "./TaskaApi";
 import { ApiError } from "./rest/RestTaskaApi";
 
 // MockTaskaApi keeps its error class private, so the shape it throws is
@@ -41,5 +42,34 @@ describe("isMissingOrForbidden", () => {
     expect(isMissingOrForbidden({ code: "NOT_FOUND" })).toBe(false);
     expect(isMissingOrForbidden(undefined)).toBe(false);
     expect(isMissingOrForbidden(null)).toBe(false);
+  });
+});
+
+describe("isUndeployedRoute", () => {
+  // Spring's static-resource fallback, as measured on 2026-09-06 against a
+  // route the gateway had not mapped. The tail is the request path, which is
+  // why the predicate matches a substring.
+  const staticResource = "No static resource api/v1/projects/p-1/issues/i-1/attachments for request '…'.";
+
+  // All three arms in one test on purpose: the predicate is an `and`, and each
+  // half is load-bearing for a different reason, so they are only meaningful
+  // read together.
+  //
+  // The message arm is the obvious one — a deployed route's own 404 says
+  // "Issue not found", and matching the status alone would read a missing
+  // issue as a missing deployment.
+  //
+  // **The status arm is the one a future simplification will delete**, because
+  // the message looks specific enough to stand by itself. It is not. A 500
+  // carrying this string is a gateway that is broken, not a gateway that is
+  // incomplete, and the attachments panel answers the two differently: on
+  // "undeployed" it says this gateway does not serve attachments yet and takes
+  // the upload control away. Relax this to a message-only match and every
+  // other test in this repository still passes, while a user whose gateway is
+  // merely down is told the feature does not exist.
+  it("wants the 404 and the message together, and refuses either one alone", () => {
+    expect(isUndeployedRoute(new ApiError(staticResource, "NOT_FOUND", 404), UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+    expect(isUndeployedRoute(new ApiError("Issue not found", "NOT_FOUND", 404), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
+    expect(isUndeployedRoute(new ApiError(staticResource, "INTERNAL", 500), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
   });
 });

@@ -244,9 +244,9 @@ function ActionFailure({ action, error }: { action: UserAction; error: unknown }
             // — with one status and one code. Neither is worth guessing at, so
             // the sentence covers both and the server's own wording, printed
             // below, says which.
-            "The server refused this. Either this account is not a global admin as far as the gateway is concerned, or what the reset needed — the account, or the password credential the lockout belongs to — is no longer there."
+            "The server refused this. Either you are not a global admin as far as the gateway is concerned, or what the reset needed — the account, or the password credential the lockout belongs to — is no longer there."
           ) : (
-            "The server refused this. Either this account is not a global admin as far as the gateway is concerned, or that user is no longer there."
+            "The server refused this. Either you are not a global admin as far as the gateway is concerned, or that user is no longer there."
           )
         ) : failure === "server" ? (
           `The gateway failed while ${actionGerunds[action]} this account. Nothing is wrong with what was asked for — this is a fault on the server, and the request id below is what identifies it in the gateway log.`

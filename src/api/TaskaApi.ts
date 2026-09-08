@@ -599,9 +599,17 @@ export interface TaskaApi {
    * Outbox journal's job, on the generic table reads above. A parameter with no
    * caller is surface that has to be kept working for nobody.
    *
-   * Not in the vendored contract yet — it exists only in the TAS-105 branch, and
-   * the deployed gateway answers `INVALID_ARGUMENT` for it
-   * (`OUTBOX_SUMMARY_UNSERVED_MESSAGE` below, docs/ai/API-DIVERGENCE.md).
+   * It is in the vendored contract (docs/contract/openapi.yml) and in the
+   * deployed gateway's own generated spec, and it answers: probed 2026-09-08
+   * with a `GLOBAL_ADMIN` token, `200` with `{counts, events, notAllShown}`,
+   * carrying two real `FAILED` events on `project` with `attempts: 5` and
+   * `lastErrorMessage: "Failed to construct kafka producer"`.
+   *
+   * So `OUTBOX_SUMMARY_UNSERVED_MESSAGE` below — the compensation that reads an
+   * `INVALID_ARGUMENT` here as "TAS-105 has not deployed yet" — now describes a
+   * gateway that no longer answers that way. Retiring it belongs to **TAS-194**,
+   * which opens this view anyway; it stays until that story takes it out
+   * (docs/ai/API-DIVERGENCE.md).
    */
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary>;
 

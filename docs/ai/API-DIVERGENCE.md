@@ -1730,6 +1730,21 @@ Same rule as above: "Closed by" is settled, the rest is live.
 
 ### Closed by TAS-196: the three admin user writes — block, unblock, reset-lockout — are deployed
 
+**Two things under this closed heading are still live, and the file's own rule
+would hide them.** "Anything not starting with Closed is open" is a rule about
+entries, and this entry closes only its *transport* claim — that the routes were
+not served. Everything it records about how they refuse is unaffected by the
+deployment and is compensated for today:
+
+- the status/code table below, and with it `isConflict`'s code arms in
+  `src/api/errors.ts`. The contract declares `409` for block and unblock while
+  the gateway answers **400 `FAILED_PRECONDITION`** for the last-active-admin
+  refusal, so reading the status alone drops the refusal this feature is most
+  careful about into "the gateway would not accept this request";
+- the `reset-lockout` refusal that arrives as `400` where the backend's own test
+  asserts `409`, which has its own open entry further down.
+
+
 - **Endpoints:** `POST /api/v1/admin/users/{userId}/block`,
   `POST /api/v1/admin/users/{userId}/unblock` and
   `POST /api/v1/admin/users/{userId}/reset-lockout` — the writes the Users
@@ -1878,7 +1893,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
   it.** `actionFor` and `StatusPill` (`src/screens/admin/users.ts`) compare the
   raw table value against `ACTIVE` / `INVITED` / `BLOCKED` exactly, with no case
   folding. The vendored contract's own filter example writes the value
-  lowercase — `?status.equals=active`, `docs/contract/openapi.yml:1396` — which
+  lowercase — `?status.equals=active`, `docs/contract/openapi.yml:1733` — which
   reads as licence to expect either case. It is not: `develop`'s
   `auth-service/.../0000-init.sql` declares
   `status varchar(32) NOT NULL DEFAULT 'INVITED'` with

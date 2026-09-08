@@ -41,8 +41,8 @@ export const adminSections: AdminSection[] = [
   // the one section in the area that writes, which is why it carries no
   // `read-only` marker — blocking an account, unblocking it and resetting its
   // lockout are its whole point. All three routes are on the deployed gateway
-  // since backend PR #146 (measured 2026-09-08, TAS-196), so the section is no
-  // longer read-only in practice either.
+  // since backend PR #146 (measured 2026-09-08, TAS-196), so the writes now
+  // reach the service instead of falling through to a 404.
   { id: "users", label: "Users", path: "/admin/users", icon: Users, stories: [], readOnly: false },
   { id: "audit", label: "Audit", path: "/admin/audit", icon: ScrollText, stories: ["TAS-160"], readOnly: false },
 ];

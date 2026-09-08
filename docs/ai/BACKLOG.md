@@ -21,6 +21,29 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **`refused` and `rejected` open as near-synonyms in the admin write dialog**
+  (`art-director`, 2026-09-08, TAS-196 verdict). "The server refused this."
+  against "The gateway would not accept this request." — both resolve on their
+  second clause, so a reader gets there, but the first four words do no work.
+  Proposed wording for `rejected`, which names the stage rather than repeating
+  the verdict: "The gateway read this request and would not take it." Declined
+  inside TAS-196 on purpose — that story removes a sentence, and rewriting a
+  neighbouring one in the same diff makes the removal harder to review, not
+  easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
+  named the account being blocked where it meant the reader.
+- **`AdminError.tsx:31` carries the same clause the write dialog just had fixed**
+  (`frontend-builder`, 2026-09-08, TAS-196). "Either this account is not a global
+  admin as far as the gateway is concerned, or the table is not one it will
+  serve." There the subject is unambiguous — a table read, the reader's own
+  account, no third party named on screen — so the defect TAS-196 fixed in
+  `AdminUserActionModal` does not apply. Worth one pass if the two sentences
+  should read alike; not a correctness item.
+- **Do not make the server's verbatim line conditional** in
+  `AdminUserActionModal` (`art-director`, 2026-09-08). It renders unconditionally
+  today, and it is the safety net that would contradict "or that user is no
+  longer there" if a static-resource 404 ever came back from a rollback. Not
+  work — a note for whoever tidies that component next.
+
 - **The UI font stack is not a token** (`art-director`, 2026-08-25, TAS-167
   re-verdict): `--font-mono` is tokenised, the UI stack is a literal on
   `body`, so nothing like `--font-ui` exists for a rule that needs to name it
@@ -902,7 +925,9 @@ the next session in this image exactly as it bit this one.
   `INVITED` and does not reject `LOCKED`, and `AuthServiceImpl.refresh` does
   not call it at all — so a locked account is stopped at the sign-in form and
   nowhere else. A backend ask, and one for after PR #146 merges rather than a
-  change to it.
+  change to it. **Filed 2026-09-08 as
+  [TAS-198](https://jira.ozero.dev/browse/TAS-198)** — the branch stopped moving
+  when PR #146 merged on 2026-09-07.
 - **`reset-lockout` declares no `default` response in its openapi block**
   (`api-contract-guard`, TAS-188), so the 500 the status round trip currently
   produces is an undeclared status on that route. Minor beside the 500 itself,
@@ -917,7 +942,12 @@ the next session in this image exactly as it bit this one.
   profile menu can be opened by an account whose status the gateway will not
   name. The frontend guards the render; it cannot fix a value it is not sent.
   A backend ask, and one for after PR #146 merges rather than a change to it —
-  filing it against an open PR would land on a moving branch.
+  filing it against an open PR would land on a moving branch. **Filed 2026-09-08
+  as [TAS-197](https://jira.ozero.dev/browse/TAS-197)**, with the vocabulary
+  re-read off the deployed gateway rather than off the PR head: its
+  `UserStatusResponseDto` carries all four values and its `GatewayUserContext.status`
+  still carries three plus `UNSPECIFIED`, so the merge made the disagreement
+  permanent instead of resolving it.
 - **Two status pills now exist for one enum.** The profile menu's
   `.user-status` (§4.16) colours `ACTIVE` green and `INVITED` amber from four
   literal hexes that are in no §2 palette; the admin Users pill keeps colour
@@ -1407,14 +1437,16 @@ again to `96408229c1e4` and the deployed gateway was measured directly:
   [TAS-195](https://jira.ozero.dev/browse/TAS-195). The same probe read the
   detail endpoint and got a non-empty `labels` back, which is the bug
   [TAS-178](https://jira.ozero.dev/browse/TAS-178) is about; that wants its own
-  confirmation before the Jira story is closed. The list endpoint now returns whole issues.
+  confirmation before the Jira story is closed.
   `RestTaskaApi.listIssues` hydrates every row from the detail endpoint because
   the short DTO carried no labels — that N+1 may now be deletable. It is a
   measurement against the deployed gateway, not a reading of the contract,
   because the two have disagreed before. Sitting in TAS-189's scope as a
   question, not as work.
-- **`NotificationTypeDto` reappears as a definition on two open PRs (#146,
-  #118) and nothing references it.** The `notificationType` field is still a
+- **`NotificationTypeDto` is back in the vendored contract, and nothing
+  references it.** It reappeared as a definition on two then-open PRs (#146,
+  #118); #146 merged 2026-09-07, so the schema is now on `develop` and in the
+  snapshot at `docs/contract/openapi.yml` — eleven values, `$ref`'d by nothing. The `notificationType` field is still a
   bare `type: string` with an `example`, so the entry above about the closed
   union stands unchanged; the schema coming back is not the enum coming back.
 
