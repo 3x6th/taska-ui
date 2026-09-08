@@ -49,19 +49,32 @@ export function outboxCategory(status: string): string | null {
 }
 
 /**
- * Whether this failure is "the gateway has not deployed the summary yet"
- * rather than a failure worth alarming anybody about.
+ * Whether this failure is the signature an *older* gateway sent for "the
+ * summary is not deployed yet", rather than a failure worth alarming anybody
+ * about.
  *
- * The pairing is narrow on purpose. The deployed gateway does not answer 404
- * for the missing path — it takes `outbox` for a service key, routes the call
- * into the generic table read and answers `400 INVALID_ARGUMENT` with one exact
- * sentence (measured 2026-08-25, docs/ai/API-DIVERGENCE.md). Matching the code
- * alone would swallow every genuine rejection this endpoint could ever make;
- * matching a 404 would be reading a signal the gateway does not send. Both
- * halves, or it goes through the normal taxonomy like anything else.
+ * **Inert rather than wrong.** The endpoint is deployed: backend PR #141
+ * (TAS-105) merged 2026-08-27, and
+ * `GET /api/v1/readonly/outbox/problematic-summary` was measured on 2026-09-08
+ * answering 200 with `{counts, events, notAllShown}`
+ * (docs/ai/API-DIVERGENCE.md). A 200 never reaches this predicate, so it
+ * cannot fire and cannot mislead a user — it survives only because the
+ * compensation it belongs to is still in the tree.
  *
- * This stops matching the day TAS-105 deploys, because the endpoint will
- * answer 200 — the check removes itself without anyone editing it.
+ * The pairing is narrow on purpose, and that narrowness is exactly why the
+ * deployment left it inert instead of leaving it lying. The gateway of
+ * 2026-08-25 did not answer 404 for the missing path — it took `outbox` for a
+ * service key, routed the call into the generic table read and answered
+ * `400 INVALID_ARGUMENT` with one exact sentence, `"Unknown service: outbox"`
+ * (`OUTBOX_SUMMARY_UNSERVED_MESSAGE`). Matching the code alone would swallow
+ * every genuine rejection this endpoint could ever make; matching a 404 would
+ * be reading a signal the gateway never sent. Both halves, compared by exact
+ * equality, or it goes through the normal taxonomy like anything else.
+ *
+ * It does not remove itself. An earlier version of this comment promised it
+ * would, "the day TAS-105 deploys" — TAS-105 deployed and nothing happened,
+ * because a check that quietly stops matching reports nothing to anyone. It
+ * comes out by hand, with the rest of the compensation, in TAS-194.
  */
 export function isSummaryNotDeployed(error: unknown): boolean {
   const { code, message } = apiErrorFacts(error);

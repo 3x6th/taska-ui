@@ -31,6 +31,15 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   neighbouring one in the same diff makes the removal harder to review, not
   easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
   named the account being blocked where it meant the reader.
+- **`UserProfileMenu.tsx` calls `.toLowerCase()` on a contract-optional field**
+  (`api-contract-guard`, 2026-09-08, TAS-196 re-verdict). `user.status` builds a
+  class name at `src/components/UserProfileMenu.tsx:108`, but
+  `ValidateAccessTokenResponseDto` has no `required` block, so `status` is
+  optional by contract and an absent one throws in the render. `statusLabel`
+  beside it is properly defensive; the class name is not. `?? ""` is the whole
+  fix. Confidence that the gateway always sends it is high — it builds
+  `GatewayUserContext` with a proto zero sink — which is why this is a line here
+  and not a story. Pre-existing, outside TAS-196's diff.
 - **`AdminError.tsx:31` carries the same clause the write dialog just had fixed**
   (`frontend-builder`, 2026-09-08, TAS-196). "Either this account is not a global
   admin as far as the gateway is concerned, or the table is not one it will

@@ -239,10 +239,16 @@ is cheaper than splitting an entry and the reader has to be told which.
   asString()` branch — is in
   [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
   (TAS-105), **merged 2026-08-27** — the fall-through branch is gone on
-  `develop`. Whether a real `jsonb` payload now arrives as JSON is a separate
-  measurement and has not been taken: the summary route out of the same PR is
-  live (see the entry below), which makes deployment likely rather than
-  established. Probe one `issue.outbox_events` row before closing this.
+  `develop`, replaced by an `instanceof Json → asString()` branch ahead of it.
+  **Deployment is established, and the doubt is about the mechanism instead.**
+  The summary route out of the same PR answers with real rows, and those rows
+  come from admin-service's gRPC rather than from the gateway, so the deployed
+  admin-service carries this branch in the same artifact. What is unmeasured is
+  whether a real `jsonb` column actually arrives as
+  `io.r2dbc.postgresql.codec.Json` and takes the new branch — the value could
+  travel a path the mapper does not cover. Probe one `issue.outbox_events`
+  payload before closing this; the probe has a specific question, not a general
+  one.
 - **The UI instead:** prints it verbatim, never repaired. The card's jsonb
   rule (`src/screens/admin/columns.ts`) is parse-as-JSON → pretty-print,
   anything else → verbatim, so the broken format stays *visible* by design —
@@ -255,8 +261,11 @@ is cheaper than splitting an entry and the reader has to be told which.
 - **Removal:** [TAS-194](https://jira.ozero.dev/browse/TAS-194), same as the
   summary entry below — close the two together. The trigger the old wording
   named, "TAS-105 merging and deploying", happened on 2026-08-27 and closed
-  nothing, because a compensation that renders as a quiet note is one nobody
-  reports; a probe is what closes this, not a merge date. When closing this one, also drop the
+  nothing. The reason here is not the summary entry's — this compensation is not
+  a quiet note but verbatim text on an event card, and it went unnoticed because
+  nobody reads a payload closely and the mock still seeds the broken form
+  locally, so the product looks the same either way. Same conclusion by a
+  different road: a probe is what closes this, not a merge date. When closing this one, also drop the
   mock's malformed `JsonByteArrayInput` seed and the assertion that pins it
   (`MockTaskaApi.test.ts`): after the fix they model a state the gateway can
   no longer produce.
@@ -1746,15 +1755,29 @@ It is kept because the compensation it explains is still in the tree.
   above — INVALID_ARGUMENT with "Unknown service: outbox" — as "the gateway
   does not serve this yet (TAS-105)": a note, not an error alert. Any other
   error, a genuine NOT_FOUND included, keeps the ordinary error taxonomy
-  (`events.test.ts` asserts it is not swallowed). The signature disappears on
-  deploy, so the note heals itself.
+  (`events.test.ts` asserts it is not swallowed). This paragraph ended, when it
+  was written, with "the signature disappears on deploy, so the note heals
+  itself". **It did not.** The signature disappeared on 2026-08-27 and the note
+  is still in the tree, inert; the sentence is kept here struck rather than
+  deleted because it is the mechanism this entry now exists to warn about — a
+  compensation that promises to retire itself is a compensation nobody schedules
+  the removal of.
 - **Switch-off:** nothing to switch — the compensation is the honest note
   plus the mock, and `RestTaskaApi` already speaks the final shape.
 - **Removal:** [TAS-194](https://jira.ozero.dev/browse/TAS-194), which opens the
   Events section for the retry write and takes the note out with it —
-  `OUTBOX_SUMMARY_UNSERVED_MESSAGE`, `isSummaryNotDeployed`, the comments in
-  `src/screens/admin/sections.ts`, `src/api/HybridTaskaApi.ts` and the mock, and
-  the `TAS-105` link pinned by `src/screens/admin/AdminScreen.test.tsx`. The
+  `OUTBOX_SUMMARY_UNSERVED_MESSAGE`, `isSummaryNotDeployed`, **the branch and
+  the rendered `<p>` in `src/screens/admin/AdminEventsProblems.tsx`** — the view
+  that actually draws the note, and the one an earlier version of this list
+  forgot — plus the comments in `src/screens/admin/sections.ts`,
+  `src/api/HybridTaskaApi.ts` and the mock, and the `TAS-105` link pinned by
+  `src/screens/admin/AdminScreen.test.tsx`. The present-tense comments left
+  standing in `AdminEventsProblems.tsx`, `src/api/mock/MockTaskaApi.ts`,
+  `src/api/rest/RestTaskaApi.test.ts` and `AdminScreen.test.tsx` ride with them
+  deliberately, so that story removes one coherent thing rather than the
+  leftovers of two. The user-facing string is correct as written either way: it
+  renders only when an old gateway is on the other end, so it is true whenever
+  it is visible. The
   `jsonb` serialisation entry above comes out in the same pass, as it always
   said it would; its own text still calls PR #141 In Review and is corrected
   here only on that point.
@@ -2034,7 +2057,8 @@ Compensating UI behaviour: `UserProfileMenu` guards its label lookup so an
 unmodelled status prints as itself rather than as an empty badge. Note that
 widening the union does **not** cover this case — the value that arrives is
 `UNSPECIFIED`, which is not a `UserStatus` at all. Removed by: the gateway
-teaching `GatewayUserStatus` about `LOCKED`; there is a backlog line for it.
+teaching `GatewayUserStatus` about `LOCKED`, filed 2026-09-08 as
+[TAS-197](https://jira.ozero.dev/browse/TAS-197).
 
 ### `reset-lockout` refuses with 400, and the backend's own test says 409
 
