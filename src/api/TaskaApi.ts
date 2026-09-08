@@ -725,21 +725,36 @@ export interface TaskaApi {
 }
 
 /**
- * What the *deployed* gateway says when asked for the problems summary, word
- * for word — measured 2026-08-25 with a GLOBAL_ADMIN token.
+ * What the gateway *said* when asked for the problems summary, word for word —
+ * measured 2026-08-25 with a GLOBAL_ADMIN token.
  *
- * It does not answer 404. Not knowing the path, it routes
- * `/readonly/outbox/problematic-summary` into the generic table read, takes
- * `outbox` for a service key, and answers `400 INVALID_ARGUMENT` with this
- * message. So this exact pairing — and nothing broader — is what "TAS-105 has
- * not deployed yet" looks like on the wire, and the Problems view reads it as a
- * quiet note rather than as a failure (docs/ai/API-DIVERGENCE.md).
+ * **Inert rather than wrong.** The endpoint is deployed: backend PR #141
+ * (TAS-105) merged 2026-08-27, and the same call was measured on 2026-09-08
+ * answering `200` with `{counts, events, notAllShown}`
+ * (docs/ai/API-DIVERGENCE.md). The only reader of this constant,
+ * `isSummaryNotDeployed` (src/screens/admin/events.ts), compares it by exact
+ * equality against a `400 INVALID_ARGUMENT`, and a 200 never reaches that
+ * predicate — so the string cannot fire and cannot mislead a user. It survives
+ * only because the compensation it belongs to is still in the tree.
+ *
+ * What was measured, in the tense it now belongs to: the gateway of 2026-08-25
+ * did not answer 404. Not knowing the path, it routed
+ * `/readonly/outbox/problematic-summary` into the generic table read, took
+ * `outbox` for a service key, and answered `400 INVALID_ARGUMENT` with this
+ * message. That exact pairing — and nothing broader — was what "TAS-105 has not
+ * deployed yet" looked like on the wire, and the Problems view still reads it
+ * as a quiet note rather than as a failure.
  *
  * Pinned as one exported constant for the same reason
  * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a
  * measurement, and it belongs where the measurement can be read, not inline in
- * a component. It stops being matched the day the endpoint deploys, because the
- * endpoint will answer 200.
+ * a component.
+ *
+ * It does not remove itself. An earlier version of this comment promised it
+ * would, "the day the endpoint deploys, because the endpoint will answer 200" —
+ * the endpoint deployed and nothing happened, because a string that quietly
+ * stops matching reports nothing to anyone. It comes out by hand, with the rest
+ * of the compensation, in TAS-194.
  */
 export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";
 
@@ -766,8 +781,15 @@ export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";
  *
  * Pinned here for the same reason `OUTBOX_SUMMARY_UNSERVED_MESSAGE` is: a
  * gateway string the UI branches on is a measurement, and it belongs where the
- * measurement can be read rather than inline in a component. It stops matching
- * the day the endpoint deploys, because the route will answer for itself — which
- * is exactly how the admin half of it removed itself.
+ * measurement can be read rather than inline in a component.
+ *
+ * The *signature* removes itself; the *code* does not, and the admin half is
+ * the worked example. The day PR #146 deployed those three routes they began
+ * answering for themselves and this string stopped matching them — silently,
+ * with nothing reported to anyone. Deleting the branch, the dialog copy and the
+ * divergence entry was a separate act, done by hand in TAS-196, as the
+ * paragraph above records. That is why a compensation needs a story to retire
+ * it and never a deployment: nobody schedules the removal of a check that has
+ * promised to disappear on its own.
  */
 export const UNDEPLOYED_ROUTE_MESSAGE = "No static resource";

@@ -68,8 +68,11 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * Matched as a substring rather than by equality because the tail of the
  * message is the request path, which differs per call — and by the same token
  * it says nothing about *which* route was asked for, which is what lets one
- * predicate serve every undeployed family at once. Each stops matching the day
- * its routes deploy, so the notes remove themselves.
+ * predicate serve every undeployed family at once. Each family stops matching
+ * the day its routes deploy — and that is all the deployment does. A check that
+ * goes quiet reports nothing to anyone, so the note does not remove itself: the
+ * admin one stopped matching the moment PR #146's routes deployed, and still
+ * had to be deleted by hand, in TAS-196, as recorded above.
  *
  * It lives here rather than beside either of its callers because it is a fact
  * about the *gateway*, in the same family as `isMissingOrForbidden`. It is

@@ -243,21 +243,29 @@ is cheaper than splitting an entry and the reader has to be told which.
   **Deployment is established, and the doubt is about the mechanism instead.**
   The summary route out of the same PR answers with real rows, and those rows
   come from admin-service's gRPC rather than from the gateway, so the deployed
-  admin-service carries this branch in the same artifact. What is unmeasured is
-  whether a real `jsonb` column actually arrives as
-  `io.r2dbc.postgresql.codec.Json` and takes the new branch — the value could
-  travel a path the mapper does not cover. Probe one `issue.outbox_events`
-  payload before closing this; the probe has a specific question, not a general
-  one.
+  admin-service carries this branch in the same artifact — and so does the
+  gateway half of that PR, proven by the same 200. **The residual is smaller
+  than it looks, and this entry overstated it once already.** Whether the value
+  reaches the mapper as `io.r2dbc.postgresql.codec.Json` is already answered by
+  this entry's own 2026-08-25 probe: `JsonByteArrayInput` *is* that class's
+  nested `JsonInput` subtype, and the observed prefix is its `toString()`. The
+  value that produced `JsonByteArrayInput{{"issue` was an `instanceof Json` by
+  construction, so it takes the new branch. What is missing is only that nobody
+  has read a payload since the deploy. Probe one `issue.outbox_events` row
+  before closing this — as confirmation, not as an open question.
 - **The UI instead:** prints it verbatim, never repaired. The card's jsonb
   rule (`src/screens/admin/columns.ts`) is parse-as-JSON → pretty-print,
   anything else → verbatim, so the broken format stays *visible* by design —
   TAS-167's own instruction is to escalate, not to strip the java prefix
   client-side. The mock deliberately seeds one such payload
   (`src/api/mock/MockTaskaApi.ts`), with a test holding the case reachable,
-  so the verbatim branch is exercised until the backend fix lands.
-- **Switch-off:** nothing to switch — once the backend fix deploys, real
-  JSON flows into the same rule's pretty-print branch on its own.
+  so the verbatim branch is exercised locally. The fix landed on 2026-08-27; what
+  remains here is the seed, which TAS-194 drops.
+- **Switch-off:** nothing to switch — the backend fix deployed, and real JSON
+  flows into the same rule's pretty-print branch on its own. Note what that does
+  *not* switch off: the mock's seed, and the comments naming this a live gap.
+  Those are the parts that need a story, which is the difference this whole
+  entry is about.
 - **Removal:** [TAS-194](https://jira.ozero.dev/browse/TAS-194), same as the
   summary entry below — close the two together. The trigger the old wording
   named, "TAS-105 merging and deploying", happened on 2026-08-27 and closed
@@ -1756,8 +1764,8 @@ It is kept because the compensation it explains is still in the tree.
   does not serve this yet (TAS-105)": a note, not an error alert. Any other
   error, a genuine NOT_FOUND included, keeps the ordinary error taxonomy
   (`events.test.ts` asserts it is not swallowed). This paragraph ended, when it
-  was written, with "the signature disappears on deploy, so the note heals
-  itself". **It did not.** The signature disappeared on 2026-08-27 and the note
+  was written, with ~~"the signature disappears on deploy, so the note heals
+  itself"~~. **It did not.** The signature disappeared on 2026-08-27 and the note
   is still in the tree, inert; the sentence is kept here struck rather than
   deleted because it is the mechanism this entry now exists to warn about — a
   compensation that promises to retire itself is a compensation nobody schedules
