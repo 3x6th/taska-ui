@@ -2069,6 +2069,59 @@ describe("admin events, retrying an event", () => {
   });
 
   /**
+   * The same rescue, with the read the write asked for arriving *second* — and
+   * this is the test that says the arm has to be paired with a particular read
+   * rather than spent by the next one to come along.
+   *
+   * Two reads are in play on this path and they are always in this order: the
+   * dismissal asks the list again, and only then does the answer land and the
+   * write ask for its own. In the test above they arrive close enough together
+   * to be committed as one, which hides the ordering entirely. Holding the
+   * second one apart is what makes it visible — and what it makes visible is
+   * that the dismissal's read has already been *served* by the time the arm is
+   * set, with only its commit still to come.
+   *
+   * So the run this effect sees first is a read older than the arm, against a
+   * list that still has the button in it. Spending the arm there — which is
+   * what keying on `dataUpdatedAt` alone does — disarms the rescue one read
+   * early, and the read that actually removes the button then finds nothing
+   * armed and leaves focus on `<body>`. That failure is invisible to the five
+   * tests around this one, which is the whole reason this one is here: without
+   * it, `armedAt` is a guard nothing defends, and the next reader to find it
+   * redundant deletes it and takes two of those five down with it.
+   */
+  it("still rescues focus when the dismissal's own read lands between the arm and the write's", async () => {
+    await dismissPendingRetry();
+    expect(screen.getByRole("button", { name: "Retry event e1" })).toHaveFocus();
+
+    // Only the *next* read is held: the dismissal's has already been served,
+    // and its commit is the one that arrives during the act() below.
+    holdSummary();
+    const readsBeforeAnswer = summaryReads();
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+
+    // The write asked for its list, and it has not come back. The row on screen
+    // is still the pre-write one, so the button — and the focus on it — are
+    // exactly where the dismissal left them.
+    expect(summaryReads()).toBe(readsBeforeAnswer + 1);
+    expect(screen.getByRole("button", { name: "Retry event e1" })).toHaveFocus();
+
+    await act(async () => {
+      releaseSummary();
+      await settle();
+    });
+
+    // Now the row is `NEW`, the button is gone, and the operator never moved —
+    // so this is the rescue's own case, arriving one read later than usual.
+    expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    expect(document.body).not.toHaveFocus();
+    expect(screen.getByRole("region", { name: "Problematic events" })).toHaveFocus();
+  });
+
+  /**
    * And the steal must not come back with it.
    *
    * This is the same removal as the test above — the trigger goes, and the

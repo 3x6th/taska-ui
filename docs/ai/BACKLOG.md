@@ -31,41 +31,47 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   neighbouring one in the same diff makes the removal harder to review, not
   easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
   named the account being blocked where it meant the reader.
-- **Focus needs a rescue, not a move, after a write nobody is waiting at**
-  (`frontend-builder`, 2026-09-08, TAS-194). On the dismissed-then-answered path
-  the retry's late answer no longer moves focus — that was a steal from an
-  operator who had gone elsewhere. But dismissal leaves focus on the Retry
-  trigger, and against the real gateway the invalidation turns that row `NEW`
-  and removes the button, so focus falls to `<body>`: the §7 failure
-  `focusListAfterWrite` exists to prevent. The late move used to cover it by
-  accident, at the cost of the steal. The honest fix is to **restore** focus
-  only when the element that had it is the one the refetch removed, which needs
-  a post-refetch check and is a different change from the one TAS-194 made.
+- **A refetch can still remove a row from under a focused control, with no write
+  involved** (`art-director` / `release-reviewer`, 2026-09-08, TAS-194). The
+  retry half of this is **done**: a rescue now restores focus to the list when a
+  late answer's refetch removes the trigger focus was sitting on, and only then,
+  so it cannot steal from an operator who moved. What is left is the wider case,
+  which no write reaches: `src/main.tsx` sets only `staleTime` and `retry`, so
+  `refetchOnWindowFocus` is on, and any blur-and-return after twenty seconds can
+  drop a row under a focused control. A rescue scoped to the retry path leaves
+  that standing, so the eventual fix belongs to the section.
 
-  **Reproducible, and an earlier version of this line said otherwise.** It
-  claimed the mock's summary is static so the trigger survives. That is true of
-  the hand-written fake in `AdminScreen.test.tsx` and false of `MockTaskaApi`,
-  whose store mutates synchronously and delivers the answer 140ms later — ample
-  room for a click and an `Escape`. The release reviewer drove it in the browser:
-  after `Esc` focus is on the Retry trigger; after the answer lands
-  `activeElement` is `body`, while the announcement is correct and the list
-  agrees with the server. Roughly fifteen lines in `e2e/admin-events.spec.ts`
-  cover it. Saying "we cannot test this" in a durable document is how a filed
-  item becomes a closed door — and this file spent the same week criticising
-  `API-DIVERGENCE.md` for a claim of exactly that shape.
+  **Why no e2e pins the retry half, stated as the measurement rather than as an
+  impossibility.** `MockTaskaApi`'s `wait(value, 140)` is a hard-coded literal
+  with no latency knob, so a spec must win a 140ms race. It is not unwinnable —
+  the art director won it six times out of six, two themes, two viewports — it is
+  unwinnable *reliably on shared CI*, and a spec that gets skipped in three
+  months is worse than none because it looks like coverage. The enabling change
+  is a latency knob on `wait`, not the spec. **Seven mutants dying in jsdom against six
+  tests, six of them to a test of their own**, is the coverage that exists — the
+  count grew twice while this entry was being written, which is its own small
+  argument for quoting a sweep rather than a memory. That it is jsdom is the
+  honest limit, and jsdom does exercise the one thing at issue: the ordering
+  between React's commit and query-core's notification.
 
-  Scope the eventual fix to the section rather than to retry. `src/main.tsx`
-  sets only `staleTime` and `retry`, so `refetchOnWindowFocus` is on: any
-  blur-and-return after twenty seconds can remove a row from under a focused
-  trigger, with no write involved at all. A rescue built only for the retry path
-  would leave that standing.
-- **The board slide-over's ✕ names itself with `title` alone**
-  (`frontend-builder`, 2026-09-08, TAS-194). `src/screens/BoardScreen.tsx:1124`
-  carries the pattern TAS-194 fixed inside `Modal`: an icon button with
-  `title="Close"` and no `aria-label`, where `title` is the weakest source in
-  the accessible-name order. DESIGN.md §7 states the rule outright — «Иконки-кнопки
-  без текста — обязателен `aria-label`» — so this is conformance rather than
-  taste. One line, outside `Modal` and outside an Events story.
+  An earlier version of this entry said the case was "not reproducible on the
+  mock". It is: `MockTaskaStore.retryOutboxEvent` mutates synchronously and the
+  answer lands 140ms later. Saying "we cannot test this" in a durable document is
+  how a filed item becomes a closed door — and this file spent the same week
+  criticising `API-DIVERGENCE.md` for a claim of exactly that shape.
+- **Six icon buttons name themselves with `title` alone** (`art-director`,
+  2026-09-08, TAS-194 — widened from one site to the set it found). TAS-194 fixed
+  the pattern inside `Modal`; `title` is the weakest source in the
+  accessible-name order and DESIGN.md §7 states the rule outright — «Иконки-кнопки
+  без текста — обязателен `aria-label`». The rest:
+  `BoardScreen.tsx:435` "Back to projects", `:542` "Manage labels", `:799`
+  "Create issue", `:1121` "Delete", `:1124` "Close", and
+  `NotificationsBell.tsx:109` "Notifications" — which §7 additionally wants
+  carrying the unread count in its label, already an open item in that section's
+  recorded gaps. Fix them as a set: an entry naming only `:1124` would authorise
+  a change that leaves the button three pixels away from it still broken.
+  `ThemeToggle.tsx:8` already ships the `aria-label` + matching `title` pair, so
+  this is an in-repo precedent rather than a reading of the spec.
 - **The mock checks the retry reason before the uuid; the gateway does the
   opposite** (`frontend-builder`, 2026-09-08, TAS-194). Measured on the deployed
   gateway: a malformed uuid is refused **before** auth (`400 "Invalid request

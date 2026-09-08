@@ -168,10 +168,39 @@ export function AdminEventsProblems() {
    * - focus is on `<body>` when it is read again — still nowhere. Anything else
    *   means the operator moved in the meantime, and where they are is theirs.
    *
+   * Note what is *not* among them: that the armed button belongs to the row the
+   * answer is about. `trigger.current` is whichever dialog was open last, so
+   * dismiss A, open and dismiss B, then let A's answer land, and the arm holds
+   * B's button. That is deliberate, and it is the thing most likely to be
+   * "fixed" by a later reader. The arm records *where focus is* when this
+   * section is about to pull the list out from under it — not which event was
+   * retried — and the two come apart exactly where it matters: one read serves
+   * every row, so the refetch A's answer sets off can come back with B already
+   * `NEW` and take B's button, with focus sitting on it. Pairing the arm with
+   * the answered event would refuse the rescue there and leave focus on
+   * `<body>`, the §7 loss this exists to close. Keyed on focus is what makes it
+   * a rescue rather than a move.
+   *
    * A ref rather than state because nothing renders from it, and because it is
    * written from a callback that outlives the dialog that owned the mutation.
    */
   const rescueFrom = useRef<HTMLButtonElement | null>(null);
+  /**
+   * The list the arm above is waiting for, named by the only thing both sides
+   * can see: the `dataUpdatedAt` the cache carried at the moment of arming. The
+   * rescue answers to the first read that beats it and to no other.
+   *
+   * Read off `queryClient` rather than off `summaryQuery`, and that is not a
+   * style choice. The arm is set from a mutation callback, whose closure holds
+   * the render's `summaryQuery` — and on this path that render is behind the
+   * cache by a whole read. Measured: at the moment of arming the cache says
+   * `…904` and the closure says `…865`, because the read the dismissal asked
+   * for has already landed in the cache and its notification, which query-core
+   * delivers on a `setTimeout(…, 0)`, has not yet reached React. Arming against
+   * the closure's number would arm against `…865`, the very read whose late
+   * commit is the one that must not count.
+   */
+  const armedAt = useRef(0);
 
   useEffect(() => {
     if (flashed === null) return;
@@ -195,14 +224,71 @@ export function AdminEventsProblems() {
    * document, the answer the refetch brought is already on screen: if the
    * button was going to go, it is gone.
    *
-   * One list per arm — whatever this finds, the arm is spent — so a rescue can
-   * never be carried into a read that has nothing to do with the write.
+   * One read per arm, and it has to be *the* read — the one the write asked
+   * for. Two different things have to be true for that, and each was got wrong
+   * on its own before this shape settled.
+   *
+   * The effect must **run** on that read. `[summaryQuery.data]` alone does not
+   * guarantee it: React Query's structural sharing hands back the *same*
+   * reference when a refetch is deeply equal to what it replaced, so a retry
+   * that leaves the summary unchanged never re-ran this at all and left the arm
+   * standing for whatever came next — a `refetchOnWindowFocus` minutes away.
+   * `dataUpdatedAt` moves on every read that answers with data, equal or not,
+   * which is why it is in the list.
+   *
+   * And the arm must **survive** the runs that are not that read. Keying on
+   * `dataUpdatedAt` without that half is worse than not keying on it, because
+   * on this exact path there is always an earlier read in the way: the
+   * dismissal asked the list again, that read has already landed in the cache
+   * when the retry is answered, and its notification reaches React *after* the
+   * arm is set. It would spend the arm with the button still connected, and the
+   * write's own read would then remove that button with nothing armed — focus
+   * on `<body>`, the loss this whole block exists to close. So the arm carries
+   * the number it was set at (`armedAt`) and only a strictly greater
+   * `dataUpdatedAt` may read it. Measured, not reasoned about: without the
+   * comparison the two tests that defend the second and third conditions stop
+   * failing when those conditions are deleted.
+   *
+   * What that leaves, said plainly rather than claimed away.
+   *
+   * **The arm is bounded by the write's own read**, which is the very next one
+   * to answer. `invalidateQueries` runs two lines after the arm is set, and the
+   * only other read that could get in front of it is the dismissal's, which is
+   * in one of two states by then and harmless in both: already answered, in
+   * which case `armedAt` *is* its `dataUpdatedAt` and `<=` excludes it exactly
+   * (measured — that run arrives with a delta of 0); or still in flight, in
+   * which case the invalidation cancels it, because `refetchQueries` defaults
+   * `cancelRefetch` to `true`, and it never sets `dataUpdatedAt` at all
+   * (measured — three reads asked, one run of this effect, the rescue fired).
+   * Whatever that read finds — button gone, button still there, operator moved
+   * — the arm is spent, so it cannot be carried into a read that has nothing to
+   * do with the write.
+   *
+   * **Except by a read that fails.** A failure moves `errorUpdatedAt` and not
+   * `dataUpdatedAt`, so it does not re-run this and does not spend the arm,
+   * which then stands until a read *does* answer. That is still a rescue and
+   * not a steal — all three conditions are asked again at the moment it is
+   * read, so a late one fires only with the armed button gone and focus still
+   * nowhere — but it is a late one, and a block that implied otherwise would be
+   * worth nothing. The arm is bounded by an answer, not by a clock.
+   *
+   * The one soft edge is that `dataUpdatedAt` is a millisecond clock, so a read
+   * answering inside the same millisecond as the arm would be read as the arm's
+   * own and skipped, costing that rescue and deferring it to the next answer.
+   * It needs the write's read to land in the same millisecond as the dismissal's,
+   * with a retry round trip in between; the margin measured in jsdom, where
+   * there is no network at all, is 4–12ms.
    */
   useEffect(() => {
     const button = rescueFrom.current;
     // Nothing armed, or the read has not answered yet: a read that has not
     // answered cannot have removed anything.
     if (!button || !summaryQuery.data) return;
+    // Answered, but not by the read the arm is waiting for — an older one whose
+    // commit is only now reaching React. It cannot have removed the button the
+    // write is about to remove, and spending the arm on it would disarm the
+    // rescue one read early.
+    if (summaryQuery.dataUpdatedAt <= armedAt.current) return;
     rescueFrom.current = null;
     // The refetch left the button alone — focus is still on it, and there is
     // nothing here to rescue.
@@ -211,12 +297,14 @@ export function AdminEventsProblems() {
     // went with it to `<body>`.
     if (document.activeElement !== document.body) return;
     focusListAfterWrite();
-    // Keyed on the answered list alone, on purpose. `isFetching` would add a
+    // Keyed on the answered read, never on `isFetching`: that would add a
     // render that cannot decide anything — while a read is out, the button is
     // still there by definition — and would leave the fast path, where the
     // fetch settles before query-core's first notification, without a change to
-    // key on at all.
-  }, [summaryQuery.data]);
+    // key on at all. `data` stays beside `dataUpdatedAt` because it is what the
+    // body above reads; `dataUpdatedAt` is what gets this run at all, and
+    // `armedAt` is what decides whether the run is the one being waited for.
+  }, [summaryQuery.dataUpdatedAt, summaryQuery.data]);
 
   const onRetried = (event: RetryableEvent, result: OutboxRetryResult, arrival: OutboxRetryArrival) => {
     setFlashed(eventKey(event));
@@ -238,6 +326,10 @@ export function AdminEventsProblems() {
       // which is what a successful retry does to it — that focus is what will
       // be lost, and this is the arm that gets it back (`rescueFrom`).
       rescueFrom.current = trigger.current;
+      // Both halves of the arm, set together and before the invalidation two
+      // lines down, so the read that invalidation asks for is the first one
+      // able to beat this number. See `armedAt`.
+      armedAt.current = queryClient.getQueryState(OUTBOX_PROBLEMS_KEY)?.dataUpdatedAt ?? 0;
     }
     // The list is what the section believes, so it is asked again — on both
     // paths, because a row that moved is worth knowing about whether or not
