@@ -70,11 +70,11 @@ describe("UserProfileMenu", () => {
 
   it("prints a status it has never heard of instead of an empty badge", () => {
     // `GET /users/me` answers the gateway's own `GatewayUserStatus`, which has
-    // no `LOCKED`. So once PR #146 deploys, an account locked by failed
-    // sign-ins whose pre-lock token still works will read back as `UNSPECIFIED`
-    // — a value the domain union does not carry and adding `LOCKED` to it does
-    // not cover. A bare lookup put `undefined` in the badge, which renders as
-    // nothing at all.
+    // no `LOCKED`. Backend PR #146 deployed the state without adding it there,
+    // so an account locked by failed sign-ins whose pre-lock token still works
+    // reads back as `UNSPECIFIED` today — a value the domain union does not
+    // carry and adding `LOCKED` to it does not cover. A bare lookup put
+    // `undefined` in the badge, which renders as nothing at all.
     renderMenu({
       user: { ...anna, status: "UNSPECIFIED" as User["status"] },
       loading: false,

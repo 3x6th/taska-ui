@@ -89,12 +89,21 @@ two:
 A mechanical strike-on-merge would have deleted two true divergences and
 orphaned the code compensating for them.
 
+That is no longer hypothetical: PR #146 merged on 2026-09-07 and TAS-196 did the
+housekeeping on 2026-09-08. The split held exactly as written — two entries
+closed, two left open — and the pass turned up a third trap the paragraph above
+does not cover. The closing entry's own `Removal:` line named two symbols to
+delete along with it, and by the time it was followed **both had acquired a
+second caller** (the attachment routes, TAS-190). Deleting on the note's
+instruction would have removed a live compensation. A removal note names the
+code to delete on the day the divergence is found; read the callers, not the
+note.
+
 When a PR closes without merging: delete the file and say so in the story that
 was written against it.
 
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
-| `pr-146-TAS-108.yml` | [#146](https://github.com/VladislavYurin/taska-backend/pull/146) | TAS-107, TAS-108 | TAS-188 |
 | `pr-148-TAS-116.yml` | [#148](https://github.com/VladislavYurin/taska-backend/pull/148) | TAS-116 | TAS-189 |
 | `pr-147-TAS-131.yml` | [#147](https://github.com/VladislavYurin/taska-backend/pull/147) | TAS-131 | TAS-190 |
 | `pr-118-TAS-125.yml` | [#118](https://github.com/VladislavYurin/taska-backend/pull/118) | TAS-125 | TAS-191 |

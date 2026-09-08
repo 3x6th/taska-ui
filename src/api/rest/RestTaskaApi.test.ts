@@ -1206,8 +1206,11 @@ describe("RestTaskaApi labels", () => {
 });
 
 /**
- * The admin user writes (TAS-186). The gateway does not serve them yet — the
- * backend change is unmerged — so nothing here has been observed on the wire;
+ * The admin user writes (TAS-186). All three are on the deployed gateway since
+ * backend PR #146, measured 2026-09-08 — but only far enough to know the paths
+ * are mapped (an invalid uuid answers `400 INVALID_ARGUMENT`), because probing
+ * further would mean mutating a real account. So the success and refusal bodies
+ * below are still read out of the backend source rather than off the wire, and
  * what these pin is the shape the client sends and the facts it reads back
  * (docs/ai/API-DIVERGENCE.md).
  */
@@ -1276,9 +1279,10 @@ describe("RestTaskaApi admin user writes", () => {
     // error and nothing on screen to notice.
     //
     // No fallback to the old name, and that is a decision rather than an
-    // omission: these routes have never been deployed, so no gateway has ever
-    // answered `updatedAt`, and accepting it would be a compatibility shim for
-    // a version of the backend that never existed.
+    // omission: the routes were unmapped on every gateway that ran before
+    // backend PR #146, and the first one to serve them serves `changedAt`, so no
+    // gateway has ever answered `updatedAt` and accepting it would be a
+    // compatibility shim for a version of the backend that never existed.
     const fetchStub = vi.fn(async (input: string) =>
       answer(200, { userId: change.userId, previousStatus: "ACTIVE", currentStatus: "BLOCKED", updatedAt: change.changedAt }, undefined, input),
     );
@@ -1431,26 +1435,6 @@ describe("RestTaskaApi admin user writes", () => {
       code: "FAILED_PRECONDITION",
       message: "Cannot block the last active global admin",
       requestId: "req-9",
-    });
-  });
-
-  it("passes the undeployed-route 404 through with its message intact", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        answer(404, {
-          code: "NOT_FOUND",
-          message: `No static resource api/v1/admin/users/${change.userId}/block for request '…'.`,
-        }),
-      ),
-    );
-
-    // The section tells "TAS-107 is not deployed" from "no such user" by the
-    // 404 *and* this message, so the message must not be replaced by a generic
-    // one on the way up (`isUndeployedRoute`).
-    await expect(new RestTaskaApi().blockUser(change.userId, "Reason")).rejects.toMatchObject({
-      status: 404,
-      message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE),
     });
   });
 });

@@ -30,7 +30,9 @@ it. Entries are deleted only when the compensating code is deleted.
 ## Runtime differs from the contract
 
 Headings starting with "Closed by" are settled and kept for their history;
-everything else here is live.
+everything else here is live. A closed entry may still carry a live sub-fact —
+it says so in its own first paragraph when it does, because closing a heading
+is cheaper than splitting an entry and the reader has to be told which.
 
 
 ### Closed by TAS-154: `GET /projects/{projectId}` answers 200
@@ -236,18 +238,42 @@ everything else here is live.
   `JsonByteArrayInput{{"issue`). The fix — an `instanceof Json →
   asString()` branch — is in
   [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
-  (TAS-105), In Review.
+  (TAS-105), **merged 2026-08-27** — the fall-through branch is gone on
+  `develop`, replaced by an `instanceof Json → asString()` branch ahead of it.
+  **Deployment is established, and the doubt is about the mechanism instead.**
+  The summary route out of the same PR answers with real rows, and those rows
+  come from admin-service's gRPC rather than from the gateway, so the deployed
+  admin-service carries this branch in the same artifact — and so does the
+  gateway half of that PR, proven by the same 200. **The residual is smaller
+  than it looks, and this entry overstated it once already.** Whether the value
+  reaches the mapper as `io.r2dbc.postgresql.codec.Json` is already answered by
+  this entry's own 2026-08-25 probe: `JsonByteArrayInput` *is* that class's
+  nested `JsonInput` subtype, and the observed prefix is its `toString()`. The
+  value that produced `JsonByteArrayInput{{"issue` was an `instanceof Json` by
+  construction, so it takes the new branch. What is missing is only that nobody
+  has read a payload since the deploy. Probe one `issue.outbox_events` row
+  before closing this — as confirmation, not as an open question.
 - **The UI instead:** prints it verbatim, never repaired. The card's jsonb
   rule (`src/screens/admin/columns.ts`) is parse-as-JSON → pretty-print,
   anything else → verbatim, so the broken format stays *visible* by design —
   TAS-167's own instruction is to escalate, not to strip the java prefix
   client-side. The mock deliberately seeds one such payload
   (`src/api/mock/MockTaskaApi.ts`), with a test holding the case reachable,
-  so the verbatim branch is exercised until the backend fix lands.
-- **Switch-off:** nothing to switch — once the backend fix deploys, real
-  JSON flows into the same rule's pretty-print branch on its own.
-- **Removal:** TAS-105 merging and deploying, same as the summary entry
-  below — close the two together. When closing this one, also drop the
+  so the verbatim branch is exercised locally. The fix landed on 2026-08-27; what
+  remains here is the seed, which TAS-194 drops.
+- **Switch-off:** nothing to switch — the backend fix deployed, and real JSON
+  flows into the same rule's pretty-print branch on its own. Note what that does
+  *not* switch off: the mock's seed, and the comments naming this a live gap.
+  Those are the parts that need a story, which is the difference this whole
+  entry is about.
+- **Removal:** [TAS-194](https://jira.ozero.dev/browse/TAS-194), same as the
+  summary entry below — close the two together. The trigger the old wording
+  named, "TAS-105 merging and deploying", happened on 2026-08-27 and closed
+  nothing. The reason here is not the summary entry's — this compensation is not
+  a quiet note but verbatim text on an event card, and it went unnoticed because
+  nobody reads a payload closely and the mock still seeds the broken form
+  locally, so the product looks the same either way. Same conclusion by a
+  different road: a probe is what closes this, not a merge date. When closing this one, also drop the
   mock's malformed `JsonByteArrayInput` seed and the assertion that pins it
   (`MockTaskaApi.test.ts`): after the fix they model a state the gateway can
   no longer produce.
@@ -1686,15 +1712,34 @@ Same rule as above: "Closed by" is settled, the rest is live.
 
 ---
 
-### The problems summary exists only in the TAS-105 branch contract
+### The problems summary was TAS-105-only; the endpoint now answers and the compensation has not come out
+
+**Still open, and read the next two paragraphs in order — the divergence
+inverted rather than closed.** The endpoint is deployed; what remains is a
+compensation in the code for a gateway that no longer behaves that way, and an
+entry is deleted only when the compensating code is.
+
+**Measured 2026-09-08** with a GLOBAL_ADMIN token:
+`GET /api/v1/readonly/outbox/problematic-summary` answers **200** with
+`{counts, events, notAllShown}` — two real `FAILED` events on `project`,
+`attempts: 5`, `lastErrorMessage: "Failed to construct kafka producer"`. Backend
+[PR #141](https://github.com/VladislavYurin/taska-backend/pull/141) (TAS-105)
+merged **2026-08-27**, and the refreshed snapshot carries the path.
+`isSummaryNotDeployed` (`src/screens/admin/events.ts`) matches its signature by
+exact equality, so against a 200 it is inert rather than wrong — which is why
+this was invisible until someone re-read the file.
+
+Everything below was written before that and describes the gateway as it was.
+It is kept because the compensation it explains is still in the tree.
 
 - **Endpoint:** `GET /api/v1/readonly/outbox/problematic-summary` — the
   stuck/failed outbox summary the Events section's Problems view is built on
   (TAS-167).
-- **Observed:** the vendored snapshot (develop @ `4241be2`) has no such path,
-  and the deployed gateway does not serve it: the backend change is
+- **Observed (superseded, see above):** the vendored snapshot (develop @
+  `4241be2`) had no such path, and the deployed gateway did not serve it: the
+  backend change was
   [backend PR #141](https://github.com/VladislavYurin/taska-backend/pull/141)
-  (TAS-105), In Review, unmerged. **Measured 2026-08-25** with a GLOBAL_ADMIN
+  (TAS-105), then In Review. **Measured 2026-08-25** with a GLOBAL_ADMIN
   token: the live gateway routes the path into the generic table read — the
   `outbox` segment is taken for a service key — and answers
   `400 INVALID_ARGUMENT` with `"Unknown service: outbox"`. That exact
@@ -1718,17 +1763,56 @@ Same rule as above: "Closed by" is settled, the rest is live.
   above — INVALID_ARGUMENT with "Unknown service: outbox" — as "the gateway
   does not serve this yet (TAS-105)": a note, not an error alert. Any other
   error, a genuine NOT_FOUND included, keeps the ordinary error taxonomy
-  (`events.test.ts` asserts it is not swallowed). The signature disappears on
-  deploy, so the note heals itself.
+  (`events.test.ts` asserts it is not swallowed). This paragraph ended, when it
+  was written, with ~~"the signature disappears on deploy, so the note heals
+  itself"~~. **It did not.** The signature disappeared on 2026-08-27 and the note
+  is still in the tree, inert; the sentence is kept here struck rather than
+  deleted because it is the mechanism this entry now exists to warn about — a
+  compensation that promises to retire itself is a compensation nobody schedules
+  the removal of.
 - **Switch-off:** nothing to switch — the compensation is the honest note
   plus the mock, and `RestTaskaApi` already speaks the final shape.
-- **Removal:** TAS-105 merging and deploying closes it. Refresh
-  `docs/contract/openapi.yml` then, and close this entry with it — together
-  with the `jsonb` serialisation entry above, whose mock seed and assertion
-  come out in the same pass. If review changes the PR's contract before
-  merge, the client follows the merged version, not this entry.
+- **Removal:** [TAS-194](https://jira.ozero.dev/browse/TAS-194), which opens the
+  Events section for the retry write and takes the note out with it —
+  `OUTBOX_SUMMARY_UNSERVED_MESSAGE`, `isSummaryNotDeployed`, **the branch and
+  the rendered `<p>` in `src/screens/admin/AdminEventsProblems.tsx`** — the view
+  that actually draws the note, and the one an earlier version of this list
+  forgot — plus the comments in `src/screens/admin/sections.ts`,
+  `src/api/HybridTaskaApi.ts` and the mock, and the `TAS-105` link pinned by
+  `src/screens/admin/AdminScreen.test.tsx`. The present-tense comments left
+  standing in `AdminEventsProblems.tsx`, `src/api/mock/MockTaskaApi.ts`,
+  `src/api/rest/RestTaskaApi.test.ts` and `AdminScreen.test.tsx` ride with them
+  deliberately, so that story removes one coherent thing rather than the
+  leftovers of two. The user-facing string is correct as written either way: it
+  renders only when an old gateway is on the other end, so it is true whenever
+  it is visible. The
+  `jsonb` serialisation entry above comes out in the same pass, as it always
+  said it would; its own text still calls PR #141 In Review and is corrected
+  here only on that point.
 
-### The three admin user writes — block, unblock, reset-lockout — exist only on an open backend PR
+  The old wording said "TAS-105 merging and deploying closes it". It merged on
+  2026-08-27 and nothing closed, because nothing was looking: the compensation is
+  a note rather than an error, and a note that never fires is a note nobody
+  reports. That is the argument for re-reading this file on every snapshot
+  refresh rather than only when a story touches an entry.
+
+### Closed by TAS-196: the three admin user writes — block, unblock, reset-lockout — are deployed
+
+**Two things under this closed heading are still live, and the file's own rule
+would hide them.** "Anything not starting with Closed is open" is a rule about
+entries, and this entry closes only its *transport* claim — that the routes were
+not served. Everything it records about how they refuse is unaffected by the
+deployment and is compensated for today:
+
+- the status/code table below, and with it `isConflict`'s code arms in
+  `src/api/errors.ts`. The contract declares `409` for block and unblock while
+  the gateway answers **400 `FAILED_PRECONDITION`** for the last-active-admin
+  refusal, so reading the status alone drops the refusal this feature is most
+  careful about into "the gateway would not accept this request";
+- the `reset-lockout` refusal that arrives as `400` where the backend's own test
+  asserts `409`, which has its own open entry further down.
+
+The entry itself, in the past tense:
 
 - **Endpoints:** `POST /api/v1/admin/users/{userId}/block`,
   `POST /api/v1/admin/users/{userId}/unblock` and
@@ -1738,22 +1822,31 @@ Same rule as above: "Closed by" is settled, the rest is live.
   greppable by any of them; an earlier revision named two, which is how a
   reader looking for `reset-lockout` found only the entry about *its refusal*
   and concluded the route was deployed.
-- **Observed:** the vendored snapshot has no such paths, and the deployed
-  gateway does not serve them. The backend change was
+- **Observed, and then closed.** The vendored snapshot had no such paths and
+  the deployed gateway did not serve them. The backend change was
   [PR #134](https://github.com/VladislavYurin/taska-backend/pull/134)
   (TAS-107, two routes) when this entry was written; it is now
   [PR #146](https://github.com/VladislavYurin/taska-backend/pull/146)
   (TAS-107 + TAS-108, **three** routes, head `01a5af4`), which supersedes it.
-  Both are open at the time of writing, which is why the older one is named
+  Both were open when this was written, which is why the older one is named
   rather than deleted — a reader who finds #134 first should learn here that it
-  is not the one this client is built against. **Measured
+  is not the one this client was built against. **Measured
   2026-08-25** with a GLOBAL_ADMIN token:
-  `POST /api/v1/admin/users/not-a-uuid/block` answers **404** with
+  `POST /api/v1/admin/users/not-a-uuid/block` answered **404** with
   `{"code":"NOT_FOUND","message":"No static resource
   api/v1/admin/users/not-a-uuid/block for request '…'"}`. That message prefix
   is Spring's static-resource fallback — what an unmapped path falls through to
-  — and it is what distinguishes "this route is not deployed" from a deployed
+  — and it is what distinguished "this route is not deployed" from a deployed
   route's own `404 "User not found"`.
+
+  **PR #146 merged 2026-09-07 and deployed, and the same probe now answers
+  differently. Measured 2026-09-08**, GLOBAL_ADMIN token, invalid uuid so that
+  nothing could be mutated: `POST /api/v1/admin/users/not-a-uuid/block` and
+  `POST …/not-a-uuid/reset-lockout` both answer **400**
+  `{"code":"INVALID_ARGUMENT","message":"Invalid request parameters"}`. A route
+  that validates its path parameter is a route that is mapped, so all three are
+  deployed — the count this entry insisted on. The snapshot was refreshed to
+  develop `96408229c1e4` in the same pass, and it carries the three paths.
 
   The shape the client is built to is the branch's `openapi.yml` — **re-read at
   backend PR #146's head `01a5af4` for TAS-188, where two things had moved since
@@ -1813,18 +1906,17 @@ Same rule as above: "Closed by" is settled, the rest is live.
   are reachable by clicking. `HybridTaskaApi` delegates straight to REST with
   **no** compensation of any kind — these are writes, and a synthesised success
   would report a change to a table this client cannot alter, which is worse
-  than the failure it would hide. Against a gateway that has not deployed them,
-  the confirmation dialog stays open and says the operation is not deployed
-  yet, naming the story the operation belongs to — TAS-108 for reset-lockout,
-  TAS-107 for the other two — read from the 404 **and** the `No static
-  resource` substring together (`UNDEPLOYED_ROUTE_MESSAGE` in
-  `src/api/TaskaApi.ts`, `isUndeployedRoute` in `src/api/errors.ts` — TAS-190
-  moved it out of `src/screens/admin/users.ts`, which now re-exports it, because
-  a second feature needed the same measured predicate and a fact about the
-  gateway belongs beside `isMissingOrForbidden`).
-  Any other failure keeps the section's ordinary taxonomy; `users.test.ts`
-  asserts that a deployed route's `404 "User not found"` is *not* swallowed by
-  it.
+  than the failure it would hide. While the routes were undeployed the
+  confirmation dialog stayed open and said so, naming the story the operation
+  belonged to — TAS-108 for reset-lockout, TAS-107 for the other two — read from
+  the 404 **and** the `No static resource` substring together. **TAS-196 removed
+  that sentence, and the `undeployed` arm of `userWriteFailure` with it**, so a
+  404 from these three writes now means what it says: there is no such user. The
+  predicate survives in `src/api/errors.ts` and `UNDEPLOYED_ROUTE_MESSAGE` in
+  `src/api/TaskaApi.ts` beside it, because the attachment routes still need them
+  — backend PR #147 is open — which is why TAS-190 moved the predicate out of
+  `src/screens/admin/users.ts` in the first place. Every other failure keeps the
+  section's ordinary taxonomy.
 - **The response timestamp is `changedAt`, and this entry has now been wrong
   about it twice.** The first revision said the backend leaves the field unset,
   so it arrives as the 1970 epoch — taken from PR #134's *Известные проблемы*,
@@ -1863,13 +1955,14 @@ Same rule as above: "Closed by" is settled, the rest is live.
   earlier revision of this paragraph that appealed to "the column the table
   shows" was false of the section it was written about — the same overstatement,
   one layer down, as the epoch claim it replaced.
-- **Switch-off:** nothing to switch — the compensation is the honest sentence
-  plus the mock, and `RestTaskaApi` already speaks the final shape.
+- **Switch-off:** done by TAS-196. The compensation was the honest sentence
+  plus the mock; the sentence is gone, the mock stays, and `RestTaskaApi` spoke
+  the final shape before the deployment rather than after it.
 - **The uppercase status comparison is safe, and the contract is a trap about
   it.** `actionFor` and `StatusPill` (`src/screens/admin/users.ts`) compare the
   raw table value against `ACTIVE` / `INVITED` / `BLOCKED` exactly, with no case
   folding. The vendored contract's own filter example writes the value
-  lowercase — `?status.equals=active`, `docs/contract/openapi.yml:1396` — which
+  lowercase — `?status.equals=active`, `docs/contract/openapi.yml:1733` — which
   reads as licence to expect either case. It is not: `develop`'s
   `auth-service/.../0000-init.sql` declares
   `status varchar(32) NOT NULL DEFAULT 'INVITED'` with
@@ -1885,37 +1978,53 @@ Same rule as above: "Closed by" is settled, the rest is live.
   gateway behaviour **nobody has observed** — added in this file, of all
   files, whose entire job is to stop compensations from being invented for
   problems that were never measured.
-- **Removal:** backend PR #146 merging and deploying closes it — **all three
-  routes, not two.** Refresh `docs/contract/openapi.yml` then and close this
-  entry with it; the `UNDEPLOYED_ROUTE_MESSAGE` constant and `isUndeployedRoute`
-  come out in the same pass, and one probe at that point confirms the
-  status/code table above against the running gateway rather than against the
-  branch's source.
+- **What is still owed here.** The probe that closed this entry proves the
+  routes are *mapped* — a 400 on an invalid uuid is a route validating its own
+  path parameter. It does not confirm the refusal table above, because every row
+  of that table needs a real account in a real state and a write that actually
+  lands. `Cannot block the last active global admin` answering **400** with
+  `code: "FAILED_PRECONDITION"`, and the status refusals answering **409** with
+  `code: "ABORTED"`, are still read out of the backend's source rather than off
+  the wire. `isConflict` depends on both arms, so the measurement is worth
+  taking the next time this section is opened — on the stand, against an account
+  seeded for it, never against a live admin.
 
-  The count is load-bearing, and this is why it is stated twice. That PR
-  carries two Jira stories, TAS-107 and TAS-108, and its own last sentence
-  contemplates review changing it before merge. If it is split, a reader
-  following the old instruction removes the compensation on TAS-107's
-  deployment while `reset-lockout` still needs it — and the modal then answers
-  a route that is merely undeployed with the `refused` sentence, which tells
-  the reader that account is no longer there. Deploy all three, or keep the
-  compensation. If review changes the PR's contract before merge, the client
-  follows the merged version, not this entry.
+  The old removal instruction said the `UNDEPLOYED_ROUTE_MESSAGE` constant and
+  `isUndeployedRoute` came out in the same pass. **They did not, and the
+  instruction was already stale when it was followed.** TAS-190 gave both a
+  second caller — the attachment routes, whose backend PR #147 is still open —
+  so deleting them would have taken a live compensation with it. This is the
+  ordinary failure mode of a removal note: it names the code to delete at the
+  moment the divergence is found, and code acquires callers afterwards. Read the
+  callers, not the note.
 
-### `UserStatus` grew a fourth value, and it arrives with the same PR the writes do
+  Kept for its history: the count in the old note was load-bearing. That PR
+  carried two Jira stories, TAS-107 and TAS-108, and a reader following a
+  two-route version of the instruction would have removed the compensation on
+  TAS-107's deployment while `reset-lockout` still needed it — the modal then
+  answering a merely-undeployed route with the `refused` sentence, which tells
+  the reader an account is gone. It merged and deployed as three, so the trap
+  never sprang.
 
-`UserStatusDto` at backend PR #146's head `01a5af4` has four values —
+### Closed by TAS-196: `UserStatus` grew a fourth value, and it arrived with the writes
+
+`UserStatusDto` at backend PR #146's head `01a5af4` had four values —
 `INVITED`, `ACTIVE`, `BLOCKED`, `LOCKED` — against the three the domain modelled.
 `LOCKED` is a credential lockout: `AuthServiceImpl.handleFailedAttempt` sets it
 after `maxFailedAttempts` failed sign-ins and `resetFailedAttempts` restores
 `ACTIVE` on the next successful one. Nobody decides it, and it clears itself.
 
-**It does not exist on `develop`.** Measured at `ref=develop` on 2026-09-05:
-`auth-service`'s `UserStatus` entity declares exactly `ACTIVE`, `BLOCKED`,
-`INVITED`; `common.proto`'s `enum UserStatus` has no `USER_STATUS_LOCKED`; and
-`develop`'s `handleFailedAttempt(Credential)` takes no `User` and writes no
-status. The two-argument version that sets `LOCKED` is introduced by PR #146,
-so the whole lifecycle ships with the same unmerged change as the three writes.
+**It did not exist on `develop` when this was written.** Measured at
+`ref=develop` on 2026-09-05: `auth-service`'s `UserStatus` entity declared
+exactly `ACTIVE`, `BLOCKED`, `INVITED`; `common.proto`'s `enum UserStatus` had
+no `USER_STATUS_LOCKED`; and `develop`'s `handleFailedAttempt(Credential)` took
+no `User` and wrote no status. The two-argument version that sets `LOCKED` came
+with PR #146, so the whole lifecycle shipped with the same change as the three
+writes — which is exactly what happened on 2026-09-07. The refreshed snapshot
+(develop `96408229c1e4`) declares `UserStatusDto` with all four values, and the
+deployed gateway's own generated spec agrees: `UserStatusResponseDto` there
+carries `previousStatus` and `currentStatus` over
+`INVITED | ACTIVE | BLOCKED | LOCKED` (read 2026-09-08).
 
 This is recorded because the first version of the TAS-188 brief asserted the
 opposite — that `LOCKED` was already arriving in `auth.users` rows the Users
@@ -1925,16 +2034,26 @@ adversarial pass over the spec caught it by reading `develop`. The rule this
 buys: **a fact about what is deployed is read at `develop`, never at a PR head**,
 and the two are different sources even when they are the same file.
 
-Compensating UI behaviour: none is needed before the merge — no row can carry
-the value. After it, the union, the label, the pill and the third action all
-name it. Removed by: PR #146 merging and deploying, which retires the
-`develop`-versus-head distinction for this value entirely.
+Compensating UI behaviour: none was needed before the merge — no row could
+carry the value — and none is needed after it. The union, the label, the pill
+and the third action all name `LOCKED`, shipped ahead of the deployment by
+TAS-188 and unchanged by this closure; TAS-196 changed no code here. The
+`develop`-versus-head distinction for this value is retired.
+
+**What is still owed here.** A `LOCKED` row has still never been seen on the
+wire. The value is reachable only by failing sign-in `maxFailedAttempts` times
+against a real account, so nothing in this repository has rendered a real one —
+the four-state coverage is the mock's seed. The entry below, about
+`GET /users/me` answering `UNSPECIFIED` for a locked account, is the live half
+of the same subject and PR #146 did **not** close it.
 
 ### `GET /users/me` answers `UNSPECIFIED` for a locked account, not `LOCKED`
 
 A second-order effect of the entry above, and one the frontend cannot fix. The
 gateway's own `GatewayUserStatus` enum — the one behind `GET /users/me` — has
-only `UNSPECIFIED/INVITED/ACTIVE/BLOCKED` at PR #146's head, while the same
+only `UNSPECIFIED/INVITED/ACTIVE/BLOCKED`, and **the merge did not change that.**
+Re-read 2026-09-08 off the deployed gateway's generated spec: `GatewayUserContext.status`
+still enumerates `UNSPECIFIED, INVITED, ACTIVE, BLOCKED` with no `LOCKED`, while the same
 service's `UserStatusDto` on the admin writes has four values. So the gateway
 now disagrees with itself about the status vocabulary, and
 `AuthMapper.toGatewayUserStatus` sends a locked account through
@@ -1946,7 +2065,8 @@ Compensating UI behaviour: `UserProfileMenu` guards its label lookup so an
 unmodelled status prints as itself rather than as an empty badge. Note that
 widening the union does **not** cover this case — the value that arrives is
 `UNSPECIFIED`, which is not a `UserStatus` at all. Removed by: the gateway
-teaching `GatewayUserStatus` about `LOCKED`; there is a backlog line for it.
+teaching `GatewayUserStatus` about `LOCKED`, filed 2026-09-08 as
+[TAS-197](https://jira.ozero.dev/browse/TAS-197).
 
 ### `reset-lockout` refuses with 400, and the backend's own test says 409
 

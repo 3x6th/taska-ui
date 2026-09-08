@@ -21,6 +21,38 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **`refused` and `rejected` open as near-synonyms in the admin write dialog**
+  (`art-director`, 2026-09-08, TAS-196 verdict). "The server refused this."
+  against "The gateway would not accept this request." — both resolve on their
+  second clause, so a reader gets there, but the first four words do no work.
+  Proposed wording for `rejected`, which names the stage rather than repeating
+  the verdict: "The gateway read this request and would not take it." Declined
+  inside TAS-196 on purpose — that story removes a sentence, and rewriting a
+  neighbouring one in the same diff makes the removal harder to review, not
+  easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
+  named the account being blocked where it meant the reader.
+- **`UserProfileMenu.tsx` calls `.toLowerCase()` on a contract-optional field**
+  (`api-contract-guard`, 2026-09-08, TAS-196 re-verdict). `user.status` builds a
+  class name at `src/components/UserProfileMenu.tsx:108`, but
+  `ValidateAccessTokenResponseDto` has no `required` block, so `status` is
+  optional by contract and an absent one throws in the render. `statusLabel`
+  beside it is properly defensive; the class name is not. `?? ""` is the whole
+  fix. Confidence that the gateway always sends it is high — it builds
+  `GatewayUserContext` with a proto zero sink — which is why this is a line here
+  and not a story. Pre-existing, outside TAS-196's diff.
+- **`AdminError.tsx:31` carries the same clause the write dialog just had fixed**
+  (`frontend-builder`, 2026-09-08, TAS-196). "Either this account is not a global
+  admin as far as the gateway is concerned, or the table is not one it will
+  serve." There the subject is unambiguous — a table read, the reader's own
+  account, no third party named on screen — so the defect TAS-196 fixed in
+  `AdminUserActionModal` does not apply. Worth one pass if the two sentences
+  should read alike; not a correctness item.
+- **Do not make the server's verbatim line conditional** in
+  `AdminUserActionModal` (`art-director`, 2026-09-08). It renders unconditionally
+  today, and it is the safety net that would contradict "or that user is no
+  longer there" if a static-resource 404 ever came back from a rollback. Not
+  work — a note for whoever tidies that component next.
+
 - **The UI font stack is not a token** (`art-director`, 2026-08-25, TAS-167
   re-verdict): `--font-mono` is tokenised, the UI stack is a literal on
   `body`, so nothing like `--font-ui` exists for a rule that needs to name it
@@ -902,7 +934,9 @@ the next session in this image exactly as it bit this one.
   `INVITED` and does not reject `LOCKED`, and `AuthServiceImpl.refresh` does
   not call it at all — so a locked account is stopped at the sign-in form and
   nowhere else. A backend ask, and one for after PR #146 merges rather than a
-  change to it.
+  change to it. **Filed 2026-09-08 as
+  [TAS-198](https://jira.ozero.dev/browse/TAS-198)** — the branch stopped moving
+  when PR #146 merged on 2026-09-07.
 - **`reset-lockout` declares no `default` response in its openapi block**
   (`api-contract-guard`, TAS-188), so the 500 the status round trip currently
   produces is an undeclared status on that route. Minor beside the 500 itself,
@@ -917,7 +951,12 @@ the next session in this image exactly as it bit this one.
   profile menu can be opened by an account whose status the gateway will not
   name. The frontend guards the render; it cannot fix a value it is not sent.
   A backend ask, and one for after PR #146 merges rather than a change to it —
-  filing it against an open PR would land on a moving branch.
+  filing it against an open PR would land on a moving branch. **Filed 2026-09-08
+  as [TAS-197](https://jira.ozero.dev/browse/TAS-197)**, with the vocabulary
+  re-read off the deployed gateway rather than off the PR head: its
+  `UserStatusResponseDto` carries all four values and its `GatewayUserContext.status`
+  still carries three plus `UNSPECIFIED`, so the merge made the disagreement
+  permanent instead of resolving it.
 - **Two status pills now exist for one enum.** The profile menu's
   `.user-status` (§4.16) colours `ACTIVE` green and `INVITED` amber from four
   literal hexes that are in no §2 palette; the admin Users pill keeps colour
@@ -1355,36 +1394,68 @@ search endpoint is claimed; the other is not:
   union and the contract already disagreed before this.
 
 The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
-schema change. None is claimed, and none is on the four open PRs this refresh was
-done for — they landed on `develop` while this repository was looking elsewhere:
+schema change. None was on the four open PRs this refresh was done for — they
+landed on `develop` while this repository was looking elsewhere. **Three of the
+five items below were claimed on 2026-09-08**, after the snapshot was refreshed
+again to `96408229c1e4` and the deployed gateway was measured directly:
 
-- **Issue watchers, five routes.** `GET`/`POST
+- ~~**Issue watchers, five routes.**~~ Claimed by
+  [TAS-193](https://jira.ozero.dev/browse/TAS-193), which builds the `me` pair
+  and the list and defers the two project-`ADMIN` routes: a watcher row carries
+  only `userId`, and with no member read (TAS-137) there is nobody to name in a
+  picker. Measured 2026-09-08 — `GET .../watchers` answers `200`
+  `{totalCount, watchers[]}`, so the route is real and the array key is
+  `watchers`, not `items`. `GET`/`POST
   /projects/{projectId}/issues/{issueId}/watchers`, `PUT`/`DELETE` on
   `.../watchers/me`, and `DELETE .../watchers/{userId}`. The `me` pair takes the
   user from the JWT and needs no body; the other two are project-`ADMIN` only.
   This is a real feature with a real UI (a watch toggle on the issue panel and a
   watcher list beside the assignee), not a mapping job, so it wants its own
   story rather than a corner of someone else's.
-- **`POST /admin/outbox/{service}/{eventId}/retry`.** The write half of TAS-106,
+- ~~**`POST /admin/outbox/{service}/{eventId}/retry`.**~~ Claimed by
+  [TAS-194](https://jira.ozero.dev/browse/TAS-194); the backend half merged
+  2026-09-03 (PR #143) and the route is in the deployed gateway's own spec. The
+  narrowing this item worried about is carried into the story rather than left
+  here. The write half of TAS-106,
   which the Events section has never had. `service` is a closed enum of `auth`,
   `project`, `issue` — narrower than the service list the catalog returns, which
   is itself worth noticing before a retry button is drawn next to a row the
   endpoint cannot accept.
-- **`GET /readonly/outbox/problematic-summary` is real now.** `TaskaApi.ts`
-  documents it as existing "only in the TAS-105 branch", and the Problems view
-  reads `OUTBOX_SUMMARY_UNSERVED_MESSAGE` off the deployed gateway to say so.
-  The contract has it; whether the *deployed* gateway does is a separate
-  measurement, and the compensation must not be deleted until that measurement
-  is taken.
-- **`ListIssuesResponseDto.items` changed from `IssueShortResponseDto` to
-  `IssueResponseDto`.** The list endpoint now returns whole issues.
+- **`GET /readonly/outbox/problematic-summary` is real now — and the
+  measurement has been taken.** `TaskaApi.ts` documents it as existing "only in
+  the TAS-105 branch", and the Problems view reads
+  `OUTBOX_SUMMARY_UNSERVED_MESSAGE` off the deployed gateway to say so. **Probed
+  2026-09-08** with a `GLOBAL_ADMIN` token: `200`, `{counts, events,
+  notAllShown}`, two real `FAILED` events on `project` with
+  `lastErrorMessage: "Failed to construct kafka producer"` and `attempts: 5`.
+  The compensation is now describing a gateway that answers, so it can come out
+  — worth folding into [TAS-194](https://jira.ozero.dev/browse/TAS-194), which
+  opens that view anyway, rather than a story of its own.
+
+  One thing that probe settles for TAS-194: `counts` names exactly `project`,
+  `issue` and `auth` — the same three the retry route's `service` enum accepts.
+  The Events section can therefore only ever draw a row whose service the retry
+  endpoint takes, so the "narrower than the catalog" worry above is about the
+  Data section's service list, not this one.
+- ~~**`ListIssuesResponseDto.items` changed from `IssueShortResponseDto` to
+  `IssueResponseDto`.**~~ **Measured 2026-09-08, and the answer is yes.** Against
+  the deployed gateway with a `GLOBAL_ADMIN` token,
+  `GET /projects/{id}/issues?page=0&pageSize=3` returns items carrying `status`
+  (`"IN_PROGRESS"`), `description`, `createdAt` and a **populated** `labels`
+  array — 1, 2 and 1 label across the three rows. Claimed by
+  [TAS-195](https://jira.ozero.dev/browse/TAS-195). The same probe read the
+  detail endpoint and got a non-empty `labels` back, which is the bug
+  [TAS-178](https://jira.ozero.dev/browse/TAS-178) is about; that wants its own
+  confirmation before the Jira story is closed.
   `RestTaskaApi.listIssues` hydrates every row from the detail endpoint because
   the short DTO carried no labels — that N+1 may now be deletable. It is a
   measurement against the deployed gateway, not a reading of the contract,
   because the two have disagreed before. Sitting in TAS-189's scope as a
   question, not as work.
-- **`NotificationTypeDto` reappears as a definition on two open PRs (#146,
-  #118) and nothing references it.** The `notificationType` field is still a
+- **`NotificationTypeDto` is back in the vendored contract, and nothing
+  references it.** It reappeared as a definition on two then-open PRs (#146,
+  #118); #146 merged 2026-09-07, so the schema is now on `develop` and in the
+  snapshot at `docs/contract/openapi.yml` — eleven values, `$ref`'d by nothing. The `notificationType` field is still a
   bare `type: string` with an `example`, so the entry above about the closed
   union stands unchanged; the schema coming back is not the enum coming back.
 

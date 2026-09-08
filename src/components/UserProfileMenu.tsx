@@ -25,11 +25,11 @@ const statusLabels: Record<UserStatus, string> = {
  * a different reason. There the value is a database cell, so it was never
  * promised to be an enum member. Here it is typed `UserStatus` and can still
  * arrive outside it: `GET /users/me` answers the gateway's own
- * `GatewayUserStatus`, which has **no** `LOCKED`. So once backend PR #146
- * deploys and the state can exist, a locked account whose pre-lock token still
- * works — `validateUserStatus` in that PR's `AuthServiceImpl` rejects `BLOCKED`
- * and `INVITED`, and says nothing about `LOCKED` — will read back as
- * `UNSPECIFIED`.
+ * `GatewayUserStatus`, which has **no** `LOCKED`. Backend PR #146 made the state
+ * reachable without adding it there, so a locked account whose pre-lock token
+ * still works — `validateUserStatus` in `AuthServiceImpl` rejects `BLOCKED` and
+ * `INVITED`, and says nothing about `LOCKED` — reads back as `UNSPECIFIED`
+ * today (docs/ai/API-DIVERGENCE.md).
  *
  * A bare lookup printed an empty badge for that: `undefined` in a place typed
  * `string`, which renders as nothing and says nothing. Adding `LOCKED` to the

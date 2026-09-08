@@ -347,17 +347,20 @@ export class HybridTaskaApi implements TaskaApi {
   }
 
   /**
-   * Straight to the gateway, and deliberately with no mock fallback even though
-   * this is the one admin call the deployed gateway cannot answer yet
-   * (docs/ai/API-DIVERGENCE.md, "The problems summary exists only in the
-   * TAS-105 branch contract").
+   * Straight to the gateway, and deliberately with no mock fallback. The route
+   * is deployed — backend PR #141 (TAS-105) merged 2026-08-27 and it answers
+   * 200 with `{counts, events, notAllShown}` (measured 2026-09-08) — so this is
+   * now the ordinary case rather than a position taken about an absent route,
+   * but the reason for it has not changed and outlives the deployment
+   * (docs/ai/API-DIVERGENCE.md, "The problems summary was TAS-105-only; the
+   * endpoint now answers and the compensation has not come out").
    *
    * Two reasons. This class holds no mock store to answer from — the
    * compensation it carries is a *view* over live data, not seeded data — and a
    * synthesised summary would sit on the same screen as an Outbox journal of
    * real rows, where the two would contradict each other with no way for the
    * reader to tell which half was invented. The Problems view instead reads the
-   * gateway's own answer and says the summary is not deployed yet.
+   * gateway's own answer, whatever it is.
    */
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
     return this.live.getProblematicOutboxSummary();
@@ -365,15 +368,16 @@ export class HybridTaskaApi implements TaskaApi {
 
   /**
    * Straight to the gateway, all three of them, and deliberately with no
-   * fallback of any kind — even though these are the three calls the deployed
-   * gateway cannot answer yet (docs/ai/API-DIVERGENCE.md, TAS-107 and TAS-108,
-   * which arrive in one backend PR).
+   * fallback of any kind. All three are deployed since backend PR #146
+   * (measured 2026-09-08), so this is now the ordinary case rather than a
+   * position taken about an absent route — but the reason for it has not
+   * changed and outlives the deployment.
    *
    * They are *writes*. A compensation for a read can be a view over live data;
    * a compensation for a write would be this class reporting a change that
    * never happened, to a table it cannot alter, which is worse than the failure
-   * it would be hiding. So the section sees the gateway's own answer and says
-   * the operation is not deployed yet.
+   * it would be hiding. So the section sees the gateway's own answer, whatever
+   * it is.
    *
    * `resetCredentialLockout` is the clearest case of the three: what it changes
    * — a credential's failed-attempt counter — is not in any response this class

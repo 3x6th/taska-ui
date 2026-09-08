@@ -1,5 +1,4 @@
-import { apiErrorFacts, isConflict, isMissingOrForbidden, isUndeployedRoute as isUndeployedGatewayRoute } from "../../api/errors";
-import { UNDEPLOYED_ROUTE_MESSAGE } from "../../api/TaskaApi";
+import { apiErrorFacts, isConflict, isMissingOrForbidden } from "../../api/errors";
 import type { AdminRow, GlobalRole, UserStatus } from "../../domain/types";
 
 /**
@@ -91,12 +90,11 @@ const userStatusLabels: Record<UserStatus, string> = {
   ACTIVE: "Active",
   BLOCKED: "Blocked",
   INVITED: "Invited",
-  // Not an administrative state (TAS-188): once backend PR #146 deploys,
-  // auth-service puts an account here after `maxFailedAttempts` failed sign-ins
-  // and takes it out again on the next successful one, so this word names
-  // something no administrator decided. It cannot appear before that PR — the
-  // value is not on `develop` at all, measured in `UserStatus`
-  // (src/domain/types.ts).
+  // Not an administrative state (TAS-188): auth-service puts an account here
+  // after `maxFailedAttempts` failed sign-ins and takes it out again on the next
+  // successful one, so this word names something no administrator decided. Live
+  // since backend PR #146 merged on 2026-09-07 — before that the value was not
+  // on `develop` at all and no row could carry it (src/domain/types.ts).
   LOCKED: "Locked",
 };
 
@@ -123,8 +121,8 @@ function isKnownUserStatus(status: string | null): status is UserStatus {
  *
  * The union growing a fourth value with TAS-188 does not retire that rule and
  * must not be read as narrowing it. `LOCKED` is not the evidence for the rule —
- * that value is not on the backend's `develop` yet, so no row has ever carried
- * it. The evidence is the shape of the source: this is a database cell, and a
+ * it is now a value `auth.users` can hold, so it is simply one more named case.
+ * The evidence is the shape of the source: this is a database cell, and a
  * fifth value can appear in it on the day a service grows one, with no contract
  * change and no build of this frontend in between. Naming four values is as far
  * as the union goes; the fallback below is what covers the rest, and it covers
@@ -233,38 +231,34 @@ export const actionGerunds: Record<UserAction, string> = {
 };
 
 /**
- * Whether this failure means "the gateway does not have this route yet"
- * (TAS-107 for block and unblock, TAS-108 for reset-lockout — one backend PR,
- * so all three deploy on the same day) rather than "there is no such user".
- *
- * The measurement and the reasoning moved to `isUndeployedRoute` in
- * src/api/errors.ts when TAS-190 needed the same predicate for the attachment
- * routes: it is a fact about the gateway rather than about this section, and
- * two copies of a measured string are two chances to drift. Re-exported under
- * the name this section already used, with `UNDEPLOYED_ROUTE_MESSAGE` passed
- * explicitly so the constant stays visibly wired to the callers that depend on
- * it.
- */
-export function isUndeployedRoute(error: unknown): boolean {
-  return isUndeployedGatewayRoute(error, UNDEPLOYED_ROUTE_MESSAGE);
-}
-
-/**
  * The five ways a write can fail, told apart by words rather than by one text
- * (DESIGN.md §5.8's taxonomy, with a sixth case this section adds).
+ * (DESIGN.md §5.8's taxonomy).
  *
- * Classification lives here and the sentences live in the modal, because one of
- * them carries a link to a Jira story and a string cannot. `AdminError`'s own
- * sentences are deliberately not reused: they name a *table* and describe
- * *reading* one, which is not what happened here.
+ * Classification lives here and the sentences live in the modal, because the
+ * sentences differ per action — the same `conflict` reads one way for a
+ * transition and another for a lockout — and a string cannot branch.
+ * `AdminError`'s own sentences are deliberately not reused: they name a *table*
+ * and describe *reading* one, which is not what happened here.
  *
- * Order matters in exactly one place — `undeployed` is a 404 and would
- * otherwise be swallowed by `refused`.
+ * There used to be a sixth case, `undeployed`, for the 404 with Spring's
+ * static-resource message the gateway answered while these three routes were
+ * unmapped. Backend PR #146 deployed all three, measured 2026-09-08 — both
+ * `block` and `reset-lockout` now answer `400 INVALID_ARGUMENT` to an invalid
+ * uuid where they answered that 404 before — so the case is gone (TAS-196). The
+ * shared predicate it used is still in src/api/errors.ts and still has a live
+ * caller: the attachment routes, which really are unmapped.
+ *
+ * Order matters, and two constraints hold it rather than one. `isConflict`
+ * must come before the `>= 400 && < 500` arm because `FAILED_PRECONDITION` —
+ * the last-active-admin guard and the not-locked refusal — arrives on **400**,
+ * which that arm would otherwise call a rejected request. `isMissingOrForbidden`
+ * must come before it too, or every 404 and every 403 would classify as
+ * `rejected` instead of `refused` — the gateway blamed for not accepting a
+ * request it read and refused.
  */
-export type UserWriteFailure = "undeployed" | "conflict" | "refused" | "server" | "rejected" | "unreachable";
+export type UserWriteFailure = "conflict" | "refused" | "server" | "rejected" | "unreachable";
 
 export function userWriteFailure(error: unknown): UserWriteFailure {
-  if (isUndeployedRoute(error)) return "undeployed";
   if (isConflict(error)) return "conflict";
   if (isMissingOrForbidden(error)) return "refused";
   const { status, code } = apiErrorFacts(error);

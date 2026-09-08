@@ -599,9 +599,17 @@ export interface TaskaApi {
    * Outbox journal's job, on the generic table reads above. A parameter with no
    * caller is surface that has to be kept working for nobody.
    *
-   * Not in the vendored contract yet — it exists only in the TAS-105 branch, and
-   * the deployed gateway answers `INVALID_ARGUMENT` for it
-   * (`OUTBOX_SUMMARY_UNSERVED_MESSAGE` below, docs/ai/API-DIVERGENCE.md).
+   * It is in the vendored contract (docs/contract/openapi.yml) and in the
+   * deployed gateway's own generated spec, and it answers: probed 2026-09-08
+   * with a `GLOBAL_ADMIN` token, `200` with `{counts, events, notAllShown}`,
+   * carrying two real `FAILED` events on `project` with `attempts: 5` and
+   * `lastErrorMessage: "Failed to construct kafka producer"`.
+   *
+   * So `OUTBOX_SUMMARY_UNSERVED_MESSAGE` below — the compensation that reads an
+   * `INVALID_ARGUMENT` here as "TAS-105 has not deployed yet" — now describes a
+   * gateway that no longer answers that way. Retiring it belongs to **TAS-194**,
+   * which opens this view anyway; it stays until that story takes it out
+   * (docs/ai/API-DIVERGENCE.md).
    */
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary>;
 
@@ -633,9 +641,13 @@ export interface TaskaApi {
    * both, from either implementation, and it has to keep reading the `code` —
    * that is the only half carrying the last-admin refusal on the wire.
    *
-   * The endpoint is not on the deployed gateway yet — it exists only in the
-   * backend's TAS-107 branch — so against `rest` and `hybrid` it answers the
-   * undeployed-route signature below (docs/ai/API-DIVERGENCE.md).
+   * On the deployed gateway since backend PR #146 (merged 2026-09-07). Measured
+   * 2026-09-08 with a GLOBAL_ADMIN token against
+   * `POST /api/v1/admin/users/not-a-uuid/block`, which answers
+   * `400 INVALID_ARGUMENT` — the path is mapped and rejects the uuid — where the
+   * same call answered Spring's static-resource 404 on 2026-08-25. That 404 is
+   * what the Users section used to read as "not deployed yet"; the compensation
+   * came out with TAS-196.
    */
   blockUser(userId: string, reason: string): Promise<UserStatusChange>;
 
@@ -659,10 +671,10 @@ export interface TaskaApi {
    * `UserStatusResponseDto` back.
    *
    * `LOCKED` is where an account lands after `maxFailedAttempts` failed
-   * sign-ins — once this PR deploys, and not before: `develop`'s
-   * `handleFailedAttempt(Credential)` writes no status at all, so the state and
-   * this endpoint arrive together. That is what makes this the write that
-   * answers a forgotten password rather than a decision about a person. On
+   * sign-ins. The state and this endpoint arrived together in backend PR #146:
+   * before it, `handleFailedAttempt(Credential)` wrote no status at all and
+   * nothing could be locked. That is what makes this the write that answers a
+   * forgotten password rather than a decision about a person. On
    * success `AdminUserManagementServiceImpl.resetCredentialLockout` clears the
    * credential's `failedAttempts`, `lockedUntil` and `lastFailedAt` and sets
    * the account `ACTIVE`, which is why the transition it reports is always
@@ -695,51 +707,89 @@ export interface TaskaApi {
    * show them; modelling them here would be inventing a field the wire has
    * never had.
    *
-   * Not on the deployed gateway either — it arrives with backend TAS-108 in the
-   * same PR as the other two, so against `rest` and `hybrid` it answers the
-   * undeployed-route signature below (docs/ai/API-DIVERGENCE.md).
+   * Deployed with the other two — same backend PR #146, measured the same way
+   * on 2026-09-08: `POST /api/v1/admin/users/not-a-uuid/reset-lockout` answers
+   * `400 INVALID_ARGUMENT`.
+   *
+   * Two things about it stay compensated (docs/ai/API-DIVERGENCE.md), and
+   * neither is closed by the routes deploying. The not-locked refusal arrives as
+   * **400** — the contract lists `400/401/403/404` here and no `409`, while the
+   * backend's own gateway test for it asserts 409, so the client believes the
+   * mapper and reads the `code` (`isConflict`, src/api/errors.ts). And
+   * `GET /users/me` reports a locked account as `UNSPECIFIED`, because the
+   * gateway's `GatewayUserStatus` has no `LOCKED` member and
+   * `ValidateAccessTokenResponseDto.status` is an unconstrained string the
+   * contract makes no promise about.
    */
   resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange>;
 }
 
 /**
- * What the *deployed* gateway says when asked for the problems summary, word
- * for word — measured 2026-08-25 with a GLOBAL_ADMIN token.
+ * What the gateway *said* when asked for the problems summary, word for word —
+ * measured 2026-08-25 with a GLOBAL_ADMIN token.
  *
- * It does not answer 404. Not knowing the path, it routes
- * `/readonly/outbox/problematic-summary` into the generic table read, takes
- * `outbox` for a service key, and answers `400 INVALID_ARGUMENT` with this
- * message. So this exact pairing — and nothing broader — is what "TAS-105 has
- * not deployed yet" looks like on the wire, and the Problems view reads it as a
- * quiet note rather than as a failure (docs/ai/API-DIVERGENCE.md).
+ * **Inert rather than wrong.** The endpoint is deployed: backend PR #141
+ * (TAS-105) merged 2026-08-27, and the same call was measured on 2026-09-08
+ * answering `200` with `{counts, events, notAllShown}`
+ * (docs/ai/API-DIVERGENCE.md). The only reader of this constant,
+ * `isSummaryNotDeployed` (src/screens/admin/events.ts), compares it by exact
+ * equality against a `400 INVALID_ARGUMENT`, and a 200 never reaches that
+ * predicate — so the string cannot fire and cannot mislead a user. It survives
+ * only because the compensation it belongs to is still in the tree.
+ *
+ * What was measured, in the tense it now belongs to: the gateway of 2026-08-25
+ * did not answer 404. Not knowing the path, it routed
+ * `/readonly/outbox/problematic-summary` into the generic table read, took
+ * `outbox` for a service key, and answered `400 INVALID_ARGUMENT` with this
+ * message. That exact pairing — and nothing broader — was what "TAS-105 has not
+ * deployed yet" looked like on the wire, and the Problems view still reads it
+ * as a quiet note rather than as a failure.
  *
  * Pinned as one exported constant for the same reason
  * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a
  * measurement, and it belongs where the measurement can be read, not inline in
- * a component. It stops being matched the day the endpoint deploys, because the
- * endpoint will answer 200.
+ * a component.
+ *
+ * It does not remove itself. An earlier version of this comment promised it
+ * would, "the day the endpoint deploys, because the endpoint will answer 200" —
+ * the endpoint deployed and nothing happened, because a string that quietly
+ * stops matching reports nothing to anyone. It comes out by hand, with the rest
+ * of the compensation, in TAS-194.
  */
 export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";
 
 /**
  * What the *deployed* gateway says when asked for a route it does not have —
- * measured 2026-08-25 with a GLOBAL_ADMIN token against
- * `POST /api/v1/admin/users/not-a-uuid/block`:
+ * measured 2026-09-06 against
+ * `GET /api/v1/projects/{uuid}/issues/{uuid}/attachments`:
  * `404 {"code":"NOT_FOUND","message":"No static resource
- * api/v1/admin/users/not-a-uuid/block for request '…'"}`.
+ * api/v1/projects/…/attachments for request '…'"}`, where the deployed
+ * neighbour `…/comments` answers `401` to the same unauthenticated request.
  *
- * That prefix is Spring's static-resource fallback, which is what an
- * unmapped path falls through to, and it is what tells "this write has not
- * deployed yet" apart from a deployed route's own
- * `404 "User not found"`. All three admin user writes are undeployed together
- * — they ship in one backend PR — so the same signature covers `reset-lockout`
- * as covers `block`. Matched as a **substring** paired with the 404 —
- * never by equality — because the tail carries the request path, so an equality
- * check would never fire.
+ * That prefix is Spring's static-resource fallback, which is what an unmapped
+ * path falls through to, and it is what tells "this route has not deployed yet"
+ * apart from a deployed route's own `404 "Issue not found"`. Matched as a
+ * **substring** paired with the 404 — never by equality — because the tail
+ * carries the request path, so an equality check would never fire.
+ *
+ * **One caller: the attachments panel** (`src/screens/BoardScreen.tsx`), whose
+ * five routes ship in backend PR #147 and are still open. The admin user writes
+ * were the original caller and are no longer one — PR #146 deployed all three,
+ * so `POST /api/v1/admin/users/not-a-uuid/block` answers `400 INVALID_ARGUMENT`
+ * as of 2026-09-08 where it answered this 404 on 2026-08-25, and TAS-196 took
+ * that compensation out.
  *
  * Pinned here for the same reason `OUTBOX_SUMMARY_UNSERVED_MESSAGE` is: a
  * gateway string the UI branches on is a measurement, and it belongs where the
- * measurement can be read rather than inline in a component. It stops matching
- * the day the endpoint deploys, because the route will answer for itself.
+ * measurement can be read rather than inline in a component.
+ *
+ * The *signature* removes itself; the *code* does not, and the admin half is
+ * the worked example. The day PR #146 deployed those three routes they began
+ * answering for themselves and this string stopped matching them — silently,
+ * with nothing reported to anyone. Deleting the branch, the dialog copy and the
+ * divergence entry was a separate act, done by hand in TAS-196, as the
+ * paragraph above records. That is why a compensation needs a story to retire
+ * it and never a deployment: nobody schedules the removal of a check that has
+ * promised to disappear on its own.
  */
 export const UNDEPLOYED_ROUTE_MESSAGE = "No static resource";

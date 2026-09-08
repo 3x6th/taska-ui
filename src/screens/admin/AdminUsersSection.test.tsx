@@ -18,9 +18,9 @@ import { AdminUsersSection } from "./AdminUsersSection";
  * The writes go to a **real `MockTaskaApi`** rather than to a stub, so the
  * refusals here are the mock's own reproduction of the backend's rules — the
  * last-active-admin guard in particular is exercised end to end rather than
- * asserted against a fake that was told to fail. Only the two shapes the mock
- * cannot produce are supplied on top: a row with an unrecognised status, and a
- * gateway that has not deployed the route.
+ * asserted against a fake that was told to fail. Only the shapes the mock cannot
+ * produce are supplied on top — a row with an unrecognised status, and the
+ * gateway's own transport failures.
  */
 const { fakeApi, useMock, setExtraRows, setWriteFailure, setRowsFailure, holdRows, releaseRows } = vi.hoisted(() => {
   const state: {
@@ -401,7 +401,12 @@ describe("the admin Users section", () => {
     expect(within(rowFor("Mark Lee")).getByText("Active")).toBeVisible();
   });
 
-  it("reads an undeployed route as a missing deployment rather than a missing user", async () => {
+  it("words a 404 as a refusal and offers the request id, with no story link left to follow", async () => {
+    // Until TAS-196 this shape — a 404 carrying Spring's static-resource
+    // message — had a sentence of its own and a link to the backend story that
+    // would deploy the route. PR #146 deployed all three, so the branch is gone:
+    // a 404 from these routes is a statement about the account, and the dialog
+    // must not send the reader to Jira over one.
     setWriteFailure(
       new ApiError(
         "No static resource api/v1/admin/users/1/block for request 'POST /api/v1/admin/users/1/block'.",
@@ -418,9 +423,9 @@ describe("the admin Users section", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Block" }));
 
     const alert = await within(dialog).findByRole("alert");
-    expect(alert).toHaveTextContent(/does not serve blocking and unblocking yet/i);
-    expect(within(alert).getByRole("link", { name: "TAS-107" })).toBeVisible();
-    expect(alert).not.toHaveTextContent(/refused this/i);
+    expect(alert).toHaveTextContent(/refused this/i);
+    expect(alert).not.toHaveTextContent(/does not serve/i);
+    expect(within(alert).queryByRole("link")).not.toBeInTheDocument();
     // The request id earns its space in this area (§5.8).
     expect(within(alert).getByRole("button", { name: /Copy request id req-77/ })).toBeVisible();
   });

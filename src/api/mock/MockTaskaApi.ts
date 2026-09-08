@@ -675,9 +675,9 @@ export class MockTaskaStore {
       },
       // Locked by his own failed sign-ins rather than by an administrator, so
       // he is the one account whose state nobody in this product created —
-      // which is exactly the row Reset lockout exists for. Seeded ahead of the
-      // backend on purpose: `LOCKED` ships with PR #146, so until that merges
-      // there is no live row anywhere that carries it and the third action
+      // which is exactly the row Reset lockout exists for. Seeded because no
+      // click can produce it: reaching `LOCKED` takes repeated failed sign-ins
+      // against the real auth-service, so without this row the third action
       // would be unreachable in the only environment an e2e run has.
       {
         id: OMAR_ID,
@@ -2349,9 +2349,9 @@ export class MockTaskaStore {
    * `AdminUserManagementServiceImpl.resetCredentialLockout` at the head of
    * backend PR #146.
    *
-   * `LOCKED` is not an administrative state — once that PR deploys an account
-   * arrives there by failing to sign in `maxFailedAttempts` times, and leaves
-   * on its next success — and this is the only *write* that leaves it. Legal
+   * `LOCKED` is not an administrative state — an account arrives there by
+   * failing to sign in `maxFailedAttempts` times, and leaves on its next
+   * success — and this is the only *write* that leaves it. Legal
    * from `LOCKED` and from nothing else, and it always
    * lands on `ACTIVE`, which is why the confirmation can state the transition
    * before asking for it.
