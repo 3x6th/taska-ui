@@ -633,9 +633,13 @@ export interface TaskaApi {
    * both, from either implementation, and it has to keep reading the `code` —
    * that is the only half carrying the last-admin refusal on the wire.
    *
-   * The endpoint is not on the deployed gateway yet — it exists only in the
-   * backend's TAS-107 branch — so against `rest` and `hybrid` it answers the
-   * undeployed-route signature below (docs/ai/API-DIVERGENCE.md).
+   * On the deployed gateway since backend PR #146 (merged 2026-09-07). Measured
+   * 2026-09-08 with a GLOBAL_ADMIN token against
+   * `POST /api/v1/admin/users/not-a-uuid/block`, which answers
+   * `400 INVALID_ARGUMENT` — the path is mapped and rejects the uuid — where the
+   * same call answered Spring's static-resource 404 on 2026-08-25. That 404 is
+   * what the Users section used to read as "not deployed yet"; the compensation
+   * came out with TAS-196.
    */
   blockUser(userId: string, reason: string): Promise<UserStatusChange>;
 
@@ -659,10 +663,10 @@ export interface TaskaApi {
    * `UserStatusResponseDto` back.
    *
    * `LOCKED` is where an account lands after `maxFailedAttempts` failed
-   * sign-ins — once this PR deploys, and not before: `develop`'s
-   * `handleFailedAttempt(Credential)` writes no status at all, so the state and
-   * this endpoint arrive together. That is what makes this the write that
-   * answers a forgotten password rather than a decision about a person. On
+   * sign-ins. The state and this endpoint arrived together in backend PR #146:
+   * before it, `handleFailedAttempt(Credential)` wrote no status at all and
+   * nothing could be locked. That is what makes this the write that answers a
+   * forgotten password rather than a decision about a person. On
    * success `AdminUserManagementServiceImpl.resetCredentialLockout` clears the
    * credential's `failedAttempts`, `lockedUntil` and `lastFailedAt` and sets
    * the account `ACTIVE`, which is why the transition it reports is always
@@ -695,9 +699,19 @@ export interface TaskaApi {
    * show them; modelling them here would be inventing a field the wire has
    * never had.
    *
-   * Not on the deployed gateway either — it arrives with backend TAS-108 in the
-   * same PR as the other two, so against `rest` and `hybrid` it answers the
-   * undeployed-route signature below (docs/ai/API-DIVERGENCE.md).
+   * Deployed with the other two — same backend PR #146, measured the same way
+   * on 2026-09-08: `POST /api/v1/admin/users/not-a-uuid/reset-lockout` answers
+   * `400 INVALID_ARGUMENT`.
+   *
+   * Two things about it stay compensated (docs/ai/API-DIVERGENCE.md), and
+   * neither is closed by the routes deploying. The not-locked refusal arrives as
+   * **400** — the contract lists `400/401/403/404` here and no `409`, while the
+   * backend's own gateway test for it asserts 409, so the client believes the
+   * mapper and reads the `code` (`isConflict`, src/api/errors.ts). And
+   * `GET /users/me` reports a locked account as `UNSPECIFIED`, because the
+   * gateway's `GatewayUserStatus` has no `LOCKED` member and
+   * `ValidateAccessTokenResponseDto.status` is an unconstrained string the
+   * contract makes no promise about.
    */
   resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange>;
 }
@@ -723,23 +737,29 @@ export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";
 
 /**
  * What the *deployed* gateway says when asked for a route it does not have —
- * measured 2026-08-25 with a GLOBAL_ADMIN token against
- * `POST /api/v1/admin/users/not-a-uuid/block`:
+ * measured 2026-09-06 against
+ * `GET /api/v1/projects/{uuid}/issues/{uuid}/attachments`:
  * `404 {"code":"NOT_FOUND","message":"No static resource
- * api/v1/admin/users/not-a-uuid/block for request '…'"}`.
+ * api/v1/projects/…/attachments for request '…'"}`, where the deployed
+ * neighbour `…/comments` answers `401` to the same unauthenticated request.
  *
- * That prefix is Spring's static-resource fallback, which is what an
- * unmapped path falls through to, and it is what tells "this write has not
- * deployed yet" apart from a deployed route's own
- * `404 "User not found"`. All three admin user writes are undeployed together
- * — they ship in one backend PR — so the same signature covers `reset-lockout`
- * as covers `block`. Matched as a **substring** paired with the 404 —
- * never by equality — because the tail carries the request path, so an equality
- * check would never fire.
+ * That prefix is Spring's static-resource fallback, which is what an unmapped
+ * path falls through to, and it is what tells "this route has not deployed yet"
+ * apart from a deployed route's own `404 "Issue not found"`. Matched as a
+ * **substring** paired with the 404 — never by equality — because the tail
+ * carries the request path, so an equality check would never fire.
+ *
+ * **One caller: the attachments panel** (`src/screens/BoardScreen.tsx`), whose
+ * five routes ship in backend PR #147 and are still open. The admin user writes
+ * were the original caller and are no longer one — PR #146 deployed all three,
+ * so `POST /api/v1/admin/users/not-a-uuid/block` answers `400 INVALID_ARGUMENT`
+ * as of 2026-09-08 where it answered this 404 on 2026-08-25, and TAS-196 took
+ * that compensation out.
  *
  * Pinned here for the same reason `OUTBOX_SUMMARY_UNSERVED_MESSAGE` is: a
  * gateway string the UI branches on is a measurement, and it belongs where the
  * measurement can be read rather than inline in a component. It stops matching
- * the day the endpoint deploys, because the route will answer for itself.
+ * the day the endpoint deploys, because the route will answer for itself — which
+ * is exactly how the admin half of it removed itself.
  */
 export const UNDEPLOYED_ROUTE_MESSAGE = "No static resource";

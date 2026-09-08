@@ -5,7 +5,6 @@ import {
   actionFor,
   actionLabels,
   globalRoleLabel,
-  isUndeployedRoute,
   personLabel,
   readUserRow,
   targetStatus,
@@ -143,42 +142,31 @@ describe("admin users, statuses and roles", () => {
 describe("admin users, telling one failure from another", () => {
   const restError = (status: number, code: string, message: string) => new ApiError(message, code, status);
 
-  it("reads the undeployed route from the 404 and the message together", () => {
-    const undeployed = restError(
-      404,
-      "NOT_FOUND",
-      "No static resource api/v1/admin/users/1/block for request 'POST /api/v1/admin/users/1/block'.",
-    );
-    expect(isUndeployedRoute(undeployed)).toBe(true);
-    expect(userWriteFailure(undeployed)).toBe("undeployed");
-
-    // A deployed route's own 404 is a missing account, and must not be read as
-    // a missing deployment — that is the whole reason both halves are matched.
-    const missing = restError(404, "NOT_FOUND", "User not found");
-    expect(isUndeployedRoute(missing)).toBe(false);
-    expect(userWriteFailure(missing)).toBe("refused");
-
-    // And the message alone, on any other status, is not the signature either.
-    expect(isUndeployedRoute(restError(500, "INTERNAL", "No static resource"))).toBe(false);
-  });
-
-  it("reads the same signature for the reset-lockout route, which is as undeployed as the other two", () => {
-    // One predicate for all three: the fallback's message names the path it was
-    // asked for, so it says nothing about *which* route is missing — and all
-    // three arrive in one backend PR anyway.
-    const undeployed = restError(
-      404,
-      "NOT_FOUND",
-      "No static resource api/v1/admin/users/1/reset-lockout for request 'POST /api/v1/admin/users/1/reset-lockout'.",
-    );
-    expect(isUndeployedRoute(undeployed)).toBe(true);
-    expect(userWriteFailure(undeployed)).toBe("undeployed");
-
-    // Reset-lockout's own 404s — two sentences, one status, one code — stay
-    // "refused". Neither may read as a missing deployment.
+  /**
+   * Every 404 these routes answer is now the route's own, and there is no
+   * seventh classification hiding behind one. Until TAS-196 the section also
+   * read a 404 carrying Spring's static-resource message as "not deployed yet";
+   * backend PR #146 mapped all three paths, so the only 404 left is a statement
+   * about the resource and all of them are `refused`.
+   */
+  it("reads every 404 these routes answer as a refusal", () => {
+    // Block and unblock have one sentence for it; reset-lockout has two — no
+    // such user, and a locked account with no password credential behind it —
+    // on one status and one code. Nothing may branch on the wording.
     for (const message of ["User not found", "Credential not found"]) {
       expect(userWriteFailure(restError(404, "NOT_FOUND", message))).toBe("refused");
     }
+    // Including the shape that used to mean something else: it is a 404 from
+    // these routes and it says the same thing about them as any other.
+    expect(
+      userWriteFailure(
+        restError(
+          404,
+          "NOT_FOUND",
+          "No static resource api/v1/admin/users/1/block for request 'POST /api/v1/admin/users/1/block'.",
+        ),
+      ),
+    ).toBe("refused");
   });
 
   it("reads the reset-lockout refusal as a conflict, which it reaches only by its code", () => {

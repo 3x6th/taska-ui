@@ -1355,10 +1355,14 @@ describe("MockTaskaApi", () => {
 
   /**
    * Blocking and unblocking an account (TAS-186). Every rule below is the
-   * backend's own, read out of `AdminUserManagementServiceImpl` on the TAS-107
-   * branch — the endpoints are not on the deployed gateway yet, so this is the
-   * only implementation of them that answers anything at all, and it has to
-   * answer exactly what the gateway will (docs/ai/API-DIVERGENCE.md).
+   * backend's own, read out of `AdminUserManagementServiceImpl` — on the TAS-107
+   * branch when these were written, on `develop` since backend PR #146 merged.
+   *
+   * The routes are deployed now, and that does not make this less load-bearing:
+   * these refusals cannot be produced against the live gateway without blocking
+   * a real account, so the mock stays the implementation that demonstrates them,
+   * and it has to answer exactly what the gateway does
+   * (docs/ai/API-DIVERGENCE.md).
    */
   describe("admin user block and unblock", () => {
     /** Whoever the seed gave this status, found through the same table the section reads. */
@@ -1373,10 +1377,9 @@ describe("MockTaskaApi", () => {
       const { rows } = await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
 
       // All four since TAS-188. `LOCKED` is the one nobody in this product puts
-      // an account into — and, until backend PR #146 merges, the one nothing
-      // puts an account into at all — so without a seeded row the third action
-      // would be unreachable in the only environment a reviewer or an e2e run
-      // has.
+      // an account into — it takes failed sign-ins against the real auth-service
+      // — so without a seeded row the third action would be unreachable in the
+      // only environment a reviewer or an e2e run has.
       expect(new Set(rows.map((row) => row.status))).toEqual(new Set(["ACTIVE", "INVITED", "BLOCKED", "LOCKED"]));
       // And exactly one global admin, which is what makes the last-active-admin
       // refusal reachable by clicking rather than only by unit test.

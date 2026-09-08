@@ -365,15 +365,16 @@ export class HybridTaskaApi implements TaskaApi {
 
   /**
    * Straight to the gateway, all three of them, and deliberately with no
-   * fallback of any kind — even though these are the three calls the deployed
-   * gateway cannot answer yet (docs/ai/API-DIVERGENCE.md, TAS-107 and TAS-108,
-   * which arrive in one backend PR).
+   * fallback of any kind. All three are deployed since backend PR #146
+   * (measured 2026-09-08), so this is now the ordinary case rather than a
+   * position taken about an absent route — but the reason for it has not
+   * changed and outlives the deployment.
    *
    * They are *writes*. A compensation for a read can be a view over live data;
    * a compensation for a write would be this class reporting a change that
    * never happened, to a table it cannot alter, which is worse than the failure
-   * it would be hiding. So the section sees the gateway's own answer and says
-   * the operation is not deployed yet.
+   * it would be hiding. So the section sees the gateway's own answer, whatever
+   * it is.
    *
    * `resetCredentialLockout` is the clearest case of the three: what it changes
    * — a credential's failed-attempt counter — is not in any response this class

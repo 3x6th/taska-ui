@@ -1,21 +1,16 @@
 /**
- * The four states an account can be in — `UserStatusDto` in the contract this
- * story is written against (backend PR #146, extracted at
- * docs/contract/pending/pr-146-TAS-108.yml), and `USER_STATUS_LOCKED = 4` in
- * that PR's `common.proto`.
+ * The four states an account can be in — `UserStatusDto` in the contract
+ * (docs/contract/openapi.yml), and `USER_STATUS_LOCKED = 4` in `common.proto`.
  *
- * `LOCKED` is not on `develop`, so nothing holds it yet. Measured at
- * `ref=develop` on 2026-09-05: `auth-service`'s `UserStatus` enum declares
- * `ACTIVE`, `BLOCKED` and `INVITED`; the proto enum stops at
- * `USER_STATUS_BLOCKED = 3`; and `handleFailedAttempt(Credential)` touches the
- * credential's counters and writes no status at all. The entity value, the
- * proto value, the failed-login write and `resetFailedAttempts` restoring
- * `ACTIVE` all ship with PR #146 — the same PR that brings the three admin
- * writes TAS-188 is about. The union is widened now for that reason and no
- * other: so this frontend is right on the day that PR merges rather than a
- * build after it.
+ * `LOCKED` was widened into this union by TAS-188 a build *before* the backend
+ * could produce it, deliberately: at `ref=develop` on 2026-09-05 the entity
+ * enum stopped at `INVITED`, the proto enum at `USER_STATUS_BLOCKED = 3`, and
+ * `handleFailedAttempt(Credential)` wrote no status at all. All four of those —
+ * plus `resetFailedAttempts` restoring `ACTIVE` — shipped in backend PR #146,
+ * which merged on 2026-09-07 and is deployed, so the value is live now and the
+ * bet came off.
  *
- * What earns it a value of its own once it does ship: `LOCKED` is **not** an
+ * What earns it a value of its own: `LOCKED` is **not** an
  * administrative state, and no write this client makes reaches it. An account
  * locks itself after `maxFailedAttempts` failed sign-ins and the next
  * successful one releases it, which is why `block` and `unblock` are both

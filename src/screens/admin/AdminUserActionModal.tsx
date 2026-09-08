@@ -6,7 +6,6 @@ import { ADMIN_WRITE_REASON_MAX_LENGTH } from "../../api/TaskaApi";
 import { Modal } from "../../components/Modal";
 import { RequestId } from "../../components/RequestId";
 import type { UserStatusChange } from "../../domain/types";
-import { jiraUrl } from "./sections";
 import type { AdminUserTarget, UserAction } from "./users";
 import {
   actionAccessibleName,
@@ -212,8 +211,12 @@ export function AdminUserActionModal({
 }
 
 /**
- * Why the write failed, in the words of §5.8's taxonomy plus the case this
- * section adds: the route is not deployed yet.
+ * Why the write failed, in the words of §5.8's taxonomy.
+ *
+ * It carried a sixth sentence until TAS-196 — "this gateway does not serve
+ * blocking and unblocking yet", with a link to the backend story that would.
+ * Backend PR #146 deployed all three routes, so there is no such failure left to
+ * word and the branch is gone rather than left unreachable.
  *
  * `AdminError` is deliberately not reused. Its four sentences describe *reading
  * a table* — "the table is not one it will serve", "failed while reading this
@@ -224,23 +227,11 @@ export function AdminUserActionModal({
 function ActionFailure({ action, error }: { action: UserAction; error: unknown }) {
   const failure = userWriteFailure(error);
   const { message, requestId } = apiErrorFacts(error);
-  // The two undeployed routes ship in one backend PR under two stories, and the
-  // reader gets the one that removes the operation in front of them.
-  const story = action === "reset" ? "TAS-108" : "TAS-107";
 
   return (
     <div className="admin-user-failure" role="alert">
       <p>
-        {failure === "undeployed" ? (
-          <>
-            This gateway does not serve {action === "reset" ? "the lockout reset" : "blocking and unblocking"} yet.
-            {action === "reset" ? " It arrives with " : " They arrive with "}
-            <a className="admin-note-link" href={jiraUrl(story)} rel="noreferrer" target="_blank">
-              {story}
-            </a>
-            ; until then this section reads the table and cannot change it. It is not that the account is missing.
-          </>
-        ) : failure === "conflict" ? (
+        {failure === "conflict" ? (
           action === "reset" ? (
             "The server would not make this change. Nothing is wrong with the request — a lockout can only be reset while the account is locked, and this one is not, or is no longer."
           ) : (

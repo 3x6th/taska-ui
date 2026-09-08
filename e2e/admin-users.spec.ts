@@ -11,9 +11,9 @@ import { expect, test, type Page } from "@playwright/test";
 // BLOCKED since TAS-186, Omar is LOCKED since TAS-188, and everybody else is
 // ACTIVE. Omar is the only row that offers the third action — the server
 // refuses Block from LOCKED, so nothing else can reach it. He is seeded rather
-// than produced: `LOCKED` is not on the backend's `develop` and arrives with
-// PR #146 alongside these three endpoints, so the mock is the only place the
-// state can be seen at all until that merges.
+// than produced: reaching `LOCKED` takes repeated failed sign-ins against the
+// real auth-service, which no test here can drive, so the mock is where the
+// state is seen.
 
 async function openUsers(page: Page) {
   await page.goto("/login");

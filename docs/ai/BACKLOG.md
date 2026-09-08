@@ -1355,29 +1355,59 @@ search endpoint is claimed; the other is not:
   union and the contract already disagreed before this.
 
 The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
-schema change. None is claimed, and none is on the four open PRs this refresh was
-done for — they landed on `develop` while this repository was looking elsewhere:
+schema change. None was on the four open PRs this refresh was done for — they
+landed on `develop` while this repository was looking elsewhere. **Three of the
+five items below were claimed on 2026-09-08**, after the snapshot was refreshed
+again to `96408229c1e4` and the deployed gateway was measured directly:
 
-- **Issue watchers, five routes.** `GET`/`POST
+- ~~**Issue watchers, five routes.**~~ Claimed by
+  [TAS-193](https://jira.ozero.dev/browse/TAS-193), which builds the `me` pair
+  and the list and defers the two project-`ADMIN` routes: a watcher row carries
+  only `userId`, and with no member read (TAS-137) there is nobody to name in a
+  picker. Measured 2026-09-08 — `GET .../watchers` answers `200`
+  `{totalCount, watchers[]}`, so the route is real and the array key is
+  `watchers`, not `items`. `GET`/`POST
   /projects/{projectId}/issues/{issueId}/watchers`, `PUT`/`DELETE` on
   `.../watchers/me`, and `DELETE .../watchers/{userId}`. The `me` pair takes the
   user from the JWT and needs no body; the other two are project-`ADMIN` only.
   This is a real feature with a real UI (a watch toggle on the issue panel and a
   watcher list beside the assignee), not a mapping job, so it wants its own
   story rather than a corner of someone else's.
-- **`POST /admin/outbox/{service}/{eventId}/retry`.** The write half of TAS-106,
+- ~~**`POST /admin/outbox/{service}/{eventId}/retry`.**~~ Claimed by
+  [TAS-194](https://jira.ozero.dev/browse/TAS-194); the backend half merged
+  2026-09-03 (PR #143) and the route is in the deployed gateway's own spec. The
+  narrowing this item worried about is carried into the story rather than left
+  here. The write half of TAS-106,
   which the Events section has never had. `service` is a closed enum of `auth`,
   `project`, `issue` — narrower than the service list the catalog returns, which
   is itself worth noticing before a retry button is drawn next to a row the
   endpoint cannot accept.
-- **`GET /readonly/outbox/problematic-summary` is real now.** `TaskaApi.ts`
-  documents it as existing "only in the TAS-105 branch", and the Problems view
-  reads `OUTBOX_SUMMARY_UNSERVED_MESSAGE` off the deployed gateway to say so.
-  The contract has it; whether the *deployed* gateway does is a separate
-  measurement, and the compensation must not be deleted until that measurement
-  is taken.
-- **`ListIssuesResponseDto.items` changed from `IssueShortResponseDto` to
-  `IssueResponseDto`.** The list endpoint now returns whole issues.
+- **`GET /readonly/outbox/problematic-summary` is real now — and the
+  measurement has been taken.** `TaskaApi.ts` documents it as existing "only in
+  the TAS-105 branch", and the Problems view reads
+  `OUTBOX_SUMMARY_UNSERVED_MESSAGE` off the deployed gateway to say so. **Probed
+  2026-09-08** with a `GLOBAL_ADMIN` token: `200`, `{counts, events,
+  notAllShown}`, two real `FAILED` events on `project` with
+  `lastErrorMessage: "Failed to construct kafka producer"` and `attempts: 5`.
+  The compensation is now describing a gateway that answers, so it can come out
+  — worth folding into [TAS-194](https://jira.ozero.dev/browse/TAS-194), which
+  opens that view anyway, rather than a story of its own.
+
+  One thing that probe settles for TAS-194: `counts` names exactly `project`,
+  `issue` and `auth` — the same three the retry route's `service` enum accepts.
+  The Events section can therefore only ever draw a row whose service the retry
+  endpoint takes, so the "narrower than the catalog" worry above is about the
+  Data section's service list, not this one.
+- ~~**`ListIssuesResponseDto.items` changed from `IssueShortResponseDto` to
+  `IssueResponseDto`.**~~ **Measured 2026-09-08, and the answer is yes.** Against
+  the deployed gateway with a `GLOBAL_ADMIN` token,
+  `GET /projects/{id}/issues?page=0&pageSize=3` returns items carrying `status`
+  (`"IN_PROGRESS"`), `description`, `createdAt` and a **populated** `labels`
+  array — 1, 2 and 1 label across the three rows. Claimed by
+  [TAS-195](https://jira.ozero.dev/browse/TAS-195). The same probe read the
+  detail endpoint and got a non-empty `labels` back, which is the bug
+  [TAS-178](https://jira.ozero.dev/browse/TAS-178) is about; that wants its own
+  confirmation before the Jira story is closed. The list endpoint now returns whole issues.
   `RestTaskaApi.listIssues` hydrates every row from the detail endpoint because
   the short DTO carried no labels — that N+1 may now be deletable. It is a
   measurement against the deployed gateway, not a reading of the contract,
