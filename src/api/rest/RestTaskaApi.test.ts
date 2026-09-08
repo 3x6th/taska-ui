@@ -763,10 +763,11 @@ describe("RestTaskaApi read-only admin", () => {
     expect(String(fetchStub.mock.calls[0][0])).not.toContain("/../");
   });
 
-  // The Events section's summary (TAS-167). Not in the vendored contract and
-  // not on the deployed gateway yet — this is the TAS-105 branch's shape, and
-  // these tests are the only thing standing between it and the first response
-  // (docs/ai/API-DIVERGENCE.md).
+  // The Events section's summary (TAS-167). In the vendored contract and on the
+  // deployed gateway since backend PR #141 (TAS-105) merged 2026-08-27 — this
+  // comment said "not deployed yet" until TAS-194. What these tests still pin is
+  // the half the mock cannot: the exact request, and the mapping of a response
+  // in which nothing is `required`.
   it("asks for the problems summary with no query at all", async () => {
     const fetchStub = vi.fn(async (input: string) => answer({ events: [], counts: [] }, input));
     vi.stubGlobal("fetch", fetchStub);
@@ -1599,6 +1600,137 @@ describe("RestTaskaApi admin user writes", () => {
       code: "FAILED_PRECONDITION",
       message: "Cannot block the last active global admin",
       requestId: "req-9",
+    });
+  });
+});
+
+/**
+ * `POST /admin/outbox/{service}/{eventId}/retry` (TAS-194, backend TAS-106) as
+ * `RestTaskaApi` puts it on the wire.
+ *
+ * What is pinned here and nowhere else: the path, the body, and the reason
+ * guard's *own* bound. The mock demonstrates which events may be retried and
+ * what the retry changes; only this side can show that the request carries
+ * `{reason}` to `/admin/outbox/{service}/{eventId}/retry` and that a 1000-
+ * character reason is sent rather than refused — the mistake a shared guard with
+ * the admin user writes' 550 would have made, silently, at the boundary.
+ */
+describe("RestTaskaApi outbox retry", () => {
+  const answer = (status: number, body: unknown, requestId?: string, _input?: string) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name === "X-Request-Id" ? (requestId ?? null) : null) },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const eventId = "7e00001-0000-4000-8000-000000000001";
+  const accepted = { eventId, status: "NEW", attempts: 5 };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the reason to the retry path and reads the new state back", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer(200, accepted, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const result = await new RestTaskaApi().retryOutboxEvent("project", eventId, "  Kafka is back  ");
+
+    const [url, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`/api/v1/admin/outbox/project/${eventId}/retry`);
+    expect(init.method).toBe("POST");
+    // Trimmed, which is also what admin-service stores in the audit row.
+    expect(JSON.parse(String(init.body)) as unknown).toEqual({ reason: "Kafka is back" });
+    expect(result).toEqual({ eventId, status: "NEW", attempts: 5 });
+  });
+
+  it("reads an omitted or null attempts as null rather than as zero", async () => {
+    // `attempts` is outside the schema's `required` list *and* declared
+    // nullable, so both spellings arrive — and neither is the number 0, which
+    // would say the event has never been tried.
+    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { eventId, status: "NEW" })));
+    await expect(new RestTaskaApi().retryOutboxEvent("auth", eventId, "Go")).resolves.toMatchObject({
+      attempts: null,
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { eventId, status: "NEW", attempts: null })));
+    await expect(new RestTaskaApi().retryOutboxEvent("auth", eventId, "Go")).resolves.toMatchObject({
+      attempts: null,
+    });
+  });
+
+  it("escapes the event id rather than letting it reshape the path", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer(200, accepted, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await new RestTaskaApi().retryOutboxEvent("issue", "../../../users/1/block", "Nice try");
+
+    expect(String(fetchStub.mock.calls[0][0])).not.toContain("/../");
+  });
+
+  /**
+   * The whole reason this route has a guard of its own. 550 is the admin *user*
+   * writes' limit; this one accepts 1000, and a build that shared the constant
+   * would refuse 551 here — a request the server would have taken — with a
+   * message naming a number the contract does not state for this route.
+   */
+  it("sends a 1000-character reason and refuses 1001, without reaching the network", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer(200, accepted, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await new RestTaskaApi().retryOutboxEvent("auth", eventId, "x".repeat(1000));
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+
+    await expect(new RestTaskaApi().retryOutboxEvent("auth", eventId, "x".repeat(1001))).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: "A reason is at most 1000 characters",
+    });
+    // Refused here, so nothing was spent on a request that could not succeed.
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a blank reason before the request, with the same sentence the mock uses", async () => {
+    const fetchStub = vi.fn(async (input: string) => answer(200, accepted, undefined, input));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await expect(new RestTaskaApi().retryOutboxEvent("auth", eventId, "   ")).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: "A reason is required",
+    });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The refusal this feature is most careful about, and the one a status check
+   * alone would misfile. `FAILED_PRECONDITION` maps to **400**, not 409, so the
+   * dialog reaches its "conflict" sentence through `isConflict`'s code arm —
+   * and the request id has to survive, because this area is where it earns its
+   * place.
+   */
+  it("carries the not-eligible refusal through as a 400 with its code and request id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer(
+          400,
+          { code: "FAILED_PRECONDITION", message: "Outbox event with status NEW is not eligible for retry" },
+          "req-42",
+        ),
+      ),
+    );
+
+    await expect(new RestTaskaApi().retryOutboxEvent("auth", eventId, "Testing the guard")).rejects.toMatchObject({
+      status: 400,
+      code: "FAILED_PRECONDITION",
+      message: "Outbox event with status NEW is not eligible for retry",
+      requestId: "req-42",
     });
   });
 });

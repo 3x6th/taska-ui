@@ -11,6 +11,7 @@ import type {
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
+  RetryableOutboxService,
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
@@ -20,6 +21,8 @@ import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
   ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
   ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
+  OUTBOX_RETRY_REASON_MAX_LENGTH,
+  OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE,
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
@@ -62,6 +65,7 @@ import type {
   IssueWithHistory,
   Label,
   Notification,
+  OutboxRetryResult,
   Page,
   ProblematicOutboxCounts,
   ProblematicOutboxEvent,
@@ -140,6 +144,20 @@ interface RestUserStatusChange {
   previousStatus: UserStatus;
   currentStatus: UserStatus;
   changedAt: string;
+}
+
+/**
+ * `RetryOutboxEventResponseDto` — what the outbox retry answers with.
+ *
+ * `eventId` and `status` are in the schema's `required` list, so they are typed
+ * as present. `attempts` is not, and is declared `nullable` on top of that, so
+ * it carries both spellings of "no number" — which is why the mapper below has
+ * to collapse them rather than spread the response through.
+ */
+interface RestOutboxRetryResult {
+  eventId: string;
+  status: string;
+  attempts?: number | null;
 }
 
 /** `GET /readonly/catalog`, with the same caveat. */
@@ -1155,6 +1173,35 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
+   * `POST /admin/outbox/{service}/{eventId}/retry`.
+   *
+   * A different reason guard from the three writes above, because the contract
+   * states a different bound — 1–1000 here against their 1–550. See
+   * `requireOutboxRetryReason` and `OUTBOX_RETRY_REASON_MAX_LENGTH`.
+   *
+   * `service` is escaped like every other path value even though its type is a
+   * three-member union: the escaping is what the path is built with, not a
+   * check, and a value that could not need it costs nothing to pass through it.
+   */
+  async retryOutboxEvent(
+    service: RetryableOutboxService,
+    eventId: string,
+    reason: string,
+  ): Promise<OutboxRetryResult> {
+    const response = await this.request<RestOutboxRetryResult>(
+      `/admin/outbox/${this.segment(service)}/${this.segment(eventId)}/retry`,
+      { method: "POST", body: { reason: requireOutboxRetryReason(reason) } },
+    );
+    return {
+      eventId: response.eventId,
+      status: response.status,
+      // `undefined` and `null` are one answer here — the schema can send either
+      // and neither is a number — and the domain type has one spelling for it.
+      attempts: response.attempts ?? null,
+    };
+  }
+
+  /**
    * Field by field rather than by spread, like `toIssueSearchHit`: the listing
    * is the point. What must keep being provable about this response is that
    * `changedAt` is carried and nothing more — no screen may start drawing it
@@ -1675,6 +1722,38 @@ function requireAdminWriteReason(raw: string): string {
   }
   if (reason.length > ADMIN_WRITE_REASON_MAX_LENGTH) {
     throw new ApiError(ADMIN_WRITE_REASON_TOO_LONG_MESSAGE, "INVALID_ARGUMENT", 400);
+  }
+  return reason;
+}
+
+/**
+ * The same guard for the outbox retry, and a **separate function on purpose**.
+ *
+ * The blank half is shared word for word — `minLength: 1` is the same rule on
+ * all four admin writes, and the server refuses a whitespace-only reason the
+ * same way for all four. The upper half is not: this route declares
+ * `maxLength: 1000` where block, unblock and reset-lockout declare 550, so
+ * folding the two into one function would have needed the limit as a parameter
+ * and the message with it — at which point the "one guard" was two guards with
+ * a shared body and a name that told the reader they were the same rule.
+ *
+ * They are not the same rule. The contract states two numbers, in two schemas,
+ * and this file states them the same way. The cost is six duplicated lines; the
+ * thing bought is that nobody reading either function comes away believing the
+ * gateway has a single reason limit.
+ *
+ * Measured on the trimmed value like its neighbour, so 1000 characters of text
+ * plus a trailing newline is accepted rather than refused on a character nobody
+ * typed on purpose — and the trimmed value is what goes out, which is also what
+ * the backend stores (`OutboxRetryServiceImpl` trims it into the audit row).
+ */
+function requireOutboxRetryReason(raw: string): string {
+  const reason = raw.trim();
+  if (reason === "") {
+    throw new ApiError(ADMIN_WRITE_REASON_REQUIRED_MESSAGE, "INVALID_ARGUMENT", 400);
+  }
+  if (reason.length > OUTBOX_RETRY_REASON_MAX_LENGTH) {
+    throw new ApiError(OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE, "INVALID_ARGUMENT", 400);
   }
   return reason;
 }

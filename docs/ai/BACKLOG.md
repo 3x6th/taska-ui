@@ -31,6 +31,25 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   neighbouring one in the same diff makes the removal harder to review, not
   easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
   named the account being blocked where it meant the reader.
+- **`userWriteFailure` now serves two sections and is named for one**
+  (`frontend-builder`, 2026-09-08, TAS-194). The outbox retry dialog imports it
+  from `src/screens/admin/users.ts` rather than copying it, which is right — its
+  ordering reasoning (`isConflict` before the 4xx arm, because
+  `FAILED_PRECONDITION` arrives on a 400) is the exact subtlety the retry's most
+  common refusal depends on, and two copies would be two chances to drift. But
+  the name now under-describes it, and so does its home. Renaming and moving it
+  under an Events story would be widening that story at merge time; it wants its
+  own small pass.
+- **The Retry column is off the right edge on a phone with no fade affordance**
+  (`frontend-builder`, 2026-09-08, TAS-194). The Users table has one, scoped to
+  `.admin-users-plane`; the Problems table was already wide enough to scroll for
+  its data and already had an off-screen chevron, so the story did not widen its
+  scope to generalise the affordance. Same recipe, one more caller.
+- **`--fg-3` measures 2.54 / 2.60 on a flashed row**, for the `—` null mark
+  (`frontend-builder`, 2026-09-08, TAS-194). Pre-existing and not caused by the
+  flash: it is already 3.14 / 3.05 on plain `--surface`, under §7's floor, and
+  the Users table has flashed the same dash since TAS-186. Belongs to the
+  `--fg-3` pass this file already asks for rather than to a spot fix.
 - **`RestIssue` tells the truth about seven fields and lies about the rest**
   (`api-contract-guard`, 2026-09-08, TAS-195 re-verdict). It is
   `Omit<Issue, seven fields> & { those seven restated optional }`, so the type

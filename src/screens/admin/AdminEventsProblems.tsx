@@ -1,15 +1,27 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { taskaApi } from "../../api/client";
-import type { ProblematicOutboxEvent } from "../../domain/types";
+import type { RetryableOutboxService } from "../../api/TaskaApi";
+import type { OutboxRetryResult, ProblematicOutboxEvent } from "../../domain/types";
 import { AdminError } from "./AdminError";
-import { eventAge, isSummaryNotDeployed, outboxCategory } from "./events";
+import { AdminOutboxRetryModal } from "./AdminOutboxRetryModal";
+import { canRetryOutboxEvent, eventAge, outboxCategory } from "./events";
 import { BACK_TO_PROBLEMS } from "./eventsUrlState";
-import { jiraUrl } from "./sections";
+
+/** How long a retried row stays marked, matching the Users section (§5.8). */
+const FLASH_MS = 2000;
+
+/** The identity of a row in this list: the summary is every service at once. */
+const eventKey = (event: Pick<ProblematicOutboxEvent, "serviceKey" | "id">) => `${event.serviceKey}:${event.id}`;
+
+/** A row narrowed to one the retry route can address. See `canRetryOutboxEvent`. */
+type RetryableEvent = ProblematicOutboxEvent & { serviceKey: RetryableOutboxService };
 
 /**
- * Problems — the Events section's landing view (DESIGN.md §5.8).
+ * Problems — the Events section's landing view (DESIGN.md §5.8), and since
+ * TAS-194 the one place in this section that writes.
  *
  * `GET /readonly/outbox/problematic-summary` with no parameters: the counters
  * are always for every service, and the list is the oldest events up to the
@@ -18,16 +30,130 @@ import { jiraUrl } from "./sections";
  * breakdown is the Outbox journal one tab away.
  */
 export function AdminEventsProblems() {
+  const queryClient = useQueryClient();
   const summaryQuery = useQuery({
     queryKey: ["admin", "outbox", "problems"],
     queryFn: () => taskaApi.getProblematicOutboxSummary(),
-    // No retries. The failure this endpoint actually produces today is the
-    // gateway saying it does not have the path (below), and asking three more
-    // times cannot change that answer — it only delays the note that explains
-    // it. A genuine fault keeps the "Try again" button, which is a retry a
-    // person chose.
+    /**
+     * No automatic retry — kept through TAS-194, on a different argument from
+     * the one that first put it here.
+     *
+     * The original reason was that the gateway did not serve this path and
+     * asking again could not change that. It serves it now (backend PR #141,
+     * measured 2026-09-08), so that argument is gone and this line was re-decided
+     * rather than inherited.
+     *
+     * What replaces it: of the failures this route can produce, only two could
+     * heal on their own — a 5xx and a lost connection — and both arrive on the
+     * screen somebody opens *because* a queue is broken, quite possibly while
+     * the gateway itself is the thing that is broken. The global default is one
+     * silent retry with a second of backoff (src/main.tsx), and a second of
+     * "Loading the summary…" bought against one chance in a few is a bad trade
+     * on this screen in particular. A 401 or a 403 could never heal, and asking
+     * twice about a refusal is only slower.
+     *
+     * The retry that matters is the one a person chooses and can see: the "Try
+     * again" button `AdminError` draws below. This is also now the query a
+     * successful write invalidates, and holding the confirmation open for a
+     * backoff would be the same cost paid at a worse moment.
+     *
+     * The honest cost: the catalog and rows queries in this area take the global
+     * default, so this is the one admin read that differs. That inconsistency is
+     * smaller than an incident screen that waits.
+     */
     retry: false,
   });
+
+  /**
+   * The row a retry was confirmed for, marked for two seconds. Keyed by
+   * `service:id` because the summary is every service at once and an id is only
+   * unique within one.
+   *
+   * There is **no optimistic override** of the row's own fields, deliberately —
+   * the Users section keeps one and this does not. There, the list is paged and
+   * cached and a row survives the write, so the pill would otherwise contradict
+   * the change for as long as the refetch took. Here the whole view is one
+   * request: it comes back entire, there is no page to be stale, and an override
+   * would mean the client re-deriving three fields (status, reason and the last
+   * error, all of which the retry changes) that the server is about to state.
+   * The mark plus the announcement is the confirmation; the list is the truth.
+   */
+  const [flashed, setFlashed] = useState<string | null>(null);
+  /**
+   * Mounted from the first render with an empty string rather than appearing
+   * together with its text: a live region that arrives at the same moment as
+   * its content depends on the screen reader's timing (§7).
+   */
+  const [announcement, setAnnouncement] = useState("");
+  const [pending, setPending] = useState<RetryableEvent | null>(null);
+  // The button the dialog was opened from, so focus goes back to it when the
+  // dialog is dismissed (§7).
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  // The list's own scroll region — focusable and named already, because a table
+  // with nothing tabbable in it cannot be scrolled sideways from the keyboard.
+  // It is also where focus lands after a *successful* retry; see below.
+  const listRegion = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Where focus goes when the dialog closes, and it is not one answer.
+   *
+   * **Dismissed** — `Esc`, Cancel, the close button — goes back to the Retry
+   * button that opened it, which is certainly still there. Plain `focus()`: the
+   * reader moved focus themselves inside the interaction that asked for it, so
+   * `:focus-visible` follows from the modality the browser has already recorded
+   * and the ring appears on its own.
+   *
+   * **After a successful retry** it goes to the list region instead, because the
+   * trigger is gone by construction. The server answers `NEW`, this list offers
+   * no retry on a `NEW` row, and so the very control that opened the dialog is
+   * removed by the refetch that follows. Measured: without this, focus ends up
+   * on `<body>` and the next Tab restarts at the top of the document — the
+   * failure §7 is about, on a screen where the next thing an operator wants is
+   * the next stuck row.
+   *
+   * That is also the one difference from the Users section's version of this,
+   * whose row keeps a control in the same place and so can simply return to it.
+   *
+   * `focusVisible` is asked for on that path, and the reasoning is the Users
+   * section's own measurement: after a pointer press a plain programmatic
+   * `focus()` matches `:focus-visible` false in Chromium, which would hand the
+   * operator focus with nothing on screen saying where it went. The option is
+   * not implemented everywhere, hence the fallback — an undrawn ring beats
+   * losing focus altogether.
+   */
+  const focusTrigger = () => {
+    const button = trigger.current;
+    if (button?.isConnected) button.focus();
+  };
+
+  const focusListAfterWrite = () => {
+    const region = listRegion.current;
+    if (!region?.isConnected) return;
+    try {
+      region.focus({ focusVisible: true });
+    } catch {
+      region.focus();
+    }
+  };
+
+  useEffect(() => {
+    if (flashed === null) return;
+    const timer = window.setTimeout(() => setFlashed(null), FLASH_MS);
+    return () => window.clearTimeout(timer);
+  }, [flashed]);
+
+  const onRetried = (event: RetryableEvent, result: OutboxRetryResult) => {
+    setFlashed(eventKey(event));
+    // The server's own word for the state, not "NEW" assumed: the endpoint
+    // reports what the row is now, and a backend that grows another state
+    // should be quoted rather than second-guessed.
+    setAnnouncement(`${event.eventType} on ${event.serviceKey} is now ${result.status}.`);
+    setPending(null);
+    focusListAfterWrite();
+    // The list is what the section believes, so it is asked again. The response
+    // is a confirmation, not a source of rows.
+    void queryClient.invalidateQueries({ queryKey: ["admin", "outbox", "problems"] });
+  };
 
   if (summaryQuery.isPending) {
     return (
@@ -38,21 +164,6 @@ export function AdminEventsProblems() {
   }
 
   if (summaryQuery.isError) {
-    // Not an alert, and not red. The gateway has not deployed this endpoint
-    // yet, which is a fact about the calendar rather than a fault: the section's
-    // other view works, and nothing here is broken (docs/ai/API-DIVERGENCE.md).
-    // Every other failure goes through the section's normal taxonomy.
-    if (isSummaryNotDeployed(summaryQuery.error)) {
-      return (
-        <p className="admin-note admin-events-unserved" role="status">
-          The gateway does not serve the problems summary yet. It arrives with{" "}
-          <a className="admin-note-link" href={jiraUrl("TAS-105")} rel="noreferrer" target="_blank">
-            TAS-105
-          </a>
-          ; until then the Outbox journal beside this tab reads the same events straight from the tables.
-        </p>
-      );
-    }
     return <AdminError error={summaryQuery.error} onRetry={() => void summaryQuery.refetch()} />;
   }
 
@@ -67,6 +178,14 @@ export function AdminEventsProblems() {
 
   return (
     <div className="admin-plane admin-events-plane">
+      {/* There is no toast in this product (§5.6 records the gap), so a retry is
+          confirmed by the row itself: it is marked for two seconds and this says
+          it in words for a reader who sees neither the mark nor the list
+          reordering underneath it. */}
+      <p className="visually-hidden" role="status">
+        {announcement}
+      </p>
+
       {/* The counters first: they are the answer to the question people come to
           this section with, and the list below is only where it started. */}
       {counts.length > 0 ? (
@@ -120,7 +239,13 @@ export function AdminEventsProblems() {
           // them is a splash screen.
           <p className="admin-events-empty">No problematic events.</p>
         ) : (
-          <div aria-label="Problematic events" className="admin-table-scroll" role="region" tabIndex={0}>
+          <div
+            aria-label="Problematic events"
+            className="admin-table-scroll"
+            ref={listRegion}
+            role="region"
+            tabIndex={0}
+          >
             <table aria-label="Problematic events, oldest first" className="admin-table">
               <thead>
                 <tr>
@@ -140,9 +265,12 @@ export function AdminEventsProblems() {
                   <th scope="col">status</th>
                   <th scope="col">attempts</th>
                   <th scope="col">last error</th>
-                  {/* Empty to the eye, named for a screen reader: a visible
-                      header over a chevron would caption the one column that is
-                      not data. */}
+                  {/* Both empty to the eye and named for a screen reader: a
+                      visible header over a button or a chevron would caption the
+                      two columns that are not data. */}
+                  <th className="admin-events-action-head" scope="col">
+                    <span className="visually-hidden">Retry</span>
+                  </th>
                   <th className="admin-open-head">
                     <span className="visually-hidden">Open event</span>
                   </th>
@@ -154,13 +282,32 @@ export function AdminEventsProblems() {
                     this started — and re-sorting would misdescribe what the
                     server cut off the end. */}
                 {events.map((event) => (
-                  <EventRow event={event} key={`${event.serviceKey}:${event.id}`} />
+                  <EventRow
+                    event={event}
+                    key={eventKey(event)}
+                    marked={flashed !== null && flashed === eventKey(event)}
+                    onRetry={(button, retryable) => {
+                      trigger.current = button;
+                      setPending(retryable);
+                    }}
+                  />
                 ))}
               </tbody>
             </table>
           </div>
         )}
       </section>
+
+      {pending ? (
+        <AdminOutboxRetryModal
+          event={pending}
+          onClose={() => {
+            setPending(null);
+            focusTrigger();
+          }}
+          onDone={(result) => onRetried(pending, result)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -195,16 +342,31 @@ function Spoken({ visible, spoken }: { visible: string; spoken: string }) {
   );
 }
 
-function EventRow({ event }: { event: ProblematicOutboxEvent }) {
+function EventRow({
+  event,
+  marked,
+  onRetry,
+}: {
+  event: ProblematicOutboxEvent;
+  marked: boolean;
+  onRetry: (button: HTMLButtonElement, event: RetryableEvent) => void;
+}) {
   const navigate = useNavigate();
   // The same card the journal opens, and it comes back here rather than to the
   // journal — where the reader came from is part of the card's address (§5.8).
   const href = `/admin/events/outbox/${encodeURIComponent(event.serviceKey)}/${encodeURIComponent(event.id)}?from=${BACK_TO_PROBLEMS}`;
   const category = outboxCategory(event.status);
+  // One button or none, the rule the Users section's action cell follows: the
+  // server decides what may be retried, the client repeats the part of that rule
+  // it can know, and a control certain to be refused is worse than no control.
+  // No cast: `canRetryOutboxEvent` is a type predicate, so the narrowing that
+  // makes this row addressable by the retry route is the compiler's rather than
+  // a promise made in a comment.
+  const retryable: RetryableEvent | null = canRetryOutboxEvent(event) ? event : null;
 
   return (
     <tr
-      className="admin-row-opens"
+      className={marked ? "admin-row-opens is-changed" : "admin-row-opens"}
       onClick={(clickEvent) => {
         if ((clickEvent.target as HTMLElement).closest("a, button")) return;
         if (window.getSelection()?.toString()) return;
@@ -266,6 +428,31 @@ function EventRow({ event }: { event: ProblematicOutboxEvent }) {
       ) : (
         <td className="admin-cell-null">—</td>
       )}
+      <td className="admin-events-action-cell">
+        {/* One button or nothing (§5.8's rule for the Users action cell, and
+            the same reason). A `NEW` row gets nothing: the server refuses to
+            retry one, since "back to NEW" is where it already is. A status this
+            build has never heard of gets nothing either — it prints verbatim two
+            columns back and offers no action (TAS-173). Hiding the control is
+            not the permission; the server is (§5.7). */}
+        {retryable ? (
+          <button
+            // "Retry event 7e0…", not "Retry": five buttons in a list all called
+            // Retry are five buttons a screen reader cannot tell apart. The id
+            // is what names an event in the neighbouring link too, so the two
+            // controls on a row name the same thing the same way.
+            aria-label={`Retry event ${event.id}`}
+            // The product's secondary button (§4.1) at the area's row density —
+            // the same `.admin-row-action` the Users section's cell uses, not a
+            // second copy of it.
+            className="secondary-button admin-row-action"
+            onClick={(clickEvent) => onRetry(clickEvent.currentTarget, retryable)}
+            type="button"
+          >
+            Retry
+          </button>
+        ) : null}
+      </td>
       <td className="admin-open-cell">
         {/* The keyboard's path to the card: a row cannot be a control without
             lying about what a table row is (§5.8). */}

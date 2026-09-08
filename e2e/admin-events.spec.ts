@@ -173,6 +173,123 @@ test("an event opened from the summary returns to the summary", async ({ page })
   await expect(page.getByRole("table", { name: "Problem counts by service" })).toBeVisible();
 });
 
+/**
+ * Retrying a stuck event (TAS-194) — the section's one write, end to end
+ * against the mock's own rules rather than a stubbed answer.
+ *
+ * The mock reproduces admin-service's eligibility: `FAILED` and long-stuck
+ * `PROCESSING` may be retried, `NEW` may not. So the two halves below — a
+ * button that works and a button that is absent — are the backend's rule
+ * arriving through the whole stack, not a fixture arranged to look like it.
+ */
+test("retries a failed event, and offers nothing on one the server would refuse", async ({ page }) => {
+  await openEvents(page);
+
+  const list = page.getByRole("table", { name: "Problematic events, oldest first" });
+  const rows = list.locator("tbody tr");
+  await expect(rows.first()).toBeVisible();
+
+  // Every row that is `NEW` has no button, and every `FAILED` one does. Read off
+  // the rendered table rather than from a seeded id, so the seed can grow.
+  const newRows = rows.filter({ has: page.getByRole("cell", { name: "NEW", exact: true }) });
+  await expect(newRows.first()).toBeVisible();
+  await expect(newRows.first().getByRole("button", { name: /^Retry event / })).toHaveCount(0);
+
+  const retryButtons = list.getByRole("button", { name: /^Retry event / });
+  const before = await retryButtons.count();
+  expect(before).toBeGreaterThan(0);
+  const retry = retryButtons.first();
+  await expect(retry).toBeVisible();
+  await retry.click();
+
+  const dialog = page.getByRole("dialog", { name: "Retry outbox event" });
+  await expect(dialog.getByText(/→ NEW/)).toBeVisible();
+  // The button waits for a reason, and the line under the field says why.
+  const confirm = dialog.getByRole("button", { name: "Retry", exact: true });
+  await expect(confirm).toBeDisabled();
+  await expect(dialog.getByText(/A reason is required/)).toBeVisible();
+
+  await dialog.getByLabel("Reason").fill("Kafka is back");
+  // The countdown is to this route's own 1000, not the admin user writes' 550.
+  await expect(dialog.getByText("987 of 1000 characters left")).toBeVisible();
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // No toast in this product (§5.6), so the confirmation is the live region and
+  // the row itself. The mock puts the row back into NEW, which is a state this
+  // list still shows — so the event stays, one category to the left.
+  await expect(page.getByText(/ is now NEW\./)).toBeAttached();
+  // Focus is not dropped. The control that opened the dialog is gone — the row
+  // is `NEW` now and offers no retry — so it lands on the list's own region,
+  // which is one Tab from the next stuck row instead of from the top of the
+  // document (§7).
+  await expect(page.getByRole("region", { name: "Problematic events" })).toBeFocused();
+  // One fewer button than before: the mock put that row back into `NEW`, which
+  // this list still shows — one category to the left — and a `NEW` row offers
+  // no retry, because the server would refuse it. That the count moves at all is
+  // the proof the write reached the store rather than only the screen.
+  await expect(retryButtons).toHaveCount(before - 1);
+});
+
+/**
+ * The refusal, and the reason it is not a bug in this screen.
+ *
+ * The summary calls a `PROCESSING` row stuck after the producing service's own
+ * timeout; the retry route wants a longer wait of its own. Between the two, a
+ * row is listed as stuck and refused — and the client cannot tell, because both
+ * thresholds are server configuration (docs/ai/API-DIVERGENCE.md). The mock
+ * seeds one row in that gap on purpose, so the whole path is exercised here:
+ * the warning before the press, and the server's own sentence after it.
+ */
+test("keeps the dialog open when the server refuses, with its own words in it", async ({ page }) => {
+  await openEvents(page);
+
+  const list = page.getByRole("table", { name: "Problematic events, oldest first" });
+  const stuck = list
+    .locator("tbody tr")
+    .filter({ has: page.getByRole("cell", { name: "PROCESSING", exact: true }) })
+    .filter({ has: page.getByRole("cell", { name: "project", exact: true }) });
+  await stuck.getByRole("button", { name: /^Retry event / }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Retry outbox event" });
+  // Said before the press, not only after it.
+  await expect(dialog.getByText(/still being processed/)).toBeVisible();
+  await dialog.getByLabel("Reason").fill("It looks stuck to me");
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+
+  // Open, not closed over a change that did not happen (§5.8).
+  const alert = dialog.getByRole("alert");
+  await expect(alert).toBeVisible();
+  await expect(alert).toContainText(/would not retry this event/i);
+  // The server's own sentence, printed as it arrived — nothing here branches on
+  // its wording.
+  await expect(alert).toContainText("is not eligible for retry");
+  // And the reason survives, so a second attempt does not start from nothing.
+  await expect(dialog.getByLabel("Reason")).toHaveValue("It looks stuck to me");
+});
+
+// The whole dialog has to be reachable and dismissable from the keyboard: it is
+// a write, and §4.11 gives it Esc to cancel.
+test("opens the retry dialog from the keyboard and cancels it with Escape", async ({ page }) => {
+  await openEvents(page);
+
+  const retry = page.getByRole("button", { name: /^Retry event / }).first();
+  await retry.focus();
+  await expect(retry).toBeFocused();
+  // A visible ring, and the row it belongs to lit up: on a table this wide the
+  // button is off the right edge and a ring alone would not say which row.
+  expect(await retry.evaluate((node) => getComputedStyle(node).outlineWidth)).not.toBe("0px");
+
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Retry outbox event" })).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // Focus comes back to the control that opened it (§7).
+  await expect(retry).toBeFocused();
+});
+
 // A row that opens has to open from the keyboard too: the row itself cannot be
 // a control, so the link in the last cell is the whole path (§5.8) — and the
 // row it belongs to lights up, because on a wide table that link is off the

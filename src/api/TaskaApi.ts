@@ -19,6 +19,7 @@ import type {
   IssueWithHistory,
   Label,
   Notification,
+  OutboxRetryResult,
   Page,
   ProblematicOutboxSummary,
   Project,
@@ -113,8 +114,15 @@ export const ADMIN_WRITE_REASON_MAX_LENGTH = 550;
 export const ADMIN_WRITE_REASON_TOO_LONG_MESSAGE = `A reason is at most ${ADMIN_WRITE_REASON_MAX_LENGTH} characters`;
 
 /**
- * What every implementation says when the reason is blank, for all three admin
- * user writes.
+ * What every implementation says when the reason is blank — for all three admin
+ * user writes **and** for the outbox retry below.
+ *
+ * The one thing the two families genuinely share. `minLength: 1` is declared
+ * identically on all four request DTOs, and unlike the upper bound it is the
+ * same number in both, so one sentence is one rule rather than two rules that
+ * happen to agree today. The upper bound is where they part
+ * (`OUTBOX_RETRY_REASON_MAX_LENGTH` below), and it has a message of its own
+ * precisely because that message states a number.
  *
  * The server answers `400` for a blank one, and **not** through `@NotBlank`:
  * the generated request DTO carries `@Size(min = 1)` from the contract's
@@ -129,6 +137,87 @@ export const ADMIN_WRITE_REASON_TOO_LONG_MESSAGE = `A reason is at most ${ADMIN_
  * cannot tell which side stopped it and nothing has to special-case the guard.
  */
 export const ADMIN_WRITE_REASON_REQUIRED_MESSAGE = "A reason is required";
+
+/**
+ * The longest `reason` the outbox retry accepts — `maxLength: 1000` on
+ * `RetryOutboxEventRequestDto` in the contract, which becomes
+ * `@Size(max = 1000)` on the gateway's generated request DTO.
+ *
+ * **Deliberately not `ADMIN_WRITE_REASON_MAX_LENGTH`, and the difference is the
+ * contract's, not an oversight.** That constant is named for a *family* — block,
+ * unblock and reset-lockout, whose three DTOs each declare the same 1–550 — and
+ * `retryOutboxEvent` is not a member of it. It declares 1–1000, in a schema of
+ * its own. Two numbers, stated twice by the backend, so two constants: sharing
+ * one would have made this field 450 characters shorter than the server allows,
+ * and would have taught the next reader that the gateway has a single reason
+ * limit. It has two, and a reader who meets both should learn that.
+ *
+ * Exported for the same reason its neighbour is: the field's own `maxLength`,
+ * the remaining-characters hint and **both** implementations' refusals read one
+ * number, so the form cannot produce a request the boundary is the first thing
+ * to refuse.
+ */
+export const OUTBOX_RETRY_REASON_MAX_LENGTH = 1000;
+
+/**
+ * What every implementation says when a retry reason is longer than that.
+ *
+ * Its own sentence rather than `ADMIN_WRITE_REASON_TOO_LONG_MESSAGE` for the
+ * one reason that decides it: that sentence carries the *number*, and the number
+ * is exactly what the two families do not share. "A reason is at most 550
+ * characters", printed against a field the server accepts 1000 in, is a string
+ * whose whole job is to be exact being wrong.
+ *
+ * Not the server's own wording, because the server has none to reproduce. The
+ * 1000 is stated once on the backend, as `maxLength` in the contract; below the
+ * gateway nothing re-checks it — `OutboxRetryServiceImpl` takes `reason` only to
+ * `.trim()` it into the audit row (read on backend `develop`, 2026-09-08). So
+ * this is not a weaker second copy of a rule the services state.
+ */
+export const OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE = `A reason is at most ${OUTBOX_RETRY_REASON_MAX_LENGTH} characters`;
+
+/**
+ * Which services `POST /admin/outbox/{service}/{eventId}/retry` will take in its
+ * path. A **closed** enum — `auth | project | issue` — and closed here because
+ * the contract closes it.
+ *
+ * The two specs disagree and the narrow one wins. The handwritten
+ * `docs/contract/openapi.yml` types this parameter as a `string` with an `enum`
+ * of those three; the deployed gateway's springdoc-generated spec types it as a
+ * bare string, which is springdoc describing a Java `String` parameter rather
+ * than the gateway promising to accept anything. Below it, admin-service resolves
+ * the name against a fixed map of outbox write datasources and answers
+ * `INVALID_ARGUMENT "Unsupported outbox service: …"` for anything else
+ * (`OutboxRetryRepositoryImpl.getDatabaseClient`, backend `develop`), so the
+ * enum is the truth and the bare string is the description.
+ *
+ * Listed rather than read from `GET /readonly/catalog` — which is where
+ * `outboxServices` (src/screens/admin/events.ts) gets the journal's selector
+ * from — because these are two different questions. The catalog answers "which
+ * services have an `outbox_events` table to read", and a fourth one appearing
+ * there should grow a journal tab by itself. This answers "which services this
+ * route will write to", and a fourth one there is a contract change with a
+ * frontend edit behind it. Deriving one from the other would put a Retry button
+ * on a row the gateway is certain to refuse the first day they differ.
+ */
+export const RETRYABLE_OUTBOX_SERVICES = ["auth", "project", "issue"] as const;
+
+export type RetryableOutboxService = (typeof RETRYABLE_OUTBOX_SERVICES)[number];
+
+/**
+ * Whether this service key is one the retry route will accept.
+ *
+ * `serviceKey` arrives from the summary as a bare `string` — it is a column of a
+ * database table on the far side of the endpoint — so this is the only thing
+ * standing between an unfamiliar value and a request the path parameter cannot
+ * carry. On today's data the case does not arise: the summary's own `counts`
+ * name exactly these three. The guard is for the day a fourth outbox appears
+ * before this list does, and the honest answer then is no button rather than a
+ * button that 400s.
+ */
+export function isRetryableOutboxService(service: string): service is RetryableOutboxService {
+  return (RETRYABLE_OUTBOX_SERVICES as readonly string[]).includes(service);
+}
 
 /**
  * Every parameter `GET /issues/search` takes, all AND-combined by the server.
@@ -605,13 +694,76 @@ export interface TaskaApi {
    * carrying two real `FAILED` events on `project` with `attempts: 5` and
    * `lastErrorMessage: "Failed to construct kafka producer"`.
    *
-   * So `OUTBOX_SUMMARY_UNSERVED_MESSAGE` below — the compensation that reads an
-   * `INVALID_ARGUMENT` here as "TAS-105 has not deployed yet" — now describes a
-   * gateway that no longer answers that way. Retiring it belongs to **TAS-194**,
-   * which opens this view anyway; it stays until that story takes it out
-   * (docs/ai/API-DIVERGENCE.md).
+   * Until TAS-194 this route carried one more thing: a pinned copy of the
+   * sentence an *older* gateway answered when it did not know the path, and a
+   * predicate reading that exact pair as "not deployed yet". Backend PR #141
+   * (TAS-105) merged 2026-08-27 and the signature stopped existing; the note
+   * stayed in the tree, inert, until it was deleted by hand. It is worth one
+   * line here because the mechanism outlives the case: a compensation that
+   * promises to retire itself when the server changes is a compensation nobody
+   * schedules the removal of.
    */
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary>;
+
+  /**
+   * `POST /admin/outbox/{service}/{eventId}/retry` — `retryOutboxEvent`, the
+   * Events section's one write and the only write in this product that acts on
+   * a queue rather than on a record (DESIGN.md §5.8).
+   *
+   * `EndpointSecurity.GLOBAL_ADMIN_REQUIRED`, like everything else under
+   * `/admin`. The `reason` is required, 1–1000 characters, and is written into
+   * the admin audit log — that is the whole of what the body carries and the
+   * whole reason a dialog asks for it.
+   *
+   * **What the server does, read off `OutboxRetryServiceImpl` and
+   * `OutboxRetryRepositoryImpl` on backend `develop` at 2026-09-08**, because
+   * the contract states none of it and every sentence the UI says about this
+   * button depends on it:
+   *
+   * - the update is `status = 'NEW'`, `last_error_message = NULL`,
+   *   `processing_started_at = NULL`. **`attempts` is not in the UPDATE**, so the
+   *   count survives the retry — the response reports the same number the row
+   *   already had. Nothing here resets a counter, and the dialog says so.
+   * - it is legal from **`FAILED`**, and from **`PROCESSING` that has been stuck
+   *   past the server's own retry threshold** (`admin.outbox-retry.stuck-threshold`,
+   *   default **10m**). Anything else — `NEW`, `PUBLISHED`, a `PROCESSING` row
+   *   younger than the threshold — is `DomainStatus.FAILED_PRECONDITION` with
+   *   `"Outbox event with status X is not eligible for retry"`, which
+   *   `RestErrorMapper.mapGrpcCodeToHttpStatus` turns into **400** carrying
+   *   `"FAILED_PRECONDITION"` in the body's `code`. Same shape as the Users
+   *   section's last-admin refusal, and read the same way — by `isConflict`
+   *   (src/api/errors.ts), through the `code` arm and through nothing else.
+   * - **that threshold is not the one this section's list uses.** The summary
+   *   calls a `PROCESSING` row stuck after the producing service's own
+   *   processing timeout (`admin.outbox.processing-timeouts`, default **5m**);
+   *   retry wants **10m**. So the Problems view can legitimately list a row as
+   *   "Stuck processing" that this route refuses, for five minutes, and the
+   *   client cannot predict which — both numbers are server configuration it
+   *   never sees. Recorded in docs/ai/API-DIVERGENCE.md; compensated by wording
+   *   rather than by a client-side clock.
+   * - a row nobody has is `404 NOT_FOUND`, `"Outbox event not found: {id}"`.
+   * - a race between the eligibility read and the UPDATE is
+   *   `FAILED_PRECONDITION` again, `"Outbox event is no longer eligible for
+   *   retry"` — the same sentence class, which is why nothing branches on the
+   *   wording and the server's own text is printed as it arrived.
+   *
+   * **The client cannot see whether a failed call landed**, and this is the
+   * fact the caller must not paper over. The audit row is written *after* the
+   * UPDATE has committed, so a fault in `AuditService` — or any 5xx, or a
+   * connection dropped on the way back — is a failure reported over a retry that
+   * already happened. Nothing here may be worded as "nothing changed"; the
+   * attachments confirm path (`src/screens/BoardScreen.tsx`) is the same shape
+   * and the same rule.
+   *
+   * `service` is typed to the contract's closed enum rather than to `string`
+   * (`RETRYABLE_OUTBOX_SERVICES` above), so a service key the route cannot carry
+   * is a type error here rather than a `400` at the boundary.
+   */
+  retryOutboxEvent(
+    service: RetryableOutboxService,
+    eventId: string,
+    reason: string,
+  ): Promise<OutboxRetryResult>;
 
   /**
    * `POST /admin/users/{userId}/block` — one of the Users section's three
@@ -725,40 +877,6 @@ export interface TaskaApi {
 }
 
 /**
- * What the gateway *said* when asked for the problems summary, word for word —
- * measured 2026-08-25 with a GLOBAL_ADMIN token.
- *
- * **Inert rather than wrong.** The endpoint is deployed: backend PR #141
- * (TAS-105) merged 2026-08-27, and the same call was measured on 2026-09-08
- * answering `200` with `{counts, events, notAllShown}`
- * (docs/ai/API-DIVERGENCE.md). The only reader of this constant,
- * `isSummaryNotDeployed` (src/screens/admin/events.ts), compares it by exact
- * equality against a `400 INVALID_ARGUMENT`, and a 200 never reaches that
- * predicate — so the string cannot fire and cannot mislead a user. It survives
- * only because the compensation it belongs to is still in the tree.
- *
- * What was measured, in the tense it now belongs to: the gateway of 2026-08-25
- * did not answer 404. Not knowing the path, it routed
- * `/readonly/outbox/problematic-summary` into the generic table read, took
- * `outbox` for a service key, and answered `400 INVALID_ARGUMENT` with this
- * message. That exact pairing — and nothing broader — was what "TAS-105 has not
- * deployed yet" looked like on the wire, and the Problems view still reads it
- * as a quiet note rather than as a failure.
- *
- * Pinned as one exported constant for the same reason
- * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a
- * measurement, and it belongs where the measurement can be read, not inline in
- * a component.
- *
- * It does not remove itself. An earlier version of this comment promised it
- * would, "the day the endpoint deploys, because the endpoint will answer 200" —
- * the endpoint deployed and nothing happened, because a string that quietly
- * stops matching reports nothing to anyone. It comes out by hand, with the rest
- * of the compensation, in TAS-194.
- */
-export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";
-
-/**
  * What the *deployed* gateway says when asked for a route it does not have —
  * measured 2026-09-06 against
  * `GET /api/v1/projects/{uuid}/issues/{uuid}/attachments`:
@@ -779,16 +897,19 @@ export const OUTBOX_SUMMARY_UNSERVED_MESSAGE = "Unknown service: outbox";
  * as of 2026-09-08 where it answered this 404 on 2026-08-25, and TAS-196 took
  * that compensation out.
  *
- * Pinned here for the same reason `OUTBOX_SUMMARY_UNSERVED_MESSAGE` is: a
- * gateway string the UI branches on is a measurement, and it belongs where the
- * measurement can be read rather than inline in a component.
+ * Pinned here rather than inline in a component for the reason
+ * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a
+ * measurement, and it belongs where the measurement can be read.
  *
- * The *signature* removes itself; the *code* does not, and the admin half is
- * the worked example. The day PR #146 deployed those three routes they began
- * answering for themselves and this string stopped matching them — silently,
- * with nothing reported to anyone. Deleting the branch, the dialog copy and the
- * divergence entry was a separate act, done by hand in TAS-196, as the
- * paragraph above records. That is why a compensation needs a story to retire
+ * The *signature* removes itself; the *code* does not, and this build has now
+ * shipped the worked example twice. The day PR #146 deployed the three admin
+ * user routes they began answering for themselves and this string stopped
+ * matching them — silently, with nothing reported to anyone; deleting the
+ * branch, the dialog copy and the divergence entry was a separate act, done by
+ * hand in TAS-196. The problems summary's own "not deployed yet" note went the
+ * same way, and less kindly: its route deployed on 2026-08-27 and the note sat
+ * inert for twelve days before TAS-194 deleted it, because nothing was looking.
+ * That is why a compensation needs a story to retire
  * it and never a deployment: nobody schedules the removal of a check that has
  * promised to disappear on its own.
  */

@@ -124,18 +124,18 @@ export function AdminUserActionModal({
           submit();
         }}
       >
-        <div className="admin-user-target">
-          <p className="admin-user-target-name">{name}</p>
+        <div className="admin-write-target">
+          <p className="admin-write-target-name">{name}</p>
           {/* Whichever of the two the name above is not, so the account is
               identifiable from the dialog alone: a confirmation naming one
               "Anna Ivanova" out of two people is not a confirmation. */}
-          {user.email && user.email !== name ? <p className="admin-user-target-line">{user.email}</p> : null}
-          {user.login && user.login !== name ? <p className="admin-user-target-line">@{user.login}</p> : null}
+          {user.email && user.email !== name ? <p className="admin-write-target-line">{user.email}</p> : null}
+          {user.login && user.login !== name ? <p className="admin-write-target-line">@{user.login}</p> : null}
           {/* The transition being asked for, in the server's own values. The
               arrow is punctuation and is hidden from the accessibility tree —
               read out, "ACTIVE → BLOCKED" is two words with a pause where a
               preposition should be. */}
-          <p className="admin-user-transition">
+          <p className="admin-write-transition">
             <span aria-hidden="true">
               {from ?? "—"} → {to}
             </span>
@@ -148,7 +148,7 @@ export function AdminUserActionModal({
         {/* Every sentence here is a fact the reader cannot see anywhere else,
             and each is printed only when it is true. */}
         {action === "block" && from === "INVITED" ? (
-          <p className="admin-user-note">
+          <p className="admin-write-note">
             This account was invited and has never signed in. Unblocking it later makes it active — the invitation
             is not restored.
           </p>
@@ -159,13 +159,13 @@ export function AdminUserActionModal({
             count and the lock expiry cannot be shown — the gateway drops them
             before REST — so the sentence is the whole of what can be said. */}
         {action === "reset" ? (
-          <p className="admin-user-note">
+          <p className="admin-write-note">
             This account locked itself after too many failed sign-ins. Resetting clears the failed-attempt count.
             It does <strong>not</strong> change the password — whoever signs in next needs the existing one.
           </p>
         ) : null}
         {currentUserId && user.id === currentUserId ? (
-          <p className="admin-user-note">
+          <p className="admin-write-note">
             This is the account you are signed in as.{" "}
             {action === "reset"
               ? "Clearing its lockout leaves this session alone: no token is revoked by it."
@@ -189,7 +189,7 @@ export function AdminUserActionModal({
             button is off, and once it is not it counts down to the server's
             limit. A disabled button cannot take focus, so its own tooltip would
             never be read — the explanation has to live beside the field. */}
-        <p className="admin-user-hint" id={hintId}>
+        <p className="admin-write-hint" id={hintId}>
           {canSubmit
             ? `${ADMIN_WRITE_REASON_MAX_LENGTH - trimmed.length} of ${ADMIN_WRITE_REASON_MAX_LENGTH} characters left`
             : `A reason is required — the server refuses a change without one. Up to ${ADMIN_WRITE_REASON_MAX_LENGTH} characters.`}
@@ -229,7 +229,7 @@ function ActionFailure({ action, error }: { action: UserAction; error: unknown }
   const { message, requestId } = apiErrorFacts(error);
 
   return (
-    <div className="admin-user-failure" role="alert">
+    <div className="admin-write-failure" role="alert">
       <p>
         {failure === "conflict" ? (
           action === "reset" ? (

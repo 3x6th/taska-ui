@@ -35,6 +35,8 @@ const {
   failRows,
   failRow,
   failSummary,
+  failRetry,
+  lastRetry,
   setMetaMismatch,
   lastRowsQuery,
 } = vi.hoisted(() => {
@@ -51,6 +53,8 @@ const {
     rowsFailure?: Error;
     rowFailure?: Error;
     summaryFailure?: Error;
+    retryFailure?: Error;
+    retryCall?: { service: string; eventId: string; reason: string };
     metaMismatch?: boolean;
     rowsQuery?: AdminRowsQuery;
   } = {};
@@ -296,6 +300,14 @@ const {
       if (state.summaryFailure) throw state.summaryFailure;
       return summary;
     },
+    retryOutboxEvent: async (service: string, eventId: string, reason: string) => {
+      state.retryCall = { service, eventId, reason };
+      if (state.retryFailure) throw state.retryFailure;
+      // What the server answers: the state read back off the row, with the
+      // attempt count unchanged — the retry does not reset it.
+      const event = summary.events.find((candidate) => candidate.id === eventId);
+      return { eventId, status: "NEW", attempts: event?.attempts ?? null };
+    },
   };
 
   return {
@@ -334,10 +346,22 @@ const {
     failRow: (failure?: Error) => {
       state.rowFailure = failure;
     },
-    /** Fail the Events summary — the one endpoint the deployed gateway cannot serve yet. */
+    /** Fail the Events summary read. */
     failSummary: (failure?: Error) => {
       state.summaryFailure = failure;
     },
+    /**
+     * Fail the Events retry write, which keeps its dialog open with the answer.
+     * Also forgets the last call: this is the per-test reset for that endpoint,
+     * and a recorded call surviving into the next test would let an assertion
+     * that nothing was written pass on the previous test's evidence.
+     */
+    failRetry: (failure?: Error) => {
+      state.retryFailure = failure;
+      state.retryCall = undefined;
+    },
+    /** What the last retry actually asked the server for. */
+    lastRetry: () => state.retryCall,
     setMetaMismatch: (on: boolean) => {
       state.metaMismatch = on;
     },
@@ -1529,29 +1553,227 @@ describe("/admin/events problems", () => {
     expect(uncategorised).toHaveAttribute("title", "Something this build has never been told about");
   });
 
-  // The deployed gateway does not have this path and does not answer 404 for
-  // it: it reads `outbox` as a service key and rejects that. Measured
-  // 2026-08-25 — docs/ai/API-DIVERGENCE.md.
-  it("reads the gateway's unknown-service rejection as 'not deployed yet'", async () => {
+  /**
+   * Until TAS-194 there was a case here for a sixth reading of this failure:
+   * the deployed gateway did not have the summary's path, took `outbox` for a
+   * service key and answered `400 INVALID_ARGUMENT "Unknown service: outbox"`,
+   * which the view drew as a quiet "not deployed yet" note linking to TAS-105.
+   * That gateway stopped existing on 2026-08-27 and the note came out with this
+   * story. What is pinned now is that the same shape gets the ordinary taxonomy
+   * — the guarantee the deleted branch was carved out of.
+   */
+  it("treats a rejection from the summary as a rejection, with nothing carved out of it", async () => {
     failSummary(Object.assign(new Error("Unknown service: outbox"), { code: "INVALID_ARGUMENT", status: 400 }));
     renderAdmin("/admin/events");
 
-    expect(await screen.findByText(/does not serve the problems summary yet/)).toBeVisible();
-    expect(screen.getByRole("link", { name: "TAS-105" })).toHaveAttribute(
-      "href",
-      "https://jira.ozero.dev/browse/TAS-105",
-    );
-    // Quiet: this is the calendar, not a fault, and nothing here is broken.
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/would not accept this request/i);
+    expect(screen.queryByText(/does not serve the problems summary yet/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "TAS-105" })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Retrying a stuck outbox event (TAS-194) — the Events section's one write, and
+ * the second write in the whole product.
+ *
+ * The fake's summary carries exactly the two rows this needs: a `FAILED` event
+ * on `auth`, which may be retried, and one whose status this build has never
+ * heard of, which may not. Everything below is about the difference between
+ * those two and about what the dialog does with an answer.
+ */
+describe("admin events, retrying an event", () => {
+  beforeEach(() => {
+    setCurrentUser(admin);
+    failSummary(undefined);
+    failRetry(undefined);
   });
 
-  it("still treats every other rejection as a rejection", async () => {
-    // Same code, different sentence — which is the point of pinning the
-    // sentence: a real INVALID_ARGUMENT from this endpoint must not be dressed
-    // up as a missing deployment.
-    failSummary(Object.assign(new Error("Unknown service: nope"), { code: "INVALID_ARGUMENT", status: 400 }));
+  const openDialog = async () => {
+    renderAdmin("/admin/events");
+    const button = await screen.findByRole("button", { name: "Retry event e1" });
+    fireEvent.click(button);
+    return button;
+  };
+
+  /**
+   * One button or none, the Users section's rule. `e2` carries `QUARANTINED`:
+   * the server would refuse it, and a control certain to be refused is worse
+   * than no control (TAS-173, DESIGN.md §5.8).
+   */
+  it("offers a retry on the failed event and nothing on the one it cannot read", async () => {
     renderAdmin("/admin/events");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/would not accept this request/i);
+    expect(await screen.findByRole("button", { name: "Retry event e1" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry event e2" })).not.toBeInTheDocument();
+    // Both rows still open, so the absent button costs the row nothing else.
+    expect(screen.getAllByRole("link", { name: /^Open event / })).toHaveLength(2);
+  });
+
+  /**
+   * The dialog says what will happen before it asks. Three facts the reader
+   * cannot get anywhere else: which event, what it becomes, and that the attempt
+   * count is *not* reset — the one thing about this endpoint an operator is
+   * most likely to assume and be wrong about.
+   */
+  it("names the event, the transition and what the retry does not change", async () => {
+    await openDialog();
+
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    expect(within(dialog).getByText("user.registered")).toBeVisible();
+    expect(within(dialog).getByText("auth.outbox_events")).toBeVisible();
+    expect(within(dialog).getByText("e1")).toBeVisible();
+    expect(within(dialog).getByText("FAILED → NEW")).toBeVisible();
+    expect(within(dialog).getByText(/attempt count is/i)).toHaveTextContent(/not.*reset/i);
+  });
+
+  /**
+   * The reason is required and never reaches the wire blank: the server answers
+   * 400 for it and both implementations refuse it first, so the only place it
+   * can be discovered is the dialog. The explanation lives beside the field
+   * because a disabled button cannot take focus and its title would never be
+   * read.
+   */
+  it("keeps the button off until a reason is typed, and says why beside the field", async () => {
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    const confirm = within(dialog).getByRole("button", { name: "Retry" });
+    const field = within(dialog).getByLabelText("Reason");
+
+    expect(confirm).toBeDisabled();
+    expect(within(dialog).getByText(/A reason is required/)).toBeVisible();
+
+    // Whitespace is blank, exactly as the server reads it.
+    fireEvent.change(field, { target: { value: "   " } });
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(field, { target: { value: "Kafka is back" } });
+    expect(confirm).toBeEnabled();
+    // And the same line becomes the countdown — to *this* route's 1000, not the
+    // admin user writes' 550.
+    expect(within(dialog).getByText("987 of 1000 characters left")).toBeVisible();
+  });
+
+  it("sends the trimmed reason, closes, marks the row and says so in words", async () => {
+    const trigger = await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "  Kafka is back  " } });
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+
+    expect(lastRetry()).toEqual({ service: "auth", eventId: "e1", reason: "Kafka is back" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    /**
+     * Focus lands on the list's own region rather than on the trigger, and that
+     * is the one place this differs from the Users dialog. A successful retry
+     * removes the control that opened it — the server answers `NEW`, and this
+     * list offers no retry on a `NEW` row — so returning to the trigger drops
+     * focus on `<body>` and the next Tab restarts at the top of the document.
+     * Measured in Chromium before this assertion existed.
+     */
+    expect(screen.getByRole("region", { name: "Problematic events" })).toHaveFocus();
+    // Unconditionally, not as a fallback — this fake serves one static summary,
+    // so the trigger survives here where against a real summary it would not.
+    // The choice is the point: a rule that only fires when the button happens to
+    // be gone is a rule nobody can read off the code.
+    expect(trigger.isConnected).toBe(true);
+    // The server's own word for the new state, in the section's live region —
+    // there is no toast in this product (§5.6).
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now NEW.");
+    expect(document.querySelector("tr.is-changed")).not.toBeNull();
+  });
+
+  /**
+   * A failure leaves the dialog open with the answer in it: closing over a
+   * change that may not have happened would be the worst of the possible
+   * answers (§5.8).
+   */
+  it("stays open on the not-eligible refusal and prints the server's own sentence", async () => {
+    failRetry(
+      Object.assign(new Error("Outbox event with status NEW is not eligible for retry"), {
+        code: "FAILED_PRECONDITION",
+        status: 400,
+      }),
+    );
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+
+    expect(screen.getByRole("dialog", { name: "Retry outbox event" })).toBeVisible();
+    // The conflict sentence, reached through `isConflict`'s *code* arm: this
+    // refusal arrives on a 400, so a status check alone would have filed it
+    // under "the gateway would not accept this request".
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent(/would not retry this event/i);
+    expect(alert).toHaveTextContent("Outbox event with status NEW is not eligible for retry");
+  });
+
+  it("says a 403 is a refusal, not a fault", async () => {
+    // The route is GLOBAL_ADMIN-only and the server stays the authority: the
+    // section drawing a button has never been the permission (§5.7).
+    failRetry(Object.assign(new Error("Forbidden"), { code: "PERMISSION_DENIED", status: 403 }));
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/server refused this/i);
+  });
+
+  /**
+   * The rule this endpoint makes non-negotiable. admin-service commits the
+   * UPDATE and *then* writes the audit row, so a 5xx and a dropped connection
+   * are both compatible with a retry that already ran. Neither may be worded as
+   * "nothing happened" — that is the one sentence that sends an operator looking
+   * in the wrong place.
+   */
+  it("never reports a failure as 'nothing happened', because the write may have landed", async () => {
+    failRetry(Object.assign(new Error("Internal error"), { code: "INTERNAL", status: 500 }));
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/may still have gone through/i);
+
+    // And the transport failure, which carries neither a status nor a code.
+    failRetry(new TypeError("Failed to fetch"));
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/may or may not have been retried/i);
+  });
+
+  it("cancels without writing anything and hands focus back", async () => {
+    const trigger = await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(lastRetry()).toBeUndefined();
+    expect(trigger).toHaveFocus();
+  });
+
+  // §4.11: `Esc` cancels. Bound in the dialog itself, because `Modal` carries
+  // neither key and giving them to every modal in the product is §7 debt
+  // (TAS-142) rather than this story.
+  it("closes on Escape", async () => {
+    await openDialog();
+    expect(screen.getByRole("dialog", { name: "Retry outbox event" })).toBeVisible();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(lastRetry()).toBeUndefined();
   });
 });

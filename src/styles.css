@@ -1952,19 +1952,83 @@ h1 {
 
    The same treatment when the row's link has focus (§5.8). On a wide table that
    link is off the right edge of the scroll container, so a focus ring alone
-   leaves a keyboard reader seeing which control is focused and not which row. */
+   leaves a keyboard reader seeing which control is focused and not which row.
+   The Problems list's Retry button (TAS-194) is in the same position and gets
+   the same anchor for the same reason — it is further from the service name
+   than the chevron is.
+
+   `:not(.is-changed)` is the Users table's spelling of the same rule and is
+   here for the same trap: without it, pointing at a row that had just been
+   retried would erase the two-second confirmation, because these selectors
+   outrank it. While a row is confirming, the confirmation is the stronger
+   signal and the hover has nothing to add. */
 .admin-row-opens {
   cursor: pointer;
 }
 
-.admin-row-opens:hover td,
-.admin-table tr:has(.admin-open-row:focus-visible) td {
+.admin-row-opens:not(.is-changed):hover td,
+.admin-table tr:not(.is-changed):has(.admin-open-row:focus-visible) td,
+.admin-table tr:not(.is-changed):has(.admin-row-action:focus-visible) td {
   background: var(--surface-3);
 }
 
-.admin-table .admin-row-opens:hover .admin-cell-frozen,
-.admin-table tr:has(.admin-open-row:focus-visible) .admin-cell-frozen {
+.admin-table .admin-row-opens:not(.is-changed):hover .admin-cell-frozen,
+.admin-table tr:not(.is-changed):has(.admin-open-row:focus-visible) .admin-cell-frozen,
+.admin-table tr:not(.is-changed):has(.admin-row-action:focus-visible) .admin-cell-frozen {
   background: var(--surface-3);
+}
+
+/* The confirmation that a write landed, in the absence of a toast (§5.6 keeps
+   that gap): a translucent accent tint on the row for two seconds, the same
+   recipe as the copy confirmation on a primary key, so the product has one way
+   of saying "that worked". Nothing moves, so `prefers-reduced-motion` has no
+   opinion to have.
+
+   Generic rather than per-section, and that is a fact about the rule rather
+   than about tidiness: the Users section (TAS-186) and the Events Problems list
+   (TAS-194) both use it, and both mean the same thing by it. Every hover and
+   focus rule above carries `:not(.is-changed)` so that pointing at a confirming
+   row cannot erase the only thing saying it changed.
+
+   The frozen column has to stay opaque and still land on the same colour. It is
+   `position: sticky` and carries an opaque `--surface` of its own so rows do not
+   scroll visibly under it, so the tint cannot simply replace that background —
+   mid-scroll it would composite over whatever passed beneath.
+
+   It is written as the *same translucent tint over an opaque `--surface`*, as
+   an image layer above a colour layer, rather than as
+   `color-mix(… var(--accent) 14%, var(--surface))`. The obvious spelling is not
+   equal to it: mixing two opaque colours in oklab and alpha-compositing a
+   premultiplied oklab mix in sRGB are different operations, and the two answers
+   differ by up to 4/255 per channel — measured, in both themes. Invisible, and
+   still the wrong kind of "close": this rule's whole job is that the frozen cell
+   and the cell beside it are one continuous band. Layering makes them identical
+   by construction rather than by approximation.
+
+   Measured in Chromium at 1x by compositing the computed values, light / dark:
+
+     the flashed plane                 rgb(230 229 251) / rgb(32 34 54)
+     the frozen cell against it        identical, 0/255 on every channel
+     --fg on it (every value cell)     14.44 / 13.39
+     --fg-3 on it (the `—` null mark)   2.54 /  2.60
+
+   The last line is the area's existing choice rather than this rule's: `--fg-3`
+   is what §5.8 gives an absent value everywhere, and it already reads
+   3.14 / 3.05 on plain `--surface`, under §7's floor before any tint is
+   involved. The flash lowers it; it does not introduce it — the Users table has
+   flashed the same dash since TAS-186. The number is recorded so the next reader
+   has one instead of an impression, and the fix belongs to a pass over `--fg-3`
+   rather than to this rule. */
+.admin-table tbody tr.is-changed td {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+
+.admin-table tbody tr.is-changed .admin-cell-frozen {
+  background-color: var(--surface);
+  background-image: linear-gradient(
+    color-mix(in oklab, var(--accent) 14%, transparent),
+    color-mix(in oklab, var(--accent) 14%, transparent)
+  );
 }
 
 /* The last column is the row's own link, and it holds only a chevron: a wider
@@ -2373,15 +2437,25 @@ h1 {
   margin: 0 22px 13px;
 }
 
-/* A note that is the whole body of the section — the catalog failed, or the
-   gateway does not serve the summary yet — takes the section's inset, since
-   there is no plane around it to provide one. */
+/* A note that is the whole body of the section — the catalog failed, the
+   summary is loading — takes the section's inset, since there is no plane
+   around it to provide one. */
 .admin-events > .admin-note {
   padding: 0 22px;
 }
 
-.admin-events-unserved {
-  max-width: 520px;
+/* The Retry column of the Problems list (§5.8, TAS-194). As narrow as its
+   button and right-aligned, exactly like the Users section's action cell and
+   the Data table's chevron: width here is width taken from the values, and this
+   table is already wider than its plane.
+
+   96 is the same figure the Users cell takes, and the button inside it is the
+   same `.admin-row-action`, so the two write surfaces in this area line up
+   rather than each choosing a size. */
+.admin-table .admin-events-action-head,
+.admin-table .admin-events-action-cell {
+  width: 96px;
+  text-align: right;
 }
 
 /* Two blocks under each other, each hugging its own content: the counters are
@@ -2724,7 +2798,7 @@ h1 {
    lands on a `--surface-3` row: 1.06:1 light, 1.13:1 dark. Slight, and it is
    the recipe rather than a choice — the Data table's chevron paints
    `--surface-3` on a `--surface-3` row and has no delta at all. */
-.admin-user-action {
+.admin-row-action {
   height: 28px;
   padding: 0 11px;
   font-size: 11.5px;
@@ -2734,7 +2808,7 @@ h1 {
    in this stylesheet — only two form-scoped ones — so dropping this would leave
    the control on the browser's default ring. That ring is what the row anchor
    below is keyed to, so it is load-bearing twice over. */
-.admin-user-action:focus-visible {
+.admin-row-action:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -2769,21 +2843,25 @@ h1 {
    stronger signal and the hover has nothing to add. Ordering or a specificity
    bump would leave the same trap for whoever edits these next. */
 .admin-users-table tbody tr:not(.is-changed):hover td,
-.admin-users-table tbody tr:not(.is-changed):has(.admin-user-action:focus-visible) td {
+.admin-users-table tbody tr:not(.is-changed):has(.admin-row-action:focus-visible) td {
   background: var(--surface-3);
 }
 
-/* The confirmation that a change landed, in the absence of a toast (§5.6 keeps
-   that gap). The same recipe and the same two seconds as the copy confirmation
-   on a primary key, so the product has one way of saying "that worked": a
-   translucent accent tint, which composites correctly over the row's own plane
-   in both themes. Nothing moves, so `prefers-reduced-motion` has no opinion
-   to have. */
-.admin-users-table tr.is-changed td {
-  background: color-mix(in oklab, var(--accent) 14%, transparent);
-}
+/* The flash this section's rows take on a successful write used to live here.
+   It is `.admin-table tbody tr.is-changed td`, up with the Data table's own row
+   rules, unchanged in recipe and in duration: TAS-194 gave the Events list the
+   same confirmation, and two identical declarations under two table names would
+   have been the "one way of saying that worked" split in half. Nothing about a
+   Users row is special — `.admin-users-table` carries `.admin-table` too. */
 
-/* ---------- Users section: the confirmation dialog (§4.11) ---------- */
+/* ---------- The administration area's write dialogs (§4.11) ---------- */
+
+/* Written for the Users section's confirmation (TAS-186) and shared with the
+   Events section's retry (TAS-194), which is why these are `admin-write-*`
+   rather than `admin-user-*`. The two dialogs ask the same shape of question —
+   name the thing, state the transition, take a reason for the audit log, keep
+   themselves open on a refusal — so they draw the same parts. What is not
+   shared is the prose, and none of it lives here. */
 
 /* Who this is about, above the reason field. A recessed block rather than loose
    lines: the dialog is asking about one account, and the block is that account.
@@ -2793,33 +2871,43 @@ h1 {
    caption that happens to have padding — and §1 rule 2 says separation comes
    from space and a very faint border rather than from a fill. The same
    correction this stylesheet already makes for the frozen column's edge. */
-.admin-user-target {
+.admin-write-target {
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--surface-2);
   padding: 10px 12px;
 }
 
-.admin-user-target p {
+.admin-write-target p {
   margin: 0;
 }
 
-.admin-user-target-name {
+.admin-write-target-name {
   color: var(--fg);
   font-size: 13px;
   font-weight: 600;
 }
 
-.admin-user-target-line {
+.admin-write-target-line {
   color: var(--fg-2);
   font-size: 11.5px;
 }
 
+/* The one target line that is a machine value rather than a human one: the
+   outbox event's uuid, which is what the request carries and what a reader
+   checks the dialog against. Mono for the reason this area sets every verbatim
+   identifier in mono (§2.3, §5.8), and allowed to wrap — a 36-character id in a
+   dialog narrower than it must break rather than push the plate sideways. */
+.admin-write-target-id {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
 /* The transition, in the server's own values, so it is set the way this area
    sets every other verbatim machine string (§2.3, §5.8). Two classes rather
-   than an `!important` (§8): `.admin-user-target p` above zeroes the margins,
+   than an `!important` (§8): `.admin-write-target p` above zeroes the margins,
    and one extra class is what puts this rule over it. */
-.admin-user-target .admin-user-transition {
+.admin-write-target .admin-write-transition {
   margin-top: 6px;
   color: var(--fg-2);
   font-family: var(--font-mono);
@@ -2830,7 +2918,7 @@ h1 {
 /* A fact the reader cannot see anywhere else — that unblocking will not restore
    an invitation, or that this is their own account. Prose, not an alert: none
    of it is a failure. */
-.admin-user-note {
+.admin-write-note {
   margin: 0;
   color: var(--fg-2);
   font-size: 12px;
@@ -2843,7 +2931,7 @@ h1 {
    tell somebody their password has been reset. Weight and colour are both
    stated rather than inherited (§1), and the weight is §2.3's, not the
    browser's 700 — the note is 12px prose, not a heading. */
-.admin-user-note strong {
+.admin-write-note strong {
   color: var(--fg);
   font-weight: 650;
 }
@@ -2852,7 +2940,7 @@ h1 {
    --fg-3 for the same reason the error detail takes it: while the field is
    empty this line is the only thing explaining a disabled control, which is not
    meta. */
-.admin-user-hint {
+.admin-write-hint {
   margin: -7px 0 0;
   color: var(--fg-2);
   font-size: 11.5px;
@@ -2864,7 +2952,7 @@ h1 {
    sentence, the server's own words, and the request id — and a whole paragraph
    set in --danger would be shouting where it should be explaining. --fg on the
    10% tint measures 15.83:1 light / 14.28:1 dark. */
-.admin-user-failure {
+.admin-write-failure {
   border-radius: 9px;
   background: color-mix(in oklab, var(--danger) 10%, transparent);
   padding: 10px 12px;
@@ -2873,15 +2961,15 @@ h1 {
   line-height: 1.55;
 }
 
-.admin-user-failure p {
+.admin-write-failure p {
   margin: 0 0 6px;
 }
 
-.admin-user-failure p:last-child {
+.admin-write-failure p:last-child {
   margin-bottom: 0;
 }
 
-.admin-user-failure .admin-error-detail {
+.admin-write-failure .admin-error-detail {
   font-size: 11.5px;
 }
 

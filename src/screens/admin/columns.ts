@@ -133,12 +133,22 @@ export function isJsonColumn(type?: string): boolean {
  * A JSON column's value laid out to be read (DESIGN.md §5.8), or `null` when it
  * is not JSON at all and must be printed exactly as it arrived.
  *
- * The `null` branch is the important one. `admin-service` currently serves this
- * column through a wrapper's `toString`, so what comes over the wire starts
- * `JsonByteArrayInput{…}` and does not parse. That is a backend defect, fixed
- * by TAS-105, and the client must not tidy it away: a repair here would survive
- * the fix silently and hide the day the format changed. §5.8 says so in as many
- * words — "срезать java-префикс руками запрещено".
+ * The `null` branch is the important one, and it is a rule rather than a
+ * workaround. A value the catalog calls `jsonb` that does not parse is a fault
+ * on the server, and this console's job is to make it visible: repairing it
+ * here would tidy the evidence away and the day the format changed would pass
+ * unnoticed. §5.8 says so in as many words — "срезать java-префикс руками
+ * запрещено" (TAS-167: escalate, do not repair).
+ *
+ * It has been earned once. Until backend PR #141 (TAS-105) admin-service served
+ * every `jsonb` column through a wrapper's `toString`, so payloads arrived as
+ * `JsonByteArrayInput{…}` and this branch printed them — which is how the defect
+ * stayed legible instead of being silently half-fixed on screen. That fix is
+ * deployed and measured (20 live `issue.outbox_events` rows read on 2026-09-08,
+ * every `payload` clean JSON), so nothing reaches this branch from the gateway
+ * today. It stays for the next one; `formatJsonValue`'s own tests keep it
+ * exercised, on a plainly non-JSON string rather than on a Java `toString` the
+ * gateway no longer emits.
  *
  * A masked payload needs no special case and gets none: `MASK_PARTIAL` stars
  * the values *inside* the document, so it is still JSON and is printed as JSON,
