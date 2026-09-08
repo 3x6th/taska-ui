@@ -31,6 +31,37 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   neighbouring one in the same diff makes the removal harder to review, not
   easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
   named the account being blocked where it meant the reader.
+- **Nothing in `src` is an error boundary, and the gateway declares every issue
+  field nullable** (`release-reviewer`, 2026-09-08, TAS-195 verdict). The
+  deployed gateway's own generated spec — `https://api.taska.ozero.dev/v3/api-docs`,
+  public, no token — types every property of `IssueResponseDto` as
+  `["string","null"]` with no `required` block. `status` is the one that matters
+  and the one TAS-195 deliberately did **not** default: a card given an invented
+  status would be placed in a column it does not belong to, which is worse than
+  a card that does not appear. Today a `null` status makes the card vanish from
+  its column while still being counted, so the board reads "10 of 10" and draws
+  nine. The honest fix is a visible one — count what is drawn, or surface the
+  row as unplaceable — and it is a product decision, not a mapper default.
+  Separately: `grep` finds no `ErrorBoundary`, `componentDidCatch` or
+  `getDerivedStateFromError` anywhere in `src`, so any render-time throw blanks
+  the whole application rather than one panel. That is what made the `null`
+  description case (fixed in TAS-195 at the mapper) an app-wide hazard rather
+  than a board-wide one.
+- **Two ways to prove a rest-mode claim without a credential**
+  (`release-reviewer`, 2026-09-08, TAS-195 verdict). TAS-195 could not produce
+  the evidence that would have settled it best — a network trace showing one
+  list request and no detail burst — because the dev server needs a sign-in and
+  the agent may not enter a password. Two routes around that, neither taken:
+  (a) a component test rendering `BoardScreen` against a real `RestTaskaApi`
+  over a stubbed `fetch` seeded with a list body, asserting cards land in
+  columns with chips **and** that no stubbed URL matches `/issues/{id}` —
+  `BoardScreen.test.tsx` already renders the board against a stub API, so this
+  is a small delta and proves the one link nothing currently proves, that a list
+  *response body* draws a board; (b) a second Playwright project with
+  `VITE_TASKA_API_MODE: "rest"` and `page.route` fixtures for login and list,
+  which needs a second `webServer` entry in `playwright.config.ts` and produces
+  exactly the trace. (b) is worth a story — it unblocks every future rest-mode
+  claim, not just this one.
 - **`UserProfileMenu.tsx` calls `.toLowerCase()` on a contract-optional field**
   (`api-contract-guard`, 2026-09-08, TAS-196 re-verdict). `user.status` builds a
   class name at `src/components/UserProfileMenu.tsx:108`, but

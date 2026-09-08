@@ -513,7 +513,15 @@ export class RestTaskaApi implements TaskaApi {
     // on the deployed gateway (see `RestListIssuesResponse`), so the reason is
     // gone. Nothing else went with it: `getIssue` still backs the issue panel,
     // and the fan-out was the multiplier that made TAS-139 fail a whole board.
-    const items = response.items.map((item) => this.toIssue(item));
+    //
+    // `?? []` because `ListIssuesResponseDto` declares no `required` block, so
+    // a `200` with no `items` at all is a legal answer to this route — the
+    // opposite of `SearchIssuesResponseDto` below, which requires both fields
+    // and is still read defensively. Unguarded, a body of `{ totalCount: 0 }`
+    // rejects with a `TypeError`: no `code`, no `requestId`, nothing
+    // `apiErrorFacts` can name, and a board that reports an unreadable failure
+    // where an empty page was meant.
+    const items = (response.items ?? []).map((item) => this.toIssue(item));
 
     return {
       items,
@@ -1279,10 +1287,34 @@ export class RestTaskaApi implements TaskaApi {
    * `?? null` and never `||`. `0` is a legal story-point count and a legal
    * estimate, and `0 || null` is `null` — the one substitution that turns a
    * value into an absence without failing anywhere.
+   *
+   * **`description` is defaulted and `status` deliberately is not**, and the
+   * asymmetry is the interesting half. Both may be absent: the deployed
+   * gateway's own generated spec (`GET /v3/api-docs`, read 2026-09-08) declares
+   * every property of `IssueResponseDto` as `["string", "null"]` under no
+   * `required` block, so `null` here is a server-declared value rather than a
+   * hypothesis. The difference is what a substitute costs.
+   *
+   * For `description`, `""` is the value the UI already means by "no
+   * description" — it is what the issue panel writes back, and what the board's
+   * filter needs, because that filter calls `.toLowerCase()` on it inside a
+   * `useMemo` during render and there is no error boundary in `src`: one `null`
+   * blanks the whole application on the first keystroke, and again after a
+   * reload on the next one.
+   *
+   * For `status` there is no such harmless value. Every candidate is a real
+   * column, so an invented one puts the card under a heading the server does not
+   * agree with, and the drag out of that column then asks for a transition from
+   * a status the issue was never in. A statusless card matches no column and
+   * simply does not appear (`BoardScreen` groups by `issue.status ===
+   * status.statusKey`), which is the recoverable failure of the two. That half
+   * is in `docs/ai/BACKLOG.md` with this reasoning rather than papered over
+   * here.
    */
   private toIssue(issue: RestIssue): Issue {
     return {
       ...issue,
+      description: issue.description ?? "",
       assigneeId: issue.assigneeId || null,
       deletedAt: issue.deletedAt ?? null,
       labels: (issue.labels ?? []).map((label) => toLabel(label)),

@@ -1110,7 +1110,7 @@ describe("RestTaskaApi issue list", () => {
     expect(page).toMatchObject({ page: 0, pageSize: 100, totalCount: 1 });
   });
 
-  it("defaults every field the list DTO may leave out, exactly as the detail read does", async () => {
+  it("defaults the fields toIssue folds, and leaves the rest of a bare row undefined", async () => {
     // `ListIssuesResponseDto` marks nothing required and the five planning
     // fields land only with backend PR #148, so a row this bare is legal — and
     // a card that renders "undefined" for a story-point count is the failure.
@@ -1122,12 +1122,44 @@ describe("RestTaskaApi issue list", () => {
     // `""` is how the gateway spells "nobody"; one shape of it reaches the UI.
     expect(issue.assigneeId).toBeNull();
     expect(issue.deletedAt).toBeNull();
+    // The board's filter lowercases this during render and nothing in `src`
+    // catches what it throws, so an absent description is the one field below
+    // that may not stay absent.
+    expect(issue.description).toBe("");
     expect(issue).toMatchObject({
       storyPoints: null,
       startDate: null,
       dueDate: null,
       originalEstimateMinutes: null,
       remainingEstimateMinutes: null,
+    });
+
+    // The gap this test does *not* close, asserted rather than left for a
+    // reader to infer from its name: everything else the wire may omit arrives
+    // `undefined` under a type that says `string`. `status` is deliberate —
+    // `toIssue` explains why an invented column is worse than a missing card —
+    // and the other three are simply not defaulted, which is a decision each
+    // needs on its own rather than a sweep. Defaulting any of them should break
+    // this line and make that decision visible.
+    expect(issue.status).toBeUndefined();
+    expect(issue.summary).toBeUndefined();
+    expect(issue.priority).toBeUndefined();
+    expect(issue.createdAt).toBeUndefined();
+  });
+
+  it("reads a page the gateway sent no items for as empty rather than throwing", async () => {
+    // The same case the search block pins, and the one where the schema
+    // actually allows it: `SearchIssuesResponseDto` requires `items`,
+    // `ListIssuesResponseDto` requires nothing. Unguarded this rejected with a
+    // `TypeError` — an error with no `code` and no `requestId`, which the board
+    // can only report as unreadable.
+    stubFetch({ totalCount: 0 });
+
+    await expect(new RestTaskaApi().listIssues("project-1")).resolves.toMatchObject({
+      items: [],
+      page: 0,
+      pageSize: 0,
+      totalCount: 0,
     });
   });
 

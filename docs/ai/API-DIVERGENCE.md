@@ -157,7 +157,7 @@ is cheaper than splitting an entry and the reader has to be told which.
 - **Removal:** narrow at the mapper the way TAS-151 did for `globalRole`, or
   have the contract state the enum.
 
-### `GET /issues/{issueId}` 500s once an issue has a comment
+### Closed by measurement (TAS-195 pass): `GET /issues/{issueId}` no longer 500s on a commented issue
 
 - **Endpoint:** `GET /api/v1/issues/{issueId}`
 - **Contract:** returns the issue with its history (`IssueWithHistoryResponseDto`).
@@ -169,10 +169,19 @@ is cheaper than splitting an entry and the reader has to be told which.
   hydration existed, one commented issue anywhere in a project made the whole
   board fail to load, and the projects screen lost every card's issue count and
   member row with it. TAS-195 removed that multiplier — the board no longer
-  reads the detail route — so the blast radius is now the issue panel alone.
+  reads the detail route — so the blast radius is now the issue panel and the notifications bell's single
+  lookup, rather than a board.
   And the fault itself no longer reproduces: **measured 2026-09-08**, three
   issues carrying 1, 1 and 4 comments each answered `200` from
   `GET /issues/{issueId}`, one of them carrying a label as well.
+
+  **A `200` alone would not have closed this, and the reviewer was right to say
+  so.** The gateway could have "fixed" the unknown-event `500` by dropping
+  events it cannot name, which reads as success and silently empties the
+  panel's history. It did not: the returned histories carry `COMMENT_CREATED`,
+  and one of them `COMMENT_UPDATED` and `COMMENT_DELETED` as well. `CRM-2`
+  settles both families at once — four comments and a label, `LABEL_ADDED` and
+  three comment event types in one history, answering `200`.
 - **Not observed on 2026-08-12, but that is not an all-clear.** Hydrating every
   issue in all seven projects — 19 `GET /issues/{id}` calls, the exact path that
   used to fail — returned `200` every time. What was *not* established is
@@ -1401,9 +1410,13 @@ Everything below is the entry as it stood, in the past tense.
     not already have, which is why `TaskaApi` returns `void`.
   - `GET …/issues/{id}/labels` → `200` with the three-field
     `IssueLabelResponseDto`. `DELETE …/labels/{labelId}` → `204`.
-  - `GET /projects/{id}/issues` carries no labels, as the contract says: the
+  - ~~`GET /projects/{id}/issues` carries no labels, as the contract says: the
     short DTO holds `id`, `issueKey`, `issueType`, `priority`, `summary`,
-    `assigneeId` and nothing else.
+    `assigneeId` and nothing else.~~ **Both halves stopped being true.** The
+    list DTO is `IssueResponseDto` and carries labels — measured 2026-09-08,
+    see the TAS-195 closure below. Left struck rather than deleted because this
+    was the most quotable sentence in the repository for "does the list carry
+    labels", and a reader who half-remembers it should meet the correction.
 - **Still unverified after that pass:** whether `labelId` actually filters
   (the probe project had one issue, so a filter proves nothing there), what
   order either list route returns, and whether `totalCount` can disagree with
@@ -1413,8 +1426,9 @@ Everything below is the entry as it stood, in the past tense.
   either. And `IssueResponseDto.labels` could not be checked at all, for the
   reason immediately below.
 - **Writing a label makes the issue permanently unreadable
-  ([TAS-172](https://jira.ozero.dev/browse/TAS-172)).** This is the finding
-  that matters, and it is not in the label routes — they are clean.
+  ([TAS-172](https://jira.ozero.dev/browse/TAS-172)) — **fixed, measured
+  2026-09-08; see the bullet below**.** This was the finding that mattered, and
+  it was not in the label routes — they are clean.
   `GET /api/v1/issues/{issueId}` answers `500` for any issue a label has ever
   touched: `{"code":"INTERNAL_SERVER_ERROR","message":"Unknown event type:
   ISSUE_EVENT_TYPE_LABEL_ADDED"}`. TAS-119 taught issue-service to write
@@ -1424,18 +1438,39 @@ Everything below is the entry as it stood, in the past tense.
     `LABEL_REMOVED` and keeps the `500`; deleting the label from the project
     entirely leaves the issue `500` still, because the history event is
     already written and nothing on the client can retract it.
-  - ~~**It takes the whole board with it, not just the panel.**~~ **No longer
-    true, twice over.** It did: `listIssues` hydrated every row through
-    `getIssue` because the list DTO omitted fields the card needs, so one
-    labelled issue failed the project's entire issue read — measured then as
-    list `200`, row hydration `500`, whole call rejected. TAS-195 removed the
-    hydration, and the 2026-09-08 probe could not reproduce the `500` at all.
-  - **Compensation: none, and the UI ships the writes anyway** — the owner's
-    call, made knowing the above, so the backend team can work the bug against
-    a real reproduction. What that means in practice: attaching a label on the
-    deployed stand permanently breaks that issue and its project's board.
-  - `kappa-test-1` (`09bf59ad-82e6-4650-992a-5d7c0dfadea9`) is in that state
-    now, broken by this verification pass. It is the live reproduction.
+  - **FIXED. Measured 2026-09-08 on the issue this entry names.**
+    `GET /api/v1/issues/09bf59ad-82e6-4650-992a-5d7c0dfadea9` — `kappa-test-1`,
+    the live reproduction deliberately left broken by the verification pass —
+    answers **`200`**. Its history carries `CREATED`, `LABEL_ADDED` and
+    `LABEL_REMOVED`, and the issue carries one label. So the two events are
+    **mapped**, not merely tolerated: the gateway did not fix the `500` by
+    dropping what it could not name, which was the reading this entry would
+    otherwise have had to rule out.
+
+    Read the probe design, because a weaker one would not have closed this. An
+    earlier pass the same day read three issues that *already carried* labels
+    and got `200`. That is suggestive and not sufficient — it does not perform
+    the write sequence this entry blames, and both reviewers said so
+    independently. What closes it is the named id: an issue already in the
+    broken state, read back, answering `200`.
+  - ~~**It takes the whole board with it, not just the panel.**~~ No longer
+    true, and it would not be even if the `500` returned: `listIssues` hydrated
+    every row through `getIssue` because the list DTO omitted fields the card
+    needs, so one labelled issue failed the project's entire issue read —
+    measured then as list `200`, row hydration `500`, whole call rejected.
+    TAS-195 removed the hydration, so a detail-route fault now costs the issue
+    panel and the notification bell's one lookup, not a board.
+  - ~~**Compensation: none, and the UI ships the writes anyway**~~ — the
+    owner's call, made knowing the above, so the backend team could work the
+    bug against a real reproduction. **The hazard that came with it is
+    retired**: attaching a label on the deployed stand no longer breaks that
+    issue, and `kappa-test-1` is readable again.
+  - **What is still owed here.** The Jira story is the backend's to close and
+    was left untouched; this entry records the measurement, not the decision.
+    And the general shape survives its instance: an unknown event type is still
+    fatal by construction unless the gateway was changed to tolerate one, which
+    this probe cannot distinguish from "the two known types were added". The
+    next event type issue-service invents is the test.
   - Same class as [TAS-139](https://jira.ozero.dev/browse/TAS-139), which was
     this bug on comment events and was closed. It will recur on the next event
     type issue-service adds unless an unknown type stops being fatal, which is
@@ -1473,7 +1508,8 @@ Everything below is the entry as it stood, in the past tense.
 - **Removed by:** [TAS-172](https://jira.ozero.dev/browse/TAS-172) closing,
   plus one more live pass covering what the list above still marks unverified
   — the `labelId` filter on a project with several labelled issues, list
-  ordering, `totalCount`, and `IssueResponseDto.labels`, which cannot be seen
+  ordering, `totalCount`, and `IssueResponseDto.labels` — the last of which, when
+  this was written, could not be seen
   until the issue read stops answering `500`.
 
 ### Closed by measurement (TAS-195 pass): `IssueResponseDto.labels` comes back populated
@@ -1507,11 +1543,11 @@ The entry as it stood:
   association**, because that filter is the server's job
   (`["issues", projectId, labelFilter]`). The card then drew no label chip.
 - **Why that pins it to the response rather than the UI.** `IssueCardContent`
-  renders `{issue.labels.length ? … : null}` (`src/screens/BoardScreen.tsx:770`),
+  renders `{issue.labels.length ? … : null}` (`src/screens/BoardScreen.tsx`, `IssueCardContent`),
   so an empty array draws nothing at all — which is what a reader sees. The board
   gets its cards from `listIssues`, which since TAS-195 maps the list row
   directly and reads `labels: (issue.labels ?? []).map(toLabel)` off it
-  (`src/api/rest/RestTaskaApi.ts:777`). There is no fallback and no filter in
+  (`src/api/rest/RestTaskaApi.ts`, `toIssue`). There is no fallback and no filter in
   between: a populated `labels` on the wire reaches the chip. The same card draws
   labels correctly against the mock, which is the control.
 - **This is the first observation of the field.** The label entry above says it
