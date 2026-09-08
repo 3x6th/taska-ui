@@ -44,6 +44,12 @@ states are not.
 | [TAS-190](https://jira.ozero.dev/browse/TAS-190) | Issue attachments over presigned S3 links (backend PR #147) | Done | merged (PR #48) |
 | [TAS-192](https://jira.ozero.dev/browse/TAS-192) | `.form-error` measures 3.17:1 in ten places; make the TAS-190 notice the product's error box | To Do | not started |
 | [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | In Progress | decided not to build a method yet, and why — `API-DIVERGENCE.md`, "The board route is declared, unimplemented, and narrower than the board it is named for" (PR #47) |
+| [TAS-196](https://jira.ozero.dev/browse/TAS-196) | The three admin writes are deployed; retire the undeployed-route compensation and refresh the contract snapshot | Done | merged (PR #50) |
+| [TAS-193](https://jira.ozero.dev/browse/TAS-193) | Issue watchers — the `me` pair, the count and the list; the two project-`ADMIN` routes deferred to TAS-137 | To Do | not started |
+| [TAS-194](https://jira.ozero.dev/browse/TAS-194) | Retry an outbox event from Events, and retire the TAS-105 summary compensation with it | To Do | not started |
+| [TAS-195](https://jira.ozero.dev/browse/TAS-195) | Drop the N+1 hydration in `listIssues` — the gateway's list DTO is whole issues now | To Do | measured, not started |
+| [TAS-197](https://jira.ozero.dev/browse/TAS-197) | `GET /users/me` answers `UNSPECIFIED` for a locked account | To Do | backend ask, filed from TAS-196 |
+| [TAS-198](https://jira.ozero.dev/browse/TAS-198) | A locked account keeps access on a pre-lock token, and `refresh` renews it | To Do | backend ask, filed from TAS-196 |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
@@ -279,6 +285,56 @@ criteria is the one that most needs the record.
   findings on TAS-125, three of which its reviewers had not raised.
 - The story stays open with the blocking condition named, and
   `npm run contract:pins` goes loud when PR #118 moves or merges.
+
+### TAS-196 — the compensation came out, and two records did not come with it
+
+- The probe first, the edits after, because the divergence entry demanded it in
+  writing: "one probe at that point confirms the status/code table above against
+  the running gateway rather than against the branch's source". Measured
+  2026-09-08 with an invalid uuid so nothing could be mutated — all three admin
+  writes answer `400 INVALID_ARGUMENT` where they answered Spring's
+  static-resource `404` on 2026-08-25. Two reviewers independently added the
+  control probe on the same prefix, which is what makes the reading "mapped"
+  rather than "a uuid filter upstream".
+- **The entry's own removal note was stale, and following it would have deleted a
+  live compensation.** It named `UNDEPLOYED_ROUTE_MESSAGE` and `isUndeployedRoute`
+  for deletion; by the time it was followed, TAS-190 had given both a second
+  caller in the attachments panel, whose backend PR is still open. The rule this
+  buys, now in `docs/contract/pending/README.md`: a removal note names the code
+  to delete on the day the divergence is found, and code acquires callers
+  afterwards — read the callers, not the note.
+- **All three reviewers found the same thing independently:** `DESIGN.md` §5.8
+  still specified the sentence the story removed, and `DESIGN.md` outranks the
+  story. The only standing instruction left in the repository would have been the
+  one to rebuild what this deleted.
+- **Two findings were defects the fixes themselves introduced.** Correcting the
+  routes table to name TAS-194 left a paragraph twenty-seven lines below naming
+  TAS-106; correcting the TAS-105 gap note pointed two files at a record that
+  still said the opposite. Both are in the commit history rather than smoothed
+  over, because the shape recurs: correcting the place someone pointed at is not
+  the same as correcting the fact.
+- **A twelve-day-old lie surfaced sideways.** `GET /readonly/outbox/problematic-summary`
+  has answered since backend PR #141 merged 2026-08-27; its entry still said the
+  gateway does not serve it. The entry stays **open** and moves to TAS-194,
+  because the divergence inverted rather than closed — the endpoint answers and
+  the compensation is still in the tree. Why nobody noticed is the durable part:
+  the compensation renders as a quiet note and compares its signature by exact
+  equality, so against a live `200` it cannot fire, and **a compensation that
+  never fires is one nobody reports**. Hence the standing instruction to re-read
+  `API-DIVERGENCE.md` whole on every snapshot refresh, not only beside the entry
+  a story touches.
+- The same sentence — "it removes itself on deploy" — turned up at five sites
+  across three rounds, the last being the docstring on the constant itself, which
+  is where a reader lands by go-to-definition. A promise to retire is what stops
+  a removal from ever being scheduled.
+- `release-reviewer` and `api-contract-guard` both verified the new predicate
+  test by mutation rather than by reading it, in both directions: relaxing the
+  message arm failed two existing tests, relaxing the status arm failed none —
+  which was the finding.
+- Verdicts: `api-contract-guard` pass, then F1–F6, then N1–N3, then N4–N5, each
+  round closing its own. `release-reviewer` request-changes on three, then
+  approve. `art-director` approve on the UI throughout, blocking twice on the
+  record — B1, then B2 which its own fix created.
 
 ### TAS-190 — issue attachments, and the leg that is not a gateway request
 
