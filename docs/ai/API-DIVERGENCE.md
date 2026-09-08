@@ -1828,8 +1828,15 @@ The entry as it stood:
   PR #143, TAS-106, merged 2026-09-03), against
   `GET /api/v1/readonly/outbox/problematic-summary` beside it.
 - **Observed:** read on `develop` 2026-09-08 from `OutboxRetryServiceImpl` and
-  `OutboxRetryRepositoryImpl`, **not probed with a token** — say so before
-  quoting it. The retry `UPDATE` carries
+  `OutboxRetryRepositoryImpl`. The eligibility *rule* is a source reading and
+  not a wire measurement — say so before quoting it. The route's **deployment**
+  is measured: `POST /api/v1/admin/outbox/issue/not-a-uuid/retry` answers `400
+  INVALID_ARGUMENT` where a control path on the same prefix answers the
+  static-resource `404` (`release-reviewer`, unauthenticated, 2026-09-08). And
+  the path enum is **not** enforced on the wire — `…/outbox/notification/<uuid>/retry`
+  answers `401` rather than `400`, so binding accepts any string and only
+  `getDatabaseClient` refuses it. The client's closed list is therefore a strict
+  narrowing over what the wire would carry, which is the safe direction. The retry `UPDATE` carries
   `WHERE id = … AND (status = 'FAILED' OR (status = 'PROCESSING' AND processing_started_at < :stuckBefore))`,
   where `stuckBefore` comes from `admin.outbox-retry.stuck-threshold`, default
   **10m**. The summary flags a `PROCESSING` row as stuck after
@@ -1863,10 +1870,21 @@ The entry as it stood:
   transaction. The `server` and `unreachable` arms say the event may have been
   retried; the `conflict` arm says the opposite, and is exact — eligibility is
   checked before the update and again in the update's own `WHERE`.
-- **Removal:** none filed, and none belongs here. This is a backend
-  configuration mismatch rather than a frontend compensation; what closes it is
-  a backend story aligning the two thresholds, or exposing eligibility on the
-  row so the client can stop inferring it.
+- **Removal:** [TAS-200](https://jira.ozero.dev/browse/TAS-200) — a backend
+  story. Align the two thresholds, or better, expose eligibility on the summary
+  row **and state the rule in the contract**, so the client stops inferring it.
+  The second half is the durable ask and the reason the first is not enough: the
+  eligibility rule lives only in Java, and the threshold is an environment
+  variable, so **the backend can change which events are retryable without
+  changing the contract** and this client would silently start drawing wrong
+  buttons. A flag moves the rule from Java to a field; describing it makes a
+  change to it a contract change, which is the only kind of change this
+  repository can notice.
+
+  The client's re-derivation of that rule *is* a compensation, which is why this
+  entry has a removal at all. An earlier revision of this line said "none filed"
+  while the story was already open — the drift this file exists to prevent,
+  committed inside the entry that documents it.
 
 ### Closed by TAS-194: the problems summary was TAS-105-only, then the endpoint answered, then the compensation came out
 

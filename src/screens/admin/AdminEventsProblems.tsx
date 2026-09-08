@@ -6,8 +6,8 @@ import { taskaApi } from "../../api/client";
 import type { RetryableOutboxService } from "../../api/TaskaApi";
 import type { OutboxRetryResult, ProblematicOutboxEvent } from "../../domain/types";
 import { AdminError } from "./AdminError";
-import { AdminOutboxRetryModal } from "./AdminOutboxRetryModal";
-import { canRetryOutboxEvent, eventAge, outboxCategory } from "./events";
+import { AdminOutboxRetryModal, type OutboxRetryArrival } from "./AdminOutboxRetryModal";
+import { canRetryOutboxEvent, eventAge, outboxCategory, OUTBOX_PROBLEMS_KEY } from "./events";
 import { BACK_TO_PROBLEMS } from "./eventsUrlState";
 
 /** How long a retried row stays marked, matching the Users section (§5.8). */
@@ -32,7 +32,7 @@ type RetryableEvent = ProblematicOutboxEvent & { serviceKey: RetryableOutboxServ
 export function AdminEventsProblems() {
   const queryClient = useQueryClient();
   const summaryQuery = useQuery({
-    queryKey: ["admin", "outbox", "problems"],
+    queryKey: OUTBOX_PROBLEMS_KEY,
     queryFn: () => taskaApi.getProblematicOutboxSummary(),
     /**
      * No automatic retry — kept through TAS-194, on a different argument from
@@ -120,6 +120,15 @@ export function AdminEventsProblems() {
    * operator focus with nothing on screen saying where it went. The option is
    * not implemented everywhere, hence the fallback — an undrawn ring beats
    * losing focus altogether.
+   *
+   * **Dismissed while the retry was still in flight, and answered afterwards** —
+   * focus does not move at all, and this is a third case rather than a variant
+   * of the second. The answer is not lost: query-core runs the mutation to the
+   * end with nobody observing it, so a confirmation can land seconds after
+   * Cancel, by which time the operator is somewhere else. The list is still
+   * asked again and the live region still says what the server said; only the
+   * focus move is withheld, because it is the one part of the confirmation that
+   * reaches out and takes something (`OutboxRetryArrival`).
    */
   const focusTrigger = () => {
     const button = trigger.current;
@@ -142,17 +151,26 @@ export function AdminEventsProblems() {
     return () => window.clearTimeout(timer);
   }, [flashed]);
 
-  const onRetried = (event: RetryableEvent, result: OutboxRetryResult) => {
+  const onRetried = (event: RetryableEvent, result: OutboxRetryResult, arrival: OutboxRetryArrival) => {
     setFlashed(eventKey(event));
     // The server's own word for the state, not "NEW" assumed: the endpoint
     // reports what the row is now, and a backend that grows another state
     // should be quoted rather than second-guessed.
     setAnnouncement(`${event.eventType} on ${event.serviceKey} is now ${result.status}.`);
-    setPending(null);
-    focusListAfterWrite();
-    // The list is what the section believes, so it is asked again. The response
-    // is a confirmation, not a source of rows.
-    void queryClient.invalidateQueries({ queryKey: ["admin", "outbox", "problems"] });
+    // The two things that belong to the dialog, done only while there is one.
+    // Closing it is the second of them: an answer to a dismissed dialog can
+    // arrive while a *different* row's dialog is open, and closing that over an
+    // answer about another event would be the same intrusion as the focus move,
+    // in the same tick.
+    if (arrival === "while-open") {
+      setPending(null);
+      focusListAfterWrite();
+    }
+    // The list is what the section believes, so it is asked again — on both
+    // paths, because a row that moved is worth knowing about whether or not
+    // anyone was still watching the dialog when it did. The response is a
+    // confirmation, not a source of rows.
+    void queryClient.invalidateQueries({ queryKey: OUTBOX_PROBLEMS_KEY });
   };
 
   if (summaryQuery.isPending) {
@@ -163,11 +181,28 @@ export function AdminEventsProblems() {
     );
   }
 
-  if (summaryQuery.isError) {
+  /**
+   * A failed read replaces the view only when there is nothing to replace it
+   * *with* — the first load, or a failure after the cache was dropped.
+   *
+   * `isError` alone would not have been that test. query-core sets
+   * `status: "error"` on a failed **background** refetch while keeping the data
+   * it already has, and the refetch this view does most often is the one that
+   * follows a successful retry: a blip there would have swapped the whole
+   * section — the flashed row and the live region's confirmation with it — for
+   * a read-failure card, over a write that landed. And this query does not retry
+   * itself (see above), so nothing would have put it back.
+   */
+  const summary = summaryQuery.data;
+  if (!summary) {
     return <AdminError error={summaryQuery.error} onRetry={() => void summaryQuery.refetch()} />;
   }
 
-  const { counts, events, notAllShown } = summaryQuery.data;
+  const { counts, events, notAllShown } = summary;
+  // A read that failed over rows that are still on screen: the failure is stated
+  // above them rather than instead of them, because the list is the last thing
+  // the server actually said and "Try again" is the same button either way.
+  const staleError = summaryQuery.isError ? summaryQuery.error : null;
   // Sorted by service key, here rather than in the API layer: the response's
   // order is unspecified — the backend collects the counts per service
   // concurrently — and a matrix that reshuffled its rows between two refetches
@@ -185,6 +220,8 @@ export function AdminEventsProblems() {
       <p className="visually-hidden" role="status">
         {announcement}
       </p>
+
+      {staleError ? <AdminError error={staleError} onRetry={() => void summaryQuery.refetch()} /> : null}
 
       {/* The counters first: they are the answer to the question people come to
           this section with, and the list below is only where it started. */}
@@ -305,7 +342,7 @@ export function AdminEventsProblems() {
             setPending(null);
             focusTrigger();
           }}
-          onDone={(result) => onRetried(pending, result)}
+          onDone={(result, arrival) => onRetried(pending, result, arrival)}
         />
       ) : null}
     </div>

@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { taskaApi } from "../../api/client";
 import { apiErrorFacts } from "../../api/errors";
@@ -6,7 +6,7 @@ import { OUTBOX_RETRY_REASON_MAX_LENGTH, type RetryableOutboxService } from "../
 import { Modal } from "../../components/Modal";
 import { RequestId } from "../../components/RequestId";
 import type { OutboxRetryResult, ProblematicOutboxEvent } from "../../domain/types";
-import { OUTBOX_TABLE } from "./events";
+import { OUTBOX_PROBLEMS_KEY, OUTBOX_TABLE } from "./events";
 // The section's five-way failure classification, shared rather than copied.
 // It lives in `users.ts` because the Users section was the first to need it and
 // the tests that pin its ordering are written against that section's refusals —
@@ -17,6 +17,27 @@ import { OUTBOX_TABLE } from "./events";
 // exact shape this dialog's most important refusal wears.
 import { userWriteFailure } from "./users";
 
+/**
+ * Whether this dialog was still on screen when the server answered.
+ *
+ * A retry dismissed while in flight is not cancelled, and the answer is not
+ * dropped either: query-core keeps a mutation running once its observer
+ * unmounts, and the `onSuccess` given to `useMutation` — unlike the callbacks
+ * handed to `mutate`, which it skips when nobody is listening — fires either
+ * way. So a confirmation can arrive seconds after Cancel, with the operator
+ * somewhere else entirely.
+ *
+ * Everything that speaks to the *section* still happens on that path: the list
+ * is asked again, the row is marked, the live region says what the server said.
+ * What must not happen is a focus move. Taking someone's focus after they
+ * dismissed a dialog and moved on is worse than not confirming at all — it is
+ * defensible only on the reading that they are still sitting there doing
+ * nothing, which is the reading every focus steal is built on — and a live
+ * region is exactly the channel for a result nobody is waiting at (DESIGN.md
+ * §7). The section is the one that owns focus, so this is what it is told with.
+ */
+export type OutboxRetryArrival = "while-open" | "after-dismissal";
+
 interface AdminOutboxRetryModalProps {
   /**
    * Narrowed to a service the retry path will carry. `canRetryOutboxEvent`
@@ -25,7 +46,8 @@ interface AdminOutboxRetryModalProps {
    */
   event: ProblematicOutboxEvent & { serviceKey: RetryableOutboxService };
   onClose: () => void;
-  onDone: (result: OutboxRetryResult) => void;
+  /** The server's answer, and whether this dialog was still there to receive it. */
+  onDone: (result: OutboxRetryResult, arrival: OutboxRetryArrival) => void;
 }
 
 /**
@@ -55,6 +77,7 @@ interface AdminOutboxRetryModalProps {
  * does (`src/screens/BoardScreen.tsx`).
  */
 export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRetryModalProps) {
+  const queryClient = useQueryClient();
   const [reason, setReason] = useState("");
   const hintId = useId();
   // Whitespace-only is blank, and it never reaches the wire: the server answers
@@ -65,9 +88,31 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
   const trimmed = reason.trim();
   const canSubmit = trimmed !== "";
 
+  /**
+   * Whether this dialog is still on screen — a ref rather than state because
+   * nothing renders from it and its one reader runs *after* the last render,
+   * quite possibly after this component has stopped existing.
+   *
+   * Written in two places on purpose. The effect's cleanup is the general
+   * answer: it covers every way this dialog can leave, including a route change
+   * that unmounts the section from under it. `dismiss` writes it as well
+   * because the question is asked from outside React's lifecycle, and the
+   * answer should not depend on when the re-render that removes this dialog
+   * happens to be flushed. The effect body re-arms it so that StrictMode's
+   * mount → unmount → mount in development does not leave a live dialog
+   * permanently marked as gone.
+   */
+  const onScreen = useRef(true);
+  useEffect(() => {
+    onScreen.current = true;
+    return () => {
+      onScreen.current = false;
+    };
+  }, []);
+
   const run = useMutation({
     mutationFn: () => taskaApi.retryOutboxEvent(event.serviceKey, event.id, trimmed),
-    onSuccess: onDone,
+    onSuccess: (result) => onDone(result, onScreen.current ? "while-open" : "after-dismissal"),
   });
 
   const submit = () => {
@@ -75,12 +120,35 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
     run.mutate();
   };
 
+  /**
+   * Dismissal — `Esc`, Cancel, the close button, the backdrop.
+   *
+   * While a retry is in flight this dialog is the only thing watching it, so
+   * leaving takes the answer with it: the request is not cancelled, and the row
+   * behind this dialog may be `NEW` a moment later with the list still showing
+   * what it was. The list is therefore asked again on the way out, and the
+   * answer, whatever it turns out to be, arrives as a row that changed or a row
+   * that did not.
+   *
+   * Invalidating rather than disabling Cancel or swallowing `Esc`: a modal that
+   * cannot be dismissed while a request hangs is a modal that can trap someone
+   * for as long as the gateway does, and §4.11 gives `Esc` unconditionally.
+   *
+   * The answer still arrives, late — see `OutboxRetryArrival` for what the
+   * section may and may not do with one that nobody is waiting at.
+   */
+  const dismiss = () => {
+    onScreen.current = false;
+    if (run.isPending) void queryClient.invalidateQueries({ queryKey: OUTBOX_PROBLEMS_KEY });
+    onClose();
+  };
+
   // Read through a ref for the reason `AdminUserActionModal` gives: the handler
   // closes over the draft, which changes on every keystroke, and rebinding a
   // document listener per character is a cost with no upside.
-  const keyboard = useRef({ submit, onClose });
+  const keyboard = useRef({ submit, dismiss });
   useEffect(() => {
-    keyboard.current = { submit, onClose };
+    keyboard.current = { submit, dismiss };
   });
 
   useEffect(() => {
@@ -89,7 +157,7 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
     // board's modals under a story that is not about them (§7 tracks that gap).
     const onKeyDown = (keyEvent: KeyboardEvent) => {
       if (keyEvent.key === "Escape") {
-        keyboard.current.onClose();
+        keyboard.current.dismiss();
         return;
       }
       if (keyEvent.key === "Enter" && (keyEvent.metaKey || keyEvent.ctrlKey)) {
@@ -102,7 +170,7 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
   }, []);
 
   return (
-    <Modal onClose={onClose} title="Retry outbox event">
+    <Modal onClose={dismiss} title="Retry outbox event">
       <form
         className="form-stack"
         onSubmit={(formEvent) => {
@@ -144,12 +212,17 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
             answer. The list calls a PROCESSING row stuck after the producing
             service's timeout; the retry route wants a longer one of its own, and
             neither number is visible from here (docs/ai/API-DIVERGENCE.md). Said
-            before the press rather than only in the refusal after it. */}
+            before the press rather than only in the refusal after it.
+
+            Two sentences, because it sits under the four-line note above it and
+            at 390 the pair was nine lines of 12px prose before the field. The
+            three facts are all still here: the status, that the server's
+            threshold is both longer and its own, and that the refusal changes
+            nothing. */}
         {event.status.trim().toUpperCase() === "PROCESSING" ? (
           <p className="admin-write-note">
-            This event is still being processed. The server retries one of those only once it has been stuck for
-            longer than this list waits before listing it, and that threshold is its own — so a recently stuck event
-            is refused, and refused without being changed.
+            This event is still processing. The server calls one stuck later than this list does, by a threshold of
+            its own — so a recently stuck event is refused, unchanged.
           </p>
         ) : null}
 
@@ -168,17 +241,25 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
         {/* One line doing two jobs, as in the Users dialog: while the field is
             empty it says why the button is off, and once it is not it counts
             down to the server's limit — which is this route's own 1000, not the
-            user writes' 550. */}
+            user writes' 550.
+
+            Word for word the Users sentence otherwise, and the one clause that
+            used to differ came out: it said the reason goes into the admin audit
+            log, which is just as true of the user writes and is said by neither.
+            It also cost two lines against that dialog's one, so the actions row
+            moved 17px on the first keystroke as the hint became the counter —
+            measured at 1440 with the entrance settled, 511 then 494, and 494
+            either way now. The drift and the reflow were the same clause. */}
         <p className="admin-write-hint" id={hintId}>
           {canSubmit
             ? `${OUTBOX_RETRY_REASON_MAX_LENGTH - trimmed.length} of ${OUTBOX_RETRY_REASON_MAX_LENGTH} characters left`
-            : `A reason is required — it goes into the admin audit log, and the server refuses a retry without one. Up to ${OUTBOX_RETRY_REASON_MAX_LENGTH} characters.`}
+            : `A reason is required — the server refuses a retry without one. Up to ${OUTBOX_RETRY_REASON_MAX_LENGTH} characters.`}
         </p>
 
         {run.isError ? <RetryFailure error={run.error} /> : null}
 
         <div className="modal-actions">
-          <button className="secondary-button" onClick={onClose} type="button">
+          <button className="secondary-button" onClick={dismiss} type="button">
             Cancel
           </button>
           <button className="primary-button" disabled={!canSubmit || run.isPending} type="submit">
@@ -211,12 +292,28 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
  */
 function RetryFailure({ error }: { error: unknown }) {
   const failure = userWriteFailure(error);
-  const { message, requestId } = apiErrorFacts(error);
+  const { code, message, requestId } = apiErrorFacts(error);
+  /**
+   * The one arm that promises the row did not move, and it is reached on the
+   * code rather than on the taxonomy's `conflict` — narrower than
+   * `userWriteFailure` on purpose.
+   *
+   * `isConflict` also admits a bare 409 and `ABORTED`, which are right for the
+   * Users writes: their transition guard answers exactly that. This route emits
+   * neither today — its one refusal is `FAILED_PRECONDITION` on a 400 — and the
+   * guarantee below is not a general property of a conflict. It holds because
+   * admin-service checks eligibility before the `UPDATE` and again in the
+   * `UPDATE`'s own `WHERE`, so *that* refusal provably moved nothing. A future
+   * 409 from this path would arrive with no such proof behind it, and would
+   * rather be read as the plain rejection it is than be handed a promise this
+   * dialog cannot keep.
+   */
+  const notEligible = failure === "conflict" && code === "FAILED_PRECONDITION";
 
   return (
     <div className="admin-write-failure" role="alert">
       <p>
-        {failure === "conflict"
+        {notEligible
           ? // The refusal this route makes most often, and the one an operator
             // is most likely to meet without having done anything wrong: only a
             // failed event, or one stuck in PROCESSING past the server's own
@@ -224,17 +321,18 @@ function RetryFailure({ error }: { error: unknown }) {
             // which of those it was.
             //
             // The last clause is the one that separates this arm from the two
-            // below it, and it is exact rather than reassuring: eligibility is
-            // checked before the update, and the update's own `WHERE` re-checks
-            // it, so a refusal on these grounds cannot have moved the row.
+            // below it, and it is exact rather than reassuring — see above for
+            // why it is spoken only here.
             "The server would not retry this event. Nothing is wrong with the request — it retries a failed event, or one stuck in processing past a threshold of its own, and this one is neither. The event is as it was."
           : failure === "refused"
             ? "The server refused this. Either you are not a global admin as far as the gateway is concerned, or that event is no longer in this service's outbox."
             : failure === "server"
               ? "The gateway failed while retrying this event. Nothing is wrong with what was asked for — this is a fault on the server, and the request id below is what identifies it in the gateway log. The retry may still have gone through: the event is updated before the answer is sent, so read the list again rather than assuming nothing happened."
-              : failure === "rejected"
-                ? "The gateway would not accept this request. Nothing is down: it read what was asked for and refused it, and what to change is in its own words below."
-                : "The admin API could not be reached, so this event may or may not have been retried. The list behind this dialog says which, once it can be read again."}
+              : failure === "unreachable"
+                ? "The admin API could not be reached, so this event may or may not have been retried. The list behind this dialog says which, once it can be read again."
+                : // `rejected`, and the fall-through for a conflict that is not the
+                  // eligibility refusal: it was read and refused, whatever the code.
+                  "The gateway would not accept this request. Nothing is down: it read what was asked for and refused it, and what to change is in its own words below."}
       </p>
       {message ? <p className="admin-error-detail">{message}</p> : null}
       {/* The same reasoning as the section's read failures (§5.8): this area's

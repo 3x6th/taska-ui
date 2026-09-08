@@ -1499,11 +1499,15 @@ describe("MockTaskaApi", () => {
     });
 
     /**
-     * The body is validated before the path, because Spring validates
-     * `@Valid @RequestBody` before the controller method runs. So a blank reason
-     * against an event nobody has is a 400, not a 404 — the order is the
-     * server's and is worth pinning, since the obvious implementation has it the
-     * other way round.
+     * A blank reason against an event nobody has is a 400, not a 404: the reason
+     * is checked before the event is looked up, and the obvious implementation
+     * has it the other way round.
+     *
+     * Not because "Spring validates `@Valid @RequestBody` before the controller
+     * method runs" — the gateway's controller takes the body as a `Mono` and
+     * subscribes it after the admin check (`MockTaskaApi.retryOutboxEvent`
+     * records the measurement). This pins the mock's own order, which is the
+     * thing the two API modes are compared on.
      */
     it("checks the reason before the event, and refuses a blank one", async () => {
       await expect(
@@ -1711,11 +1715,12 @@ describe("MockTaskaApi", () => {
       await expect(api.blockUser("not-a-uuid", "Nobody")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     });
 
-    it("validates the body before it looks for the account, the way Spring does", async () => {
-      // `@Valid @RequestBody` runs before the controller method, so a blank
-      // reason on an account nobody has is a 400 and not a 404. Unreachable
-      // from the section, and pinned because the mock is what the two modes are
-      // compared against.
+    it("validates the body before it looks for the account", async () => {
+      // A blank reason on an account nobody has is a 400 and not a 404.
+      // Unreachable from the section, and pinned because the mock is what the
+      // two modes are compared against. The reason is *not* the one this
+      // comment used to give — see `adminUser` in MockTaskaApi.ts for what the
+      // gateway actually does with a body and a path.
       await expect(
         api.blockUser("0f3d5cb0-0000-0000-0000-000000000000", "  "),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });

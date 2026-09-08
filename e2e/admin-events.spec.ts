@@ -254,7 +254,7 @@ test("keeps the dialog open when the server refuses, with its own words in it", 
 
   const dialog = page.getByRole("dialog", { name: "Retry outbox event" });
   // Said before the press, not only after it.
-  await expect(dialog.getByText(/still being processed/)).toBeVisible();
+  await expect(dialog.getByText(/still processing/)).toBeVisible();
   await dialog.getByLabel("Reason").fill("It looks stuck to me");
   await dialog.getByRole("button", { name: "Retry", exact: true }).click();
 

@@ -2423,14 +2423,26 @@ export class MockTaskaStore {
   }
 
   /**
-   * Everything all three writes check before they look at the transition, in
-   * the order the server checks it.
+   * Everything all three writes check before they look at the transition.
    *
-   * The body first, because Spring validates `@Valid @RequestBody` before the
-   * controller method runs at all — so a blank reason on an account nobody has
-   * is a `400`, not a `404`. Then the path parameter, which is typed `UUID` and
-   * refused before auth-service ever sees it, exactly as `adminRow` refuses a
-   * non-uuid row id. Then the account itself.
+   * The body first, so a blank reason on an account nobody has is a `400` and
+   * not a `404`. Then the path parameter, which is typed `UUID` and refused
+   * before auth-service ever sees it, exactly as `adminRow` refuses a non-uuid
+   * row id. Then the account itself.
+   *
+   * Not "because Spring validates `@Valid @RequestBody` before the controller
+   * method runs", which is what this said until TAS-194 and is not what the
+   * gateway does. `AdminUserManagementController` takes each body as a
+   * `Mono<…RequestDto>` and passes it into
+   * `executor.execute(exchange, GLOBAL_ADMIN_REQUIRED, …)`, so the body is
+   * subscribed *after* the admin check, while `UUID userId` is bound before the
+   * method runs at all. On the wire the path is therefore the first thing
+   * refused and the only one refused without a token — measured on the retry
+   * route, whose controller has the same shape (see `retryOutboxEvent`).
+   *
+   * What is reproduced here is the half that is about this endpoint's own
+   * checks: the reason before the lookup. The mock has no auth leg to order
+   * against, so the id and the reason are in the order the checks read best.
    *
    * None of the three is reachable from the section, which sends a key it read
    * out of the table and a reason the field would not let be blank. They are
@@ -2530,11 +2542,25 @@ export class MockTaskaStore {
    * admin-service checks and applies it (`OutboxRetryServiceImpl` and
    * `OutboxRetryRepositoryImpl`, backend `develop` 2026-09-08).
    *
-   * The order is the server's, and it is not the obvious one: the body is
-   * validated before the path, because Spring validates `@Valid @RequestBody`
-   * before the controller method runs — so a blank reason against an event
-   * nobody has is a `400`, not a `404`. Then the id, typed `UUID` in the path
-   * and refused before admin-service sees it. Then the event, then eligibility.
+   * The reason before the event, so a blank reason against an event nobody has
+   * is a `400` and not a `404`. Then the id, typed `UUID` in the path and
+   * refused before admin-service sees it. Then the event, then eligibility.
+   *
+   * The gateway's own order is read off
+   * `AdminReadOnlyController.retryOutboxEvent` (backend `develop`): `eventId`
+   * is a `UUID` argument bound before the method body runs, while the request
+   * is a `Mono<RetryOutboxEventRequestDto>` subscribed *inside*
+   * `executor.execute(exchange, GLOBAL_ADMIN_REQUIRED, …)`. So the path is
+   * refused first, before authentication, and the body only after the admin
+   * check — probed on the deployed gateway with no token 2026-09-08: a
+   * malformed uuid answers `400 "Invalid request parameters"`, a blank reason
+   * answers `401`. It is *not* "the body before the path because Spring
+   * validates `@Valid @RequestBody` first", which is what this comment claimed
+   * and which describes a blocking controller this route does not have.
+   *
+   * The two orders differ only for a call malformed in both ways at once, which
+   * this section cannot make: it sends an id read out of the table and a reason
+   * the field would not let be blank.
    *
    * What the update does, field for field:
    *

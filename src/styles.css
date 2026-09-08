@@ -2002,13 +2002,16 @@ h1 {
    premultiplied oklab mix in sRGB are different operations, and the two answers
    differ by up to 4/255 per channel — measured, in both themes. Invisible, and
    still the wrong kind of "close": this rule's whole job is that the frozen cell
-   and the cell beside it are one continuous band. Layering makes them identical
-   by construction rather than by approximation.
+   and the cell beside it are one continuous band. Layering makes the two the
+   same expression rather than two spellings of one; what is left after it is
+   rounding, and the figure below is that rounding rather than a claim of
+   equality.
 
-   Measured in Chromium at 1x by compositing the computed values, light / dark:
+   Measured in Chromium at 1x, light / dark — the plane and the step sampled off
+   the rendered row, the ratios composited from the computed values:
 
      the flashed plane                 rgb(230 229 251) / rgb(32 34 54)
-     the frozen cell against it        identical, 0/255 on every channel
+     the frozen cell against it        1/255 on green, both themes
      --fg on it (every value cell)     14.44 / 13.39
      --fg-3 on it (the `—` null mark)   2.54 /  2.60
 
@@ -2449,9 +2452,13 @@ h1 {
    the Data table's chevron: width here is width taken from the values, and this
    table is already wider than its plane.
 
-   96 is the same figure the Users cell takes, and the button inside it is the
-   same `.admin-row-action`, so the two write surfaces in this area line up
-   rather than each choosing a size. */
+   96 is a preference and not a promise, which is the correction this comment
+   needed: under `table-layout: auto` a declared width loses in both directions,
+   and at 1440 this cell measures 72 against the Users action cell's 114. What
+   the two write surfaces actually share is the button inside them — the same
+   `.admin-row-action` — and that is what makes them read as one control in two
+   places. The declared width is left because it is what the column asks for
+   when the layout has room to grant it. */
 .admin-table .admin-events-action-head,
 .admin-table .admin-events-action-cell {
   width: 96px;
@@ -2595,27 +2602,57 @@ h1 {
    plane. */
 .admin-users-plane .admin-table-scroll {
   max-width: 860px;
-  /* "There is more to the right", and nothing else says it. At 390 the table is
-     471 in a 360 container, arrives at `scrollLeft: 0`, and overlay scrollbars
-     draw nothing until you touch it — so the section reads as read-only until
-     the reader happens to swipe or Tab, and the action column is the part that
-     is off screen. §5.8 already accepts a fade for exactly this on the catalog's
-     bottom edge.
+}
 
-     Two layers rather than that section's `mask-image`, and the difference is
-     the point: a mask fades the viewport edge unconditionally, so once the
-     reader *had* scrolled to the end it would fade out the Block button itself —
-     hiding the control it exists to advertise. This pair self-cancels instead.
-     The first layer is attached `local`, so it is painted at the right end of
-     the *content* and slides into place to cover the second exactly when there
-     is no more to scroll; the second is attached `scroll`, so it stays at the
-     box's own right edge while there is. A table that does not overflow at all
-     has its content end at the box edge, so the cover starts on top and no fade
-     is ever drawn — the rule needs no width query to know when it applies.
+/* "There is more to the right", and nothing else says it. One declaration for
+   both of this area's write surfaces, because it is one problem: a table wider
+   than the region it is read in, arriving at `scrollLeft: 0`, with overlay
+   scrollbars drawing nothing until the reader touches them — so what is past
+   the right edge does not exist as far as the section is concerned, and in both
+   of these tables the part past the right edge is the part that writes.
 
-     `color-mix` on `--fg` rather than a shadow token: it darkens in light and
-     lightens in dark, which is the direction "more content" wants on either
-     plane, and it is the same reasoning `.admin-key:hover` records below. */
+   Measured on each region, client against scroll width:
+
+     Users, 390       360 / 471    the Block button is what is cut off
+     Problems, 1440  1226 / 1254   the `Open event` chevron is
+     Problems, 390    360 / 1254   most of the table is, Retry included
+
+   The Problems list did not overflow at 1440 before it had a Retry column —
+   1226 against 1226, measured with the cells removed — so it is this section's
+   own write that pushed the row's remaining affordance past the edge. §5.8
+   leaves the Data catalog's bottom edge on `mask-image` on the grounds that
+   what is past *that* edge is a list rather than a control; this table stopped
+   being on that side of the distinction when the write arrived.
+
+   Two layers rather than the catalog's `mask-image`, and the difference is the
+   point: a mask fades the viewport edge unconditionally, so once the reader
+   *had* scrolled to the end it would fade out the control it exists to
+   advertise. This pair self-cancels instead. The first layer is attached
+   `local`, so it is painted at the right end of the *content* and slides into
+   place to cover the second exactly when there is no more to scroll; the second
+   is attached `scroll`, so it stays at the box's own right edge while there is.
+   A table that does not overflow at all has its content end at the box edge, so
+   the cover starts on top and no fade is ever drawn — which is why this rule
+   needs no width query, and why the counts matrix beside the Problems list
+   (360 / 360 at 390) is left out of the selector rather than exempted by one.
+
+   `color-mix` on `--fg` rather than a shadow token: it darkens in light and
+   lightens in dark, which is the direction "more content" wants on either
+   plane, and it is the same reasoning `.admin-key:hover` records below.
+
+   Sampled on the Problems list in Chromium at 1x, on an empty cell inside a row,
+   light / dark — the same figures at 1440 and at 390:
+
+     the plane, just outside the band   rgb(255 255 255) / rgb(20 20 24)
+     the band's last pixel at rest      rgb(228 228 228) / rgb(45 45 49)
+     the same pixel at the scroll end   rgb(254 254 254) / rgb(20 20 24)
+
+   "Self-cancels" is exact at the ends and approximate in between: the cover and
+   the wash are both ramps, so where they cross — about 12px in — 6/255 of the
+   wash still survives at the scroll end, against the 27 the band carries at
+   rest. Invisible, and recorded rather than rounded to zero. */
+.admin-users-plane .admin-table-scroll,
+.admin-events-list .admin-table-scroll {
   background:
     linear-gradient(to left, var(--surface), transparent) 100% 0 / 22px 100% no-repeat local,
     linear-gradient(to left, color-mix(in oklab, var(--fg) 12%, transparent), transparent) 100% 0 / 22px 100%

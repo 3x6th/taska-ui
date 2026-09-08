@@ -9,6 +9,16 @@ import { supportsOperator } from "./columns";
 export const OUTBOX_TABLE = "outbox_events";
 
 /**
+ * The Problems view's one query, named here rather than in the view because two
+ * files ask for it to be read again: the list itself after a retry it saw
+ * answered, and the retry dialog when it is dismissed over an answer nobody
+ * will see. A key spelled twice is a key that can drift, and the failure it
+ * would produce — a list that quietly stops refreshing — looks like nothing at
+ * all.
+ */
+export const OUTBOX_PROBLEMS_KEY = ["admin", "outbox", "problems"];
+
+/**
  * Which services have an outbox at all, in the catalog's own order (DESIGN.md
  * §5.8). Read from the catalog rather than listed here: auth, project and issue
  * are what the gateway serves today, and a fourth service that grows an outbox

@@ -31,6 +31,46 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   neighbouring one in the same diff makes the removal harder to review, not
   easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
   named the account being blocked where it meant the reader.
+- **Focus needs a rescue, not a move, after a write nobody is waiting at**
+  (`frontend-builder`, 2026-09-08, TAS-194). On the dismissed-then-answered path
+  the retry's late answer no longer moves focus — that was a steal from an
+  operator who had gone elsewhere. But dismissal leaves focus on the Retry
+  trigger, and against the real gateway the invalidation turns that row `NEW`
+  and removes the button, so focus falls to `<body>`: the §7 failure
+  `focusListAfterWrite` exists to prevent. The late move used to cover it by
+  accident, at the cost of the steal. The honest fix is to **restore** focus
+  only when the element that had it is the one the refetch removed, which needs
+  a post-refetch check and is a different change from the one TAS-194 made. Not
+  reproducible on the mock: its summary is static, so the trigger survives.
+- **The mock checks the retry reason before the uuid; the gateway does the
+  opposite** (`frontend-builder`, 2026-09-08, TAS-194). Measured on the deployed
+  gateway: a malformed uuid is refused **before** auth (`400 "Invalid request
+  parameters"`), a blank reason **after** it (`401`) — path arguments bind before
+  the handler's `Mono<…RequestDto>` is subscribed inside the security executor.
+  The mock refuses the reason first. Reachable only by a call malformed in both
+  ways at once, which no UI path can produce, and the comment now states the
+  real order instead of hiding it behind a false mechanism. Two other mock sites
+  carry the same shape; change all three together or none.
+- **The overflow fade is painted behind the table, so an opaque row covers it**
+  (`frontend-builder`, 2026-09-08, TAS-194). Inherited from the Users recipe and
+  not new — but the Problems list flashes a row on every successful write, so
+  the affordance is hidden on exactly the row that just changed, for the two
+  seconds someone is most likely to be looking at it. Hover does the same.
+  Whoever revisits the recipe should decide whether the band belongs above the
+  rows rather than beneath them.
+- **One e2e assertion is the only thing keeping the board and the server in
+  agreement after a retry** (`release-reviewer`, 2026-09-08, TAS-194). Removing
+  `queryClient.invalidateQueries` survives the entire unit suite — 74 of 74 pass
+  — and is killed only by `e2e/admin-events.spec.ts`'s `toHaveCount(before - 1)`.
+  That is adequate coverage today and a warning for later: if the e2e suite is
+  ever trimmed, that is the assertion to keep.
+- **The audit-after-commit ordering has no watcher** (`release-reviewer`,
+  2026-09-08, TAS-194). The retry dialog's most important sentences — which arms
+  may report a write that actually landed — are derived from the order of
+  operations in `completeRetry` on a moving `develop`, and the contract states
+  none of it. TAS-200 covers the threshold half of that exposure; this half is
+  covered by nothing. A backend change to that ordering would silently make the
+  dialog's wording wrong, and nothing here would notice.
 - **`userWriteFailure` now serves two sections and is named for one**
   (`frontend-builder`, 2026-09-08, TAS-194). The outbox retry dialog imports it
   from `src/screens/admin/users.ts` rather than copying it, which is right — its
@@ -40,11 +80,31 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   the name now under-describes it, and so does its home. Renaming and moving it
   under an Events story would be widening that story at merge time; it wants its
   own small pass.
-- **The Retry column is off the right edge on a phone with no fade affordance**
-  (`frontend-builder`, 2026-09-08, TAS-194). The Users table has one, scoped to
-  `.admin-users-plane`; the Problems table was already wide enough to scroll for
-  its data and already had an off-screen chevron, so the story did not widen its
-  scope to generalise the affordance. Same recipe, one more caller.
+- ~~**The Retry column is off the right edge on a phone with no fade
+  affordance.**~~ **Withdrawn the same day it was written — the art director
+  blocked on it and was right.** This line argued the Problems table was already
+  wide enough to scroll and already had an off-screen chevron, so the affordance
+  could wait. §5.8 pre-empts that argument in the same paragraph that states the
+  recipe: «там за краем список, а не контрол, и цена ошибки другая». This story
+  put the section's **only write** behind that edge, so the class of the problem
+  changed. And it is not a phone issue: measured at **1440**, one of the three
+  verified viewports, the table now overflows its container by 28px where it fit
+  exactly before, and what falls off is the chevron that opens the row. Fixed
+  inside TAS-194 by scoping the Users `max-width` and sharing the existing
+  three-layer background with the Events plane — one recipe, two callers.
+- **The shared `Modal` cannot scroll, so a tall failure arm can put its primary
+  button below the viewport** (`art-director`, 2026-09-08, TAS-194). Measured on
+  a `PROCESSING` row at 390×844 with the `server` arm's prose: modal 781px tall,
+  top 93, primary button bottom at **857** against an `innerHeight` of 844.
+  `.modal-layer` is `position: fixed` with `overflow: visible` and no
+  `padding-bottom`, `.modal` is `overflow: hidden`, and nothing on the page
+  scrolls. Nobody is trapped — Cancel, the header ✕ and the backdrop are all
+  reachable, and `⌘/Ctrl+Enter` submits — but the pointer route to the primary
+  action does not exist at that size. Pre-existing in the shared component;
+  TAS-194 is simply the story that built the tallest dialog in the product and
+  so made the arm reachable. `overflow-y: auto` plus `padding-bottom: 11vh` on
+  `.modal-layer` is the fix, and it belongs to whoever owns `Modal` rather than
+  to an Events story.
 - **`--fg-3` measures 2.54 / 2.60 on a flashed row**, for the `—` null mark
   (`frontend-builder`, 2026-09-08, TAS-194). Pre-existing and not caused by the
   flash: it is already 3.14 / 3.05 on plain `--surface`, under §7's floor, and

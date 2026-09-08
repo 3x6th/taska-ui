@@ -46,12 +46,13 @@ export const adminSections: AdminSection[] = [
   // 2026-08-27). The section's old "the gateway does not serve this yet" note
   // described a gateway that stopped existing on that date and came out here.
   { id: "events", label: "Events", path: "/admin/events", icon: Radio, stories: [], readOnly: false },
-  // No stories, so no placeholder: the section is built (TAS-186). It is also
-  // the one section in the area that writes, which is why it carries no
-  // `read-only` marker — blocking an account, unblocking it and resetting its
-  // lockout are its whole point. All three routes are on the deployed gateway
-  // since backend PR #146 (measured 2026-09-08, TAS-196), so the writes now
-  // reach the service instead of falling through to a 404.
+  // No stories, so no placeholder: the section is built (TAS-186). It carries
+  // no `read-only` marker because blocking an account, unblocking it and
+  // resetting its lockout are its whole point — it was the first section in the
+  // area to write, and since TAS-194 above it is no longer the only one. All
+  // three routes are on the deployed gateway since backend PR #146 (measured
+  // 2026-09-08, TAS-196), so the writes now reach the service instead of
+  // falling through to a 404.
   { id: "users", label: "Users", path: "/admin/users", icon: Users, stories: [], readOnly: false },
   { id: "audit", label: "Audit", path: "/admin/audit", icon: ScrollText, stories: ["TAS-160"], readOnly: false },
 ];
