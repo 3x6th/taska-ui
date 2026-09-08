@@ -7,6 +7,7 @@ import type { RetryableOutboxService } from "../../api/TaskaApi";
 import type { OutboxRetryResult, ProblematicOutboxEvent } from "../../domain/types";
 import { AdminError } from "./AdminError";
 import { AdminOutboxRetryModal, type OutboxRetryArrival } from "./AdminOutboxRetryModal";
+import { shortKey } from "./columns";
 import { canRetryOutboxEvent, eventAge, outboxCategory, OUTBOX_PROBLEMS_KEY } from "./events";
 import { BACK_TO_PROBLEMS } from "./eventsUrlState";
 
@@ -145,6 +146,45 @@ export function AdminEventsProblems() {
     if (button?.isConnected) button.focus();
   };
 
+  /**
+   * No `preventScroll: true` here, and its absence is a decision rather than an
+   * oversight — it is the option a reader arrives with, because `focus()`
+   * scrolls the focused element into view and this call lands on a region that
+   * has just been re-laid-out by the read behind it.
+   *
+   * With the ordinary seed it scrolls nothing. Every ancestor of the region
+   * reports `scrollHeight - clientHeight === 0` at all three gate viewports
+   * (1920×1080, 1440×900, 390×844), the document's own delta is 0 as well, and
+   * the call moves no scroll position anywhere. The two boxes in the chain that
+   * could hold one are the region's own `.admin-table-scroll` (`overflow: auto`)
+   * and `main.page-shell` (`overflow: hidden`); everything between them is
+   * `overflow: visible` and cannot keep a `scrollTop` at all.
+   *
+   * Reaching the scroll takes a layout that has already run out of room.
+   * `.admin-events-list` is `flex: 0 1 auto` and spends its own height first,
+   * pushing rows into that inner scroller — clean at +10 counts rows on all
+   * three viewports. Only once that block is squeezed to its floor does the
+   * overflow reach the shell, and then it goes nowhere else: at 1440×900, +40
+   * rows leave `main.page-shell` with 693px of it, which this `focus()` takes in
+   * one jump.
+   *
+   * `preventScroll: true` is the right answer when the ancestor that would
+   * scroll is one the operator can scroll back. Then the choice is between a
+   * jump they can undo and no jump at all, and no jump wins. `main.page-shell`
+   * is not that ancestor: `height: 100dvh` with `overflow: hidden` makes it
+   * scrollable to script and immovable to a person. Measured at 1440×900 with
+   * the shell holding those 693px — no scrollbar, the wheel moves it neither
+   * down beforehand nor back up after the focus, `Home` does nothing, and the
+   * document never grew, so there is no page scroll to fall back on. Suppressing
+   * the scroll there would leave focus on a region parked off screen with no way
+   * to bring it into view: the symptom removed and the loss kept.
+   *
+   * So the option is not the fix and adding it would hide the one that is
+   * needed. A `main.page-shell` that overflows its own `overflow: hidden` is the
+   * defect — recorded as one in `docs/ai/BACKLOG.md` — and until it is fixed,
+   * the scroll this call can cause is the only thing that brings the region back
+   * on screen.
+   */
   const focusListAfterWrite = () => {
     const region = listRegion.current;
     if (!region?.isConnected) return;
@@ -251,18 +291,22 @@ export function AdminEventsProblems() {
    *
    * What that leaves, said plainly rather than claimed away.
    *
-   * **The arm is bounded by the write's own read**, which is the very next one
-   * to answer. `invalidateQueries` runs two lines after the arm is set, and the
-   * only other read that could get in front of it is the dismissal's, which is
-   * in one of two states by then and harmless in both: already answered, in
-   * which case `armedAt` *is* its `dataUpdatedAt` and `<=` excludes it exactly
-   * (measured — that run arrives with a delta of 0); or still in flight, in
-   * which case the invalidation cancels it, because `refetchQueries` defaults
-   * `cancelRefetch` to `true`, and it never sets `dataUpdatedAt` at all
-   * (measured — three reads asked, one run of this effect, the rescue fired).
-   * Whatever that read finds — button gone, button still there, operator moved
-   * — the arm is spent, so it cannot be carried into a read that has nothing to
-   * do with the write.
+   * **The arm is bounded by the write's own read**, which is normally the very
+   * next one to answer. `invalidateQueries` runs two lines after the arm is set,
+   * and a read that gets in front of it is in one of two states by then and
+   * harmless in both — which is what makes this hold without an exhaustive list
+   * of who could have started that read. The dismissal's is the one this path
+   * always asks for; a `refetchOnWindowFocus` can be out just as easily, since
+   * `staleTime` is 20s and that option keeps its default in `src/main.tsx`, so
+   * coming back to the tab is enough. Either of them, and anything else that
+   * gets there first: already answered, in which case `armedAt` *is* its
+   * `dataUpdatedAt` and `<=` excludes it exactly (measured — that run arrives
+   * with a delta of 0); or still in flight, in which case the invalidation
+   * cancels it, because `refetchQueries` defaults `cancelRefetch` to `true`, and
+   * it never sets `dataUpdatedAt` at all (measured — three reads asked, one run
+   * of this effect, the rescue fired). Whatever that read finds — button gone,
+   * button still there, operator moved — the arm is spent, so it cannot be
+   * carried into a read that has nothing to do with the write.
    *
    * **Except by a read that fails.** A failure moves `errorUpdatedAt` and not
    * `dataUpdatedAt`, so it does not re-run this and does not spend the arm,
@@ -308,10 +352,35 @@ export function AdminEventsProblems() {
 
   const onRetried = (event: RetryableEvent, result: OutboxRetryResult, arrival: OutboxRetryArrival) => {
     setFlashed(eventKey(event));
-    // The server's own word for the state, not "NEW" assumed: the endpoint
-    // reports what the row is now, and a backend that grows another state
-    // should be quoted rather than second-guessed.
-    setAnnouncement(`${event.eventType} on ${event.serviceKey} is now ${result.status}.`);
+    /**
+     * The confirmation, and it names the **event** rather than its kind.
+     *
+     * `${eventType} on ${serviceKey}` was the whole sentence until TAS-194's
+     * review, and those two fields are not an identity: two rows of one type on
+     * one service produce a byte-identical string, and a live region whose text
+     * does not change is not announced again by most screen readers. So the
+     * second retry would confirm nothing — silently, with the row's two-second
+     * mark being the only signal left and that one being visual.
+     *
+     * It is not a corner. The list is the *oldest* problematic events of every
+     * service at once, and what fills it is an incident: one broker down, one
+     * consumer stopped, the same event type failing over and over on the one
+     * service that produces it. The gateway's own answer on 2026-09-08 was two
+     * `FAILED` events on `project` sharing a `lastErrorMessage` (§5.8). Retrying
+     * several of those in a row is the ordinary way this screen is used.
+     *
+     * The id is the only per-event identity the summary carries, so it is what
+     * goes in — shortened by §5.8's own rule (`shortKey`), which is what the
+     * journal shows a person for the same row one tab away, and what the full id
+     * in the dialog above starts with. Full would be 36 characters read out for
+     * a confirmation nobody asked to hear spelled; eight is what the section
+     * already treats as enough to tell two rows apart on screen.
+     *
+     * The status is the server's own word rather than "NEW" assumed: the
+     * endpoint reports what the row is now, and a backend that grows another
+     * state should be quoted rather than second-guessed.
+     */
+    setAnnouncement(`${event.eventType} ${shortKey(event.id)} on ${event.serviceKey} is now ${result.status}.`);
     // The two things that belong to the dialog, done only while there is one.
     // Closing it is the second of them: an answer to a dismissed dialog can
     // arrive while a *different* row's dialog is open, and closing that over an
@@ -639,10 +708,15 @@ function EventRow({
             not the permission; the server is (§5.7). */}
         {retryable ? (
           <button
-            // "Retry event 7e0…", not "Retry": five buttons in a list all called
-            // Retry are five buttons a screen reader cannot tell apart. The id
-            // is what names an event in the neighbouring link too, so the two
-            // controls on a row name the same thing the same way.
+            // "Retry event" and the whole id, not "Retry": five buttons in a
+            // list all called Retry are five buttons a screen reader cannot tell
+            // apart. The id is what names an event in the neighbouring link too,
+            // so the two controls on a row name the same thing the same way —
+            // and the whole id rather than `shortKey`'s eight characters for the
+            // same reason, since that link has carried the full one since
+            // TAS-167 and one row would otherwise name itself two ways. The
+            // retry confirmation does use the short form; there it is a sentence
+            // being read out rather than a name being matched against a row.
             aria-label={`Retry event ${event.id}`}
             // The product's secondary button (§4.1) at the area's row density —
             // the same `.admin-row-action` the Users section's cell uses, not a

@@ -2651,8 +2651,14 @@ export class MockTaskaStore {
    * prove the summary applies a threshold rather than counting states.
    *
    * One row sits in the gap between the summary's threshold and the retry
-   * route's — listed as stuck, refused by retry. See the last of `project`'s
-   * seeds; it is the only place that divergence is reachable by clicking.
+   * route's — listed as stuck, refused by retry. See `project`'s
+   * `project.member_added` PROCESSING seed; it is the only place that
+   * divergence is reachable by clicking.
+   *
+   * Two of `project`'s rows are the *same* event type in the same state for the
+   * same reason, which is the last of its seeds and the one shape a summary of
+   * an incident always has. A row is not identified by its type and service,
+   * and until TAS-194 nothing here could show that.
    *
    * Every payload here is a JSON document, which is all a `jsonb` column can
    * hold — including one whose values arrive masked, because admin-service
@@ -2823,6 +2829,44 @@ export class MockTaskaStore {
           processingMinutesAgo: 7,
           attempts: 6,
           payload: JSON.stringify({ projectId: projects[0]?.id ?? TASKA_PROJECT_ID, userId: MARK_ID, role: "ADMIN" }),
+        },
+        // The second `project.archived` failure, and the pair is the point: same
+        // service, same event type, same category, same broker error, different
+        // event. Everything the Problems row says about one of these it says
+        // about the other — which is precisely the shape an outbox incident
+        // takes, one fault stopping every event of one kind on one service, and
+        // it is what the gateway itself answered on 2026-09-08 (two `FAILED`
+        // events on `project` sharing a `lastErrorMessage`, DESIGN.md §5.8).
+        //
+        // Without it the seed could not reach the case that broke the retry
+        // confirmation: two announcements identical to the byte, and a live
+        // region that does not change is not read out a second time. The five
+        // rows here happened to have five distinct type-and-service pairs, so
+        // every test in the suite passed over the defect. Seeded rather than
+        // argued about, so the pin in `e2e/admin-events.spec.ts` has a real
+        // pair of rows to retry.
+        //
+        // An hour younger than the archive failure above it, so the two are
+        // neighbours in an oldest-first list — the reader sees the collision
+        // rather than having to hunt for it — and both still fit inside
+        // `OUTBOX_SUMMARY_LIMIT`. What that pushes off the end is the issue
+        // service's 7h `FAILED` row; the four rows the mock's own tests name by
+        // status and service are all still listed.
+        //
+        // Appended rather than inserted, for the reason the row above gives:
+        // the id is derived from the position in this array.
+        {
+          eventType: "project.archived",
+          aggregateType: "Project",
+          aggregateId: projects[2]?.id ?? MOB_PROJECT_ID,
+          status: "FAILED",
+          minutesAgo: 1440,
+          processingMinutesAgo: 1438,
+          attempts: 5,
+          // The same fault as the other archive failure, word for word: one
+          // registry that cannot be reached does not write two different errors.
+          lastErrorMessage: "Connection refused: schema-registry.taska.svc.cluster.local/10.0.4.11:8081",
+          payload: JSON.stringify({ projectId: projects[2]?.id ?? MOB_PROJECT_ID, archivedBy: MARK_ID }),
         },
       ]),
       issue: rowsOf("issue", [

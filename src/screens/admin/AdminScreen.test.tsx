@@ -1795,7 +1795,7 @@ describe("admin events, retrying an event", () => {
     expect(trigger.isConnected).toBe(true);
     // The server's own word for the new state, in the section's live region —
     // there is no toast in this product (§5.6).
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now NEW.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
     expect(document.querySelector("tr.is-changed")).not.toBeNull();
   });
 
@@ -1816,7 +1816,7 @@ describe("admin events, retrying an event", () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
     });
 
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now REQUEUED.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now REQUEUED.");
   });
 
   /**
@@ -1863,7 +1863,7 @@ describe("admin events, retrying an event", () => {
       releaseRetry();
       await settle();
     });
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now NEW.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
   });
 
   /**
@@ -1920,7 +1920,7 @@ describe("admin events, retrying an event", () => {
       releaseRetry();
       await settle();
     });
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now NEW.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
   });
 
   /**
@@ -1945,7 +1945,7 @@ describe("admin events, retrying an event", () => {
       releaseRetry();
       await settle();
     });
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now NEW.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
   });
 
   /**
@@ -1995,7 +1995,7 @@ describe("admin events, retrying an event", () => {
     });
 
     // The confirmation still happens, in the channel that interrupts nobody …
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now NEW.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
     expect(document.querySelector("tr.is-changed")).not.toBeNull();
     // … the list is still asked again, so the row cannot be left stale …
     expect(summaryReads()).toBe(readsBeforeAnswer + 1);
@@ -2065,7 +2065,7 @@ describe("admin events, retrying an event", () => {
     expect(screen.getByRole("region", { name: "Problematic events" })).toHaveFocus();
     // The rest of the late answer is unchanged by the rescue: it still
     // announces, and it is still the live region that carries the result.
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now NEW.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
   });
 
   /**
@@ -2245,7 +2245,7 @@ describe("admin events, retrying an event", () => {
     });
 
     // The list did change — this is not a refetch that did nothing …
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now PROCESSING.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now PROCESSING.");
     expect(screen.getByRole("cell", { name: "PROCESSING" })).toBeVisible();
     // … the button is still there, and so focus stays where the operator left
     // it rather than being moved on account of a loss that never happened.
@@ -2318,7 +2318,7 @@ describe("admin events, retrying an event", () => {
     // The rows the server last stated are still on screen …
     expect(screen.getByRole("table", { name: "Problematic events, oldest first" })).toBeVisible();
     // … with the two things that say the write happened …
-    expect(screen.getByRole("status")).toHaveTextContent("user.registered on auth is now NEW.");
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
     expect(document.querySelector("tr.is-changed")).not.toBeNull();
     // … and the failed read above them rather than instead of them.
     expect(await screen.findByRole("alert")).toHaveTextContent(/gateway failed/i);

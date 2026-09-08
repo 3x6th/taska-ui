@@ -7,6 +7,7 @@ import {
   isJsonColumn,
   isWithheld,
   operatorsForType,
+  shortKey,
   supportsOperator,
   valueControlForType,
 } from "./columns";
@@ -141,6 +142,34 @@ describe("which columns are set in mono", () => {
     for (const type of ["character varying", "text", "boolean", undefined]) {
       expect(isAlignedType(type)).toBe(false);
     }
+  });
+});
+
+/**
+ * §5.8's abbreviation for a row key, which two callers now depend on: the Data
+ * section draws it in the frozen column and the Events section's retry
+ * confirmation says it out loud. It was one component's private constant until
+ * TAS-194 and is pinned here because a change to the numbers is now a change to
+ * what a screen reader is told, which no test of the table would catch.
+ */
+describe("how long a row key is shown", () => {
+  it("cuts a uuid to its first eight characters", () => {
+    expect(shortKey("7e010008-0000-4000-8000-100000000008")).toBe("7e010008");
+  });
+
+  it("leaves a key that is already short exactly as it is", () => {
+    // The boundary §5.8 names, from both sides: twelve is kept whole, thirteen
+    // is cut. A caller tells the two cases apart by comparing the result with
+    // what it passed in, so "unchanged" has to mean the same string.
+    expect(shortKey("123456789012")).toBe("123456789012");
+    expect(shortKey("1234567890123")).toBe("12345678");
+    expect(shortKey("e1")).toBe("e1");
+  });
+
+  it("carries no ellipsis, because one caller is a sentence being read aloud", () => {
+    // The `…` is a mark on a screen and a word in an announcement. The table
+    // appends it; this does not.
+    expect(shortKey("7e010008-0000-4000-8000-100000000008")).not.toContain("…");
   });
 });
 

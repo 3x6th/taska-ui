@@ -72,6 +72,14 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   a change that leaves the button three pixels away from it still broken.
   `ThemeToggle.tsx:8` already ships the `aria-label` + matching `title` pair, so
   this is an in-repo precedent rather than a reading of the spec.
+- **A pagination test races its own clamp** (`frontend-builder`, 2026-09-08,
+  seen once in five full runs during TAS-194). `AdminScreen.test.tsx`'s "lands on
+  the last page when the address names one past the end" asserts
+  `lastRowsQuery()?.page` as soon as the heading appears, without waiting for the
+  clamp's follow-up request — `expected 999 to be 2`. In the Data section's
+  pagination, untouched by TAS-194, and it passed on the clean tree and in three
+  consecutive runs after. A flake in the test, not in the product, but a flake
+  that will be blamed on whatever diff is open when it next fires.
 - **The mock checks the retry reason before the uuid; the gateway does the
   opposite** (`frontend-builder`, 2026-09-08, TAS-194). Measured on the deployed
   gateway: a malformed uuid is refused **before** auth (`400 "Invalid request
@@ -125,6 +133,34 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   exactly before, and what falls off is the chevron that opens the row. Fixed
   inside TAS-194 by scoping the Users `max-width` and sharing the existing
   three-layer background with the Events plane — one recipe, two callers.
+- **`main.page-shell` overflows with `overflow: hidden` at short viewports, so
+  content goes off with no way back** (`frontend-builder`, 2026-09-08, TAS-194 —
+  found while refusing to write a docblock note whose premises measured false).
+  At **844×390** — a phone in landscape, and outside the three viewports the gate
+  checks — the admin plane overflows `main.page-shell` by 47px. That box is
+  `overflow: hidden`, and the document's `scrollHeight` equals its `clientHeight`
+  at every viewport, so the shell never scrolls for a user: no scrollbar, no
+  wheel path, and the section header stays off screen until a resize or a route
+  change. The Problems list is squeezed to its **2px** floor there and sits
+  entirely below the fold.
+
+  Two things this makes concrete for whoever takes it. The box is
+  programmatically scrollable while being user-unscrollable, which is why
+  `focus()` can move it and a person cannot move it back — so any "just add
+  `preventScroll`" fix is wrong here: it would park focus somewhere unreachable
+  instead of somewhere merely surprising. And the growth path is not the counts
+  matrix: `.admin-events-list` is `flex: 0 1 auto` and absorbs rows into its own
+  overflow — measured clean at +10 rows — the shell only takes it once that
+  block hits its floor. **Two separate numbers, and an earlier version of this
+  line ran them together:** the floor is reached at +20 rows at 1440×900 (shell
+  delta 93), +30 at 1920×1080, +20 at 390×844 — while +40 is merely where the
+  693px figure was measured, not where the floor is. Measured clean at 1440×760,
+  1440×700, 1280×620, 1024×560 and 390×500; failing at 844×390 with the ordinary
+  seed.
+
+  **The docblock note added in TAS-194 is a mitigation, not a fix.** It points
+  the next reader at the layout rather than at `preventScroll`, which is worth
+  having, and does nothing at all for an operator who meets this.
 - **The shared `Modal` cannot scroll, so a tall failure arm can put its primary
   button below the viewport** (`art-director`, 2026-09-08, TAS-194). Measured on
   a `PROCESSING` row at 390×844 with the `server` arm's prose: modal 781px tall,
@@ -143,6 +179,16 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   does not overflow, so the shared component's missing `overflow-y` is reachable
   **only** through this dialog today; and shortening the `PROCESSING` warning
   bought 37px, which is what turned "unreachable" into "clipped".
+  **And the fix is smaller than "pre-existing" suggests** (`frontend-builder`,
+  2026-09-08): `.modal` is `overflow: hidden` with `width: 480px` and **no
+  `max-height` at all** (`styles.css:4970`), inside a fixed `.modal-layer` with
+  `padding-top: 11vh`. A `max-height` plus `overflow-y: auto` on the body is a
+  contained change to a box we own — not the layout redesign the neighbouring
+  `main.page-shell` item needs. The builder argued for taking it inside TAS-194
+  on the grounds that this story's own dialog is what reaches it; deferred
+  anyway, because it touches a component three other dialogs use and the art
+  director scoped it out on purpose. That is a sequencing call, not a
+  disagreement about the defect.
   Pre-existing in the shared component;
   TAS-194 is simply the story that built the tallest dialog in the product and
   so made the arm reachable. `overflow-y: auto` plus `padding-bottom: 11vh` on

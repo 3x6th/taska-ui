@@ -203,6 +203,34 @@ export function formatCell(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/** Longer than this and the frozen column stops being narrow enough to freeze. */
+const KEY_LIMIT = 12;
+const KEY_SHOWN = 8;
+
+/**
+ * A row key shortened to what a person is shown of it: DESIGN.md §5.8's rule,
+ * "longer than 12 characters is cut to the first 8".
+ *
+ * Here rather than in the table that draws it, because two places now speak
+ * this abbreviation and a second copy of the numbers would be a second rule.
+ * The Data section's primary key cell is the one §5.8 is written about; the
+ * Events section's retry confirmation names the event it just moved with the
+ * same eight characters, so what an operator hears matches what the journal
+ * shows them for the same row.
+ *
+ * **The ellipsis is not part of it.** `…` is the visible mark that says a value
+ * was cut, and it is chrome in the same way the `FAILED → NEW` arrow in the
+ * retry dialog is: read aloud it becomes a word. So the caller that draws the
+ * key appends it and the caller that says the key does not — the returned
+ * string is exactly the characters that came out of the value.
+ *
+ * A key that is already short — a numeric id, a short code — comes back whole,
+ * which is how a caller tells the two cases apart without repeating the limit.
+ */
+export function shortKey(value: string): string {
+  return value.length > KEY_LIMIT ? value.slice(0, KEY_SHOWN) : value;
+}
+
 /**
  * The literal a fully masked value arrives as. `admin-service` replaces the
  * whole value with it, so this is a protocol constant rather than a guess

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 // Like the other suites, this runs against MockTaskaApi
 // (playwright.config.ts starts the server with VITE_TASKA_API_MODE=mock): any
@@ -230,6 +230,73 @@ test("retries a failed event, and offers nothing on one the server would refuse"
   // no retry, because the server would refuse it. That the count moves at all is
   // the proof the write reached the store rather than only the screen.
   await expect(retryButtons).toHaveCount(before - 1);
+});
+
+/**
+ * Two retries in a row on events that are indistinguishable in the list, which
+ * is what an outbox incident looks like rather than a corner of one.
+ *
+ * The confirmation is a live region, and a live region whose text does not
+ * change is not announced again by most screen readers. So "user.registered on
+ * auth is now NEW." — the type and the service, with no id in it — confirms the
+ * first retry and then says nothing at all for the second, on the exact screen
+ * where several events of one type on one service is the normal case. There is
+ * no toast to fall back on (§5.6) and the row's own two-second mark is visual,
+ * so the second write would land with nothing spoken about it.
+ *
+ * The assertion is that the two confirmations **differ**. The short id is how
+ * that is achieved and it is checked against the row it names — read off the
+ * button that was pressed, not off a seeded constant — but a different way of
+ * telling the two apart would satisfy this test, which is the point.
+ *
+ * The seed puts two `project.archived` failures on `project` there for this: it
+ * had five problematic rows with five distinct type-and-service pairs, so the
+ * collision was unreachable and the whole suite passed over it.
+ */
+test("says which event was retried, so a second identical-looking retry is announced too", async ({ page }) => {
+  await openEvents(page);
+
+  const list = page.getByRole("table", { name: "Problematic events, oldest first" });
+  const archived = list
+    .locator("tbody tr")
+    .filter({ has: page.getByRole("cell", { name: "project.archived", exact: true }) })
+    .filter({ has: page.getByRole("cell", { name: "project", exact: true }) });
+  // Same service, same event type, same category, same error: everything this
+  // list says about one of them it says about the other.
+  await expect(archived).toHaveCount(2);
+
+  // One region for the whole section, mounted from the first render with an
+  // empty string — a region that arrives together with its text depends on the
+  // reader's timing (§7).
+  const live = page.getByRole("status");
+  await expect(live).toHaveCount(1);
+
+  const retry = async (row: Locator) => {
+    const button = row.getByRole("button", { name: /^Retry event / });
+    // The event's own address, taken from the control being pressed. The
+    // confirmation names the row by the first eight characters of it — §5.8's
+    // rule for a key on screen, and what the journal shows for the same row.
+    const label = (await button.getAttribute("aria-label")) ?? "";
+    await button.click();
+    const dialog = page.getByRole("dialog", { name: "Retry outbox event" });
+    await dialog.getByLabel("Reason").fill("Schema registry is back");
+    await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    return label.replace("Retry event ", "").slice(0, 8);
+  };
+
+  const first = await retry(archived.first());
+  await expect(live).toHaveText(`project.archived ${first} on project is now NEW.`);
+  const saidFirst = (await live.textContent()) ?? "";
+
+  // The second row is still retryable — the first is `NEW` now and has lost its
+  // button, but this one has not moved.
+  const second = await retry(archived.nth(1));
+  expect(second).not.toBe(first);
+  // The assertion this test exists for: the region's text changed, so there is
+  // something for a screen reader to announce.
+  await expect(live).not.toHaveText(saidFirst);
+  await expect(live).toHaveText(`project.archived ${second} on project is now NEW.`);
 });
 
 /**

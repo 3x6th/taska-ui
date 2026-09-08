@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import type { AdminRow, AdminRows, AdminSortOrder, AdminTable } from "../../domain/types";
 import { useCopied } from "../../hooks/useCopied";
 import { AdminPager } from "./AdminPager";
-import { formatCell, isAlignedType, isWithheld } from "./columns";
+import { formatCell, isAlignedType, isWithheld, shortKey } from "./columns";
 
 interface AdminRowsTableProps {
   rows: AdminRows;
@@ -223,10 +223,6 @@ export function AdminRowsTable({
   );
 }
 
-/** Longer than this and the frozen column stops being narrow enough to freeze. */
-const KEY_LIMIT = 12;
-const KEY_SHOWN = 8;
-
 /**
  * The primary key, shortened (§5.8). A 36-character uuid made the frozen column
  * the widest in the table and pushed the real content off the right edge — the
@@ -236,10 +232,15 @@ const KEY_SHOWN = 8;
  * one stays reachable: it is in `title` for a pointer, in the accessible name
  * for a screen reader, and on the clipboard in one click for the case that
  * actually happens — pasting it into a query somewhere else.
+ *
+ * The rule itself moved to `shortKey` in TAS-194, unchanged: the Events
+ * section's retry confirmation says the same eight characters out loud, and the
+ * two had to be one rule rather than two copies of a number. The `…` stays
+ * here, where it is a mark on a screen rather than a word in a sentence.
  */
 function PrimaryKeyCell({ value }: { value: string }) {
   const [copyState, copy] = useCopied();
-  const short = value.length > KEY_LIMIT ? `${value.slice(0, KEY_SHOWN)}…` : value;
+  const short = shortKey(value);
 
   if (short === value) return <>{value}</>;
 
@@ -252,7 +253,10 @@ function PrimaryKeyCell({ value }: { value: string }) {
         title={value}
         type="button"
       >
-        {short}
+        {/* One text node, not `{short}…`: the accessible name is assembled from
+            the nodes, and keeping the mark in the same string is what has always
+            made this read as one value. */}
+        {`${short}…`}
       </button>
       {/* The confirmation takes no width. An inline "Copied" widened the frozen
           column by 45px for two seconds and shifted every column twice, in a
