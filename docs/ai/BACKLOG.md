@@ -40,8 +40,32 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `focusListAfterWrite` exists to prevent. The late move used to cover it by
   accident, at the cost of the steal. The honest fix is to **restore** focus
   only when the element that had it is the one the refetch removed, which needs
-  a post-refetch check and is a different change from the one TAS-194 made. Not
-  reproducible on the mock: its summary is static, so the trigger survives.
+  a post-refetch check and is a different change from the one TAS-194 made.
+
+  **Reproducible, and an earlier version of this line said otherwise.** It
+  claimed the mock's summary is static so the trigger survives. That is true of
+  the hand-written fake in `AdminScreen.test.tsx` and false of `MockTaskaApi`,
+  whose store mutates synchronously and delivers the answer 140ms later — ample
+  room for a click and an `Escape`. The release reviewer drove it in the browser:
+  after `Esc` focus is on the Retry trigger; after the answer lands
+  `activeElement` is `body`, while the announcement is correct and the list
+  agrees with the server. Roughly fifteen lines in `e2e/admin-events.spec.ts`
+  cover it. Saying "we cannot test this" in a durable document is how a filed
+  item becomes a closed door — and this file spent the same week criticising
+  `API-DIVERGENCE.md` for a claim of exactly that shape.
+
+  Scope the eventual fix to the section rather than to retry. `src/main.tsx`
+  sets only `staleTime` and `retry`, so `refetchOnWindowFocus` is on: any
+  blur-and-return after twenty seconds can remove a row from under a focused
+  trigger, with no write involved at all. A rescue built only for the retry path
+  would leave that standing.
+- **The board slide-over's ✕ names itself with `title` alone**
+  (`frontend-builder`, 2026-09-08, TAS-194). `src/screens/BoardScreen.tsx:1124`
+  carries the pattern TAS-194 fixed inside `Modal`: an icon button with
+  `title="Close"` and no `aria-label`, where `title` is the weakest source in
+  the accessible-name order. DESIGN.md §7 states the rule outright — «Иконки-кнопки
+  без текста — обязателен `aria-label`» — so this is conformance rather than
+  taste. One line, outside `Modal` and outside an Events story.
 - **The mock checks the retry reason before the uuid; the gateway does the
   opposite** (`frontend-builder`, 2026-09-08, TAS-194). Measured on the deployed
   gateway: a malformed uuid is refused **before** auth (`400 "Invalid request
@@ -60,10 +84,13 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   rows rather than beneath them.
 - **One e2e assertion is the only thing keeping the board and the server in
   agreement after a retry** (`release-reviewer`, 2026-09-08, TAS-194). Removing
-  `queryClient.invalidateQueries` survives the entire unit suite — 74 of 74 pass
-  — and is killed only by `e2e/admin-events.spec.ts`'s `toHaveCount(before - 1)`.
-  That is adequate coverage today and a warning for later: if the e2e suite is
-  ever trimmed, that is the assertion to keep.
+  `queryClient.invalidateQueries` survived the entire unit suite — 74 of 74
+  passed — and was killed only by `e2e/admin-events.spec.ts`'s
+  `toHaveCount(before - 1)`. **Superseded inside the same story**: the dismissal
+  tests added for the focus guard count summary reads directly, so the mutant now
+  dies in the unit suite too. Kept because the lesson outlived its instance — a
+  write's agreement with the server can rest on one assertion in the slowest
+  suite, and nothing announces when it does.
 - **The audit-after-commit ordering has no watcher** (`release-reviewer`,
   2026-09-08, TAS-194). The retry dialog's most important sentences — which arms
   may report a write that actually landed — are derived from the order of
@@ -99,8 +126,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `.modal-layer` is `position: fixed` with `overflow: visible` and no
   `padding-bottom`, `.modal` is `overflow: hidden`, and nothing on the page
   scrolls. Nobody is trapped — Cancel, the header ✕ and the backdrop are all
-  reachable, and `⌘/Ctrl+Enter` submits — but the pointer route to the primary
-  action does not exist at that size. Pre-existing in the shared component;
+  reachable, and `⌘/Ctrl+Enter` submits. **Two corrections to an earlier version
+  of this line, one in each direction.** It said the pointer route does not
+  exist; measured again at 390×844 the primary button's bottom is 852.7 against
+  844, so 25 of its 34px are visible and hit-testable — clipped, not absent. And
+  it understated the real case: a phone's *visual* viewport is 60–100px shorter
+  than the emulated 844 while the dialog's `padding-top: 11vh` is measured
+  against the large viewport, so on a real device the button does go away. Two
+  facts worth carrying: the Users dialog with its longest arm ends at 703 and
+  does not overflow, so the shared component's missing `overflow-y` is reachable
+  **only** through this dialog today; and shortening the `PROCESSING` warning
+  bought 37px, which is what turned "unreachable" into "clipped".
+  Pre-existing in the shared component;
   TAS-194 is simply the story that built the tallest dialog in the product and
   so made the arm reachable. `overflow-y: auto` plus `padding-bottom: 11vh` on
   `.modal-layer` is the fix, and it belongs to whoever owns `Modal` rather than

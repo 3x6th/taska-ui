@@ -122,13 +122,23 @@ export function AdminEventsProblems() {
    * losing focus altogether.
    *
    * **Dismissed while the retry was still in flight, and answered afterwards** —
-   * focus does not move at all, and this is a third case rather than a variant
-   * of the second. The answer is not lost: query-core runs the mutation to the
-   * end with nobody observing it, so a confirmation can land seconds after
-   * Cancel, by which time the operator is somewhere else. The list is still
-   * asked again and the live region still says what the server said; only the
-   * focus move is withheld, because it is the one part of the confirmation that
-   * reaches out and takes something (`OutboxRetryArrival`).
+   * the answer moves nothing and then rescues what it took, which is a third
+   * case rather than a variant of the second. The answer is not lost:
+   * query-core runs the mutation to the end with nobody observing it, so a
+   * confirmation can land seconds after Cancel, by which time the operator may
+   * be somewhere else. The list is still asked again and the live region still
+   * says what the server said; the *move* is withheld, because it is the one
+   * part of the confirmation that reaches out and takes something
+   * (`OutboxRetryArrival`).
+   *
+   * Withholding it outright was wrong, and on the likeliest path of all. Doing
+   * nothing for two seconds after Cancel is the most ordinary thing an operator
+   * does next, and on that path dismissal has put focus back on the Retry
+   * button, the refetch turns that row `NEW`, `canRetryOutboxEvent` drops the
+   * button — and focus falls to `<body>`, where the next Tab restarts at the
+   * top of the document. That is the same §7 failure the successful path moves
+   * focus to avoid; the guard against the steal traded it for a loss. What
+   * closes both is a rescue rather than a move: `rescueFrom` below.
    */
   const focusTrigger = () => {
     const button = trigger.current;
@@ -145,11 +155,68 @@ export function AdminEventsProblems() {
     }
   };
 
+  /**
+   * The Retry button a late answer found focus resting on — armed when that
+   * answer lands, read once the list it asked for has landed too.
+   *
+   * Three conditions, and each one is what keeps the rescue from being the
+   * steal it was built to avoid:
+   *
+   * - focus was on *this* trigger when the answer arrived, so nothing is taken
+   *   from anywhere the operator went of their own accord;
+   * - the refetch removed that trigger, so the loss is this section's doing;
+   * - focus is on `<body>` when it is read again — still nowhere. Anything else
+   *   means the operator moved in the meantime, and where they are is theirs.
+   *
+   * A ref rather than state because nothing renders from it, and because it is
+   * written from a callback that outlives the dialog that owned the mutation.
+   */
+  const rescueFrom = useRef<HTMLButtonElement | null>(null);
+
   useEffect(() => {
     if (flashed === null) return;
     const timer = window.setTimeout(() => setFlashed(null), FLASH_MS);
     return () => window.clearTimeout(timer);
   }, [flashed]);
+
+  /**
+   * The rescue, and the whole of it is *when* it runs: after the commit that
+   * removed the button, not after the promise that asked for the read.
+   *
+   * `invalidateQueries().then(…)` is the obvious place and the inert one. That
+   * promise resolves as a microtask off the fetch, while the render that drops
+   * the button reaches React through query-core's own `setTimeout(…, 0)`
+   * notification — so asked there, `isConnected` is still `true`, focus is
+   * still on a button that has not left yet, and the rescue never fires. It
+   * would fail silently, with everything green.
+   *
+   * A passive effect is not a bet on that race. React runs it after the DOM
+   * mutation of the commit it belongs to, so by the time this reads the
+   * document, the answer the refetch brought is already on screen: if the
+   * button was going to go, it is gone.
+   *
+   * One list per arm — whatever this finds, the arm is spent — so a rescue can
+   * never be carried into a read that has nothing to do with the write.
+   */
+  useEffect(() => {
+    const button = rescueFrom.current;
+    // Nothing armed, or the read has not answered yet: a read that has not
+    // answered cannot have removed anything.
+    if (!button || !summaryQuery.data) return;
+    rescueFrom.current = null;
+    // The refetch left the button alone — focus is still on it, and there is
+    // nothing here to rescue.
+    if (button.isConnected) return;
+    // It went, and unless the operator has moved since the answer landed, focus
+    // went with it to `<body>`.
+    if (document.activeElement !== document.body) return;
+    focusListAfterWrite();
+    // Keyed on the answered list alone, on purpose. `isFetching` would add a
+    // render that cannot decide anything — while a read is out, the button is
+    // still there by definition — and would leave the fast path, where the
+    // fetch settles before query-core's first notification, without a change to
+    // key on at all.
+  }, [summaryQuery.data]);
 
   const onRetried = (event: RetryableEvent, result: OutboxRetryResult, arrival: OutboxRetryArrival) => {
     setFlashed(eventKey(event));
@@ -165,6 +232,12 @@ export function AdminEventsProblems() {
     if (arrival === "while-open") {
       setPending(null);
       focusListAfterWrite();
+    } else if (trigger.current !== null && document.activeElement === trigger.current) {
+      // Dismissed, and the operator has not moved since: focus is back on the
+      // button that opened the dialog. If the invalidation below removes it —
+      // which is what a successful retry does to it — that focus is what will
+      // be lost, and this is the arm that gets it back (`rescueFrom`).
+      rescueFrom.current = trigger.current;
     }
     // The list is what the section believes, so it is asked again — on both
     // paths, because a row that moved is worth knowing about whether or not

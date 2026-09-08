@@ -29,12 +29,20 @@ import { userWriteFailure } from "./users";
  *
  * Everything that speaks to the *section* still happens on that path: the list
  * is asked again, the row is marked, the live region says what the server said.
- * What must not happen is a focus move. Taking someone's focus after they
+ * What must not happen is a focus *move*. Taking someone's focus after they
  * dismissed a dialog and moved on is worse than not confirming at all — it is
  * defensible only on the reading that they are still sitting there doing
  * nothing, which is the reading every focus steal is built on — and a live
  * region is exactly the channel for a result nobody is waiting at (DESIGN.md
- * §7). The section is the one that owns focus, so this is what it is told with.
+ * §7).
+ *
+ * A focus *rescue* is a different act and the section does make one: if the
+ * refetch this answer sets off removes the very button the dismissal put focus
+ * back on, focus is put on the list rather than left on `<body>`. That is not a
+ * move to somewhere the section prefers — it is the section undoing a loss it
+ * caused, and it is skipped the moment the operator has gone anywhere at all.
+ * The section is the one that owns focus, so this is what it is told with; the
+ * conditions are in `AdminEventsProblems`.
  */
 export type OutboxRetryArrival = "while-open" | "after-dismissal";
 
