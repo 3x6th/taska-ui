@@ -47,7 +47,8 @@ states are not.
 | [TAS-196](https://jira.ozero.dev/browse/TAS-196) | The three admin writes are deployed; retire the undeployed-route compensation and refresh the contract snapshot | Done | merged (PR #50) |
 | [TAS-193](https://jira.ozero.dev/browse/TAS-193) | Issue watchers — the `me` pair, the count and the list; the two project-`ADMIN` routes deferred to TAS-137 | To Do | not started |
 | [TAS-194](https://jira.ozero.dev/browse/TAS-194) | Retry an outbox event from Events, and retire the TAS-105 summary compensation with it | To Do | not started |
-| [TAS-195](https://jira.ozero.dev/browse/TAS-195) | Drop the N+1 hydration in `listIssues` — the gateway's list DTO is whole issues now | To Do | measured, not started |
+| [TAS-195](https://jira.ozero.dev/browse/TAS-195) | Drop the N+1 hydration in `listIssues` — the gateway's list DTO is whole issues now | Done | merged (PR #52) |
+| [TAS-173](https://jira.ozero.dev/browse/TAS-173) | An unknown enum value from the backend must not blank the screen | To Do | **was `Done` without being built** — reopened 2026-09-08, see below |
 | [TAS-197](https://jira.ozero.dev/browse/TAS-197) | `GET /users/me` answers `UNSPECIFIED` for a locked account | To Do | backend ask, filed from TAS-196 |
 | [TAS-198](https://jira.ozero.dev/browse/TAS-198) | A locked account keeps access on a pre-lock token, and `refresh` renews it | To Do | backend ask, filed from TAS-196 |
 
@@ -305,6 +306,41 @@ criteria is the one that most needs the record.
   findings on TAS-125, three of which its reviewers had not raised.
 - The story stays open with the blocking condition named, and
   `npm run contract:pins` goes loud when PR #118 moves or merges.
+
+### TAS-195 — the board stops asking twice, and four blockers turn out to be dead
+
+- The measurement is the story. `ListIssuesResponseDto.items` had been
+  `IssueResponseDto` on `develop` since before the 2026-09-05 refresh, and the
+  divergence entry refused to close on that, demanding a probe because contract
+  and runtime have disagreed here before. Probed 2026-09-08: the list carries
+  `status`, `description`, `createdAt` and **populated** `labels`. The entry was
+  right to insist — and it is the only place in the repository that did.
+- **Two response types had been sharing one interface**, above a comment warning
+  that one name would hide the day either schema grew a field. The list grew;
+  search did not. Splitting them was the actual work, not deleting the fan-out.
+- **Four of the six blocker rows probed the same day were already fixed** —
+  TAS-139, TAS-162, TAS-172, TAS-178 — including the one this repository called
+  the board's core gesture and the one that called an issue permanently
+  unreadable. TAS-137 and TAS-180 survived every clause. Nothing fires when a
+  blocker stops being true, which is why the table now says re-measure rather
+  than read.
+- **TAS-173 was `Done` without existing.** No commit carries the key, the ledger
+  has no row, and not one acceptance criterion is met in the code. Found only
+  because a duplicate was filed for the same defect and the duplicate check went
+  looking. `git log --grep` on a key is the cheap version of that check.
+- Two findings were the orchestrator's own errors, both caught by reviewers: an
+  all-clear written for TAS-172 from a measurement of a different bug, and
+  `description` named as the field that blanks the application when the board's
+  filter reads `summary` first. Corrected in the history, not smoothed over.
+- The evidence that would settle this best does not exist: a rest-mode network
+  trace showing one request where there were 101. The mock never hydrated, so
+  mock mode cannot show it, and a real trace needs a sign-in the agent will not
+  perform. Said plainly in the PR body rather than covered by a green gate; two
+  routes to close it are in `BACKLOG.md`.
+- Verdicts: `api-contract-guard` pass then eight findings then five more;
+  `release-reviewer` approve twice, with 19 mutants written by hand and all 19
+  killed, plus a corroboration of TAS-172 taken from the deployed app rather
+  than from the diff.
 
 ### TAS-196 — the compensation came out, and two records did not come with it
 
