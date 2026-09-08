@@ -271,9 +271,10 @@ export interface Issue {
   /**
    * `IssueResponseDto.labels`. Always an array by the time it is read — the API
    * layer defaults an absent one to `[]` — so a card never has to ask whether
-   * the gateway sent the field. The list endpoint's short DTO does not carry
-   * labels at all; `listIssues` hydrates each row from the detail endpoint
-   * (`RestTaskaApi`), which is where the board's chips come from.
+   * the gateway sent the field. The list endpoint answers with that same DTO
+   * since TAS-195 and carries the labels itself (measured on the deployed
+   * gateway 2026-09-08), which is where the board's chips come from; before
+   * that `listIssues` hydrated every row from the detail endpoint to get them.
    */
   labels: Label[];
   /**
@@ -321,11 +322,12 @@ export interface Issue {
  * (DESIGN.md §5.4 counts them, §5.2 does not hold them). And a hit needs a
  * `projectId` to be linkable, which is resolved from the `issueKey` prefix
  * against the projects list the client already holds — see
- * `projectKeyFromIssueKey`. Deliberately not hydrated through `getIssue`: that
- * is the N+1 `RestTaskaApi.listIssues` already pays, and the owner settled the
- * general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md, TAS-178) — fix the
- * backend, do not hydrate on the frontend. On a search it would be that N+1 on
- * every keystroke.
+ * `projectKeyFromIssueKey`. Deliberately not hydrated through `getIssue` — the
+ * owner settled the general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md,
+ * TAS-178): fix the backend, do not hydrate on the frontend. `listIssues` used
+ * to pay exactly that N+1 and stopped in TAS-195, when its DTO grew into a
+ * whole issue; this one did not, so hydrating here would be a `getIssue` per
+ * hit on every keystroke.
  */
 export interface IssueSearchHit {
   id: string;

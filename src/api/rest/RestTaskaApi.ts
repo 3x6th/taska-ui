@@ -165,6 +165,7 @@ type RestIssue = Omit<
   Issue,
   | "assigneeId"
   | "deletedAt"
+  | "description"
   | "labels"
   | "storyPoints"
   | "startDate"
@@ -174,6 +175,17 @@ type RestIssue = Omit<
 > & {
   assigneeId?: string | null;
   deletedAt?: string | null;
+  // Neither spec puts this field in a `required` block, and the deployed
+  // gateway's generated spec types it `["string", "null"]`, so the wire may
+  // state `null` or omit the key outright. Restated so that `toIssue`'s
+  // `?? ""` is code with a reason a reader can check, rather than a guard
+  // against a case the type says cannot happen.
+  //
+  // Restating it does not newly imply that the rest are guaranteed: an `Omit`
+  // of nine fields already says the other twelve arrive exactly as `Issue`
+  // states them, on no better evidence than this one had. Typing the whole
+  // schema honestly is its own story; see docs/ai/BACKLOG.md.
+  description?: string | null;
   // Absent on every gateway built before TAS-120, and absent again the moment
   // this app talks to one. `toIssue` turns that into `[]` so no card has to.
   labels?: RestLabel[];
@@ -226,7 +238,13 @@ interface RestIssueWithHistory {
   history: RestIssueHistoryEvent[];
 }
 
-interface RestIssueListItem {
+/**
+ * `IssueShortResponseDto`, which since TAS-195 is the *search* DTO and nothing
+ * else — hence the name. It used to be called `RestIssueListItem` and used by
+ * both response types below, until `ListIssuesResponseDto.items` became
+ * `IssueResponseDto` and the list stopped being short.
+ */
+interface RestIssueShortItem {
   id: string;
   issueKey: string;
   summary: string;
@@ -239,19 +257,39 @@ interface RestIssueListItem {
   storyPoints?: number | null;
 }
 
+/**
+ * `ListIssuesResponseDto`, whose `items` is a whole `IssueResponseDto` — the
+ * same schema `GET /issues/{issueId}` answers with, `status` and `labels`
+ * included. Measured on the deployed gateway on 2026-09-08 rather than read
+ * off the contract, because the two have disagreed here before: every row of
+ * `GET /projects/{id}/issues?page=0&pageSize=3` carried all fifteen fields,
+ * `status` as a key and `labels` populated. That measurement is what let
+ * TAS-195 delete the per-row hydration `listIssues` used to pay.
+ */
 interface RestListIssuesResponse {
-  items: RestIssueListItem[];
+  // Optional, unlike `RestSearchIssuesResponse` below: `ListIssuesResponseDto`
+  // declares no `required` block in either spec, so a `200` carrying no `items`
+  // is a legal answer. `listIssues` reads it with `?? []` and a test pins that.
+  items?: RestIssue[];
   totalCount: number;
 }
 
 /**
- * `SearchIssuesResponseDto`. The same two fields as `ListIssuesResponseDto`
- * above and deliberately not an alias for it: they are two schemas in the
- * contract, and one name would hide the day either of them grows a field.
- * Both are `required` here, which the list response's schema does not say.
+ * `SearchIssuesResponseDto`. Two fields with the same names as
+ * `ListIssuesResponseDto` above, and deliberately not an alias for it: they are
+ * two schemas in the contract, and one name would hide the day either of them
+ * grows a field.
+ *
+ * That day was TAS-195. The list's `items` became `IssueResponseDto` and this
+ * one stayed `IssueShortResponseDto` (openapi.yml, `SearchIssuesResponseDto`),
+ * so the shared `RestIssueListItem` split in two rather than widening a search
+ * hit into an issue it never was.
+ *
+ * Both fields are `required` here, which the list response's schema still does
+ * not say.
  */
 interface RestSearchIssuesResponse {
-  items: RestIssueListItem[];
+  items: RestIssueShortItem[];
   totalCount: number;
 }
 
@@ -481,12 +519,24 @@ export class RestTaskaApi implements TaskaApi {
       `/projects/${this.segment(projectId)}/issues${this.query(search)}`,
     );
 
-    // The gateway list DTO omits fields required by the board (including status),
-    // so hydrate the page with the detail endpoint until the REST contract grows.
-    const items = await mapWithConcurrency(response.items, 6, async (item) => {
-      const details = await this.getIssue(projectId, item.id);
-      return details.issue;
-    });
+    // One request per page, and the same mapping the detail read uses, because
+    // the list and the detail answer with the same DTO. Until TAS-195 this
+    // followed the list with `GET /issues/{issueId}` per row at concurrency 6 —
+    // up to a hundred extra requests for the board's `pageSize: 100` — because
+    // `ListIssuesResponseDto.items` was the short DTO and a kanban card cannot
+    // choose a column without `status`. It is `IssueResponseDto` now, measured
+    // on the deployed gateway (see `RestListIssuesResponse`), so the reason is
+    // gone. Nothing else went with it: `getIssue` still backs the issue panel,
+    // and the fan-out was the multiplier that made TAS-139 fail a whole board.
+    //
+    // `?? []` because `ListIssuesResponseDto` declares no `required` block, so
+    // a `200` with no `items` at all is a legal answer to this route — the
+    // opposite of `SearchIssuesResponseDto` below, which requires both fields
+    // and is still read defensively. Unguarded, a body of `{ totalCount: 0 }`
+    // rejects with a `TypeError`: no `code`, no `requestId`, nothing
+    // `apiErrorFacts` can name, and a board that reports an unreadable failure
+    // where an empty page was meant.
+    const items = (response.items ?? []).map((item) => this.toIssue(item));
 
     return {
       items,
@@ -522,10 +572,12 @@ export class RestTaskaApi implements TaskaApi {
     if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
 
     const response = await this.request<RestSearchIssuesResponse>(`/issues/search${this.query(search)}`);
-    // No hydration, on purpose: `listIssues` above pays an N+1 through
-    // `getIssue` because the board needs a status, and doing the same here
-    // would be that N+1 on every keystroke. A hit stays as short as the
-    // contract made it (docs/ai/API-DIVERGENCE.md, TAS-178).
+    // No hydration, on purpose, and the reason outlived the N+1 in `listIssues`
+    // above: the search DTO is still `IssueShortResponseDto`, so filling in a
+    // status here would mean a `getIssue` per hit on every keystroke. The owner
+    // settled that on 2026-08-23 — fix the backend, do not hydrate on the
+    // frontend (docs/ai/API-DIVERGENCE.md, TAS-178). A hit stays as short as
+    // the contract made it.
     const items = (response.items ?? []).map((item) => this.toIssueSearchHit(item));
     return {
       items,
@@ -1236,6 +1288,11 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
+   * `IssueResponseDto` → `Issue`, for the detail read *and*, since TAS-195,
+   * for every row of `listIssues`: the two routes answer with the same schema,
+   * so a field this method forgets to default is a hundred cards rather than
+   * one panel.
+   *
    * The five planning fields are folded one by one rather than left to the
    * spread. A spread of a response that carries none of them — which is every
    * response until backend PR #148 deploys — produces five members that are
@@ -1245,10 +1302,50 @@ export class RestTaskaApi implements TaskaApi {
    * `?? null` and never `||`. `0` is a legal story-point count and a legal
    * estimate, and `0 || null` is `null` — the one substitution that turns a
    * value into an absence without failing anywhere.
+   *
+   * **`description` is defaulted and `status` deliberately is not**, and the
+   * asymmetry is the interesting half. Both may be absent: the deployed
+   * gateway's own generated spec (`GET /v3/api-docs`, read 2026-09-08) declares
+   * every property of `IssueResponseDto` as `["string", "null"]` under no
+   * `required` block, so `null` here is a server-declared value rather than a
+   * hypothesis. The difference is what a substitute costs.
+   *
+   * `description` is defaulted for the *write* path, not the read one.
+   * `PUT /issues/{issueId}` is a full replace and `UpdateIssueRequestDto`
+   * requires `summary`, `description` and `priority`; `updateIssue` fills that
+   * body with `input.description ?? current.description`, and `current` is a
+   * row this method produced. An `undefined` there is dropped by
+   * `JSON.stringify`, so the PUT leaves out a required key — refused, or taken
+   * as a clear of the field nobody asked to edit. `""` is also what the rest of
+   * the UI already means by "no description" and what the issue panel writes
+   * back, so nothing downstream has to learn a second spelling of empty.
+   *
+   * It is **not** the field that blanks the application, and an earlier version
+   * of this paragraph said it was. The board's filter tests
+   * `issue.summary.toLowerCase()` before it reaches the description, so a row
+   * bare enough to be missing one has already thrown on the summary; and an
+   * absent description renders as `<p>{undefined}</p>`, which draws nothing and
+   * throws nothing. The dereferences that really do take the whole app need no
+   * keystroke and are not in this mapper — `Record` lookups on `issueType` and
+   * `priority` in the card render path, over two fields no spec constrains to
+   * an enum. They are their own defect with their own line in
+   * `docs/ai/BACKLOG.md`; this default neither causes nor fixes them.
+   *
+   * For `status` there is no such harmless value. Every candidate is a real
+   * column, so an invented one puts the card under a heading the server does not
+   * agree with, and the drag out of that column then asks for a transition from
+   * a status the issue was never in. A statusless card matches no column and
+   * does not appear (`BoardScreen` groups by `issue.status ===
+   * status.statusKey`) — while still being counted at *both* ends of that
+   * screen's "X of Y" header, since `filteredIssues` and `issues` each hold it.
+   * The board reads "10 of 10" over nine cards. That is still the recoverable
+   * failure of the two, and its visible half is in `docs/ai/BACKLOG.md` with
+   * this reasoning rather than papered over here with an invented column.
    */
   private toIssue(issue: RestIssue): Issue {
     return {
       ...issue,
+      description: issue.description ?? "",
       assigneeId: issue.assigneeId || null,
       deletedAt: issue.deletedAt ?? null,
       labels: (issue.labels ?? []).map((label) => toLabel(label)),
@@ -1284,7 +1381,7 @@ export class RestTaskaApi implements TaskaApi {
    * day the DTO grows a field, and the one thing this type must keep proving is
    * that it carries no status and no project.
    */
-  private toIssueSearchHit(item: RestIssueListItem): IssueSearchHit {
+  private toIssueSearchHit(item: RestIssueShortItem): IssueSearchHit {
     return {
       id: item.id,
       issueKey: item.issueKey,

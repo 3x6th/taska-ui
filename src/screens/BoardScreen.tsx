@@ -263,10 +263,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       if (assigneeFilter !== "ALL" && issue.assigneeId !== assigneeFilter) return false;
       if (!normalized) return true;
       // Three fields, the same three `GET /issues/search` matches on. The
-      // description was already on every hydrated issue and simply was not
-      // consulted, so a card the server would return for a word in its body was
-      // filtered out of the board by the box above it — the local and the
-      // server halves of one search disagreeing about what the question was.
+      // description is on every issue this page holds — the list DTO carries
+      // it — and simply was not consulted, so a card the server would return
+      // for a word in its body was filtered out of the board by the box above
+      // it: the local and the server halves of one search disagreeing about
+      // what the question was.
       return (
         issue.summary.toLowerCase().includes(normalized) ||
         issue.issueKey.toLowerCase().includes(normalized) ||

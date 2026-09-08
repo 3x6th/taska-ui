@@ -31,6 +31,64 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   neighbouring one in the same diff makes the removal harder to review, not
   easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
   named the account being blocked where it meant the reader.
+- **`RestIssue` tells the truth about seven fields and lies about the rest**
+  (`api-contract-guard`, 2026-09-08, TAS-195 re-verdict). It is
+  `Omit<Issue, seven fields> & { those seven restated optional }`, so the type
+  already promises the other thirteen are guaranteed while the deployed spec
+  types every one of them `["string","null"]` with no `required` block. TAS-195
+  added `description` to the restated block, which makes the type wrong about
+  twelve instead of thirteen. Making it systematically partial — so `toIssue`
+  has to justify every field it passes through — is the change that would have
+  caught the render-path hazard in [TAS-173](https://jira.ozero.dev/browse/TAS-173)
+  at compile time instead of leaving it to a reviewer. Its own story, not a line
+  in someone else's.
+- **Nothing in `src` is an error boundary, and the gateway declares every issue
+  field nullable** (`release-reviewer`, 2026-09-08, TAS-195 verdict). The
+  deployed gateway's own generated spec — `https://api.taska.ozero.dev/v3/api-docs`,
+  public, no token — types every property of `IssueResponseDto` as
+  `["string","null"]` with no `required` block. `status` is the one that matters
+  and the one TAS-195 deliberately did **not** default: a card given an invented
+  status would be placed in a column it does not belong to, which is worse than
+  a card that does not appear. Today a `null` status makes the card vanish from
+  its column while still being counted, so the board reads "10 of 10" and draws
+  nine. The honest fix is a visible one — count what is drawn, or surface the
+  row as unplaceable — and it is a product decision, not a mapper default.
+  Separately: `grep` finds no `ErrorBoundary`, `componentDidCatch` or
+  `getDerivedStateFromError` anywhere in `src`, so any render-time throw blanks
+  the whole application rather than one panel. That is what sets the scale of
+  [TAS-173](https://jira.ozero.dev/browse/TAS-173), where an unrecognised
+  `issueType` or `priority` throws on the first paint of every card. **That
+  story stood in `Done` with none of its acceptance criteria met** — no helper,
+  no error boundary, no tests, and the unguarded lookups still in place at seven
+  sites rather than the six it lists. Found 2026-09-08 while filing a duplicate
+  for the same defect; the duplicate was closed and TAS-173 returned to `To Do`.
+  Worth knowing as a class: a story can be `Done` in Jira and absent from the
+  code, and neither the ledger nor a green gate will say so — `git log --grep`
+  on the key is the cheap check.
+
+  Note what this line first claimed and got wrong, because the correction is the
+  useful part: the `null` description TAS-195 defaulted at the mapper is **not**
+  the app-blanking case. The board's filter reads `summary` before `description`,
+  and `summary` is undefined on the same bare row — so a row that could reach
+  that filter without a description would already have thrown one field earlier.
+  The default is right for a duller reason the release reviewer supplied:
+  `PUT /issues/{issueId}` is a full replace and `UpdateIssueRequestDto` requires
+  `description`, so an undefined one would go out as a missing required key.
+- **Two ways to prove a rest-mode claim without a credential**
+  (`release-reviewer`, 2026-09-08, TAS-195 verdict). TAS-195 could not produce
+  the evidence that would have settled it best — a network trace showing one
+  list request and no detail burst — because the dev server needs a sign-in and
+  the agent may not enter a password. Two routes around that, neither taken:
+  (a) a component test rendering `BoardScreen` against a real `RestTaskaApi`
+  over a stubbed `fetch` seeded with a list body, asserting cards land in
+  columns with chips **and** that no stubbed URL matches `/issues/{id}` —
+  `BoardScreen.test.tsx` already renders the board against a stub API, so this
+  is a small delta and proves the one link nothing currently proves, that a list
+  *response body* draws a board; (b) a second Playwright project with
+  `VITE_TASKA_API_MODE: "rest"` and `page.route` fixtures for login and list,
+  which needs a second `webServer` entry in `playwright.config.ts` and produces
+  exactly the trace. (b) is worth a story — it unblocks every future rest-mode
+  claim, not just this one.
 - **`UserProfileMenu.tsx` calls `.toLowerCase()` on a contract-optional field**
   (`api-contract-guard`, 2026-09-08, TAS-196 re-verdict). `user.status` builds a
   class name at `src/components/UserProfileMenu.tsx:108`, but
@@ -371,10 +429,12 @@ time.
   because headless Chromium has no toolbars to retract.
 - **`--font-mono` is specified in §2.3 and never declared in `styles.css`.**
   TAS-163 defines it and converts the copies it found; check for others.
-- **`listIssues` is still all-or-nothing internally.** Its N+1 hydration uses
-  `Promise.all`, so one unreadable issue still zeroes its own project's count.
-  TAS-163 contained the blast radius to a single card; it did not remove it,
-  and TAS-124/125 is what actually does.
+- ~~**`listIssues` is still all-or-nothing internally.**~~ **Gone with the
+  hydration (TAS-195, 2026-09-08.)** It used `Promise.all` over a per-row
+  `getIssue`, so one unreadable issue zeroed its own project's count. There are
+  no per-row reads left to fail. Note which prediction was wrong: this line said
+  TAS-124/125 is what removes it. The board API never did — what did was the
+  list DTO growing whole issues, measured rather than read off the contract.
 - ~~No test proves a real `VIEWER` cannot drag.~~ **Withdrawn the same day it
   was written.** It rested on "the mock seeds no VIEWER project", which is
   false: Anna is not a member of `MOB`, and a non-member gets `VIEWER`. TAS-163
@@ -435,8 +495,9 @@ time.
   `IssueLinksSection`'s own observer on `["issues", projectId, "ALL"]` refetches
   on mount when the entry is stale (`staleTime` 20_000), where before the panel
   added no observer at all. Against the real gateway that is not one call:
-  `RestTaskaApi.listIssues` hydrates every item with a per-issue `getIssue` at
-  concurrency 6. Nothing required — if it shows as load, the smallest change is
+  `RestTaskaApi.listIssues` hydrated every item with a per-issue `getIssue` at
+  concurrency 6 until TAS-195 removed it, so whatever load this line was about
+  is now one request per page. Nothing required — if it shows as load, the smallest change is
   `refetchOnMount: false` on that one observer, which consumes the cached page
   without ever driving a fetch of it.
 - **Pressing "Add" by keyboard drops focus to `<body>`,** because the button
@@ -825,11 +886,9 @@ the next session in this image exactly as it bit this one.
   in the documents** (`release-reviewer`, TAS-191): it justifies the per-issue
   hydration by saying the list DTO omits fields the board needs, and on the
   vendored contract `ListIssuesResponseDto.items` is now `IssueResponseDto`,
-  which carries them. The hydration should stay until the deployed gateway is
-  measured — it is the comment's reason that is stale, not its conclusion.
-  Belongs to whoever takes that measurement, which is the same one the
-  2026-09-05 refresh entry files under `ListIssuesResponseDto.items` — one
-  request answers both.
+  which carries them. **Both halves closed by TAS-195**: the measurement was
+  taken on 2026-09-08, the gateway agreed with its own contract, and the
+  hydration came out with the comment that justified it.
 - **A third intermittent test signature, on `AdminScreen.test.tsx`**
   (`release-reviewer`, TAS-190): "lands on the last page when the address names
   one past the end" failed once in four `npm run check` runs with
@@ -1447,11 +1506,10 @@ again to `96408229c1e4` and the deployed gateway was measured directly:
   detail endpoint and got a non-empty `labels` back, which is the bug
   [TAS-178](https://jira.ozero.dev/browse/TAS-178) is about; that wants its own
   confirmation before the Jira story is closed.
-  `RestTaskaApi.listIssues` hydrates every row from the detail endpoint because
-  the short DTO carried no labels — that N+1 may now be deletable. It is a
-  measurement against the deployed gateway, not a reading of the contract,
-  because the two have disagreed before. Sitting in TAS-189's scope as a
-  question, not as work.
+  `RestTaskaApi.listIssues` hydrated every row from the detail endpoint because
+  the short DTO carried no labels. The measurement was taken on 2026-09-08, the
+  gateway agreed with its own contract, and the N+1 came out — a story of its
+  own rather than a question in TAS-189's margin.
 - **`NotificationTypeDto` is back in the vendored contract, and nothing
   references it.** It reappeared as a definition on two then-open PRs (#146,
   #118); #146 merged 2026-09-07, so the schema is now on `develop` and in the
