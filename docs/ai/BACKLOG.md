@@ -72,6 +72,30 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   a change that leaves the button three pixels away from it still broken.
   `ThemeToggle.tsx:8` already ships the `aria-label` + matching `title` pair, so
   this is an in-repo precedent rather than a reading of the spec.
+- **The Users section announces a name, and two accounts can share one**
+  (`art-director`, 2026-09-08, TAS-194 verdict). `AdminUsersSection.tsx:341`
+  announces `${personLabel(user)} is now ${status}.`, and `personLabel` prefers
+  `displayName` — so two accounts with the same display name, ordinary in any
+  real directory, produce a byte-identical confirmation, and a `role="status"`
+  whose text does not change is not re-announced. **Exactly the defect TAS-194
+  fixed in Events, one heading away and already shipped.** The row already
+  carries the unique `@login`, so the fix is the same shape: put the
+  distinguishing token in the sentence. Out of TAS-194's scope; filed so the
+  lesson does not stay local to Events.
+- **Neither live region is ever cleared, so two identical announcements are
+  heard once** (`art-director`, 2026-09-08). This is the residue TAS-194's fix
+  does not reach: naming the event makes *different* events distinguishable, and
+  a genuine repeat — retry a row, the server answers with a status that keeps it
+  retryable, retry the same row again — still produces the same string and the
+  same silence. `AdminScreen.test.tsx` pins that state as supported. Related and
+  worth amending together: the existing entry saying `role="status"` never being
+  cleared is "harmless to a screen reader, which announces the *change*" — TAS-194
+  falsified the comfortable half of that sentence, and it should say so.
+- **A comment gives the wrong reason for a right decision** (`art-director`,
+  2026-09-08, TAS-194 verdict). `PrimaryKeyCell` justifies its single template
+  string by "the accessible name is assembled from the nodes" — but the button
+  carries an explicit `aria-label={`Copy ${value}`}`, so the content plays no
+  part in the name. The concatenation is right; the stated reason is not.
 - **A pagination test races its own clamp** (`frontend-builder`, 2026-09-08,
   seen once in five full runs during TAS-194). `AdminScreen.test.tsx`'s "lands on
   the last page when the address names one past the end" asserts
