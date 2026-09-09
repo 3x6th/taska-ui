@@ -3831,7 +3831,16 @@ h1 {
    this tint that measures 2.52:1 in light, under the 3:1 floor §7 sets even
    for non-critical meta, so the quieter of two greys gives way to the rule
    that decides whether it can be read at all. --fg-2 measures 5.13:1 light /
-   7.39:1 dark and still reads as secondary under the sentence. */
+   7.39:1 dark and still reads as secondary under the sentence.
+
+   The watchers box (§4.21) joins the group rather than declaring a second copy:
+   it prints the same two machine strings for the same reason, and two recipes
+   for one line is how the board's and the panel's ids come to disagree. Its
+   ground is --surface rather than a tint, where the same --fg-2 measures 7.26:1
+   light / 6.75:1 dark — and --fg-3 there is 3.14 / 3.05, over §7's 3:1 meta
+   floor by a hair and still the wrong choice, because a string whose whole
+   purpose is to be read out and pasted into a ticket is not meta. */
+.watcher-note-detail,
 .api-notice-detail {
   display: flex;
   flex-wrap: wrap;
@@ -4444,7 +4453,8 @@ h1 {
 
 .issue-labels,
 .issue-links,
-.issue-attachments {
+.issue-attachments,
+.issue-watchers {
   margin-top: 24px;
 }
 
@@ -4674,7 +4684,8 @@ button.issue-link-open:hover {
    the quiet version of this (§1); the panel behind it is `--surface` too, so
    the box is defined by its border and its stripe. Padding is on §2.4's scale
    (7 / 11); the 10 this rule used to carry is not on it. */
-.attachment-note {
+.attachment-note,
+.watcher-note {
   margin: 0 0 12px;
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
@@ -4688,8 +4699,25 @@ button.issue-link-open:hover {
   text-wrap: pretty;
 }
 
-.attachment-note.is-error {
+/* Two sections, one recipe, shared as a selector group rather than copied: the
+   watchers section has the same pair of tones for the same reason (an info line
+   for a write that changed nothing, an error line for one that was refused), and
+   two copies of §5.6's box are two chances for them to drift apart. Named
+   separately rather than renamed to something generic so neither section's
+   markup has to change to say what it already says. */
+.attachment-note.is-error,
+.watcher-note.is-error {
   border-left-color: var(--danger);
+}
+
+/* The sentence inside the watchers box. It carries no type of its own on
+   purpose — the box above already sets 12.5/400 and `text-wrap: pretty`, and
+   the only thing a `<p>` needs taking off it is the margin that would otherwise
+   push the box open. It is a `<p>` and not a bare text node because it is the
+   live region now (see the section's own comment): the box holds the id line
+   too, and a uuid does not belong in an announcement. */
+.watcher-note-sentence {
+  margin: 0;
 }
 
 .attachment-list {
@@ -4805,6 +4833,174 @@ button.attachment-open:hover:not(:disabled) {
   outline-offset: 2px;
 }
 
+/* ==================== Watchers (TAS-193) ====================
+   Geometry only, and mostly borrowed — the picker is `.issue-link-form` and the
+   notice is `.attachment-note`, both reused by class rather than re-declared, so
+   this block is the toggle and the row and nothing else. Every colour is a §2.1
+   or §2.2 token; the one new shade is the accent tint §2.2 already prescribes
+   (`color-mix(in oklab, <color> N%, transparent)`), at the same 12% the active
+   assignee chip uses. */
+/* The add form is `.issue-link-form` reused, with one rule undone. There the
+   first field is the relation control and is meant to take a row of its own so
+   the picker and its button share the second; here the picker *is* the first
+   field, so inheriting that put "Add" alone on a line under a full-width
+   select. `auto` hands the row back to `.issue-link-target`'s `flex: 1`, which
+   is what puts the button beside the picker at both widths. */
+.watcher-form > .issue-link-field:first-child {
+  flex-basis: auto;
+}
+
+.watcher-toggle-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 9px;
+  margin-bottom: 12px;
+}
+
+/* The pressed state, and it is deliberately the same recipe as
+   `.assignee-chip.is-active` rather than a new one: both mean "this is the
+   option in force", and §1 spends its colour budget on meaning rather than on
+   variety. `aria-pressed` carries the same fact to a screen reader, so the tint
+   is never the only signal (§7) — the label changes too.
+
+   **The whole recipe, the label included.** The chip states `--fg` on its own
+   text node (see `.assignee-chip span:last-child`, and §1's hard rule that a
+   text node never takes its colour by accident); this rule used to say
+   `--accent` there instead, which was a deviation the comment claimed it was
+   not — and the deviation is what failed §7. Measured by §7's own method, over
+   the tint as composited rather than over the panel beneath it: `--accent` on
+   this label was **4.17:1 dark at rest and 3.74:1 on hover** (light was fine at
+   5.26 / 4.63), so the dark theme sat under the 4.5 floor at rest and further
+   under it exactly when the pointer was on the control. `--fg` measures 14.95:1
+   light / 13.78:1 dark at rest and 13.15 / 12.37 on hover, on grounds of
+   rgb(234,233,252) and rgb(31,32,50). It also stops this being the third
+   accent-marked control in one panel view and the only one where the accent is
+   the type colour: the border, the tint, the icon swap and the word carry the
+   state without it.
+
+   Placed after `.compact-button:hover` on purpose. That rule is (0,2,0) like
+   this one, so source order is what decides, and a watched issue whose button
+   turned plain on hover would be reporting a state change that is not
+   happening. */
+.watch-toggle.is-watching {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--fg);
+}
+
+/* Hover still has to say something. Without this, the two rules above leave a
+   pressed toggle inert under the cursor — `.secondary-button:hover` is earlier
+   in the file and loses. A deeper tint rather than a colour change, because the
+   tint is the state — and the label holds at `--fg` through the hover for the
+   reason above. */
+.watch-toggle.is-watching:hover {
+  background: color-mix(in oklab, var(--accent) 20%, transparent);
+  color: var(--fg);
+}
+
+/* The in-flight window, and it is `aria-disabled` rather than `disabled` so the
+   button keeps focus (see the component). No opacity with it: the global
+   `button:disabled` recipe fades a control to 0.58, and flashing that for the
+   ~200ms a toggle takes would be a flicker on every press. The label has
+   already flipped — that is the feedback — so the cursor is all this needs to
+   add.
+
+   The same window, and the same treatment, on the row's remove control while
+   that row's own `DELETE` is out. §4.21's rule is about a control disabled
+   *during a write*, which is what both of these are — a row that can never be
+   removed (a response that omitted `userId`) keeps a real `disabled`, because
+   nothing about it is in flight and the 0.58 fade is the honest thing to draw
+   for a control that will never come back. */
+.watch-toggle[aria-disabled="true"],
+.watcher-row .icon-button[aria-disabled="true"] {
+  cursor: progress;
+}
+
+/* "Add" is the third control that stopped using `disabled` (§4.21: Enter on a
+   button that disables itself drops focus to `<body>`), and the only one that
+   needs the fade back. Its `aria-disabled` is almost always the steady "nothing
+   is chosen yet" state rather than a 200ms window — the submit handler clears
+   the picker as it dispatches, so the write happens with the button already in
+   that state — and a steady unavailable control that looks available is the §4.1
+   gap `art-director` recorded against §4.20. This is `button:disabled`'s own
+   recipe, restored by hand for a button that may no longer carry the
+   attribute. */
+.watcher-form .secondary-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+/* The heading is in this group because the product focuses it: when the last
+   row leaves there is no neighbour to hand focus to, so it goes to `h3` and the
+   reader has to be shown where. Without the selector Chrome draws `outline:
+   auto`, which it derives from the **reader's system accent** — measured at
+   1440x900 as `rgb(229,151,0)` in light and `rgb(153,200,255)` in dark, two
+   colours that agree with neither `--accent` nor each other. §7 already names
+   exactly this failure in its TAS-185 entry, for the same reason: a ring that
+   is not "the wrong blue" but not bounded by §2 at all. */
+.watch-toggle:focus-visible,
+.issue-watchers h3:focus-visible,
+.watcher-row .icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The sentence beside the toggle, which is what makes the control's state
+   legible without decoding a tint. `--fg-2` rather than the `--fg-3` a meta row
+   takes: it is the only prose in this section and §7 keeps the meta exemption
+   for text that is genuinely secondary to something beside it. */
+.watcher-toggle-hint {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.watcher-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.watcher-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px 4px 0;
+}
+
+.watcher-name {
+  overflow: hidden;
+  flex: 1;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "(you)" is an annotation on the name, not part of it. */
+.watcher-you {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+
+/* A row with a write of its own out: an add the server has not confirmed, and —
+   since the removal stopped emptying the list before the answer — a row waiting
+   for its own `DELETE`. One treatment for both, because both mean the same
+   thing to a reader: this line is not settled yet. No pulse and no spinner
+   (§5.6); the row is already legible and only its remove control is held back.
+   Never `opacity: 0` — §3 forbids a starting frame that hides content, and this
+   element is on screen the whole time. */
+.watcher-row.is-pending .watcher-name {
+  color: var(--fg-2);
+}
+
 .comments {
   margin-top: 24px;
 }
@@ -4812,6 +5008,7 @@ button.attachment-open:hover:not(:disabled) {
 .issue-labels h3,
 .issue-links h3,
 .issue-attachments h3,
+.issue-watchers h3,
 .comments h3,
 .activity h3 {
   display: flex;
@@ -4821,6 +5018,24 @@ button.attachment-open:hover:not(:disabled) {
   color: var(--fg-2);
   font-size: 12px;
   font-weight: 600;
+}
+
+/* And the focus ring drawn on this heading further up hugs the words instead
+   of spanning the panel: 78.4 wide at 1440x900 rather than the section's full
+   435 — 425 when the panel's scrollbar is up, which is the same ten-pixel
+   wrinkle §7 records for this section's select. The heading is `display: flex`
+   from the shared section-heading recipe above, so `fit-content` changes
+   nothing but the box the outline follows. 6 is §2.5's small-element band,
+   which is what this box now is.
+
+   After that group and not before it, which is the whole reason this rule sits
+   here rather than beside the focus ring it belongs to: the two selectors have
+   equal specificity, so on any property they ever come to share the later one
+   wins. Today they share none and the order is invisible — which is exactly
+   when it is cheap to put a rule that *refines* a group behind it. */
+.issue-watchers h3 {
+  width: fit-content;
+  border-radius: 6px;
 }
 
 .comment-composer textarea,

@@ -31,6 +31,7 @@ import type {
   IssueLink,
   IssueSearchHit,
   IssueType,
+  IssueWatchers,
   IssueWithHistory,
   Label,
   Notification,
@@ -41,8 +42,10 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  UnwatchIssueResult,
   User,
   UserStatusChange,
+  WatchIssueResult,
   Workflow,
 } from "../domain/types";
 
@@ -237,6 +240,55 @@ export class HybridTaskaApi implements TaskaApi {
 
   removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
     return this.live.removeIssueLabel(projectId, issueId, labelId);
+  }
+
+  /**
+   * All five delegated whole. Nothing here is synthesisable: a subscription is
+   * server state, and the five routes are **measured** on the deployed gateway
+   * rather than inferred from the backend PR that added them — which is the
+   * standard this file is held to, since its whole job is saying what is real
+   * and what is stood in for. Probed on 2026-09-09 with an invalid uuid and no
+   * credentials: `GET …/watchers`, both `…/watchers/me` verbs and
+   * `DELETE …/watchers/{userId}` answer `400 INVALID_ARGUMENT` (the path
+   * matched and the argument was rejected), `POST …/watchers` answers
+   * `415 UNSUPPORTED_MEDIA_TYPE` (matched, and reached body parsing), and a
+   * `…/watchers-nope` control answers the static-resource `404` an unmapped
+   * path gets here. So there is no gap for this class to stand in.
+   *
+   * The compensation it *does* carry reaches this family sideways and it is
+   * worth naming, because it is the thing a reader will wonder about. A watcher
+   * row names a person by `userId` alone, and the panel resolves that through
+   * `listMembers` above — which here answers with the current user and nobody
+   * else. So against the deployed stand a watcher who is not the reader draws
+   * as "Unknown", exactly as the reporter line and an attachment's byline
+   * already do. That is the member-read gap (TAS-137) showing through one more
+   * surface, not a second defect, and it is the reason this class must not
+   * invent a name: a synthesised display name would make one screen look
+   * healthy while the three beside it stayed honest.
+   *
+   * `isProjectAdmin` is `true` for everyone when `VITE_TASKA_ASSUME_PROJECT_ADMIN`
+   * is on, so the panel offers the two ADMIN controls to every caller on the
+   * stand and the gateway refuses them for anybody who is not one. That is the
+   * documented shape of this flag (docs/ai/API-DIVERGENCE.md), not a new risk.
+   */
+  listIssueWatchers(projectId: string, issueId: string): Promise<IssueWatchers> {
+    return this.live.listIssueWatchers(projectId, issueId);
+  }
+
+  watchIssue(projectId: string, issueId: string): Promise<WatchIssueResult> {
+    return this.live.watchIssue(projectId, issueId);
+  }
+
+  unwatchIssue(projectId: string, issueId: string): Promise<UnwatchIssueResult> {
+    return this.live.unwatchIssue(projectId, issueId);
+  }
+
+  addIssueWatcher(projectId: string, issueId: string, userId: string): Promise<WatchIssueResult> {
+    return this.live.addIssueWatcher(projectId, issueId, userId);
+  }
+
+  removeIssueWatcher(projectId: string, issueId: string, userId: string): Promise<UnwatchIssueResult> {
+    return this.live.removeIssueWatcher(projectId, issueId, userId);
   }
 
   /**

@@ -511,6 +511,81 @@ export interface IssueLink {
   createdAt: string;
 }
 
+/**
+ * One subscription row — `IssueWatcherResponseDto`.
+ *
+ * **It names nobody.** The only thing here that identifies a person is
+ * `userId`, exactly as with `Issue.assigneeId` and `IssueAttachment.uploadedBy`,
+ * and it is resolved the same way: through the `userById` map the board builds
+ * from `GET /projects/{id}/members`. That read is a 405 on the deployed gateway
+ * (TAS-137), so a watcher degrades to "Unknown" in `rest` mode precisely as the
+ * reporter line already does — one mechanism, one failure, no second invention.
+ *
+ * `createdBy` is not `userId`: a project ADMIN may subscribe somebody else
+ * through `POST .../watchers`, and then the two differ.
+ */
+export interface IssueWatcher {
+  /** The subscription's own id. Never the user's. */
+  id: string;
+  issueId: string;
+  projectId: string;
+  /** The subscribed person. */
+  userId: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+/**
+ * `ListIssueWatchersResponseDto` — and the two fields are kept apart on purpose.
+ *
+ * `totalCount` is the server's own answer to "how many", stated beside the
+ * array rather than derived from it, and it is what the UI prints. The array is
+ * what the UI lists. Reading the count off `watchers.length` would be this
+ * side deciding a number the server already sent, and the route takes no paging
+ * parameter, so if the two ever disagree there is nothing the client could ask
+ * to reconcile them — printing the field the contract calls the total is the
+ * only reading that cannot be wrong on purpose.
+ *
+ * `null` means the server did not send it. No field of this DTO is `required`,
+ * so an answer with only `watchers` is legal, and "the server did not say" must
+ * not arrive at a screen looking like the number zero.
+ */
+export interface IssueWatchers {
+  watchers: IssueWatcher[];
+  totalCount: number | null;
+}
+
+/** `WatchIssueResponseDto` — the row that now exists, and the count after it. */
+export interface WatchIssueResult {
+  /**
+   * `null` when the response omitted it. Nothing in the UI needs the row — the
+   * caller knows who was subscribed, because it asked — so this is carried for
+   * completeness rather than read.
+   */
+  watcher: IssueWatcher | null;
+  /** The count after the write, `null` when the server did not state one. */
+  watchersCount: number | null;
+}
+
+/**
+ * `UnwatchIssueResponseDto`, and `removed` is the field this whole type exists
+ * for.
+ *
+ * `removed: false` is a **successful** response saying that nothing was
+ * deleted, because there was no subscription to delete. The end state is the
+ * one that was asked for either way, so this is not a failure and must not be
+ * shown as one — but it is also not the change the reader thinks they just
+ * made, and flattening the two is how a UI comes to report events that did not
+ * happen (the same distinction TAS-194 drew for the outbox retry).
+ */
+export interface UnwatchIssueResult {
+  issueId: string;
+  /** Whether a subscription was actually deleted, as opposed to never existing. */
+  removed: boolean;
+  /** The count after the write, `null` when the server did not state one. */
+  watchersCount: number | null;
+}
+
 export interface IssueComment {
   id: string;
   issueId: string;

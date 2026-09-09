@@ -2273,4 +2273,172 @@ describe("MockTaskaApi", () => {
       await expect(api.listAttachments(other.id, issue.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
   });
+
+  describe("watchers", () => {
+    const openIssue = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+
+    beforeEach(async () => {
+      await api.login({ email: "anna@example.com", password: "anything" });
+    });
+
+    it("answers with the rows and with its own count, and sends no name", async () => {
+      const issue = await openIssue("TAS-101");
+      const answer = await api.listIssueWatchers(project.id, issue.id);
+
+      expect(answer.totalCount).toBe(3);
+      expect(answer.watchers).toHaveLength(3);
+      // `IssueWatcherResponseDto` has six fields and none of them is a name.
+      // A mock that denormalised one would let a component be written against
+      // a field the gateway does not send.
+      expect(Object.keys(answer.watchers[0]).sort()).toEqual([
+        "createdAt",
+        "createdBy",
+        "id",
+        "issueId",
+        "projectId",
+        "userId",
+      ]);
+      // Anna subscribed Sofia, so at least one row's author is not its subject.
+      expect(answer.watchers.some((watcher) => watcher.createdBy !== watcher.userId)).toBe(true);
+    });
+
+    it("seeds a watcher who is not a member of the project, so the unnamed row is reachable", async () => {
+      // Priya belongs to WEB and MOB, not to TAS. `GET /projects/{TAS}/members`
+      // therefore cannot name her, which is the state *every* watcher is in
+      // against the deployed gateway (TAS-137).
+      const issue = await openIssue("TAS-103");
+      const { watchers } = await api.listIssueWatchers(project.id, issue.id);
+      const members = new Set((await api.listMembers(project.id)).map((member) => member.userId));
+
+      expect(watchers).toHaveLength(2);
+      expect(watchers.some((watcher) => !members.has(watcher.userId))).toBe(true);
+    });
+
+    it("subscribes the signed-in user and says how many are watching afterwards", async () => {
+      const issue = await openIssue("TAS-102");
+      const me = await api.getCurrentUser();
+
+      const result = await api.watchIssue(project.id, issue.id);
+
+      expect(result.watcher?.userId).toBe(me.id);
+      expect(result.watchersCount).toBe(1);
+      const { watchers, totalCount } = await api.listIssueWatchers(project.id, issue.id);
+      expect(watchers.map((watcher) => watcher.userId)).toEqual([me.id]);
+      expect(totalCount).toBe(1);
+    });
+
+    it("is idempotent on a second watch, because the response has no flag to say otherwise", async () => {
+      const issue = await openIssue("TAS-102");
+
+      const first = await api.watchIssue(project.id, issue.id);
+      const second = await api.watchIssue(project.id, issue.id);
+
+      // The same subscription, not a second one. `WatchIssueResponseDto` has no
+      // sibling of `removed` — nothing in it can report "already watching" — so
+      // a route that created a duplicate would have no way to say so.
+      expect(second.watcher?.id).toBe(first.watcher?.id);
+      expect(second.watchersCount).toBe(1);
+    });
+
+    it("reports removed:true once and removed:false after, and neither is a failure", async () => {
+      const issue = await openIssue("TAS-101");
+
+      const first = await api.unwatchIssue(project.id, issue.id);
+      expect(first).toMatchObject({ issueId: issue.id, removed: true, watchersCount: 2 });
+
+      // The end state is the one that was asked for, so this is a 200 rather
+      // than a 404 — and `removed` is how the caller learns nothing happened.
+      const second = await api.unwatchIssue(project.id, issue.id);
+      expect(second).toMatchObject({ issueId: issue.id, removed: false, watchersCount: 2 });
+    });
+
+    it("lets a project ADMIN subscribe somebody else, recording who did it", async () => {
+      const issue = await openIssue("TAS-102");
+      const me = await api.getCurrentUser();
+      const other = (await api.listMembers(project.id)).find((member) => member.userId !== me.id);
+      expect(other).toBeDefined();
+      if (!other) return;
+
+      const result = await api.addIssueWatcher(project.id, issue.id, other.userId);
+
+      expect(result.watcher).toMatchObject({ userId: other.userId, createdBy: me.id });
+      expect(result.watchersCount).toBe(1);
+    });
+
+    it("refuses both ADMIN routes for a MEMBER, and leaves the me pair open to them", async () => {
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const issue = await openIssue("TAS-101");
+      const me = await api.getCurrentUser();
+      const sofia = (await api.listIssueWatchers(project.id, issue.id)).watchers.find(
+        (watcher) => watcher.userId !== me.id,
+      );
+      expect(sofia).toBeDefined();
+      if (!sofia) return;
+
+      await expect(api.addIssueWatcher(project.id, issue.id, me.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      await expect(api.removeIssueWatcher(project.id, issue.id, sofia.userId)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+
+      // The contract puts no role on `…/watchers/me`, so neither does this.
+      await expect(api.unwatchIssue(project.id, issue.id)).resolves.toMatchObject({ removed: true });
+      await expect(api.watchIssue(project.id, issue.id)).resolves.toMatchObject({ watchersCount: 3 });
+    });
+
+    it("lets a VIEWER watch an issue they can read", async () => {
+      // `listProjects` answers a non-member nothing, so Mobile has to be found
+      // as somebody who belongs to it before Anna — who does not — can be the
+      // VIEWER of it. The same two-step every other cross-project case here
+      // uses. No seeded member is a VIEWER anywhere, so a non-member stands in
+      // for one (docs/ai/API-DIVERGENCE.md).
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+      const { items } = await api.listIssues(mobile.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === "MOB-6");
+      expect(issue).toBeDefined();
+      if (!issue) return;
+
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.getMembership(mobile.id)).resolves.toMatchObject({ role: "VIEWER" });
+      // The contract puts no role on `…/watchers/me`, so a reader who can open
+      // the issue may subscribe to it — this is the one control in the panel a
+      // VIEWER keeps.
+      await expect(api.watchIssue(mobile.id, issue.id)).resolves.toMatchObject({ watchersCount: 1 });
+      // And still cannot touch anybody else's subscription.
+      await expect(api.addIssueWatcher(mobile.id, issue.id, "anything")).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+    });
+
+    it("answers an ADMIN removal of somebody who was never watching, rather than refusing it", async () => {
+      const issue = await openIssue("TAS-102");
+      const tom = (await api.listMembers(project.id)).at(-1);
+      expect(tom).toBeDefined();
+      if (!tom) return;
+
+      // Not a 404. The whole point of `removed` is that this case is a success
+      // that changed nothing — and a row belonging to a deleted account is
+      // exactly the one an ADMIN has to be able to clear.
+      await expect(api.removeIssueWatcher(project.id, issue.id, tom.userId)).resolves.toMatchObject({
+        removed: false,
+        watchersCount: 0,
+      });
+    });
+
+    it("refuses to subscribe a user this deployment has never heard of", async () => {
+      const issue = await openIssue("TAS-102");
+      await expect(
+        api.addIssueWatcher(project.id, issue.id, "00000000-0000-4000-8000-000000000000"),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+  });
 });

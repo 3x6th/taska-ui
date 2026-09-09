@@ -72,6 +72,129 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   a change that leaves the button three pixels away from it still broken.
   `ThemeToggle.tsx:8` already ships the `aria-label` + matching `title` pair, so
   this is an in-repo precedent rather than a reading of the spec.
+- **§4.1 documents a disabled recipe the product does not use**
+  (`art-director`, 2026-09-09, TAS-193 verdict). §4.1 says `opacity: .5` and
+  `pointer-events: none`; `styles.css:108` ships `opacity: .58` and
+  `cursor: not-allowed`, and every disabled control in the product follows the
+  code. TAS-193's new rule copies the code and its comment calls that
+  "`button:disabled`'s own recipe" — correctly, but the document outranks the
+  code, so it is the document that is wrong. One line in §4.1 rather than a
+  product-wide restyle.
+- **The read-error slot in the watchers section has no live region, deliberately**
+  (`art-director`, 2026-09-09, TAS-193). Giving it one would be a *second*
+  region in the block and would mount with its content — the shape §7's TAS-179
+  entry already records as a defect. So a read failure is visible and not
+  announced. Recorded rather than fixed, because fixing it properly means giving
+  the panel one region for all its sections, which is a bigger change than any
+  one section should make.
+- **Optimistic removal reflows a list under the cursor, in four panel sections**
+  (`release-reviewer`, 2026-09-08, TAS-193 verdict). `onMutate` filters the row
+  out, the list closes the gap within a frame, and the next row's control arrives
+  under the pointer before the second click of an ordinary double-click.
+  Measured on watchers before the fix: **three watchers to one** at 120, 200 and
+  350ms between clicks — two real `DELETE`s, no confirmation, no undo, nothing
+  said. Labels, links and attachments share the shape (`removeLabel` at
+  `BoardScreen.tsx:1860` is the same code).
+
+  TAS-193 narrowed it for watchers by keeping the row mounted, `is-pending`, and
+  deferring the filter to `onSuccess`: 120ms now costs one row. **200 and 350ms
+  still cost two**, and that residual is the server's own latency — once the
+  `DELETE` answers, the list reflows honestly and a later press lands on the
+  neighbour legitimately. Closing it needs undo, a confirmation, or holding the
+  layout until the pointer leaves, which is a product decision rather than a
+  component one, and it should be taken for all four sections at once rather
+  than four times.
+- **`watcherFailureText`'s fallback cannot render against any implementation**
+  (`frontend-builder`, 2026-09-09, TAS-193). It returns the server's message
+  whenever there is one, and no client ships an error without one:
+  `RestTaskaApi` falls back to `Request failed with {status}`, and
+  `MockApiError`'s constructor requires a string across fifty call sites, none
+  of them empty. So two of the three watcher sentences, and the "only a project
+  admin" 403 sentence beside them, can only render for a message-less error
+  nothing constructs — only the `removed: false` notice, which bypasses the
+  helper, reaches a browser. This is the mirror of the `gatewayWords` dead
+  branch already documented in `WatcherNoteDetail`, and it is one question, not
+  two: what a notice helper should do when the server's words are the whole
+  message. A design call about the helper rather than a wording fix in one
+  section.
+- **A third word for one state, just outside the watchers section**
+  (`frontend-builder`, 2026-09-09, TAS-193). TAS-193 unified "Unnamed member"
+  and "Unknown" inside its own section; the assignee chip says **"User"** for a
+  member with no user summary — same condition, third word, one panel. Worth
+  doing when the panel's naming is next opened, and worth doing as a set: per
+  the contract note in `API-DIVERGENCE.md`, this state is the DTO's default
+  rather than an edge, so whichever word wins will be the one most readers see
+  if the member read ever ships as written.
+
+  **And the word is only half of it** (`art-director`, 2026-09-09). The same
+  surfaces announce "Unassigned" beside whatever word they print, because they
+  pass no `label` to `Avatar`: `AssigneeChip` computes as "Unassigned User" and
+  the None chip as "Unassigned None", while the reporter line and the comment
+  byline sit beside "Unknown" with the same silent dashed circle. That is the
+  defect TAS-193 closed in the watcher row, three more times over. One `label`
+  prop each. Fix the word and the announcement together, or the next pass mends
+  the visible half and leaves the audible one.
+- **The mock states a watcher count and imposes an order the contract does not
+  promise** (`api-contract-guard`, 2026-09-09, TAS-193 verdict).
+  `totalCount: watchers.length` means the mock always answers with a count, so
+  the `null` branch the UI carefully protects is reachable only in `rest` mode
+  and in unit tests — worth knowing when reading an e2e run as evidence. And
+  `.sort(byCreatedAt)` gives an ascending order the gateway does not guarantee,
+  the same shape already recorded for attachment lists after TAS-190. Nothing in
+  the UI depends on the order, so this is a note rather than work.
+- **The watcher writes are asymmetric: `removed` exists, `added` does not**
+  (`frontend-builder`, 2026-09-08, TAS-193). `UnwatchIssueResponseDto` carries
+  `removed: boolean`, so an unwatch that found nothing can be reported honestly.
+  `WatchIssueResponseDto` has no counterpart, so a second watch is
+  indistinguishable from a first and the mock is idempotent on that reading. A
+  contract asymmetry rather than ours; worth raising with the backend when
+  something else on that surface moves.
+- **The watcher picker outweighs the control the section exists for**
+  (`art-director`, 2026-09-08, TAS-193 verdict). The heaviest object in a block
+  whose stated point is that watching is what *any* reader can do is a
+  full-width `--surface-2` slab only a project ADMIN can use, sitting between
+  the toggle and the list — 63px of the block's 259. On the stand, where
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN` shows it to everyone, every reader pays it.
+  Collapsing it behind a compact "Add a watcher" button that reveals the select
+  would recover the space and demote an ADMIN control below the reader's.
+  Explicitly taste, not a defect; the section order matches labels and links and
+  is not what is being questioned.
+- **"Am I watching" is derived from the list, because the contract has no
+  per-user read** (`frontend-builder`, 2026-09-08, TAS-193). There is no
+  `GET .../watchers/me`, so the toggle's state comes from finding yourself in
+  the list — correct exactly as long as the list is complete. And it has no
+  paging parameter at all, so if the server ever truncated it, the truncation
+  would be both undetectable and unpageable, and the toggle would quietly read
+  "not watching" for someone who is. Not observed; recorded because the
+  mechanism has no way to notice.
+- **Watching produces no journal entry and no notification this build can name**
+  (`frontend-builder`, 2026-09-08, TAS-193). `IssueEventType` and
+  `NotificationType` in `src/domain/types.ts` have no watcher member, so the
+  watch writes deliberately do **not** invalidate the issue query — doing so
+  would assert the server journalled something it never mentions — and no copy
+  promises a notification. The backend's TAS-123 is the story that would make
+  watchers mean something; until it lands, watching is a list membership and
+  nothing else, which the UI should keep not over-promising.
+- **The two watcher notice tones have no browser evidence and cannot get any
+  from the mock UI** (`frontend-builder`, 2026-09-08, TAS-193). The
+  `removed: false` info line and the ADMIN 403 line are proven in jsdom only:
+  the UI keeps the toggle in sync with the list, so an unwatch never finds
+  nothing to remove, and the mock's Anna is ADMIN, so the ADMIN routes never
+  refuse her. Reachable against a real gateway with a second client, or by
+  adding a mock trigger of the `MOCK_ATTACHMENT_TRIGGERS` kind — which TAS-193
+  did not build, because the story did not ask for it.
+
+  **One correction to how this was first written** (`art-director`, 2026-09-09):
+  it said real evidence needs "a gateway that refuses". That is stronger than
+  this repository's own record. `DESIGN.md` §4.21 states that the stand runs
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN`, which shows the ADMIN controls to everyone
+  **precisely so that a 403 is reachable by ordinary clicking** — so what is
+  missing is a run against the stand, not a special gateway. The screenshots
+  that exist for these tones are the stylesheet drawn onto the live document
+  (the `admin-console.spec.ts` technique, labelled as such in the script and the
+  spec), which covers the colour and type of a line whose recipe is shared by
+  selector with one the admin console renders for real. A thin, correctly
+  labelled gap — and thinner than the first version of this line implied.
 - **The Users section announces a name, and two accounts can share one**
   (`art-director`, 2026-09-08, TAS-194 verdict). `AdminUsersSection.tsx:341`
   announces `${personLabel(user)} is now ${status}.`, and `personLabel` prefers
