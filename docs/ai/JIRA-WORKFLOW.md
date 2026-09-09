@@ -45,7 +45,7 @@ states are not.
 | [TAS-192](https://jira.ozero.dev/browse/TAS-192) | `.form-error` measures 3.17:1 in ten places; make the TAS-190 notice the product's error box | To Do | not started |
 | [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | In Progress | decided not to build a method yet, and why — `API-DIVERGENCE.md`, "The board route is declared, unimplemented, and narrower than the board it is named for" (PR #47) |
 | [TAS-196](https://jira.ozero.dev/browse/TAS-196) | The three admin writes are deployed; retire the undeployed-route compensation and refresh the contract snapshot | Done | merged (PR #50) |
-| [TAS-193](https://jira.ozero.dev/browse/TAS-193) | Issue watchers — the `me` pair, the count and the list; the two project-`ADMIN` routes deferred to TAS-137 | To Do | not started |
+| [TAS-193](https://jira.ozero.dev/browse/TAS-193) | Issue watchers — the toggle, the count, the list **and** the two project-`ADMIN` routes the story had deferred | Done | merged (PR #56) |
 | [TAS-194](https://jira.ozero.dev/browse/TAS-194) | Retry an outbox event from Events, and retire the TAS-105 summary compensation with it | Done | merged (PR #54) |
 | [TAS-200](https://jira.ozero.dev/browse/TAS-200) | The summary calls an event stuck five minutes before retry will accept it | To Do | backend ask, filed from TAS-194 |
 | [TAS-195](https://jira.ozero.dev/browse/TAS-195) | Drop the N+1 hydration in `listIssues` — the gateway's list DTO is whole issues now | Done | merged (PR #52) |
@@ -307,6 +307,47 @@ criteria is the one that most needs the record.
   findings on TAS-125, three of which its reviewers had not raised.
 - The story stays open with the blocking condition named, and
   `npm run contract:pins` goes loud when PR #118 moves or merges.
+
+### TAS-193 — watchers, and the deferral that did not survive being checked
+
+- **The story deferred half the feature for a reason that was wrong twice over,
+  and the brief said so instead of restating it.** Removing someone else's
+  subscription needs no picker — the route takes a `userId` every row already
+  carries. Adding one draws from the pool the assignee picker uses. And the
+  asymmetry that settled it: in `rest` the member read is a 405, the assignee
+  chips render nothing and Reporter says Unknown, while the ADMIN remove still
+  works, because it needs no name. **Watchers degrade less than the assignee
+  they were compared to.**
+- **What the roles found.** The pressed toggle's label was `--accent` on an
+  accent tint — 4.17:1 dark, below §7's floor — while §4.21, written for this
+  story, claimed it used the assignee chip's recipe; the chip sets `--fg`. An
+  ordinary double-click on a row's ✕ unsubscribed **two people**. The section
+  announced the `aria-disabled` rule and broke it twice inside itself. The
+  heading made a focus target drew `outline: auto` from the reader's system
+  accent — orange, in an indigo product.
+- **A sentence that was false and could not be made true.** Hybrid's member read
+  returns one element and *succeeds*, so §5.6's boundary — only a successful
+  read may claim there is nobody — cannot tell a synthesis from an answer. The
+  rule that came out of it is in `API-DIVERGENCE.md` and outlives watchers: **a
+  synthesised read is safe to draw from and unsafe to conclude from.** Anything
+  built on that list may offer and may not assert.
+- **Three guards were correct and held by nothing.** Deleting the toggle's
+  in-flight guard, or either `null`-count guard, passed the entire suite. All
+  three are pinned now. This is the third story running where a reviewer's
+  mutation found a guard nobody tested.
+- **The closing question paid a second time.** Asked before merge whether
+  anything should have been written differently, the builder found that this
+  pass had made a defect *louder*: the row read "You" and its button said
+  "Remove yourself from watchers" while the sentence about that person said
+  "Unknown is still watching this issue". Row, control and sentence are taught
+  together now. **Ask it every time — a reviewer checks what is written, and the
+  builder knows where it hesitated.**
+- Not fixed and named in the PR rather than implied: the double-click residual
+  at 200 and 350ms, which is the server's own latency and shared by four panel
+  sections; four touch targets under 44 at 390, now in §7's list with numbers;
+  the same "Unassigned" announcement in three more places; and
+  `watcherFailureText`'s fallback being unreachable against every
+  implementation.
 
 ### TAS-194 — the retry, and the six rounds that were not about the retry
 
