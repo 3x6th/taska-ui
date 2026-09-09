@@ -139,10 +139,9 @@ export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               <span className="admin-section-name">{section.label}</span>
             </h1>
             {/* Not a request state and not decoration: it says this section
-                only reads, and it has already left one — Users writes since
-                TAS-186 and carries none — while TAS-194 will take it off
-                Events once the retry write lands there (the gateway already
-                serves that route; backend TAS-106 shipped it). That is why it
+                only reads, and two sections have now left it — Users writes
+                since TAS-186, Events since TAS-194 — while Data still carries
+                it. That they leave one at a time is exactly why it
                 is a field on the section rather than a fixture of the shell. */}
             {section.readOnly ? <p className="admin-readonly">read-only</p> : null}
           </header>

@@ -35,6 +35,15 @@ const {
   failRows,
   failRow,
   failSummary,
+  holdSummary,
+  releaseSummary,
+  failRetry,
+  lastRetry,
+  summaryReads,
+  setRetryStatus,
+  setRetryMovesRow,
+  holdRetry,
+  releaseRetry,
   setMetaMismatch,
   lastRowsQuery,
 } = vi.hoisted(() => {
@@ -51,6 +60,16 @@ const {
     rowsFailure?: Error;
     rowFailure?: Error;
     summaryFailure?: Error;
+    summaryReads?: number;
+    summaryGate?: Promise<void>;
+    summaryRelease?: () => void;
+    retryFailure?: Error;
+    retryStatus?: string;
+    retryMovesRow?: boolean;
+    movedStatuses?: Record<string, string>;
+    retryGate?: Promise<void>;
+    retryRelease?: () => void;
+    retryCall?: { service: string; eventId: string; reason: string };
     metaMismatch?: boolean;
     rowsQuery?: AdminRowsQuery;
   } = {};
@@ -293,8 +312,41 @@ const {
       return row;
     },
     getProblematicOutboxSummary: async () => {
+      // Counted, not just served: a refetch is invisible against a static
+      // summary, and two of this section's rules — the write asks the list
+      // again, and so does a dialog dismissed over a write in flight — are
+      // *only* observable as another read. Counted when the read goes out and
+      // gated after, so a held summary still proves the refetch was asked for.
+      state.summaryReads = (state.summaryReads ?? 0) + 1;
+      if (state.summaryGate) await state.summaryGate;
       if (state.summaryFailure) throw state.summaryFailure;
-      return summary;
+      const moved = state.movedStatuses;
+      if (!moved) return summary;
+      // A retry that actually moved a row, the way `MockTaskaApi` does: the
+      // event stays in the list — an old `NEW` row is still overdue — and it is
+      // the *status* that changes underneath it. See `setRetryMovesRow`.
+      return {
+        ...summary,
+        events: summary.events.map((event) => {
+          const status = moved[event.id];
+          return status ? { ...event, status } : event;
+        }),
+      };
+    },
+    retryOutboxEvent: async (service: string, eventId: string, reason: string) => {
+      state.retryCall = { service, eventId, reason };
+      if (state.retryGate) await state.retryGate;
+      if (state.retryFailure) throw state.retryFailure;
+      if (state.retryMovesRow) {
+        state.movedStatuses = { ...(state.movedStatuses ?? {}), [eventId]: state.retryStatus ?? "NEW" };
+      }
+      // What the server answers: the state read back off the row, with the
+      // attempt count unchanged — the retry does not reset it. `NEW` is what
+      // this endpoint answers today, and `setRetryStatus` is how a test says
+      // "and if it ever answered something else" — the screen quotes the field
+      // rather than repeating the word.
+      const event = summary.events.find((candidate) => candidate.id === eventId);
+      return { eventId, status: state.retryStatus ?? "NEW", attempts: event?.attempts ?? null };
     },
   };
 
@@ -334,9 +386,83 @@ const {
     failRow: (failure?: Error) => {
       state.rowFailure = failure;
     },
-    /** Fail the Events summary — the one endpoint the deployed gateway cannot serve yet. */
+    /** Fail the Events summary read. */
     failSummary: (failure?: Error) => {
       state.summaryFailure = failure;
+    },
+    /**
+     * Keep the Problems summary pending until `releaseSummary()`.
+     *
+     * The window it opens is the one a write cannot avoid: the answer to the
+     * retry has arrived and the read it set off has not, so the row on screen is
+     * still the one from before the write. In production that window is a whole
+     * round trip, and what an operator does inside it is the difference between
+     * a focus rescue and a focus steal.
+     */
+    holdSummary: () => {
+      state.summaryGate = new Promise<void>((resolve) => {
+        state.summaryRelease = resolve;
+      });
+    },
+    releaseSummary: () => {
+      state.summaryRelease?.();
+      state.summaryGate = undefined;
+      state.summaryRelease = undefined;
+    },
+    /**
+     * Fail the Events retry write, which keeps its dialog open with the answer.
+     * Also forgets the last call: this is the per-test reset for that endpoint,
+     * and a recorded call surviving into the next test would let an assertion
+     * that nothing was written pass on the previous test's evidence.
+     */
+    failRetry: (failure?: Error) => {
+      state.retryFailure = failure;
+      state.retryCall = undefined;
+    },
+    /** What the last retry actually asked the server for. */
+    lastRetry: () => state.retryCall,
+    /** How many times the Problems summary has been read, refetches included. */
+    summaryReads: () => state.summaryReads ?? 0,
+    /**
+     * What the retry endpoint answers as the row's new state. `NEW` unless a
+     * test says otherwise — the point of the knob is that the screen has to
+     * quote this and not the word `NEW`.
+     */
+    setRetryStatus: (status?: string) => {
+      state.retryStatus = status;
+    },
+    /**
+     * Whether a successful retry **changes the row the next read returns**, as
+     * `MockTaskaApi` does: it sets `status` to `NEW` synchronously and the
+     * summary is derived from those rows, so the refetch a retry sets off comes
+     * back with a row `canRetryOutboxEvent` refuses — and the Retry button that
+     * opened the dialog is removed.
+     *
+     * Off by default, and that default is load-bearing rather than laziness: a
+     * static summary is what lets the successful path assert that focus moves to
+     * the list *unconditionally*, with the trigger still on screen. A rule that
+     * only fires when the button happens to have gone is a rule nobody can read
+     * off the code.
+     *
+     * On, it is the one thing that makes the removal — and so the focus loss
+     * that follows it — reachable from a test at all. An earlier backlog line
+     * called that loss unreproducible on a mock; `MockTaskaApi` reproduces it
+     * in full, and this fake had simply never been asked to.
+     */
+    setRetryMovesRow: (on: boolean) => {
+      state.retryMovesRow = on;
+      state.movedStatuses = undefined;
+    },
+    /** Keep the retry pending until `releaseRetry()`, the only way to observe a dismissal over one. */
+    holdRetry: () => {
+      state.retryGate = new Promise<void>((resolve) => {
+        state.retryRelease = resolve;
+      });
+    },
+    releaseRetry: () => {
+      state.retryRelease?.();
+      state.retryGate = undefined;
+      state.retryRelease = undefined;
     },
     setMetaMismatch: (on: boolean) => {
       state.metaMismatch = on;
@@ -415,6 +541,15 @@ function renderAdmin(at = "/admin") {
 }
 
 const currentLocation = () => screen.getByTestId("location").textContent;
+
+/**
+ * One macrotask. `await act(async () => …)` drains microtasks, which is enough
+ * for anything that hangs off a resolved promise — but query-core delivers
+ * observer notifications through `setTimeout(…, 0)`, so a state a component
+ * only learns about that way (a mutation going pending, most of all) is not on
+ * screen until a timer has fired.
+ */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const admin: User = { ...anna, globalRole: "GLOBAL_ADMIN" };
 
@@ -1529,29 +1664,798 @@ describe("/admin/events problems", () => {
     expect(uncategorised).toHaveAttribute("title", "Something this build has never been told about");
   });
 
-  // The deployed gateway does not have this path and does not answer 404 for
-  // it: it reads `outbox` as a service key and rejects that. Measured
-  // 2026-08-25 — docs/ai/API-DIVERGENCE.md.
-  it("reads the gateway's unknown-service rejection as 'not deployed yet'", async () => {
+  /**
+   * Until TAS-194 there was a case here for a sixth reading of this failure:
+   * the deployed gateway did not have the summary's path, took `outbox` for a
+   * service key and answered `400 INVALID_ARGUMENT "Unknown service: outbox"`,
+   * which the view drew as a quiet "not deployed yet" note linking to TAS-105.
+   * That gateway stopped existing on 2026-08-27 and the note came out with this
+   * story. What is pinned now is that the same shape gets the ordinary taxonomy
+   * — the guarantee the deleted branch was carved out of.
+   */
+  it("treats a rejection from the summary as a rejection, with nothing carved out of it", async () => {
     failSummary(Object.assign(new Error("Unknown service: outbox"), { code: "INVALID_ARGUMENT", status: 400 }));
     renderAdmin("/admin/events");
 
-    expect(await screen.findByText(/does not serve the problems summary yet/)).toBeVisible();
-    expect(screen.getByRole("link", { name: "TAS-105" })).toHaveAttribute(
-      "href",
-      "https://jira.ozero.dev/browse/TAS-105",
-    );
-    // Quiet: this is the calendar, not a fault, and nothing here is broken.
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/would not accept this request/i);
+    expect(screen.queryByText(/does not serve the problems summary yet/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "TAS-105" })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Retrying a stuck outbox event (TAS-194) — the Events section's one write, and
+ * the second write in the whole product.
+ *
+ * The fake's summary carries exactly the two rows this needs: a `FAILED` event
+ * on `auth`, which may be retried, and one whose status this build has never
+ * heard of, which may not. Everything below is about the difference between
+ * those two and about what the dialog does with an answer.
+ */
+describe("admin events, retrying an event", () => {
+  beforeEach(() => {
+    setCurrentUser(admin);
+    failSummary(undefined);
+    releaseSummary();
+    failRetry(undefined);
+    setRetryStatus(undefined);
+    setRetryMovesRow(false);
+    releaseRetry();
   });
 
-  it("still treats every other rejection as a rejection", async () => {
-    // Same code, different sentence — which is the point of pinning the
-    // sentence: a real INVALID_ARGUMENT from this endpoint must not be dressed
-    // up as a missing deployment.
-    failSummary(Object.assign(new Error("Unknown service: nope"), { code: "INVALID_ARGUMENT", status: 400 }));
+  const openDialog = async () => {
+    renderAdmin("/admin/events");
+    const button = await screen.findByRole("button", { name: "Retry event e1" });
+    fireEvent.click(button);
+    return button;
+  };
+
+  /**
+   * One button or none, the Users section's rule. `e2` carries `QUARANTINED`:
+   * the server would refuse it, and a control certain to be refused is worse
+   * than no control (TAS-173, DESIGN.md §5.8).
+   */
+  it("offers a retry on the failed event and nothing on the one it cannot read", async () => {
     renderAdmin("/admin/events");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/would not accept this request/i);
+    expect(await screen.findByRole("button", { name: "Retry event e1" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry event e2" })).not.toBeInTheDocument();
+    // Both rows still open, so the absent button costs the row nothing else.
+    expect(screen.getAllByRole("link", { name: /^Open event / })).toHaveLength(2);
+  });
+
+  /**
+   * The dialog says what will happen before it asks. Three facts the reader
+   * cannot get anywhere else: which event, what it becomes, and that the attempt
+   * count is *not* reset — the one thing about this endpoint an operator is
+   * most likely to assume and be wrong about.
+   */
+  it("names the event, the transition and what the retry does not change", async () => {
+    await openDialog();
+
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    expect(within(dialog).getByText("user.registered")).toBeVisible();
+    expect(within(dialog).getByText("auth.outbox_events")).toBeVisible();
+    expect(within(dialog).getByText("e1")).toBeVisible();
+    expect(within(dialog).getByText("FAILED → NEW")).toBeVisible();
+    expect(within(dialog).getByText(/attempt count is/i)).toHaveTextContent(/not.*reset/i);
+  });
+
+  /**
+   * The reason is required and never reaches the wire blank: the server answers
+   * 400 for it and both implementations refuse it first, so the only place it
+   * can be discovered is the dialog. The explanation lives beside the field
+   * because a disabled button cannot take focus and its title would never be
+   * read.
+   */
+  it("keeps the button off until a reason is typed, and says why beside the field", async () => {
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    const confirm = within(dialog).getByRole("button", { name: "Retry" });
+    const field = within(dialog).getByLabelText("Reason");
+
+    expect(confirm).toBeDisabled();
+    expect(within(dialog).getByText(/A reason is required/)).toBeVisible();
+
+    // Whitespace is blank, exactly as the server reads it.
+    fireEvent.change(field, { target: { value: "   " } });
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(field, { target: { value: "Kafka is back" } });
+    expect(confirm).toBeEnabled();
+    // And the same line becomes the countdown — to *this* route's 1000, not the
+    // admin user writes' 550.
+    expect(within(dialog).getByText("987 of 1000 characters left")).toBeVisible();
+  });
+
+  it("sends the trimmed reason, closes, marks the row and says so in words", async () => {
+    const trigger = await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "  Kafka is back  " } });
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+
+    expect(lastRetry()).toEqual({ service: "auth", eventId: "e1", reason: "Kafka is back" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    /**
+     * Focus lands on the list's own region rather than on the trigger, and that
+     * is the one place this differs from the Users dialog. A successful retry
+     * removes the control that opened it — the server answers `NEW`, and this
+     * list offers no retry on a `NEW` row — so returning to the trigger drops
+     * focus on `<body>` and the next Tab restarts at the top of the document.
+     * Measured in Chromium before this assertion existed.
+     */
+    expect(screen.getByRole("region", { name: "Problematic events" })).toHaveFocus();
+    // Unconditionally, not as a fallback — this fake serves one static summary,
+    // so the trigger survives here where against a real summary it would not.
+    // The choice is the point: a rule that only fires when the button happens to
+    // be gone is a rule nobody can read off the code.
+    expect(trigger.isConnected).toBe(true);
+    // The server's own word for the new state, in the section's live region —
+    // there is no toast in this product (§5.6).
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
+    expect(document.querySelector("tr.is-changed")).not.toBeNull();
+  });
+
+  /**
+   * The confirmation quotes the server's own word for the new state. It is
+   * `NEW` today and this asserts that it is not *hardcoded* to be: the fake
+   * answers something else here, and the sentence has to follow it. Without
+   * this the whole suite passes with the literal in place of the field, which
+   * is exactly the mutation a backend that grew another state would ship into.
+   */
+  it("says the status the server answered, not the one it usually answers", async () => {
+    setRetryStatus("REQUEUED");
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Kafka is back" } });
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now REQUEUED.");
+  });
+
+  /**
+   * Dismissing over a retry still in flight. The request is not cancelled and
+   * nobody is left watching it, so the one thing that must not happen is the
+   * list going on showing a row the server may already have moved. Leaving asks
+   * the list again — and `Esc` keeps working and Cancel stays enabled, which is
+   * why the fix is a read rather than a trap.
+   */
+  it("asks the list again when it is dismissed over a retry still in flight", async () => {
+    holdRetry();
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Kafka is back" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+      // A whole macrotask, not just the microtasks `act` drains: query-core
+      // delivers observer notifications through `setTimeout(…, 0)`, so without
+      // this the mutation is in flight and the button has not heard about it.
+      await settle();
+    });
+    // In flight: the write went out and no answer has come back.
+    expect(lastRetry()).toEqual({ service: "auth", eventId: "e1", reason: "Kafka is back" });
+    expect(within(dialog).getByRole("button", { name: "Retrying…" })).toBeDisabled();
+
+    const readsBeforeDismissal = summaryReads();
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Escape" });
+      await settle();
+    });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // The one assertion this test exists for: dismissal over a write in flight
+    // asks the list again, so the row cannot be left showing a state the server
+    // may already have changed.
+    expect(summaryReads()).toBe(readsBeforeDismissal + 1);
+
+    // And the answer that arrives afterwards still lands: react-query keeps a
+    // mutation once its observer is gone, so the confirmation is late rather
+    // than lost. Asserted because it is what makes the invalidation above a
+    // guarantee instead of a coincidence — it holds for a *failed* answer too,
+    // where nothing else would have asked the list anything.
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
+  });
+
+  /**
+   * Leaves a retry in flight, which is the only state in which a dismissal has
+   * anything to do. Shared by the two tests below it because they differ in
+   * exactly one line — which control dismisses — and that one line is the whole
+   * reason both exist.
+   */
+  const startPendingRetry = async () => {
+    holdRetry();
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Kafka is back" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+      // The macrotask query-core notifies observers on; see the test above.
+      await settle();
+    });
+    expect(within(dialog).getByRole("button", { name: "Retrying…" })).toBeDisabled();
+    return dialog;
+  };
+
+  /**
+   * The same dismissal through the header's ✕, which is a different route into
+   * it: `Esc` and Cancel are wired in this component, and ✕ and the backdrop
+   * are `Modal`'s own controls, reached only through the handler this dialog
+   * hands it.
+   *
+   * Written because that is the seam a simplification breaks in silence. With
+   * `Modal`'s `onClose` given `onClose` instead of `dismiss` — the shape this
+   * dialog started with — `Esc` and Cancel go on asking the list again and
+   * these two stop, and every test above still passes. What is lost is the
+   * whole point of the invalidation: the row goes on showing a state the server
+   * may already have left, with nobody watching the write that changed it.
+   */
+  it("asks the list again when the header's close button dismisses a retry in flight", async () => {
+    const dialog = await startPendingRetry();
+
+    const readsBeforeDismissal = summaryReads();
+    await act(async () => {
+      // Named by its `title`, which is `Modal`'s only name for it — and exactly
+      // the string the backdrop's own name is not, so this matches one button.
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      await settle();
+    });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(summaryReads()).toBe(readsBeforeDismissal + 1);
+
+    // And the late answer still lands, as it does after `Esc`: the request was
+    // never cancelled, so the dismissal is what has to keep the list honest in
+    // the meantime.
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
+  });
+
+  /**
+   * And the fourth route the docblock names. It is a real `<button>` in the
+   * layer above the dialog rather than a click handler on a div, so it is as
+   * reachable from a test as it is from a keyboard.
+   */
+  it("asks the list again when the backdrop dismisses a retry in flight", async () => {
+    await startPendingRetry();
+
+    const readsBeforeDismissal = summaryReads();
+    await act(async () => {
+      // Outside the dialog element, hence `screen` rather than `within`.
+      fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
+      await settle();
+    });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(summaryReads()).toBe(readsBeforeDismissal + 1);
+
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
+  });
+
+  /**
+   * The other half of that dismissal, and the negative the successful path's
+   * assertions cannot state: a confirmation that arrives when nobody is waiting
+   * for it announces, and does not reach for focus.
+   *
+   * A retry answered while the dialog is open moves focus to the list region,
+   * because the trigger it would otherwise return to is removed by the refetch.
+   * Run that same move seconds after Cancel and it is a focus steal — defensible
+   * only if the operator is still sitting on the screen doing nothing, which is
+   * the assumption every focus steal is built on. So the two paths are told
+   * apart (`OutboxRetryArrival`) and only this one withholds the move.
+   *
+   * Everything else the answer does is unchanged, and asserted here rather than
+   * assumed: it is the announcement that carries the result on this path, and it
+   * is the invalidation that keeps the row from going on showing a state the
+   * server has already left.
+   */
+  it("announces the late answer without taking focus back from wherever the operator went", async () => {
+    holdRetry();
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Kafka is back" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+      // The macrotask query-core notifies observers on; see the test above.
+      await settle();
+    });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await settle();
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // And moved on. Any focusable thing on the screen would do — this one is a
+    // row the retry is not even about, which is the point: after a dismissal the
+    // section has no claim on where the operator is.
+    const elsewhere = screen.getByRole("link", { name: "Open event e2" });
+    elsewhere.focus();
+    expect(elsewhere).toHaveFocus();
+
+    const readsBeforeAnswer = summaryReads();
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+
+    // The confirmation still happens, in the channel that interrupts nobody …
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
+    expect(document.querySelector("tr.is-changed")).not.toBeNull();
+    // … the list is still asked again, so the row cannot be left stale …
+    expect(summaryReads()).toBe(readsBeforeAnswer + 1);
+    // … and focus is exactly where the operator left it.
+    expect(elsewhere).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Problematic events" })).not.toHaveFocus();
+  });
+
+  /**
+   * A retry submitted, dismissed with `Esc` while it is still in flight, and
+   * about to be answered — with the fake moving the row the way `MockTaskaApi`
+   * does, so the refetch the answer sets off takes the Retry button away.
+   *
+   * That last part is what every test below is about, and what the two above
+   * could not see: against a static summary the trigger survives the
+   * refetch, and every question about losing focus with it is unreachable.
+   */
+  const dismissPendingRetry = async () => {
+    setRetryMovesRow(true);
+    await startPendingRetry();
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Escape" });
+      await settle();
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  };
+
+  /**
+   * The rescue, and the case it exists for is the *default* one: dismiss, then
+   * do nothing.
+   *
+   * Dismissal returns focus to the Retry button, which is right — until the
+   * answer arrives and the refetch behind it turns that row `NEW`, at which
+   * point `canRetryOutboxEvent` drops the button and focus falls to `<body>`
+   * with it. The next Tab then restarts at the top of the document, which is
+   * the §7 failure the successful path already moves focus to avoid.
+   *
+   * It is a rescue and not the move it replaced: it fires only because the
+   * element that had focus is the one the refetch removed. The four tests after
+   * this one are the other side of that sentence — one for each condition, and
+   * one for the pair of them.
+   *
+   * Both halves of the fix are load-bearing here, and each dies on its own.
+   * Removing the rescue leaves focus on `<body>`. Keeping it but asking its
+   * question in `invalidateQueries().then(…)` — the obvious place — leaves
+   * focus on `<body>` too, because that promise resolves a microtask after the
+   * fetch while the render that removes the button arrives on query-core's
+   * `setTimeout(…, 0)`: the check reads a document where the button is still
+   * connected, and the whole thing is inert with nothing red to show for it.
+   */
+  it("rescues focus to the list when the refetch removes the trigger the dismissal left it on", async () => {
+    await dismissPendingRetry();
+
+    // Where the dismissal put it, and where an operator who does nothing next
+    // is still sitting when the write they can no longer see finishes.
+    expect(screen.getByRole("button", { name: "Retry event e1" })).toHaveFocus();
+
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+
+    // The row came back `NEW`, so the button focus was resting on is gone …
+    expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    // … and focus did not go with it.
+    expect(document.body).not.toHaveFocus();
+    expect(screen.getByRole("region", { name: "Problematic events" })).toHaveFocus();
+    // The rest of the late answer is unchanged by the rescue: it still
+    // announces, and it is still the live region that carries the result.
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
+  });
+
+  /**
+   * The same rescue, with the read the write asked for arriving *second* — and
+   * this is the test that says the arm has to be paired with a particular read
+   * rather than spent by the next one to come along.
+   *
+   * Two reads are in play on this path and they are always in this order: the
+   * dismissal asks the list again, and only then does the answer land and the
+   * write ask for its own. In the test above they arrive close enough together
+   * to be committed as one, which hides the ordering entirely. Holding the
+   * second one apart is what makes it visible — and what it makes visible is
+   * that the dismissal's read has already been *served* by the time the arm is
+   * set, with only its commit still to come.
+   *
+   * So the run this effect sees first is a read older than the arm, against a
+   * list that still has the button in it. Spending the arm there — which is
+   * what keying on `dataUpdatedAt` alone does — disarms the rescue one read
+   * early, and the read that actually removes the button then finds nothing
+   * armed and leaves focus on `<body>`. That failure is invisible to the five
+   * tests around this one, which is the whole reason this one is here: without
+   * it, `armedAt` is a guard nothing defends, and the next reader to find it
+   * redundant deletes it and takes two of those five down with it.
+   */
+  it("still rescues focus when the dismissal's own read lands between the arm and the write's", async () => {
+    await dismissPendingRetry();
+    expect(screen.getByRole("button", { name: "Retry event e1" })).toHaveFocus();
+
+    // Only the *next* read is held: the dismissal's has already been served,
+    // and its commit is the one that arrives during the act() below.
+    holdSummary();
+    const readsBeforeAnswer = summaryReads();
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+
+    // The write asked for its list, and it has not come back. The row on screen
+    // is still the pre-write one, so the button — and the focus on it — are
+    // exactly where the dismissal left them.
+    expect(summaryReads()).toBe(readsBeforeAnswer + 1);
+    expect(screen.getByRole("button", { name: "Retry event e1" })).toHaveFocus();
+
+    await act(async () => {
+      releaseSummary();
+      await settle();
+    });
+
+    // Now the row is `NEW`, the button is gone, and the operator never moved —
+    // so this is the rescue's own case, arriving one read later than usual.
+    expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    expect(document.body).not.toHaveFocus();
+    expect(screen.getByRole("region", { name: "Problematic events" })).toHaveFocus();
+  });
+
+  /**
+   * And the steal must not come back with it.
+   *
+   * This is the same removal as the test above — the trigger goes, and the
+   * rescue is the code that could move focus — with the one difference that
+   * decides it: the operator went somewhere first. A rescue that fires here is
+   * the focus steal the guard was written for, arriving through the fix for the
+   * loss that guard caused.
+   */
+  it("leaves focus where the operator moved it, even though the refetch removes the trigger", async () => {
+    await dismissPendingRetry();
+
+    // Anywhere they chose. This one is a row the retry is not even about, which
+    // is the point: after a dismissal the section has no claim on where they
+    // are.
+    const elsewhere = screen.getByRole("link", { name: "Open event e2" });
+    elsewhere.focus();
+
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+
+    expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    expect(elsewhere).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Problematic events" })).not.toHaveFocus();
+  });
+
+  /**
+   * The operator moves *after* the answer and *before* the read it set off
+   * comes back — the widest of the three windows, because in production it is a
+   * whole round trip rather than a tick.
+   *
+   * The arm is set here: focus was on the trigger when the answer landed. What
+   * stops the rescue is the third of its conditions, asked at the moment the
+   * button actually goes — is focus still nowhere? It is not, so the
+   * section leaves it alone. Dropping that check passes every other test in
+   * this file and reintroduces the steal in the one shape a guard read at
+   * answer-time cannot see.
+   */
+  it("does not take focus back when the operator moves while the refetch is still out", async () => {
+    await dismissPendingRetry();
+    expect(screen.getByRole("button", { name: "Retry event e1" })).toHaveFocus();
+
+    holdSummary();
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+    // The answer has arrived; the list has not. The row is still the one from
+    // before the write, so the button — and the focus on it — are still there.
+    expect(screen.getByRole("button", { name: "Retry event e1" })).toHaveFocus();
+
+    const elsewhere = screen.getByRole("link", { name: "Open event e2" });
+    elsewhere.focus();
+
+    await act(async () => {
+      releaseSummary();
+      await settle();
+    });
+
+    expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    expect(elsewhere).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Problematic events" })).not.toHaveFocus();
+  });
+
+  /**
+   * Focus already on `<body>` before the answer lands — clicking the page
+   * background is all it takes — and the section leaves it there.
+   *
+   * The narrow case, and the only thing defending the first of the rescue's
+   * three conditions: it rescues focus *it* lost, not focus that was already
+   * nowhere. Dropping "was focus on this trigger when the answer arrived" from
+   * the arm passes every other test in this file and fails this one, because
+   * the other two conditions — the button went, focus is on `<body>` — are both
+   * true here.
+   */
+  it("does not reach for focus that was already nowhere when the answer landed", async () => {
+    await dismissPendingRetry();
+
+    screen.getByRole("button", { name: "Retry event e1" }).blur();
+    expect(document.body).toHaveFocus();
+
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+
+    expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Problematic events" })).not.toHaveFocus();
+  });
+
+  /**
+   * The second of the three conditions, and the one that makes this a rescue at
+   * all: the button has to have *gone*.
+   *
+   * The arm is set — focus was on the trigger when the answer arrived — and
+   * then two things happen inside the refetch's window: the operator drops
+   * focus on the page background, and the list comes back saying `PROCESSING`,
+   * which this list still offers a retry on. So the row changed, the control
+   * did not, and nothing was taken from anybody. Without the check, focus on
+   * `<body>` is enough to move it into the list for a button that never left.
+   */
+  it("does not move focus when the refetch changes the row but keeps the trigger", async () => {
+    await dismissPendingRetry();
+
+    // Still eligible after the write, so the button survives the refetch.
+    setRetryStatus("PROCESSING");
+    holdSummary();
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+
+    screen.getByRole("button", { name: "Retry event e1" }).blur();
+    expect(document.body).toHaveFocus();
+
+    await act(async () => {
+      releaseSummary();
+      await settle();
+    });
+
+    // The list did change — this is not a refetch that did nothing …
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now PROCESSING.");
+    expect(screen.getByRole("cell", { name: "PROCESSING" })).toBeVisible();
+    // … the button is still there, and so focus stays where the operator left
+    // it rather than being moved on account of a loss that never happened.
+    expect(screen.getByRole("button", { name: "Retry event e1" })).toBeVisible();
+    expect(document.body).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Problematic events" })).not.toHaveFocus();
+  });
+
+  /**
+   * The same late answer, arriving while the dialog has been opened again.
+   *
+   * Closing the dialog is as much the dismissed dialog's business as moving
+   * focus was, and it is the same intrusion in the same tick: the dialog on
+   * screen is asking about the *next* retry, and an answer to the previous one
+   * has no standing to close it out from under a half-typed reason.
+   */
+  it("leaves a dialog opened after the dismissal alone when the old answer lands", async () => {
+    holdRetry();
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Kafka is back" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+      await settle();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Escape" });
+      await settle();
+    });
+
+    // Straight back in on the same row: this fake serves one static summary, so
+    // the trigger is still there to press.
+    fireEvent.click(screen.getByRole("button", { name: "Retry event e1" }));
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Second thoughts" } });
+
+    await act(async () => {
+      releaseRetry();
+      await settle();
+    });
+
+    const reopened = screen.getByRole("dialog", { name: "Retry outbox event" });
+    expect(reopened).toBeVisible();
+    // With what was typed into it still in it.
+    expect(within(reopened).getByLabelText("Reason")).toHaveValue("Second thoughts");
+    expect(screen.getByRole("region", { name: "Problematic events" })).not.toHaveFocus();
+  });
+
+  /**
+   * The write landed and the read behind it did not.
+   *
+   * query-core sets `status: "error"` on a failed *background* refetch while
+   * keeping the data it already has, so a view that tests `isError` before
+   * using `data` throws away rows it still has — here, together with the flash
+   * and the live region that are the only confirmation the write worked at all.
+   * And this query does not retry itself, so nothing would put them back. The
+   * failure is stated above the list instead.
+   */
+  it("keeps the list and the confirmation when the read behind the write fails", async () => {
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Kafka is back" } });
+    // The write succeeds; the refetch it triggers is what breaks.
+    failSummary(Object.assign(new Error("Internal error"), { code: "INTERNAL", status: 500 }));
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+      await settle();
+    });
+
+    // The rows the server last stated are still on screen …
+    expect(screen.getByRole("table", { name: "Problematic events, oldest first" })).toBeVisible();
+    // … with the two things that say the write happened …
+    expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now NEW.");
+    expect(document.querySelector("tr.is-changed")).not.toBeNull();
+    // … and the failed read above them rather than instead of them.
+    expect(await screen.findByRole("alert")).toHaveTextContent(/gateway failed/i);
+  });
+
+  /**
+   * A failure leaves the dialog open with the answer in it: closing over a
+   * change that may not have happened would be the worst of the possible
+   * answers (§5.8).
+   */
+  it("stays open on the not-eligible refusal and prints the server's own sentence", async () => {
+    failRetry(
+      Object.assign(new Error("Outbox event with status NEW is not eligible for retry"), {
+        code: "FAILED_PRECONDITION",
+        status: 400,
+      }),
+    );
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+
+    expect(screen.getByRole("dialog", { name: "Retry outbox event" })).toBeVisible();
+    // The conflict sentence, reached through `isConflict`'s *code* arm: this
+    // refusal arrives on a 400, so a status check alone would have filed it
+    // under "the gateway would not accept this request".
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent(/would not retry this event/i);
+    expect(alert).toHaveTextContent("Outbox event with status NEW is not eligible for retry");
+  });
+
+  /**
+   * The other side of that refusal, and the only thing defending the narrowing
+   * in `RetryFailure`: the eligibility arm is reached on the *code* rather than
+   * on the taxonomy's `conflict`, and this is the case that tells them apart.
+   *
+   * "The event is as it was" is a provable claim for `FAILED_PRECONDITION` —
+   * admin-service checks eligibility before the `UPDATE` and again in the
+   * `UPDATE`'s own `WHERE`, so that refusal moved nothing. `isConflict` also
+   * admits a bare 409 and `ABORTED`, which this route does not emit today and
+   * which come with no such proof behind them. They get the plain rejection
+   * wording instead of a promise this dialog cannot keep.
+   *
+   * Written because widening the condition back to `failure === "conflict"`
+   * passed the entire suite: the defect that restores is a dialog telling an
+   * operator nothing happened at the one moment it cannot know, which is the
+   * same sentence the 5xx and transport arms are forbidden from saying.
+   */
+  it("does not promise the event is unchanged for a conflict that is not the eligibility refusal", async () => {
+    // A 409 the gateway could grow tomorrow — `ABORTED` is what admin-service
+    // sends for the Users section's status-transition refusals, and nothing
+    // stops this route from acquiring one of its own.
+    failRetry(Object.assign(new Error("Retry was aborted"), { code: "ABORTED", status: 409 }));
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+
+    const alert = await within(dialog).findByRole("alert");
+    // `rejected`: it was read and refused, and what to change is in the
+    // server's own words below.
+    expect(alert).toHaveTextContent(/would not accept this request/i);
+    // Not the eligibility arm, and above all not the guarantee that closes it.
+    expect(alert).not.toHaveTextContent(/would not retry this event/i);
+    expect(alert).not.toHaveTextContent(/as it was/i);
+    // The server's sentence is printed either way — the arm decides the
+    // explanation, never whether the operator sees what the server said.
+    expect(alert).toHaveTextContent("Retry was aborted");
+  });
+
+  it("says a 403 is a refusal, not a fault", async () => {
+    // The route is GLOBAL_ADMIN-only and the server stays the authority: the
+    // section drawing a button has never been the permission (§5.7).
+    failRetry(Object.assign(new Error("Forbidden"), { code: "PERMISSION_DENIED", status: 403 }));
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/server refused this/i);
+  });
+
+  /**
+   * The rule this endpoint makes non-negotiable. admin-service commits the
+   * UPDATE and *then* writes the audit row, so a 5xx and a dropped connection
+   * are both compatible with a retry that already ran. Neither may be worded as
+   * "nothing happened" — that is the one sentence that sends an operator looking
+   * in the wrong place.
+   */
+  it("never reports a failure as 'nothing happened', because the write may have landed", async () => {
+    failRetry(Object.assign(new Error("Internal error"), { code: "INTERNAL", status: 500 }));
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/may still have gone through/i);
+
+    // And the transport failure, which carries neither a status nor a code.
+    failRetry(new TypeError("Failed to fetch"));
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/may or may not have been retried/i);
+  });
+
+  it("cancels without writing anything and hands focus back", async () => {
+    const trigger = await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(lastRetry()).toBeUndefined();
+    expect(trigger).toHaveFocus();
+  });
+
+  // §4.11: `Esc` cancels. Bound in the dialog itself, because `Modal` carries
+  // neither key and giving them to every modal in the product is §7 debt
+  // (TAS-142) rather than this story.
+  it("closes on Escape", async () => {
+    await openDialog();
+    expect(screen.getByRole("dialog", { name: "Retry outbox event" })).toBeVisible();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(lastRetry()).toBeUndefined();
   });
 });

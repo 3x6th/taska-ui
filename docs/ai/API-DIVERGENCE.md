@@ -239,7 +239,27 @@ is cheaper than splitting an entry and the reader has to be told which.
 
 ---
 
-### `jsonb` values arrive as `JsonByteArrayInput{…}`, not as JSON
+### Closed by TAS-194: `jsonb` values arrived as `JsonByteArrayInput{…}`, and now arrive as JSON
+
+**Closed on the probe this entry insisted on, not on the merge date.** Backend
+PR #141 landed 2026-08-27; the entry refused to close on that and asked for one
+`issue.outbox_events` row to be read. **Measured 2026-09-08** with a
+`GLOBAL_ADMIN` token: twenty rows, every `payload` a clean JSON string, and the
+substring `JsonByteArrayInput` absent from the whole response. The first row
+reads `{"issueId": "df53f9b1-…", "projectId": "eedc3a5b-…", "actorUserId": …}`.
+
+The mock's malformed seed and the assertion pinning it came out with it. What
+did **not** come out is the card's rule — parse as JSON and pretty-print,
+otherwise print verbatim — because that was never a compensation: it is
+TAS-167's instruction to escalate rather than repair, and it is what makes the
+*next* malformed payload visible. The seed was replaced by direct unit tests on
+the rule itself, built on values that are simply not JSON rather than on a Java
+`toString` this gateway no longer emits. Worth noting why that matters: the old
+assertion pinned the *seed*, not the rule, so the rule had no coverage at all
+until it was removed and replaced.
+
+The entry as it stood:
+
 
 - **Endpoints:** `GET /readonly/{service}/{table}` and
   `GET /readonly/{service}/{table}/{id}` — every `jsonb` column,
@@ -1802,12 +1822,84 @@ The entry as it stood:
 
 ---
 
-### The problems summary was TAS-105-only; the endpoint now answers and the compensation has not come out
+### Retry accepts a stuck event five minutes after the summary calls it stuck
 
-**Still open, and read the next two paragraphs in order — the divergence
-inverted rather than closed.** The endpoint is deployed; what remains is a
-compensation in the code for a gateway that no longer behaves that way, and an
-entry is deleted only when the compensating code is.
+- **Endpoint:** `POST /api/v1/admin/outbox/{service}/{eventId}/retry` (backend
+  PR #143, TAS-106, merged 2026-09-03), against
+  `GET /api/v1/readonly/outbox/problematic-summary` beside it.
+- **Observed:** read on `develop` 2026-09-08 from `OutboxRetryServiceImpl` and
+  `OutboxRetryRepositoryImpl`. The eligibility *rule* is a source reading and
+  not a wire measurement — say so before quoting it. The route's **deployment**
+  is measured: `POST /api/v1/admin/outbox/issue/not-a-uuid/retry` answers `400
+  INVALID_ARGUMENT` where a control path on the same prefix answers the
+  static-resource `404` (`release-reviewer`, unauthenticated, 2026-09-08). And
+  the path enum is **not** enforced on the wire — `…/outbox/notification/<uuid>/retry`
+  answers `401` rather than `400`, so binding accepts any string and only
+  `getDatabaseClient` refuses it. The client's closed list is therefore a strict
+  narrowing over what the wire would carry, which is the safe direction. The retry `UPDATE` carries
+  `WHERE id = … AND (status = 'FAILED' OR (status = 'PROCESSING' AND processing_started_at < :stuckBefore))`,
+  where `stuckBefore` comes from `admin.outbox-retry.stuck-threshold`, default
+  **10m**. The summary flags a `PROCESSING` row as stuck after
+  `admin.outbox.processing-timeouts`, default **5m**, configured per producing
+  service. Both are server configuration the client never sees.
+- **So the gateway will list a row as stuck and refuse to retry it**, for about
+  five minutes, and nothing on the wire lets a client predict which rows are in
+  that window. The refusal is `FAILED_PRECONDITION` → HTTP **400** with
+  `"FAILED_PRECONDITION"` in `code`, the same shape as the last-active-admin
+  refusal on the user writes.
+- **Not the only eligibility rule, and the other one is the bigger trap.**
+  `NEW` and `PUBLISHED` are refused outright — and "Overdue NEW" is one of the
+  three categories the Problems view exists to show. A retry button drawn from
+  "this row is problematic" would therefore fail on a whole category of the
+  list. The brief for TAS-194 assumed exactly that and `frontend-builder`
+  refused it, reading the service instead.
+- **The UI instead:** offers Retry on `FAILED` and `PROCESSING` only, never on
+  `NEW` or on a status it does not recognise, and never on a `serviceKey`
+  outside the path enum. On a `PROCESSING` row it says before the press that the
+  server's own threshold is longer than the list's, and after a refusal it
+  prints the server's sentence verbatim and keeps the dialog open. **No
+  client-side clock**: hard-coding ten minutes would be a guess about one
+  deployment's configuration, and the mock seeds a row inside the gap so the
+  refusal is reachable by clicking rather than only by argument.
+- **`attempts` is not reset**, which is the most assumable-and-wrong thing about
+  this endpoint: the column is absent from the `UPDATE`, so the response
+  reports the count the row already had. The dialog says so in the sentence
+  before the button.
+- **A 5xx can follow a retry that succeeded.** `auditService.logAudit` runs
+  after the `UPDATE` commits, so the write and the report of it are not one
+  transaction. The `server` and `unreachable` arms say the event may have been
+  retried; the `conflict` arm says the opposite, and is exact — eligibility is
+  checked before the update and again in the update's own `WHERE`.
+- **Removal:** [TAS-200](https://jira.ozero.dev/browse/TAS-200) — a backend
+  story. Align the two thresholds, or better, expose eligibility on the summary
+  row **and state the rule in the contract**, so the client stops inferring it.
+  The second half is the durable ask and the reason the first is not enough: the
+  eligibility rule lives only in Java, and the threshold is an environment
+  variable, so **the backend can change which events are retryable without
+  changing the contract** and this client would silently start drawing wrong
+  buttons. A flag moves the rule from Java to a field; describing it makes a
+  change to it a contract change, which is the only kind of change this
+  repository can notice.
+
+  The client's re-derivation of that rule *is* a compensation, which is why this
+  entry has a removal at all. An earlier revision of this line said "none filed"
+  while the story was already open — the drift this file exists to prevent,
+  committed inside the entry that documents it.
+
+### Closed by TAS-194: the problems summary was TAS-105-only, then the endpoint answered, then the compensation came out
+
+**Closed on the second of the two conditions, twelve days after the first.** The
+endpoint deployed on 2026-08-27 and nothing happened here, because the
+compensation rendered as a quiet note and matched its signature by exact
+equality, so against a live `200` it could not fire — and a compensation that
+never fires is one nobody comes to retire. It was found on 2026-09-08 while a
+different story was refreshing the snapshot, and removed by TAS-194, which had
+to open this view anyway for the retry write. `OUTBOX_SUMMARY_UNSERVED_MESSAGE`,
+`isSummaryNotDeployed`, the note branch and the `TAS-105` link are gone from the
+tree.
+
+The entry is kept for the sequence rather than the fact. **Deploy and removal
+are two events, and only the first announces itself.**
 
 **Measured 2026-09-08** with a GLOBAL_ADMIN token:
 `GET /api/v1/readonly/outbox/problematic-summary` answers **200** with

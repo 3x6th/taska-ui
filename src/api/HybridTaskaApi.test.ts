@@ -185,6 +185,39 @@ describe("HybridTaskaApi", () => {
     });
   });
 
+  /**
+   * The Events section's retry (TAS-194), on the same terms as the writes above
+   * and for a sharper version of the same reason: the operator's next act after
+   * being told a stuck event was requeued is to stop looking at it. A
+   * compensation here would be this class emptying a queue it cannot touch.
+   *
+   * The second call is the part worth pinning. It finds the same event already
+   * back in `NEW` and is refused with the code the gateway sends — so nothing in
+   * this class turns a repeated retry into a second success.
+   */
+  it("passes the outbox retry straight to the live api, refusals included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    const retryOutboxEvent = vi.spyOn(live, "retryOutboxEvent");
+
+    const summary = await live.getProblematicOutboxSummary();
+    const failed = summary.events.find((event) => event.status === "FAILED")!;
+    const service = failed.serviceKey as "auth" | "project" | "issue";
+
+    await expect(hybrid.retryOutboxEvent(service, failed.id, "Kafka is back")).resolves.toMatchObject({
+      eventId: failed.id,
+      status: "NEW",
+      // Not reset by the retry: the count is not in the backend's UPDATE.
+      attempts: failed.attempts,
+    });
+    expect(retryOutboxEvent).toHaveBeenCalledWith(service, failed.id, "Kafka is back");
+
+    await expect(hybrid.retryOutboxEvent(service, failed.id, "Again")).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+      message: "Outbox event with status NEW is not eligible for retry",
+    });
+  });
+
   // Search is a gateway route with no membership in it, so this class has
   // nothing to add to it — including the short-query guard, which belongs to
   // whichever implementation is underneath and must not be applied twice.

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { AdminTable } from "../../domain/types";
 import {
+  formatJsonValue,
   isAddressableKey,
   isAlignedType,
+  isJsonColumn,
   isWithheld,
   operatorsForType,
+  shortKey,
   supportsOperator,
   valueControlForType,
 } from "./columns";
@@ -139,6 +142,106 @@ describe("which columns are set in mono", () => {
     for (const type of ["character varying", "text", "boolean", undefined]) {
       expect(isAlignedType(type)).toBe(false);
     }
+  });
+});
+
+/**
+ * §5.8's abbreviation for a row key, which two callers now depend on: the Data
+ * section draws it in the frozen column and the Events section's retry
+ * confirmation says it out loud. It was one component's private constant until
+ * TAS-194 and is pinned here because a change to the numbers is now a change to
+ * what a screen reader is told, which no test of the table would catch.
+ */
+describe("how long a row key is shown", () => {
+  it("cuts a uuid to its first eight characters", () => {
+    expect(shortKey("7e010008-0000-4000-8000-100000000008")).toBe("7e010008");
+  });
+
+  it("leaves a key that is already short exactly as it is", () => {
+    // The boundary §5.8 names, from both sides: twelve is kept whole, thirteen
+    // is cut. A caller tells the two cases apart by comparing the result with
+    // what it passed in, so "unchanged" has to mean the same string.
+    expect(shortKey("123456789012")).toBe("123456789012");
+    expect(shortKey("1234567890123")).toBe("12345678");
+    expect(shortKey("e1")).toBe("e1");
+  });
+
+  it("carries no ellipsis, because one caller is a sentence being read aloud", () => {
+    // The `…` is a mark on a screen and a word in an announcement. The table
+    // appends it; this does not.
+    expect(shortKey("7e010008-0000-4000-8000-100000000008")).not.toContain("…");
+  });
+});
+
+/**
+ * The card's one rule for a `jsonb` column (DESIGN.md §5.8): parse it as JSON
+ * and lay it out, or print it exactly as it arrived. The second half is the one
+ * these tests exist for. It is not a compensation for any particular server
+ * defect — it is TAS-167's instruction to escalate rather than repair, so that a
+ * value the catalog calls a document and that is not one stays *visible* instead
+ * of being quietly tidied on the way to the screen.
+ *
+ * It has been needed once, on the `JsonByteArrayInput{…}` strings admin-service
+ * served before backend PR #141 (TAS-105). That fix is deployed and measured, so
+ * the case below is deliberately built on a payload that is simply not JSON
+ * rather than on that Java `toString`: the rule outlives the defect that first
+ * exercised it, and pinning it to a format the gateway can no longer produce
+ * would make the test expire with the bug.
+ */
+describe("how a JSON column's value is laid out", () => {
+  it("asks the catalog, exactly, whether the column is a document", () => {
+    expect(isJsonColumn("json")).toBe(true);
+    expect(isJsonColumn("jsonb")).toBe(true);
+    expect(isJsonColumn("JSONB")).toBe(true);
+    // A substring test would reformat these, and reformatting a value the
+    // server never called a document is the client inventing structure.
+    expect(isJsonColumn("jsonb[]")).toBe(false);
+    expect(isJsonColumn("character varying")).toBe(false);
+    expect(isJsonColumn(undefined)).toBe(false);
+  });
+
+  it("lays out a document over several lines", () => {
+    expect(formatJsonValue('{"issueId":"df53f9b1","projectId":"eedc3a5b"}')).toBe(
+      '{\n  "issueId": "df53f9b1",\n  "projectId": "eedc3a5b"\n}',
+    );
+    expect(formatJsonValue("[1,2]")).toBe("[\n  1,\n  2\n]");
+  });
+
+  // Masking happens inside the document, so a masked payload is still JSON and
+  // falls out of the same rule with no special case — stars and all.
+  it("lays out a payload whose values arrived masked", () => {
+    expect(formatJsonValue('{"email":"a****a@mail.ru"}')).toBe('{\n  "email": "a****a@mail.ru"\n}');
+  });
+
+  it("lays out a value that arrived as an object rather than as a string", () => {
+    // Some services answer the column as an object rather than as a string;
+    // re-stringifying to parse it back could only lose.
+    expect(formatJsonValue({ a: 1 })).toBe('{\n  "a": 1\n}');
+  });
+
+  // The verbatim branch. `null` here means "the card prints what arrived", and
+  // the caller (AdminRowCard) falls through to formatCell.
+  it("refuses to lay out a value that is not JSON, so the card prints it as it came", () => {
+    expect(formatJsonValue("not json at all")).toBeNull();
+    // A document truncated in transit: the half that arrived is exactly what the
+    // reader has to see to report it.
+    expect(formatJsonValue('{"issueId":"df53f9b1",')).toBeNull();
+    // Single quotes are not JSON, however much the value looks like a document.
+    expect(formatJsonValue("{'issueId': 'df53f9b1'}")).toBeNull();
+  });
+
+  it("leaves a bare scalar alone even though it parses", () => {
+    // Pretty-printing these changes nothing but the quoting, which would make
+    // the card disagree with the same value in the table.
+    for (const value of ["12", "null", "true", '"a string"']) {
+      expect(formatJsonValue(value)).toBeNull();
+    }
+  });
+
+  it("has nothing to lay out for an absent value", () => {
+    expect(formatJsonValue(null)).toBeNull();
+    expect(formatJsonValue(undefined)).toBeNull();
+    expect(formatJsonValue(42)).toBeNull();
   });
 });
 

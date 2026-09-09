@@ -11,6 +11,7 @@ import type {
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
+  RetryableOutboxService,
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
@@ -33,6 +34,7 @@ import type {
   IssueWithHistory,
   Label,
   Notification,
+  OutboxRetryResult,
   Page,
   ProblematicOutboxSummary,
   Project,
@@ -350,10 +352,9 @@ export class HybridTaskaApi implements TaskaApi {
    * Straight to the gateway, and deliberately with no mock fallback. The route
    * is deployed — backend PR #141 (TAS-105) merged 2026-08-27 and it answers
    * 200 with `{counts, events, notAllShown}` (measured 2026-09-08) — so this is
-   * now the ordinary case rather than a position taken about an absent route,
-   * but the reason for it has not changed and outlives the deployment
-   * (docs/ai/API-DIVERGENCE.md, "The problems summary was TAS-105-only; the
-   * endpoint now answers and the compensation has not come out").
+   * the ordinary case rather than a position taken about an absent route, and
+   * the compensation that used to hang off it came out with TAS-194. The reason
+   * below is not that compensation and outlives it.
    *
    * Two reasons. This class holds no mock store to answer from — the
    * compensation it carries is a *view* over live data, not seeded data — and a
@@ -393,5 +394,24 @@ export class HybridTaskaApi implements TaskaApi {
 
   resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange> {
     return this.live.resetCredentialLockout(userId, reason);
+  }
+
+  /**
+   * The Events section's retry, on the same terms as the three writes above and
+   * for the same reason: it is a write, and a compensation for a write would be
+   * this class reporting that a stuck event had been requeued when nothing had
+   * touched the queue. Worse here than there, because the operator's next act is
+   * to stop looking.
+   *
+   * It is also the one write in this product whose *failure* is ambiguous on the
+   * server — the audit row is written after the update commits — so a class that
+   * invented an answer would be inventing the one answer nobody can check.
+   */
+  retryOutboxEvent(
+    service: RetryableOutboxService,
+    eventId: string,
+    reason: string,
+  ): Promise<OutboxRetryResult> {
+    return this.live.retryOutboxEvent(service, eventId, reason);
   }
 }

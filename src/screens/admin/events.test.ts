@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { AdminCatalog } from "../../domain/types";
 import {
   availableOutboxFilters,
+  canRetryOutboxEvent,
   eventAge,
-  isSummaryNotDeployed,
   outboxCategory,
   outboxFilterChipLabel,
   outboxFilters,
@@ -186,23 +186,72 @@ describe("the nine named filters", () => {
 });
 
 /**
- * The deployed gateway does not answer 404 for the summary it does not have: it
- * reads `outbox` as a service key, routes the call into the generic table read
- * and rejects that. Measured 2026-08-25 — docs/ai/API-DIVERGENCE.md.
+ * Which rows may be offered a Retry button (TAS-194). Two independent gates —
+ * the service has to be one the retry path will carry, the status has to be one
+ * admin-service will act on — and both exist for the reason the Users section's
+ * `actionFor` exists: a control certain to be refused is worse than none.
+ *
+ * These are the *server's* rules repeated, never a permission. The gateway is
+ * `GLOBAL_ADMIN`-only and refuses everything below regardless (DESIGN.md §5.7).
  */
-describe("the summary the gateway does not serve yet", () => {
-  const rejection = (message: string) => Object.assign(new Error(message), { code: "INVALID_ARGUMENT", status: 400 });
+describe("which problematic events may be retried", () => {
+  const event = (serviceKey: string, status: string) => ({ serviceKey, status });
 
-  it("recognises the exact rejection the live gateway sends", () => {
-    expect(isSummaryNotDeployed(rejection("Unknown service: outbox"))).toBe(true);
+  it("offers a retry for a failed event on any service the path can carry", () => {
+    for (const service of ["auth", "project", "issue"]) {
+      expect(canRetryOutboxEvent(event(service, "FAILED"))).toBe(true);
+    }
   });
 
-  it("does not swallow any other rejection from the same endpoint", () => {
-    // The narrowness is the point. Matching the code alone would dress every
-    // genuine 400 from this route up as a missing deployment.
-    expect(isSummaryNotDeployed(rejection("Unknown service: outboxes"))).toBe(false);
-    expect(isSummaryNotDeployed(Object.assign(new Error("Not found"), { code: "NOT_FOUND", status: 404 }))).toBe(false);
-    expect(isSummaryNotDeployed(new Error("Unknown service: outbox"))).toBe(false);
-    expect(isSummaryNotDeployed(undefined)).toBe(false);
+  /**
+   * `PROCESSING` is a maybe and is deliberately allowed through. admin-service
+   * retries one only after it has been stuck longer than
+   * `admin.outbox-retry.stuck-threshold` (10m), while the summary lists it as
+   * stuck after the producing service's own timeout (5m) — two numbers this
+   * client never sees. A row in the gap gets a button and the server's own
+   * refusal, which is honest; a hardcoded threshold here would be a guess about
+   * somebody's deployment config (docs/ai/API-DIVERGENCE.md).
+   */
+  it("offers a retry for a processing event, because only the server knows if it is stuck enough", () => {
+    expect(canRetryOutboxEvent(event("project", "PROCESSING"))).toBe(true);
+  });
+
+  /**
+   * The case the list makes most tempting and the server refuses outright.
+   * Retry's whole action is to put a row back into `NEW`; an overdue `NEW` row
+   * is already there, so the request is `FAILED_PRECONDITION` rather than a
+   * no-op — which is exactly why no button is drawn for it.
+   */
+  it("offers nothing for an overdue NEW event, which the server will not retry", () => {
+    expect(canRetryOutboxEvent(event("auth", "NEW"))).toBe(false);
+  });
+
+  it("offers nothing for a status this build has never heard of", () => {
+    // The same rule `outboxCategory` follows (TAS-173): an unknown value prints
+    // verbatim and offers no action rather than being coerced into a known one.
+    expect(canRetryOutboxEvent(event("auth", "QUARANTINED"))).toBe(false);
+    expect(canRetryOutboxEvent(event("auth", "PUBLISHED"))).toBe(false);
+    expect(canRetryOutboxEvent(event("auth", ""))).toBe(false);
+  });
+
+  /**
+   * The guard that cannot fire today and is the reason the enum is not read out
+   * of the catalog: the summary's own `counts` name exactly the three services
+   * the contract lists. It is here for the day a fourth outbox reaches the
+   * response before it reaches the path enum, and the honest answer then is an
+   * absent button rather than a request the gateway refuses at the boundary.
+   */
+  it("offers nothing for a service the retry path cannot carry", () => {
+    expect(canRetryOutboxEvent(event("notification", "FAILED"))).toBe(false);
+    expect(canRetryOutboxEvent(event("", "FAILED"))).toBe(false);
+    // Not case-insensitive, unlike the status: `service` is a path enum whose
+    // three members are lowercase, and admin-service lowercases before its own
+    // lookup — but the contract states the three in lowercase and this build
+    // does not invent a spelling the enum has never declared.
+    expect(canRetryOutboxEvent(event("AUTH", "FAILED"))).toBe(false);
+  });
+
+  it("reads the status the way a database column would spell it", () => {
+    expect(canRetryOutboxEvent(event("auth", " failed "))).toBe(true);
   });
 });

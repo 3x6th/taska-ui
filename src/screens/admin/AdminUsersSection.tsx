@@ -303,9 +303,9 @@ export function AdminUsersSection() {
                         // The product's secondary button (§4.1), sized down for
                         // this table rather than rebuilt: border, surface,
                         // radius and hover all come from `.secondary-button`,
-                        // and `.admin-user-action` only changes the three
+                        // and `.admin-row-action` only changes the three
                         // things the row's density decides.
-                        className="secondary-button admin-user-action"
+                        className="secondary-button admin-row-action"
                         onClick={(event) => {
                           trigger.current = event.currentTarget;
                           setPending({ user, action });

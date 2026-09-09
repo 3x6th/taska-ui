@@ -1,6 +1,5 @@
-import { apiErrorFacts } from "../../api/errors";
-import { OUTBOX_SUMMARY_UNSERVED_MESSAGE } from "../../api/TaskaApi";
-import type { AdminCatalog, AdminFilter, AdminFilterOperator } from "../../domain/types";
+import { isRetryableOutboxService, type RetryableOutboxService } from "../../api/TaskaApi";
+import type { AdminCatalog, AdminFilter, AdminFilterOperator, ProblematicOutboxEvent } from "../../domain/types";
 import { supportsOperator } from "./columns";
 
 /**
@@ -8,6 +7,16 @@ import { supportsOperator } from "./columns";
  * service that publishes through a transactional outbox has its own copy of it.
  */
 export const OUTBOX_TABLE = "outbox_events";
+
+/**
+ * The Problems view's one query, named here rather than in the view because two
+ * files ask for it to be read again: the list itself after a retry it saw
+ * answered, and the retry dialog when it is dismissed over an answer nobody
+ * will see. A key spelled twice is a key that can drift, and the failure it
+ * would produce — a list that quietly stops refreshing — looks like nothing at
+ * all.
+ */
+export const OUTBOX_PROBLEMS_KEY = ["admin", "outbox", "problems"];
 
 /**
  * Which services have an outbox at all, in the catalog's own order (DESIGN.md
@@ -49,36 +58,50 @@ export function outboxCategory(status: string): string | null {
 }
 
 /**
- * Whether this failure is the signature an *older* gateway sent for "the
- * summary is not deployed yet", rather than a failure worth alarming anybody
- * about.
+ * Whether this row may be offered a Retry button at all (DESIGN.md §5.8).
  *
- * **Inert rather than wrong.** The endpoint is deployed: backend PR #141
- * (TAS-105) merged 2026-08-27, and
- * `GET /api/v1/readonly/outbox/problematic-summary` was measured on 2026-09-08
- * answering 200 with `{counts, events, notAllShown}`
- * (docs/ai/API-DIVERGENCE.md). A 200 never reaches this predicate, so it
- * cannot fire and cannot mislead a user — it survives only because the
- * compensation it belongs to is still in the tree.
+ * Two questions, both of which the client can answer without asking, and
+ * neither of which is a permission — the server decides, and hiding a control
+ * has never been a right (§5.7). This exists for the same reason `actionFor`
+ * exists in the Users section: a button certain to be refused is worse than no
+ * button.
  *
- * The pairing is narrow on purpose, and that narrowness is exactly why the
- * deployment left it inert instead of leaving it lying. The gateway of
- * 2026-08-25 did not answer 404 for the missing path — it took `outbox` for a
- * service key, routed the call into the generic table read and answered
- * `400 INVALID_ARGUMENT` with one exact sentence, `"Unknown service: outbox"`
- * (`OUTBOX_SUMMARY_UNSERVED_MESSAGE`). Matching the code alone would swallow
- * every genuine rejection this endpoint could ever make; matching a 404 would
- * be reading a signal the gateway never sent. Both halves, compared by exact
- * equality, or it goes through the normal taxonomy like anything else.
+ * **The service** has to be one the retry path will carry
+ * (`RETRYABLE_OUTBOX_SERVICES`, a closed enum in the contract). On today's data
+ * this is never false — the summary's own `counts` name exactly those three —
+ * and it is here for the day a fourth outbox appears in the response before it
+ * appears in the contract.
  *
- * It does not remove itself. An earlier version of this comment promised it
- * would, "the day TAS-105 deploys" — TAS-105 deployed and nothing happened,
- * because a check that quietly stops matching reports nothing to anyone. It
- * comes out by hand, with the rest of the compensation, in TAS-194.
+ * **The status** has to be one admin-service will act on: `FAILED`, or
+ * `PROCESSING`. Everything else is `FAILED_PRECONDITION`, and that emphatically
+ * includes `NEW` — a third of the rows this very list draws. The Problems view
+ * shows an overdue `NEW` row because nothing has *picked it up*; retry's job is
+ * to put a row back into `NEW`, which for that row would be a no-op the server
+ * refuses rather than performs. An unknown status is treated as ineligible, the
+ * same way `outboxCategory` refuses to name one (TAS-173).
+ *
+ * **`PROCESSING` is a maybe, and it is deliberately allowed through.** The
+ * server retries a stuck `PROCESSING` row only once it is older than
+ * `admin.outbox-retry.stuck-threshold` (10m by default) — a *longer* wait than
+ * the one that put it in this list (`admin.outbox.processing-timeouts`, 5m).
+ * Both are server configuration this client never sees, so it cannot compute the
+ * answer and must not hardcode either number. A row in the gap between them gets
+ * a button and a refusal, in the server's own words, with the dialog left open;
+ * that is honest, where a client-side clock guessing at a deployment's config
+ * would not be. Recorded in docs/ai/API-DIVERGENCE.md.
+ *
+ * A **type predicate**, not a boolean, and that is what saves the caller a cast.
+ * The service key it narrows to is the one `retryOutboxEvent` requires
+ * (`RetryableOutboxService`), so a row that has not been through this guard
+ * cannot be handed to the API method at all — the rule is held by the compiler
+ * rather than by everybody remembering it.
  */
-export function isSummaryNotDeployed(error: unknown): boolean {
-  const { code, message } = apiErrorFacts(error);
-  return code === "INVALID_ARGUMENT" && message === OUTBOX_SUMMARY_UNSERVED_MESSAGE;
+export function canRetryOutboxEvent<T extends Pick<ProblematicOutboxEvent, "serviceKey" | "status">>(
+  event: T,
+): event is T & { serviceKey: RetryableOutboxService } {
+  if (!isRetryableOutboxService(event.serviceKey)) return false;
+  const status = event.status.trim().toUpperCase();
+  return status === "FAILED" || status === "PROCESSING";
 }
 
 /**

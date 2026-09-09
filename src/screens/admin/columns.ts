@@ -133,12 +133,22 @@ export function isJsonColumn(type?: string): boolean {
  * A JSON column's value laid out to be read (DESIGN.md §5.8), or `null` when it
  * is not JSON at all and must be printed exactly as it arrived.
  *
- * The `null` branch is the important one. `admin-service` currently serves this
- * column through a wrapper's `toString`, so what comes over the wire starts
- * `JsonByteArrayInput{…}` and does not parse. That is a backend defect, fixed
- * by TAS-105, and the client must not tidy it away: a repair here would survive
- * the fix silently and hide the day the format changed. §5.8 says so in as many
- * words — "срезать java-префикс руками запрещено".
+ * The `null` branch is the important one, and it is a rule rather than a
+ * workaround. A value the catalog calls `jsonb` that does not parse is a fault
+ * on the server, and this console's job is to make it visible: repairing it
+ * here would tidy the evidence away and the day the format changed would pass
+ * unnoticed. §5.8 says so in as many words — "срезать java-префикс руками
+ * запрещено" (TAS-167: escalate, do not repair).
+ *
+ * It has been earned once. Until backend PR #141 (TAS-105) admin-service served
+ * every `jsonb` column through a wrapper's `toString`, so payloads arrived as
+ * `JsonByteArrayInput{…}` and this branch printed them — which is how the defect
+ * stayed legible instead of being silently half-fixed on screen. That fix is
+ * deployed and measured (20 live `issue.outbox_events` rows read on 2026-09-08,
+ * every `payload` clean JSON), so nothing reaches this branch from the gateway
+ * today. It stays for the next one; `formatJsonValue`'s own tests keep it
+ * exercised, on a plainly non-JSON string rather than on a Java `toString` the
+ * gateway no longer emits.
  *
  * A masked payload needs no special case and gets none: `MASK_PARTIAL` stars
  * the values *inside* the document, so it is still JSON and is printed as JSON,
@@ -191,6 +201,34 @@ export function formatCell(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
+}
+
+/** Longer than this and the frozen column stops being narrow enough to freeze. */
+const KEY_LIMIT = 12;
+const KEY_SHOWN = 8;
+
+/**
+ * A row key shortened to what a person is shown of it: DESIGN.md §5.8's rule,
+ * "longer than 12 characters is cut to the first 8".
+ *
+ * Here rather than in the table that draws it, because two places now speak
+ * this abbreviation and a second copy of the numbers would be a second rule.
+ * The Data section's primary key cell is the one §5.8 is written about; the
+ * Events section's retry confirmation names the event it just moved with the
+ * same eight characters, so what an operator hears matches what the journal
+ * shows them for the same row.
+ *
+ * **The ellipsis is not part of it.** `…` is the visible mark that says a value
+ * was cut, and it is chrome in the same way the `FAILED → NEW` arrow in the
+ * retry dialog is: read aloud it becomes a word. So the caller that draws the
+ * key appends it and the caller that says the key does not — the returned
+ * string is exactly the characters that came out of the value.
+ *
+ * A key that is already short — a numeric id, a short code — comes back whole,
+ * which is how a caller tells the two cases apart without repeating the limit.
+ */
+export function shortKey(value: string): string {
+  return value.length > KEY_LIMIT ? value.slice(0, KEY_SHOWN) : value;
 }
 
 /**

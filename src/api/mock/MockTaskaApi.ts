@@ -11,6 +11,7 @@ import type {
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
+  RetryableOutboxService,
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
@@ -20,6 +21,8 @@ import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
   ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
   ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
+  OUTBOX_RETRY_REASON_MAX_LENGTH,
+  OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE,
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
@@ -60,6 +63,7 @@ import type {
   IssueWithHistory,
   Label,
   Notification,
+  OutboxRetryResult,
   Page,
   ProblematicOutboxCounts,
   ProblematicOutboxEvent,
@@ -291,6 +295,27 @@ const requireAdminWriteReason = (raw: string): string => {
 };
 
 /**
+ * The same guard for the outbox retry, whose contract states a **different**
+ * upper bound: `maxLength: 1000` against the user writes' 550.
+ *
+ * Separate rather than parameterised, exactly as `requireOutboxRetryReason` in
+ * src/api/rest/RestTaskaApi.ts is separate and for the same reason: one function
+ * taking a limit would read as one rule the backend applies twice, and the
+ * backend applies two rules. The blank half is genuinely shared — `minLength: 1`
+ * on all four DTOs — so it keeps the shared sentence.
+ */
+const requireOutboxRetryReason = (raw: string): string => {
+  const reason = raw.trim();
+  if (reason === "") {
+    throw new MockApiError("INVALID_ARGUMENT", ADMIN_WRITE_REASON_REQUIRED_MESSAGE);
+  }
+  if (reason.length > OUTBOX_RETRY_REASON_MAX_LENGTH) {
+    throw new MockApiError("INVALID_ARGUMENT", OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE);
+  }
+  return reason;
+};
+
+/**
  * The planning-field refusals, decided in src/api/planningFields.ts so that this
  * side and `RestTaskaApi` cannot drift, and thrown here as the code the gateway
  * answers with. `stored` is the issue as it stands — `null` on a create —
@@ -459,6 +484,24 @@ const OUTBOX_PROCESSING_TIMEOUT_MINUTES = 5;
 const OUTBOX_NEW_OVERDUE_MINUTES = 10;
 
 /**
+ * How long a `PROCESSING` row has to have been stuck before the **retry** route
+ * will take it — a *third* threshold, and deliberately not equal to the one
+ * above it.
+ *
+ * This is the backend's shape, not a mock convenience. admin-service reads
+ * `admin.outbox-retry.stuck-threshold` (default **10m**) to decide eligibility,
+ * and reads `admin.outbox.processing-timeouts` (default **5m**, per producing
+ * service) to decide what the *summary* calls stuck. So the real gateway has a
+ * window in which a row is listed as "Stuck processing" and refused by retry,
+ * and this mock has to have one too — otherwise the only implementation a
+ * developer clicks through would be the one where the case cannot happen
+ * (docs/ai/API-DIVERGENCE.md).
+ *
+ * The ratio is the backend's; the units are the mock's, like the two above.
+ */
+const OUTBOX_RETRY_STUCK_MINUTES = 10;
+
+/**
  * How many events the mock's summary will list. The real default is 100; a
  * small number here is legitimate because the limit is server config rather
  * than contract, and it is the only way `notAllShown` — and the line the UI
@@ -468,8 +511,9 @@ const OUTBOX_SUMMARY_LIMIT = 5;
 
 /**
  * The backend's own sentences for why a row is problematic, word for word
- * (branch TAS-105). `reason` is prose, not an enum: the UI derives the category
- * from `status` and never parses these — they are seeded verbatim so that the
+ * (backend PR #141, TAS-105, merged 2026-08-27). `reason` is prose, not an enum:
+ * the UI derives the category from `status` and never parses these — they are
+ * seeded verbatim so that the
  * sentence the summary list carries on its category cell (in `title` and in the
  * cell's accessible name) is in mock mode exactly what the gateway will send.
  */
@@ -2272,10 +2316,14 @@ export class MockTaskaStore {
       // Not NOT_FOUND, and the wording is not ours. The gateway resolves the
       // service key before it looks for anything, and a key it does not know is
       // a rejected *argument* rather than a missing resource: measured
-      // 2026-08-25, `400 INVALID_ARGUMENT` with exactly this sentence — which is
-      // also what the Events section reads to tell "TAS-105 has not deployed
-      // yet" from a real failure (`OUTBOX_SUMMARY_UNSERVED_MESSAGE`). The mock
+      // 2026-08-25, `400 INVALID_ARGUMENT` with exactly this sentence. The mock
       // is the reference implementation, so it answers what the gateway answers.
+      //
+      // Until TAS-194 the Events section read one instance of this sentence —
+      // `Unknown service: outbox` — as "the problems summary has not deployed
+      // yet", because a gateway without that path routed it here. That gateway
+      // is gone and the branch with it; this refusal is now only ever about a
+      // service key nobody has.
       throw new MockApiError("INVALID_ARGUMENT", `Unknown service: ${serviceName}`);
     }
     const table = service.tables.find((item) => item.name === tableName);
@@ -2375,14 +2423,26 @@ export class MockTaskaStore {
   }
 
   /**
-   * Everything all three writes check before they look at the transition, in
-   * the order the server checks it.
+   * Everything all three writes check before they look at the transition.
    *
-   * The body first, because Spring validates `@Valid @RequestBody` before the
-   * controller method runs at all — so a blank reason on an account nobody has
-   * is a `400`, not a `404`. Then the path parameter, which is typed `UUID` and
-   * refused before auth-service ever sees it, exactly as `adminRow` refuses a
-   * non-uuid row id. Then the account itself.
+   * The body first, so a blank reason on an account nobody has is a `400` and
+   * not a `404`. Then the path parameter, which is typed `UUID` and refused
+   * before auth-service ever sees it, exactly as `adminRow` refuses a non-uuid
+   * row id. Then the account itself.
+   *
+   * Not "because Spring validates `@Valid @RequestBody` before the controller
+   * method runs", which is what this said until TAS-194 and is not what the
+   * gateway does. `AdminUserManagementController` takes each body as a
+   * `Mono<…RequestDto>` and passes it into
+   * `executor.execute(exchange, GLOBAL_ADMIN_REQUIRED, …)`, so the body is
+   * subscribed *after* the admin check, while `UUID userId` is bound before the
+   * method runs at all. On the wire the path is therefore the first thing
+   * refused and the only one refused without a token — measured on the retry
+   * route, whose controller has the same shape (see `retryOutboxEvent`).
+   *
+   * What is reproduced here is the half that is about this endpoint's own
+   * checks: the reason before the lookup. The mock has no auth leg to order
+   * against, so the id and the reason are in the order the checks read best.
    *
    * None of the three is reachable from the section, which sends a key it read
    * out of the table and a reason the field would not let be blank. They are
@@ -2420,9 +2480,11 @@ export class MockTaskaStore {
    * Events section can never contradict each other, which is the whole reason
    * the mock computes this rather than seeding a second, independent answer.
    *
-   * Not in the vendored contract: this is the TAS-105 branch's endpoint, and
-   * mock mode is the only place it answers today
-   * (docs/ai/API-DIVERGENCE.md).
+   * In the vendored contract and on the deployed gateway since backend PR #141
+   * (TAS-105) merged 2026-08-27 — this comment said the opposite until TAS-194,
+   * and the mock is not a stand-in for a missing route any more. What it is is
+   * the reference implementation: the same answer, from seeded rows, so the
+   * section can be clicked through without a gateway.
    */
   problematicOutboxSummary(): ProblematicOutboxSummary {
     const nowMs = Date.now();
@@ -2475,6 +2537,88 @@ export class MockTaskaStore {
     };
   }
 
+  /**
+   * `POST /admin/outbox/{service}/{eventId}/retry`, checked and applied the way
+   * admin-service checks and applies it (`OutboxRetryServiceImpl` and
+   * `OutboxRetryRepositoryImpl`, backend `develop` 2026-09-08).
+   *
+   * The reason before the event, so a blank reason against an event nobody has
+   * is a `400` and not a `404`. Then the id, typed `UUID` in the path and
+   * refused before admin-service sees it. Then the event, then eligibility.
+   *
+   * The gateway's own order is read off
+   * `AdminReadOnlyController.retryOutboxEvent` (backend `develop`): `eventId`
+   * is a `UUID` argument bound before the method body runs, while the request
+   * is a `Mono<RetryOutboxEventRequestDto>` subscribed *inside*
+   * `executor.execute(exchange, GLOBAL_ADMIN_REQUIRED, …)`. So the path is
+   * refused first, before authentication, and the body only after the admin
+   * check — probed on the deployed gateway with no token 2026-09-08: a
+   * malformed uuid answers `400 "Invalid request parameters"`, a blank reason
+   * answers `401`. It is *not* "the body before the path because Spring
+   * validates `@Valid @RequestBody` first", which is what this comment claimed
+   * and which describes a blocking controller this route does not have.
+   *
+   * The two orders differ only for a call malformed in both ways at once, which
+   * this section cannot make: it sends an id read out of the table and a reason
+   * the field would not let be blank.
+   *
+   * What the update does, field for field:
+   *
+   * - `status` → `NEW`;
+   * - `last_error_message` → `null`;
+   * - `processing_started_at` → `null`;
+   * - **`attempts` untouched.** It is not in the backend's `UPDATE`, so the
+   *   count carries over and the response reports the number the row already
+   *   had. A mock that reset it here would teach the one thing about this
+   *   endpoint an operator is most likely to assume and be wrong about.
+   *
+   * Eligibility is `FAILED`, or `PROCESSING` stuck longer than
+   * `OUTBOX_RETRY_STUCK_MINUTES` — which is *not* the threshold the summary uses
+   * to call a row stuck, on the backend or here. Everything else is
+   * `FAILED_PRECONDITION` in the server's own words, including the `NEW` rows
+   * this section's own list is full of.
+   */
+  retryOutboxEvent(service: string, eventId: string, reason: string): OutboxRetryResult {
+    requireOutboxRetryReason(reason);
+    if (!UUID_PATTERN.test(eventId)) {
+      throw new MockApiError("INVALID_ARGUMENT", `Outbox event id ${eventId} is not a UUID`);
+    }
+    // The gateway's path enum refuses an unknown service before this, and
+    // admin-service refuses it again from its own map of write datasources. The
+    // mock speaks the second one's sentence: it is the one a hand-made call to a
+    // service that has no outbox would actually meet.
+    if (!this.outboxServiceKeys().includes(service)) {
+      throw new MockApiError("INVALID_ARGUMENT", `Unsupported outbox service: ${service}`);
+    }
+    const row = this.outboxRowsFor(service).find((candidate) => String(candidate.id) === eventId);
+    if (!row) {
+      throw new MockApiError("NOT_FOUND", `Outbox event not found: ${eventId}`);
+    }
+
+    const stuckBefore = Date.now() - OUTBOX_RETRY_STUCK_MINUTES * 60_000;
+    const startedAt = row.processing_started_at;
+    const eligible =
+      row.status === "FAILED" ||
+      (row.status === "PROCESSING" &&
+        typeof startedAt === "string" &&
+        new Date(startedAt).getTime() < stuckBefore);
+    if (!eligible) {
+      throw new MockApiError(
+        "FAILED_PRECONDITION",
+        `Outbox event with status ${String(row.status)} is not eligible for retry`,
+      );
+    }
+
+    row.status = "NEW";
+    row.last_error_message = null;
+    row.processing_started_at = null;
+    // Read back out of the row, like the backend's second `findById`, rather
+    // than assembled from what was just written: the response is a statement
+    // about the row's state, and the two are the same only while nothing else
+    // touches it.
+    return { eventId, status: String(row.status), attempts: Number(row.attempts) };
+  }
+
   private outboxRowsFor(service: string): AdminRow[] {
     this.outboxEvents ??= this.seedOutboxEvents();
     return this.outboxEvents[service] ?? [];
@@ -2506,12 +2650,33 @@ export class MockTaskaStore {
    * PROCESSING row a couple of minutes old. Without them nothing here would
    * prove the summary applies a threshold rather than counting states.
    *
-   * The payloads carry the two readings the row card has to survive: JSON that
-   * parses (including one whose values arrive masked, which is what TAS-105's
-   * masking does *inside* the document), and the broken `JsonByteArrayInput{…}`
-   * string admin-service writes today, which does not parse and is therefore
-   * printed exactly as it came. The client never repairs it — the defect is the
-   * backend's and has to stay visible until TAS-105 removes it.
+   * One row sits in the gap between the summary's threshold and the retry
+   * route's — listed as stuck, refused by retry. See `project`'s
+   * `project.member_added` PROCESSING seed; it is the only place that
+   * divergence is reachable by clicking.
+   *
+   * Two of `project`'s rows are the *same* event type in the same state for the
+   * same reason, which is the last of its seeds and the one shape a summary of
+   * an incident always has. A row is not identified by its type and service,
+   * and until TAS-194 nothing here could show that.
+   *
+   * Every payload here is a JSON document, which is all a `jsonb` column can
+   * hold — including one whose values arrive masked, because admin-service
+   * masks *inside* the document and the result is still JSON.
+   *
+   * This seed used to carry one payload that was not JSON at all, an
+   * `JsonByteArrayInput{…}` string modelling admin-service's `value.toString()`
+   * fall-through for `jsonb`. Backend PR #141 (TAS-105) replaced that with an
+   * `instanceof Json → asString()` branch, and the probe
+   * docs/ai/API-DIVERGENCE.md required before closing the entry was taken on
+   * 2026-09-08: `GET /api/v1/readonly/issue/outbox_events` returned 20 rows and
+   * every `payload` was clean JSON, with no `JsonByteArrayInput` anywhere in the
+   * response. TAS-194 dropped the seed there, because a mock that keeps sending
+   * it teaches a wire format the gateway can no longer produce. The card's rule
+   * — parse as JSON and lay it out, anything else print verbatim — is untouched
+   * and is not a compensation; it is TAS-167's instruction to escalate rather
+   * than repair, and its verbatim branch is tested directly in
+   * src/screens/admin/columns.test.ts.
    */
   private seedOutboxEvents(): Record<string, AdminRow[]> {
     const base = Date.now();
@@ -2640,6 +2805,69 @@ export class MockTaskaStore {
           lastErrorMessage: "Connection refused: schema-registry.taska.svc.cluster.local/10.0.4.11:8081",
           payload: JSON.stringify({ projectId: projects[3]?.id ?? OPS_PROJECT_ID, archivedBy: MARK_ID }),
         },
+        // The row that lives in the gap between the section's two thresholds,
+        // and the reason `OUTBOX_RETRY_STUCK_MINUTES` exists at all: old enough
+        // for the summary to call it "Stuck processing" (past 5m) and too young
+        // for the retry route to take it (short of 10m). Retrying it is a
+        // `FAILED_PRECONDITION`, in the server's own words, on a row that looks
+        // exactly as retryable as the ones above it.
+        //
+        // Its shape is the one that produces this on a real stand: an event
+        // created two days ago, requeued by somebody, picked up minutes ago and
+        // still going. That is also why `attempts` is 6 — the count survives a
+        // retry, so a requeued event carries its history forward.
+        //
+        // Appended rather than inserted: the id is derived from the position in
+        // this array, and a row's address has to survive a reload and a copied
+        // link.
+        {
+          eventType: "project.member_added",
+          aggregateType: "Project",
+          aggregateId: projects[0]?.id ?? TASKA_PROJECT_ID,
+          status: "PROCESSING",
+          minutesAgo: 700,
+          processingMinutesAgo: 7,
+          attempts: 6,
+          payload: JSON.stringify({ projectId: projects[0]?.id ?? TASKA_PROJECT_ID, userId: MARK_ID, role: "ADMIN" }),
+        },
+        // The second `project.archived` failure, and the pair is the point: same
+        // service, same event type, same category, same broker error, different
+        // event. Everything the Problems row says about one of these it says
+        // about the other — which is precisely the shape an outbox incident
+        // takes, one fault stopping every event of one kind on one service, and
+        // it is what the gateway itself answered on 2026-09-08 (two `FAILED`
+        // events on `project` sharing a `lastErrorMessage`, DESIGN.md §5.8).
+        //
+        // Without it the seed could not reach the case that broke the retry
+        // confirmation: two announcements identical to the byte, and a live
+        // region that does not change is not read out a second time. The five
+        // rows here happened to have five distinct type-and-service pairs, so
+        // every test in the suite passed over the defect. Seeded rather than
+        // argued about, so the pin in `e2e/admin-events.spec.ts` has a real
+        // pair of rows to retry.
+        //
+        // An hour younger than the archive failure above it, so the two are
+        // neighbours in an oldest-first list — the reader sees the collision
+        // rather than having to hunt for it — and both still fit inside
+        // `OUTBOX_SUMMARY_LIMIT`. What that pushes off the end is the issue
+        // service's 7h `FAILED` row; the four rows the mock's own tests name by
+        // status and service are all still listed.
+        //
+        // Appended rather than inserted, for the reason the row above gives:
+        // the id is derived from the position in this array.
+        {
+          eventType: "project.archived",
+          aggregateType: "Project",
+          aggregateId: projects[2]?.id ?? MOB_PROJECT_ID,
+          status: "FAILED",
+          minutesAgo: 1440,
+          processingMinutesAgo: 1438,
+          attempts: 5,
+          // The same fault as the other archive failure, word for word: one
+          // registry that cannot be reached does not write two different errors.
+          lastErrorMessage: "Connection refused: schema-registry.taska.svc.cluster.local/10.0.4.11:8081",
+          payload: JSON.stringify({ projectId: projects[2]?.id ?? MOB_PROJECT_ID, archivedBy: MARK_ID }),
+        },
       ]),
       issue: rowsOf("issue", [
         ...published(
@@ -2699,10 +2927,7 @@ export class MockTaskaStore {
           attempts: 5,
           lastErrorMessage:
             "org.apache.kafka.common.errors.RecordTooLargeException: The message is 2097244 bytes when serialized which is larger than 1048576",
-          // The defect as the gateway serves it today: admin-service prints the
-          // jsonb column through a wrapper's toString, so what arrives is not
-          // JSON at all. It stays exactly as it came — see the card's rule.
-          payload: `JsonByteArrayInput{{"issueId":"${issues[4]?.id ?? ""}","from":"IN_PROGRESS","to":"DONE"}}`,
+          payload: JSON.stringify({ issueId: issues[4]?.id ?? "", from: "IN_PROGRESS", to: "DONE" }),
         },
         {
           eventType: "issue.commented",
@@ -3372,5 +3597,13 @@ export class MockTaskaApi implements TaskaApi {
 
   async resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange> {
     return wait(this.store.resetCredentialLockout(userId, reason));
+  }
+
+  async retryOutboxEvent(
+    service: RetryableOutboxService,
+    eventId: string,
+    reason: string,
+  ): Promise<OutboxRetryResult> {
+    return wait(this.store.retryOutboxEvent(service, eventId, reason));
   }
 }

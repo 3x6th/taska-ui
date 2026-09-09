@@ -31,6 +31,198 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   neighbouring one in the same diff makes the removal harder to review, not
   easier. `refused` itself needs no change; TAS-196 did fix its *subject*, which
   named the account being blocked where it meant the reader.
+- **A refetch can still remove a row from under a focused control, with no write
+  involved** (`art-director` / `release-reviewer`, 2026-09-08, TAS-194). The
+  retry half of this is **done**: a rescue now restores focus to the list when a
+  late answer's refetch removes the trigger focus was sitting on, and only then,
+  so it cannot steal from an operator who moved. What is left is the wider case,
+  which no write reaches: `src/main.tsx` sets only `staleTime` and `retry`, so
+  `refetchOnWindowFocus` is on, and any blur-and-return after twenty seconds can
+  drop a row under a focused control. A rescue scoped to the retry path leaves
+  that standing, so the eventual fix belongs to the section.
+
+  **Why no e2e pins the retry half, stated as the measurement rather than as an
+  impossibility.** `MockTaskaApi`'s `wait(value, 140)` is a hard-coded literal
+  with no latency knob, so a spec must win a 140ms race. It is not unwinnable —
+  the art director won it six times out of six, two themes, two viewports — it is
+  unwinnable *reliably on shared CI*, and a spec that gets skipped in three
+  months is worse than none because it looks like coverage. The enabling change
+  is a latency knob on `wait`, not the spec. **Seven mutants dying in jsdom against six
+  tests, six of them to a test of their own**, is the coverage that exists — the
+  count grew twice while this entry was being written, which is its own small
+  argument for quoting a sweep rather than a memory. That it is jsdom is the
+  honest limit, and jsdom does exercise the one thing at issue: the ordering
+  between React's commit and query-core's notification.
+
+  An earlier version of this entry said the case was "not reproducible on the
+  mock". It is: `MockTaskaStore.retryOutboxEvent` mutates synchronously and the
+  answer lands 140ms later. Saying "we cannot test this" in a durable document is
+  how a filed item becomes a closed door — and this file spent the same week
+  criticising `API-DIVERGENCE.md` for a claim of exactly that shape.
+- **Six icon buttons name themselves with `title` alone** (`art-director`,
+  2026-09-08, TAS-194 — widened from one site to the set it found). TAS-194 fixed
+  the pattern inside `Modal`; `title` is the weakest source in the
+  accessible-name order and DESIGN.md §7 states the rule outright — «Иконки-кнопки
+  без текста — обязателен `aria-label`». The rest:
+  `BoardScreen.tsx:435` "Back to projects", `:542` "Manage labels", `:799`
+  "Create issue", `:1121` "Delete", `:1124` "Close", and
+  `NotificationsBell.tsx:109` "Notifications" — which §7 additionally wants
+  carrying the unread count in its label, already an open item in that section's
+  recorded gaps. Fix them as a set: an entry naming only `:1124` would authorise
+  a change that leaves the button three pixels away from it still broken.
+  `ThemeToggle.tsx:8` already ships the `aria-label` + matching `title` pair, so
+  this is an in-repo precedent rather than a reading of the spec.
+- **The Users section announces a name, and two accounts can share one**
+  (`art-director`, 2026-09-08, TAS-194 verdict). `AdminUsersSection.tsx:341`
+  announces `${personLabel(user)} is now ${status}.`, and `personLabel` prefers
+  `displayName` — so two accounts with the same display name, ordinary in any
+  real directory, produce a byte-identical confirmation, and a `role="status"`
+  whose text does not change is not re-announced. **Exactly the defect TAS-194
+  fixed in Events, one heading away and already shipped.** The row already
+  carries the unique `@login`, so the fix is the same shape: put the
+  distinguishing token in the sentence. Out of TAS-194's scope; filed so the
+  lesson does not stay local to Events.
+- **Neither live region is ever cleared, so two identical announcements are
+  heard once** (`art-director`, 2026-09-08). This is the residue TAS-194's fix
+  does not reach: naming the event makes *different* events distinguishable, and
+  a genuine repeat — retry a row, the server answers with a status that keeps it
+  retryable, retry the same row again — still produces the same string and the
+  same silence. `AdminScreen.test.tsx` pins that state as supported. Related and
+  worth amending together: the existing entry saying `role="status"` never being
+  cleared is "harmless to a screen reader, which announces the *change*" — TAS-194
+  falsified the comfortable half of that sentence, and it should say so.
+- **A comment gives the wrong reason for a right decision** (`art-director`,
+  2026-09-08, TAS-194 verdict). `PrimaryKeyCell` justifies its single template
+  string by "the accessible name is assembled from the nodes" — but the button
+  carries an explicit `aria-label={`Copy ${value}`}`, so the content plays no
+  part in the name. The concatenation is right; the stated reason is not.
+- **A pagination test races its own clamp** (`frontend-builder`, 2026-09-08,
+  seen once in five full runs during TAS-194). `AdminScreen.test.tsx`'s "lands on
+  the last page when the address names one past the end" asserts
+  `lastRowsQuery()?.page` as soon as the heading appears, without waiting for the
+  clamp's follow-up request — `expected 999 to be 2`. In the Data section's
+  pagination, untouched by TAS-194, and it passed on the clean tree and in three
+  consecutive runs after. A flake in the test, not in the product, but a flake
+  that will be blamed on whatever diff is open when it next fires.
+- **The mock checks the retry reason before the uuid; the gateway does the
+  opposite** (`frontend-builder`, 2026-09-08, TAS-194). Measured on the deployed
+  gateway: a malformed uuid is refused **before** auth (`400 "Invalid request
+  parameters"`), a blank reason **after** it (`401`) — path arguments bind before
+  the handler's `Mono<…RequestDto>` is subscribed inside the security executor.
+  The mock refuses the reason first. Reachable only by a call malformed in both
+  ways at once, which no UI path can produce, and the comment now states the
+  real order instead of hiding it behind a false mechanism. Two other mock sites
+  carry the same shape; change all three together or none.
+- **The overflow fade is painted behind the table, so an opaque row covers it**
+  (`frontend-builder`, 2026-09-08, TAS-194). Inherited from the Users recipe and
+  not new — but the Problems list flashes a row on every successful write, so
+  the affordance is hidden on exactly the row that just changed, for the two
+  seconds someone is most likely to be looking at it. Hover does the same.
+  Whoever revisits the recipe should decide whether the band belongs above the
+  rows rather than beneath them.
+- **One e2e assertion is the only thing keeping the board and the server in
+  agreement after a retry** (`release-reviewer`, 2026-09-08, TAS-194). Removing
+  `queryClient.invalidateQueries` survived the entire unit suite — 74 of 74
+  passed — and was killed only by `e2e/admin-events.spec.ts`'s
+  `toHaveCount(before - 1)`. **Superseded inside the same story**: the dismissal
+  tests added for the focus guard count summary reads directly, so the mutant now
+  dies in the unit suite too. Kept because the lesson outlived its instance — a
+  write's agreement with the server can rest on one assertion in the slowest
+  suite, and nothing announces when it does.
+- **The audit-after-commit ordering has no watcher** (`release-reviewer`,
+  2026-09-08, TAS-194). The retry dialog's most important sentences — which arms
+  may report a write that actually landed — are derived from the order of
+  operations in `completeRetry` on a moving `develop`, and the contract states
+  none of it. TAS-200 covers the threshold half of that exposure; this half is
+  covered by nothing. A backend change to that ordering would silently make the
+  dialog's wording wrong, and nothing here would notice.
+- **`userWriteFailure` now serves two sections and is named for one**
+  (`frontend-builder`, 2026-09-08, TAS-194). The outbox retry dialog imports it
+  from `src/screens/admin/users.ts` rather than copying it, which is right — its
+  ordering reasoning (`isConflict` before the 4xx arm, because
+  `FAILED_PRECONDITION` arrives on a 400) is the exact subtlety the retry's most
+  common refusal depends on, and two copies would be two chances to drift. But
+  the name now under-describes it, and so does its home. Renaming and moving it
+  under an Events story would be widening that story at merge time; it wants its
+  own small pass.
+- ~~**The Retry column is off the right edge on a phone with no fade
+  affordance.**~~ **Withdrawn the same day it was written — the art director
+  blocked on it and was right.** This line argued the Problems table was already
+  wide enough to scroll and already had an off-screen chevron, so the affordance
+  could wait. §5.8 pre-empts that argument in the same paragraph that states the
+  recipe: «там за краем список, а не контрол, и цена ошибки другая». This story
+  put the section's **only write** behind that edge, so the class of the problem
+  changed. And it is not a phone issue: measured at **1440**, one of the three
+  verified viewports, the table now overflows its container by 28px where it fit
+  exactly before, and what falls off is the chevron that opens the row. Fixed
+  inside TAS-194 by scoping the Users `max-width` and sharing the existing
+  three-layer background with the Events plane — one recipe, two callers.
+- **`main.page-shell` overflows with `overflow: hidden` at short viewports, so
+  content goes off with no way back** (`frontend-builder`, 2026-09-08, TAS-194 —
+  found while refusing to write a docblock note whose premises measured false).
+  At **844×390** — a phone in landscape, and outside the three viewports the gate
+  checks — the admin plane overflows `main.page-shell` by 47px. That box is
+  `overflow: hidden`, and the document's `scrollHeight` equals its `clientHeight`
+  at every viewport, so the shell never scrolls for a user: no scrollbar, no
+  wheel path, and the section header stays off screen until a resize or a route
+  change. The Problems list is squeezed to its **2px** floor there and sits
+  entirely below the fold.
+
+  Two things this makes concrete for whoever takes it. The box is
+  programmatically scrollable while being user-unscrollable, which is why
+  `focus()` can move it and a person cannot move it back — so any "just add
+  `preventScroll`" fix is wrong here: it would park focus somewhere unreachable
+  instead of somewhere merely surprising. And the growth path is not the counts
+  matrix: `.admin-events-list` is `flex: 0 1 auto` and absorbs rows into its own
+  overflow — measured clean at +10 rows — the shell only takes it once that
+  block hits its floor. **Two separate numbers, and an earlier version of this
+  line ran them together:** the floor is reached at +20 rows at 1440×900 (shell
+  delta 93), +30 at 1920×1080, +20 at 390×844 — while +40 is merely where the
+  693px figure was measured, not where the floor is. Measured clean at 1440×760,
+  1440×700, 1280×620, 1024×560 and 390×500; failing at 844×390 with the ordinary
+  seed.
+
+  **The docblock note added in TAS-194 is a mitigation, not a fix.** It points
+  the next reader at the layout rather than at `preventScroll`, which is worth
+  having, and does nothing at all for an operator who meets this.
+- **The shared `Modal` cannot scroll, so a tall failure arm can put its primary
+  button below the viewport** (`art-director`, 2026-09-08, TAS-194). Measured on
+  a `PROCESSING` row at 390×844 with the `server` arm's prose: modal 781px tall,
+  top 93, primary button bottom at **857** against an `innerHeight` of 844.
+  `.modal-layer` is `position: fixed` with `overflow: visible` and no
+  `padding-bottom`, `.modal` is `overflow: hidden`, and nothing on the page
+  scrolls. Nobody is trapped — Cancel, the header ✕ and the backdrop are all
+  reachable, and `⌘/Ctrl+Enter` submits. **Two corrections to an earlier version
+  of this line, one in each direction.** It said the pointer route does not
+  exist; measured again at 390×844 the primary button's bottom is 852.7 against
+  844, so 25 of its 34px are visible and hit-testable — clipped, not absent. And
+  it understated the real case: a phone's *visual* viewport is 60–100px shorter
+  than the emulated 844 while the dialog's `padding-top: 11vh` is measured
+  against the large viewport, so on a real device the button does go away. Two
+  facts worth carrying: the Users dialog with its longest arm ends at 703 and
+  does not overflow, so the shared component's missing `overflow-y` is reachable
+  **only** through this dialog today; and shortening the `PROCESSING` warning
+  bought 37px, which is what turned "unreachable" into "clipped".
+  **And the fix is smaller than "pre-existing" suggests** (`frontend-builder`,
+  2026-09-08): `.modal` is `overflow: hidden` with `width: 480px` and **no
+  `max-height` at all** (`styles.css:4970`), inside a fixed `.modal-layer` with
+  `padding-top: 11vh`. A `max-height` plus `overflow-y: auto` on the body is a
+  contained change to a box we own — not the layout redesign the neighbouring
+  `main.page-shell` item needs. The builder argued for taking it inside TAS-194
+  on the grounds that this story's own dialog is what reaches it; deferred
+  anyway, because it touches a component three other dialogs use and the art
+  director scoped it out on purpose. That is a sequencing call, not a
+  disagreement about the defect.
+  Pre-existing in the shared component;
+  TAS-194 is simply the story that built the tallest dialog in the product and
+  so made the arm reachable. `overflow-y: auto` plus `padding-bottom: 11vh` on
+  `.modal-layer` is the fix, and it belongs to whoever owns `Modal` rather than
+  to an Events story.
+- **`--fg-3` measures 2.54 / 2.60 on a flashed row**, for the `—` null mark
+  (`frontend-builder`, 2026-09-08, TAS-194). Pre-existing and not caused by the
+  flash: it is already 3.14 / 3.05 on plain `--surface`, under §7's floor, and
+  the Users table has flashed the same dash since TAS-186. Belongs to the
+  `--fg-3` pass this file already asks for rather than to a spot fix.
 - **`RestIssue` tells the truth about seven fields and lies about the rest**
   (`api-contract-guard`, 2026-09-08, TAS-195 re-verdict). It is
   `Omit<Issue, seven fields> & { those seven restated optional }`, so the type

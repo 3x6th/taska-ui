@@ -1233,11 +1233,11 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * The Events section (TAS-167). The summary endpoint exists only in the
-   * TAS-105 branch of the backend, so mock mode is the only place it answers at
-   * all — and it is derived from the very rows the Outbox journal reads, so the
-   * two views of the section can never disagree. That derivation is what these
-   * tests are about.
+   * The Events section (TAS-167). The summary endpoint is deployed — backend
+   * PR #141 (TAS-105) merged 2026-08-27 — and this is the reference
+   * implementation of it: derived from the very rows the Outbox journal reads,
+   * so the two views of the section can never disagree. That derivation is what
+   * these tests are about.
    */
   describe("problematic outbox summary", () => {
     it("gives exactly auth, project and issue an outbox_events table", async () => {
@@ -1330,26 +1330,206 @@ describe("MockTaskaApi", () => {
       }
     });
 
-    it("seeds a payload that parses and one that does not", async () => {
+    it("seeds payloads that are all documents, which is all a jsonb column can hold", async () => {
       const { rows } = await api.listAdminRows({ service: "issue", table: "outbox_events", pageSize: 500 });
       const payloads = rows.map((row) => String(row.payload));
 
-      // The defect admin-service ships today: the jsonb column comes through a
-      // wrapper's toString, so it is not JSON at all. The card prints it
-      // verbatim, and it must stay reachable until TAS-105 removes it.
-      expect(payloads.some((payload) => payload.startsWith("JsonByteArrayInput{"))).toBe(true);
-      expect(payloads.some((payload) => payload.startsWith("{"))).toBe(true);
+      // This used to assert the opposite for one row. The seed carried a
+      // `JsonByteArrayInput{…}` payload, because admin-service served every
+      // jsonb column through a wrapper's toString and what arrived was not JSON.
+      // Backend PR #141 (TAS-105) fixed that, and the probe that closes the
+      // divergence entry was taken on 2026-09-08: 20 live `issue.outbox_events`
+      // rows, every payload clean JSON, no `JsonByteArrayInput` in the response.
+      // So the mock stopped modelling a wire format the gateway cannot produce.
+      // The card's rule did not change and is not a compensation — a payload
+      // that does not parse is still printed verbatim, and that branch is tested
+      // where it lives, in src/screens/admin/columns.test.ts.
+      expect(payloads.length).toBeGreaterThan(0);
+      for (const payload of payloads) {
+        expect(() => JSON.parse(payload) as unknown).not.toThrow();
+      }
     });
 
     it("seeds a payload whose values arrived masked", async () => {
       const { rows } = await api.listAdminRows({ service: "auth", table: "outbox_events", pageSize: 500 });
 
-      // TAS-105 masks fields *inside* the document, so a masked payload is
+      // admin-service masks fields *inside* the document, so a masked payload is
       // still valid JSON — which is what makes it fall out of the card's one
       // rule with no special case.
       const masked = rows.find((row) => String(row.payload).includes("****"));
       expect(masked).toBeDefined();
       expect(() => JSON.parse(String(masked!.payload)) as unknown).not.toThrow();
+    });
+  });
+
+  /**
+   * Retrying a stuck outbox event (TAS-194) —
+   * `POST /admin/outbox/{service}/{eventId}/retry`, backend TAS-106.
+   *
+   * Every rule below is admin-service's own, read out of `OutboxRetryServiceImpl`
+   * and `OutboxRetryRepositoryImpl` on `develop` at 2026-09-08. The contract
+   * states none of them: it declares `400/401/403/404` and a response of
+   * `{eventId, status, attempts}`, and everything about *which* events may be
+   * retried and *what changes* lives in the service. The mock is where those
+   * rules are demonstrable without a broken queue on a real stand.
+   */
+  describe("retrying an outbox event", () => {
+    const failedEvent = async () => {
+      const summary = await api.getProblematicOutboxSummary();
+      const event = summary.events.find((candidate) => candidate.status === "FAILED");
+      expect(event).toBeDefined();
+      return event!;
+    };
+
+    it("puts a failed event back into NEW and clears the error it stopped on", async () => {
+      const event = await failedEvent();
+      expect(event.serviceKey === "auth" || event.serviceKey === "project" || event.serviceKey === "issue").toBe(true);
+
+      const result = await api.retryOutboxEvent(
+        event.serviceKey as "auth" | "project" | "issue",
+        event.id,
+        "Kafka is back",
+      );
+
+      expect(result).toEqual({ eventId: event.id, status: "NEW", attempts: event.attempts });
+      // The journal reads the same rows, so the change has to be visible there
+      // too — the two views of this section are one store.
+      const row = await api.getAdminRow({ service: event.serviceKey, table: "outbox_events", id: event.id });
+      expect(row.status).toBe("NEW");
+      expect(row.last_error_message).toBeNull();
+      expect(row.processing_started_at).toBeNull();
+    });
+
+    /**
+     * The single most assumable thing about this endpoint, and it is false:
+     * `attempts` is absent from the backend's `UPDATE`, so the count survives
+     * the retry. A mock that reset it would teach the opposite of the server.
+     */
+    it("does not reset the attempt count", async () => {
+      const event = await failedEvent();
+      expect(event.attempts).toBeGreaterThan(0);
+
+      const result = await api.retryOutboxEvent(event.serviceKey as "auth", event.id, "Retry after incident");
+
+      expect(result.attempts).toBe(event.attempts);
+      const row = await api.getAdminRow({ service: event.serviceKey, table: "outbox_events", id: event.id });
+      expect(row.attempts).toBe(event.attempts);
+    });
+
+    /**
+     * The refusal an operator meets without having done anything wrong. `NEW` is
+     * where retry *puts* an event, so retrying one is `FAILED_PRECONDITION` —
+     * which reaches the dialog's "conflict" sentence through `isConflict`'s code
+     * arm, since on the wire it is a 400.
+     */
+    it("refuses an overdue NEW event, with the server's own sentence", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+      const overdue = summary.events.find((candidate) => candidate.status === "NEW");
+      expect(overdue).toBeDefined();
+
+      await expect(
+        api.retryOutboxEvent(overdue!.serviceKey as "auth", overdue!.id, "Please go"),
+      ).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: "Outbox event with status NEW is not eligible for retry",
+      });
+    });
+
+    /**
+     * The divergence this whole feature has to be honest about, reachable here
+     * because the seed puts a row in the gap on purpose. admin-service calls a
+     * `PROCESSING` row stuck after the producing service's timeout (5m) and
+     * retryable only after its own, longer one (10m), so between the two the
+     * summary lists an event that the retry route refuses — and no client can
+     * predict which, since both numbers are server configuration
+     * (docs/ai/API-DIVERGENCE.md).
+     */
+    it("lists a briefly stuck PROCESSING event and still refuses to retry it", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+      const briefly = summary.events.find(
+        (event) => event.status === "PROCESSING" && event.serviceKey === "project",
+      );
+      // Listed: the summary's own threshold has passed.
+      expect(briefly).toBeDefined();
+      expect(briefly!.reason).toContain("PROCESSING");
+
+      // And refused: the retry route's has not.
+      await expect(api.retryOutboxEvent("project", briefly!.id, "It looks stuck")).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: "Outbox event with status PROCESSING is not eligible for retry",
+      });
+    });
+
+    it("retries a PROCESSING event that has been stuck long enough", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+      const longStuck = summary.events.find(
+        (event) => event.status === "PROCESSING" && event.serviceKey === "issue",
+      );
+      expect(longStuck).toBeDefined();
+
+      await expect(api.retryOutboxEvent("issue", longStuck!.id, "Consumer restarted")).resolves.toMatchObject({
+        status: "NEW",
+      });
+    });
+
+    it("refuses a published event, which is not in the summary at all", async () => {
+      const { rows } = await api.listAdminRows({ service: "auth", table: "outbox_events", pageSize: 500 });
+      const published = rows.find((row) => row.status === "PUBLISHED");
+      expect(published).toBeDefined();
+
+      await expect(api.retryOutboxEvent("auth", String(published!.id), "Send it again")).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+      });
+    });
+
+    it("answers NOT_FOUND for an event this service does not have", async () => {
+      // A real uuid that is simply not in this outbox — and specifically not the
+      // INVALID_ARGUMENT below, which is what a malformed one gets.
+      await expect(
+        api.retryOutboxEvent("auth", "00000000-0000-4000-8000-000000000000", "Nothing there"),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("refuses an id the gateway's path could not carry", async () => {
+      // `eventId` is `format: uuid` in the contract, so a non-uuid is rejected
+      // before admin-service is reached — the same wall `adminRow` puts up.
+      await expect(api.retryOutboxEvent("auth", "not-a-uuid", "Try it")).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+    });
+
+    /**
+     * A blank reason against an event nobody has is a 400, not a 404: the reason
+     * is checked before the event is looked up, and the obvious implementation
+     * has it the other way round.
+     *
+     * Not because "Spring validates `@Valid @RequestBody` before the controller
+     * method runs" — the gateway's controller takes the body as a `Mono` and
+     * subscribes it after the admin check (`MockTaskaApi.retryOutboxEvent`
+     * records the measurement). This pins the mock's own order, which is the
+     * thing the two API modes are compared on.
+     */
+    it("checks the reason before the event, and refuses a blank one", async () => {
+      await expect(
+        api.retryOutboxEvent("auth", "00000000-0000-4000-8000-000000000000", "   "),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "A reason is required" });
+    });
+
+    /**
+     * 1000, not the user writes' 550. Two contract limits, two guards — the
+     * point of this case is that the *number* is this route's own, so a build
+     * that folded the two families into one would fail here at 551.
+     */
+    it("takes a reason up to 1000 characters and refuses 1001", async () => {
+      const event = await failedEvent();
+
+      await expect(
+        api.retryOutboxEvent(event.serviceKey as "auth", event.id, "x".repeat(1001)),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "A reason is at most 1000 characters" });
+      // 551 would be refused by the admin *user* writes and must not be here.
+      await expect(api.retryOutboxEvent(event.serviceKey as "auth", event.id, "x".repeat(1000))).resolves.toMatchObject(
+        { status: "NEW" },
+      );
     });
   });
 
@@ -1535,11 +1715,12 @@ describe("MockTaskaApi", () => {
       await expect(api.blockUser("not-a-uuid", "Nobody")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     });
 
-    it("validates the body before it looks for the account, the way Spring does", async () => {
-      // `@Valid @RequestBody` runs before the controller method, so a blank
-      // reason on an account nobody has is a 400 and not a 404. Unreachable
-      // from the section, and pinned because the mock is what the two modes are
-      // compared against.
+    it("validates the body before it looks for the account", async () => {
+      // A blank reason on an account nobody has is a 400 and not a 404.
+      // Unreachable from the section, and pinned because the mock is what the
+      // two modes are compared against. The reason is *not* the one this
+      // comment used to give — see `adminUser` in MockTaskaApi.ts for what the
+      // gateway actually does with a body and a path.
       await expect(
         api.blockUser("0f3d5cb0-0000-0000-0000-000000000000", "  "),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });

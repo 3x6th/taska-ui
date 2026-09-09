@@ -723,3 +723,26 @@ export interface ProblematicOutboxSummary {
   counts: ProblematicOutboxCounts[];
   notAllShown: boolean;
 }
+
+/**
+ * What `POST /admin/outbox/{service}/{eventId}/retry` says the event is now
+ * (`RetryOutboxEventResponseDto`) — the state read back out of the row *after*
+ * the update, not an echo of what was asked for.
+ *
+ * `status` is an open `string`, like every other outbox status in this file and
+ * for the same reason: the contract types it as a bare string with no enum. On
+ * the backend as it stands the answer is always `NEW` — the UPDATE sets it —
+ * but the client reports what it was told rather than what it expected, so a
+ * backend that grows a `REQUEUED` state prints that instead of lying.
+ *
+ * `attempts` is `null` when the response omitted it: the schema marks it
+ * `nullable`, and the field is the row's own count, which the retry does **not**
+ * reset — `attempts` is absent from the UPDATE (`OutboxRetryRepositoryImpl`,
+ * backend `develop`). So the number that comes back is the number that was
+ * already there, and nothing in the UI may present it as a fresh start.
+ */
+export interface OutboxRetryResult {
+  eventId: string;
+  status: string;
+  attempts: number | null;
+}
