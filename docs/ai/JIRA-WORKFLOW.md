@@ -46,7 +46,8 @@ states are not.
 | [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | In Progress | decided not to build a method yet, and why — `API-DIVERGENCE.md`, "The board route is declared, unimplemented, and narrower than the board it is named for" (PR #47) |
 | [TAS-196](https://jira.ozero.dev/browse/TAS-196) | The three admin writes are deployed; retire the undeployed-route compensation and refresh the contract snapshot | Done | merged (PR #50) |
 | [TAS-193](https://jira.ozero.dev/browse/TAS-193) | Issue watchers — the `me` pair, the count and the list; the two project-`ADMIN` routes deferred to TAS-137 | To Do | not started |
-| [TAS-194](https://jira.ozero.dev/browse/TAS-194) | Retry an outbox event from Events, and retire the TAS-105 summary compensation with it | To Do | not started |
+| [TAS-194](https://jira.ozero.dev/browse/TAS-194) | Retry an outbox event from Events, and retire the TAS-105 summary compensation with it | Done | merged (PR #54) |
+| [TAS-200](https://jira.ozero.dev/browse/TAS-200) | The summary calls an event stuck five minutes before retry will accept it | To Do | backend ask, filed from TAS-194 |
 | [TAS-195](https://jira.ozero.dev/browse/TAS-195) | Drop the N+1 hydration in `listIssues` — the gateway's list DTO is whole issues now | Done | merged (PR #52) |
 | [TAS-173](https://jira.ozero.dev/browse/TAS-173) | An unknown enum value from the backend must not blank the screen | To Do | **was `Done` without being built** — reopened 2026-09-08, see below |
 | [TAS-197](https://jira.ozero.dev/browse/TAS-197) | `GET /users/me` answers `UNSPECIFIED` for a locked account | To Do | backend ask, filed from TAS-196 |
@@ -306,6 +307,50 @@ criteria is the one that most needs the record.
   findings on TAS-125, three of which its reviewers had not raised.
 - The story stays open with the blocking condition named, and
   `npm run contract:pins` goes loud when PR #118 moves or merges.
+
+### TAS-194 — the retry, and the six rounds that were not about the retry
+
+- **The brief was wrong about the guard and the builder refused it.** I said the
+  rule was about the `service` in the path. It is mostly about **status**: the
+  server takes `FAILED` and a long-enough `PROCESSING`, and refuses `NEW` and
+  `PUBLISHED` — while "Overdue NEW" is one of the three categories this screen
+  exists to show. A button drawn from "this row is problematic" would have
+  failed on a whole category of the list. Read out of `OutboxRetryServiceImpl`,
+  not out of the contract, which states none of it.
+- **Two thresholds disagree** — stuck at five minutes in the summary, retryable
+  at ten in the retry, both server config the client never sees. Hence a warning
+  before the press, the server's own sentence after it, and no client-side
+  clock. [TAS-200](https://jira.ozero.dev/browse/TAS-200), where the durable ask
+  is to state the eligibility rule in the contract rather than to align two
+  numbers: today the backend can change which events are retryable without
+  changing the contract.
+- **Two compensations retired on probes rather than on merge dates.** The
+  `jsonb` seed is the one to remember: the builder refused to delete it on the
+  merge date and asked for the probe first. Twenty rows read, every payload
+  clean JSON, then the deletion. The order was measurement → removal, which is
+  what the file had asked for twice and not got.
+- **Six rounds of verdicts, none about whether retry works.** The overflow band
+  the section's only write ended up behind; a dialog closing over a pending
+  write, in defiance of its own docblock; then the fix for that stealing focus;
+  then the fix for *that* losing focus to `<body>`; then a one-line fix for the
+  arm's lifetime silently disarming two mutants, because the dismissal's own
+  read spent the arm while the button was still connected. Each fix was correct
+  and each created the next finding.
+- **A reviewer's own suggestion would have shipped a no-op**, and the builder
+  proved it by making that exact version a mutant rather than by arguing. Worth
+  keeping: the reviewer had run it green in its own copy. A green run confirmed
+  the change was invisible, not that it was right.
+- **The defect no verdict could find.** Asked before merge whether anything
+  should have been written differently, the builder named the confirmation: two
+  rows sharing a service and an event type produced a byte-identical
+  announcement, and an unchanged `role="status"` is not re-announced. The
+  fixture had no colliding pair, so no test could show it and no reviewer
+  reading a diff could see a case the fixture lacked. **Ask the builder what it
+  doubted. It is the one question a diff cannot answer.**
+- Not fixed and said plainly in the PR body rather than implied: `main.page-shell`
+  overflowing with `overflow: hidden` at 844×390, the shared `Modal` having no
+  `max-height`, the same announcement defect live in Users, and no e2e on the
+  focus rescue.
 
 ### TAS-195 — the board stops asking twice, and four blockers turn out to be dead
 
