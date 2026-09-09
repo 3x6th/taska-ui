@@ -45,6 +45,8 @@ states are not.
 | [TAS-192](https://jira.ozero.dev/browse/TAS-192) | `.form-error` measures 3.17:1 in ten places; make the TAS-190 notice the product's error box | To Do | not started |
 | [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | Done | merged (PRs #47, #58) |
 | [TAS-201](https://jira.ozero.dev/browse/TAS-201) | `BoardIssueDto` drops `issueType`, `priority` and `statusKey` that `IssueBoardResponse` already carries | To Do | backend ask, filed from TAS-191 |
+| [TAS-202](https://jira.ozero.dev/browse/TAS-202) | Five measured places where a screen pays requests for what it already holds, or silently loses what did not fit one page | To Do | the request-shape debt, consolidated 2026-09-09 from six `BACKLOG.md` lines and one audit; not started |
+| [TAS-203](https://jira.ozero.dev/browse/TAS-203) | The project list carries no counts, so nine cards cost nine reads | To Do | backend ask, filed from TAS-202 |
 | [TAS-196](https://jira.ozero.dev/browse/TAS-196) | The three admin writes are deployed; retire the undeployed-route compensation and refresh the contract snapshot | Done | merged (PR #50) |
 | [TAS-193](https://jira.ozero.dev/browse/TAS-193) | Issue watchers — the toggle, the count, the list **and** the two project-`ADMIN` routes the story had deferred | Done | merged (PR #56) |
 | [TAS-194](https://jira.ozero.dev/browse/TAS-194) | Retry an outbox event from Events, and retire the TAS-105 summary compensation with it | Done | merged (PR #54) |
@@ -352,6 +354,45 @@ a stale snapshot, before anything had been read.
   had a race older than this branch, which this branch's added tests exposed by
   making the suite longer. Fixed by awaiting the commit the assertions are about;
   the pattern that produced them is in `BACKLOG.md`.
+
+### TAS-202 — the request-shape debt, and what was deliberately left out of it
+
+Filed 2026-09-09 as one story rather than six, at the owner's asking, after an
+audit measured what each screen actually requests. The measurement method
+matters more than the numbers: the real `HybridTaskaApi` over the real
+`RestTaskaApi` with a counting `fetch`, not a reading of the code.
+
+- **What it costs today.** Projects screen, nine projects: 27 requests for the
+  cards, 30 with the screen's own, and 18 of the 27 exist to print `1 members`,
+  which `hybrid` hard-codes. Board: 10 requests, constant in the issue count, of
+  which one project read and one profile read are duplicates of reads the screen
+  already made. Neither number moves with data — the fan-out is per card and per
+  issue type, never per issue. The per-issue hydration TAS-195 removed is
+  genuinely gone.
+- **What was folded in**, all of it already written down somewhere: the
+  `markAllNotificationsRead` cap, the board's 100-issue ceiling and its second
+  copy under the links section, the panel's re-read of the issue page, the two
+  call sites sharing one cache key, the mock's missing paging validation, and the
+  `summaryByProject` memo. Six `BACKLOG.md` lines, each struck with the key.
+- **What stayed out, and why in one sentence each.** A `rest`-mode Playwright
+  project is infrastructure with its own review surface. Watchers paging is a
+  contract ask, and folding it would give a frontend story a backend dependency.
+  The `getMembership` three-mode disagreement is parity, not waste — the flag
+  short-circuits it to zero requests. The invite flow's unauthenticated
+  `getCurrentUser` is an auth path, and a performance story must not edit one.
+  The admin clamp holes and the attachment presign-per-row belong to other
+  owners.
+- **The backend half is two asks, not one.**
+  [TAS-201](https://jira.ozero.dev/browse/TAS-201) is the board DTO;
+  [TAS-203](https://jira.ozero.dev/browse/TAS-203) is the missing project counts,
+  filed after checking rather than assuming — no `memberCount`, no `issueCount`,
+  no batch summary route anywhere in the contract.
+  [TAS-137](https://jira.ozero.dev/browse/TAS-137) is the root cause of the
+  synthesis and is already in flight, so it got a comment saying its call sites
+  will have moved by the time it lands, not a scope change.
+- **The rule used to decide.** One story where one diff touches the same files
+  and splitting means writing the paging twice; separate stories where the fix
+  has a different owner, a different review surface, or a backend dependency.
 
 ### TAS-193 — watchers, and the deferral that did not survive being checked
 
