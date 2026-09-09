@@ -31,6 +31,7 @@ import { Avatar } from "../components/Avatar";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
+import { RequestId } from "../components/RequestId";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
@@ -1330,6 +1331,14 @@ function watcherRowKey(watcher: IssueWatcher): string {
 interface WatcherNotice {
   tone: "info" | "error";
   text: string;
+  /**
+   * The refusal the sentence is about, so the line under it can carry the
+   * gateway's request id — the one string that finds this failure in its log,
+   * and the one every surface of this section used to drop. Absent on the info
+   * tone: `removed: false` is a `200` that changed nothing, not a fault, and
+   * there is nothing to file about it.
+   */
+  error?: unknown;
 }
 
 /**
@@ -1535,7 +1544,7 @@ function IssueWatchersSection({
     onSuccess: (result) => applyServerCount(result.watchersCount),
     onError: (error, _variables, context) => {
       rollback(context?.previous);
-      setNotice({ tone: "error", text: watcherFailureText(error, "You were not subscribed to this issue.") });
+      setNotice({ error, tone: "error", text: watcherFailureText(error, "You were not subscribed to this issue.") });
     },
     onSettled: settle,
   });
@@ -1558,7 +1567,7 @@ function IssueWatchersSection({
     },
     onError: (error, _variables, context) => {
       rollback(context?.previous);
-      setNotice({ tone: "error", text: watcherFailureText(error, "You are still watching this issue.") });
+      setNotice({ error, tone: "error", text: watcherFailureText(error, "You are still watching this issue.") });
     },
     onSettled: settle,
   });
@@ -1574,6 +1583,7 @@ function IssueWatchersSection({
     onError: (error, userId, context) => {
       rollback(context?.previous);
       setNotice({
+        error,
         tone: "error",
         text: watcherFailureText(error, `${watcherName(userById, userId)} was not subscribed to this issue.`),
       });
@@ -1644,6 +1654,7 @@ function IssueWatchersSection({
     },
     onError: (error, userId) => {
       setNotice({
+        error,
         tone: "error",
         text: watcherFailureText(error, `${watcherName(userById, userId)} is still watching this issue.`),
       });
@@ -1653,10 +1664,19 @@ function IssueWatchersSection({
 
   /**
    * The handoff itself, after the render that removed the row rather than
-   * inside the callback that asked for it. `focusVisible` where the browser
-   * has it: the reader may have arrived by pointer, and then a plain `focus()`
-   * moves focus with nothing on screen saying where it went — the same trap
-   * `AdminEventsProblems` records for its own rescue.
+   * inside the callback that asked for it.
+   *
+   * **A plain `focus()`, deliberately, and the option it used to pass was
+   * measured rather than reasoned away** (`art-director`, TAS-193). Chromium
+   * carries `:focus-visible` across a programmatic move when the element losing
+   * focus had it, so the keyboard reader — who pressed Enter on the ✕ and is
+   * the reader this handoff exists for — still gets the ring without asking for
+   * it. `focusVisible: true` only changed the *pointer* path, and there it
+   * drew a second "you are here": the cursor sits over the new neighbour
+   * showing its hover fill while the accent ring sits on a ✕ 74px away.
+   * `AdminEventsProblems` forces the ring for a different situation — focus
+   * returning from a dismissed dialog to a control that may have changed — and
+   * that precedent does not reach a list handing one row to the next.
    */
   useEffect(() => {
     const target = focusAfterRemoval.current;
@@ -1664,11 +1684,7 @@ function IssueWatchersSection({
     focusAfterRemoval.current = null;
     const node = target === "" ? heading.current : rowButtons.current.get(target);
     if (!node?.isConnected) return;
-    try {
-      node.focus({ focusVisible: true });
-    } catch {
-      node.focus();
-    }
+    node.focus();
   }, [watchers]);
 
   const toggling = watchIssue.isPending || unwatchIssue.isPending;
@@ -1812,14 +1828,34 @@ function IssueWatchersSection({
         </p>
       ) : null}
 
-      {/* One live region that stays mounted and changes its text, the shape
-          §7 asks for and the attachments section already uses. Polite: every
-          sentence here follows something the reader just did. */}
-      <div aria-live="polite" className={notice ? `watcher-note${notice.tone === "error" ? " is-error" : ""}` : ""}>
-        {notice?.text ?? ""}
+      {/* One live region that stays mounted and changes its text, the shape §7
+          asks for and the attachments section already uses. Polite: every
+          sentence here follows something the reader just did.
+
+          The region is the *sentence*, not the box around it — the split
+          `ApiNotice` makes internally and the reason it is worth copying while
+          the component itself is not. A polite region containing the detail
+          line would read a 36-character uuid out loud, which is the defect N6
+          has just finished removing from the ✕ label. The box stays silent, so
+          the region count is still one. */}
+      <div className={notice ? `watcher-note${notice.tone === "error" ? " is-error" : ""}` : ""}>
+        <p aria-live="polite" className="watcher-note-sentence">
+          {notice?.text ?? ""}
+        </p>
+        <WatcherNoteDetail error={notice?.error} sentence={notice?.text} />
       </div>
 
-      {readError ? <div className="watcher-note is-error">{readError.message}</div> : null}
+      {/* The same two-part body, and deliberately **not** a second live region:
+          this box mounts together with its text, which is the shape §7 objects
+          to, and a section with two polite regions is worse than one that
+          announces a read failure a beat late. Recorded rather than fixed
+          here. */}
+      {readError ? (
+        <div className="watcher-note is-error">
+          <p className="watcher-note-sentence">{readError.message}</p>
+          <WatcherNoteDetail error={readError} sentence={readError.message} />
+        </div>
+      ) : null}
 
       {watchersQuery.isPending ? <p className="issue-links-empty">Loading watchers</p> : null}
       {/* Only a successful read may say nobody is watching. */}
@@ -1829,8 +1865,19 @@ function IssueWatchersSection({
         <ul className="watcher-list">
           {watchers.map((watcher) => {
             const person = watcher.userId ? userById.get(watcher.userId) : undefined;
-            const name = watcherName(userById, watcher.userId);
             const mine = Boolean(currentUserId) && watcher.userId === currentUserId;
+            // The member map is the only source of names in this section, and
+            // there is exactly one person it may fail on whom the UI can name
+            // anyway: the reader. A VIEWER who is not a member of the project
+            // can still watch an issue in it, and that row used to read
+            // "Unknown (you)" — a screen saying it does not know who you are,
+            // beside a mark saying it does. `GET /users/me` answered that
+            // question before this section drew anything.
+            //
+            // "You" also makes the "(you)" beside it a tautology, so the mark
+            // goes: it exists to pick the reader out of a list of names, and
+            // there is no name here to pick out of.
+            const name = !person && mine ? "You" : watcherName(userById, watcher.userId);
             const pending = watcher.id === optimisticWatcherId;
             const removing = removeWatcher.isPending && removeWatcher.variables === watcher.userId;
             const key = watcherRowKey(watcher);
@@ -1842,7 +1889,7 @@ function IssueWatchersSection({
                 <Avatar user={person} size="sm" />
                 <span className="watcher-name">
                   {name}
-                  {mine ? <span className="watcher-you"> (you)</span> : null}
+                  {mine && person ? <span className="watcher-you"> (you)</span> : null}
                 </span>
                 {isProjectAdmin ? (
                   <button
@@ -1902,6 +1949,37 @@ function watcherName(
 }
 
 /**
+ * The second line of a watcher notice: the gateway's own words, and the id that
+ * finds this failure in its log.
+ *
+ * Written here rather than reached for as `ApiNotice`, and that was the
+ * argued-out call (`art-director`, TAS-193). The component would fit the read
+ * slot and *only* the read slot; the two toggle writes, the add, the remove and
+ * the info tone all print through the section's own `.watcher-note` box, and
+ * dropping `ApiNotice` in beside them would fix one surface of six and leave a
+ * second, differently-shaped error box next to the first. What is worth copying
+ * is `ApiNotice`'s split — sentence live, machine strings not — which is what
+ * both callers here do.
+ *
+ * `sentence` is what is already on screen above this line. It is a parameter
+ * rather than an assumption because `watcherFailureText` *prefers* the server's
+ * own message whenever there is one, so the two are usually the same string and
+ * printing it twice would be an echo, not a detail.
+ */
+function WatcherNoteDetail({ error, sentence }: { error: unknown; sentence?: string }) {
+  const { message, requestId } = apiErrorFacts(error);
+  const gatewayWords = message && message !== sentence ? message : null;
+  if (!gatewayWords && !requestId) return null;
+
+  return (
+    <p className="watcher-note-detail">
+      {gatewayWords ? <span>{gatewayWords}</span> : null}
+      {requestId ? <RequestId value={requestId} /> : null}
+    </p>
+  );
+}
+
+/**
  * What to say when a watcher write is refused.
  *
  * The server's own sentence wins whenever it sent one — both implementations
@@ -1909,6 +1987,10 @@ function watcherName(
  * without a message, and it exists because a refusal on these two routes is the
  * one failure the reader can actually act on: the controls were offered because
  * `isProjectAdmin` said so, and the server disagreed.
+ *
+ * Because the server's sentence wins, it is also the sentence the detail line
+ * above must not repeat — `WatcherNoteDetail` takes it as a parameter for
+ * exactly that reason, and the two functions have to move together.
  *
  * Deliberately not `isMissingOrForbidden`, which folds 403 into 404 because
  * DESIGN.md §4.18 requires a *screen* not to tell "missing" from "not yours".

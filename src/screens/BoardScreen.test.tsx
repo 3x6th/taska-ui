@@ -1997,11 +1997,17 @@ describe("issue watchers", () => {
     const panel = await section();
     fireEvent.click(await panel.findByRole("button", { name: "Watching" }));
 
-    const notice = await panel.findByText(/were not watching this issue/i);
+    // The box, not the sentence inside it: the tone is drawn on the box, and
+    // `.watcher-note-sentence` happens to contain "watcher-note" as a substring,
+    // so asserting on the text node's own class would pass whatever the box
+    // said.
+    const notice = (await panel.findByText(/were not watching this issue/i)).parentElement!;
     // The distinction the server drew has to survive to the screen: this is a
     // 200 that changed nothing, so it is not dressed as an error.
     expect(notice).not.toHaveClass("is-error");
-    expect(notice.className).toContain("watcher-note");
+    expect(notice).toHaveClass("watcher-note");
+    // Nothing to file about a 200, so no detail line under it.
+    expect(notice.querySelector(".watcher-note-detail")).toBeNull();
   });
 
   it("says nothing when an unwatch did remove something", async () => {
@@ -2060,11 +2066,77 @@ describe("issue watchers", () => {
     fireEvent.click(panel.getByRole("button", { name: "Add" }));
 
     // The server's own sentence, not one invented here.
-    expect(await panel.findByText("Not allowed role")).toHaveClass("is-error");
+    const sentence = await panel.findByText("Not allowed role");
+    expect(sentence.parentElement).toHaveClass("is-error");
+    // Said once. `watcherFailureText` prefers the server's message, so the
+    // sentence *is* the message here and the detail line has nothing left to
+    // add — this error carries no request id.
+    expect(sentence.parentElement!.querySelector(".watcher-note-detail")).toBeNull();
     // And the optimistic row is gone again: a watcher the reader believes was
     // added is worse than a refusal they can read.
     await waitFor(() => expect(panel.queryByRole("button", { name: /^Remove Tom/ })).toBeNull());
     expect(watchedUserIds()).toEqual([]);
+  });
+
+  it("puts the gateway's request id under the sentence, outside the announcement", async () => {
+    // **This case is the only place the id can be produced at all.** Only the
+    // REST client reads `X-Request-Id` off a response; `MockApiError` carries no
+    // such field, so mock mode — which is the whole e2e suite — cannot render
+    // this line, and a browser run finding it absent is the mock working as
+    // designed rather than the code being broken.
+    seedMembers([member("user-tom", "Tom Becker")]);
+    seedWatchers([], 0);
+    failWatcherWrite(
+      Object.assign(new Error("Not allowed role"), {
+        status: 403,
+        code: "PERMISSION_DENIED",
+        requestId: "7f0e6d5c-1b2a-4c3d-9e8f-0a1b2c3d4e5f",
+      }),
+    );
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const picker = await panel.findByLabelText("Add a watcher");
+    fireEvent.change(picker, { target: { value: "user-tom" } });
+    fireEvent.click(panel.getByRole("button", { name: "Add" }));
+
+    const sentence = await panel.findByText("Not allowed role");
+    const detail = sentence.parentElement!.querySelector(".watcher-note-detail");
+    expect(detail).not.toBeNull();
+    expect(detail).toHaveTextContent("7f0e6d5c-1b2a-4c3d-9e8f-0a1b2c3d4e5f");
+    // The id is copyable, which is the only reason it is on screen: it goes to
+    // a gateway log or a ticket, never back into this UI.
+    expect(
+      within(detail as HTMLElement).getByRole("button", {
+        name: "Copy request id 7f0e6d5c-1b2a-4c3d-9e8f-0a1b2c3d4e5f",
+      }),
+    ).toBeVisible();
+    // And it stays out of the announcement: the live region is the sentence,
+    // not the box, so a screen reader is not made to spell out a uuid.
+    expect(sentence).toHaveAttribute("aria-live", "polite");
+    expect(detail!.closest("[aria-live]")).toBeNull();
+  });
+
+  it("names the reader in their own row when the member list cannot", async () => {
+    // A reader who is not a member of the project can still watch an issue in
+    // it — and against the deployed gateway, whose member read is a 405
+    // (TAS-137), the map cannot name anybody at all. The one person it may
+    // never fail on is the reader: `GET /users/me` named them before this
+    // section drew a row.
+    setMembership("VIEWER");
+    seedMembers([member(SOFIA, "Sofia Reyes")]);
+    seedWatchers([watcher(ANNA), watcher(SOFIA)], 2);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText("You")).toBeVisible();
+    // Not "Unknown (you)" — a screen saying it does not know who you are, next
+    // to a mark saying it does.
+    expect(panel.queryByText("Unknown")).toBeNull();
+    // The mark itself goes with the name it was annotating: it exists to pick
+    // the reader out of a list of names, and "You (you)" picks nothing.
+    expect(panel.queryByText("(you)")).toBeNull();
+    expect(panel.getByText("Sofia Reyes")).toBeVisible();
   });
 
   it("claims nothing about the member list while the read is still in flight", async () => {

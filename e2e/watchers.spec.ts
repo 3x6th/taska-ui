@@ -262,3 +262,162 @@ test("drives the whole toggle from the keyboard", async ({ page }) => {
   await page.keyboard.press("Enter");
   await expect(watchers.getByRole("button", { name: "Watch", exact: true })).toHaveAttribute("aria-pressed", "false");
 });
+
+// **The heading is a focus target only because this section makes it one**, and
+// that is the whole reason it needs a ring of its own. When the last row leaves
+// there is no neighbour to hand focus to, so `h3` takes it — and with no
+// `:focus-visible` rule Chrome falls back to `outline: auto`, which it derives
+// from the **reader's system accent**: measured at 1440x900 as `rgb(229,151,0)`
+// in light and `rgb(153,200,255)` in dark, neither of them `--accent` and
+// neither of them each other. §7 already records that failure once, against the
+// bare `.icon-button`s TAS-185 fixed, and it is the same one.
+//
+// Both themes run because the disagreement *between* them is half the evidence,
+// and the colour is compared to the live document's own `--accent` rather than
+// to a hex, so a palette change cannot quietly turn this green.
+for (const theme of ["light", "dark"] as const) {
+  test(`rings the heading focus falls back to, in ${theme}`, async ({ page }) => {
+    await page.goto("/login");
+    await page.evaluate((value) => window.localStorage.setItem("taska.theme", value), theme);
+    await signIn(page);
+
+    // TAS-102 is the shortest path to an empty list with a row in it first:
+    // nobody is watching, so Anna's own subscription is the only row and
+    // removing it empties the section.
+    const watchers = await openIssuePanel(page, "TAS-102");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await watchers.getByRole("button", { name: "Watch", exact: true }).click();
+
+    const remove = watchers.getByRole("button", { name: /^Remove / });
+    await expect(remove).toBeVisible();
+    // The row arrives optimistically, and its ✕ is deliberately inert until the
+    // subscription that created it is confirmed — press Enter inside that
+    // window and the handler returns without dispatching, which is the
+    // behaviour and not a flake. Waiting for the state rather than a duration
+    // is what the double-click case above does for the same reason.
+    await expect(watchers.locator(".watcher-row.is-pending")).toHaveCount(0);
+    // Reached *by keyboard*. Chromium decides `:focus-visible` from the
+    // modality focus arrived by, so a bare `focus()` here would leave the
+    // control ringless and the assertion below would be measuring nothing.
+    await remove.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(remove).toBeFocused();
+    expect(await page.evaluate(() => document.activeElement?.matches(":focus-visible"))).toBe(true);
+
+    await page.keyboard.press("Enter");
+    await expect(watchers.locator(".watcher-row")).toHaveCount(0);
+
+    const heading = watchers.getByRole("heading", { name: /Watchers/ });
+    await expect(heading).toBeFocused();
+
+    const ring = await heading.evaluate((node) => {
+      // The theme's own --accent, resolved by the live document and taken off
+      // again — the same trick `admin-console.spec.ts` uses to read a token
+      // without writing its value down twice.
+      const probe = document.createElement("span");
+      probe.style.outlineColor = "var(--accent)";
+      node.append(probe);
+      const accent = getComputedStyle(probe).outlineColor;
+      probe.remove();
+      const style = getComputedStyle(node);
+      return {
+        visible: node.matches(":focus-visible"),
+        width: style.outlineWidth,
+        lineStyle: style.outlineStyle,
+        colour: style.outlineColor,
+        accent,
+      };
+    });
+
+    // The handoff passes the modality on rather than forcing it: the ✕ that
+    // just left had the ring, so the heading has it, with a plain `focus()`
+    // and no `focusVisible` option anywhere.
+    expect(ring.visible).toBe(true);
+    // `auto` is the system-accent ring this test exists to keep out; §7 asks
+    // for exactly these three.
+    expect(ring.lineStyle).toBe("solid");
+    expect(ring.width).toBe("2px");
+    expect(ring.colour).toBe(ring.accent);
+
+    // And it hugs the words rather than spanning the panel — 425px of ring
+    // around a two-word heading is not a focus indicator, it is a banner.
+    const headingBox = (await heading.boundingBox())!;
+    const sectionBox = (await watchers.boundingBox())!;
+    expect(headingBox.width).toBeLessThan(sectionBox.width / 2);
+  });
+}
+
+// **The ring does not fire on the pointer path, and that is the ruling rather
+// than an omission** (`art-director`, TAS-193). The handoff uses a plain
+// `focus()`: Chromium carries `:focus-visible` across a programmatic move when
+// the element losing focus had it, so the keyboard reader above keeps the ring
+// without the `focusVisible` option — and forcing it would put a second "you
+// are here" on screen for a reader who already has a cursor.
+test("hands focus on without a ring when the row was removed by pointer", async ({ page }) => {
+  await signIn(page);
+  const watchers = await openIssuePanel(page, "TAS-101");
+
+  const next = (await watchers.getByRole("button", { name: /^Remove / }).nth(1).getAttribute("aria-label"))!;
+  await watchers.getByRole("button", { name: /^Remove / }).first().click();
+  await expect(watchers.locator(".watcher-row")).toHaveCount(2);
+
+  const neighbour = watchers.getByRole("button", { name: next });
+  // Focus still moves — the button the reader pressed is gone, and leaving
+  // focus in `<body>` is the defect the handoff exists for.
+  await expect(neighbour).toBeFocused();
+  expect(await page.evaluate(() => document.activeElement?.matches(":focus-visible"))).toBe(false);
+  expect(await neighbour.evaluate((node) => getComputedStyle(node).outlineStyle)).toBe("none");
+});
+
+// The detail line cannot be reached in mock mode at all: only the REST client
+// reads `X-Request-Id` off a response, and the one refusal `MockTaskaStore` can
+// produce on these routes sits behind controls the same role check removes. So
+// the *recipe* is measured — drawn onto the live document and taken off again,
+// the way `admin-console.spec.ts` reads a colour it cannot otherwise reach.
+// What is pinned is §7's ruling on which grey it takes: `--fg-2`, not the
+// `--fg-3` of a meta row, because a string whose whole purpose is to be read
+// out and pasted into a ticket is not meta. Compared to the live tokens rather
+// than to a hex, so it reads the same in dark.
+test("keeps the notice's detail line above the meta colour", async ({ page }) => {
+  await signIn(page);
+  const watchers = await openIssuePanel(page, "TAS-101");
+  await expect(watchers.locator(".watcher-note")).toHaveCount(0);
+
+  const read = await watchers.evaluate((section) => {
+    const box = document.createElement("div");
+    box.className = "watcher-note is-error";
+    const sentence = document.createElement("p");
+    sentence.className = "watcher-note-sentence";
+    sentence.textContent = "The server refused.";
+    const detail = document.createElement("p");
+    detail.className = "watcher-note-detail";
+    detail.textContent = "Request ID: 00000000-0000-4000-8000-000000000000";
+    const probe = document.createElement("span");
+    box.append(sentence, detail, probe);
+    section.append(box);
+
+    probe.style.color = "var(--fg-2)";
+    const fg2 = getComputedStyle(probe).color;
+    probe.style.color = "var(--fg-3)";
+    const fg3 = getComputedStyle(probe).color;
+    const measured = {
+      detail: getComputedStyle(detail).color,
+      detailSize: getComputedStyle(detail).fontSize,
+      sentence: getComputedStyle(sentence).color,
+      fg2,
+      fg3,
+    };
+    box.remove();
+    return measured;
+  });
+
+  expect(read.detail).toBe(read.fg2);
+  expect(read.detail).not.toBe(read.fg3);
+  // Quieter than the sentence above it, which keeps the box's own --fg.
+  expect(read.detail).not.toBe(read.sentence);
+  // Inherited from `.api-notice-detail`'s recipe, which this line joined rather
+  // than copied: a second copy is how the board's id and the console's come to
+  // disagree about their own type.
+  expect(read.detailSize).toBe("11px");
+});

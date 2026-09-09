@@ -3831,7 +3831,16 @@ h1 {
    this tint that measures 2.52:1 in light, under the 3:1 floor §7 sets even
    for non-critical meta, so the quieter of two greys gives way to the rule
    that decides whether it can be read at all. --fg-2 measures 5.13:1 light /
-   7.39:1 dark and still reads as secondary under the sentence. */
+   7.39:1 dark and still reads as secondary under the sentence.
+
+   The watchers box (§4.21) joins the group rather than declaring a second copy:
+   it prints the same two machine strings for the same reason, and two recipes
+   for one line is how the board's and the panel's ids come to disagree. Its
+   ground is --surface rather than a tint, where the same --fg-2 measures 7.26:1
+   light / 6.75:1 dark — and --fg-3 there is 3.14 / 3.05, over §7's 3:1 meta
+   floor by a hair and still the wrong choice, because a string whose whole
+   purpose is to be read out and pasted into a ticket is not meta. */
+.watcher-note-detail,
 .api-notice-detail {
   display: flex;
   flex-wrap: wrap;
@@ -4701,6 +4710,16 @@ button.issue-link-open:hover {
   border-left-color: var(--danger);
 }
 
+/* The sentence inside the watchers box. It carries no type of its own on
+   purpose — the box above already sets 12.5/400 and `text-wrap: pretty`, and
+   the only thing a `<p>` needs taking off it is the margin that would otherwise
+   push the box open. It is a `<p>` and not a bare text node because it is the
+   live region now (see the section's own comment): the box holds the id line
+   too, and a uuid does not belong in an announcement. */
+.watcher-note-sentence {
+  margin: 0;
+}
+
 .attachment-list {
   display: flex;
   flex-direction: column;
@@ -4912,10 +4931,30 @@ button.attachment-open:hover:not(:disabled) {
   opacity: 0.58;
 }
 
+/* The heading is in this group because the product focuses it: when the last
+   row leaves there is no neighbour to hand focus to, so it goes to `h3` and the
+   reader has to be shown where. Without the selector Chrome draws `outline:
+   auto`, which it derives from the **reader's system accent** — measured at
+   1440x900 as `rgb(229,151,0)` in light and `rgb(153,200,255)` in dark, two
+   colours that agree with neither `--accent` nor each other. §7 already names
+   exactly this failure in its TAS-185 entry, for the same reason: a ring that
+   is not "the wrong blue" but not bounded by §2 at all. */
 .watch-toggle:focus-visible,
+.issue-watchers h3:focus-visible,
 .watcher-row .icon-button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* …and the ring hugs the words instead of spanning the panel: 78.4 wide at
+   1440x900 rather than the section's full 435 — 425 when the panel's scrollbar
+   is up, which is the same ten-pixel wrinkle §7 records for this section's
+   select. The heading is `display: flex` from the shared section-heading recipe
+   below, so `fit-content` changes nothing but the box the outline follows. 6 is
+   §2.5's small-element band, which is what this box now is. */
+.issue-watchers h3 {
+  width: fit-content;
+  border-radius: 6px;
 }
 
 /* The sentence beside the toggle, which is what makes the control's state

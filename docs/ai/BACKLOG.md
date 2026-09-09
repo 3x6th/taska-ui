@@ -72,6 +72,21 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   a change that leaves the button three pixels away from it still broken.
   `ThemeToggle.tsx:8` already ships the `aria-label` + matching `title` pair, so
   this is an in-repo precedent rather than a reading of the spec.
+- **§4.1 documents a disabled recipe the product does not use**
+  (`art-director`, 2026-09-09, TAS-193 verdict). §4.1 says `opacity: .5` and
+  `pointer-events: none`; `styles.css:108` ships `opacity: .58` and
+  `cursor: not-allowed`, and every disabled control in the product follows the
+  code. TAS-193's new rule copies the code and its comment calls that
+  "`button:disabled`'s own recipe" — correctly, but the document outranks the
+  code, so it is the document that is wrong. One line in §4.1 rather than a
+  product-wide restyle.
+- **The read-error slot in the watchers section has no live region, deliberately**
+  (`art-director`, 2026-09-09, TAS-193). Giving it one would be a *second*
+  region in the block and would mount with its content — the shape §7's TAS-179
+  entry already records as a defect. So a read failure is visible and not
+  announced. Recorded rather than fixed, because fixing it properly means giving
+  the panel one region for all its sections, which is a bigger change than any
+  one section should make.
 - **Optimistic removal reflows a list under the cursor, in four panel sections**
   (`release-reviewer`, 2026-09-08, TAS-193 verdict). `onMutate` filters the row
   out, the list closes the gap within a frame, and the next row's control arrives
