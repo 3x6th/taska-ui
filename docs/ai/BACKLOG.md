@@ -1671,6 +1671,31 @@ them blocks the story.
   result array, whose identity changes every render. Harmless — the body is
   cheap — but the memo is decoration, and a reader will assume it is doing
   something.
+- **A notification whose body happens to contain a uuid is routed as an issue**
+  (found 2026-09-09, reading the notification path against backend PR #151).
+  `notificationTarget` falls back to the first uuid anywhere in
+  `notification.body` and opens it as an issue id. Backend PR #151 adds
+  `USER_BLOCKED` and `USER_UNBLOCKED` to the notification types, and those are
+  about a *user*: if notification-service writes the blocked account's uuid into
+  the body, clicking the row will read `getIssueById` on a user id and land on
+  "This issue doesn't exist, or you don't have access to it." instead of doing
+  nothing. Not yet reproducible — the two types are a database constraint so far,
+  nothing emits them. Probe the body text once something does; the fix, if
+  needed, is a guard so a non-issue id is not routed as one. The types themselves
+  need no frontend change: `notificationType` is inert in the render path, and the
+  gateway already sends `LABEL_ADDED` outside the union without trouble.
+- **An expired access token drew "Page not found" on the deployed stand**
+  (observed 2026-09-09 on `taska.ozero.dev`, signed in as `admin`). The stored
+  `taska.accessToken` had expired ~15 minutes earlier; `GET /users/me` and every
+  other call answered `401 UNAUTHENTICATED "JWT token expired"`, and opening a
+  project board rendered the not-found screen rather than refreshing the session
+  or returning to `/login`. `RestTaskaApi` does have the machinery — a 401 retries
+  through `tryRefresh` and, failing that, `SessionExpiredSignal` sends the user to
+  the login form — so **what was not established is which half failed**: a refresh
+  token that had also expired, a refresh answer that is itself a 401 mapped as
+  not-found, or a deployed build older than the machinery. Reproduce with a fresh
+  session and a short-lived token before filing; the observation is worth keeping
+  because the screen it ends on tells the user the wrong thing either way.
 
 ## Frontend stories already filed
 
