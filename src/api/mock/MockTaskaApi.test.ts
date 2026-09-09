@@ -431,6 +431,55 @@ describe("MockTaskaApi", () => {
       expect(assignees.every((assignee) => assignee.displayName === null)).toBe(true);
     });
 
+    it("states no estimate on any card, however the issue behind it is estimated", async () => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      expect(items.some((issue) => issue.issueType === "TASK" && issue.storyPoints !== null)).toBe(true);
+
+      const board = await api.getBoard(project.id, { issueType: "TASK", includeDone: true });
+      const cards = board.columns.flatMap((column) => column.issues);
+
+      expect(cards.length).toBeGreaterThan(0);
+      // `IssueBoardResponse` in the backend's `v1/issue-service.proto` has no
+      // `story_points` field and `IssueMapper.toRestBoardIssue` never calls
+      // `setStoryPoints`, so no board card the gateway sends can carry an
+      // estimate. A mock that copied the seed's would draw a badge that is
+      // blank in production.
+      expect(cards.every((issue) => issue.storyPoints === null)).toBe(true);
+    });
+
+    it("keys includeDone on the status key rather than on the column's category", async () => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const done = items.find((issue) => issue.status === "DONE");
+      if (!done) throw new Error("the seed has no DONE issue");
+
+      // A column keyed `DONE` and categorised as something else — the two
+      // coincide on the seeded workflow and on the project probed, which is why
+      // only the source can tell them apart. It is
+      // `IssueRepositoryImpl.boardFilterConditions`: a literal
+      // `status_key <> 'DONE'`, so the key decides and the category does not.
+      const miscategorised: Workflow = {
+        id: "33333333-3333-3333-3333-333333333333",
+        name: "Workflow whose DONE column is filed elsewhere",
+        version: 1,
+        createdAt: "2026-06-08T09:10:00Z",
+        updatedAt: "2026-06-08T09:10:00Z",
+        statuses: [
+          { id: "44444444-4444-4444-4444-444444444444", statusKey: "DONE", name: "Done", category: "IN_PROGRESS", sortOrder: 10 },
+        ],
+        transitions: [],
+      };
+
+      const hidden = buildMockBoard(project.id, miscategorised, [done], { issueType: done.issueType });
+      expect(hidden.columns.map((column) => column.statusKey)).toEqual(["DONE"]);
+      expect(hidden.columns[0].issues).toEqual([]);
+
+      const shown = buildMockBoard(project.id, miscategorised, [done], {
+        issueType: done.issueType,
+        includeDone: true,
+      });
+      expect(shown.columns[0].issues.map((issue) => issue.issueKey)).toEqual([done.issueKey]);
+    });
+
     it("refuses a project that does not exist", async () => {
       await expect(
         api.getBoard("11111111-2222-4333-8444-555555555555", { issueType: "TASK" }),
@@ -446,8 +495,14 @@ describe("MockTaskaApi", () => {
      * seeded workflow lists every status the seeded issues use, and
      * `IssueStatus` narrows both sides to the same three values. A workflow
      * that has lost `DONE` is the same inconsistency from the other end.
+     *
+     * Which is also why `includeDone` decides whether it fails at all. The flag
+     * is a `status_key <> 'DONE'` in issue-service
+     * (`IssueRepositoryImpl.boardFilterConditions`), so with it off this stray
+     * never reaches the gateway's leftover-status check and the read succeeds
+     * on both sides; with it on, both sides fail.
      */
-    it("fails the whole read when an issue sits in a status the workflow does not list", async () => {
+    it("fails a read that keeps an issue whose status the workflow does not list", async () => {
       const { items } = await api.listIssues(project.id, { pageSize: 100 });
       const stray = items.find((issue) => issue.status === "DONE");
       if (!stray) throw new Error("the seed has no DONE issue");
@@ -471,14 +526,26 @@ describe("MockTaskaApi", () => {
         return null;
       };
 
-      expect(failure({ issueType: stray.issueType })).toMatchObject({
-        code: "INTERNAL",
+      // `INTERNAL_SERVER_ERROR`, not `INTERNAL`: `BoardServiceImpl` raises a
+      // `ResponseStatusException`, which is not a gRPC status, so
+      // `GatewayErrorHandler` sets the code from the HTTP status' name.
+      expect(failure({ issueType: stray.issueType, includeDone: true })).toMatchObject({
+        code: "INTERNAL_SERVER_ERROR",
         message: "Inconsistent state: issues found with statuses not present in workflow",
       });
-      // And it fails the same way with `includeDone` off, which is this
-      // repository's reading of an ordering the gateway has not been measured
-      // on: a filter must not be able to hide an inconsistency.
-      expect(failure({ issueType: stray.issueType, includeDone: false })).toMatchObject({ code: "INTERNAL" });
+
+      // And with the flag off — including its default, absent — the filter has
+      // already removed the stray in issue-service, so the board is assembled
+      // without it and answers `200`: the workflow's one column, empty.
+      for (const params of [
+        { issueType: stray.issueType },
+        { issueType: stray.issueType, includeDone: false },
+      ]) {
+        expect(failure(params)).toBeNull();
+        const board = buildMockBoard(project.id, shortWorkflow, [stray], params);
+        expect(board.columns.map((column) => column.statusKey)).toEqual(["TODO"]);
+        expect(board.columns.flatMap((column) => column.issues)).toEqual([]);
+      }
     });
   });
 

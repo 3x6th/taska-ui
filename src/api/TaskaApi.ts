@@ -475,10 +475,13 @@ export interface TaskaApi {
    * replaces those two the day it can (TAS-191).
    *
    * A workflow that does not list a status one of its own issues is sitting in
-   * is an `INTERNAL` failure — the gateway's `BoardServiceImpl` throws
-   * "Inconsistent state: issues found with statuses not present in workflow"
-   * — and the mock reproduces it rather than dropping the card, because a
-   * silently missing issue is the one failure a board cannot show.
+   * is a 500 coded `INTERNAL_SERVER_ERROR` — the gateway's `BoardServiceImpl`
+   * throws "Inconsistent state: issues found with statuses not present in
+   * workflow" — and the mock reproduces it rather than dropping the card,
+   * because a silently missing issue is the one failure a board cannot show.
+   * When the offending status is the literal `DONE`, though, `includeDone` off
+   * excludes the issue in issue-service before the check ever sees it, and both
+   * implementations answer `200`.
    */
   getBoard(projectId: string, params: BoardParams): Promise<Board>;
   /**

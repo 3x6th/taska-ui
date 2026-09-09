@@ -382,7 +382,10 @@ export interface BoardIssue {
   /**
    * `??`, never `||`, at every reader: an issue estimated at zero points has
    * been estimated. Absent on the wire is `null`, and the deployed gateway
-   * answered `null` for every issue measured on 2026-09-09.
+   * answered `null` for every issue measured on 2026-09-09 — not by chance:
+   * `IssueBoardResponse` in the backend's `v1/issue-service.proto` has no
+   * `story_points` field, and `IssueMapper.toRestBoardIssue` never sets one, so
+   * the field cannot be filled by any branch that exists today.
    */
   storyPoints: number | null;
   assignee: BoardAssignee | null;

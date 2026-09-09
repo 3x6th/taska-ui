@@ -2491,7 +2491,15 @@ re-sending resolved values can never trip the check by itself.
   `inputSpec … static/openapi.yml`, `modelPackage ru.taska.domain.dto`), so a mapper
   calling `restDto.setStoryPoints(…)` on a schema that does not declare the field cannot
   compile. `Build & Test — api-gateway` is failing on that head while all ten other
-  modules pass, which is the prediction and the measurement agreeing.
+  modules pass — **but not for that reason, and the correction matters.** The job
+  has exactly two compile errors, both `cannot find symbol` in the PR's own
+  `IssueMapper.java`: `CreateIssueRequest` (the proto class) and
+  `CreateIssueRequestDto` (which *is* generated from develop's spec). Those are
+  missing imports, and javac stops before attributing the method bodies where the
+  planning-field setters live. So restoring the declarations alone will not turn
+  this head green, and the compile error the missing schema would cause has not
+  been observed. Found by `api-contract-guard` reading the CI log after this entry
+  had asserted the prediction and the failure were the same thing.
 - **What follows for the deployed gateway is a reading, not a probe:** develop's spec
   does not declare the fields, the DTOs are generated from it, so a gateway built from
   develop cannot serialise them. No request was made to check, because a field that is
@@ -2646,8 +2654,14 @@ as a column position. The runtime is narrower again than that list reads:
 - `assignee.displayName` came back `null` for **every** assigned issue, beside
   an `id` that resolves to a named user elsewhere. An avatar or a name is
   resolved against members the screen already holds, not read off this response.
-- `storyPoints` came back `null` throughout, which is right for unestimated
-  issues and untested for estimated ones.
+- `storyPoints` came back `null` on every issue, and the reason is structural
+  rather than incidental. `IssueBoardResponse` in `issue-service.proto` has **no
+  `story_points` field**, and `IssueMapper.toRestBoardIssue` never sets one: the
+  contract declares the field on `BoardIssueDto` and nothing on any branch that
+  exists today can fill it. Found by `api-contract-guard` reading the proto after
+  the probe had been written up here as the weaker fact — null *because these
+  issues are unestimated* — which it is not. The mock therefore sends `null` too,
+  so a screen cannot draw an estimate badge that would be blank in production.
 
 **Alive: its failure mode is worse than the one it would replace.**
 `BoardServiceImpl` throws `500 "Inconsistent state: issues found with statuses
@@ -2674,10 +2688,21 @@ inconsistent status, so the two implementations fail the same way. Nothing calls
 it. That is TAS-191's stated shape: be ready on the day the card DTO catches up,
 without shipping a visible regression to get there a week early.
 
+**And the ask is cheaper than the missing fields make it look.**
+`IssueBoardResponse` — what `issue-service` already sends the gateway — carries
+`issue_type`, `status_key`, `priority`, `reporter_id`, `label_ids`,
+`watchers_count` and `comments_count`. `IssueMapper.toRestBoardIssue` maps five
+of those to nothing. So `issueType`, `priority` and the `status` that
+drag-and-drop needs as a value are a gateway mapper plus three schema lines, not
+a change through `issue-service`; only `description` and `createdAt` are absent
+from the proto as well. `storyPoints` is the odd one out in the other direction:
+declared in REST and absent from the proto.
+
 **Removed by:** `BoardIssueDto` gaining what the card draws — `issueType`,
 `priority`, `description`, `createdAt` — and `labels` arriving as something a
 chip can be drawn from. Not by the route working, which it now does. Raised on
-TAS-125; the frontend half is TAS-191.
+TAS-125; the frontend half is TAS-191, and the mapper asks above are filed as
+[TAS-201](https://jira.ozero.dev/browse/TAS-201).
 
 ### The five attachment routes exist only on an open backend PR
 

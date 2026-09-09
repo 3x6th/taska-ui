@@ -337,10 +337,13 @@ interface RestBoardUser {
  * is why `toBoardIssue` renames it to `labelIds` rather than passing the wire's
  * own name through into the domain.
  *
- * `storyPoints` is declared `int32` and came back `null` for every issue
- * measured; the gateway's mapper also has a no-guard path that can serialise an
- * unestimated issue as `0`, so a number and a `null` are both ordinary input
- * here and neither may be read with `||`.
+ * `storyPoints` is declared `int32` and cannot arrive at all today:
+ * `IssueBoardResponse` in the backend's `v1/issue-service.proto` has no
+ * `story_points` field and `IssueMapper.toRestBoardIssue` never calls
+ * `setStoryPoints`, so every board card is `null` by construction rather than
+ * by estimate. The property is still typed as the schema declares it, and read
+ * with `??` rather than `||` below, so that the day the field is filled a `0`
+ * arrives as an estimate of nothing instead of as no estimate.
  */
 interface RestBoardIssue {
   id: string;

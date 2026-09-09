@@ -1305,8 +1305,10 @@ describe("RestTaskaApi board", () => {
               id: "issue-3",
               issueKey: "API-3",
               summary: "Estimated at nought",
-              // Zero, which the gateway's unguarded mapper can produce for an
-              // unestimated issue, and which must never read as "not set".
+              // Zero, which no board card can carry today — `IssueBoardResponse`
+              // has no `story_points` field and `toRestBoardIssue` never sets
+              // one — and which must never read as "not set" the day one can.
+              // The mapping is what is pinned here, not an answer measured.
               storyPoints: 0,
               assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: "Anna Ivanova" },
               labels: [],

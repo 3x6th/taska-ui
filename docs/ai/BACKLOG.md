@@ -1671,6 +1671,36 @@ them blocks the story.
   result array, whose identity changes every render. Harmless — the body is
   cheap — but the memo is decoration, and a reader will assume it is doing
   something.
+- **The admin Events focus tests race the refetch they assert against**
+  (diagnosed 2026-09-09 while gating TAS-191, and the diagnosis is the value
+  here). `settle()` is one `setTimeout(…, 0)` registered synchronously after the
+  read is released; the refetch's commit reaches React on query-core's *own*
+  `setTimeout(…, 0)`, registered later, in the microtask drain where the released
+  read resolves. Same timers phase on an idle machine, a different one on a
+  loaded run, and then `act` returns before the commit and the assertion reads
+  the row as it was. Three tests in `AdminScreen.test.tsx` had it; TAS-191 fixed
+  all three by awaiting the commit rather than assuming it. **What is not fixed
+  is the pattern** — any future test in that file that asserts synchronously
+  after `settle()` inherits the race, and the file has no helper that makes the
+  right shape the easy one. A `settleAndCommit()` beside `settle()` would.
+- **One more of the same family, seen only under artificial load**: with eight
+  concurrent instances of `AdminScreen.test.tsx`, "lands on the last page when
+  the address names one past the end" failed `expected 999 to be 2` — the
+  assertion on `lastRowsQuery()?.page` runs after the heading resolves but before
+  the clamp's second rows request goes out. Not reachable in the real suite as it
+  stands; noted so the next person to see it does not re-diagnose it.
+- **The board's rest error path has no test** (`api-contract-guard`, 2026-09-09,
+  TAS-191 verdict, below its reporting cap). Nothing covers what `getBoard` does
+  with the gateway's `500 INTERNAL_SERVER_ERROR`, nor that `requestId` survives on
+  it; the describe's `answer` helper hardcodes a header getter that returns null,
+  so it needs a `requestId` parameter and one case. Cheap, and worth doing with
+  the first screen that calls the route rather than before it.
+- **The mock serves one workflow for every issue type** (same verdict). The
+  gateway fetches a workflow per `issueType`, so a project with per-type
+  workflows would get different boards from mock and rest. `MockTaskaStore` holds
+  a single `workflow` field, so closing it is a store-shape change rather than a
+  comment — and no seeded project has per-type workflows, so nothing is wrong
+  today.
 - **A notification whose body happens to contain a uuid is routed as an issue**
   (found 2026-09-09, reading the notification path against backend PR #151).
   `notificationTarget` falls back to the first uuid anywhere in
@@ -1913,3 +1943,12 @@ is what recurs.
   deliberately stays tokens-only. Contract-level only so far: the field has not
   been observed on the deployed gateway, which is why the frontend treats its
   absence as "not stated" rather than as an error.
+- [TAS-201](https://jira.ozero.dev/browse/TAS-201) — filed 2026-09-09 from
+  TAS-191, and filed directly rather than parked here because it is a
+  contract-design problem that survives on its own: `BoardIssueDto` drops
+  `issueType`, `status_key` and `priority`, which `IssueBoardResponse` already
+  hands the gateway, so three of the reasons the board screen cannot move onto
+  the board route are a mapper and three schema lines. The same ask carries the
+  three smaller ones — `storyPoints` declared in REST with no `story_points` in
+  the proto to fill it, `labels` sending ids under a name that reads as names,
+  and `assignee.displayName` null for every assigned issue measured.

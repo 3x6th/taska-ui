@@ -342,8 +342,25 @@ const requirePlanningFields = (input: PlanningFieldsInput, stored: StoredPlannin
  * failure that is worth reproducing here rather than papering over. Dropping
  * the card instead would make an issue disappear from every board with nothing
  * on screen to say so.
+ *
+ * The code is `INTERNAL_SERVER_ERROR` and not `INTERNAL`: `BoardServiceImpl`
+ * raises a `ResponseStatusException(INTERNAL_SERVER_ERROR, "Inconsistent
+ * state: …")`, which is not a gRPC status, so `GatewayErrorHandler` takes its
+ * middle branch and sets `code = httpStatus.name()`. Only its
+ * unexpected-exception branch emits `INTERNAL`.
  */
+const BOARD_INCONSISTENT_STATE_CODE = "INTERNAL_SERVER_ERROR";
 const BOARD_INCONSISTENT_STATE_MESSAGE = "Inconsistent state: issues found with statuses not present in workflow";
+
+/**
+ * The status key `includeDone` excludes, verbatim from
+ * `IssueRepositoryImpl.boardFilterConditions`, which adds
+ * `new BoardFilterCondition("status_key", "excludedStatusKey", NOT_EQUALS,
+ * "DONE")` when the flag is off. The server keys this on the status key and
+ * never on the column's `category`, so a workflow with a `DONE`-category column
+ * keyed `RESOLVED` keeps its cards.
+ */
+const BOARD_EXCLUDED_STATUS_KEY = "DONE";
 
 /**
  * The board, built the way the gateway builds it: the workflow's statuses
@@ -357,16 +374,21 @@ const BOARD_INCONSISTENT_STATE_MESSAGE = "Inconsistent state: issues found with 
  *
  * `issues` arrive already filtered by project, type, assignee and label, and
  * already carrying their labels: those are the parts the store owns. What is
- * decided here is the part the *board* owns, and the ordering of the two rules
- * is the only thing about it the gateway has not been measured doing:
+ * decided here is the part the *board* owns, and the order of the two rules is
+ * the backend's own, read off the source rather than inferred from a probe:
  *
- * - an issue whose status no column holds fails the whole read, **before**
- *   `includeDone` is consulted, so an inconsistent DONE issue is reported
- *   rather than hidden by a filter;
- * - `includeDone` then drops the issues of any column whose `category` is
- *   `DONE` while **keeping the column**, which is what the deployed gateway
- *   answers (measured 2026-09-09: the DONE column arrives either way, empty
- *   without the flag and populated with it).
+ * - `includeDone` off drops every issue whose status key is the literal `DONE`
+ *   (`BOARD_EXCLUDED_STATUS_KEY` above) while **keeping the column**, because
+ *   the columns come from the workflow and the filter only ever sees issues.
+ *   The DONE column therefore arrives either way, empty without the flag and
+ *   populated with it, which is also what the deployed gateway answered on
+ *   2026-09-09;
+ * - **then** an issue whose status no column holds fails the whole read. That
+ *   order is not this repository's choice: the exclusion is a `WHERE` clause in
+ *   issue-service (`IssueRepositoryImpl.boardFilterConditions`), so a stray
+ *   `DONE` issue never reaches the gateway's leftover-status check while
+ *   `includeDone` is off and the gateway answers `200`. With the flag on, the
+ *   issue arrives, no column holds it, and both implementations fail.
  */
 export function buildMockBoard(
   projectId: string,
@@ -386,16 +408,30 @@ export function buildMockBoard(
   const byStatusKey = new Map(columns.map((column) => [column.statusKey, column]));
 
   for (const issue of issues) {
+    // Before the lookup, and on the issue's own status key, because that is
+    // where the server does it: `includeDone` is a `status_key <> 'DONE'` in
+    // issue-service, applied to the rows the board is built from rather than to
+    // the columns it is built into.
+    if (!params.includeDone && issue.status === BOARD_EXCLUDED_STATUS_KEY) continue;
     const column = byStatusKey.get(issue.status);
     if (!column) {
-      throw new MockApiError("INTERNAL", BOARD_INCONSISTENT_STATE_MESSAGE);
+      throw new MockApiError(BOARD_INCONSISTENT_STATE_CODE, BOARD_INCONSISTENT_STATE_MESSAGE);
     }
-    if (!params.includeDone && column.category === "DONE") continue;
     column.issues.push({
       id: issue.id,
       issueKey: issue.issueKey,
       summary: issue.summary,
-      storyPoints: issue.storyPoints,
+      // `storyPoints: null` on every card, deliberately, even though this store
+      // has an estimate for most of these issues: `IssueBoardResponse` in
+      // grpc-common-lib/src/main/proto/v1/issue-service.proto has no
+      // `story_points` field, and the gateway's `IssueMapper.toRestBoardIssue`
+      // never calls `setStoryPoints`, so `BoardIssueDto.storyPoints` is
+      // declared in the contract and undeliverable — not merely unset on the
+      // issues that happen to exist. Copying the seed's 3, 0, 1.5, 8 and 13
+      // would let a mock-mode card draw an estimate badge that is blank in
+      // production, and 1.5 could not cross the wire at all, where the field is
+      // `int32`.
+      storyPoints: null,
       // `displayName: null` on every assignee, deliberately, even though this
       // store knows the name: the deployed gateway answered `null` for every
       // assigned issue measured on 2026-09-09. A mock that filled it in would
