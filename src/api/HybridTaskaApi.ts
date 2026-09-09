@@ -1,6 +1,7 @@
 import type {
   AcceptInvitationInput,
   AuthTokens,
+  BoardParams,
   ConfirmAttachmentUploadInput,
   CreateAttachmentUploadUrlInput,
   CreateIssueInput,
@@ -25,6 +26,7 @@ import type {
   AdminRowsQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  Board,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -156,6 +158,14 @@ export class HybridTaskaApi implements TaskaApi {
 
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
     return this.live.listIssues(projectId, params);
+  }
+
+  // Delegated whole, like the search below it. The board route is deployed and
+  // measured (2026-09-09), it takes a project id and no membership, and there
+  // is nothing here for this class to synthesise — the compensation it exists
+  // for is project membership only.
+  getBoard(projectId: string, params: BoardParams): Promise<Board> {
+    return this.live.getBoard(projectId, params);
   }
 
   // Delegated whole. Search is one gateway route with no membership in it, and

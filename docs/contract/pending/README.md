@@ -19,9 +19,13 @@ version, pinned by head commit.
   outranks it. A pending file losing an argument with the snapshot is the
   pending file being wrong.
 - **Not a promise.** Every one of these is on a PR that can still change, be
-  rewritten, or be closed. `pr-118-TAS-125.yml` is on a PR in
-  `CHANGES_REQUESTED` for a missing access check, so its shape is the least
-  settled of the four.
+  rewritten, or be closed. Both halves of that have now happened. `pr-118-TAS-125.yml`
+  sat on a PR in `CHANGES_REQUESTED` for a missing access check; it merged on
+  2026-09-09 — with the check added a level below the gateway rather than in it —
+  and the file is gone, as this section's housekeeping requires. `pr-148-TAS-116.yml`
+  had its head move the same day without a byte of its `openapi.yml` changing,
+  which is the other lesson: a moved pin is not by itself a moved contract, and
+  the way to tell is to diff the two heads rather than to re-extract on faith.
 - **Not complete files.** Each is an extract: the paths and schemas that are new
   in that PR, or whose text differs from `develop`. Everything they `$ref` that
   they do not define is in the snapshot.
@@ -33,11 +37,12 @@ against `develop` block by block. Two things are deliberately not reported as
 changes: a block whose only difference is whitespace, and a trailing comment
 banner that belongs to the next section. A branch that is far behind `develop`
 also shows unrelated endpoints as "removed" when they are only absent from a
-stale base — `pr-118-TAS-125.yml` is restricted to the one route its PR actually
-adds for that reason, and says so in its own header. That extract first claimed
+stale base — `pr-118-TAS-125.yml` was restricted to the one route its PR actually
+added for that reason, and said so in its own header. That extract first claimed
 two, and the second was a route the branch had merely not caught up on being
-renamed; the header carries the story, because a stale branch producing a
-plausible-looking addition is the trap this whole directory can walk into.
+renamed; the story is kept here now that the file is deleted, because a stale
+branch producing a plausible-looking addition is the trap this whole directory
+can walk into.
 
 The extract is a reading aid, not a source. Where an extract and the PR disagree,
 the PR wins; where the PR's `openapi.yml` and the PR's Java disagree, the Java
@@ -106,4 +111,13 @@ was written against it.
 | --- | --- | --- | --- |
 | `pr-148-TAS-116.yml` | [#148](https://github.com/VladislavYurin/taska-backend/pull/148) | TAS-116 | TAS-189 |
 | `pr-147-TAS-131.yml` | [#147](https://github.com/VladislavYurin/taska-backend/pull/147) | TAS-131 | TAS-190 |
-| `pr-118-TAS-125.yml` | [#118](https://github.com/VladislavYurin/taska-backend/pull/118) | TAS-125 | TAS-191 |
+
+`pr-118-TAS-125.yml` was here for TAS-125 / TAS-191 and was deleted on 2026-09-09
+when backend PR #118 merged and the snapshot was refreshed to develop
+`5941499203ae`.
+
+One open PR deliberately has no extract: backend
+[#150](https://github.com/VladislavYurin/taska-backend/pull/150) (TAS-129, user
+avatars) changes the contract and is open, but nothing in this repository is
+written against it, and an extract nobody audits is a pin to keep current for
+free. Write one the day a story here needs it.

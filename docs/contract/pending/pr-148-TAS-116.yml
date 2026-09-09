@@ -2,24 +2,45 @@
 # Issue planning fields on the gateway REST DTOs
 #
 # Source: https://github.com/VladislavYurin/taska-backend/pull/148
-# Head commit: c01c7b960e973726d8c8891dd1119ad4d7a12041
-# PR state on 2026-09-05: open, checks green, review required
+# Head commit: 4539137553b49faf4f7ba1edaecd7de2882920eb
+# PR state on 2026-09-09: open, "Build & Test — api-gateway" FAILING, every other module green
 # Base for this extract: develop @ 8b8b3c5aca210175322d5f1d092c61ffcd3cfeb3
+#
+# READ THIS BEFORE THE FILE. At the pinned head this PR does not change openapi.yml at all.
+# Its copy of the spec is byte-identical to develop @ 5941499203ae, and the only file it
+# changes is api-gateway/src/main/java/ru/taska/mapper/IssueMapper.java, which sets
+# storyPoints, startDate, dueDate and both estimates on IssueResponseDto,
+# UpdateIssueResponseDto and IssueShortResponseDto. The declarations extracted below were on
+# the PR's earlier heads — c01c7b960e97, then 79187f94d135 — and went away in the force-push
+# of 2026-09-09 11:49Z, three hours after this repository re-pinned the file.
+#
+# That is not a cosmetic loss. The gateway's ru.taska.domain.dto classes are generated from
+# this very spec by openapi-generator-maven-plugin (api-gateway/pom.xml, inputSpec
+# src/main/resources/static/openapi.yml, modelPackage ru.taska.domain.dto), so a mapper
+# calling setStoryPoints on a schema that does not declare it cannot compile — and the
+# api-gateway build is red on this head while all ten other modules pass. Read the failure as
+# the missing half rather than as flaky CI.
+#
+# So this file has stopped being "what the contract will say if this PR merges as it stands".
+# It is what the contract said at the head TAS-189's API layer was written against, kept
+# because that work exists in this repository and has to stay auditable. Nothing further is
+# written against it until the declarations come back. Raised on TAS-116; recorded in
+# docs/ai/API-DIVERGENCE.md.
 #
 # Adds no routes. Adds storyPoints, startDate, dueDate, originalEstimateMinutes and
 # remainingEstimateMinutes to five existing issue schemas.
-# storyPoints is number/double here and integer/int32 in PR #118 BoardIssueDto — the two open
-# PRs disagree with each other. Recorded in docs/ai/API-DIVERGENCE.md.
+# storyPoints is number/double here and integer/int32 in BoardIssueDto. PR #118 merged on
+# 2026-09-09, so this is no longer two open PRs disagreeing: the merged contract says int32
+# on the board DTO and this extract says double on the issue DTOs. Recorded in
+# docs/ai/API-DIVERGENCE.md.
 #
-# This is NOT the contract. It is what the contract WILL say if this PR merges as it
-# stands. docs/contract/openapi.yml stays the authority until then; this file exists so a
-# reviewer without network access can audit frontend work written ahead of the merge, and
-# so the version that work was written against is pinned in history. Delete it when the PR
-# merges and the snapshot is refreshed.
+# This is NOT the contract. docs/contract/openapi.yml stays the authority; this file exists so
+# a reviewer without network access can audit frontend work written ahead of the merge, and so
+# the version that work was written against is pinned in history. Delete it when the PR merges
+# and the snapshot is refreshed.
 #
 # Extracted mechanically: every path and schema that is new in the PR, or whose text differs
 # from develop. Ordering follows the PR file.
-
 components:
   schemas:
 

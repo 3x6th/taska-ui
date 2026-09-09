@@ -33,6 +33,33 @@ describe("HybridTaskaApi", () => {
     expect(getWorkflow).toHaveBeenCalledWith(project.id, undefined);
   });
 
+  // The board route is deployed and measured (TAS-191), so this class has
+  // nothing to add to it. Both halves matter: the call reaches live with the
+  // filters untouched, and a failure comes back as a failure rather than as a
+  // synthesised board — a compensation invented here would be a board nobody
+  // could tell from the server's.
+  it("delegates the board read to live, filters and all", async () => {
+    const live = liveApi();
+    const getBoard = vi.spyOn(live, "getBoard");
+    const hybrid = new HybridTaskaApi(live, true);
+    const [project] = await hybrid.listProjects();
+
+    const params = { issueType: "TASK", includeDone: true } as const;
+    const board = await hybrid.getBoard(project.id, params);
+
+    expect(getBoard).toHaveBeenCalledWith(project.id, params);
+    expect(board.columns.map((column) => column.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
+  });
+
+  it("lets a failing board read fail", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    const [project] = await live.listProjects();
+    vi.spyOn(live, "getBoard").mockRejectedValue(new Error("Internal error"));
+
+    await expect(hybrid.getBoard(project.id, { issueType: "TASK" })).rejects.toThrow("Internal error");
+  });
+
   it("synthesises membership without calling any endpoint at all", async () => {
     const live = liveApi();
     const hybrid = new HybridTaskaApi(live, true);

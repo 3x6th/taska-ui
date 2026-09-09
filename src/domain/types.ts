@@ -350,6 +350,88 @@ export interface IssueSearchHit {
   storyPoints: number | null;
 }
 
+/**
+ * Who a board card is assigned to — `BoardUserDto`, and two fields is all of
+ * it. Not a `User` and not a `ProjectMember`: the board route is told an id and
+ * a name and nothing else, so typing this as a person would put an email, a
+ * status and a colour in scope for a card that was never sent them.
+ *
+ * `displayName` is `string | null` because the deployed gateway answered
+ * `{"id":"275417fd-…","displayName":null}` for **every** assigned issue on
+ * 2026-09-09 — a real assignee, with a real name in `GET /users/me`, and no
+ * name here. So a caller that wants to print a person's name resolves the id
+ * against the members it already holds; the name on this object is a bonus the
+ * gateway has not yet been observed paying.
+ */
+export interface BoardAssignee {
+  id: string;
+  displayName: string | null;
+}
+
+/**
+ * One card on the board — `BoardIssueDto`, and deliberately not an `Issue`.
+ * Six fields is everything this route is ever told: no `status` (the column
+ * carries it), no `priority`, no `projectId`, no `description`, no dates and no
+ * estimates. Same rule as `IssueSearchHit` above — do not widen it into an
+ * issue it never was.
+ */
+export interface BoardIssue {
+  id: string;
+  issueKey: string;
+  summary: string;
+  /**
+   * `??`, never `||`, at every reader: an issue estimated at zero points has
+   * been estimated. Absent on the wire is `null`, and the deployed gateway
+   * answered `null` for every issue measured on 2026-09-09.
+   */
+  storyPoints: number | null;
+  assignee: BoardAssignee | null;
+  /**
+   * The wire field is `labels` and it carries label **ids**, not names —
+   * measured against the deployed gateway on 2026-09-09, where every value was
+   * a uuid matching a row of `GET /projects/{projectId}/labels`. Renamed here
+   * for what it holds, so nothing can print it as a chip by mistake.
+   */
+  labelIds: string[];
+}
+
+/**
+ * One column — `BoardColumnDto`. A workflow status of the asked-for issue type,
+ * plus the issues sitting in it.
+ *
+ * **`statusKey` and `category` are plain strings and must stay that way.**
+ * `WorkflowStatus` narrows both to `IssueStatus` because this build has only
+ * ever been shown three; the board's columns come straight out of whatever
+ * workflow the project has, and a value outside that union is a project
+ * configuration rather than a bug. Narrowing them is how TAS-173 and TAS-199
+ * blanked screens — the type would say the case cannot happen and the renderer
+ * would then not draw it.
+ */
+export interface BoardColumn {
+  statusKey: string;
+  name: string;
+  category: string;
+  sortOrder: number;
+  issues: BoardIssue[];
+}
+
+/**
+ * `GET /projects/{projectId}/board` — `BoardResponseDto`. One issue type's
+ * columns, in the workflow's own `sortOrder` (10/20/30 for TODO/IN_PROGRESS/DONE
+ * on the deployed gateway, measured 2026-09-09).
+ *
+ * `issueType` is the echo of what the caller asked for: the route requires the
+ * parameter, so a board is always about exactly one type and there is no "all".
+ *
+ * The `includeDone` filter drops *issues*, never columns: without it the DONE
+ * column still arrives, carrying an empty `issues` array.
+ */
+export interface Board {
+  projectId: string;
+  issueType: IssueType;
+  columns: BoardColumn[];
+}
+
 export type IssueEventType =
   | "CREATED"
   | "TRANSITIONED"

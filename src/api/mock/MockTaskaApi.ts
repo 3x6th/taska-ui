@@ -1,6 +1,7 @@
 import type {
   AcceptInvitationInput,
   AuthTokens,
+  BoardParams,
   ConfirmAttachmentUploadInput,
   CreateAttachmentUploadUrlInput,
   CreateIssueInput,
@@ -50,6 +51,8 @@ import type {
   AdminTable,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  Board,
+  BoardColumn,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -332,6 +335,81 @@ const requirePlanningFields = (input: PlanningFieldsInput, stored: StoredPlannin
     throw new MockApiError(refusal.code, refusal.message);
   }
 };
+
+/**
+ * What `BoardServiceImpl` throws when an issue sits in a status its project's
+ * workflow does not list — a 500 on the deployed gateway, and the one board
+ * failure that is worth reproducing here rather than papering over. Dropping
+ * the card instead would make an issue disappear from every board with nothing
+ * on screen to say so.
+ */
+const BOARD_INCONSISTENT_STATE_MESSAGE = "Inconsistent state: issues found with statuses not present in workflow";
+
+/**
+ * The board, built the way the gateway builds it: the workflow's statuses
+ * become the columns, in `sortOrder`, and the issues are dropped into them by
+ * `statusKey`.
+ *
+ * A module-level function rather than a method because the failure below cannot
+ * be produced through the seeded store at all — every seeded issue sits in a
+ * status the seeded workflow lists, and `IssueStatus` narrows both sides to the
+ * same three values — so this is the only surface a test can reach it through.
+ *
+ * `issues` arrive already filtered by project, type, assignee and label, and
+ * already carrying their labels: those are the parts the store owns. What is
+ * decided here is the part the *board* owns, and the ordering of the two rules
+ * is the only thing about it the gateway has not been measured doing:
+ *
+ * - an issue whose status no column holds fails the whole read, **before**
+ *   `includeDone` is consulted, so an inconsistent DONE issue is reported
+ *   rather than hidden by a filter;
+ * - `includeDone` then drops the issues of any column whose `category` is
+ *   `DONE` while **keeping the column**, which is what the deployed gateway
+ *   answers (measured 2026-09-09: the DONE column arrives either way, empty
+ *   without the flag and populated with it).
+ */
+export function buildMockBoard(
+  projectId: string,
+  workflow: Workflow,
+  issues: Issue[],
+  params: BoardParams,
+): Board {
+  const columns: BoardColumn[] = [...workflow.statuses]
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .map((status) => ({
+      statusKey: status.statusKey,
+      name: status.name,
+      category: status.category,
+      sortOrder: status.sortOrder,
+      issues: [],
+    }));
+  const byStatusKey = new Map(columns.map((column) => [column.statusKey, column]));
+
+  for (const issue of issues) {
+    const column = byStatusKey.get(issue.status);
+    if (!column) {
+      throw new MockApiError("INTERNAL", BOARD_INCONSISTENT_STATE_MESSAGE);
+    }
+    if (!params.includeDone && column.category === "DONE") continue;
+    column.issues.push({
+      id: issue.id,
+      issueKey: issue.issueKey,
+      summary: issue.summary,
+      storyPoints: issue.storyPoints,
+      // `displayName: null` on every assignee, deliberately, even though this
+      // store knows the name: the deployed gateway answered `null` for every
+      // assigned issue measured on 2026-09-09. A mock that filled it in would
+      // let a card be built against a name the gateway never sends, which is
+      // the one difference between these two implementations that a screen
+      // would notice only in production.
+      assignee: issue.assigneeId ? { id: issue.assigneeId, displayName: null } : null,
+      // Ids, not names — `labels` on the wire carries uuids. See `BoardIssue`.
+      labelIds: issue.labels.map((label) => label.id),
+    });
+  }
+
+  return { projectId, issueType: params.issueType, columns };
+}
 
 /** Substring, case-insensitive, over `issue_key` OR `summary` OR `description` — the probe's own OR. */
 const matchesSearchQuery = (issue: Issue, query: string | null) => {
@@ -1417,6 +1495,34 @@ export class MockTaskaStore {
       pageSize,
       totalCount: filtered.length,
     };
+  }
+
+  /**
+   * `GET /projects/{projectId}/board`, built out of this store's own workflow
+   * and issues rather than from a fixture, so it moves when the seed does and
+   * an e2e run cannot pass against a board the gateway would never answer.
+   *
+   * What this method owns is which issues the board is about: the project's
+   * live issues of the asked-for type, narrowed by the `assigneeId` and
+   * `labelId` filters the gateway applies server-side. `buildMockBoard` above
+   * owns the rest — the columns, the grouping, `includeDone`, and the
+   * inconsistent-workflow failure.
+   */
+  getBoard(projectId: string, params: BoardParams): Board {
+    this.getProject(projectId);
+    const issues = this.issues
+      .filter((item) => item.projectId === projectId && item.deletedAt === null)
+      .filter((item) => item.issueType === params.issueType)
+      .filter((item) => !params.assigneeId || item.assigneeId === params.assigneeId)
+      // On the attached ids, exactly like `listIssues`: a soft-deleted label
+      // matches nothing rather than the issues it used to be on.
+      .filter((item) => !params.labelId || this.labelsForIssue(item.id).some((label) => label.id === params.labelId))
+      // The gateway's own order within a column is not measured, so the mock
+      // states the one its issue list already uses rather than inventing a
+      // second one for the same cards.
+      .sort(byCreatedAt)
+      .map((item) => this.issueView(item));
+    return buildMockBoard(projectId, this.workflow, issues, params);
   }
 
   /**
@@ -3583,6 +3689,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
     return wait(this.store.listIssues(projectId, params));
+  }
+
+  async getBoard(projectId: string, params: BoardParams): Promise<Board> {
+    return wait(this.store.getBoard(projectId, params));
   }
 
   async searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>> {
