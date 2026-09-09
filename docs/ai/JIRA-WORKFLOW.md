@@ -372,16 +372,25 @@ matters more than the numbers: the real `HybridTaskaApi` over the real
 - **What was folded in**, all of it already written down somewhere: the
   `markAllNotificationsRead` cap, the board's 100-issue ceiling and its second
   copy under the links section, the panel's re-read of the issue page, the two
-  call sites sharing one cache key, the mock's missing paging validation, and the
-  `summaryByProject` memo. Six `BACKLOG.md` lines, each struck with the key.
+  call sites sharing one cache key, the mock's missing paging validation, the
+  `summaryByProject` memo, and the project card's hard-coded `1 members` — that
+  last one alone is eighteen of the twenty-seven, which is why it is named here
+  rather than left inside "the projects screen". Seven `BACKLOG.md` lines, and
+  **two of the seven are struck through while five are annotated in place**: the
+  numbers in the bullet above are quoted from those five, and a struck line is a
+  worse place to quote from than a live one. `release-reviewer` caught the first
+  version of this sentence claiming all seven were struck, which the file's own
+  rule at `BACKLOG.md:8` would have led a reader to expect.
 - **What stayed out, and why in one sentence each.** A `rest`-mode Playwright
   project is infrastructure with its own review surface. Watchers paging is a
   contract ask, and folding it would give a frontend story a backend dependency.
   The `getMembership` three-mode disagreement is parity, not waste — the flag
   short-circuits it to zero requests. The invite flow's unauthenticated
   `getCurrentUser` is an auth path, and a performance story must not edit one.
-  The admin clamp holes and the attachment presign-per-row belong to other
-  owners.
+  The admin clamp holes belong to another owner, and the attachment
+  presign-per-row is the same shape on the far side of the wire —
+  `API-DIVERGENCE.md`'s attachment entry, not a `BACKLOG.md` line, which is where
+  a reader will otherwise look for it.
 - **The backend half is two asks, not one.**
   [TAS-201](https://jira.ozero.dev/browse/TAS-201) is the board DTO;
   [TAS-203](https://jira.ozero.dev/browse/TAS-203) is the missing project counts,
