@@ -4946,17 +4946,6 @@ button.attachment-open:hover:not(:disabled) {
   outline-offset: 2px;
 }
 
-/* …and the ring hugs the words instead of spanning the panel: 78.4 wide at
-   1440x900 rather than the section's full 435 — 425 when the panel's scrollbar
-   is up, which is the same ten-pixel wrinkle §7 records for this section's
-   select. The heading is `display: flex` from the shared section-heading recipe
-   below, so `fit-content` changes nothing but the box the outline follows. 6 is
-   §2.5's small-element band, which is what this box now is. */
-.issue-watchers h3 {
-  width: fit-content;
-  border-radius: 6px;
-}
-
 /* The sentence beside the toggle, which is what makes the control's state
    legible without decoding a tint. `--fg-2` rather than the `--fg-3` a meta row
    takes: it is the only prose in this section and §7 keeps the meta exemption
@@ -5029,6 +5018,24 @@ button.attachment-open:hover:not(:disabled) {
   color: var(--fg-2);
   font-size: 12px;
   font-weight: 600;
+}
+
+/* And the focus ring drawn on this heading further up hugs the words instead
+   of spanning the panel: 78.4 wide at 1440x900 rather than the section's full
+   435 — 425 when the panel's scrollbar is up, which is the same ten-pixel
+   wrinkle §7 records for this section's select. The heading is `display: flex`
+   from the shared section-heading recipe above, so `fit-content` changes
+   nothing but the box the outline follows. 6 is §2.5's small-element band,
+   which is what this box now is.
+
+   After that group and not before it, which is the whole reason this rule sits
+   here rather than beside the focus ring it belongs to: the two selectors have
+   equal specificity, so on any property they ever come to share the later one
+   wins. Today they share none and the order is invisible — which is exactly
+   when it is cheap to put a rule that *refines* a group behind it. */
+.issue-watchers h3 {
+  width: fit-content;
+  border-radius: 6px;
 }
 
 .comment-composer textarea,

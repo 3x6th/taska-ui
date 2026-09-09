@@ -367,6 +367,17 @@ Same rule as above: "Closed by" is settled, the rest is live.
   than to the project. Worth carrying here because the lesson generalises past
   watchers: **a synthesised read is safe to draw from and unsafe to conclude
   from.** Anything built on this list may offer, and may not assert.
+
+  **And the nameless member is the contract's default, not its edge case**
+  (`frontend-builder`, 2026-09-09, TAS-193). `ProjectMemberResponseDto` states
+  `projectId`, `userId` and `role` and carries **no user summary at all**, and
+  there is no `GET /projects/{projectId}/members` in the contract whatsoever —
+  the client's member read is against a route the contract does not describe. So
+  if that read ever ships as the DTO is written, every name this map resolves
+  goes at once: every watcher row, every picker option, every assignee chip.
+  What today reads as a rare "Unknown" beside a real name would become the whole
+  column. Worth knowing before anyone treats the nameless case as an edge worth
+  little wording effort.
 - **Two further consequences** (found by `api-contract-guard`, 2026-08-03):
   `isMember: true` and `projectExists: true` are hardcoded, so a non-member or
   a deleted project reads as a healthy membership; and with the flag off, a

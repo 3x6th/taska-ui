@@ -1582,10 +1582,21 @@ function IssueWatchersSection({
     onSuccess: (result) => applyServerCount(result.watchersCount),
     onError: (error, userId, context) => {
       rollback(context?.previous);
+      // The same sentence in the person its subject requires, and the reader's
+      // half is the toggle's own words rather than new prose: an ADMIN can add
+      // *themselves* from this picker — `addable` is every member who is not
+      // watching yet, which includes them — and the failure that follows is the
+      // one `watchIssue` above already has a sentence for.
+      const subject = watcherSubject(userById, userId, currentUserId);
       setNotice({
         error,
         tone: "error",
-        text: watcherFailureText(error, `${watcherName(userById, userId)} was not subscribed to this issue.`),
+        text: watcherFailureText(
+          error,
+          subject.reader
+            ? "You were not subscribed to this issue."
+            : `${subject.name} was not subscribed to this issue.`,
+        ),
       });
       // The rollback puts the person back in the picker, so put the choice back
       // with it — unless something else has been chosen since, which is the one
@@ -1646,17 +1657,26 @@ function IssueWatchersSection({
       removeRow(userId);
       applyServerCount(result.watchersCount);
       if (!result.removed) {
+        const subject = watcherSubject(userById, userId, currentUserId);
         setNotice({
           tone: "info",
-          text: `${watcherName(userById, userId)} was not watching this issue, so nothing was removed.`,
+          text: subject.reader
+            ? "You were not watching this issue, so nothing was removed."
+            : `${subject.name} was not watching this issue, so nothing was removed.`,
         });
       }
     },
     onError: (error, userId) => {
+      const subject = watcherSubject(userById, userId, currentUserId);
       setNotice({
         error,
         tone: "error",
-        text: watcherFailureText(error, `${watcherName(userById, userId)} is still watching this issue.`),
+        text: watcherFailureText(
+          error,
+          subject.reader
+            ? "You are still watching this issue."
+            : `${subject.name} is still watching this issue.`,
+        ),
       });
     },
     onSettled: settle,
@@ -1781,9 +1801,19 @@ function IssueWatchersSection({
             <span>Add a watcher</span>
             <select onChange={(event) => setPicked(event.target.value)} value={picked}>
               <option value="">Select a member</option>
+              {/* Each option worded as the row it is about to become. This read
+                  `member.user?.displayName ?? "Unnamed member"` — the same
+                  condition the rows call "Unknown", since `toUserMap` drops a
+                  membership row precisely for having no `user` — so choosing an
+                  "Unnamed member" produced an "Unknown" row and, when the add
+                  failed, a sentence about somebody the reader had never seen
+                  named. The contract makes that no edge case either:
+                  `ProjectMemberResponseDto` states `projectId`, `userId` and
+                  `role` and no user summary at all, so a member read shipped as
+                  written would put every option in this state at once. */}
               {addable.map((member) => (
                 <option key={member.userId} value={member.userId}>
-                  {member.user?.displayName ?? "Unnamed member"}
+                  {watcherSubject(userById, member.userId, currentUserId).name}
                 </option>
               ))}
             </select>
@@ -1836,8 +1866,18 @@ function IssueWatchersSection({
           `ApiNotice` makes internally and the reason it is worth copying while
           the component itself is not. A polite region containing the detail
           line would read a 36-character uuid out loud, which is the defect N6
-          has just finished removing from the ✕ label. The box stays silent, so
-          the region count is still one. */}
+          has just finished removing from the ✕ label.
+
+          What that buys is narrower than "one region in this section", so it is
+          worth stating as itself: **no ancestor of the detail line is a live
+          region**, which is what keeps the id out of every announcement, and it
+          is what the unit test checks (`closest("[aria-live]")`). It is not a
+          count. When the failure carries an id, `RequestId` mounts a
+          `role="status"` span *inside* this line — an implicit polite region,
+          the second in the box. It is empty until the reader clicks Copy and
+          only ever holds "Copied" or "Couldn't copy"; the uuid never enters it.
+          A silent region announces nothing, so the reader still hears one
+          sentence per failure. */}
       <div className={notice ? `watcher-note${notice.tone === "error" ? " is-error" : ""}` : ""}>
         <p aria-live="polite" className="watcher-note-sentence">
           {notice?.text ?? ""}
@@ -1872,12 +1912,14 @@ function IssueWatchersSection({
             // can still watch an issue in it, and that row used to read
             // "Unknown (you)" — a screen saying it does not know who you are,
             // beside a mark saying it does. `GET /users/me` answered that
-            // question before this section drew anything.
+            // question before this section drew anything. The rule lives in
+            // `watcherSubject` rather than here now, because the sentences
+            // below needed the same one and had been given a different one.
             //
             // "You" also makes the "(you)" beside it a tautology, so the mark
             // goes: it exists to pick the reader out of a list of names, and
             // there is no name here to pick out of.
-            const name = !person && mine ? "You" : watcherName(userById, watcher.userId);
+            const { name } = watcherSubject(userById, watcher.userId, currentUserId);
             const pending = watcher.id === optimisticWatcherId;
             const removing = removeWatcher.isPending && removeWatcher.variables === watcher.userId;
             const key = watcherRowKey(watcher);
@@ -1886,7 +1928,17 @@ function IssueWatchersSection({
               // add the server has not confirmed, and its own removal, which now
               // holds its place until the `DELETE` answers.
               <li className={`watcher-row${pending || removing ? " is-pending" : ""}`} key={key}>
-                <Avatar user={person} size="sm" />
+                {/* `label` is the announcement, not the drawing. Without a
+                    `user` the circle falls back to §4.4's word for nobody, so
+                    a row whose text reads "You" was announced "Unassigned You"
+                    — a screen saying in one breath that it knows who this is
+                    and that nobody is here — and an unnamed row was announced
+                    "Unassigned Unknown". The dashes and the empty glyph do not
+                    move: both are gated on `user`, not on this, so §4.4's
+                    nobody-circle is still drawn for a person this map cannot
+                    name. Only the word a reader hears changes, and it changes
+                    to the one already beside it. */}
+                <Avatar user={person} label={name} size="sm" />
                 <span className="watcher-name">
                   {name}
                   {mine && person ? <span className="watcher-you"> (you)</span> : null}
@@ -1899,8 +1951,36 @@ function IssueWatchersSection({
                     // characters read out one at a time. §5.8's own abbreviation
                     // is enough to disambiguate two rows and is what the admin
                     // tables already say aloud.
+                    //
+                    // The reader's own unnamed row takes the word the row
+                    // itself uses instead of an id that identifies them to
+                    // nobody. **Not observed in a browser, and against the mock
+                    // it cannot be**: the mock makes the first member of each
+                    // project its ADMIN, so an admin is always in the list
+                    // `userById` is built from and this arm never runs there.
+                    //
+                    // Where it *can* run is narrower than "the deployed stand's
+                    // 405", which is what this comment said until the sentences
+                    // below were fixed to match it. The stand runs `hybrid`,
+                    // and `HybridTaskaApi.listMembers` never calls the 405
+                    // route: it synthesises one member — the reader, *named* —
+                    // so the map names them and this arm stays shut. `rest`
+                    // does meet the 405, and there `getMembership` is equally
+                    // unmapped, so `isProjectAdmin` is false and there is no ✕
+                    // to label. What reaches it is the stand plus a failing
+                    // `GET /projects/{id}`: `listMembers` is built on that read
+                    // and rejects with it, while
+                    // `VITE_TASKA_ASSUME_PROJECT_ADMIN` short-circuits
+                    // `getMembership` before any request and keeps the control
+                    // on screen — the same coupling API-DIVERGENCE.md records
+                    // for TAS-162. A ruling about that case, then, not a
+                    // screenshot of it; the unit suite is where it is held.
                     aria-label={
-                      person ? `Remove ${person.displayName} from watchers` : `Remove watcher ${shortKey(watcher.userId)}`
+                      person
+                        ? `Remove ${person.displayName} from watchers`
+                        : mine
+                          ? "Remove yourself from watchers"
+                          : `Remove watcher ${shortKey(watcher.userId)}`
                     }
                     // In flight, so `aria-disabled` and a handler guard rather
                     // than `disabled` — §4.21's rule, and the reason this row
@@ -1936,21 +2016,50 @@ function IssueWatchersSection({
 }
 
 /**
- * A watcher's display name, or the word this panel already uses for a person it
- * cannot name — the reporter line above prints the same one for the same
- * reason. Kept in one function so the row, the two notices and the remove
- * label cannot drift apart.
+ * Who a watcher row — and every sentence about one — is about: the name this
+ * section is allowed to use for them, and whether that name is the reader
+ * themselves.
+ *
+ * **One function because two of them contradicted each other.** The rows had
+ * learned that this map's failure is not total — `GET /users/me` names the
+ * reader whatever the member read did — and the sentences had not, so an ADMIN
+ * removing their own unnamed row met "You" in the row, "Remove yourself from
+ * watchers" on its ✕, and "Unknown is still watching this issue." underneath,
+ * all three about the same person. The picker was a third voice: "Unnamed
+ * member" for exactly the condition the rows call "Unknown", `toUserMap`
+ * dropping a membership row that carries no `user` summary being the single
+ * thing both words are about. Every surface in this section asks here now, so
+ * there is one word per state and it cannot drift again.
+ *
+ * Precedence is the rows', unchanged: the member map first — a reader it *can*
+ * name sees their own name, exactly as the assignee row and the reporter line
+ * show it — then the reader, then §4.21's word for a person nobody here can
+ * name.
+ *
+ * `reader` travels with the name because English will not let a caller recover
+ * it: "You" takes a plural verb, so a sentence built by interpolation reads
+ * "You was not subscribed to this issue." The three ADMIN notices ask for it
+ * and then say what the `…/watchers/me` pair already says about that same
+ * state, rather than inflecting a template.
  */
-function watcherName(
+function watcherSubject(
   userById: Map<string, Pick<User, "id" | "displayName" | "color">>,
   userId: string,
-): string {
-  return userById.get(userId)?.displayName ?? "Unknown";
+  currentUserId?: string,
+): { name: string; reader: boolean } {
+  // Whether the map *has* them, never whether the name it holds is non-empty:
+  // an empty `displayName` is the server's answer about that person, and this
+  // section is not the place that overrides it.
+  const person = userById.get(userId);
+  if (person) return { name: person.displayName, reader: false };
+  if (currentUserId && userId === currentUserId) return { name: "You", reader: true };
+  return { name: "Unknown", reader: false };
 }
 
 /**
- * The second line of a watcher notice: the gateway's own words, and the id that
- * finds this failure in its log.
+ * The second line of a watcher notice: the id that finds this failure in the
+ * gateway's log, and — on a branch today's callers cannot reach, see the last
+ * paragraph — the gateway's own words.
  *
  * Written here rather than reached for as `ApiNotice`, and that was the
  * argued-out call (`art-director`, TAS-193). The component would fit the read
@@ -1965,6 +2074,16 @@ function watcherName(
  * rather than an assumption because `watcherFailureText` *prefers* the server's
  * own message whenever there is one, so the two are usually the same string and
  * printing it twice would be an echo, not a detail.
+ *
+ * Which makes `gatewayWords` dead with the two callers this section has, and
+ * saying so here saves the next reader looking for a line that cannot render:
+ * `watcherFailureText` returns `message` whenever there is one and both call
+ * sites hand that same string straight back as `sentence`, so the only words
+ * this branch could print are the ones it exists to suppress. The branch stays
+ * because the rule killing it lives in another function — a caller that
+ * composes its own sentence, or a `watcherFailureText` that stops preferring
+ * the server's, and it renders again — and because `null` is also the honest
+ * answer for an error that is not an `ApiError` at all.
  */
 function WatcherNoteDetail({ error, sentence }: { error: unknown; sentence?: string }) {
   const { message, requestId } = apiErrorFacts(error);

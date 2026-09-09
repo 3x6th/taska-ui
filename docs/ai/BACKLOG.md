@@ -104,6 +104,27 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   layout until the pointer leaves, which is a product decision rather than a
   component one, and it should be taken for all four sections at once rather
   than four times.
+- **`watcherFailureText`'s fallback cannot render against any implementation**
+  (`frontend-builder`, 2026-09-09, TAS-193). It returns the server's message
+  whenever there is one, and no client ships an error without one:
+  `RestTaskaApi` falls back to `Request failed with {status}`, and
+  `MockApiError`'s constructor requires a string across fifty call sites, none
+  of them empty. So two of the three watcher sentences, and the "only a project
+  admin" 403 sentence beside them, can only render for a message-less error
+  nothing constructs — only the `removed: false` notice, which bypasses the
+  helper, reaches a browser. This is the mirror of the `gatewayWords` dead
+  branch already documented in `WatcherNoteDetail`, and it is one question, not
+  two: what a notice helper should do when the server's words are the whole
+  message. A design call about the helper rather than a wording fix in one
+  section.
+- **A third word for one state, just outside the watchers section**
+  (`frontend-builder`, 2026-09-09, TAS-193). TAS-193 unified "Unnamed member"
+  and "Unknown" inside its own section; the assignee chip says **"User"** for a
+  member with no user summary — same condition, third word, one panel. Worth
+  doing when the panel's naming is next opened, and worth doing as a set: per
+  the contract note in `API-DIVERGENCE.md`, this state is the DTO's default
+  rather than an edge, so whichever word wins will be the one most readers see
+  if the member read ever ships as written.
 - **The mock states a watcher count and imposes an order the contract does not
   promise** (`api-contract-guard`, 2026-09-09, TAS-193 verdict).
   `totalCount: watchers.length` means the mock always answers with a count, so
@@ -153,6 +174,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   refuse her. Reachable against a real gateway with a second client, or by
   adding a mock trigger of the `MOCK_ATTACHMENT_TRIGGERS` kind — which TAS-193
   did not build, because the story did not ask for it.
+
+  **One correction to how this was first written** (`art-director`, 2026-09-09):
+  it said real evidence needs "a gateway that refuses". That is stronger than
+  this repository's own record. `DESIGN.md` §4.21 states that the stand runs
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN`, which shows the ADMIN controls to everyone
+  **precisely so that a 403 is reachable by ordinary clicking** — so what is
+  missing is a run against the stand, not a special gateway. The screenshots
+  that exist for these tones are the stylesheet drawn onto the live document
+  (the `admin-console.spec.ts` technique, labelled as such in the script and the
+  spec), which covers the colour and type of a line whose recipe is shared by
+  selector with one the admin console renders for real. A thin, correctly
+  labelled gap — and thinner than the first version of this line implied.
 - **The Users section announces a name, and two accounts can share one**
   (`art-director`, 2026-09-08, TAS-194 verdict). `AdminUsersSection.tsx:341`
   announces `${personLabel(user)} is now ${status}.`, and `personLabel` prefers

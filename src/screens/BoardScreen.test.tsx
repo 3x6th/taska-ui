@@ -117,8 +117,15 @@ const {
      * `GET /projects/{id}/members`. Empty for every other case here — the
      * assignee row is not what they are about — and seeded only where a name
      * has to be resolved from an id, which is how an attachment's byline works.
+     *
+     * `user` is optional because it is optional on the wire: the contract's
+     * `ProjectMemberResponseDto` states `projectId`, `userId` and `role` and no
+     * user summary at all, so a membership row that names nobody is the shape a
+     * member read shipped as written would send for *everyone*. `toUserMap`
+     * drops such a row, which is the state the watchers section had two
+     * different words for.
      */
-    members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER"; addedAt: string; addedBy: string; user: { displayName: string; email: string } }[];
+    members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER"; addedAt: string; addedBy: string; user?: { displayName: string; email: string } }[];
     attachments: {
       id: string;
       issueId: string;
@@ -1937,6 +1944,30 @@ describe("issue watchers", () => {
     user: { displayName, email: `${displayName.split(" ")[0].toLowerCase()}@example.com` },
   });
 
+  /**
+   * A membership row that names nobody — the shape `ProjectMemberResponseDto`
+   * actually describes, and the row `toUserMap` drops. It is the picker's half
+   * of the state the rows call "Unknown".
+   */
+  const nameless = (userId: string) => ({
+    userId,
+    role: "MEMBER" as const,
+    addedAt: "2026-08-01T09:00:00Z",
+    addedBy: ANNA,
+  });
+
+  /**
+   * A refusal with nothing to say, which is the **only** way to reach the
+   * section's own failure sentences: `watcherFailureText` returns the server's
+   * message whenever there is one, and no implementation ships an error without
+   * one — `RestTaskaApi` falls back to `Request failed with {status}` and
+   * `MockApiError` always carries a string. So the two sentences below are
+   * rulings about a branch today's clients cannot produce, and only the
+   * `removed: false` notice — which does not go through `watcherFailureText` at
+   * all — is reachable in a browser.
+   */
+  const silentRefusal = () => Object.assign(new Error(""), { status: 500, code: "INTERNAL" });
+
   const section = async () => {
     const heading = await screen.findByRole("heading", { name: /watchers/i });
     const found = heading.closest("section");
@@ -2111,8 +2142,12 @@ describe("issue watchers", () => {
         name: "Copy request id 7f0e6d5c-1b2a-4c3d-9e8f-0a1b2c3d4e5f",
       }),
     ).toBeVisible();
-    // And it stays out of the announcement: the live region is the sentence,
-    // not the box, so a screen reader is not made to spell out a uuid.
+    // And it stays out of the announcement: the sentence is the live region
+    // and no ancestor of the detail line is one, so a screen reader is never
+    // made to spell out a uuid. That is the whole claim — not "one region in
+    // the section": `RequestId` mounts a `role="status"` span inside the
+    // detail, which is a polite region too, and it is empty here and only ever
+    // holds "Copied" or "Couldn't copy".
     expect(sentence).toHaveAttribute("aria-live", "polite");
     expect(detail!.closest("[aria-live]")).toBeNull();
   });
@@ -2137,6 +2172,11 @@ describe("issue watchers", () => {
     // the reader out of a list of names, and "You (you)" picks nothing.
     expect(panel.queryByText("(you)")).toBeNull();
     expect(panel.getByText("Sofia Reyes")).toBeVisible();
+    // The circle beside the name says the same word. Left to its own fallback
+    // it says §4.4's "Unassigned", and the row announced "Unassigned You" —
+    // the name and the mark beside it disagreeing about whether anyone is
+    // there. The dashes stay: this row still has no user to colour.
+    expect(panel.getByLabelText("You")).toHaveClass("avatar", "avatar-empty");
   });
 
   it("claims nothing about the member list while the read is still in flight", async () => {
@@ -2181,9 +2221,106 @@ describe("issue watchers", () => {
 
     const panel = await section();
     // The same word the reporter line above already prints for an id this map
-    // cannot resolve.
+    // cannot resolve — and the circle beside it announces that word rather
+    // than "Unassigned", which would have made the row read "Unassigned
+    // Unknown" to a screen reader.
     expect(await panel.findByText("Unknown")).toBeVisible();
+    expect(panel.getByLabelText("Unknown")).toHaveClass("avatar", "avatar-empty");
     expect(panel.getByText(/Anna Ivanova/)).toBeVisible();
+  });
+
+  it("says one word for a member it cannot name, in the picker and in the sentence about them", async () => {
+    // Two words for one state, which is what made the contradiction below
+    // visible: the option said "Unnamed member" and every other surface said
+    // "Unknown", about the one condition both are for — a membership row with
+    // no user summary, which is exactly the row `toUserMap` drops.
+    seedMembers([nameless("user-priya")]);
+    seedWatchers([], 0);
+    failWatcherWrite(silentRefusal());
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const picker = await panel.findByLabelText("Add a watcher");
+    await waitFor(() =>
+      expect([...picker.querySelectorAll("option")].map((option) => option.textContent)).toEqual([
+        "Select a member",
+        "Unknown",
+      ]),
+    );
+
+    fireEvent.change(picker, { target: { value: "user-priya" } });
+    fireEvent.click(panel.getByRole("button", { name: "Add" }));
+
+    expect(await panel.findByText("Unknown was not subscribed to this issue.")).toBeVisible();
+  });
+
+  it("offers the reader the word their own row uses, and refuses them in the person it takes", async () => {
+    // The same nameless membership row, except that it is the reader's own —
+    // and an ADMIN may add themselves from this picker, since `addable` is
+    // everyone not watching yet. Interpolating the row's word into the third
+    // person sentence would have produced "You was not subscribed to this
+    // issue.", so the notice says what the toggle above already says.
+    seedMembers([nameless(ANNA)]);
+    seedWatchers([], 0);
+    failWatcherWrite(silentRefusal());
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const picker = await panel.findByLabelText("Add a watcher");
+    await waitFor(() =>
+      expect([...picker.querySelectorAll("option")].map((option) => option.textContent)).toEqual([
+        "Select a member",
+        "You",
+      ]),
+    );
+
+    fireEvent.change(picker, { target: { value: ANNA } });
+    fireEvent.click(panel.getByRole("button", { name: "Add" }));
+
+    expect(await panel.findByText("You were not subscribed to this issue.")).toBeVisible();
+  });
+
+  it("tells the reader their own removal removed nothing, in the person the row is written in", async () => {
+    // **The one sentence of the three a browser can reach**: it is set without
+    // `watcherFailureText`, so no server message can win over it.
+    //
+    // The fixture is a member read that failed, whichever way — what the stand
+    // does is fail it from underneath. `hybrid` synthesises a *named* reader
+    // into the member list rather than calling the 405 route, so the map loses
+    // the reader only when the `GET /projects/{id}` that synthesis is built on
+    // fails, and `VITE_TASKA_ASSUME_PROJECT_ADMIN` answers `getMembership`
+    // without asking the gateway anything, so the ✕ stays on screen through it.
+    failMembers(Object.assign(new Error("Method Not Allowed"), { status: 405 }));
+    seedWatchers([watcher(ANNA)], 1, 1);
+    setUnwatchAnswer(false);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Remove yourself from watchers" }, AFTER_RETRY));
+
+    const notice = (await panel.findByText("You were not watching this issue, so nothing was removed.")).parentElement!;
+    // A 200 that changed nothing, said in the neutral tone — the same sentence
+    // and the same tone the `…/watchers/me` unwatch gives for the same answer.
+    expect(notice).not.toHaveClass("is-error");
+  });
+
+  it("says a refused removal of the reader's own row about the person the row names", async () => {
+    // The contradiction this pass came back for: the row read "You", its ✕ said
+    // "Remove yourself from watchers", and the sentence under both said
+    // "Unknown is still watching this issue." about that same person.
+    failMembers(Object.assign(new Error("Method Not Allowed"), { status: 405 }));
+    seedWatchers([watcher(ANNA)], 1);
+    failWatcherWrite(silentRefusal());
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Remove yourself from watchers" }, AFTER_RETRY));
+
+    expect(await panel.findByText("You are still watching this issue.")).toBeVisible();
+    // And the row it is about is still there, still reading the same word: the
+    // ADMIN removal only leaves the list on the server's word, and a refusal is
+    // not one.
+    expect(panel.getByText("You")).toBeVisible();
   });
 
   it("shows the read failure and offers no toggle over a state nobody knows", async () => {
