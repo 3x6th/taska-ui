@@ -50,7 +50,7 @@ states are not.
 | [TAS-204](https://jira.ozero.dev/browse/TAS-204) | Nobody can be invited and nobody can be found by email | To Do | backend ask, MVP; trimmed 2026-09-09 — the user summary and batch read moved into TAS-137 |
 | [TAS-205](https://jira.ozero.dev/browse/TAS-205) | Reads do not answer a screen's question: `issueType` required, no transitions on the board, no issue lookup by key | To Do | backend ask |
 | [TAS-206](https://jira.ozero.dev/browse/TAS-206) | Dictionaries, versions and contract completeness | To Do | backend ask; narrowed 2026-09-09 — the `X-Request-Id` clause was wrong and is struck, the enum defence is TAS-173, the `version` half gates TAS-116 |
-| [TAS-207](https://jira.ozero.dev/browse/TAS-207) | Two project reads lie: `workflow` enforces no membership, an empty project list is a `404` | To Do | backend ask, MVP; re-filed because both clauses went into TAS-141's closure unfixed |
+| [TAS-207](https://jira.ozero.dev/browse/TAS-207) | Two project reads lie: `workflow` enforces no membership, an empty project list is a `404` | To Do | backend ask, MVP. The empty-list clause traces to TAS-141 and went into its closure unfixed; the workflow-membership clause was **never filed, deliberately** — see `API-DIVERGENCE.md`, "the workflow read is not membership-checked" — and is filed for the first time here |
 | [TAS-208](https://jira.ozero.dev/browse/TAS-208) | The invitation path is broken three ways, and one of them reports activating somebody else's account as success | To Do | MVP, not started |
 | [TAS-209](https://jira.ozero.dev/browse/TAS-209) | Drop hybrid and default to `rest` — the act that closes the MVP | To Do | MVP, last in order, not started |
 | [TAS-196](https://jira.ozero.dev/browse/TAS-196) | The three admin writes are deployed; retire the undeployed-route compensation and refresh the contract snapshot | Done | merged (PR #50) |
@@ -73,7 +73,7 @@ the story has drifted and should be transitioned rather than the table edited.
 | --- | --- | --- |
 | [TAS-137](https://jira.ozero.dev/browse/TAS-137) | full `rest` mode | No project membership or member reads. `hybrid` mode plus `VITE_TASKA_ASSUME_PROJECT_ADMIN` compensates. **Re-probed 2026-09-08 and still true**: `GET /projects/{id}/members` answers `405` (only `POST` is mapped) and `GET /projects/{id}/membership` answers Spring's static-resource `404`. See `API-DIVERGENCE.md`. |
 | [TAS-139](https://jira.ozero.dev/browse/TAS-139) | nothing any more — measured fixed | Was: `GET /api/v1/issues/{issueId}` returns 500 once an issue has a comment; via the list hydration this made the whole board fail against live data. Probed 2026-09-08: three issues carrying 1, 1 and 4 comments each answered `200` with history, one of them carrying a label as well. The multiplier is gone too — TAS-195 removed the hydration. Backend story; its status is the backend owner's to move. |
-| [TAS-141](https://jira.ozero.dev/browse/TAS-141) | several UI affordances | Contract gaps: read-all, nullable assignee, comment ordering, CORS-exposed `X-Request-Id`, 404-on-empty-projects bug. |
+| [TAS-141](https://jira.ozero.dev/browse/TAS-141) | several UI affordances | Contract gaps: read-all, nullable assignee, comment ordering, CORS-exposed `X-Request-Id`, 404-on-empty-projects bug. **Closed 2026-09-04 in Jira with these gaps still open.** The empty-projects clause is re-filed as TAS-207; the CORS half is measured done (`API-DIVERGENCE.md`); the rest are unowned and need re-filing before anyone quotes this row as live work. |
 | [TAS-124](https://jira.ozero.dev/browse/TAS-124) | nothing any more — measured live | Was: the route's gRPC method was declared and unimplemented, so a deployed gateway would answer `501 UNIMPLEMENTED`, and PR #118 was CHANGES_REQUESTED besides. Both landed — PR #142 on 2026-09-07, PR #118 on 2026-09-09. Probed 2026-09-09 with a signed-in token: `GET /projects/{id}/board?issueType=TASK` answers `200` with columns in workflow order, `includeDone` filters issues and not columns, `assigneeId` and `labelId` filter server-side, and `EPIC` is a correct `400`. `TaskaApi.getBoard` exists in all three implementations (TAS-191); the board screen still composes its own board, for the two reasons that outlived the merge. |
 | [TAS-124](https://jira.ozero.dev/browse/TAS-124) / [TAS-125](https://jira.ozero.dev/browse/TAS-125) | ~~removing the N+1 board hydration~~ — **nothing any more** | **Withdrawn (TAS-191).** The board API does not cover the list-DTO gap: `BoardIssueDto` has no description and no `createdAt` either, and gives status only as a column position, so the detail read stays. What may remove it is `ListIssuesResponseDto.items` becoming `IssueResponseDto`, which it already has on `develop` — that wanted one measurement against the deployed gateway rather than a contract reading — **taken 2026-09-08, and the hydration was removed by [TAS-195](https://jira.ozero.dev/browse/TAS-195)**. |
 | [TAS-145](https://jira.ozero.dev/browse/TAS-145) | [TAS-148](https://jira.ozero.dev/browse/TAS-148) | No `PATCH /projects/{id}`, no `description` column and no `color` column. Until it ships, editing a project is mock-only. Widened 2026-08-21 to carry a nullable `color`, which is what makes the project half of TAS-171's compensation removable; the avatar half has no such story and is not meant to. |
@@ -383,18 +383,21 @@ is not a definition.
 
 | Key | What breaks without it | Evidence |
 | --- | --- | --- |
-| [TAS-137](https://jira.ozero.dev/browse/TAS-137) + the acceptance note added to it | the member read lands carrying ids, and the board draws a column of uuids instead of the occasional "Unknown" | measured |
-| [TAS-204](https://jira.ozero.dev/browse/TAS-204) | nobody can be invited, so the member form is a uuid field with nowhere to get a uuid | measured |
+| [TAS-137](https://jira.ozero.dev/browse/TAS-137) + the acceptance note added to it | the member read lands carrying ids, and the board draws a column of uuids instead of the occasional "Unknown" | read — the DTO's shape is contract, the column of uuids is what follows from it, and nobody has seen it because the route answers `405` today |
+| [TAS-204](https://jira.ozero.dev/browse/TAS-204) | nobody can be invited, so the member form is a uuid field with nowhere to get a uuid | measured 2026-09-09 — `/users`, `/users/{id}`, `/users/batch` and `/auth/invitations` all answer the static-resource `404` while `/users/me` beside them answers `401`, which is the control that makes the `404` mean unmapped |
 | [TAS-158](https://jira.ozero.dev/browse/TAS-158) | there is no way to put a person in a project, so role gating stays undemonstrable | read |
 | [TAS-208](https://jira.ozero.dev/browse/TAS-208) | the flow every new person must walk fails three ways, one of them reporting success for the wrong account | read |
-| [TAS-207](https://jira.ozero.dev/browse/TAS-207) | a non-member sees another project's workflow; a missing route reads as "you have no projects" | measured |
+| [TAS-207](https://jira.ozero.dev/browse/TAS-207) | a non-member sees another project's workflow; a missing route reads as "you have no projects" | measured — the workflow half on 2026-08-18 with a second account, the empty-list half recorded 2026-08-03 and not re-probed since |
 | [TAS-198](https://jira.ozero.dev/browse/TAS-198), then [TAS-197](https://jira.ozero.dev/browse/TAS-197) | admin "block" is decorative for anyone holding a token, and the admin screen says otherwise | read |
 | [TAS-173](https://jira.ozero.dev/browse/TAS-173) | one unknown enum value still removes a card from a column while leaving it in the count | read |
 | [TAS-202](https://jira.ozero.dev/browse/TAS-202), the request-shape half | the projects screen costs 30 requests and the counters describe one loaded page | measured |
 | [TAS-209](https://jira.ozero.dev/browse/TAS-209) | the compensation stays, and with it the flag that makes every permission check meaningless | read |
 
-**What left the first draft.** TAS-141 entirely, because it is `Done` and two of
-its clauses went into that closure unfixed — the live one is re-filed as TAS-207.
+**What left the first draft.** TAS-141 entirely, because it is `Done` in Jira
+while the dependency table below still lists five open gaps against it; its live
+empty-projects clause is re-filed as TAS-207. TAS-201, TAS-203 and TAS-205 were
+never candidates rather than silently dropped: each makes a screen cheaper or
+richer, and none of them stands between a second person and a project.
 The `X-Request-Id` ask, because it is measured working and the claim was ours,
 not the gateway's. TAS-184, because the click already fails safe. Read-all for
 notifications, because it saves clicks rather than removing a lie. The `version`
