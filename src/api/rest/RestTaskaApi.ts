@@ -62,6 +62,8 @@ import type {
   IssueLink,
   IssueSearchHit,
   IssueType,
+  IssueWatcher,
+  IssueWatchers,
   IssueWithHistory,
   Label,
   Notification,
@@ -74,9 +76,11 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  UnwatchIssueResult,
   User,
   UserStatus,
   UserStatusChange,
+  WatchIssueResult,
   Workflow,
   IssueHistoryEvent,
 } from "../../domain/types";
@@ -348,6 +352,46 @@ interface RestIssueLink {
 
 interface RestListIssueLinksResponse {
   items?: RestIssueLink[];
+}
+
+/**
+ * `IssueWatcherResponseDto`. Optional throughout, like its neighbours: the
+ * contract marks no field of any watcher schema `required`.
+ */
+interface RestIssueWatcher {
+  id?: string;
+  issueId?: string;
+  projectId?: string;
+  userId?: string;
+  createdAt?: string;
+  createdBy?: string;
+}
+
+/**
+ * `ListIssueWatchersResponseDto`, and the reason this interface exists at all
+ * rather than being inlined: **the array is `watchers`, not `items`.**
+ *
+ * Every other list on this gateway answers with `items`, so the one place that
+ * knows otherwise had better be named. Measured on the deployed gateway
+ * 2026-09-08 with a `GLOBAL_ADMIN` token — `GET …/watchers` on issue `API-2`
+ * answered `200 {"totalCount":1,"watchers":[{…}]}` — which agrees with the
+ * contract. A mapper that reached for `items` here would map every answer to an
+ * empty list and never fail.
+ */
+interface RestListIssueWatchersResponse {
+  watchers?: RestIssueWatcher[];
+  totalCount?: number;
+}
+
+interface RestWatchIssueResponse {
+  watcher?: RestIssueWatcher;
+  watchersCount?: number;
+}
+
+interface RestUnwatchIssueResponse {
+  issueId?: string;
+  removed?: boolean;
+  watchersCount?: number;
 }
 
 /**
@@ -797,6 +841,47 @@ export class RestTaskaApi implements TaskaApi {
     await this.request<void>(`${this.issueLabelsPath(projectId, issueId)}/${this.segment(labelId)}`, {
       method: "DELETE",
     });
+  }
+
+  async listIssueWatchers(projectId: string, issueId: string): Promise<IssueWatchers> {
+    const response = await this.request<RestListIssueWatchersResponse>(this.watchersPath(projectId, issueId));
+    return {
+      // `watchers`, measured. See `RestListIssueWatchersResponse`.
+      watchers: (response.watchers ?? []).map((watcher) => this.toIssueWatcher(watcher, projectId, issueId)),
+      totalCount: toWatchersCount(response.totalCount),
+    };
+  }
+
+  async watchIssue(projectId: string, issueId: string): Promise<WatchIssueResult> {
+    // No body, and none may be added: the contract declares no request schema
+    // for this route and says the user comes from the Gateway context (JWT).
+    const response = await this.request<RestWatchIssueResponse>(`${this.watchersPath(projectId, issueId)}/me`, {
+      method: "PUT",
+    });
+    return this.toWatchResult(response, projectId, issueId);
+  }
+
+  async unwatchIssue(projectId: string, issueId: string): Promise<UnwatchIssueResult> {
+    const response = await this.request<RestUnwatchIssueResponse>(`${this.watchersPath(projectId, issueId)}/me`, {
+      method: "DELETE",
+    });
+    return this.toUnwatchResult(response, issueId);
+  }
+
+  async addIssueWatcher(projectId: string, issueId: string, userId: string): Promise<WatchIssueResult> {
+    const response = await this.request<RestWatchIssueResponse>(this.watchersPath(projectId, issueId), {
+      method: "POST",
+      body: { userId },
+    });
+    return this.toWatchResult(response, projectId, issueId);
+  }
+
+  async removeIssueWatcher(projectId: string, issueId: string, userId: string): Promise<UnwatchIssueResult> {
+    const response = await this.request<RestUnwatchIssueResponse>(
+      `${this.watchersPath(projectId, issueId)}/${this.segment(userId)}`,
+      { method: "DELETE" },
+    );
+    return this.toUnwatchResult(response, issueId);
   }
 
   async listAttachments(projectId: string, issueId: string): Promise<IssueAttachment[]> {
@@ -1310,6 +1395,10 @@ export class RestTaskaApi implements TaskaApi {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/labels`;
   }
 
+  private watchersPath(projectId: string, issueId: string) {
+    return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/watchers`;
+  }
+
   private commentsPath(projectId: string, issueId: string) {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/comments`;
   }
@@ -1473,6 +1562,52 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
+   * Same rule as `toAttachment` below: the ids the caller asked with fill in
+   * for ids the response omitted, because those two are not inventions — the
+   * route was scoped to this project and this issue. `userId` is not defaulted
+   * that way and never can be: nothing in the request says who is watching, so
+   * a blank stays blank and the panel draws the row as an unnamed watcher
+   * rather than attributing it to somebody.
+   */
+  private toIssueWatcher(watcher: RestIssueWatcher, projectId: string, issueId: string): IssueWatcher {
+    return {
+      id: watcher.id ?? "",
+      issueId: watcher.issueId ?? issueId,
+      projectId: watcher.projectId ?? projectId,
+      userId: watcher.userId ?? "",
+      createdAt: watcher.createdAt ?? "",
+      createdBy: watcher.createdBy ?? "",
+    };
+  }
+
+  private toWatchResult(
+    response: RestWatchIssueResponse,
+    projectId: string,
+    issueId: string,
+  ): WatchIssueResult {
+    return {
+      watcher: response.watcher ? this.toIssueWatcher(response.watcher, projectId, issueId) : null,
+      watchersCount: toWatchersCount(response.watchersCount),
+    };
+  }
+
+  /**
+   * `removed` defaults to **`false`**, and that is the safe direction rather
+   * than the pessimistic one. The field means "a subscription was actually
+   * deleted"; a response that does not state it has not claimed one was, and
+   * announcing a change nobody can evidence is the failure this DTO exists to
+   * prevent. The end state is the same either way — the caller asked to not be
+   * watching, and it is not — so the default costs a sentence, never a fact.
+   */
+  private toUnwatchResult(response: RestUnwatchIssueResponse, issueId: string): UnwatchIssueResult {
+    return {
+      issueId: response.issueId ?? issueId,
+      removed: response.removed === true,
+      watchersCount: toWatchersCount(response.watchersCount),
+    };
+  }
+
+  /**
    * `issueId` is defaulted from the request rather than left blank: the caller
    * asked about one issue, so an attachment that arrived without one belongs to
    * that issue and nothing is being invented. Everything else keeps the shape
@@ -1582,6 +1717,21 @@ function toLabel(label: RestLabel): Label {
     name: label.name ?? "",
     color: typeof label.color === "string" ? label.color : "",
   };
+}
+
+/**
+ * A watcher count as the server stated it, or `null` for "the server did not
+ * state one".
+ *
+ * Deliberately **not** `?? 0`, which is the shape every other numeric field in
+ * this file uses. Zero is a fact about an issue — nobody is watching it — and no
+ * field of any watcher schema is `required`, so a `200` that omits the count is
+ * legal. Collapsing the two would put "0 watchers" on screen for an issue whose
+ * count nobody knows, and the caller would have no way to tell. `typeof` rather
+ * than a truthiness check, because `0` is exactly the value that must survive.
+ */
+function toWatchersCount(value: number | undefined): number | null {
+  return typeof value === "number" ? value : null;
 }
 
 /**

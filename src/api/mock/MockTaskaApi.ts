@@ -60,6 +60,8 @@ import type {
   IssueSearchHit,
   IssueStatus,
   IssueType,
+  IssueWatcher,
+  IssueWatchers,
   IssueWithHistory,
   Label,
   Notification,
@@ -72,9 +74,11 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  UnwatchIssueResult,
   User,
   UserStatus,
   UserStatusChange,
+  WatchIssueResult,
   Workflow,
 } from "../../domain/types";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
@@ -432,6 +436,14 @@ interface StoredIssueLink {
   createdAt: string;
 }
 
+/**
+ * A watcher row, stored exactly as `IssueWatcherResponseDto` is served — no
+ * denormalised name beside it, because the server sends none. Anything this
+ * store held about the person would be a field the gateway does not have, and a
+ * component written against it would work here and nowhere else.
+ */
+type StoredIssueWatcher = IssueWatcher;
+
 /** The transactional outbox table, in every service that has one. */
 const OUTBOX_TABLE = "outbox_events";
 
@@ -566,6 +578,12 @@ export class MockTaskaStore {
   private historyByIssue: Record<string, IssueHistoryEvent[]>;
   private commentsByIssue: Record<string, IssueComment[]>;
   private links: StoredIssueLink[] = [];
+  /**
+   * Issue subscriptions. Hard-deleted, unlike attachments and labels: the
+   * contract's `removed` flag on the unwatch response only makes sense over a
+   * store where the row is either there or gone.
+   */
+  private watchers: StoredIssueWatcher[] = [];
   /** Attachment rows, soft-deleted in place exactly as the server's are. */
   private attachments: StoredAttachment[] = [];
   /**
@@ -1144,6 +1162,54 @@ export class MockTaskaStore {
       (this.labelIdsByIssue[target.id] ??= []).push(label.id);
     });
 
+    // Watchers, seeded so every state of the section is reachable by signing in
+    // rather than by clicking something first (TAS-193). Anna is ADMIN of TAS
+    // and not a member of MOB, so as her:
+    //
+    // - **TAS-101** — she is watching, alongside Mark and Sofia. The toggle
+    //   reads "Watching" on open and the count is three.
+    // - **TAS-102** — nobody is watching. The empty state and the unpressed
+    //   toggle, which is the pair a screenshot has to show.
+    // - **TAS-103** — Mark and Priya are watching and she is not: a populated
+    //   list under an unpressed toggle, which is the state that catches a UI
+    //   deriving "am I watching" from whether the list is empty.
+    // - **MOB-5** — Priya is watching an issue in a project Anna cannot write
+    //   to. The read-only view: no add picker, no per-row remove, and the
+    //   toggle still live, because the contract puts no role on `…/watchers/me`.
+    //
+    // **Priya on TAS-103 is the deliberate one.** She is a member of WEB and
+    // MOB and not of TAS, so `GET /projects/{TAS}/members` does not name her
+    // and her row draws as "Unknown" — the same sentence the reporter line
+    // prints for an id it cannot resolve. That is the state every watcher is in
+    // against the deployed gateway, where the member read is a 405 (TAS-137),
+    // and seeding it means the case is on screen in the one environment
+    // anybody looks at instead of only in `rest` mode, which nobody runs. It
+    // also demonstrates the half of this feature that needs no member list at
+    // all: her row can be removed by an ADMIN, because a remove names a
+    // `userId` and the row already carries one.
+    const watcherSeed: [string, string, string][] = [
+      ["TAS-101", ANNA_ID, ANNA_ID],
+      ["TAS-101", MARK_ID, MARK_ID],
+      // Subscribed by Anna rather than by herself, so `createdBy` differs from
+      // `userId` on at least one row — which is what the ADMIN add route does.
+      ["TAS-101", SOFIA_ID, ANNA_ID],
+      ["TAS-103", MARK_ID, MARK_ID],
+      ["TAS-103", PRIYA_ID, ANNA_ID],
+      ["MOB-5", PRIYA_ID, PRIYA_ID],
+    ];
+    watcherSeed.forEach(([issueKey, userId, createdBy], index) => {
+      const target = this.issues.find((item) => item.issueKey === issueKey);
+      if (!target) return;
+      this.watchers.push({
+        id: makeId("watcher"),
+        issueId: target.id,
+        projectId: target.projectId,
+        userId,
+        createdAt: ts(21, 10 + index),
+        createdBy,
+      });
+    });
+
     // Attachments, seeded so the section is not empty on first load and so all
     // three of its interesting states are reachable by signing in as somebody:
     //
@@ -1698,6 +1764,112 @@ export class MockTaskaStore {
     }
     this.labelIdsByIssue[issue.id] = attached.filter((id) => id !== labelId);
     this.pushHistory(issue.id, "UPDATED", this.currentUserId, { field: "labels" });
+  }
+
+  /**
+   * `totalCount` is computed from this store's own rows, which is what makes it
+   * the *server's* number here rather than a length the caller worked out — the
+   * distinction the UI depends on. The route takes no paging parameter, so the
+   * list is never short of the total and the two always agree; a client that
+   * reads the field is right either way, and one that counts the array is right
+   * only by luck.
+   *
+   * No role check, deliberately. The contract states none for this route, and
+   * the read routes of this store are already the looser half of the pair
+   * (see `membersByProject` in the constructor and docs/ai/API-DIVERGENCE.md).
+   */
+  listIssueWatchers(projectId: string, issueId: string): IssueWatchers {
+    const issue = this.findIssue(projectId, issueId);
+    const watchers = this.watchers.filter((item) => item.issueId === issue.id).sort(byCreatedAt);
+    return { watchers: watchers.map((item) => ({ ...item })), totalCount: watchers.length };
+  }
+
+  /**
+   * `PUT …/watchers/me`. No role check for the same reason as the read: the
+   * contract states none, and watching is per-reader.
+   */
+  watchIssue(projectId: string, issueId: string): WatchIssueResult {
+    return this.subscribe(projectId, issueId, this.currentUserId, this.currentUserId);
+  }
+
+  unwatchIssue(projectId: string, issueId: string): UnwatchIssueResult {
+    return this.unsubscribe(projectId, issueId, this.currentUserId);
+  }
+
+  addIssueWatcher(projectId: string, issueId: string, userId: string): WatchIssueResult {
+    this.requireWatcherAdmin(projectId);
+    // A user this deployment has never heard of is a 404, not a subscription to
+    // a ghost. `getUser` is the store's own "does this person exist" check and
+    // is what the assignee routes would use.
+    this.getUser(userId);
+    return this.subscribe(projectId, issueId, userId, this.currentUserId);
+  }
+
+  removeIssueWatcher(projectId: string, issueId: string, userId: string): UnwatchIssueResult {
+    this.requireWatcherAdmin(projectId);
+    // No `getUser` here, on purpose, and it is not an oversight. The whole
+    // point of `removed` is that unsubscribing somebody who is not subscribed
+    // is a `200` rather than a failure, and refusing an unknown user would turn
+    // one of those into a 404 — the flattening this route's flag exists to
+    // prevent. A row for a deleted account is exactly the row an ADMIN needs to
+    // be able to clear.
+    return this.unsubscribe(projectId, issueId, userId);
+  }
+
+  /**
+   * Idempotent, and that is read off the contract rather than assumed:
+   * `WatchIssueResponseDto` carries the row and the count and **no flag saying
+   * whether anything was created**, where its sibling `UnwatchIssueResponseDto`
+   * carries `removed`. A route whose author wanted "already watching" to be
+   * distinguishable would have given it the same field. So a second watch
+   * returns the first one's row.
+   */
+  private subscribe(projectId: string, issueId: string, userId: string, actorId: string): WatchIssueResult {
+    const issue = this.findIssue(projectId, issueId);
+    const existing = this.watchers.find((item) => item.issueId === issue.id && item.userId === userId);
+    const watcher: StoredIssueWatcher = existing ?? {
+      id: makeId("watcher"),
+      issueId: issue.id,
+      projectId: issue.projectId,
+      userId,
+      createdAt: now(),
+      createdBy: actorId,
+    };
+    if (!existing) this.watchers.push(watcher);
+    return { watcher: { ...watcher }, watchersCount: this.watcherCount(issue.id) };
+  }
+
+  /** `removed: false` is a success. See `UnwatchIssueResult`. */
+  private unsubscribe(projectId: string, issueId: string, userId: string): UnwatchIssueResult {
+    const issue = this.findIssue(projectId, issueId);
+    const before = this.watchers.length;
+    this.watchers = this.watchers.filter((item) => !(item.issueId === issue.id && item.userId === userId));
+    return {
+      issueId: issue.id,
+      removed: this.watchers.length !== before,
+      watchersCount: this.watcherCount(issue.id),
+    };
+  }
+
+  private watcherCount(issueId: string): number {
+    return this.watchers.filter((item) => item.issueId === issueId).length;
+  }
+
+  /**
+   * The gate on the two routes the contract marks "только project ADMIN".
+   *
+   * The wording is this store's, not the gateway's — nothing in the backend
+   * repository was read for it, unlike `requireUploadRole` below, whose two
+   * sentences were. Named so a reader does not take it for a measurement.
+   */
+  private requireWatcherAdmin(projectId: string): void {
+    const { role } = this.getMembership(projectId);
+    if (role !== "ADMIN") {
+      throw new MockApiError(
+        "PERMISSION_DENIED",
+        "Only a project admin can change who else watches this issue",
+      );
+    }
   }
 
   listAttachments(projectId: string, issueId: string): IssueAttachment[] {
@@ -3492,6 +3664,26 @@ export class MockTaskaApi implements TaskaApi {
   async removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void> {
     this.store.removeIssueLabel(projectId, issueId, labelId);
     await wait(null);
+  }
+
+  async listIssueWatchers(projectId: string, issueId: string): Promise<IssueWatchers> {
+    return wait(this.store.listIssueWatchers(projectId, issueId));
+  }
+
+  async watchIssue(projectId: string, issueId: string): Promise<WatchIssueResult> {
+    return wait(this.store.watchIssue(projectId, issueId));
+  }
+
+  async unwatchIssue(projectId: string, issueId: string): Promise<UnwatchIssueResult> {
+    return wait(this.store.unwatchIssue(projectId, issueId));
+  }
+
+  async addIssueWatcher(projectId: string, issueId: string, userId: string): Promise<WatchIssueResult> {
+    return wait(this.store.addIssueWatcher(projectId, issueId, userId));
+  }
+
+  async removeIssueWatcher(projectId: string, issueId: string, userId: string): Promise<UnwatchIssueResult> {
+    return wait(this.store.removeIssueWatcher(projectId, issueId, userId));
   }
 
   async listAttachments(projectId: string, issueId: string): Promise<IssueAttachment[]> {

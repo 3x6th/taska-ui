@@ -72,6 +72,37 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   a change that leaves the button three pixels away from it still broken.
   `ThemeToggle.tsx:8` already ships the `aria-label` + matching `title` pair, so
   this is an in-repo precedent rather than a reading of the spec.
+- **The watcher writes are asymmetric: `removed` exists, `added` does not**
+  (`frontend-builder`, 2026-09-08, TAS-193). `UnwatchIssueResponseDto` carries
+  `removed: boolean`, so an unwatch that found nothing can be reported honestly.
+  `WatchIssueResponseDto` has no counterpart, so a second watch is
+  indistinguishable from a first and the mock is idempotent on that reading. A
+  contract asymmetry rather than ours; worth raising with the backend when
+  something else on that surface moves.
+- **"Am I watching" is derived from the list, because the contract has no
+  per-user read** (`frontend-builder`, 2026-09-08, TAS-193). There is no
+  `GET .../watchers/me`, so the toggle's state comes from finding yourself in
+  the list — correct exactly as long as the list is complete. And it has no
+  paging parameter at all, so if the server ever truncated it, the truncation
+  would be both undetectable and unpageable, and the toggle would quietly read
+  "not watching" for someone who is. Not observed; recorded because the
+  mechanism has no way to notice.
+- **Watching produces no journal entry and no notification this build can name**
+  (`frontend-builder`, 2026-09-08, TAS-193). `IssueEventType` and
+  `NotificationType` in `src/domain/types.ts` have no watcher member, so the
+  watch writes deliberately do **not** invalidate the issue query — doing so
+  would assert the server journalled something it never mentions — and no copy
+  promises a notification. The backend's TAS-123 is the story that would make
+  watchers mean something; until it lands, watching is a list membership and
+  nothing else, which the UI should keep not over-promising.
+- **The two watcher notice tones have no browser evidence and cannot get any
+  from the mock UI** (`frontend-builder`, 2026-09-08, TAS-193). The
+  `removed: false` info line and the ADMIN 403 line are proven in jsdom only:
+  the UI keeps the toggle in sync with the list, so an unwatch never finds
+  nothing to remove, and the mock's Anna is ADMIN, so the ADMIN routes never
+  refuse her. Reachable against a real gateway with a second client, or by
+  adding a mock trigger of the `MOCK_ATTACHMENT_TRIGGERS` kind — which TAS-193
+  did not build, because the story did not ask for it.
 - **The Users section announces a name, and two accounts can share one**
   (`art-director`, 2026-09-08, TAS-194 verdict). `AdminUsersSection.tsx:341`
   announces `${personLabel(user)} is now ${status}.`, and `personLabel` prefers

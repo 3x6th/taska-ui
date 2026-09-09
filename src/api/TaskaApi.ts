@@ -16,6 +16,7 @@ import type {
   IssueSearchHit,
   IssueStatus,
   IssueType,
+  IssueWatchers,
   IssueWithHistory,
   Label,
   Notification,
@@ -26,8 +27,10 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  UnwatchIssueResult,
   User,
   UserStatusChange,
+  WatchIssueResult,
   Workflow,
 } from "../domain/types";
 
@@ -521,6 +524,54 @@ export interface TaskaApi {
    */
   addIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void>;
   removeIssueLabel(projectId: string, issueId: string, labelId: string): Promise<void>;
+
+  /**
+   * The five watcher routes (`TAS-193`), backend PR #144. Two families, and the
+   * split is a permission rather than a shape:
+   *
+   * - `listIssueWatchers` and the `…/watchers/me` pair are for **whoever is
+   *   reading**. The contract states no role for any of the three, so this
+   *   build states none either: a `VIEWER` may subscribe themselves to an issue
+   *   they can read, and the watch toggle is the one control in the issue panel
+   *   that is not behind `canEdit`.
+   * - `addIssueWatcher` and `removeIssueWatcher` are project-`ADMIN` only, said
+   *   in the contract's own summaries ("только project ADMIN", and
+   *   "Viewer/MEMBER без роли ADMIN не может удалить чужого watcher"). Hiding
+   *   those two controls is presentation; the server decides.
+   *
+   * The `me` pair takes the user from the JWT and sends no body, which is why
+   * neither signature has a `userId`. Passing one would be a lie about the
+   * request.
+   *
+   * Measured against the deployed gateway on 2026-09-08 with a `GLOBAL_ADMIN`
+   * token: `GET …/watchers` answers `200` with `{"totalCount":1,"watchers":[…]}`.
+   * **The array key is `watchers`, not `items`** — every other list DTO in this
+   * contract says `items`, so the mapper is the one place that knows, and it is
+   * measured rather than inferred. The four write routes were not probed; the
+   * mapping below follows the contract for those.
+   */
+  listIssueWatchers(projectId: string, issueId: string): Promise<IssueWatchers>;
+  /**
+   * `PUT …/watchers/me`. Idempotent by the shape of its answer: there is no
+   * "was it new" flag to read, so a second call on an issue already watched is
+   * indistinguishable from the first. That asymmetry with `unwatchIssue` below
+   * is the contract's, not a field dropped here.
+   */
+  watchIssue(projectId: string, issueId: string): Promise<WatchIssueResult>;
+  /**
+   * `DELETE …/watchers/me`, and the one call in this family whose answer says
+   * more than its status code. See `UnwatchIssueResult.removed`: a `200` with
+   * `removed: false` is the server reporting that there was nothing to delete,
+   * and the caller is expected not to announce a change.
+   */
+  unwatchIssue(projectId: string, issueId: string): Promise<UnwatchIssueResult>;
+  /** `POST …/watchers`, project `ADMIN` only. Subscribes somebody else. */
+  addIssueWatcher(projectId: string, issueId: string, userId: string): Promise<WatchIssueResult>;
+  /**
+   * `DELETE …/watchers/{userId}`, project `ADMIN` only. Answers with the same
+   * DTO as `unwatchIssue`, `removed` included and meaning the same thing.
+   */
+  removeIssueWatcher(projectId: string, issueId: string, userId: string): Promise<UnwatchIssueResult>;
 
   /**
    * The five attachment routes, plus the one leg of the upload that is not a

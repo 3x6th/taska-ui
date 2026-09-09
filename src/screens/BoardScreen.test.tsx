@@ -52,6 +52,14 @@ const {
   failWorkflow,
   seedLabels,
   holdLabelCreate,
+  failMembers,
+  holdMembers,
+  seedWatchers,
+  failWatchersRead,
+  holdWatchersRead,
+  failWatcherWrite,
+  setUnwatchAnswer,
+  watchedUserIds,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -142,6 +150,27 @@ const {
     deleteFailure?: Error;
     deleteHeld: boolean;
     deleteReleases: (() => void)[];
+    /** `GET /projects/{id}/members` failing, which on the deployed gateway it does (405, TAS-137). */
+    membersFailure?: Error;
+    membersHeld: boolean;
+    /**
+     * The watchers section. `watchers` and `watchersTotal` are held apart
+     * deliberately: the whole point of the count is that it is a field the
+     * server states rather than the length of the array beside it, and a
+     * fixture where the two always agreed could not tell the two readings
+     * apart.
+     */
+    watchers: { id: string; issueId: string; projectId: string; userId: string; createdAt: string; createdBy: string }[];
+    watchersTotal: number | null;
+    /** What every watcher *write* states as the count after it. */
+    watchersCountAfterWrite: number | null;
+    /** What both delete routes report in `removed`. */
+    unwatchRemoved: boolean;
+    watchersFailure?: Error;
+    /** The list re-read held open, so a test can read what a write left in the cache rather than the refetch that replaces it. */
+    watchersHeld: boolean;
+    /** A refused ADMIN add or remove. The `me` pair is left alone: its refusals are not what the gating is about. */
+    watcherWriteFailure?: Error;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -167,6 +196,12 @@ const {
     attachmentsHeld: false,
     deleteHeld: false,
     deleteReleases: [],
+    membersHeld: false,
+    watchers: [],
+    watchersTotal: null,
+    watchersCountAfterWrite: null,
+    unwatchRemoved: true,
+    watchersHeld: false,
   };
 
   const api = {
@@ -199,7 +234,11 @@ const {
       if (state.membershipFailure) throw state.membershipFailure;
       return state.membership;
     },
-    listMembers: async () => state.members,
+    listMembers: async () => {
+      if (state.membersHeld) return new Promise(() => {});
+      if (state.membersFailure) throw state.membersFailure;
+      return state.members;
+    },
     getWorkflow: async () => {
       if (state.workflowFailure) throw state.workflowFailure;
       return {
@@ -325,6 +364,54 @@ const {
     }),
     listIssueLabels: async () => [],
     listIssueLinks: async () => [],
+    /**
+     * The watchers section's five calls. The list answers with the array *and*
+     * the count as two independent facts, because that is what the contract
+     * sends and what the section is required not to conflate.
+     */
+    listIssueWatchers: async () => {
+      // A re-read that never lands, so a test can read what a write left in
+      // the cache rather than the refetch that would replace it.
+      if (state.watchersHeld) return new Promise(() => {});
+      if (state.watchersFailure) throw state.watchersFailure;
+      return { watchers: state.watchers, totalCount: state.watchersTotal };
+    },
+    watchIssue: async () => {
+      const watcher = {
+        id: `watcher-${state.watchers.length + 1}`,
+        issueId: "issue-1",
+        projectId: PROJECT_ID,
+        userId: "user-anna",
+        createdAt: now,
+        createdBy: "user-anna",
+      };
+      state.watchers = [...state.watchers, watcher];
+      return { watcher, watchersCount: state.watchersCountAfterWrite };
+    },
+    unwatchIssue: async () => {
+      state.watchers = state.watchers.filter((watcher) => watcher.userId !== "user-anna");
+      return { issueId: "issue-1", removed: state.unwatchRemoved, watchersCount: state.watchersCountAfterWrite };
+    },
+    addIssueWatcher: async (_projectId: string, _issueId: string, userId: string) => {
+      // Refused *before* the row is touched: a server that says no has added
+      // nothing, which is what makes the disappearing row correct.
+      if (state.watcherWriteFailure) throw state.watcherWriteFailure;
+      const watcher = {
+        id: `watcher-${state.watchers.length + 1}`,
+        issueId: "issue-1",
+        projectId: PROJECT_ID,
+        userId,
+        createdAt: now,
+        createdBy: "user-anna",
+      };
+      state.watchers = [...state.watchers, watcher];
+      return { watcher, watchersCount: state.watchersCountAfterWrite };
+    },
+    removeIssueWatcher: async (_projectId: string, _issueId: string, userId: string) => {
+      if (state.watcherWriteFailure) throw state.watcherWriteFailure;
+      state.watchers = state.watchers.filter((watcher) => watcher.userId !== userId);
+      return { issueId: "issue-1", removed: state.unwatchRemoved, watchersCount: state.watchersCountAfterWrite };
+    },
     // The attachments section's five reachable calls. `putAttachmentBytes`
     // takes a Blob and answers nothing, exactly as the real middle leg does.
     listAttachments: async () => {
@@ -441,6 +528,33 @@ const {
     holdLabelCreate: (held: boolean) => {
       state.labelCreateHeld = held;
     },
+    failMembers: (error: Error) => {
+      state.membersFailure = error;
+    },
+    /** A member read that never settles — the third state, between answered and failed. */
+    holdMembers: (held: boolean) => {
+      state.membersHeld = held;
+    },
+    /** The list read's two answers, stated apart so a test can make them disagree. */
+    seedWatchers: (watchers: typeof state.watchers, totalCount: number | null, countAfterWrite: number | null = null) => {
+      state.watchers = watchers;
+      state.watchersTotal = totalCount;
+      state.watchersCountAfterWrite = countAfterWrite;
+    },
+    failWatchersRead: (error: Error) => {
+      state.watchersFailure = error;
+    },
+    holdWatchersRead: (held: boolean) => {
+      state.watchersHeld = held;
+    },
+    failWatcherWrite: (error: Error) => {
+      state.watcherWriteFailure = error;
+    },
+    /** What both delete routes report in `removed`. */
+    setUnwatchAnswer: (removed: boolean) => {
+      state.unwatchRemoved = removed;
+    },
+    watchedUserIds: () => state.watchers.map((watcher) => watcher.userId),
     seedSearch: (hits: typeof state.searchHits, totalCount: number) => {
       state.searchHits = hits;
       state.searchTotal = totalCount;
@@ -499,6 +613,15 @@ const {
       state.deleteFailure = undefined;
       state.deleteHeld = false;
       state.deleteReleases = [];
+      state.membersFailure = undefined;
+      state.membersHeld = false;
+      state.watchers = [];
+      state.watchersTotal = null;
+      state.watchersCountAfterWrite = null;
+      state.unwatchRemoved = true;
+      state.watchersFailure = undefined;
+      state.watchersHeld = false;
+      state.watcherWriteFailure = undefined;
     },
   };
 });
@@ -1726,5 +1849,230 @@ describe("issue attachments", () => {
     // discovered by being refused.
     expect(hint).toHaveTextContent(/JPEG, PNG or WebP images, PDF/);
     expect(hint).toHaveTextContent(/ZIP/);
+  });
+});
+
+/**
+ * The watchers section (TAS-193). What is pinned here is the handful of facts
+ * that live only in this component:
+ *
+ * - the count on screen is the number the *server* stated, never the length of
+ *   the array it happened to send, and a write states one without a refetch;
+ * - an unwatch that removed nothing is reported as exactly that — not as a
+ *   change, and not as a failure;
+ * - the toggle belongs to every reader, including a `VIEWER`, while the two
+ *   ADMIN controls are gated;
+ * - a refused ADMIN add puts the row back and says why;
+ * - and a member read that failed does not get presented as a project with
+ *   nobody left to add.
+ */
+describe("issue watchers", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const ANNA = "user-anna";
+  const SOFIA = "user-sofia";
+
+  const watcher = (userId: string, id = `watcher-${userId}`) => ({
+    id,
+    issueId: "issue-1",
+    projectId: PROJECT_ID,
+    userId,
+    createdAt: "2026-09-02T10:15:00Z",
+    createdBy: userId,
+  });
+
+  const member = (userId: string, displayName: string) => ({
+    userId,
+    role: "MEMBER" as const,
+    addedAt: "2026-08-01T09:00:00Z",
+    addedBy: ANNA,
+    user: { displayName, email: `${displayName.split(" ")[0].toLowerCase()}@example.com` },
+  });
+
+  const section = async () => {
+    const heading = await screen.findByRole("heading", { name: /watchers/i });
+    const found = heading.closest("section");
+    if (!found) throw new Error("no watchers section");
+    return within(found);
+  };
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("prints the count the server stated rather than the number of rows it sent", async () => {
+    // Two rows and a total of seven. Any component reading `watchers.length`
+    // puts a 2 here, and nothing else in this suite would notice.
+    seedWatchers([watcher(ANNA), watcher(SOFIA)], 7);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText("7")).toBeVisible();
+    expect(panel.queryByText("2")).toBeNull();
+  });
+
+  it("reads the toggle from the list and flips it on a press", async () => {
+    seedWatchers([watcher(SOFIA)], 1, 2);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const toggle = await panel.findByRole("button", { name: "Watch" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(toggle);
+
+    // The optimistic flip, and then the row the server confirmed.
+    expect(await panel.findByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(watchedUserIds()).toContain(ANNA));
+  });
+
+  it("takes the count from the write's own answer, before any refetch lands", async () => {
+    seedWatchers([watcher(SOFIA)], 1, 9);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Watch" }));
+
+    // The list re-read is held from here on, so nothing below can have come
+    // from it: the 9 is the number `watchIssue` answered with. An optimistic
+    // guess would have read 2.
+    holdWatchersRead(true);
+    expect(await panel.findByText("9")).toBeVisible();
+  });
+
+  it("says an unwatch removed nothing, without calling it a failure", async () => {
+    seedWatchers([watcher(ANNA)], 1, 1);
+    setUnwatchAnswer(false);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Watching" }));
+
+    const notice = await panel.findByText(/were not watching this issue/i);
+    // The distinction the server drew has to survive to the screen: this is a
+    // 200 that changed nothing, so it is not dressed as an error.
+    expect(notice).not.toHaveClass("is-error");
+    expect(notice.className).toContain("watcher-note");
+  });
+
+  it("says nothing when an unwatch did remove something", async () => {
+    seedWatchers([watcher(ANNA)], 1, 0);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Watching" }));
+
+    await panel.findByRole("button", { name: "Watch" });
+    expect(panel.queryByText(/nothing was removed/i)).toBeNull();
+  });
+
+  it("leaves the toggle to a VIEWER and takes both admin controls away", async () => {
+    setMembership("VIEWER");
+    seedMembers([member(SOFIA, "Sofia Reyes")]);
+    seedWatchers([watcher(SOFIA)], 1);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    // The one control in this panel that is not behind `canEdit`: the contract
+    // puts no role on `…/watchers/me`.
+    expect(await panel.findByRole("button", { name: "Watch" })).toBeEnabled();
+    expect(panel.queryByLabelText("Add a watcher")).toBeNull();
+    expect(panel.queryByRole("button", { name: /^Remove / })).toBeNull();
+  });
+
+  it("offers an admin the picker and a remove per row", async () => {
+    seedMembers([member(SOFIA, "Sofia Reyes"), member("user-tom", "Tom Becker")]);
+    seedWatchers([watcher(SOFIA)], 1, 2);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByRole("button", { name: "Remove Sofia Reyes from watchers" })).toBeVisible();
+    // Sofia is already watching, so only Tom is on offer.
+    const picker = panel.getByLabelText("Add a watcher");
+    await waitFor(() =>
+      expect([...picker.querySelectorAll("option")].map((option) => option.textContent)).toEqual([
+        "Select a member",
+        "Tom Becker",
+      ]),
+    );
+  });
+
+  it("puts the row back and reports the refusal when the server says no to an add", async () => {
+    seedMembers([member("user-tom", "Tom Becker")]);
+    seedWatchers([], 0);
+    failWatcherWrite(
+      Object.assign(new Error("Not allowed role"), { status: 403, code: "PERMISSION_DENIED" }),
+    );
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const picker = await panel.findByLabelText("Add a watcher");
+    fireEvent.change(picker, { target: { value: "user-tom" } });
+    fireEvent.click(panel.getByRole("button", { name: "Add" }));
+
+    // The server's own sentence, not one invented here.
+    expect(await panel.findByText("Not allowed role")).toHaveClass("is-error");
+    // And the optimistic row is gone again: a watcher the reader believes was
+    // added is worse than a refusal they can read.
+    await waitFor(() => expect(panel.queryByRole("button", { name: /^Remove Tom/ })).toBeNull());
+    expect(watchedUserIds()).toEqual([]);
+  });
+
+  it("claims nothing about the member list while the read is still in flight", async () => {
+    // Neither an answer nor a failure. `members` is `[]` in this state exactly
+    // as it is after a 405, and a section reading only the failure flag would
+    // tell the reader this project has no members for as long as the request
+    // takes.
+    holdMembers(true);
+    seedWatchers([watcher(SOFIA)], 1);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    await panel.findByText("Unknown");
+    expect(panel.queryByText(/no members to add/i)).toBeNull();
+    expect(panel.queryByText(/already watching/i)).toBeNull();
+    expect(panel.queryByText(/members could not be read/i)).toBeNull();
+    expect(panel.queryByLabelText("Add a watcher")).toBeNull();
+  });
+
+  it("does not present a failed member read as a project with nobody to add", async () => {
+    // What the deployed gateway answers today: `GET /projects/{id}/members` is
+    // not mapped (TAS-137). An empty picker under "Add a watcher" would read as
+    // "there is nobody left", which is a claim about the project that a failed
+    // read cannot support (§5.6).
+    failMembers(Object.assign(new Error("Method Not Allowed"), { status: 405 }));
+    seedWatchers([watcher(SOFIA)], 1);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText(/members could not be read/i, undefined, AFTER_RETRY)).toBeVisible();
+    expect(panel.queryByLabelText("Add a watcher")).toBeNull();
+    // The rest of the section still works: the row is there, unnamed, and an
+    // admin can still remove it — a remove names a `userId`, which the row
+    // already carries.
+    expect(panel.getByRole("button", { name: `Remove watcher ${SOFIA}` })).toBeEnabled();
+  });
+
+  it("draws a watcher the member list cannot name without dropping the row", async () => {
+    seedMembers([member(ANNA, "Anna Ivanova")]);
+    seedWatchers([watcher(ANNA), watcher("user-priya")], 2);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    // The same word the reporter line above already prints for an id this map
+    // cannot resolve.
+    expect(await panel.findByText("Unknown")).toBeVisible();
+    expect(panel.getByText(/Anna Ivanova/)).toBeVisible();
+  });
+
+  it("shows the read failure and offers no toggle over a state nobody knows", async () => {
+    failWatchersRead(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND" }));
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText("Issue not found", undefined, AFTER_RETRY)).toBeVisible();
+    // "Watch" and "Watching" are each a claim about the reader's own state, and
+    // neither is supported by a read that failed.
+    expect(panel.queryByRole("button", { name: /^Watch/ })).toBeNull();
   });
 });

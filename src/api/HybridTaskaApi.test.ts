@@ -330,6 +330,47 @@ describe("HybridTaskaApi", () => {
     expect(remove).toHaveBeenCalledWith(project.id, issue.id, attachment.id);
   });
 
+  it("delegates all five watcher calls and names none of the people in them", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const [project] = await hybrid.listProjects();
+    const { items } = await hybrid.listIssues(project.id, { pageSize: 100 });
+    const issue = items.find((item) => item.issueKey === "TAS-101");
+    expect(issue).toBeDefined();
+    if (!issue) return;
+
+    const list = vi.spyOn(live, "listIssueWatchers");
+    const watch = vi.spyOn(live, "watchIssue");
+    const unwatch = vi.spyOn(live, "unwatchIssue");
+    const add = vi.spyOn(live, "addIssueWatcher");
+    const remove = vi.spyOn(live, "removeIssueWatcher");
+
+    const before = await hybrid.listIssueWatchers(project.id, issue.id);
+    expect(list).toHaveBeenCalledWith(project.id, issue.id);
+    // A watcher row carries an id and no name, here as everywhere. This class
+    // must not invent one: the assignee, the reporter and an attachment's
+    // byline all resolve through the same member read, and a watcher list that
+    // looked healthy while those three said "Unknown" would be hiding TAS-137
+    // on one surface out of four.
+    expect(before.watchers.every((watcher) => !("displayName" in watcher))).toBe(true);
+
+    await hybrid.unwatchIssue(project.id, issue.id);
+    expect(unwatch).toHaveBeenCalledWith(project.id, issue.id);
+    await hybrid.watchIssue(project.id, issue.id);
+    expect(watch).toHaveBeenCalledWith(project.id, issue.id);
+
+    // The single-member list this class synthesises is exactly the pool the
+    // ADMIN add would draw from, so on the deployed stand it offers the caller
+    // and nobody else — the same degradation the assignee picker already has.
+    const [self] = await hybrid.listMembers(project.id);
+    await hybrid.addIssueWatcher(project.id, issue.id, self.userId);
+    expect(add).toHaveBeenCalledWith(project.id, issue.id, self.userId);
+
+    await hybrid.removeIssueWatcher(project.id, issue.id, self.userId);
+    expect(remove).toHaveBeenCalledWith(project.id, issue.id, self.userId);
+  });
+
   it("passes a store failure straight up rather than compensating for it", async () => {
     const live = liveApi();
     const hybrid = new HybridTaskaApi(live, true);

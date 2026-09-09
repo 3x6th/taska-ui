@@ -1371,6 +1371,189 @@ describe("RestTaskaApi labels", () => {
 });
 
 /**
+ * The five watcher routes (TAS-193). Live on the deployed gateway since backend
+ * PR #144, and one of them has been measured: `GET …/watchers` on issue `API-2`
+ * answered `200 {"totalCount":1,"watchers":[{…}]}` with a `GLOBAL_ADMIN` token
+ * on 2026-09-08. The other four are read out of the contract, so what these pin
+ * is the request this client sends and the facts it reads back — not proof that
+ * the gateway answers them.
+ */
+describe("RestTaskaApi watchers", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (route: (input: string) => unknown, status = 200) => {
+    const fetchStub = vi.fn(async (input: string, _init?: { method?: string; body?: string }) =>
+      answer(status, route(input)),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the array the gateway actually sends, which is `watchers` and not `items`", async () => {
+    // The body is the measured one, field for field. Every other list on this
+    // gateway answers with `items`, so a mapper that reached for that here
+    // would map a populated answer to an empty list and never fail — the
+    // failure this case exists to make loud.
+    const fetchStub = stubFetch(() => ({
+      totalCount: 1,
+      watchers: [
+        {
+          id: "6f1d2c33-0aa1-4a1e-9d10-1b2c3d4e5f60",
+          issueId: "issue-1",
+          projectId: "project-1",
+          userId: "user-9",
+          createdAt: "2026-09-02T10:15:00Z",
+          createdBy: "user-9",
+        },
+      ],
+      // Present and ignored, so a gateway that grew an `items` alias could not
+      // make this test pass by accident.
+      items: [],
+    }));
+
+    const result = await new RestTaskaApi().listIssueWatchers("project-1", "issue-1");
+
+    expect(String(fetchStub.mock.calls[0][0])).toContain("/projects/project-1/issues/issue-1/watchers");
+    expect(result.totalCount).toBe(1);
+    expect(result.watchers).toEqual([
+      {
+        id: "6f1d2c33-0aa1-4a1e-9d10-1b2c3d4e5f60",
+        issueId: "issue-1",
+        projectId: "project-1",
+        userId: "user-9",
+        createdAt: "2026-09-02T10:15:00Z",
+        createdBy: "user-9",
+      },
+    ]);
+  });
+
+  it("keeps a count of zero and turns a missing one into null", async () => {
+    // No field of any watcher schema is `required`, so both of these are legal
+    // answers — and they mean different things. "Nobody is watching" is a fact
+    // about the issue; "the server did not say" is an admission about the
+    // response, and a `?? 0` here would print the first over the second.
+    stubFetch(() => ({ watchers: [] }));
+    await expect(new RestTaskaApi().listIssueWatchers("project-1", "issue-1")).resolves.toEqual({
+      watchers: [],
+      totalCount: null,
+    });
+
+    stubFetch(() => ({ totalCount: 0, watchers: [] }));
+    await expect(new RestTaskaApi().listIssueWatchers("project-1", "issue-1")).resolves.toEqual({
+      watchers: [],
+      totalCount: 0,
+    });
+  });
+
+  it("fills a row's issue and project from the path, and never its user", async () => {
+    stubFetch(() => ({ watchers: [{ id: "watch-1" }] }));
+
+    const { watchers } = await new RestTaskaApi().listIssueWatchers("project-1", "issue-1");
+
+    // The route was scoped to this project and this issue, so those two are
+    // recovered rather than invented. Nothing in the request says who is
+    // watching, so `userId` stays blank and the panel draws an unnamed row —
+    // it does not attribute the subscription to somebody.
+    expect(watchers[0]).toEqual({
+      id: "watch-1",
+      issueId: "issue-1",
+      projectId: "project-1",
+      userId: "",
+      createdAt: "",
+      createdBy: "",
+    });
+  });
+
+  it("sends no body on either half of the me pair", async () => {
+    const put = stubFetch(() => ({ watcher: { id: "watch-1", userId: "user-9" }, watchersCount: 2 }));
+    const watched = await new RestTaskaApi().watchIssue("project-1", "issue-1");
+
+    const [putUrl, putInit] = put.mock.calls[0];
+    expect(String(putUrl)).toContain("/projects/project-1/issues/issue-1/watchers/me");
+    expect(putInit?.method).toBe("PUT");
+    // The contract declares no request schema for this route and says the user
+    // comes from the Gateway context. A body would be a claim the JWT already
+    // answers.
+    expect(putInit?.body).toBeUndefined();
+    expect(watched.watchersCount).toBe(2);
+    expect(watched.watcher).toMatchObject({ userId: "user-9", issueId: "issue-1", projectId: "project-1" });
+
+    const del = stubFetch(() => ({ issueId: "issue-1", removed: true, watchersCount: 1 }));
+    await new RestTaskaApi().unwatchIssue("project-1", "issue-1");
+
+    const [delUrl, delInit] = del.mock.calls[0];
+    expect(String(delUrl)).toContain("/projects/project-1/issues/issue-1/watchers/me");
+    expect(delInit?.method).toBe("DELETE");
+    expect(delInit?.body).toBeUndefined();
+  });
+
+  it("reads `removed` as sent, and treats an unstated one as nothing removed", async () => {
+    stubFetch(() => ({ issueId: "issue-1", removed: false, watchersCount: 3 }));
+    await expect(new RestTaskaApi().unwatchIssue("project-1", "issue-1")).resolves.toEqual({
+      issueId: "issue-1",
+      removed: false,
+      watchersCount: 3,
+    });
+
+    // A response that omits the flag has not claimed a subscription was
+    // deleted, and announcing a change nobody can evidence is what this field
+    // exists to prevent. The end state is the same either way.
+    stubFetch(() => ({ watchersCount: 3 }));
+    await expect(new RestTaskaApi().unwatchIssue("project-1", "issue-1")).resolves.toEqual({
+      issueId: "issue-1",
+      removed: false,
+      watchersCount: 3,
+    });
+  });
+
+  it("names the user in the body when an admin adds one, and in the path when one is removed", async () => {
+    const post = stubFetch(() => ({ watcher: { id: "watch-2", userId: "user-7" }, watchersCount: 4 }));
+    await new RestTaskaApi().addIssueWatcher("project-1", "issue-1", "user-7");
+
+    const [postUrl, postInit] = post.mock.calls[0];
+    expect(String(postUrl)).toContain("/projects/project-1/issues/issue-1/watchers");
+    expect(String(postUrl)).not.toContain("/watchers/me");
+    expect(postInit?.method).toBe("POST");
+    expect(JSON.parse(postInit?.body ?? "{}")).toEqual({ userId: "user-7" });
+
+    const del = stubFetch(() => ({ issueId: "issue-1", removed: true, watchersCount: 3 }));
+    await expect(
+      new RestTaskaApi().removeIssueWatcher("project-1", "issue-1", "user-7"),
+    ).resolves.toMatchObject({ removed: true, watchersCount: 3 });
+
+    const [delUrl, delInit] = del.mock.calls[0];
+    expect(String(delUrl)).toContain("/projects/project-1/issues/issue-1/watchers/user-7");
+    expect(delInit?.method).toBe("DELETE");
+  });
+
+  it("carries a 403 on an admin route up as one, rather than as an empty answer", async () => {
+    stubFetch(() => ({ code: "PERMISSION_DENIED", message: "Not allowed role" }), 403);
+
+    const failure = await new RestTaskaApi()
+      .addIssueWatcher("project-1", "issue-1", "user-7")
+      .catch((error: unknown) => error);
+
+    expect(isMissingOrForbidden(failure)).toBe(true);
+    expect(failure).toMatchObject({ status: 403, code: "PERMISSION_DENIED", message: "Not allowed role" });
+  });
+});
+
+/**
  * The admin user writes (TAS-186). All three are on the deployed gateway since
  * backend PR #146, measured 2026-09-08 — but only far enough to know the paths
  * are mapped (an invalid uuid answers `400 INVALID_ARGUMENT`), because probing

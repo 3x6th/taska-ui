@@ -4444,7 +4444,8 @@ h1 {
 
 .issue-labels,
 .issue-links,
-.issue-attachments {
+.issue-attachments,
+.issue-watchers {
   margin-top: 24px;
 }
 
@@ -4674,7 +4675,8 @@ button.issue-link-open:hover {
    the quiet version of this (§1); the panel behind it is `--surface` too, so
    the box is defined by its border and its stripe. Padding is on §2.4's scale
    (7 / 11); the 10 this rule used to carry is not on it. */
-.attachment-note {
+.attachment-note,
+.watcher-note {
   margin: 0 0 12px;
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
@@ -4688,7 +4690,14 @@ button.issue-link-open:hover {
   text-wrap: pretty;
 }
 
-.attachment-note.is-error {
+/* Two sections, one recipe, shared as a selector group rather than copied: the
+   watchers section has the same pair of tones for the same reason (an info line
+   for a write that changed nothing, an error line for one that was refused), and
+   two copies of §5.6's box are two chances for them to drift apart. Named
+   separately rather than renamed to something generic so neither section's
+   markup has to change to say what it already says. */
+.attachment-note.is-error,
+.watcher-note.is-error {
   border-left-color: var(--danger);
 }
 
@@ -4805,6 +4814,124 @@ button.attachment-open:hover:not(:disabled) {
   outline-offset: 2px;
 }
 
+/* ==================== Watchers (TAS-193) ====================
+   Geometry only, and mostly borrowed — the picker is `.issue-link-form` and the
+   notice is `.attachment-note`, both reused by class rather than re-declared, so
+   this block is the toggle and the row and nothing else. Every colour is a §2.1
+   or §2.2 token; the one new shade is the accent tint §2.2 already prescribes
+   (`color-mix(in oklab, <color> N%, transparent)`), at the same 12% the active
+   assignee chip uses. */
+/* The add form is `.issue-link-form` reused, with one rule undone. There the
+   first field is the relation control and is meant to take a row of its own so
+   the picker and its button share the second; here the picker *is* the first
+   field, so inheriting that put "Add" alone on a line under a full-width
+   select. `auto` hands the row back to `.issue-link-target`'s `flex: 1`, which
+   is what puts the button beside the picker at both widths. */
+.watcher-form > .issue-link-field:first-child {
+  flex-basis: auto;
+}
+
+.watcher-toggle-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-bottom: 12px;
+}
+
+/* The pressed state, and it is deliberately the same recipe as
+   `.assignee-chip.is-active` rather than a new one: both mean "this is the
+   option in force", and §1 spends its colour budget on meaning rather than on
+   variety. `aria-pressed` carries the same fact to a screen reader, so the tint
+   is never the only signal (§7) — the label changes too.
+
+   Placed after `.compact-button:hover` on purpose. That rule is (0,2,0) like
+   this one, so source order is what decides, and a watched issue whose button
+   turned plain on hover would be reporting a state change that is not
+   happening. */
+.watch-toggle.is-watching {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+/* Hover still has to say something. Without this, the two rules above leave a
+   pressed toggle inert under the cursor — `.secondary-button:hover` is earlier
+   in the file and loses. A deeper tint rather than a colour change, because the
+   colour is the state. */
+.watch-toggle.is-watching:hover {
+  background: color-mix(in oklab, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+/* The in-flight window, and it is `aria-disabled` rather than `disabled` so the
+   button keeps focus (see the component). No opacity with it: the global
+   `button:disabled` recipe fades a control to 0.58, and flashing that for the
+   ~200ms a toggle takes would be a flicker on every press. The label has
+   already flipped — that is the feedback — so the cursor is all this needs to
+   add. */
+.watch-toggle[aria-disabled="true"] {
+  cursor: progress;
+}
+
+.watch-toggle:focus-visible,
+.watcher-row .icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The sentence beside the toggle, which is what makes the control's state
+   legible without decoding a tint. `--fg-2` rather than the `--fg-3` a meta row
+   takes: it is the only prose in this section and §7 keeps the meta exemption
+   for text that is genuinely secondary to something beside it. */
+.watcher-toggle-hint {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.watcher-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.watcher-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px 4px 0;
+}
+
+.watcher-name {
+  overflow: hidden;
+  flex: 1;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "(you)" is an annotation on the name, not part of it. */
+.watcher-you {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+
+/* The optimistic row, until the server's answer replaces it. No pulse and no
+   spinner (§5.6); the row is already legible and only its remove control is
+   held back. Never `opacity: 0` — §3 forbids a starting frame that hides
+   content, and this element is on screen the whole time. */
+.watcher-row.is-pending .watcher-name {
+  color: var(--fg-2);
+}
+
 .comments {
   margin-top: 24px;
 }
@@ -4812,6 +4939,7 @@ button.attachment-open:hover:not(:disabled) {
 .issue-labels h3,
 .issue-links h3,
 .issue-attachments h3,
+.issue-watchers h3,
 .comments h3,
 .activity h3 {
   display: flex;

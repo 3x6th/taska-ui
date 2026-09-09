@@ -11,7 +11,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronLeft, Download, Paperclip, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
 import { useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput } from "../api/TaskaApi";
@@ -44,6 +44,8 @@ import type {
   IssueLink,
   IssueLinkType,
   IssueSearchHit,
+  IssueWatcher,
+  IssueWatchers,
   Label,
   Page,
   IssuePriority,
@@ -228,6 +230,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const issuesUnread = useUnanswered(issuesQuery);
   const workflowUnread = useUnanswered(workflowQuery);
   const labelsUnread = useUnanswered(projectLabelsQuery);
+  // Read by the watchers section and by nothing else so far. Everywhere else a
+  // failed member read is *already* legible — the assignee chip row simply has
+  // no chips and the reporter line says "Unknown" — but a picker of people to
+  // subscribe would be an empty `<select>` under the words "Add a watcher",
+  // which reads as "this project has nobody left to add" (§5.6: only a
+  // successful read may say there are none). This is what tells the two apart.
+  const membersUnread = useUnanswered(membersQuery);
   // "The server never told us your role" and "you are a VIEWER" are different
   // states, and only one of them is a permission. Both end in a board nobody
   // can write to — the server stays the authority, so write access we could
@@ -708,6 +717,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           issueId={issueId}
           projectId={projectId}
           members={members}
+          membersAnswered={membersQuery.data !== undefined}
+          membersUnknown={membersUnread.unanswered}
           userById={userById}
           canEdit={canEdit}
           isProjectAdmin={isProjectAdmin}
@@ -1002,6 +1013,8 @@ function IssuePanel({
   projectId,
   issueId,
   members,
+  membersAnswered,
+  membersUnknown,
   userById,
   canEdit,
   isProjectAdmin,
@@ -1013,6 +1026,21 @@ function IssuePanel({
   projectId: string;
   issueId: string;
   members: ProjectMember[];
+  /**
+   * Whether the member read has answered *at all*. Distinct from the flag
+   * below, and the pair is three states rather than two: answered, failed, and
+   * still in flight. `members` is `[]` in the last two alike, so a section that
+   * read only the failure flag would tell a reader the project has no members
+   * during the second it is still being asked.
+   */
+  membersAnswered: boolean;
+  /**
+   * The member read failed and there is nothing to show for it. Only the
+   * watchers section reads either of these — see `membersUnread` on the board —
+   * because it is the only place where an empty member list would be presented
+   * as an answer rather than simply leaving a row bare.
+   */
+  membersUnknown: boolean;
   userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
   canEdit: boolean;
   /**
@@ -1219,6 +1247,23 @@ function IssuePanel({
             />
           </label>
 
+          {/* Above the other three sections on purpose. It is the only one
+              every reader can act on — labels, links and files all need write
+              access — and it is the one whose state has to be legible without
+              hunting, so it takes the slot nearest the panel's own facts about
+              people. It also keeps the toggle above the fold at 1440×900 and
+              one short scroll away at 390×844. */}
+          <IssueWatchersSection
+            projectId={projectId}
+            issueId={issueId}
+            currentUserId={currentUserId}
+            members={members}
+            membersAnswered={membersAnswered}
+            membersUnknown={membersUnknown}
+            userById={userById}
+            isProjectAdmin={isProjectAdmin}
+          />
+
           <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
           <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
@@ -1259,6 +1304,478 @@ function IssuePanel({
       </aside>
     </div>
   );
+}
+
+/**
+ * Id of the row an optimistic watch puts in the cache before the server has
+ * answered, on the same terms as `optimisticLinkId`: no subscription on the
+ * server can carry it, and it is deliberately not the empty string, which is
+ * what a response omitting `id` produces.
+ */
+const optimisticWatcherId = "tk-optimistic-watcher";
+
+/** What the section says about a write, and whether it is a failure. */
+interface WatcherNotice {
+  tone: "info" | "error";
+  text: string;
+}
+
+/**
+ * The five watcher routes (TAS-193): the list, the `…/watchers/me` pair every
+ * reader owns, and the two project-`ADMIN` routes that subscribe and
+ * unsubscribe somebody else.
+ *
+ * **Three things here are not obvious and each has cost somebody an hour.**
+ *
+ * *The count is the server's field, never the array's length.*
+ * `ListIssueWatchersResponseDto` states `totalCount` beside `watchers`, and
+ * both writes answer with `watchersCount` — so after a toggle the number is
+ * right before any refetch lands, and `null` (the server said nothing) stays
+ * distinguishable from `0` (nobody is watching). Only the *membership* question
+ * — am I in this list — is answered from the array, because the contract offers
+ * no `…/watchers/me` read to ask it with.
+ *
+ * *`removed: false` is a success that changed nothing.* The unwatch pair
+ * answers `200` with a flag saying whether a subscription was actually deleted,
+ * and an unwatch that deleted nothing is reported as exactly that rather than
+ * as a change or as an error. Same class as TAS-194's retry: the server
+ * distinguishes "done" from "already so", and flattening the two is how a UI
+ * comes to report events that never happened. Its sibling `watchIssue` has no
+ * such flag, so a second watch is genuinely indistinguishable from a first and
+ * nothing here pretends otherwise.
+ *
+ * *A watcher carries a `userId` and no name.* It is resolved through the same
+ * `userById` map that names the assignee, the reporter and an attachment's
+ * uploader — one mechanism, and it fails in one way: `GET /projects/{id}/members`
+ * is a 405 on the deployed gateway (TAS-137), so in `rest` mode every watcher
+ * draws as "Unknown", exactly as the reporter line already does. That symmetry
+ * is the argument for reusing the map rather than inventing a second lookup,
+ * and it is *not* a reason to defer the ADMIN half: a remove names a `userId`,
+ * which every row already carries, so it needs no name at all; and an add needs
+ * a list of candidate people, which is the very list the assignee picker two
+ * sections above is built from. Both degrade with that picker and neither
+ * degrades further.
+ */
+function IssueWatchersSection({
+  projectId,
+  issueId,
+  currentUserId,
+  members,
+  membersAnswered,
+  membersUnknown,
+  userById,
+  isProjectAdmin,
+}: {
+  projectId: string;
+  issueId: string;
+  /** `undefined` until `GET /users/me` answers. Until then nothing may claim who is watching. */
+  currentUserId?: string;
+  members: ProjectMember[];
+  /** The member read answered. Three states, not two — see the panel's own prop. */
+  membersAnswered: boolean;
+  membersUnknown: boolean;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+  /**
+   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`, both of
+   * which the contract marks "только project ADMIN". Presentation only — the
+   * server checks again, and in `hybrid` with `VITE_TASKA_ASSUME_PROJECT_ADMIN`
+   * this is `true` for everybody (DESIGN.md §5.7).
+   */
+  isProjectAdmin: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [picked, setPicked] = useState("");
+  const [notice, setNotice] = useState<WatcherNotice | null>(null);
+
+  const watchersKey = useMemo(() => ["issue-watchers", projectId, issueId], [projectId, issueId]);
+  const watchersQuery = useQuery({
+    queryKey: watchersKey,
+    queryFn: () => taskaApi.listIssueWatchers(projectId, issueId),
+    retry: retryUnlessMissing,
+  });
+
+  const answer = watchersQuery.data;
+  const watchers = useMemo(() => answer?.watchers ?? [], [answer]);
+  const watching = Boolean(currentUserId) && watchers.some((watcher) => watcher.userId === currentUserId);
+  const subscribed = useMemo(() => new Set(watchers.map((watcher) => watcher.userId)), [watchers]);
+  const addable = members.filter((member) => !subscribed.has(member.userId));
+
+  /**
+   * The count as somebody *said* it. `answer.totalCount` is the list read's
+   * field and the write mutations overwrite it with theirs, so this is never
+   * `watchers.length` — and it is `null`, drawing no pill at all, when nothing
+   * has stated a number yet.
+   */
+  const count = answer?.totalCount ?? null;
+
+  /**
+   * Both halves of what a write tells us, applied to the cache the moment it
+   * lands: the server's count, and — for the two removals — whether anything
+   * was actually deleted. The count is applied even when it is the number the
+   * optimistic update had already guessed, because "the same number, from the
+   * server" and "our guess" are different states of this cache and only the
+   * first survives the next reader.
+   */
+  const applyServerCount = (watchersCount: number | null) => {
+    if (watchersCount === null) return;
+    queryClient.setQueryData<IssueWatchers>(watchersKey, (current) =>
+      current ? { ...current, totalCount: watchersCount } : current,
+    );
+  };
+
+  /**
+   * One write, one stale cache. Deliberately **not** `invalidateBoard`: no
+   * watcher route changes the issue, and this build knows of no history event
+   * or notification type for a subscription — `IssueEventType` has none and
+   * neither does `NotificationType` — so refetching the issue after a toggle
+   * would be this side asserting that the server wrote something it never
+   * mentioned. If the backend turns out to journal these, the invalidation
+   * belongs here and the union belongs in `src/domain/types.ts` with it.
+   */
+  const settle = () => queryClient.invalidateQueries({ queryKey: watchersKey });
+
+  /** The optimistic row for a subscription the server has not confirmed yet. */
+  const optimisticRow = (userId: string): IssueWatcher => ({
+    id: optimisticWatcherId,
+    issueId,
+    projectId,
+    userId,
+    createdAt: "",
+    createdBy: currentUserId ?? "",
+  });
+
+  const beginWrite = async () => {
+    setNotice(null);
+    await queryClient.cancelQueries({ queryKey: watchersKey });
+    return queryClient.getQueryData<IssueWatchers>(watchersKey);
+  };
+
+  const addOptimistically = (userId: string) => {
+    queryClient.setQueryData<IssueWatchers>(watchersKey, (current) =>
+      current
+        ? {
+            watchers: [...current.watchers, optimisticRow(userId)],
+            // A guess, and only until the server's own number replaces it a
+            // tick later. `null` stays `null`: a count nobody has stated is not
+            // a count this side may start one from.
+            totalCount: current.totalCount === null ? null : current.totalCount + 1,
+          }
+        : current,
+    );
+  };
+
+  const removeOptimistically = (userId: string) => {
+    queryClient.setQueryData<IssueWatchers>(watchersKey, (current) => {
+      if (!current) return current;
+      const watchersLeft = current.watchers.filter((watcher) => watcher.userId !== userId);
+      const changed = watchersLeft.length !== current.watchers.length;
+      return {
+        watchers: watchersLeft,
+        totalCount:
+          current.totalCount === null || !changed ? current.totalCount : Math.max(0, current.totalCount - 1),
+      };
+    });
+  };
+
+  const rollback = (previous: IssueWatchers | undefined) => {
+    if (previous) queryClient.setQueryData(watchersKey, previous);
+  };
+
+  const watchIssue = useMutation({
+    mutationFn: () => taskaApi.watchIssue(projectId, issueId),
+    onMutate: async () => {
+      const previous = await beginWrite();
+      if (currentUserId) addOptimistically(currentUserId);
+      return { previous };
+    },
+    onSuccess: (result) => applyServerCount(result.watchersCount),
+    onError: (error, _variables, context) => {
+      rollback(context?.previous);
+      setNotice({ tone: "error", text: watcherFailureText(error, "You were not subscribed to this issue.") });
+    },
+    onSettled: settle,
+  });
+
+  const unwatchIssue = useMutation({
+    mutationFn: () => taskaApi.unwatchIssue(projectId, issueId),
+    onMutate: async () => {
+      const previous = await beginWrite();
+      if (currentUserId) removeOptimistically(currentUserId);
+      return { previous };
+    },
+    onSuccess: (result) => {
+      applyServerCount(result.watchersCount);
+      // Not an error and not silence. The end state is the one that was asked
+      // for, so nothing rolls back; what did not happen is the *removal*, and
+      // saying so is the whole reason the server sends this flag.
+      if (!result.removed) {
+        setNotice({ tone: "info", text: "You were not watching this issue, so nothing was removed." });
+      }
+    },
+    onError: (error, _variables, context) => {
+      rollback(context?.previous);
+      setNotice({ tone: "error", text: watcherFailureText(error, "You are still watching this issue.") });
+    },
+    onSettled: settle,
+  });
+
+  const addWatcher = useMutation({
+    mutationFn: (userId: string) => taskaApi.addIssueWatcher(projectId, issueId, userId),
+    onMutate: async (userId) => {
+      const previous = await beginWrite();
+      addOptimistically(userId);
+      return { previous };
+    },
+    onSuccess: (result) => applyServerCount(result.watchersCount),
+    onError: (error, userId, context) => {
+      rollback(context?.previous);
+      setNotice({
+        tone: "error",
+        text: watcherFailureText(error, `${watcherName(userById, userId)} was not subscribed to this issue.`),
+      });
+      // The rollback puts the person back in the picker, so put the choice back
+      // with it — unless something else has been chosen since, which is the one
+      // thing this must never overwrite. Same rule as the label picker.
+      setPicked((current) => (current === "" ? userId : current));
+    },
+    onSettled: settle,
+  });
+
+  const removeWatcher = useMutation({
+    mutationFn: (userId: string) => taskaApi.removeIssueWatcher(projectId, issueId, userId),
+    onMutate: async (userId) => {
+      const previous = await beginWrite();
+      removeOptimistically(userId);
+      return { previous };
+    },
+    onSuccess: (result, userId) => {
+      applyServerCount(result.watchersCount);
+      if (!result.removed) {
+        setNotice({
+          tone: "info",
+          text: `${watcherName(userById, userId)} was not watching this issue, so nothing was removed.`,
+        });
+      }
+    },
+    onError: (error, userId, context) => {
+      rollback(context?.previous);
+      setNotice({
+        tone: "error",
+        text: watcherFailureText(error, `${watcherName(userById, userId)} is still watching this issue.`),
+      });
+    },
+    onSettled: settle,
+  });
+
+  const toggling = watchIssue.isPending || unwatchIssue.isPending;
+  // Mutations first, reads second, for the reason the label section states: an
+  // observer can hold data *and* a failed background refetch at once, and in
+  // that state a refused write would otherwise be explained by whatever the
+  // refetch said instead.
+  const readError = watchersQuery.data === undefined ? watchersQuery.error : null;
+
+  return (
+    <section className="issue-watchers">
+      <h3>
+        Watchers
+        {/* Only when somebody has stated a number. `0` states one; `null` — a
+            `200` that omitted `totalCount`, which this contract permits — does
+            not, and a pill reading "0" over it would be this side answering a
+            question the server declined. */}
+        {count !== null ? <span className="count-pill">{count}</span> : null}
+      </h3>
+
+      {/* Two answers have to be in before this may be drawn at all, and both for
+          the same reason: "Watch" and "Watching" are each a claim about the
+          reader's own state, so the control waits until the list says who is
+          watching *and* `GET /users/me` says who is reading. A disabled toggle
+          with a guessed label would make the claim anyway. `data` rather than
+          `isSuccess`, so a failing background refetch leaves it where it was. */}
+      {answer && currentUserId ? (
+        <div className="watcher-toggle-row">
+          <button
+            /**
+             * `aria-disabled`, never `disabled`, and this is the one line in
+             * the section worth defending. A `disabled` button loses focus in
+             * Chromium the moment the attribute lands, so pressing Enter on
+             * this toggle dropped focus to `<body>` for the length of the
+             * request and the *second* Enter went nowhere — a keyboard user
+             * could watch an issue and then not unwatch it without tabbing in
+             * from the top of the document again. Caught by the keyboard case
+             * in `e2e/watchers.spec.ts`, which is why that case exists.
+             *
+             * The guard moves into the handler with it. Leaving the press live
+             * would be worse than a dead 200ms: a `PUT` and a `DELETE` in
+             * flight together can be applied by the server in either order, and
+             * the loser decides the subscription.
+             */
+            aria-disabled={toggling || undefined}
+            aria-pressed={watching}
+            className={`secondary-button compact-button watch-toggle${watching ? " is-watching" : ""}`}
+            // The one control in this panel that is not behind `canEdit`: the
+            // contract puts no role on `…/watchers/me`, and watching is
+            // per-reader.
+            onClick={() => {
+              if (toggling) return;
+              if (watching) unwatchIssue.mutate();
+              else watchIssue.mutate();
+            }}
+            type="button"
+          >
+            {watching ? <Eye size={13} /> : <EyeOff size={13} />}
+            {watching ? "Watching" : "Watch"}
+          </button>
+          <span className="watcher-toggle-hint">
+            {watching ? "You are on this issue's watcher list." : "Add yourself to this issue's watcher list."}
+          </span>
+        </div>
+      ) : null}
+
+      {/* The ADMIN add. Hidden — rather than rendered empty — when the member
+          read failed, because an empty picker under "Add a watcher" reads as
+          "there is nobody left to add", which is a claim about the project that
+          a failed read cannot support (§5.6). The sentence below says which it
+          is. */}
+      {isProjectAdmin && answer && membersAnswered && addable.length > 0 ? (
+        <form
+          className="issue-link-form watcher-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!picked) return;
+            addWatcher.mutate(picked);
+            // Reset in the handler that read the value, never in a callback a
+            // round trip later — see the label picker for what a late reset
+            // takes with it.
+            setPicked("");
+          }}
+        >
+          <label className="issue-link-field issue-link-target">
+            <span>Add a watcher</span>
+            <select onChange={(event) => setPicked(event.target.value)} value={picked}>
+              <option value="">Select a member</option>
+              {addable.map((member) => (
+                <option key={member.userId} value={member.userId}>
+                  {member.user?.displayName ?? "Unnamed member"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="secondary-button compact-button" disabled={!picked || addWatcher.isPending} type="submit">
+            Add
+          </button>
+        </form>
+      ) : null}
+
+      {isProjectAdmin && membersUnknown ? (
+        <p className="issue-links-empty">
+          This project&rsquo;s members could not be read, so there is nobody to offer here.
+        </p>
+      ) : null}
+      {/* `membersAnswered`, not `!membersUnknown`: a read still in flight is
+          neither an answer nor a failure, and this sentence is a claim about
+          the project that only a landed answer supports. */}
+      {isProjectAdmin && answer && membersAnswered && addable.length === 0 ? (
+        <p className="issue-links-empty">
+          {members.length === 0
+            ? "This project has no members to add."
+            : "Everyone on this project is already watching."}
+        </p>
+      ) : null}
+
+      {/* One live region that stays mounted and changes its text, the shape
+          §7 asks for and the attachments section already uses. Polite: every
+          sentence here follows something the reader just did. */}
+      <div aria-live="polite" className={notice ? `watcher-note${notice.tone === "error" ? " is-error" : ""}` : ""}>
+        {notice?.text ?? ""}
+      </div>
+
+      {readError ? <div className="watcher-note is-error">{readError.message}</div> : null}
+
+      {watchersQuery.isPending ? <p className="issue-links-empty">Loading watchers</p> : null}
+      {/* Only a successful read may say nobody is watching. */}
+      {answer && watchers.length === 0 ? <p className="issue-links-empty">No one is watching this issue yet</p> : null}
+
+      {watchers.length ? (
+        <ul className="watcher-list">
+          {watchers.map((watcher) => {
+            const person = watcher.userId ? userById.get(watcher.userId) : undefined;
+            const name = watcherName(userById, watcher.userId);
+            const mine = Boolean(currentUserId) && watcher.userId === currentUserId;
+            const pending = watcher.id === optimisticWatcherId;
+            const removing = removeWatcher.isPending && removeWatcher.variables === watcher.userId;
+            return (
+              // Keyed by the person rather than by the subscription: a row's
+              // `id` is `optimisticWatcherId` until the server answers, so two
+              // pending adds would share one key. A user has at most one
+              // subscription per issue, which makes `userId` the natural key —
+              // and `id` is the fallback for a response that omitted it.
+              <li className={`watcher-row${pending ? " is-pending" : ""}`} key={watcher.userId || watcher.id}>
+                <Avatar user={person} size="sm" />
+                <span className="watcher-name">
+                  {name}
+                  {mine ? <span className="watcher-you"> (you)</span> : null}
+                </span>
+                {isProjectAdmin ? (
+                  <button
+                    // Two rows for two people this map cannot name would
+                    // otherwise share one accessible name. The id is the only
+                    // thing that tells them apart, so it is what the label uses.
+                    aria-label={person ? `Remove ${person.displayName} from watchers` : `Remove watcher ${watcher.userId}`}
+                    className="icon-button"
+                    // A row whose `userId` the response left blank cannot be
+                    // removed: the request would name nobody. The row still
+                    // shows — somebody is watching either way.
+                    disabled={!watcher.userId || pending || removing}
+                    onClick={() => removeWatcher.mutate(watcher.userId)}
+                    type="button"
+                  >
+                    <X size={14} />
+                  </button>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * A watcher's display name, or the word this panel already uses for a person it
+ * cannot name — the reporter line above prints the same one for the same
+ * reason. Kept in one function so the row, the two notices and the remove
+ * label cannot drift apart.
+ */
+function watcherName(
+  userById: Map<string, Pick<User, "id" | "displayName" | "color">>,
+  userId: string,
+): string {
+  return userById.get(userId)?.displayName ?? "Unknown";
+}
+
+/**
+ * What to say when a watcher write is refused.
+ *
+ * The server's own sentence wins whenever it sent one — both implementations
+ * do, so this is the ordinary path. The `403` arm is for a gateway that refuses
+ * without a message, and it exists because a refusal on these two routes is the
+ * one failure the reader can actually act on: the controls were offered because
+ * `isProjectAdmin` said so, and the server disagreed.
+ *
+ * Deliberately not `isMissingOrForbidden`, which folds 403 into 404 because
+ * DESIGN.md §4.18 requires a *screen* not to tell "missing" from "not yours".
+ * That rule is about what a visitor may learn from a page they cannot see; here
+ * the issue is already open and readable, so the two answers mean different
+ * things and are worth different sentences.
+ */
+function watcherFailureText(error: unknown, fallback: string): string {
+  const { message, status, code } = apiErrorFacts(error);
+  if (message) return message;
+  if (status === 403 || code === "PERMISSION_DENIED") {
+    return "The server refused: only a project admin may change who else watches this issue.";
+  }
+  return fallback;
 }
 
 /**
