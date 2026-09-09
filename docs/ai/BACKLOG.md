@@ -38,8 +38,14 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   so it cannot steal from an operator who moved. What is left is the wider case,
   which no write reaches: `src/main.tsx` sets only `staleTime` and `retry`, so
   `refetchOnWindowFocus` is on, and any blur-and-return after twenty seconds can
-  drop a row under a focused control. A rescue scoped to the retry path leaves
-  that standing, so the eventual fix belongs to the section.
+  drop a row under a focused control. **The configuration half graduated to
+  [TAS-202](https://jira.ozero.dev/browse/TAS-202) on 2026-09-09** — that story
+  turns the refetch off globally, because the same line multiplies a
+  twenty-seven-request fan-out on the projects screen. This entry stays open for
+  the residue: turning the refetch off makes the focus loss rarer without making
+  it wrong, and any write's own invalidation can still do it, so TAS-202 owes a
+  re-measurement here rather than a closure. The sentence this replaces said the
+  fix "belongs to the section"; it is global, which is why it left.
 
   **Why no e2e pins the retry half, stated as the measurement rather than as an
   impossibility.** `MockTaskaApi`'s `wait(value, 140)` is a hard-coded literal
@@ -563,9 +569,17 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   > that the only path to `canEdit === false` was unobserved, so the *silence*
   > was never noticed either. Seeding the roles is still right, and TAS-163 adds
   > the coverage for the failure path.
-- **`markAllNotificationsRead` loop needs an iteration cap** (unbounded if the
-  gateway ever ignores `unreadOnly`).
-- **The board's 100-issue page is now a functional ceiling, not just a paging
+- ~~**`markAllNotificationsRead` loop needs an iteration cap** (unbounded if the
+  gateway ever ignores `unreadOnly`).~~ **Graduated to
+  [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09**, and widened
+  there: the cap is the smaller half. The measured cost is one `PATCH` per unread
+  item at concurrency 6 with `offset` pinned at 0, so forty unread notifications
+  are forty-one requests, and the loop terminates only because the page it just
+  marked comes back shorter. The gateway has no read-all route, so the fan-out
+  itself stays until [TAS-141](https://jira.ozero.dev/browse/TAS-141).
+- **Graduated to [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09.**
+  Kept in full because the story's second section is this entry.
+  **The board's 100-issue page is now a functional ceiling, not just a paging
   detail** (from TAS-157). `BoardScreen` asks for `pageSize: 100` and the links
   section resolves its targets out of that one page: past 100 issues, a target
   cannot be offered in the picker at all, and an existing link to an issue
@@ -806,7 +820,11 @@ time.
   ~791px and, with `Clear` showing, from ~883px (Taska Platform, 4 members,
   ADMIN); above 820 only the filtered bar wraps at all, in the band 821–882.
   Same story, TAS-177.
-- **Opening an issue panel can now drive a full re-read of the issue page.**
+- **Graduated to [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09**,
+  where it is the panel-side half of the `staleTime` question rather than a
+  `refetchOnMount` on one observer — deciding the two apart is how one observer
+  gets the flag and nothing else does.
+  **Opening an issue panel can now drive a full re-read of the issue page.**
   `IssueLinksSection`'s own observer on `["issues", projectId, "ALL"]` refetches
   on mount when the entry is stale (`staleTime` 20_000), where before the panel
   added no observer at all. Against the real gateway that is not one call:
@@ -922,7 +940,11 @@ time.
 
 ### Found while fixing the TAS-169 review blocker (2026-08-21)
 
-- **Two call sites now produce the query key `["issues", projectId, "ALL"]`
+- **Taken into [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09**, not
+  because it is waste but because it is the landmine directly under that story:
+  paging the board's `listIssues` call changes what this shared cache entry holds,
+  silently, unless both call sites move in one diff.
+  **Two call sites now produce the query key `["issues", projectId, "ALL"]`
   with `queryFn` bodies that differ cosmetically.** The board passes
   `labelId: undefined` explicitly; `IssueLinksSection` omits the key entirely.
   Identical across mock, rest and hybrid today, and deliberately the same cache
@@ -932,10 +954,10 @@ time.
   shared options helper would remove the class. Not filed — it is a latent
   coupling with no user-visible symptom yet, and it disappears if either call
   site stops needing the page.
-- **The links section still resolves link targets from a page**
-  (`pageSize: 100`), so on a project past a hundred issues a link row still
-  falls back to its raw id. Unchanged by TAS-169 and correct as documented —
-  worth a story only when a project that large exists.
+- ~~**The links section still resolves link targets from a page**
+  (`pageSize: 100`)…~~ **Deleted 2026-09-09 as a duplicate** of the board-ceiling
+  entry above, which says the same thing first and does not defer it to "a project
+  that large". Both are [TAS-202](https://jira.ozero.dev/browse/TAS-202).
 
 ### Left open by TAS-171 (from all three roles, 2026-08-21)
 
@@ -975,9 +997,13 @@ time.
   mock's own seed, and they are annotated as such — but if TAS-148 ever ships
   without a colour, deleting both fields is the honest end state, and the
   divergence entry becomes "computed, permanently".
-- **"1 members"** on a freshly created project card — plural not handled.
-  Cosmetic, pre-existing, noticed by `art-director` on the create path TAS-171
-  made worth looking at.
+- ~~**"1 members"** on a freshly created project card — plural not handled.~~
+  **Overtaken by [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09.**
+  It is not a plural bug on new projects: `hybrid` synthesises the member list
+  from the reader alone, so **every** card prints `1 members` whatever the truth,
+  and eighteen of that screen's twenty-seven requests exist to produce it. The
+  story removes the count until [TAS-137](https://jira.ozero.dev/browse/TAS-137)
+  lands rather than making it cheaper or fixing its grammar.
 
 ### Left open by TAS-175 (from `art-director`, 2026-08-22)
 
@@ -1625,7 +1651,10 @@ Measured against the deployed gateway without a token, which is what made the
 first two visible at all. Past the report's cap, so recorded rather than
 triaged.
 
-- **The gateway edge rejects `page < 0` and `pageSize` outside `1..100`
+- **Graduated to [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09**:
+  its own reason for being a note — "the callers pass fixed sizes" — is what that
+  story stops being true the moment the board sends a computed page.
+  **The gateway edge rejects `page < 0` and `pageSize` outside `1..100`
   pre-auth; the mock validates neither**, and `page: -1` there silently yields
   an empty slice. Unreachable today — the callers pass fixed sizes — but it is
   the reference implementation being laxer than the thing it models, same class
@@ -1667,7 +1696,9 @@ them blocks the story.
   hit to the wrong project. Unreachable in the mock seed; the gateway has never
   been asked whether it treats `TAS` and `tas` as one key. Worth a probe before
   it is worth a fix.
-- **`summaryByProject`'s memo never memoises.** It depends on the `useQueries`
+- **Graduated to [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09** —
+  four lines under the block that story rewrites.
+  **`summaryByProject`'s memo never memoises.** It depends on the `useQueries`
   result array, whose identity changes every render. Harmless — the body is
   cheap — but the memo is decoration, and a reader will assume it is doing
   something.
