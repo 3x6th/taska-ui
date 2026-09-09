@@ -384,7 +384,7 @@ is not a definition.
 | Key | What breaks without it | Evidence |
 | --- | --- | --- |
 | [TAS-137](https://jira.ozero.dev/browse/TAS-137) + the acceptance note added to it | the member read lands carrying ids, and the board draws a column of uuids instead of the occasional "Unknown" | read — the DTO's shape is contract, the column of uuids is what follows from it, and nobody has seen it because the route answers `405` today |
-| [TAS-204](https://jira.ozero.dev/browse/TAS-204) | nobody can be invited, so the member form is a uuid field with nowhere to get a uuid | measured 2026-09-09 — `/users`, `/users/{id}`, `/users/batch` and `/auth/invitations` all answer the static-resource `404` while `/users/me` beside them answers `401`, which is the control that makes the `404` mean unmapped |
+| [TAS-204](https://jira.ozero.dev/browse/TAS-204) | nobody can be invited, so the member form is a uuid field with nowhere to get a uuid | measured 2026-09-09 — `/users`, `/users/{id}` and `/auth/invitations` all answer the static-resource `404` while `/users/me` beside them answers `401`, which is the control that makes the `404` mean unmapped. `/users/batch` answers the same `404` and is TAS-137's evidence, not this row's, since the batch read moved there |
 | [TAS-158](https://jira.ozero.dev/browse/TAS-158) | there is no way to put a person in a project, so role gating stays undemonstrable | read |
 | [TAS-208](https://jira.ozero.dev/browse/TAS-208) | the flow every new person must walk fails three ways, one of them reporting success for the wrong account | read |
 | [TAS-207](https://jira.ozero.dev/browse/TAS-207) | a non-member sees another project's workflow; a missing route reads as "you have no projects" | measured — the workflow half on 2026-08-18 with a second account, the empty-list half recorded 2026-08-03 and not re-probed since |
@@ -394,7 +394,8 @@ is not a definition.
 | [TAS-209](https://jira.ozero.dev/browse/TAS-209) | the compensation stays, and with it the flag that makes every permission check meaningless | read |
 
 **What left the first draft.** TAS-141 entirely, because it is `Done` in Jira
-while the dependency table below still lists five open gaps against it; its live
+while the dependency table earlier in this file still lists five open gaps
+against it; its live
 empty-projects clause is re-filed as TAS-207. TAS-201, TAS-203 and TAS-205 were
 never candidates rather than silently dropped: each makes a screen cheaper or
 richer, and none of them stands between a second person and a project.
