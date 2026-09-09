@@ -430,6 +430,12 @@ you file:
   `jira_update_issue` keep underscores intact. When a comment must name a
   snake_case or SCREAMING_SNAKE identifier, describe it instead, or accept the
   mangling knowingly rather than by surprise.
+  **A fenced code block survives it** — found on TAS-125, 2026-09-09, after two
+  comments came back mangled. Names inside triple backticks keep their
+  underscores; inline backticks and `{{…}}` do not, and neither does a lone
+  identifier once a second one shares the paragraph, because the two pair up as
+  emphasis. So: identifiers a reader has to copy go in a fenced block, and one
+  identifier alone in a paragraph is a coin flip, not a rule.
 
 ## Verification evidence
 
