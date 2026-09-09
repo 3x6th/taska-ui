@@ -2276,6 +2276,38 @@ the four-state coverage is the mock's seed. The entry below, about
 `GET /users/me` answering `UNSPECIFIED` for a locked account, is the live half
 of the same subject and PR #146 did **not** close it.
 
+### Closed by backend PR #149: the admin writes answered with the protobuf constant, and nothing here was reading for it
+
+- **Endpoints:** `POST /api/v1/admin/users/{userId}/block`, `…/unblock`,
+  `…/reset-lockout` — the `previousStatus` and `currentStatus` of
+  `UserStatusResponseDto` and `UserCredentialStateResponseDto`.
+- **What was wrong.** From PR #146 deploying the three writes (2026-09-07) until
+  PR #149 merged (2026-09-09), `AdminUserManagementMapper` filled both fields
+  with `grpcResponse.getPreviousStatus().name()` — the protobuf constant,
+  `USER_STATUS_ACTIVE` and its three siblings — while `openapi.yml` declared the
+  bare `UserStatusDto`. PR #149 maps the four values explicitly and raises
+  `INVALID_ARGUMENT` on anything else, so an unknown proto value can no longer
+  reach the audit trail either.
+- **Compensating UI behaviour: none, then and now.** This is recorded for the
+  opposite reason to most entries here — the frontend read the field exactly as
+  the contract declares it and would have been wrong about the deployed gateway
+  for two days without knowing. `UserStatus` is the bare four-value union,
+  `RestTaskaApi.toUserStatusChange` copies both fields with no narrowing, no
+  fixture anywhere uses a prefixed value, and the string `USER_STATUS_` occurs in
+  this repository only in two prose comments describing the proto enum.
+- **What the prefixed form would have done, had it been seen.** Not a crash: the
+  write response's `currentStatus` is read in exactly two places, the row's
+  status override after a `200` and the live-region announcement. `isKnownUserStatus`
+  rejects `USER_STATUS_BLOCKED`, so the pill would have printed the raw string in
+  the unstyled `.admin-pill` and the announcement would have read "… is now
+  user_status_blocked". Silent and cosmetic — which is why nobody found it by
+  using the product.
+- **Both halves are code readings, not probes.** Neither form was ever observed
+  on the wire from here: the deployed writes have only ever been probed with an
+  invalid uuid, deliberately, so that nothing mutated. The window this entry
+  describes is closed, so the measurement that would have settled it is no longer
+  available. Closed by backend PR #149; no frontend change.
+
 ### `GET /users/me` answers `UNSPECIFIED` for a locked account, not `LOCKED`
 
 A second-order effect of the entry above, and one the frontend cannot fix. The
@@ -2443,16 +2475,56 @@ Note `0007-issue-planing-fields.sql` adds `issues_dates_chk (start_date <=
 due_date)`, so a *stored* pair can never be inconsistent — which is why
 re-sending resolved values can never trip the check by itself.
 
-### `storyPoints` is `double` on one open PR and `int32` on another, and the column settles it
+### The planning-field declarations left backend PR #148, and the gateway build went red with them
+
+- **Schemas:** `storyPoints`, `startDate`, `dueDate`, `originalEstimateMinutes`
+  and `remainingEstimateMinutes` on the issue request and response DTOs — the
+  whole of TAS-116's contract half. None of them are on `develop`.
+- **Observed 2026-09-09, twice in half an hour**, because the PR moved while this
+  session was reading it. At head `79187f94d135` the PR's `openapi.yml` still
+  carried the five fields, and this repository re-pinned the extract to it. At
+  head `4539137553b4`, force-pushed at 11:49Z, the PR changes **exactly one
+  file** — `api-gateway/.../mapper/IssueMapper.java` — and its copy of the spec
+  is byte-identical to `develop @ 5941499203ae`.
+- **That is not a cosmetic loss.** The gateway's `ru.taska.domain.dto` classes are
+  generated from that spec by `openapi-generator-maven-plugin` (`api-gateway/pom.xml`,
+  `inputSpec … static/openapi.yml`, `modelPackage ru.taska.domain.dto`), so a mapper
+  calling `restDto.setStoryPoints(…)` on a schema that does not declare the field cannot
+  compile. `Build & Test — api-gateway` is failing on that head while the other nine
+  module jobs pass — **but not for that reason, and the correction matters.** The job
+  has exactly two compile errors, both `cannot find symbol` in the PR's own
+  `IssueMapper.java`: `CreateIssueRequest` (the proto class) and
+  `CreateIssueRequestDto` (which *is* generated from develop's spec). Those are
+  missing imports, and javac stops before attributing the method bodies where the
+  planning-field setters live. So restoring the declarations alone will not turn
+  this head green, and the compile error the missing schema would cause has not
+  been observed. Found by `api-contract-guard` reading the CI log after this entry
+  had asserted the prediction and the failure were the same thing.
+- **What follows for the deployed gateway is a reading, not a probe:** develop's spec
+  does not declare the fields, the DTOs are generated from it, so a gateway built from
+  develop cannot serialise them. No request was made to check, because a field that is
+  absent from a response cannot be told apart from a field the server chose not to send.
+- **The UI instead:** TAS-189's API layer (merged here as PR #45) was written against the
+  earlier head and stays exactly as it is — it is right about the wire the day the
+  declarations come back and wrong about nothing today, since nothing in the UI reads
+  these fields yet. `docs/contract/pending/pr-148-TAS-116.yml` keeps the extract with its
+  header rewritten to say which head it describes. Nothing further is written against it
+  until the declarations return.
+- **Removed by:** backend PR #148 restoring the declarations and merging. Raised on
+  TAS-116.
+
+### `storyPoints` is `double` on an open PR and `int32` in the merged contract, and the column settles it
 
 Backend PR #148 declares `storyPoints` as `number` / `format: double` on the
-issue DTOs. Backend PR #118 declares the same field as `integer` / `format:
-int32` on `BoardIssueDto`. Two open PRs disagreeing with each other about one
-field.
+issue DTOs, and is open. `BoardIssueDto` declares the same field as `integer` /
+`format: int32`, and merged on 2026-09-09. **Updated 2026-09-09:** this is no
+longer two open PRs disagreeing with each other, which is a worse place to be
+rather than a better one — the narrower of the two readings is now the one in
+force, and the wider one is still on a branch.
 
 The database settles it: `0007-issue-planing-fields.sql` adds
-`story_points numeric(5, 2)`. Half points are a real value and `#118`'s board
-card would truncate them. The client models it as a float everywhere and the
+`story_points numeric(5, 2)`. Half points are a real value and the board DTO's
+`int32` would truncate them. The client models it as a float everywhere and the
 board DTO is treated as the narrower of the two, not as the definition.
 
 `numeric(5, 2)` also fixes two bounds the contract states nowhere. The **scale**
@@ -2527,58 +2599,124 @@ message about it is wrong. The client uses its own wording and never shows the
 server's for this case; `0` is seeded in the mock precisely so that a mapper
 folding it to `null` fails a test rather than a review.
 
-### The board route is declared, unimplemented, and narrower than the board it is named for
+### The board route answers now, and the board screen still does not use it
 
-Nothing in this repository is built against `GET /api/v1/projects/{projectId}/board`
-(backend PR #118, TAS-125). Recorded here rather than in a story's comment
-because four independent reasons say "not yet", and each one is the kind that
-gets forgotten and re-litigated.
+`GET /api/v1/projects/{projectId}/board` (TAS-125) merged into `develop` on
+2026-09-09 and is deployed. `TaskaApi.getBoard` exists in all three
+implementations as of TAS-191; **`BoardScreen` does not call it** and still
+composes its own board from `getWorkflow` and `listIssues`. This entry is why
+that is deliberate, and what would end it.
 
-**It cannot answer.** The PR adds `rpc ListIssuesForBoard` to
-`issue-service.proto` and **no service implements it** — no override on
-`GrpcIssueServiceAdapter`, no method on `GrpcIssueService`, neither at the PR's
-head nor on `develop`. A declared-but-unimplemented gRPC method answers
-`UNIMPLEMENTED`, which the gateway maps to **501**. The implementation is on
-backend PR #142 (TAS-124), open and `CONFLICTING`. So even merged and deployed,
-the route returns 501 until a second PR lands.
+The previous version of this entry gave four reasons not to build against the
+route. Two are dead and are kept below in one paragraph each, because a reason
+that dies quietly is a reason someone re-litigates. Two are alive.
 
-**It draws less than the board does.** `BoardIssueDto` carries `id`,
+**Dead: it could not answer.** The route's `rpc ListIssuesForBoard` was declared
+and unimplemented, so a deployed gateway answered `501`. Backend PR #142
+(TAS-124) merged 2026-09-07 and implements it end to end —
+`IssueServiceImpl.listIssueBoard`, `GrpcIssueServiceAdapter.listIssuesForBoard`,
+`IssueRepositoryImpl.findForBoard` and its board indexes. **Measured 2026-09-09**
+against `api.taska.ozero.dev` with a signed-in token, project `API`
+(`c9594240-…`): `200` with three columns in workflow order — `TODO`/10,
+`IN_PROGRESS`/20, `DONE`/30 — carrying 1, 2 and 1 issues. Request id
+`98aa1322-9a0a-457d-98fc-ccface9ed01b`. The same probe settled four semantics
+the contract leaves open:
+
+| Probe | Answer |
+| --- | --- |
+| `includeDone` absent or `false` | the `DONE` column is returned **empty** — the flag filters issues, never columns |
+| `includeDone=true` | the `DONE` column carries its issues |
+| `assigneeId` / `labelId` | filtered server-side; an id nobody holds gives `200` with every column empty |
+| `issueType=EPIC`, `issueType=SUBTASK` | `400 INVALID_ARGUMENT` — correct, the contract's `IssueTypeDto` is `TASK`/`BUG`/`STORY` and nothing else |
+
+**Dead: the review was open on an access-control gap.** PR #118 merged, and the
+gap it was held for is closed one level below the gateway rather than in it. The
+gateway still checks nothing itself — `BoardServiceImpl` zips workflow and
+issues — but `IssueServiceImpl.listIssueBoard` opens with
+`projectRoleChecker.checkProjectRole(requestId, nodeId, projectId, actorUserId,
+listIssueRoles)`, the same call `listIssues` makes, and `workflow-service`
+carries its own `ProjectRoleChecker`. **What a non-member sees is read, not
+probed** — `release-reviewer` traced the chain that the first version of this
+paragraph called an expectation. `ProjectRoleChecker.validateAccess` raises
+`DomainStatus.PERMISSION_DENIED, "Access denied"` for a non-member and
+`NOT_FOUND, "Project not found"` for a project that does not exist;
+`RestErrorMapper` maps those to `403` and `404`. So the shape is the one
+`GET /projects/{projectId}` already gives, and `isMissingOrForbidden` covers it.
+The probe itself is still owed and needs a second account: the only token
+available was a `GLOBAL_ADMIN`'s, for whom every project reads.
+
+**Alive: it draws less than the board draws.** `BoardIssueDto` carries `id`,
 `issueKey`, `summary`, `storyPoints`, an assignee `{id, displayName}` and
-`labels` as bare strings. The card draws `issueType`, `priority`, `description`
-and `createdAt` as well, renders labels with their colours, and drag-and-drop
-needs `status` and `issueType` as values rather than as a column position. Six of
-the nine are absent. Adopting the route as the board's data source would be a
-visible regression bought with one request instead of several.
+`labels`. The card draws `issueType`, `priority`, `description` and `createdAt`
+as well, and drag-and-drop needs `status` and `issueType` as values rather than
+as a column position. The runtime is narrower again than that list reads:
 
-**Its failure mode is worse than the one it would replace.** `BoardServiceImpl`
-fails the whole board with a 500 when any issue carries a `statusKey` the
-workflow does not have. Today an unknown status simply places no card — a silent
-per-card degradation, recorded elsewhere in this file. That is a strictly better
-failure than a blank screen.
+- `labels` carries label **ids**, not names — every value in the probe was a
+  uuid matching a row of `GET /projects/{projectId}/labels`. A chip needs the
+  name and the colour, so the label read stays either way. `TaskaApi` names the
+  field `labelIds` for what it holds.
+- `assignee.displayName` came back `null` for **every** assigned issue, beside
+  an `id` that resolves to a named user elsewhere — and, like `storyPoints`, the
+  source says it always will: `IssueBoardResponse` carries `assignee_id` and no
+  name field of any kind, and `IssueMapper.toRestBoardIssue` builds `BoardUserDto`
+  with `setId` alone. An avatar or a name is resolved against members the screen
+  already holds, not read off this response.
+- `storyPoints` came back `null` on every issue, and the reason is structural
+  rather than incidental. `IssueBoardResponse` in `issue-service.proto` has **no
+  `story_points` field**, and `IssueMapper.toRestBoardIssue` never sets one: the
+  contract declares the field on `BoardIssueDto` and nothing on any branch that
+  exists today can fill it. Found by `api-contract-guard` reading the proto after
+  the probe had been written up here as the weaker fact — null *because these
+  issues are unestimated* — which it is not. The mock therefore sends `null` too,
+  so a screen cannot draw an estimate badge that would be blank in production.
 
-**And the contract is still moving.** `CHANGES_REQUESTED` stands on the
-access-control gap: the route is `EndpointSecurity.PROTECTED` — authentication
-only — and `BoardServiceImpl` calls neither service through
-`ProjectRoleChecker`. Fixing that adds 403 and 404 cases the contract does not
-have, so anything written now would be written against an error taxonomy about
-to gain two members.
+**Alive: its failure mode is worse than the one it would replace.**
+`BoardServiceImpl` throws `500 "Inconsistent state: issues found with statuses
+not present in workflow"` when any issue carries a `statusKey` the workflow does
+not list — one bad row blanks the whole board. Composing on the client, an
+unknown status simply places no card. That is strictly better, and the merged
+code is unchanged on this point.
 
-Three smaller things, worth stating so they are not rediscovered:
-`storyPoints` is `int32` here and `double` on backend PR #148 — two open PRs
-disagreeing, settled by the `numeric(5,2)` column in favour of `double`;
-`IssueMapper.toRestBoardIssue` calls `setStoryPoints(getStoryPoints())` with no
-`hasStoryPoints()` guard, so an unestimated issue serialises as `storyPoints: 0`
-and nothing on the wire tells "zero points" from "not estimated"; and
-`issueType` is a **required** query parameter, so one call cannot answer the
-board's own `ALL` filter.
+There is one exception, and it is worth stating because the mock reproduces it:
+a stray issue whose status key is the literal `DONE` never reaches that check
+while `includeDone` is off, because `issue-service` excludes it in SQL
+(`boardFilterConditions`) before the gateway builds columns. That one case
+answers `200` with an empty column. Every other unknown status, and every
+unknown status at all once `includeDone` is on, blanks the board.
 
-**The UI instead:** the board keeps composing from `getWorkflow` + `listIssues`
-with per-issue hydration. No client method exists for this route, so there is no
-compensation to remove — only this entry to delete.
+**And the arithmetic does not favour the route even when the fields arrive.**
+`issueType` is a **required** query parameter, so the board's own `ALL` filter
+needs one call per concrete type: three. The response carries no transitions,
+and `findTransition` on the drop path and `resolveTransitions` in the issue
+panel both need them, so the three `getWorkflow` reads stay. That is six
+requests against today's four — three workflows and one `listIssues` page —
+for a card that draws less. The one thing today's shape does worse is the
+`pageSize: 100` ceiling on that single page; the gateway passes no
+`pageSizePerColumn` to `issue-service`, so the board route returns every issue
+in every column, and that is the one measured argument in its favour.
 
-**Removed by:** backend PR #142 landing an implementation, PR #118 clearing its
-review, and the card DTO gaining what the card draws. All three, not any one.
-Raised on TAS-125.
+**What this repository has instead:** `getBoard` on the `TaskaApi` interface,
+with `rest` mapping the route, `hybrid` delegating to live, and `mock` building
+the same board from its own workflow and issues — including the `500` on an
+inconsistent status, so the two implementations fail the same way. Nothing calls
+it. That is TAS-191's stated shape: be ready on the day the card DTO catches up,
+without shipping a visible regression to get there a week early.
+
+**And the ask is cheaper than the missing fields make it look.**
+`IssueBoardResponse` — what `issue-service` already sends the gateway — carries
+`issue_type`, `status_key`, `priority`, `reporter_id`, `label_ids`,
+`watchers_count` and `comments_count`. `IssueMapper.toRestBoardIssue` maps five
+of those to nothing. So `issueType`, `priority` and the `status` that
+drag-and-drop needs as a value are a gateway mapper plus three schema lines, not
+a change through `issue-service`; only `description` and `createdAt` are absent
+from the proto as well. `storyPoints` is the odd one out in the other direction:
+declared in REST and absent from the proto.
+
+**Removed by:** `BoardIssueDto` gaining what the card draws — `issueType`,
+`priority`, `description`, `createdAt` — and `labels` arriving as something a
+chip can be drawn from. Not by the route working, which it now does. Raised on
+TAS-125; the frontend half is TAS-191, and the mapper asks above are filed as
+[TAS-201](https://jira.ozero.dev/browse/TAS-201).
 
 ### The five attachment routes exist only on an open backend PR
 

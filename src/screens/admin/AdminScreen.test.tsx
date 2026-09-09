@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
@@ -2116,7 +2116,12 @@ describe("admin events, retrying an event", () => {
 
     // Now the row is `NEW`, the button is gone, and the operator never moved —
     // so this is the rescue's own case, arriving one read later than usual.
-    expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    // The removal itself lands on query-core's own `setTimeout(…, 0)`, a beat
+    // after `settle()` has already moved on — wait for it, because a gate that
+    // goes red one run in four is a gate people learn to re-run instead of read.
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    });
     expect(document.body).not.toHaveFocus();
     expect(screen.getByRole("region", { name: "Problematic events" })).toHaveFocus();
   });
@@ -2182,7 +2187,12 @@ describe("admin events, retrying an event", () => {
       await settle();
     });
 
-    expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    // The same query-core `setTimeout(…, 0)` commit as the rescue test above —
+    // wait for the removal before reading focus, or these two checks race a
+    // document the timer has not reached yet.
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument();
+    });
     expect(elsewhere).toHaveFocus();
     expect(screen.getByRole("region", { name: "Problematic events" })).not.toHaveFocus();
   });
@@ -2246,7 +2256,16 @@ describe("admin events, retrying an event", () => {
 
     // The list did change — this is not a refetch that did nothing …
     expect(screen.getByRole("status")).toHaveTextContent("user.registered e1 on auth is now PROCESSING.");
-    expect(screen.getByRole("cell", { name: "PROCESSING" })).toBeVisible();
+    // `findBy`, and that is not decoration. `settle()` is one macrotask, and
+    // the commit that brings this row reaches React on query-core's own
+    // `setTimeout(…, 0)` — a timer registered *after* `settle()`'s, so the two
+    // only arrive together while they land in the same millisecond. Under a
+    // loaded run they do not, and a `getBy` here reads the row as it was before
+    // the write and fails on its accessible name — which is what it did twice
+    // in four full-suite runs, and every time with 3ms of work inserted after
+    // the summary's gate. Waiting for the row the refetch brought is what makes
+    // the three assertions below about focus rather than about a timer.
+    expect(await screen.findByRole("cell", { name: "PROCESSING" })).toBeVisible();
     // … the button is still there, and so focus stays where the operator left
     // it rather than being moved on account of a loss that never happened.
     expect(screen.getByRole("button", { name: "Retry event e1" })).toBeVisible();

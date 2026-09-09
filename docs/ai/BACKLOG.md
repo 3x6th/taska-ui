@@ -1671,6 +1671,61 @@ them blocks the story.
   result array, whose identity changes every render. Harmless — the body is
   cheap — but the memo is decoration, and a reader will assume it is doing
   something.
+- **The admin Events focus tests race the refetch they assert against**
+  (diagnosed 2026-09-09 while gating TAS-191, and the diagnosis is the value
+  here). `settle()` is one `setTimeout(…, 0)` registered synchronously after the
+  read is released; the refetch's commit reaches React on query-core's *own*
+  `setTimeout(…, 0)`, registered later, in the microtask drain where the released
+  read resolves. Same timers phase on an idle machine, a different one on a
+  loaded run, and then `act` returns before the commit and the assertion reads
+  the row as it was. Three tests in `AdminScreen.test.tsx` had it; TAS-191 fixed
+  all three by awaiting the commit rather than assuming it. **What is not fixed
+  is the pattern** — any future test in that file that asserts synchronously
+  after `settle()` inherits the race, and the file has no helper that makes the
+  right shape the easy one. A `settleAndCommit()` beside `settle()` would.
+- **One more of the same family, seen only under artificial load**: with eight
+  concurrent instances of `AdminScreen.test.tsx`, "lands on the last page when
+  the address names one past the end" failed `expected 999 to be 2` — the
+  assertion on `lastRowsQuery()?.page` runs after the heading resolves but before
+  the clamp's second rows request goes out. Not reachable in the real suite as it
+  stands; noted so the next person to see it does not re-diagnose it.
+- **The board's rest error path has no test** (`api-contract-guard`, 2026-09-09,
+  TAS-191 verdict, below its reporting cap). Nothing covers what `getBoard` does
+  with the gateway's `500 INTERNAL_SERVER_ERROR`, nor that `requestId` survives on
+  it; the describe's `answer` helper hardcodes a header getter that returns null,
+  so it needs a `requestId` parameter and one case. Cheap, and worth doing with
+  the first screen that calls the route rather than before it.
+- **The mock serves one workflow for every issue type** (same verdict). The
+  gateway fetches a workflow per `issueType`, so a project with per-type
+  workflows would get different boards from mock and rest. `MockTaskaStore` holds
+  a single `workflow` field, so closing it is a store-shape change rather than a
+  comment — and no seeded project has per-type workflows, so nothing is wrong
+  today.
+- **A notification whose body happens to contain a uuid is routed as an issue**
+  (found 2026-09-09, reading the notification path against backend PR #151).
+  `notificationTarget` falls back to the first uuid anywhere in
+  `notification.body` and opens it as an issue id. Backend PR #151 adds
+  `USER_BLOCKED` and `USER_UNBLOCKED` to the notification types, and those are
+  about a *user*: if notification-service writes the blocked account's uuid into
+  the body, clicking the row will read `getIssueById` on a user id and land on
+  "This issue doesn't exist, or you don't have access to it." instead of doing
+  nothing. Not yet reproducible — the two types are a database constraint so far,
+  nothing emits them. Probe the body text once something does; the fix, if
+  needed, is a guard so a non-issue id is not routed as one. The types themselves
+  need no frontend change: `notificationType` is inert in the render path, and the
+  gateway already sends `LABEL_ADDED` outside the union without trouble.
+- **An expired access token drew "Page not found" on the deployed stand**
+  (observed 2026-09-09 on `taska.ozero.dev`, signed in as `admin`). The stored
+  `taska.accessToken` had expired ~15 minutes earlier; `GET /users/me` and every
+  other call answered `401 UNAUTHENTICATED "JWT token expired"`, and opening a
+  project board rendered the not-found screen rather than refreshing the session
+  or returning to `/login`. `RestTaskaApi` does have the machinery — a 401 retries
+  through `tryRefresh` and, failing that, `SessionExpiredSignal` sends the user to
+  the login form — so **what was not established is which half failed**: a refresh
+  token that had also expired, a refresh answer that is itself a 401 mapped as
+  not-found, or a deployed build older than the machinery. Reproduce with a fresh
+  session and a short-lived token before filing; the observation is worth keeping
+  because the screen it ends on tells the user the wrong thing either way.
 
 ## Frontend stories already filed
 
@@ -1888,3 +1943,12 @@ is what recurs.
   deliberately stays tokens-only. Contract-level only so far: the field has not
   been observed on the deployed gateway, which is why the frontend treats its
   absence as "not stated" rather than as an error.
+- [TAS-201](https://jira.ozero.dev/browse/TAS-201) — filed 2026-09-09 from
+  TAS-191, and filed directly rather than parked here because it is a
+  contract-design problem that survives on its own: `BoardIssueDto` drops
+  `issueType`, `status_key` and `priority`, which `IssueBoardResponse` already
+  hands the gateway, so three of the reasons the board screen cannot move onto
+  the board route are a mapper and three schema lines. The same ask carries the
+  three smaller ones — `storyPoints` declared in REST with no `story_points` in
+  the proto to fill it, `labels` sending ids under a name that reads as names,
+  and `assignee.displayName` null for every assigned issue measured.

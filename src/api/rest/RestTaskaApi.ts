@@ -1,6 +1,7 @@
 import type {
   AcceptInvitationInput,
   AuthTokens,
+  BoardParams,
   ConfirmAttachmentUploadInput,
   CreateAttachmentUploadUrlInput,
   CreateIssueInput,
@@ -54,6 +55,8 @@ import type {
   AdminTable,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  Board,
+  BoardIssue,
   DateOnly,
   GlobalRole,
   Issue,
@@ -313,6 +316,64 @@ interface RestListIssuesResponse {
 interface RestSearchIssuesResponse {
   items: RestIssueShortItem[];
   totalCount: number;
+}
+
+/**
+ * `BoardUserDto`. `id` is the schema's one required property; `displayName` is
+ * optional there and has been `null` on every assigned issue measured against
+ * the deployed gateway (2026-09-09), so both spellings of "no name" arrive.
+ */
+interface RestBoardUser {
+  id: string;
+  displayName?: string | null;
+}
+
+/**
+ * `BoardIssueDto`. The three required properties are stated as required; the
+ * other three are optional exactly as the schema has them.
+ *
+ * `labels` is a list of **label ids** — `["760798da-9e59-4c54-aaac-4c93de82e68a"]`
+ * on the deployed gateway, matching rows of `GET /projects/{id}/labels` — which
+ * is why `toBoardIssue` renames it to `labelIds` rather than passing the wire's
+ * own name through into the domain.
+ *
+ * `storyPoints` is declared `int32` and cannot arrive at all today:
+ * `IssueBoardResponse` in the backend's `v1/issue-service.proto` has no
+ * `story_points` field and `IssueMapper.toRestBoardIssue` never calls
+ * `setStoryPoints`, so every board card is `null` by construction rather than
+ * by estimate. The property is still typed as the schema declares it, and read
+ * with `??` rather than `||` below, so that the day the field is filled a `0`
+ * arrives as an estimate of nothing instead of as no estimate.
+ */
+interface RestBoardIssue {
+  id: string;
+  issueKey: string;
+  summary: string;
+  storyPoints?: number | null;
+  assignee?: RestBoardUser | null;
+  labels?: string[];
+}
+
+/** `BoardColumnDto`. All five properties are in the schema's `required` block. */
+interface RestBoardColumn {
+  statusKey: string;
+  name: string;
+  category: string;
+  sortOrder: number;
+  issues: RestBoardIssue[];
+}
+
+/**
+ * `BoardResponseDto`. All three properties are required by the schema and are
+ * typed that way — and the two arrays are still read with `?? []` below, for
+ * the same reason `RestSearchIssuesResponse` is: a missing array rejects with a
+ * `TypeError` carrying no code and no request id, which reaches a caller as an
+ * unreadable failure where an empty board was meant.
+ */
+interface RestBoardResponse {
+  projectId: string;
+  issueType: IssueType;
+  columns: RestBoardColumn[];
 }
 
 interface RestUpdateIssueResponse {
@@ -606,6 +667,29 @@ export class RestTaskaApi implements TaskaApi {
       pageSize: params.pageSize ?? items.length,
       totalCount: response.totalCount,
     };
+  }
+
+  /**
+   * `GET /projects/{projectId}/board`, measured against the deployed gateway on
+   * 2026-09-09.
+   *
+   * `issueType` goes on every request because the route requires it. The two
+   * id filters go only when set — the server ANDs whatever it is given, and an
+   * empty value is not the same question as an absent one. `includeDone` goes
+   * only when it is `true`: `false` is the server's own default and the flag
+   * filters issues rather than columns, so sending `includeDone=false` in every
+   * URL would add a parameter that never changes an answer.
+   */
+  async getBoard(projectId: string, params: BoardParams): Promise<Board> {
+    const search = new URLSearchParams();
+    search.set("issueType", params.issueType);
+    if (params.assigneeId) search.set("assigneeId", params.assigneeId);
+    if (params.labelId) search.set("labelId", params.labelId);
+    if (params.includeDone) search.set("includeDone", "true");
+    const response = await this.request<RestBoardResponse>(
+      `/projects/${this.segment(projectId)}/board${this.query(search)}`,
+    );
+    return this.toBoard(response);
   }
 
   /**
@@ -1508,6 +1592,49 @@ export class RestTaskaApi implements TaskaApi {
       createdBy: label.createdBy ?? "",
       createdAt: label.createdAt ?? "",
       deletedAt: label.deletedAt ?? null,
+    };
+  }
+
+  /**
+   * `BoardResponseDto` → `Board`. The columns arrive in the workflow's own
+   * `sortOrder` — 10/20/30 for TODO/IN_PROGRESS/DONE on the deployed gateway —
+   * and are passed through in the order the server sent them rather than
+   * re-sorted here: the server decides the board's shape, and a client that
+   * quietly re-ordered would hide the day it stops agreeing.
+   */
+  private toBoard(response: RestBoardResponse): Board {
+    return {
+      projectId: response.projectId,
+      issueType: response.issueType,
+      columns: (response.columns ?? []).map((column) => ({
+        statusKey: column.statusKey,
+        name: column.name,
+        category: column.category,
+        sortOrder: column.sortOrder,
+        // Empty rather than absent is the ordinary case here: without
+        // `includeDone` the DONE column arrives with no issues at all.
+        issues: (column.issues ?? []).map((issue) => this.toBoardIssue(issue)),
+      })),
+    };
+  }
+
+  /**
+   * `BoardIssueDto` → `BoardIssue`, field by field like `toIssueSearchHit` and
+   * for the same reason: a spread would widen a card the day the DTO grows a
+   * property, and the one thing this type must keep proving is that it carries
+   * no status, no priority and no project.
+   */
+  private toBoardIssue(issue: RestBoardIssue): BoardIssue {
+    return {
+      id: issue.id,
+      issueKey: issue.issueKey,
+      summary: issue.summary,
+      // `??`, not `||`: an issue estimated at zero points has been estimated.
+      storyPoints: issue.storyPoints ?? null,
+      assignee: issue.assignee ? { id: issue.assignee.id, displayName: issue.assignee.displayName ?? null } : null,
+      // `labels` on the wire, ids in it. `[]` when the key is absent, so no
+      // caller has to ask whether the gateway sent the field.
+      labelIds: issue.labels ?? [],
     };
   }
 

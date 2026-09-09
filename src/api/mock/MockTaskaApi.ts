@@ -1,6 +1,7 @@
 import type {
   AcceptInvitationInput,
   AuthTokens,
+  BoardParams,
   ConfirmAttachmentUploadInput,
   CreateAttachmentUploadUrlInput,
   CreateIssueInput,
@@ -50,6 +51,8 @@ import type {
   AdminTable,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  Board,
+  BoardColumn,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -332,6 +335,123 @@ const requirePlanningFields = (input: PlanningFieldsInput, stored: StoredPlannin
     throw new MockApiError(refusal.code, refusal.message);
   }
 };
+
+/**
+ * What `BoardServiceImpl` throws when an issue sits in a status its project's
+ * workflow does not list — a 500 on the deployed gateway, and the one board
+ * failure that is worth reproducing here rather than papering over. Dropping
+ * the card instead would make an issue disappear from every board with nothing
+ * on screen to say so.
+ *
+ * The code is `INTERNAL_SERVER_ERROR` and not `INTERNAL`: `BoardServiceImpl`
+ * raises a `ResponseStatusException(INTERNAL_SERVER_ERROR, "Inconsistent
+ * state: …")`, which is not a gRPC status, so `GatewayErrorHandler` takes its
+ * middle branch and sets `code = httpStatus.name()`. `INTERNAL` is what its
+ * gRPC branch emits instead — `code = grpcStatus.getCode().name()`, so a
+ * downstream `Status.INTERNAL` also arrives as `{code: "INTERNAL"}` with a
+ * 500 — and what its unexpected-exception branch emits as a last resort;
+ * this failure takes neither.
+ */
+const BOARD_INCONSISTENT_STATE_CODE = "INTERNAL_SERVER_ERROR";
+const BOARD_INCONSISTENT_STATE_MESSAGE = "Inconsistent state: issues found with statuses not present in workflow";
+
+/**
+ * The status key `includeDone` excludes, verbatim from
+ * `IssueRepositoryImpl.boardFilterConditions`, which adds
+ * `new BoardFilterCondition("status_key", "excludedStatusKey", NOT_EQUALS,
+ * "DONE")` when the flag is off. The server keys this on the status key and
+ * never on the column's `category`, so a workflow with a `DONE`-category column
+ * keyed `RESOLVED` keeps its cards.
+ */
+const BOARD_EXCLUDED_STATUS_KEY = "DONE";
+
+/**
+ * The board, built the way the gateway builds it: the workflow's statuses
+ * become the columns, in `sortOrder`, and the issues are dropped into them by
+ * `statusKey`.
+ *
+ * A module-level function rather than a method because the failure below cannot
+ * be produced through the seeded store at all — every seeded issue sits in a
+ * status the seeded workflow lists, and `IssueStatus` narrows both sides to the
+ * same three values — so this is the only surface a test can reach it through.
+ *
+ * `issues` arrive already filtered by project, type, assignee and label, and
+ * already carrying their labels: those are the parts the store owns. What is
+ * decided here is the part the *board* owns, and the order of the two rules is
+ * the backend's own, read off the source rather than inferred from a probe:
+ *
+ * - `includeDone` off drops every issue whose status key is the literal `DONE`
+ *   (`BOARD_EXCLUDED_STATUS_KEY` above) while **keeping the column**, because
+ *   the columns come from the workflow and the filter only ever sees issues.
+ *   The DONE column therefore arrives either way, empty without the flag and
+ *   populated with it, which is also what the deployed gateway answered on
+ *   2026-09-09;
+ * - **then** an issue whose status no column holds fails the whole read. That
+ *   order is not this repository's choice: the exclusion is a `WHERE` clause in
+ *   issue-service (`IssueRepositoryImpl.boardFilterConditions`), so a stray
+ *   `DONE` issue never reaches the gateway's leftover-status check while
+ *   `includeDone` is off and the gateway answers `200`. With the flag on, the
+ *   issue arrives, no column holds it, and both implementations fail.
+ */
+export function buildMockBoard(
+  projectId: string,
+  workflow: Workflow,
+  issues: Issue[],
+  params: BoardParams,
+): Board {
+  const columns: BoardColumn[] = [...workflow.statuses]
+    .sort((left, right) => left.sortOrder - right.sortOrder)
+    .map((status) => ({
+      statusKey: status.statusKey,
+      name: status.name,
+      category: status.category,
+      sortOrder: status.sortOrder,
+      issues: [],
+    }));
+  const byStatusKey = new Map(columns.map((column) => [column.statusKey, column]));
+
+  for (const issue of issues) {
+    // Before the lookup, and on the issue's own status key, because that is
+    // where the server does it: `includeDone` is a `status_key <> 'DONE'` in
+    // issue-service, applied to the rows the board is built from rather than to
+    // the columns it is built into.
+    if (!params.includeDone && issue.status === BOARD_EXCLUDED_STATUS_KEY) continue;
+    const column = byStatusKey.get(issue.status);
+    if (!column) {
+      throw new MockApiError(BOARD_INCONSISTENT_STATE_CODE, BOARD_INCONSISTENT_STATE_MESSAGE);
+    }
+    column.issues.push({
+      id: issue.id,
+      issueKey: issue.issueKey,
+      summary: issue.summary,
+      // `storyPoints: null` on every card, deliberately, even though this store
+      // has an estimate for most of these issues: `IssueBoardResponse` in
+      // grpc-common-lib/src/main/proto/v1/issue-service.proto has no
+      // `story_points` field, and the gateway's `IssueMapper.toRestBoardIssue`
+      // never calls `setStoryPoints`, so `BoardIssueDto.storyPoints` is
+      // declared in the contract and undeliverable — not merely unset on the
+      // issues that happen to exist. Copying the seed's 3, 0, 1.5, 8 and 13
+      // would let a mock-mode card draw an estimate badge that is blank in
+      // production, and 1.5 could not cross the wire at all, where the field is
+      // `int32`.
+      storyPoints: null,
+      // `displayName: null` on every assignee, deliberately, even though this
+      // store knows the name: `IssueBoardResponse` in
+      // grpc-common-lib/src/main/proto/v1/issue-service.proto carries
+      // `assignee_id` and no name field of any kind, and the gateway's
+      // `IssueMapper.toRestBoardIssue` builds `BoardUserDto` with `setId`
+      // alone — `setDisplayName` appears nowhere in the gateway. A mock that
+      // filled it in would let a card be built against a name the gateway
+      // cannot send, which is the one difference between these two
+      // implementations that a screen would notice only in production.
+      assignee: issue.assigneeId ? { id: issue.assigneeId, displayName: null } : null,
+      // Ids, not names — `labels` on the wire carries uuids. See `BoardIssue`.
+      labelIds: issue.labels.map((label) => label.id),
+    });
+  }
+
+  return { projectId, issueType: params.issueType, columns };
+}
 
 /** Substring, case-insensitive, over `issue_key` OR `summary` OR `description` — the probe's own OR. */
 const matchesSearchQuery = (issue: Issue, query: string | null) => {
@@ -1417,6 +1537,35 @@ export class MockTaskaStore {
       pageSize,
       totalCount: filtered.length,
     };
+  }
+
+  /**
+   * `GET /projects/{projectId}/board`, built out of this store's own workflow
+   * and issues rather than from a fixture, so it moves when the seed does and
+   * an e2e run cannot pass against a board the gateway would never answer.
+   *
+   * What this method owns is which issues the board is about: the project's
+   * live issues of the asked-for type, narrowed by the `assigneeId` and
+   * `labelId` filters the gateway applies server-side. `buildMockBoard` above
+   * owns the rest — the columns, the grouping, `includeDone`, and the
+   * inconsistent-workflow failure.
+   */
+  getBoard(projectId: string, params: BoardParams): Board {
+    this.getProject(projectId);
+    const issues = this.issues
+      .filter((item) => item.projectId === projectId && item.deletedAt === null)
+      .filter((item) => item.issueType === params.issueType)
+      .filter((item) => !params.assigneeId || item.assigneeId === params.assigneeId)
+      // On the attached ids, exactly like `listIssues`: a soft-deleted label
+      // matches nothing rather than the issues it used to be on.
+      .filter((item) => !params.labelId || this.labelsForIssue(item.id).some((label) => label.id === params.labelId))
+      // `IssueRepositoryImpl.buildBoardCriteriaQuery` ends
+      // `.sort(Sort.by(Sort.Direction.ASC, "status_key", "created_at"))`, so
+      // ascending `byCreatedAt` is the gateway's own order within a column,
+      // not a stand-in for one.
+      .sort(byCreatedAt)
+      .map((item) => this.issueView(item));
+    return buildMockBoard(projectId, this.workflow, issues, params);
   }
 
   /**
@@ -3583,6 +3732,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
     return wait(this.store.listIssues(projectId, params));
+  }
+
+  async getBoard(projectId: string, params: BoardParams): Promise<Board> {
+    return wait(this.store.getBoard(projectId, params));
   }
 
   async searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>> {

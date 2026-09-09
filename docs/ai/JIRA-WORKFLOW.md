@@ -40,10 +40,11 @@ states are not.
 | [TAS-186](https://jira.ozero.dev/browse/TAS-186) | Admin Users section: the accounts list over `auth.users`, block and unblock behind a confirmation with a required reason | Done | merged (PR #41) |
 | [TAS-187](https://jira.ozero.dev/browse/TAS-187) | Disable the `voltagent` plugin packs for this repository so their 60 generic agents stay out of every session's context | Done | merged (PR #42) |
 | [TAS-188](https://jira.ozero.dev/browse/TAS-188) | Bring the admin user-status writes to backend PR #146's contract — `changedAt`, `LOCKED`, and the new reset-lockout write | Done | merged (PR #43) |
-| [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | In Progress | API layer merged (PR #45); UI half open |
+| [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | In Progress | API layer merged (PR #45); UI half open. **Blocked on the backend as of 2026-09-09**: PR #148 force-pushed away its own `openapi.yml` half, so the gateway build is red and the contract this work was written against is not on the PR any more — see `API-DIVERGENCE.md` |
 | [TAS-190](https://jira.ozero.dev/browse/TAS-190) | Issue attachments over presigned S3 links (backend PR #147) | Done | merged (PR #48) |
 | [TAS-192](https://jira.ozero.dev/browse/TAS-192) | `.form-error` measures 3.17:1 in ten places; make the TAS-190 notice the product's error box | To Do | not started |
-| [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | In Progress | decided not to build a method yet, and why — `API-DIVERGENCE.md`, "The board route is declared, unimplemented, and narrower than the board it is named for" (PR #47) |
+| [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | In Progress | PR #47 decided not to build a method and said why; backend PRs #142 and #118 then merged and the route answers, so the method is built in all three implementations and the board screen still does not call it |
+| [TAS-201](https://jira.ozero.dev/browse/TAS-201) | `BoardIssueDto` drops `issueType`, `priority` and `statusKey` that `IssueBoardResponse` already carries | To Do | backend ask, filed from TAS-191 |
 | [TAS-196](https://jira.ozero.dev/browse/TAS-196) | The three admin writes are deployed; retire the undeployed-route compensation and refresh the contract snapshot | Done | merged (PR #50) |
 | [TAS-193](https://jira.ozero.dev/browse/TAS-193) | Issue watchers — the toggle, the count, the list **and** the two project-`ADMIN` routes the story had deferred | Done | merged (PR #56) |
 | [TAS-194](https://jira.ozero.dev/browse/TAS-194) | Retry an outbox event from Events, and retire the TAS-105 summary compensation with it | Done | merged (PR #54) |
@@ -65,7 +66,7 @@ the story has drifted and should be transitioned rather than the table edited.
 | [TAS-137](https://jira.ozero.dev/browse/TAS-137) | full `rest` mode | No project membership or member reads. `hybrid` mode plus `VITE_TASKA_ASSUME_PROJECT_ADMIN` compensates. **Re-probed 2026-09-08 and still true**: `GET /projects/{id}/members` answers `405` (only `POST` is mapped) and `GET /projects/{id}/membership` answers Spring's static-resource `404`. See `API-DIVERGENCE.md`. |
 | [TAS-139](https://jira.ozero.dev/browse/TAS-139) | nothing any more — measured fixed | Was: `GET /api/v1/issues/{issueId}` returns 500 once an issue has a comment; via the list hydration this made the whole board fail against live data. Probed 2026-09-08: three issues carrying 1, 1 and 4 comments each answered `200` with history, one of them carrying a label as well. The multiplier is gone too — TAS-195 removed the hydration. Backend story; its status is the backend owner's to move. |
 | [TAS-141](https://jira.ozero.dev/browse/TAS-141) | several UI affordances | Contract gaps: read-all, nullable assignee, comment ordering, CORS-exposed `X-Request-Id`, 404-on-empty-projects bug. |
-| [TAS-124](https://jira.ozero.dev/browse/TAS-124) | any client use of the board route | The route's gRPC method is declared and unimplemented, so a merged and deployed gateway answers `501 UNIMPLEMENTED`. The implementation is on backend PR #142, itself open and CONFLICTING, and PR #118 is CHANGES_REQUESTED besides. Nothing is built against the route until both land — see TAS-191. |
+| [TAS-124](https://jira.ozero.dev/browse/TAS-124) | nothing any more — measured live | Was: the route's gRPC method was declared and unimplemented, so a deployed gateway would answer `501 UNIMPLEMENTED`, and PR #118 was CHANGES_REQUESTED besides. Both landed — PR #142 on 2026-09-07, PR #118 on 2026-09-09. Probed 2026-09-09 with a signed-in token: `GET /projects/{id}/board?issueType=TASK` answers `200` with columns in workflow order, `includeDone` filters issues and not columns, `assigneeId` and `labelId` filter server-side, and `EPIC` is a correct `400`. `TaskaApi.getBoard` exists in all three implementations (TAS-191); the board screen still composes its own board, for the two reasons that outlived the merge. |
 | [TAS-124](https://jira.ozero.dev/browse/TAS-124) / [TAS-125](https://jira.ozero.dev/browse/TAS-125) | ~~removing the N+1 board hydration~~ — **nothing any more** | **Withdrawn (TAS-191).** The board API does not cover the list-DTO gap: `BoardIssueDto` has no description and no `createdAt` either, and gives status only as a column position, so the detail read stays. What may remove it is `ListIssuesResponseDto.items` becoming `IssueResponseDto`, which it already has on `develop` — that wanted one measurement against the deployed gateway rather than a contract reading — **taken 2026-09-08, and the hydration was removed by [TAS-195](https://jira.ozero.dev/browse/TAS-195)**. |
 | [TAS-145](https://jira.ozero.dev/browse/TAS-145) | [TAS-148](https://jira.ozero.dev/browse/TAS-148) | No `PATCH /projects/{id}`, no `description` column and no `color` column. Until it ships, editing a project is mock-only. Widened 2026-08-21 to carry a nullable `color`, which is what makes the project half of TAS-171's compensation removable; the avatar half has no such story and is not meant to. |
 | [TAS-129](https://jira.ozero.dev/browse/TAS-129) | nothing here, listed so the citation is checkable | Avatar upload through the gateway (presigned URL to MinIO), on top of TAS-128 which is Done. Referenced by `API-DIVERGENCE.md`'s colour entry only to say what the computed avatar colour is a fallback *under* — it does not gate TAS-171 or anything else in this repository. |
@@ -307,6 +308,50 @@ criteria is the one that most needs the record.
   findings on TAS-125, three of which its reviewers had not raised.
 - The story stays open with the blocking condition named, and
   `npm run contract:pins` goes loud when PR #118 moves or merges.
+
+**2026-09-09 — the condition cleared, the criterion was met, and the decline
+held where it was about the screen.** The pin did exactly what it was left to
+do: `npm run contract:pins` opened this run with `MERGED pr-118-TAS-125.yml` and
+a stale snapshot, before anything had been read.
+
+- Two of the four reasons are dead. Backend PR #142 (TAS-124) merged 2026-09-07
+  and implements `ListIssuesForBoard` end to end, and PR #118 merged 2026-09-09
+  with the access check added in `issue-service` rather than in the gateway.
+  Measured, not read: `GET …/board?issueType=TASK` answers `200` with three
+  ordered columns against the deployed gateway.
+- Two are alive, and both are about the **screen**, not the method:
+  `BoardIssueDto` still draws less than the card does — labels arrive as ids and
+  `displayName` came back `null` for every assigned row — and one issue in an
+  unknown status still 500s the whole board. So the method shipped in all three
+  implementations and `BoardScreen` did not move, which is the story as written.
+- The arithmetic is now recorded rather than asserted: `issueType` is required,
+  so the `ALL` filter needs three board calls, and the response carries no
+  transitions, so the three workflow reads stay — six requests against today's
+  four, for a card that draws less.
+- Found while doing it, and unrelated to the board: backend PR #148 (TAS-116)
+  force-pushed away its own `openapi.yml` half at 11:49Z, three hours after this
+  repository re-pinned it. Its api-gateway build is red because the gateway's
+  DTOs are generated from that spec. Recorded in `API-DIVERGENCE.md` and in the
+  extract's header, and raised on TAS-116.
+- **What the roles found, and the one lesson worth keeping.**
+  `api-contract-guard` blocked on three claims the mock was making about a server
+  it had not read: story points copied from the seed onto cards the gateway can
+  never fill, an `INTERNAL` code where the gateway sends `INTERNAL_SERVER_ERROR`,
+  and an `includeDone` rule keyed on the column's category where `issue-service`
+  keys it on the literal `status_key`. The last one is the lesson: **the probe
+  could not have settled it**, because on the project measured the category and
+  the status key are the same string. A single project cannot distinguish two
+  rules that agree on it, and the source can.
+- `release-reviewer` approved and then made the same correction in the other
+  direction: three sibling claims were still written as measurements —
+  `displayName`, the non-member's answer, and the order of cards within a column
+  — where the backend source settles all three. A record that says "not measured"
+  about something readable is an invitation to re-measure it, and the entries now
+  say which kind of evidence each claim rests on.
+- Not a finding, but the run's other cost: three tests in `AdminScreen.test.tsx`
+  had a race older than this branch, which this branch's added tests exposed by
+  making the suite longer. Fixed by awaiting the commit the assertions are about;
+  the pattern that produced them is in `BACKLOG.md`.
 
 ### TAS-193 — watchers, and the deferral that did not survive being checked
 

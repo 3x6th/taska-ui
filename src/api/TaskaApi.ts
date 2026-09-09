@@ -6,6 +6,7 @@ import type {
   AdminRowsQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  Board,
   DateOnly,
   Issue,
   IssueAttachment,
@@ -63,6 +64,32 @@ export interface ListIssuesParams {
   labelId?: string;
   page?: number;
   pageSize?: number;
+}
+
+/**
+ * Everything `GET /projects/{projectId}/board` takes, all AND-combined by the
+ * server.
+ *
+ * `issueType` is **required and has no default**, because the route requires it:
+ * a board is one issue type's board, and the gateway answers `400` when the
+ * parameter is missing. There is deliberately no `ALL` — the contract's enum is
+ * `TASK | BUG | STORY`, and `EPIC` and `SUBTASK` are both `400 INVALID_ARGUMENT`
+ * (measured 2026-09-09), so inventing a wider value here would only move a
+ * server refusal into a client that cannot honour it either.
+ *
+ * `assigneeId` and `labelId` filter server-side, and an id nobody holds is a
+ * `200` with every column empty rather than an error.
+ *
+ * `includeDone` filters **issues, not columns**: omitted or `false`, the DONE
+ * column still arrives with an empty `issues` array. `false` and `undefined`
+ * are the same request, which is why the implementations send the parameter
+ * only when it is `true`.
+ */
+export interface BoardParams {
+  issueType: IssueType;
+  assigneeId?: string;
+  labelId?: string;
+  includeDone?: boolean;
 }
 
 /**
@@ -434,6 +461,29 @@ export interface TaskaApi {
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow>;
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>>;
+  /**
+   * `GET /projects/{projectId}/board` — the server's own grouping of one issue
+   * type's issues into the project workflow's columns, ordered by the
+   * workflow's `sortOrder`.
+   *
+   * **The board screen does not call this yet**, and that is not an oversight:
+   * `BoardIssueDto` carries six fields, while a card in DESIGN.md §4.8 draws a
+   * priority indicator, a type chip and label chips with their names and
+   * colours — none of which this route sends. Until the DTO grows them, the
+   * screen keeps building its columns from `getWorkflow` and `listIssues`,
+   * which do carry them, and this method is the contract-shaped read that
+   * replaces those two the day it can (TAS-191).
+   *
+   * A workflow that does not list a status one of its own issues is sitting in
+   * is a 500 coded `INTERNAL_SERVER_ERROR` — the gateway's `BoardServiceImpl`
+   * throws "Inconsistent state: issues found with statuses not present in
+   * workflow" — and the mock reproduces it rather than dropping the card,
+   * because a silently missing issue is the one failure a board cannot show.
+   * When the offending status is the literal `DONE`, though, `includeDone` off
+   * excludes the issue in issue-service before the check ever sees it, and both
+   * implementations answer `200`.
+   */
+  getBoard(projectId: string, params: BoardParams): Promise<Board>;
   /**
    * `GET /issues/search` — substring, case-insensitive, over `issueKey` OR
    * `summary` OR `description`, with every other parameter ANDed onto it.
