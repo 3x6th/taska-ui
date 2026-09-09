@@ -375,8 +375,11 @@ matters more than the numbers: the real `HybridTaskaApi` over the real
   call sites sharing one cache key, the mock's missing paging validation, the
   `summaryByProject` memo, and the project card's hard-coded `1 members` — that
   last one alone is eighteen of the twenty-seven, which is why it is named here
-  rather than left inside "the projects screen". Seven `BACKLOG.md` lines, and
-  **two of the seven are struck through while five are annotated in place**: the
+  rather than left inside "the projects screen". Seven `BACKLOG.md` lines — the
+  links-section duplicate is not one of them, because it was **deleted** rather
+  than graduated, which this file's own rule at `BACKLOG.md:8` treats as a
+  different act. Of the seven,
+  **two are struck through and five are annotated in place**: the
   numbers in the bullet above are quoted from those five, and a struck line is a
   worse place to quote from than a live one. `release-reviewer` caught the first
   version of this sentence claiming all seven were struck, which the file's own
