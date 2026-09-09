@@ -2490,8 +2490,8 @@ re-sending resolved values can never trip the check by itself.
   generated from that spec by `openapi-generator-maven-plugin` (`api-gateway/pom.xml`,
   `inputSpec … static/openapi.yml`, `modelPackage ru.taska.domain.dto`), so a mapper
   calling `restDto.setStoryPoints(…)` on a schema that does not declare the field cannot
-  compile. `Build & Test — api-gateway` is failing on that head while all ten other
-  modules pass — **but not for that reason, and the correction matters.** The job
+  compile. `Build & Test — api-gateway` is failing on that head while the other nine
+  module jobs pass — **but not for that reason, and the correction matters.** The job
   has exactly two compile errors, both `cannot find symbol` in the PR's own
   `IssueMapper.java`: `CreateIssueRequest` (the proto class) and
   `CreateIssueRequestDto` (which *is* generated from develop's spec). Those are
@@ -2635,11 +2635,15 @@ gateway still checks nothing itself — `BoardServiceImpl` zips workflow and
 issues — but `IssueServiceImpl.listIssueBoard` opens with
 `projectRoleChecker.checkProjectRole(requestId, nodeId, projectId, actorUserId,
 listIssueRoles)`, the same call `listIssues` makes, and `workflow-service`
-carries its own `ProjectRoleChecker`. **What a non-member sees is not measured**:
-the only account available was a `GLOBAL_ADMIN`, for whom every project reads.
-`GET /projects/{projectId}` answers a clean `403 PERMISSION_DENIED` to a
-non-member, so the same shape is the expectation here — an expectation, not a
-reading, and the first thing to probe when a second account is at hand.
+carries its own `ProjectRoleChecker`. **What a non-member sees is read, not
+probed** — `release-reviewer` traced the chain that the first version of this
+paragraph called an expectation. `ProjectRoleChecker.validateAccess` raises
+`DomainStatus.PERMISSION_DENIED, "Access denied"` for a non-member and
+`NOT_FOUND, "Project not found"` for a project that does not exist;
+`RestErrorMapper` maps those to `403` and `404`. So the shape is the one
+`GET /projects/{projectId}` already gives, and `isMissingOrForbidden` covers it.
+The probe itself is still owed and needs a second account: the only token
+available was a `GLOBAL_ADMIN`'s, for whom every project reads.
 
 **Alive: it draws less than the board draws.** `BoardIssueDto` carries `id`,
 `issueKey`, `summary`, `storyPoints`, an assignee `{id, displayName}` and
@@ -2652,8 +2656,11 @@ as a column position. The runtime is narrower again than that list reads:
   name and the colour, so the label read stays either way. `TaskaApi` names the
   field `labelIds` for what it holds.
 - `assignee.displayName` came back `null` for **every** assigned issue, beside
-  an `id` that resolves to a named user elsewhere. An avatar or a name is
-  resolved against members the screen already holds, not read off this response.
+  an `id` that resolves to a named user elsewhere — and, like `storyPoints`, the
+  source says it always will: `IssueBoardResponse` carries `assignee_id` and no
+  name field of any kind, and `IssueMapper.toRestBoardIssue` builds `BoardUserDto`
+  with `setId` alone. An avatar or a name is resolved against members the screen
+  already holds, not read off this response.
 - `storyPoints` came back `null` on every issue, and the reason is structural
   rather than incidental. `IssueBoardResponse` in `issue-service.proto` has **no
   `story_points` field**, and `IssueMapper.toRestBoardIssue` never sets one: the
@@ -2669,6 +2676,13 @@ not present in workflow"` when any issue carries a `statusKey` the workflow does
 not list — one bad row blanks the whole board. Composing on the client, an
 unknown status simply places no card. That is strictly better, and the merged
 code is unchanged on this point.
+
+There is one exception, and it is worth stating because the mock reproduces it:
+a stray issue whose status key is the literal `DONE` never reaches that check
+while `includeDone` is off, because `issue-service` excludes it in SQL
+(`boardFilterConditions`) before the gateway builds columns. That one case
+answers `200` with an empty column. Every other unknown status, and every
+unknown status at all once `includeDone` is on, blanks the board.
 
 **And the arithmetic does not favour the route even when the fields arrive.**
 `issueType` is a **required** query parameter, so the board's own `ALL` filter

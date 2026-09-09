@@ -333,6 +333,25 @@ a stale snapshot, before anything had been read.
   repository re-pinned it. Its api-gateway build is red because the gateway's
   DTOs are generated from that spec. Recorded in `API-DIVERGENCE.md` and in the
   extract's header, and raised on TAS-116.
+- **What the roles found, and the one lesson worth keeping.**
+  `api-contract-guard` blocked on three claims the mock was making about a server
+  it had not read: story points copied from the seed onto cards the gateway can
+  never fill, an `INTERNAL` code where the gateway sends `INTERNAL_SERVER_ERROR`,
+  and an `includeDone` rule keyed on the column's category where `issue-service`
+  keys it on the literal `status_key`. The last one is the lesson: **the probe
+  could not have settled it**, because on the project measured the category and
+  the status key are the same string. A single project cannot distinguish two
+  rules that agree on it, and the source can.
+- `release-reviewer` approved and then made the same correction in the other
+  direction: three sibling claims were still written as measurements —
+  `displayName`, the non-member's answer, and the order of cards within a column
+  — where the backend source settles all three. A record that says "not measured"
+  about something readable is an invitation to re-measure it, and the entries now
+  say which kind of evidence each claim rests on.
+- Not a finding, but the run's other cost: three tests in `AdminScreen.test.tsx`
+  had a race older than this branch, which this branch's added tests exposed by
+  making the suite longer. Fixed by awaiting the commit the assertions are about;
+  the pattern that produced them is in `BACKLOG.md`.
 
 ### TAS-193 — watchers, and the deferral that did not survive being checked
 

@@ -356,12 +356,15 @@ export interface IssueSearchHit {
  * a name and nothing else, so typing this as a person would put an email, a
  * status and a colour in scope for a card that was never sent them.
  *
- * `displayName` is `string | null` because the deployed gateway answered
+ * `displayName` is `string | null`. The deployed gateway answered
  * `{"id":"275417fd-…","displayName":null}` for **every** assigned issue on
- * 2026-09-09 — a real assignee, with a real name in `GET /users/me`, and no
- * name here. So a caller that wants to print a person's name resolves the id
- * against the members it already holds; the name on this object is a bonus the
- * gateway has not yet been observed paying.
+ * 2026-09-09 — not by chance: `IssueBoardResponse` in the backend's
+ * `v1/issue-service.proto` carries `assignee_id` (field 6) and no name field
+ * of any kind, and `IssueMapper.toRestBoardIssue` builds `BoardUserDto` with
+ * `setId` alone — `setDisplayName` appears nowhere in the gateway. So it is
+ * null on every branch that exists today, exactly like `storyPoints` ten
+ * lines below: a caller that wants to print a person's name resolves the id
+ * against the members it already holds.
  */
 export interface BoardAssignee {
   id: string;

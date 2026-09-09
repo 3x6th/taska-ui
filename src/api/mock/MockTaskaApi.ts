@@ -346,8 +346,11 @@ const requirePlanningFields = (input: PlanningFieldsInput, stored: StoredPlannin
  * The code is `INTERNAL_SERVER_ERROR` and not `INTERNAL`: `BoardServiceImpl`
  * raises a `ResponseStatusException(INTERNAL_SERVER_ERROR, "Inconsistent
  * state: …")`, which is not a gRPC status, so `GatewayErrorHandler` takes its
- * middle branch and sets `code = httpStatus.name()`. Only its
- * unexpected-exception branch emits `INTERNAL`.
+ * middle branch and sets `code = httpStatus.name()`. `INTERNAL` is what its
+ * gRPC branch emits instead — `code = grpcStatus.getCode().name()`, so a
+ * downstream `Status.INTERNAL` also arrives as `{code: "INTERNAL"}` with a
+ * 500 — and what its unexpected-exception branch emits as a last resort;
+ * this failure takes neither.
  */
 const BOARD_INCONSISTENT_STATE_CODE = "INTERNAL_SERVER_ERROR";
 const BOARD_INCONSISTENT_STATE_MESSAGE = "Inconsistent state: issues found with statuses not present in workflow";
@@ -433,11 +436,14 @@ export function buildMockBoard(
       // `int32`.
       storyPoints: null,
       // `displayName: null` on every assignee, deliberately, even though this
-      // store knows the name: the deployed gateway answered `null` for every
-      // assigned issue measured on 2026-09-09. A mock that filled it in would
-      // let a card be built against a name the gateway never sends, which is
-      // the one difference between these two implementations that a screen
-      // would notice only in production.
+      // store knows the name: `IssueBoardResponse` in
+      // grpc-common-lib/src/main/proto/v1/issue-service.proto carries
+      // `assignee_id` and no name field of any kind, and the gateway's
+      // `IssueMapper.toRestBoardIssue` builds `BoardUserDto` with `setId`
+      // alone — `setDisplayName` appears nowhere in the gateway. A mock that
+      // filled it in would let a card be built against a name the gateway
+      // cannot send, which is the one difference between these two
+      // implementations that a screen would notice only in production.
       assignee: issue.assigneeId ? { id: issue.assigneeId, displayName: null } : null,
       // Ids, not names — `labels` on the wire carries uuids. See `BoardIssue`.
       labelIds: issue.labels.map((label) => label.id),
@@ -1553,9 +1559,10 @@ export class MockTaskaStore {
       // On the attached ids, exactly like `listIssues`: a soft-deleted label
       // matches nothing rather than the issues it used to be on.
       .filter((item) => !params.labelId || this.labelsForIssue(item.id).some((label) => label.id === params.labelId))
-      // The gateway's own order within a column is not measured, so the mock
-      // states the one its issue list already uses rather than inventing a
-      // second one for the same cards.
+      // `IssueRepositoryImpl.buildBoardCriteriaQuery` ends
+      // `.sort(Sort.by(Sort.Direction.ASC, "status_key", "created_at"))`, so
+      // ascending `byCreatedAt` is the gateway's own order within a column,
+      // not a stand-in for one.
       .sort(byCreatedAt)
       .map((item) => this.issueView(item));
     return buildMockBoard(projectId, this.workflow, issues, params);

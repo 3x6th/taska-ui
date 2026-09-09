@@ -1364,8 +1364,11 @@ describe("RestTaskaApi board", () => {
               // `0`, not `null`: an issue estimated at nought has been
               // estimated, and `||` anywhere near this field erases that.
               storyPoints: 0,
-              // A name, when the gateway does send one — the type is
-              // `string | null` and both halves have to survive the mapping.
+              // A name, if the gateway ever sends one — it has not, on any row
+              // measured (see the board doc above), so like `storyPoints: 0`
+              // above, this pins the mapping rather than an answer observed:
+              // the type is `string | null` and both halves have to survive
+              // it.
               assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: "Anna Ivanova" },
               labelIds: [],
             },
