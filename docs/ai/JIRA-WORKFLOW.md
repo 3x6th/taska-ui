@@ -47,6 +47,12 @@ states are not.
 | [TAS-201](https://jira.ozero.dev/browse/TAS-201) | `BoardIssueDto` drops `issueType`, `priority` and `statusKey` that `IssueBoardResponse` already carries | To Do | backend ask, filed from TAS-191 |
 | [TAS-202](https://jira.ozero.dev/browse/TAS-202) | Five measured places where a screen pays requests for what it already holds, or silently loses what did not fit one page | To Do | the request-shape debt, consolidated 2026-09-09 from six `BACKLOG.md` lines and one audit; not started |
 | [TAS-203](https://jira.ozero.dev/browse/TAS-203) | The project list carries no counts, so nine cards cost nine reads | To Do | backend ask, filed from TAS-202 |
+| [TAS-204](https://jira.ozero.dev/browse/TAS-204) | Nobody can be invited and nobody can be found by email | To Do | backend ask, MVP; trimmed 2026-09-09 — the user summary and batch read moved into TAS-137 |
+| [TAS-205](https://jira.ozero.dev/browse/TAS-205) | Reads do not answer a screen's question: `issueType` required, no transitions on the board, no issue lookup by key | To Do | backend ask |
+| [TAS-206](https://jira.ozero.dev/browse/TAS-206) | Dictionaries, versions and contract completeness | To Do | backend ask; narrowed 2026-09-09 — the `X-Request-Id` clause was wrong and is struck, the enum defence is TAS-173, the `version` half gates TAS-116 |
+| [TAS-207](https://jira.ozero.dev/browse/TAS-207) | Two project reads lie: `workflow` enforces no membership, an empty project list is a `404` | To Do | backend ask, MVP; re-filed because both clauses went into TAS-141's closure unfixed |
+| [TAS-208](https://jira.ozero.dev/browse/TAS-208) | The invitation path is broken three ways, and one of them reports activating somebody else's account as success | To Do | MVP, not started |
+| [TAS-209](https://jira.ozero.dev/browse/TAS-209) | Drop hybrid and default to `rest` — the act that closes the MVP | To Do | MVP, last in order, not started |
 | [TAS-196](https://jira.ozero.dev/browse/TAS-196) | The three admin writes are deployed; retire the undeployed-route compensation and refresh the contract snapshot | Done | merged (PR #50) |
 | [TAS-193](https://jira.ozero.dev/browse/TAS-193) | Issue watchers — the toggle, the count, the list **and** the two project-`ADMIN` routes the story had deferred | Done | merged (PR #56) |
 | [TAS-194](https://jira.ozero.dev/browse/TAS-194) | Retry an outbox event from Events, and retire the TAS-105 summary compensation with it | Done | merged (PR #54) |
@@ -354,6 +360,60 @@ a stale snapshot, before anything had been read.
   had a race older than this branch, which this branch's added tests exposed by
   making the suite longer. Fixed by awaiting the commit the assertions are about;
   the pattern that produced them is in `BACKLOG.md`.
+
+## The MVP cut
+
+Written 2026-09-09 at the owner's asking, after an audit of what each screen
+requests and a four-lens critique of the first draft. It is here rather than in
+a story because it decides what several stories are for.
+
+**The definition, and it is one checkable sentence:** the app runs in `rest`
+mode with `VITE_TASKA_ASSUME_PROJECT_ADMIN` off, **a second person can reach a
+project in the role they were given**, and no screen lies.
+
+The first draft stopped at "rest mode with the flag off". The critique broke it:
+`HybridTaskaApi` synthesises exactly the two methods that describe *somebody
+else's* membership, so removing the synthesis without a way to create a second
+membership removes the compensation and leaves nothing to check under it —
+`VIEWER` stays unreachable, and `DESIGN.md`'s own warning about that survives the
+deletion. A definition whose acceptance criterion sits in a story ranked below it
+is not a definition.
+
+**Core, and why each is in it.**
+
+| Key | What breaks without it | Evidence |
+| --- | --- | --- |
+| [TAS-137](https://jira.ozero.dev/browse/TAS-137) + the acceptance note added to it | the member read lands carrying ids, and the board draws a column of uuids instead of the occasional "Unknown" | measured |
+| [TAS-204](https://jira.ozero.dev/browse/TAS-204) | nobody can be invited, so the member form is a uuid field with nowhere to get a uuid | measured |
+| [TAS-158](https://jira.ozero.dev/browse/TAS-158) | there is no way to put a person in a project, so role gating stays undemonstrable | read |
+| [TAS-208](https://jira.ozero.dev/browse/TAS-208) | the flow every new person must walk fails three ways, one of them reporting success for the wrong account | read |
+| [TAS-207](https://jira.ozero.dev/browse/TAS-207) | a non-member sees another project's workflow; a missing route reads as "you have no projects" | measured |
+| [TAS-198](https://jira.ozero.dev/browse/TAS-198), then [TAS-197](https://jira.ozero.dev/browse/TAS-197) | admin "block" is decorative for anyone holding a token, and the admin screen says otherwise | read |
+| [TAS-173](https://jira.ozero.dev/browse/TAS-173) | one unknown enum value still removes a card from a column while leaving it in the count | read |
+| [TAS-202](https://jira.ozero.dev/browse/TAS-202), the request-shape half | the projects screen costs 30 requests and the counters describe one loaded page | measured |
+| [TAS-209](https://jira.ozero.dev/browse/TAS-209) | the compensation stays, and with it the flag that makes every permission check meaningless | read |
+
+**What left the first draft.** TAS-141 entirely, because it is `Done` and two of
+its clauses went into that closure unfixed — the live one is re-filed as TAS-207.
+The `X-Request-Id` ask, because it is measured working and the claim was ours,
+not the gateway's. TAS-184, because the click already fails safe. Read-all for
+notifications, because it saves clicks rather than removing a lie. The `version`
+half of TAS-206, because its window is three fields until TAS-116 merges, which
+makes it TAS-116's gate rather than the MVP's. The board's 100-issue ceiling,
+because the stand cannot reach it.
+
+**The order optimises for one thing: the earliest date a second account can walk
+the stand.** Probes first, and nothing is ordered for the backend until they are
+taken. Then the cheap backend fixes that are blocked by nothing, the frontend
+work that waits on no one, TAS-137 with its widened acceptance, TAS-204 after its
+DTO shape is visible, and last of all TAS-209 — a compensation comes out when
+everything it compensated for answers, not when a backend key closes.
+
+**The MVP is declared by a run, not by a build.** Two accounts on the stand: an
+admin issues an invitation, the second person activates through the link, gets
+`MEMBER`, sees the board and moves a card; the same person as `VIEWER` is refused
+a write; an outsider sees neither the project nor its workflow. Until that run
+passes, the MVP is not declared, however green `npm run check` is.
 
 ### TAS-202 — the request-shape debt, and what was deliberately left out of it
 
