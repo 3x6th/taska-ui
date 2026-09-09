@@ -719,7 +719,10 @@ Everything below is the entry as it stood, in the past tense.
   this harness file a contract-**design** problem directly, and this is a runtime
   defect against a contract that is already correct, so it is the owner's call.
   Surfaced to the owner in the working session that found it, on 2026-08-18,
-  rather than left here to be found later — no Jira key yet, by design.
+  rather than left here to be found later — filed 2026-09-09 as [TAS-207](https://jira.ozero.dev/browse/TAS-207), together
+  with the empty-projects clause that TAS-141 closed without fixing. It was left
+  unfiled by design until then, which is why TAS-207 is its first key rather than
+  a re-filing.
 
 ### `sortableColumns` and `filterableColumns` are always empty
 
