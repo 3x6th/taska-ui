@@ -378,6 +378,15 @@ Same rule as above: "Closed by" is settled, the rest is live.
   What today reads as a rare "Unknown" beside a real name would become the whole
   column. Worth knowing before anyone treats the nameless case as an edge worth
   little wording effort.
+
+  **The picker is the surface that fails first**, and it fails differently from
+  the rest: N identical "Unknown" options with only source order to tell them
+  apart, where a row at least sits beside a date and a control. The section
+  already owns the device for that state — `shortKey` (§5.8), which labels the
+  ✕ — so if this ever becomes the common case the answer is on hand rather than
+  to be invented. Recorded beside the prediction rather than in the backlog,
+  because it is a consequence of the contract's shape and not work anyone should
+  start today.
 - **Two further consequences** (found by `api-contract-guard`, 2026-08-03):
   `isMember: true` and `projectExists: true` are hardcoded, so a non-member or
   a deleted project reads as a healthy membership; and with the flag off, a

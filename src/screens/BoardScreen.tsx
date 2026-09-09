@@ -1919,7 +1919,7 @@ function IssueWatchersSection({
             // "You" also makes the "(you)" beside it a tautology, so the mark
             // goes: it exists to pick the reader out of a list of names, and
             // there is no name here to pick out of.
-            const { name } = watcherSubject(userById, watcher.userId, currentUserId);
+            const { name, named, reader } = watcherSubject(userById, watcher.userId, currentUserId);
             const pending = watcher.id === optimisticWatcherId;
             const removing = removeWatcher.isPending && removeWatcher.variables === watcher.userId;
             const key = watcherRowKey(watcher);
@@ -1936,8 +1936,17 @@ function IssueWatchersSection({
                     "Unassigned Unknown". The dashes and the empty glyph do not
                     move: both are gated on `user`, not on this, so §4.4's
                     nobody-circle is still drawn for a person this map cannot
-                    name. Only the word a reader hears changes, and it changes
-                    to the one already beside it. */}
+                    name.
+
+                    What moves is the circle's word, and not only for the reader
+                    who hears it: `Avatar` sets `title` from the same expression
+                    as `aria-label`, so the hover tooltip on an unnamed row now
+                    reads "You" or "Unknown" where it read "Unassigned". That is
+                    the same improvement rather than a second one — the circle
+                    stops contradicting the text beside it — and it asks for no
+                    screenshot either, because a tooltip needs a pointer held on
+                    the circle to exist at all, so a static capture of this row
+                    is unchanged. */}
                 <Avatar user={person} label={name} size="sm" />
                 <span className="watcher-name">
                   {name}
@@ -1945,6 +1954,15 @@ function IssueWatchersSection({
                 </span>
                 {isProjectAdmin ? (
                   <button
+                    // Three arms for `watcherSubject`'s three states, in its
+                    // order and on its own flags. This was the last of the
+                    // section's four wordings — row, picker option, notice,
+                    // this label — still deciding for itself which state it is
+                    // in, by re-reading the member map; the four agreed today
+                    // and it is the precedence, not the wording, that a second
+                    // copy gets wrong first. `person` above stays because
+                    // `Avatar` needs the *object* for its fill, not a name.
+                    //
                     // Two rows for two people this map cannot name would
                     // otherwise share one accessible name, so the id is what
                     // tells them apart — but the whole of it is thirty-six
@@ -1976,9 +1994,9 @@ function IssueWatchersSection({
                     // for TAS-162. A ruling about that case, then, not a
                     // screenshot of it; the unit suite is where it is held.
                     aria-label={
-                      person
-                        ? `Remove ${person.displayName} from watchers`
-                        : mine
+                      named
+                        ? `Remove ${name} from watchers`
+                        : reader
                           ? "Remove yourself from watchers"
                           : `Remove watcher ${shortKey(watcher.userId)}`
                     }
@@ -2041,19 +2059,30 @@ function IssueWatchersSection({
  * "You was not subscribed to this issue." The three ADMIN notices ask for it
  * and then say what the `…/watchers/me` pair already says about that same
  * state, rather than inflecting a template.
+ *
+ * `named` travels for the ✕'s label, the one surface that cannot use `name` at
+ * all — it says "Remove watcher {shortKey}" for a person nobody here can name,
+ * so it needs the *state* and not the word. It is asked for rather than
+ * re-derived from `userById` because that re-derivation was the last copy of
+ * this precedence living outside this function, and precedence is what a second
+ * copy gets wrong first: the two agree today, and would not have agreed through
+ * the change that taught the rows to name a reader the map cannot.
+ *
+ * `named`, not "has a name" — an empty `displayName` from the server is
+ * `named: true`, for the reason the lookup below gives.
  */
 function watcherSubject(
   userById: Map<string, Pick<User, "id" | "displayName" | "color">>,
   userId: string,
   currentUserId?: string,
-): { name: string; reader: boolean } {
+): { name: string; named: boolean; reader: boolean } {
   // Whether the map *has* them, never whether the name it holds is non-empty:
   // an empty `displayName` is the server's answer about that person, and this
   // section is not the place that overrides it.
   const person = userById.get(userId);
-  if (person) return { name: person.displayName, reader: false };
-  if (currentUserId && userId === currentUserId) return { name: "You", reader: true };
-  return { name: "Unknown", reader: false };
+  if (person) return { name: person.displayName, named: true, reader: false };
+  if (currentUserId && userId === currentUserId) return { name: "You", named: false, reader: true };
+  return { name: "Unknown", named: false, reader: false };
 }
 
 /**

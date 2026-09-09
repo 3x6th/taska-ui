@@ -125,6 +125,15 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   the contract note in `API-DIVERGENCE.md`, this state is the DTO's default
   rather than an edge, so whichever word wins will be the one most readers see
   if the member read ever ships as written.
+
+  **And the word is only half of it** (`art-director`, 2026-09-09). The same
+  surfaces announce "Unassigned" beside whatever word they print, because they
+  pass no `label` to `Avatar`: `AssigneeChip` computes as "Unassigned User" and
+  the None chip as "Unassigned None", while the reporter line and the comment
+  byline sit beside "Unknown" with the same silent dashed circle. That is the
+  defect TAS-193 closed in the watcher row, three more times over. One `label`
+  prop each. Fix the word and the announcement together, or the next pass mends
+  the visible half and leaves the audible one.
 - **The mock states a watcher count and imposes an order the contract does not
   promise** (`api-contract-guard`, 2026-09-09, TAS-193 verdict).
   `totalCount: watchers.length` means the mock always answers with a count, so
