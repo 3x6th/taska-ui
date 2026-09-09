@@ -4835,7 +4835,7 @@ button.attachment-open:hover:not(:disabled) {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 10px;
+  gap: 8px 9px;
   margin-bottom: 12px;
 }
 
@@ -4845,6 +4845,21 @@ button.attachment-open:hover:not(:disabled) {
    variety. `aria-pressed` carries the same fact to a screen reader, so the tint
    is never the only signal (§7) — the label changes too.
 
+   **The whole recipe, the label included.** The chip states `--fg` on its own
+   text node (see `.assignee-chip span:last-child`, and §1's hard rule that a
+   text node never takes its colour by accident); this rule used to say
+   `--accent` there instead, which was a deviation the comment claimed it was
+   not — and the deviation is what failed §7. Measured by §7's own method, over
+   the tint as composited rather than over the panel beneath it: `--accent` on
+   this label was **4.17:1 dark at rest and 3.74:1 on hover** (light was fine at
+   5.26 / 4.63), so the dark theme sat under the 4.5 floor at rest and further
+   under it exactly when the pointer was on the control. `--fg` measures 14.95:1
+   light / 13.78:1 dark at rest and 13.15 / 12.37 on hover, on grounds of
+   rgb(234,233,252) and rgb(31,32,50). It also stops this being the third
+   accent-marked control in one panel view and the only one where the accent is
+   the type colour: the border, the tint, the icon swap and the word carry the
+   state without it.
+
    Placed after `.compact-button:hover` on purpose. That rule is (0,2,0) like
    this one, so source order is what decides, and a watched issue whose button
    turned plain on hover would be reporting a state change that is not
@@ -4852,16 +4867,17 @@ button.attachment-open:hover:not(:disabled) {
 .watch-toggle.is-watching {
   border-color: var(--accent);
   background: color-mix(in oklab, var(--accent) 12%, transparent);
-  color: var(--accent);
+  color: var(--fg);
 }
 
 /* Hover still has to say something. Without this, the two rules above leave a
    pressed toggle inert under the cursor — `.secondary-button:hover` is earlier
    in the file and loses. A deeper tint rather than a colour change, because the
-   colour is the state. */
+   tint is the state — and the label holds at `--fg` through the hover for the
+   reason above. */
 .watch-toggle.is-watching:hover {
   background: color-mix(in oklab, var(--accent) 20%, transparent);
-  color: var(--accent);
+  color: var(--fg);
 }
 
 /* The in-flight window, and it is `aria-disabled` rather than `disabled` so the
@@ -4869,9 +4885,31 @@ button.attachment-open:hover:not(:disabled) {
    `button:disabled` recipe fades a control to 0.58, and flashing that for the
    ~200ms a toggle takes would be a flicker on every press. The label has
    already flipped — that is the feedback — so the cursor is all this needs to
-   add. */
-.watch-toggle[aria-disabled="true"] {
+   add.
+
+   The same window, and the same treatment, on the row's remove control while
+   that row's own `DELETE` is out. §4.21's rule is about a control disabled
+   *during a write*, which is what both of these are — a row that can never be
+   removed (a response that omitted `userId`) keeps a real `disabled`, because
+   nothing about it is in flight and the 0.58 fade is the honest thing to draw
+   for a control that will never come back. */
+.watch-toggle[aria-disabled="true"],
+.watcher-row .icon-button[aria-disabled="true"] {
   cursor: progress;
+}
+
+/* "Add" is the third control that stopped using `disabled` (§4.21: Enter on a
+   button that disables itself drops focus to `<body>`), and the only one that
+   needs the fade back. Its `aria-disabled` is almost always the steady "nothing
+   is chosen yet" state rather than a 200ms window — the submit handler clears
+   the picker as it dispatches, so the write happens with the button already in
+   that state — and a steady unavailable control that looks available is the §4.1
+   gap `art-director` recorded against §4.20. This is `button:disabled`'s own
+   recipe, restored by hand for a button that may no longer carry the
+   attribute. */
+.watcher-form .secondary-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .watch-toggle:focus-visible,
@@ -4924,10 +4962,13 @@ button.attachment-open:hover:not(:disabled) {
   font-weight: 400;
 }
 
-/* The optimistic row, until the server's answer replaces it. No pulse and no
-   spinner (§5.6); the row is already legible and only its remove control is
-   held back. Never `opacity: 0` — §3 forbids a starting frame that hides
-   content, and this element is on screen the whole time. */
+/* A row with a write of its own out: an add the server has not confirmed, and —
+   since the removal stopped emptying the list before the answer — a row waiting
+   for its own `DELETE`. One treatment for both, because both mean the same
+   thing to a reader: this line is not settled yet. No pulse and no spinner
+   (§5.6); the row is already legible and only its remove control is held back.
+   Never `opacity: 0` — §3 forbids a starting frame that hides content, and this
+   element is on screen the whole time. */
 .watcher-row.is-pending .watcher-name {
   color: var(--fg-2);
 }

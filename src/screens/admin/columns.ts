@@ -211,12 +211,16 @@ const KEY_SHOWN = 8;
  * A row key shortened to what a person is shown of it: DESIGN.md §5.8's rule,
  * "longer than 12 characters is cut to the first 8".
  *
- * Here rather than in the table that draws it, because two places now speak
+ * Here rather than in the table that draws it, because three places now speak
  * this abbreviation and a second copy of the numbers would be a second rule.
  * The Data section's primary key cell is the one §5.8 is written about; the
  * Events section's retry confirmation names the event it just moved with the
  * same eight characters, so what an operator hears matches what the journal
- * shows them for the same row.
+ * shows them for the same row; and the watchers section of the issue panel
+ * (TAS-193) names a row the member list cannot put a name to, where the whole
+ * id was thirty-six characters read out one at a time. The third caller is
+ * outside `/admin`, which is the point at which this stopped being §5.8's
+ * private rule and became the app's.
  *
  * **The ellipsis is not part of it.** `…` is the visible mark that says a value
  * was cut, and it is chrome in the same way the `FAILED → NEW` arrow in the

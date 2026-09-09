@@ -244,8 +244,16 @@ export class HybridTaskaApi implements TaskaApi {
 
   /**
    * All five delegated whole. Nothing here is synthesisable: a subscription is
-   * server state, and the five routes are on the deployed gateway (TAS-193,
-   * backend PR #144), so there is no gap for this class to stand in.
+   * server state, and the five routes are **measured** on the deployed gateway
+   * rather than inferred from the backend PR that added them — which is the
+   * standard this file is held to, since its whole job is saying what is real
+   * and what is stood in for. Probed on 2026-09-09 with an invalid uuid and no
+   * credentials: `GET …/watchers`, both `…/watchers/me` verbs and
+   * `DELETE …/watchers/{userId}` answer `400 INVALID_ARGUMENT` (the path
+   * matched and the argument was rejected), `POST …/watchers` answers
+   * `415 UNSUPPORTED_MEDIA_TYPE` (matched, and reached body parsing), and a
+   * `…/watchers-nope` control answers the static-resource `404` an unmapped
+   * path gets here. So there is no gap for this class to stand in.
    *
    * The compensation it *does* carry reaches this family sideways and it is
    * worth naming, because it is the thing a reader will wonder about. A watcher

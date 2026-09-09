@@ -1371,12 +1371,19 @@ describe("RestTaskaApi labels", () => {
 });
 
 /**
- * The five watcher routes (TAS-193). Live on the deployed gateway since backend
- * PR #144, and one of them has been measured: `GET …/watchers` on issue `API-2`
- * answered `200 {"totalCount":1,"watchers":[{…}]}` with a `GLOBAL_ADMIN` token
- * on 2026-09-08. The other four are read out of the contract, so what these pin
- * is the request this client sends and the facts it reads back — not proof that
- * the gateway answers them.
+ * The five watcher routes (TAS-193). All five are on the deployed gateway, and
+ * that is measured rather than read off backend PR #144: `GET …/watchers` on
+ * issue `API-2` answered `200 {"totalCount":1,"watchers":[{…}]}` with a
+ * `GLOBAL_ADMIN` token on 2026-09-08, and on 2026-09-09 each of the five was
+ * probed with an invalid uuid and no credentials — `GET`, both `…/watchers/me`
+ * verbs and `DELETE …/watchers/{userId}` answer `400 INVALID_ARGUMENT`, `POST
+ * …/watchers` answers `415 UNSUPPORTED_MEDIA_TYPE` after matching the route,
+ * and a `…/watchers-nope` control answers the static-resource `404`.
+ *
+ * What that establishes is that the paths exist. The four write *answers* are
+ * still read out of the contract, so what these cases pin is the request this
+ * client sends and the facts it reads back — not proof that the gateway sends
+ * those bodies.
  */
 describe("RestTaskaApi watchers", () => {
   const answer = (status: number, body: unknown) =>

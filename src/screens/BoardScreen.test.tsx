@@ -58,6 +58,9 @@ const {
   failWatchersRead,
   holdWatchersRead,
   failWatcherWrite,
+  holdWatcherWrites,
+  releaseWatcherWrites,
+  watcherCalls,
   setUnwatchAnswer,
   watchedUserIds,
   reset,
@@ -171,6 +174,15 @@ const {
     watchersHeld: boolean;
     /** A refused ADMIN add or remove. The `me` pair is left alone: its refusals are not what the gating is about. */
     watcherWriteFailure?: Error;
+    /**
+     * The four writes held open, and every dispatch counted. Both exist for the
+     * same class of defect: the guards in this section live entirely in the
+     * window between the press and the answer, and against a fake that resolves
+     * on the next tick that window is not something a test can stand in.
+     */
+    watcherWritesHeld: boolean;
+    watcherWriteReleases: (() => void)[];
+    watcherCalls: { watch: number; unwatch: number; add: string[]; remove: string[] };
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -202,6 +214,15 @@ const {
     watchersCountAfterWrite: null,
     unwatchRemoved: true,
     watchersHeld: false,
+    watcherWritesHeld: false,
+    watcherWriteReleases: [],
+    watcherCalls: { watch: 0, unwatch: 0, add: [], remove: [] },
+  };
+
+  /** The held half of a watcher write: counted on the way in, answered when the test says so. */
+  const watcherWriteWindow = async () => {
+    if (!state.watcherWritesHeld) return;
+    await new Promise<void>((resolve) => state.watcherWriteReleases.push(resolve));
   };
 
   const api = {
@@ -377,6 +398,8 @@ const {
       return { watchers: state.watchers, totalCount: state.watchersTotal };
     },
     watchIssue: async () => {
+      state.watcherCalls.watch += 1;
+      await watcherWriteWindow();
       const watcher = {
         id: `watcher-${state.watchers.length + 1}`,
         issueId: "issue-1",
@@ -389,10 +412,14 @@ const {
       return { watcher, watchersCount: state.watchersCountAfterWrite };
     },
     unwatchIssue: async () => {
+      state.watcherCalls.unwatch += 1;
+      await watcherWriteWindow();
       state.watchers = state.watchers.filter((watcher) => watcher.userId !== "user-anna");
       return { issueId: "issue-1", removed: state.unwatchRemoved, watchersCount: state.watchersCountAfterWrite };
     },
     addIssueWatcher: async (_projectId: string, _issueId: string, userId: string) => {
+      state.watcherCalls.add.push(userId);
+      await watcherWriteWindow();
       // Refused *before* the row is touched: a server that says no has added
       // nothing, which is what makes the disappearing row correct.
       if (state.watcherWriteFailure) throw state.watcherWriteFailure;
@@ -408,6 +435,8 @@ const {
       return { watcher, watchersCount: state.watchersCountAfterWrite };
     },
     removeIssueWatcher: async (_projectId: string, _issueId: string, userId: string) => {
+      state.watcherCalls.remove.push(userId);
+      await watcherWriteWindow();
       if (state.watcherWriteFailure) throw state.watcherWriteFailure;
       state.watchers = state.watchers.filter((watcher) => watcher.userId !== userId);
       return { issueId: "issue-1", removed: state.unwatchRemoved, watchersCount: state.watchersCountAfterWrite };
@@ -550,6 +579,23 @@ const {
     failWatcherWrite: (error: Error) => {
       state.watcherWriteFailure = error;
     },
+    /** Every watcher write held open from here on. */
+    holdWatcherWrites: (held: boolean) => {
+      state.watcherWritesHeld = held;
+    },
+    /** Answers everything held, in the order it was asked. */
+    releaseWatcherWrites: () => {
+      const waiting = state.watcherWriteReleases;
+      state.watcherWriteReleases = [];
+      waiting.forEach((resolve) => resolve());
+    },
+    /** Dispatches, not results: what the component asked the server to do. */
+    watcherCalls: () => ({
+      watch: state.watcherCalls.watch,
+      unwatch: state.watcherCalls.unwatch,
+      add: [...state.watcherCalls.add],
+      remove: [...state.watcherCalls.remove],
+    }),
     /** What both delete routes report in `removed`. */
     setUnwatchAnswer: (removed: boolean) => {
       state.unwatchRemoved = removed;
@@ -622,6 +668,9 @@ const {
       state.watchersFailure = undefined;
       state.watchersHeld = false;
       state.watcherWriteFailure = undefined;
+      state.watcherWritesHeld = false;
+      state.watcherWriteReleases = [];
+      state.watcherCalls = { watch: 0, unwatch: 0, add: [], remove: [] };
     },
   };
 });
@@ -2074,5 +2123,168 @@ describe("issue watchers", () => {
     // "Watch" and "Watching" are each a claim about the reader's own state, and
     // neither is supported by a read that failed.
     expect(panel.queryByRole("button", { name: /^Watch/ })).toBeNull();
+  });
+
+  /**
+   * The four cases below are about the window between a press and its answer.
+   * Everything in this section that is deliberate about that window — the row
+   * that keeps its place, the guard on the toggle, the optimistic row that must
+   * not appear twice — was, until these, held by nothing: each could be deleted
+   * and the suite stayed green (release-reviewer F1–F5, TAS-193).
+   */
+  it("keeps a row in place while its own removal is in flight, so a double press cannot take the next one", async () => {
+    seedMembers([member(SOFIA, "Sofia Reyes"), member("user-tom", "Tom Becker")]);
+    seedWatchers([watcher(SOFIA), watcher("user-tom"), watcher(ANNA)], 3, 2);
+    holdWatcherWrites(true);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const sofia = await panel.findByRole("button", { name: "Remove Sofia Reyes from watchers" });
+    fireEvent.click(sofia);
+
+    // The row is still on screen, and this is the whole fix: filtering it out
+    // here reflowed the list inside a frame and put Tom's ✕ under the cursor in
+    // time for the second click of an ordinary double-click.
+    await waitFor(() => expect(sofia).toHaveAttribute("aria-disabled", "true"));
+    expect(sofia).toBeVisible();
+    expect(sofia.closest("li")).toHaveClass("watcher-row", "is-pending");
+
+    // The second click, on the button that is still where it was. Inert, and
+    // inert by the handler rather than by `disabled` — the attribute states it,
+    // the guard enforces it.
+    fireEvent.click(sofia);
+    expect(sofia).not.toBeDisabled();
+
+    releaseWatcherWrites();
+    await waitFor(() => expect(panel.queryByRole("button", { name: /^Remove Sofia/ })).toBeNull());
+    expect(watcherCalls().remove).toEqual([SOFIA]);
+    expect(watchedUserIds()).toEqual(["user-tom", ANNA]);
+    // And nothing was said about a person nobody pressed anything about.
+    expect(panel.queryByText(/Tom Becker/)).toBeVisible();
+  });
+
+  it("hands focus to the next row when the one holding it is removed", async () => {
+    seedMembers([member(SOFIA, "Sofia Reyes"), member("user-tom", "Tom Becker")]);
+    seedWatchers([watcher(SOFIA), watcher("user-tom")], 2, 1);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const sofia = await panel.findByRole("button", { name: "Remove Sofia Reyes from watchers" });
+    // Focused first, because the handoff is armed only when focus is resting on
+    // the control that is about to unmount — a settling write is no licence to
+    // move focus across the panel.
+    sofia.focus();
+    fireEvent.click(sofia);
+
+    await waitFor(() => expect(panel.queryByRole("button", { name: /^Remove Sofia/ })).toBeNull());
+    // Not `<body>`, which is where it lands with no handoff: an ADMIN pruning
+    // five rows would tab in from the top of the document five times.
+    expect(document.activeElement).toBe(panel.getByRole("button", { name: "Remove Tom Becker from watchers" }));
+  });
+
+  it("hands focus to the heading when the row that had it was the last one", async () => {
+    seedMembers([member(SOFIA, "Sofia Reyes")]);
+    seedWatchers([watcher(SOFIA)], 1, 0);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const sofia = await panel.findByRole("button", { name: "Remove Sofia Reyes from watchers" });
+    sofia.focus();
+    fireEvent.click(sofia);
+
+    await waitFor(() => expect(panel.getByText(/No one is watching this issue yet/)).toBeVisible());
+    // The heading rather than the toggle beside it: the toggle answers Enter
+    // with a subscription, and the reader who has just pressed ✕ is the reader
+    // who would press it again.
+    expect(document.activeElement).toBe(panel.getByRole("heading", { name: /Watchers/ }));
+  });
+
+  it("refuses a second toggle press while the first write is still out", async () => {
+    seedWatchers([], 0, 1);
+    holdWatcherWrites(true);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const toggle = await panel.findByRole("button", { name: "Watch" });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-disabled", "true"));
+
+    // `aria-disabled` states the window; it does not enforce it, and that is the
+    // point of it (a real `disabled` would take the focus with it). So the
+    // second press reaches the handler, where `if (toggling) return;` is the
+    // only thing standing between a `PUT` and a `DELETE` racing to decide the
+    // subscription — the label has already flipped to "Watching", so without the
+    // guard this press unsubscribes what the first one has not finished
+    // subscribing.
+    fireEvent.click(toggle);
+    releaseWatcherWrites();
+
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(watcherCalls()).toMatchObject({ watch: 1, unwatch: 0 });
+  });
+
+  it("draws no pill for a count nobody has stated, and no write invents the first one", async () => {
+    // `null` is a `200` that omitted `totalCount`, which this contract permits,
+    // and it is not `0`: one is "the server says nobody", the other is "the
+    // server did not say". The mock never sends it, so no e2e can reach this.
+    seedWatchers([watcher(SOFIA)], null);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const toggle = await panel.findByRole("button", { name: "Watch" });
+    expect(document.querySelector(".issue-watchers .count-pill")).toBeNull();
+
+    // Held from here, so the pill below cannot have come from a refetch.
+    holdWatchersRead(true);
+    fireEvent.click(toggle);
+
+    await panel.findByRole("button", { name: "Watching" });
+    // The optimistic add counts from a number nobody has stated, which is not a
+    // thing that can be counted from: `(totalCount ?? 0) + 1` would put a 1 here.
+    expect(document.querySelector(".issue-watchers .count-pill")).toBeNull();
+  });
+
+
+  it("puts one row on screen when two presses land in one task", async () => {
+    seedMembers([member(ANNA, "Anna Ivanova")]);
+    seedWatchers([], 0, 1);
+    holdWatcherWrites(true);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const toggle = await panel.findByRole("button", { name: "Watch" });
+    // Nothing awaited between the two: this is the *same task*, which is the one
+    // place the toggle's own `if (toggling) return;` cannot help — react-query
+    // publishes `isPending` in a microtask, so both presses read it as `false`
+    // and both dispatch. Measured: `watchIssue` is called twice. That much is
+    // harmless (`PUT …/watchers/me` has no "was it new" flag and a second call
+    // is indistinguishable from the first), and the dangerous pairing — a `PUT`
+    // and a `DELETE` racing — cannot happen here, because the second press only
+    // becomes an unwatch once the label has flipped, which takes the render that
+    // publishes the flag.
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    releaseWatcherWrites();
+
+    await waitFor(() => expect(toggle).not.toHaveAttribute("aria-disabled"));
+    expect(watcherCalls().watch).toBe(2);
+    // What must not double is the *list*. Both dispatches run `addOptimistically`
+    // for the same person, and without its membership guard that is two rows
+    // sharing one React key — "Encountered two children with the same key" —
+    // and a count that has counted one subscription twice.
+    expect(document.querySelectorAll(".issue-watchers .watcher-row")).toHaveLength(1);
+    expect(panel.getAllByText(/Anna Ivanova/)).toHaveLength(1);
+  });
+
+  it("names a row it cannot put a name to by a short id rather than a whole uuid", async () => {
+    const unnamed = "fdf35fa6-e68b-4dbe-8a48-5867d7f08ce9";
+    seedWatchers([watcher(unnamed)], 1);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    // Two unnamed rows still differ, and a reader is not read thirty-six
+    // characters one at a time to hear it (§5.8's own abbreviation).
+    expect(await panel.findByRole("button", { name: "Remove watcher fdf35fa6" })).toBeVisible();
+    expect(panel.queryByRole("button", { name: `Remove watcher ${unnamed}` })).toBeNull();
   });
 });

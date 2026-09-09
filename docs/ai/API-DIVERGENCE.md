@@ -351,6 +351,22 @@ Same rule as above: "Closed by" is settled, the rest is live.
   stopped deciding whether the user may write.
 - **User-visible effect:** a project appears to have exactly one member; the
   assignee filter and chips can only ever offer the current user.
+- **A third consumer, and the first that turns the synthesis into an assertion**
+  (`api-contract-guard`, 2026-09-09, TAS-193). The watcher picker draws from the
+  same list, which is the right reuse — but where the assignee chips merely
+  *offer fewer people*, the watcher section wanted to say "everyone on this
+  project is already watching" when the picker came back empty. Under the
+  synthesis that sentence is **false on the stand**, for the reader most likely
+  to act on it: the list succeeds with one element, so the §5.6 boundary — only
+  a successful read may claim there is nobody — cannot tell it from a real
+  answer. The boundary holds against a failed read and not against a
+  synthesised one, and no UI can close that, because the two are the same
+  response.
+
+  TAS-193 answered by narrowing the claim to what the client can see rather
+  than to the project. Worth carrying here because the lesson generalises past
+  watchers: **a synthesised read is safe to draw from and unsafe to conclude
+  from.** Anything built on this list may offer, and may not assert.
 - **Two further consequences** (found by `api-contract-guard`, 2026-08-03):
   `isMember: true` and `projectExists: true` are hardcoded, so a non-member or
   a deleted project reads as a healthy membership; and with the flag off, a
@@ -536,12 +552,23 @@ Everything below is the entry as it stood, in the past tense.
 
 - **Contract:** `RestErrorResponse` is `{code, message}`; the request id is
   the `X-Request-Id` **header** on every response.
-- **Observed/unverified:** cross-origin the header is readable only if the
-  gateway sends `Access-Control-Expose-Headers: X-Request-Id` — not confirmed.
-  No UI surface displays it either way (`DESIGN.md` §5.6 records the missing
-  toast), so no support conversation can be correlated to a gateway log line.
-- **Removal:** [TAS-141](https://jira.ozero.dev/browse/TAS-141) for the CORS
-  expose header; the toast is the UI half.
+- **Confirmed 2026-09-09, and the answer is the opposite of what this entry
+  assumed.** It said the header was readable cross-origin "only if" the gateway
+  exposes it, and called that unconfirmed. It does. With
+  `Origin: https://taska.ozero.dev`, a simple request and a `PUT` preflight both
+  return `access-control-expose-headers: X-Request-Id` alongside a real
+  `x-request-id`. So `response.headers.get("X-Request-Id")` works from the
+  deployed origin and `ApiError.requestId` is populated in a browser today
+  (`api-contract-guard`, TAS-193 verdict).
+- **What that changes.** The id was never the thing missing — the surfaces that
+  drop it were. `ApiNotice` and `AdminError` render it; several panel sections
+  print `error.message` alone and discard it, which was a cheap omission while
+  the value was thought unavailable and is a real one now. That is the backlog
+  line about the panel's failure surfaces, and it wants re-reading in this
+  light rather than staying filed as cosmetic.
+- **Removal:** the CORS half of [TAS-141](https://jira.ozero.dev/browse/TAS-141)
+  is **done** — narrow that story to whatever else it still carries. The UI half
+  is ours and is what the backlog line names.
 
 ### The create-project form shows a field the contract does not have
 

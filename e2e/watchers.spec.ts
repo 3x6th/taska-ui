@@ -4,8 +4,12 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // VITE_TASKA_API_MODE=mock): any seeded user signs in with any password.
 //
 // **Nothing below is evidence about the gateway.** The five watcher routes are
-// deployed — `GET …/watchers` was measured answering `200 {totalCount,
-// watchers[]}` on 2026-09-08 — but every answer this file reacts to comes from
+// deployed, and that is measured rather than taken from the backend PR: `GET
+// …/watchers` answered `200 {totalCount, watchers[]}` on 2026-09-08, and on
+// 2026-09-09 all five were probed with an invalid uuid and no credentials —
+// four answer `400 INVALID_ARGUMENT`, `POST …/watchers` answers `415
+// UNSUPPORTED_MEDIA_TYPE`, and a `…/watchers-nope` control answers the
+// static-resource `404`. But every answer *this file* reacts to comes from
 // `MockTaskaStore`, including the two the product depends on most: `removed`
 // on an unwatch that deletes nothing, and the `PERMISSION_DENIED` on the two
 // project-ADMIN routes. Read these as pinning what the UI does with such a
@@ -116,6 +120,63 @@ test("unwatches, and says so when there was nothing to remove", async ({ page })
   // row already carries.
   await watchers.getByRole("button", { name: /^Remove / }).first().click();
   await expect(watchers.locator(".count-pill")).toHaveText("1");
+});
+
+test("takes one watcher on a double-click of one row's remove, not two", async ({ page }) => {
+  await signIn(page);
+  const watchers = await openIssuePanel(page, "TAS-101");
+  await expect(watchers.locator(".watcher-row")).toHaveCount(3);
+
+  const first = watchers.getByRole("button", { name: /^Remove / }).first();
+  const second = (await watchers.getByRole("button", { name: /^Remove / }).nth(1).getAttribute("aria-label"))!;
+
+  // Raw mouse presses at one fixed point rather than `locator.click()` twice,
+  // because the defect is about hit-testing: a hand does not re-find the
+  // button between the two presses of a double-click, it presses the same
+  // *place* again. The row used to be filtered out of the list on the first
+  // press, the list reflowed inside a frame, and the second press landed on the
+  // next row's ✕ — two `DELETE`s for two people out of one gesture, with no
+  // confirmation, no undo and nothing on screen naming the second person.
+  const box = (await first.boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.up();
+
+  // The in-flight row, which is what the fix is: it holds its place, so the
+  // second press below is still over the same control. Waiting for the state
+  // rather than for a duration is also what puts the press inside the mock's
+  // 140ms answer instead of racing it.
+  await expect(watchers.locator(".watcher-row.is-pending")).toHaveCount(1);
+  await page.mouse.down();
+  await page.mouse.up();
+
+  await expect(watchers.locator(".watcher-row")).toHaveCount(2);
+  // Nothing else happens after the write settles: a second `DELETE` would have
+  // answered inside this wait, and the mock's own list is what the reopened
+  // panel would read.
+  await page.waitForTimeout(400);
+  await expect(watchers.locator(".watcher-row")).toHaveCount(2);
+  await expect(watchers.getByRole("button", { name: second })).toBeVisible();
+  await expect(watchers.locator(".count-pill")).toHaveText("2");
+});
+
+test("removes a row from the keyboard and hands focus to the next one", async ({ page }) => {
+  await signIn(page);
+  const watchers = await openIssuePanel(page, "TAS-101");
+
+  const first = watchers.getByRole("button", { name: /^Remove / }).first();
+  const next = (await watchers.getByRole("button", { name: /^Remove / }).nth(1).getAttribute("aria-label"))!;
+  await first.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(watchers.locator(".watcher-row")).toHaveCount(2);
+  // §4.21's `aria-disabled` rule applies to this control too — a real
+  // `disabled` while the `DELETE` is out drops focus to `<body>` in Chromium
+  // the moment the attribute lands — and the row that leaves hands focus on
+  // rather than taking it with it.
+  await expect(watchers.getByRole("button", { name: next })).toBeFocused();
 });
 
 test("offers an admin a picker of members who are not watching yet", async ({ page }) => {

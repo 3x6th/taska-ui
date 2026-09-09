@@ -547,8 +547,12 @@ export interface TaskaApi {
    * token: `GET …/watchers` answers `200` with `{"totalCount":1,"watchers":[…]}`.
    * **The array key is `watchers`, not `items`** — every other list DTO in this
    * contract says `items`, so the mapper is the one place that knows, and it is
-   * measured rather than inferred. The four write routes were not probed; the
-   * mapping below follows the contract for those.
+   * measured rather than inferred. The other four were probed on 2026-09-09
+   * for *existence* only — an invalid uuid and no credentials draws `400
+   * INVALID_ARGUMENT` from three of them and `415 UNSUPPORTED_MEDIA_TYPE` from
+   * `POST …/watchers`, against the static-resource `404` an unmapped path gets
+   * — so their answers are still read out of the contract and the mapping below
+   * follows it for those.
    */
   listIssueWatchers(projectId: string, issueId: string): Promise<IssueWatchers>;
   /**

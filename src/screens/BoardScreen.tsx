@@ -12,7 +12,7 @@ import {
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput } from "../api/TaskaApi";
 import { SEARCH_QUERY_MIN_LENGTH, UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
@@ -72,6 +72,7 @@ import {
   statusLabels,
   typeMeta,
 } from "../lib/format";
+import { shortKey } from "./admin/columns";
 import type { ScreenProps } from "./App";
 import { NotFoundScreen } from "./NotFoundScreen";
 
@@ -1250,8 +1251,7 @@ function IssuePanel({
           {/* Above the other three sections on purpose. It is the only one
               every reader can act on — labels, links and files all need write
               access — and it is the one whose state has to be legible without
-              hunting, so it takes the slot nearest the panel's own facts about
-              people. It also keeps the toggle above the fold at 1440×900 and
+              hunting. It also keeps the toggle above the fold at 1440×900 and
               one short scroll away at 390×844. */}
           <IssueWatchersSection
             projectId={projectId}
@@ -1313,6 +1313,18 @@ function IssuePanel({
  * what a response omitting `id` produces.
  */
 const optimisticWatcherId = "tk-optimistic-watcher";
+
+/**
+ * A row's identity, for React and for the map of remove buttons the focus
+ * handoff reads. Keyed by the person rather than by the subscription: a row's
+ * `id` is `optimisticWatcherId` until the server answers, so two pending adds
+ * would share one key. A user has at most one subscription per issue, which
+ * makes `userId` the natural key — and `id` is the fallback for a response that
+ * omitted it.
+ */
+function watcherRowKey(watcher: IssueWatcher): string {
+  return watcher.userId || watcher.id;
+}
 
 /** What the section says about a write, and whether it is a failure. */
 interface WatcherNotice {
@@ -1387,6 +1399,25 @@ function IssueWatchersSection({
   const [picked, setPicked] = useState("");
   const [notice, setNotice] = useState<WatcherNotice | null>(null);
 
+  /**
+   * Every row's remove control, keyed the way the rows are, and the heading —
+   * which is where focus goes when the last row leaves and there is no
+   * neighbour to hand it to. Both exist for the same reason: a button that
+   * unmounts under the reader's own focus drops them in `<body>`, one Tab from
+   * the top of the document recovers it, and an ADMIN pruning five watchers
+   * pays that five times.
+   */
+  const rowButtons = useRef(new Map<string, HTMLButtonElement>());
+  const heading = useRef<HTMLHeadingElement | null>(null);
+  /**
+   * Where focus goes once the removed row is gone: a row key, `""` for the
+   * heading, `null` for "leave it where it is". Recorded here and applied by the
+   * effect below rather than moved in the mutation callback, because the row
+   * meant to receive it does not exist in the DOM until React has re-rendered
+   * without the one that left.
+   */
+  const focusAfterRemoval = useRef<string | null>(null);
+
   const watchersKey = useMemo(() => ["issue-watchers", projectId, issueId], [projectId, issueId]);
   const watchersQuery = useQuery({
     queryKey: watchersKey,
@@ -1451,20 +1482,33 @@ function IssueWatchersSection({
   };
 
   const addOptimistically = (userId: string) => {
-    queryClient.setQueryData<IssueWatchers>(watchersKey, (current) =>
-      current
-        ? {
-            watchers: [...current.watchers, optimisticRow(userId)],
-            // A guess, and only until the server's own number replaces it a
-            // tick later. `null` stays `null`: a count nobody has stated is not
-            // a count this side may start one from.
-            totalCount: current.totalCount === null ? null : current.totalCount + 1,
-          }
-        : current,
-    );
+    queryClient.setQueryData<IssueWatchers>(watchersKey, (current) => {
+      if (!current) return current;
+      // **Idempotent, and not as a precaution.** Two dispatches for one person
+      // land in the same task whenever a double press outruns the mutation's own
+      // pending flag — react-query publishes that flag in a microtask, so the
+      // second click of a 120ms double-click can still read it as `false`. A
+      // second row for a `userId` already here would collide on the React key
+      // the rows are given below *and* count one subscription twice. A
+      // subscription is set membership: adding it twice is adding it once.
+      if (current.watchers.some((watcher) => watcher.userId === userId)) return current;
+      return {
+        watchers: [...current.watchers, optimisticRow(userId)],
+        // A guess, and only until the server's own number replaces it a
+        // tick later. `null` stays `null`: a count nobody has stated is not
+        // a count this side may start one from.
+        totalCount: current.totalCount === null ? null : current.totalCount + 1,
+      };
+    });
   };
 
-  const removeOptimistically = (userId: string) => {
+  /**
+   * Drop a person's row and take the count down with it — optimistically for
+   * the reader's own unwatch, and only on the server's word for the ADMIN
+   * removal below, which is why this is not called `removeOptimistically`
+   * (its sibling above still is, because it has one caller and one timing).
+   */
+  const removeRow = (userId: string) => {
     queryClient.setQueryData<IssueWatchers>(watchersKey, (current) => {
       if (!current) return current;
       const watchersLeft = current.watchers.filter((watcher) => watcher.userId !== userId);
@@ -1500,7 +1544,7 @@ function IssueWatchersSection({
     mutationFn: () => taskaApi.unwatchIssue(projectId, issueId),
     onMutate: async () => {
       const previous = await beginWrite();
-      if (currentUserId) removeOptimistically(currentUserId);
+      if (currentUserId) removeRow(currentUserId);
       return { previous };
     },
     onSuccess: (result) => {
@@ -1541,14 +1585,55 @@ function IssueWatchersSection({
     onSettled: settle,
   });
 
+  /**
+   * Where focus goes when a row leaves under it: the row below, or the one
+   * above when the last row is the one leaving, or the section heading when
+   * nothing is left to hold it.
+   *
+   * Deliberately **not** "wherever the reader was". A settling write is no
+   * licence to move focus across a panel, so the handoff is armed only when
+   * focus is still resting on the very control that is about to unmount — which
+   * is where the reader who pressed it left it. Anywhere else and this does
+   * nothing at all.
+   */
+  const planFocusHandoff = (userId: string) => {
+    const leaving = rowButtons.current.get(userId);
+    if (!leaving || document.activeElement !== leaving) return;
+    const list = queryClient.getQueryData<IssueWatchers>(watchersKey)?.watchers ?? [];
+    const index = list.findIndex((watcher) => watcher.userId === userId);
+    if (index < 0) return;
+    const neighbour = list[index + 1] ?? list[index - 1];
+    focusAfterRemoval.current = neighbour ? watcherRowKey(neighbour) : "";
+  };
+
+  /**
+   * The one write in this section that is **not** optimistic in the list, and
+   * the reason was measured rather than argued. Filtering the row out in
+   * `onMutate` reflows the list inside a frame, so the *next* row's ✕ arrives
+   * under the cursor before the second click of an ordinary double-click: at
+   * 120ms, 200ms and 350ms that took one issue from three watchers to one — two
+   * real `DELETE`s, no confirmation, no undo, and not a word to the person who
+   * did it. What disappears here is somebody else's subscription, which is why
+   * this section pays for the fix now rather than waiting for the panel-wide
+   * one — labels, links and attachments all remove a row the same way, and that
+   * shape is filed as its own piece of work.
+   *
+   * The response is still immediate — the row goes `is-pending` on the press
+   * and its ✕ stops answering — it simply keeps its place until the server
+   * answers. Nothing reaches the cache before that, so there is nothing to roll
+   * back: a refusal leaves the list exactly as it was and says why.
+   */
   const removeWatcher = useMutation({
     mutationFn: (userId: string) => taskaApi.removeIssueWatcher(projectId, issueId, userId),
-    onMutate: async (userId) => {
-      const previous = await beginWrite();
-      removeOptimistically(userId);
-      return { previous };
-    },
+    // `beginWrite` for the half of its job that still applies: clearing the
+    // notice, and cancelling a refetch that would otherwise land on top of the
+    // removal below. Its snapshot is dropped on purpose — a rollback to a list
+    // read before *this* `DELETE` would restore a sibling row whose own
+    // removal succeeded in between.
+    onMutate: () => beginWrite(),
     onSuccess: (result, userId) => {
+      planFocusHandoff(userId);
+      removeRow(userId);
       applyServerCount(result.watchersCount);
       if (!result.removed) {
         setNotice({
@@ -1557,8 +1642,7 @@ function IssueWatchersSection({
         });
       }
     },
-    onError: (error, userId, context) => {
-      rollback(context?.previous);
+    onError: (error, userId) => {
       setNotice({
         tone: "error",
         text: watcherFailureText(error, `${watcherName(userById, userId)} is still watching this issue.`),
@@ -1566,6 +1650,26 @@ function IssueWatchersSection({
     },
     onSettled: settle,
   });
+
+  /**
+   * The handoff itself, after the render that removed the row rather than
+   * inside the callback that asked for it. `focusVisible` where the browser
+   * has it: the reader may have arrived by pointer, and then a plain `focus()`
+   * moves focus with nothing on screen saying where it went — the same trap
+   * `AdminEventsProblems` records for its own rescue.
+   */
+  useEffect(() => {
+    const target = focusAfterRemoval.current;
+    if (target === null) return;
+    focusAfterRemoval.current = null;
+    const node = target === "" ? heading.current : rowButtons.current.get(target);
+    if (!node?.isConnected) return;
+    try {
+      node.focus({ focusVisible: true });
+    } catch {
+      node.focus();
+    }
+  }, [watchers]);
 
   const toggling = watchIssue.isPending || unwatchIssue.isPending;
   // Mutations first, reads second, for the reason the label section states: an
@@ -1576,7 +1680,12 @@ function IssueWatchersSection({
 
   return (
     <section className="issue-watchers">
-      <h3>
+      {/* `tabIndex={-1}` makes this reachable by script and by nothing else: it
+          is where focus lands when the row that had it was the last one in the
+          list. A heading rather than the toggle beside it, because the toggle
+          answers Enter with a subscription and a reader who has just pressed ✕
+          five times is exactly the reader who would press it again. */}
+      <h3 ref={heading} tabIndex={-1}>
         Watchers
         {/* Only when somebody has stated a number. `0` states one; `null` — a
             `200` that omitted `totalCount`, which this contract permits — does
@@ -1641,7 +1750,10 @@ function IssueWatchersSection({
           className="issue-link-form watcher-form"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!picked) return;
+            // The guard the `aria-disabled` below no longer enforces by itself.
+            // Both halves of it: nothing chosen, and a `POST` already out for
+            // the person who was.
+            if (!picked || addWatcher.isPending) return;
             addWatcher.mutate(picked);
             // Reset in the handler that read the value, never in a callback a
             // round trip later — see the label picker for what a late reset
@@ -1660,7 +1772,17 @@ function IssueWatchersSection({
               ))}
             </select>
           </label>
-          <button className="secondary-button compact-button" disabled={!picked || addWatcher.isPending} type="submit">
+          {/* `aria-disabled`, never `disabled` — §4.21's rule, which this
+              section stated and then broke twice inside itself. Measured: Enter
+              on a button that disables itself in the same tick drops
+              `document.activeElement` to `<body>` and leaves it there. The
+              handler above carries the guard, and the fade `button:disabled`
+              would have drawn is restored in the stylesheet. */}
+          <button
+            aria-disabled={!picked || addWatcher.isPending || undefined}
+            className="secondary-button compact-button"
+            type="submit"
+          >
             Add
           </button>
         </form>
@@ -1672,13 +1794,21 @@ function IssueWatchersSection({
         </p>
       ) : null}
       {/* `membersAnswered`, not `!membersUnknown`: a read still in flight is
-          neither an answer nor a failure, and this sentence is a claim about
-          the project that only a landed answer supports. */}
+          neither an answer nor a failure, and this sentence needs a landed one.
+          What it may then say is narrower than it looks. In `hybrid` — the
+          default, and the mode the deployed stand runs — `listMembers`
+          *succeeds* with exactly one element, the reader themselves, because the
+          gateway has no member read (TAS-137). So a sentence about "everyone on
+          this project" would be told to an ADMIN of a ten-person project on the
+          strength of a list of one, and nothing in the UI can tell a synthesised
+          answer from a real one. The claim is therefore about the list that came
+          back, which is true either way; §5.6's boundary above still keeps a
+          *failed* read from producing a sentence at all. */}
       {isProjectAdmin && answer && membersAnswered && addable.length === 0 ? (
         <p className="issue-links-empty">
           {members.length === 0
-            ? "This project has no members to add."
-            : "Everyone on this project is already watching."}
+            ? "No members came back for this project, so there is nobody to add."
+            : "Everyone this project's member list names is already watching."}
         </p>
       ) : null}
 
@@ -1703,13 +1833,12 @@ function IssueWatchersSection({
             const mine = Boolean(currentUserId) && watcher.userId === currentUserId;
             const pending = watcher.id === optimisticWatcherId;
             const removing = removeWatcher.isPending && removeWatcher.variables === watcher.userId;
+            const key = watcherRowKey(watcher);
             return (
-              // Keyed by the person rather than by the subscription: a row's
-              // `id` is `optimisticWatcherId` until the server answers, so two
-              // pending adds would share one key. A user has at most one
-              // subscription per issue, which makes `userId` the natural key —
-              // and `id` is the fallback for a response that omitted it.
-              <li className={`watcher-row${pending ? " is-pending" : ""}`} key={watcher.userId || watcher.id}>
+              // `is-pending` covers both windows a row can be in flight in: an
+              // add the server has not confirmed, and its own removal, which now
+              // holds its place until the `DELETE` answers.
+              <li className={`watcher-row${pending || removing ? " is-pending" : ""}`} key={key}>
                 <Avatar user={person} size="sm" />
                 <span className="watcher-name">
                   {name}
@@ -1718,15 +1847,33 @@ function IssueWatchersSection({
                 {isProjectAdmin ? (
                   <button
                     // Two rows for two people this map cannot name would
-                    // otherwise share one accessible name. The id is the only
-                    // thing that tells them apart, so it is what the label uses.
-                    aria-label={person ? `Remove ${person.displayName} from watchers` : `Remove watcher ${watcher.userId}`}
+                    // otherwise share one accessible name, so the id is what
+                    // tells them apart — but the whole of it is thirty-six
+                    // characters read out one at a time. §5.8's own abbreviation
+                    // is enough to disambiguate two rows and is what the admin
+                    // tables already say aloud.
+                    aria-label={
+                      person ? `Remove ${person.displayName} from watchers` : `Remove watcher ${shortKey(watcher.userId)}`
+                    }
+                    // In flight, so `aria-disabled` and a handler guard rather
+                    // than `disabled` — §4.21's rule, and the reason this row
+                    // still has focus to hand on when it goes.
+                    aria-disabled={pending || removing || undefined}
                     className="icon-button"
                     // A row whose `userId` the response left blank cannot be
-                    // removed: the request would name nobody. The row still
-                    // shows — somebody is watching either way.
-                    disabled={!watcher.userId || pending || removing}
-                    onClick={() => removeWatcher.mutate(watcher.userId)}
+                    // removed: the request would name nobody. That is not a
+                    // window, it is permanent, so it keeps a real `disabled` and
+                    // the fade that comes with it. The row still shows —
+                    // somebody is watching either way.
+                    disabled={!watcher.userId}
+                    onClick={() => {
+                      if (pending || removing) return;
+                      removeWatcher.mutate(watcher.userId);
+                    }}
+                    ref={(node) => {
+                      if (node) rowButtons.current.set(key, node);
+                      else rowButtons.current.delete(key);
+                    }}
                     type="button"
                   >
                     <X size={14} />
