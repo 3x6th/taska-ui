@@ -1748,8 +1748,10 @@ them blocks the story.
   read found something worse for a different reason: `link` was empty on all
   twenty rows across five types, so that fallback is the only path any row in
   that inbox has. The guard is still worth having, and it is now about
-  `ISSUE_ASSIGNED`, whose body does carry a uuid, rather than about the two new
-  types. The types themselves
+  `ISSUE_ASSIGNED`, whose body **does** carry one — measured in the same read,
+  which counted uuids per type: one of one for `ISSUE_ASSIGNED`, one of one for
+  `MEMBER_ADDED`, two of two for `MEMBER_UPDATED`, zero of sixteen for the two
+  new types. The types themselves
   need no frontend change: `notificationType` is inert in the render path, and the
   gateway already sends `LABEL_ADDED` outside the union without trouble.
 - **An expired access token drew "Page not found" on the deployed stand**

@@ -711,7 +711,12 @@ Everything below is the entry as it stood, in the past tense.
   PERMISSION_DENIED "Access denied"`. Every neighbour refuses. `…/workflow`
   answers `200` with all three statuses. Twenty-three days on, this is the only
   project-scoped read on the gateway that does not enforce membership, which
-  makes it an oversight rather than a policy.
+  makes it an oversight rather than a policy. **"Only" is checked, not assumed:**
+  the list above is every `GET` the contract defines beneath
+  `/projects/{projectId}` and `/issues/{issueId}`, run against the same foreign
+  project in the same session. The two that answer neither `200` nor `403` —
+  `…/members` and `…/members/{userId}` — do so because `GET` is unmapped there at
+  all, which is TAS-137's gap and not a membership question.
 - **What it discloses:** that the project exists, and its workflow
   configuration — status keys, transition names, sort order. On this stand every
   project shares one "Default workflow", so today it discloses nothing a member
@@ -1820,7 +1825,7 @@ found"`.
   compensation above costs nothing. Recorded so the next agent does not
   discover the missing `projectId` from a broken link.
 
-### `NotificationResponseDto.link` is a gateway API path, and empty for the two types people read
+### `NotificationResponseDto.link` is a gateway API path, and on a real inbox it is empty on every row
 
 - **Endpoint:** `GET /api/v1/notifications`.
 - **Probed 2026-08-24** on the deployed gateway with a `GLOBAL_ADMIN` token
@@ -1874,10 +1879,16 @@ found"`.
   and raw UUIDs included. It comes out *together with* `notifications.ts`: a
   revert of one without the other leaves a green suite proving shapes the
   gateway no longer sends.
-- **Provenance, and its limits.** One sample, eight most recent notifications,
-  read as `GLOBAL_ADMIN` — an account that sees notifications an ordinary member
-  never would, so this is not a sample of a normal inbox. The token expired
-  within the session and `api-contract-guard` could not reproduce any of it.
+- **Provenance, and its limits — as they stood on 2026-08-24, and answered
+  2026-09-10.** The first sample was eight most recent notifications read as
+  `GLOBAL_ADMIN`, an account that sees notifications an ordinary member never
+  would, so it was not a sample of a normal inbox; the token expired within the
+  session and `api-contract-guard` could not reproduce any of it. Both limits are
+  now closed by the re-probe above: a second sample, twenty rows, on a plain
+  `USER`'s own inbox, and it reproduced the finding rather than softening it.
+  Kept rather than deleted because the heading above it changed on the strength
+  of that second sample, and a reader should be able to see which claim rests on
+  which population.
 - **Removal:** TAS-184, and it has to be all-or-nothing. If the gateway starts
   sending a usable target for *some* types only, the link branch silently takes
   over while the body fallback keeps running for the rest, and the compensation
