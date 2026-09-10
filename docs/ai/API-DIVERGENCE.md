@@ -703,6 +703,15 @@ Everything below is the entry as it stood, in the past tense.
   `…/workflow` is **200** for `TASK`, `BUG` and `STORY` alike. Visible in the
   board's own traffic, not just by curl — the board fires all three while the
   project read beside them is refused.
+- **Re-measured 2026-09-10, as `defaultUser` again, and it still reproduces.**
+  Against the same foreign project: `GET /projects/{id}` → `403
+  PERMISSION_DENIED "You don't have access to this project"`, and `…/issues`,
+  `…/board`, `…/labels`, `…/issues/{id}`, `…/issues/{id}/comments`,
+  `…/issues/{id}/labels`, `…/issues/{id}/watchers` and `…/links` → `403
+  PERMISSION_DENIED "Access denied"`. Every neighbour refuses. `…/workflow`
+  answers `200` with all three statuses. Twenty-three days on, this is the only
+  project-scoped read on the gateway that does not enforce membership, which
+  makes it an oversight rather than a policy.
 - **What it discloses:** that the project exists, and its workflow
   configuration — status keys, transition names, sort order. On this stand every
   project shares one "Default workflow", so today it discloses nothing a member
@@ -1683,6 +1692,19 @@ The entry as it stood:
   rather than of the page — which is the first honest issue total this
   frontend has ever been able to print.
 
+**Re-measured 2026-09-10 as `defaultUser`, and all three still reproduce** — the
+first time with a control that separates "the filter matched nothing" from "the
+filter was ignored". Baseline with no filters: `200`, one item. Then
+`?priority=NOT_A_PRIORITY` → `200` with **the same one item**, and
+`?issueType=EPIC` → `200` with the same one item, while `?priority=LOW` against
+a `MEDIUM` issue correctly answers zero and `?priority=MEDIUM` answers one. So
+the unknown value is *dropped*, not applied, and the earlier reading of this was
+right. `?statusKey=NOT_A_STATUS` answers `200` with zero, which is the third
+behaviour for the same class of mistake. `?query=ka` → `400 "Search query must
+be at least 3 characters"`, `?query=` → `400`, no `query` at all → `200`.
+`?projectId={foreign}` → `403`, `?projectId={nonexistent}` → `404 "Project not
+found"`.
+
 **Three divergences, one of them a defect.**
 
 - **The minimum query length is 2 in the contract and 3 in the runtime.** A
@@ -1757,6 +1779,11 @@ The entry as it stood:
 - **Observed 2026-08-23:** every hit is an `IssueShortResponseDto` —
   `{id, issueKey, issueType, priority, summary, assigneeId}` — the same short
   shape `GET /projects/{projectId}/issues` returns, and for the same reason.
+- **Re-measured 2026-09-10** on a real hit rather than on the schema: the object
+  really does arrive without `statusKey` and without `projectId`, so the two
+  compensations built on that absence — placing a hit in a column, and deriving
+  the project from the issue-key prefix — are still both required. Filed as part
+  of [TAS-205](https://jira.ozero.dev/browse/TAS-205).
   It is not a contract violation: the contract declares exactly this. It is
   recorded because of what it costs the UI.
 - **Two things follow, and both shape the feature rather than decorate it.**
@@ -1803,6 +1830,17 @@ The entry as it stood:
   - `LABEL_ADDED` / `LABEL_REMOVED` → `link: "/issues/{uuid}"`.
   - `ISSUE_ASSIGNED` → `link: ""`.
   - `ISSUE_TRANSITIONED` → `link: ""`.
+- **Re-probed 2026-09-10 against a different inbox — `defaultUser`, a plain
+  `USER` — and it is worse than the 2026-08-24 sample said.** Twenty
+  notifications, five types, and **`link` is empty on every single one**:
+  `USER_BLOCKED` ×8, `USER_UNBLOCKED` ×8, `ISSUE_ASSIGNED`, `MEMBER_ADDED`,
+  `MEMBER_UPDATED` ×2. So "empty for the two types people read" understates it
+  for this population; the earlier sample's `LABEL_ADDED` links are the exception
+  rather than the rule. Two side facts from the same read: the page carries **no
+  `totalCount`**, and `USER_BLOCKED` / `USER_UNBLOCKED` are **already live** on
+  the deployed stand, days after backend PR #151 added them — their bodies read
+  "Your account has been blocked. Reason: …" and carry no uuid, so the
+  first-uuid-in-body fallback cannot misfire on them.
 - **`/issues/{uuid}` is the gateway's own REST path, not a route of this
   application.** Ours is `/projects/{projectId}/issues/{issueId}`, because a
   project board is an issue's context. `navigate()` on the value as sent
@@ -2643,10 +2681,11 @@ probed** — `release-reviewer` traced the chain that the first version of this
 paragraph called an expectation. `ProjectRoleChecker.validateAccess` raises
 `DomainStatus.PERMISSION_DENIED, "Access denied"` for a non-member and
 `NOT_FOUND, "Project not found"` for a project that does not exist;
-`RestErrorMapper` maps those to `403` and `404`. So the shape is the one
-`GET /projects/{projectId}` already gives, and `isMissingOrForbidden` covers it.
-The probe itself is still owed and needs a second account: the only token
-available was a `GLOBAL_ADMIN`'s, for whom every project reads.
+`RestErrorMapper` maps those to `403` and `404`. **Probed 2026-09-10** with the
+second account the earlier paragraph said this needed: `GET
+/projects/{foreign}/board?issueType=TASK` answers `403 PERMISSION_DENIED
+"Access denied"`. The reading was right, the route refuses a non-member, and
+`isMissingOrForbidden` covers the shape. What is owed here is nothing.
 
 **Alive: it draws less than the board draws.** `BoardIssueDto` carries `id`,
 `issueKey`, `summary`, `storyPoints`, an assignee `{id, displayName}` and
