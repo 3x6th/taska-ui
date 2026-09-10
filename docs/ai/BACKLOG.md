@@ -1740,9 +1740,16 @@ them blocks the story.
   about a *user*: if notification-service writes the blocked account's uuid into
   the body, clicking the row will read `getIssueById` on a user id and land on
   "This issue doesn't exist, or you don't have access to it." instead of doing
-  nothing. Not yet reproducible — the two types are a database constraint so far,
-  nothing emits them. Probe the body text once something does; the fix, if
-  needed, is a guard so a non-issue id is not routed as one. The types themselves
+  nothing. **Probed 2026-09-10, and it does not reproduce for these two types.**
+  They are no longer hypothetical: a plain user's inbox already holds eight
+  `USER_BLOCKED` and eight `USER_UNBLOCKED`, days after backend PR #151 landed
+  them. Their bodies read "Your account has been blocked. Reason: …" and carry
+  **no uuid at all**, so the first-uuid fallback cannot fire on them. The same
+  read found something worse for a different reason: `link` was empty on all
+  twenty rows across five types, so that fallback is the only path any row in
+  that inbox has. The guard is still worth having, and it is now about
+  `ISSUE_ASSIGNED`, whose body does carry a uuid, rather than about the two new
+  types. The types themselves
   need no frontend change: `notificationType` is inert in the render path, and the
   gateway already sends `LABEL_ADDED` outside the union without trouble.
 - **An expired access token drew "Page not found" on the deployed stand**
