@@ -1,7 +1,7 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: 5941499203ae (develop, 2026-09-09)
-# Fetched: 2026-09-09
+# Backend commit: 21a0d9d177a1 (develop, 2026-09-11)
+# Fetched: 2026-09-11
 #
 # The backend repository is the single source of truth for this contract.
 # This copy exists so read-only reviewers without network access can audit
@@ -2114,9 +2114,34 @@ components:
           type: string
         priority:
           type: string
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          description: Первоначальная оценка времени в минутах
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          description: Оставшееся время в минутах
+          minimum: 0
 
     IssueResponseDto:
       type: object
+      required: [id, projectId, issueNumber, issueKey, issueType, summary, description,
+                 priority, assigneeId, reporterId, createdAt, updatedAt,version, labels]
       properties:
         id:
           type: string
@@ -2148,6 +2173,29 @@ components:
           format: date-time
         version:
           type: integer
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          description: Первоначальная оценка времени в минутах
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          description: Оставшееся время в минутах
+          minimum: 0
         labels:
           type: array
           description: Метки задачи (краткая информация)
@@ -2181,6 +2229,7 @@ components:
 
     IssueShortResponseDto:
       type: object
+      required: [id, issueKey, summary, issueType, priority, assigneeId]
       properties:
         id:
           type: string
@@ -2194,6 +2243,11 @@ components:
           type: string
         assigneeId:
           type: string
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
 
     ListIssuesResponseDto:
       type: object
@@ -2215,9 +2269,33 @@ components:
           type: string
         priority:
           type: string
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          description: Первоначальная оценка времени в минутах
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          description: Оставшееся время в минутах
+          minimum: 0
 
     UpdateIssueResponseDto:
       type: object
+      required: [id, summary, description, priority]
       properties:
         id:
           type: string
@@ -2227,6 +2305,29 @@ components:
           type: string
         priority:
           type: string
+        storyPoints:
+          type: number
+          format: double
+          description: Оценка сложности задачи в story points
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          description: Первоначальная оценка времени в минутах
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          description: Оставшееся время в минутах
+          minimum: 0
 
     AssignIssueRequestDto:
       type: object

@@ -109,12 +109,17 @@ was written against it.
 
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
-| `pr-148-TAS-116.yml` | [#148](https://github.com/VladislavYurin/taska-backend/pull/148) | TAS-116 | TAS-189 |
 | `pr-147-TAS-131.yml` | [#147](https://github.com/VladislavYurin/taska-backend/pull/147) | TAS-131 | TAS-190 |
 
 `pr-118-TAS-125.yml` was here for TAS-125 / TAS-191 and was deleted on 2026-09-09
 when backend PR #118 merged and the snapshot was refreshed to develop
 `5941499203ae`.
+
+`pr-148-TAS-116.yml` was here for TAS-116 / TAS-189 and was deleted on 2026-09-11
+when backend PR #148 merged with its `openapi.yml` half restored and the snapshot
+was refreshed to develop `21a0d9d177a1`. The merged declarations are the ones the
+extract pinned at `79187f94d135`, checked by diffing the two snapshots rather than
+by re-reading the PR — the lesson above, applied in the other direction.
 
 One open PR deliberately has no extract: backend
 [#150](https://github.com/VladislavYurin/taska-backend/pull/150) (TAS-129, user
