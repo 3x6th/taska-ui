@@ -3432,7 +3432,7 @@ export class MockTaskaStore {
   }
 
   /**
-   * The issue as `IssueShortResponseDto` states it — seven fields since backend
+   * The issue as `IssueShortResponseDto` states it — seven fields since merged
    * PR #148 added `storyPoints` to that DTO, listed one by one rather than
    * spread, so the mock can never hand out a `status` or a `projectId` the
    * gateway would not have sent. That narrowness is the whole reason

@@ -285,8 +285,9 @@ export interface CreateIssueInput {
   description: string;
   priority: IssuePriority;
   /**
-   * The five planning fields, all optional — `CreateIssueRequestDto` in backend
-   * PR #148 (docs/contract/pending/pr-148-TAS-116.yml).
+   * The five planning fields, all optional — `CreateIssueRequestDto` in
+   * docs/contract/openapi.yml (backend develop `21a0d9d177a1`, where TAS-116
+   * landed as merged PR #148).
    *
    * `undefined` and `null` mean the same thing here, unlike on the update
    * below: a create has no prior value to leave alone, so both spellings of

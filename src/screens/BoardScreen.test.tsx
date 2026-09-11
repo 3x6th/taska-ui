@@ -67,6 +67,23 @@ const {
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
 
+  /**
+   * The five planning fields, as `Issue` declares them — `null` being the only
+   * "not set" for all five. Spelled out in the fixtures below rather than left
+   * off them: the fake is cast to `TaskaApi`, so an issue missing a field the
+   * domain declares typechecks, renders, and tells nobody. `storyPoints: 3`
+   * with a `null` remaining estimate is the pair the panel's Planning block is
+   * asserted on, because `0`, `null` and "not sent" are three different
+   * answers and only one of them is empty.
+   */
+  const planning = {
+    storyPoints: null as number | null,
+    startDate: null as string | null,
+    dueDate: null as string | null,
+    originalEstimateMinutes: null as number | null,
+    remainingEstimateMinutes: null as number | null,
+  };
+
   const makeIssue = (id: string, issueKey: string, summary: string, description: string) => ({
     id,
     projectId: PROJECT_ID,
@@ -84,6 +101,7 @@ const {
     version: 1,
     deletedAt: null,
     labels: [] as { id: string; name: string; color: string }[],
+    ...planning,
   });
 
   const state: {
@@ -96,7 +114,7 @@ const {
     workflowFailure?: Error;
     labels: { id: string; name: string; color: string }[];
     labelCreateHeld: boolean;
-    searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null }[];
+    searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null; storyPoints: number | null }[];
     searchTotal: number;
     searchFailure?: Error;
     /** The notifications popover: what the bell lists, what it managed to mark read, and a read that fails. */
@@ -386,6 +404,15 @@ const {
         version: 1,
         deletedAt: null,
         labels: [],
+        // Four of the five set and the fifth `null`, which is what the panel's
+        // Planning block is read on: `480` has to come back as a duration,
+        // a date has to come back as the day it is, and the empty one has to
+        // come back empty rather than as a nought.
+        storyPoints: 3,
+        startDate: "2026-06-15",
+        dueDate: "2026-06-26",
+        originalEstimateMinutes: 480,
+        remainingEstimateMinutes: null,
         ...(state.edits[issueId] ?? {}),
       },
       history: [],
@@ -951,6 +978,7 @@ describe("the board's search and the server's", () => {
           summary: "Deployed gateway rejects an empty query",
           priority: "HIGH",
           assigneeId: null,
+          storyPoints: null,
         },
       ],
       7,
@@ -979,6 +1007,7 @@ describe("the board's search and the server's", () => {
           summary: "Deployed gateway rejects an empty query",
           priority: "HIGH",
           assigneeId: null,
+          storyPoints: null,
         },
       ],
       7,
@@ -995,7 +1024,7 @@ describe("the board's search and the server's", () => {
   });
 
   it("asks nothing until the query reaches the minimum the gateway enforces", async () => {
-    seedSearch([{ id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Short", priority: "LOW", assigneeId: null }], 7);
+    seedSearch([{ id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Short", priority: "LOW", assigneeId: null, storyPoints: null }], 7);
     renderBoard();
     await screen.findByRole("region", { name: "To Do column" });
 
@@ -1070,9 +1099,9 @@ describe("the counter after a mutation", () => {
       [
         // The card the board already holds: the search finds it too, and the
         // group must not draw it twice.
-        { id: "issue-1", issueKey: "TAS-102", issueType: "TASK", summary: "Wire the board to the gateway", priority: "MEDIUM", assigneeId: null },
+        { id: "issue-1", issueKey: "TAS-102", issueType: "TASK", summary: "Wire the board to the gateway", priority: "MEDIUM", assigneeId: null, storyPoints: null },
         // And one it does not.
-        { id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Deployed gateway rejects an empty query", priority: "HIGH", assigneeId: null },
+        { id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Deployed gateway rejects an empty query", priority: "HIGH", assigneeId: null, storyPoints: null },
       ],
       2,
     );
@@ -1475,6 +1504,56 @@ describe("a card on a board that cannot be written to", () => {
 
     const card = await screen.findByRole("button", { name: /TAS-102/ });
     await waitFor(() => expect(card).toHaveAttribute("aria-roledescription", "draggable"));
+  });
+});
+
+/**
+ * The panel's Planning block (TAS-189). One test, and it is about the reading
+ * rather than the writing: minutes have to arrive as a duration, a calendar day
+ * has to arrive as the day it is, and an unset field has to arrive **empty**.
+ *
+ * The last of those three is the whole point of the feature and the one an
+ * implementation gets wrong for free: `remainingEstimateMinutes` is `null` on
+ * this fixture, and a field drawn from `value || 0` — or a formatter asked to
+ * print `null` — puts `0m` there, which is a claim about the issue that nobody
+ * made. The editing paths are covered against the real mock in
+ * e2e/planning-fields.spec.ts, where the API layer's refusals are the ones
+ * under test.
+ */
+describe("the planning fields on an issue panel", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("reads the four the issue carries and leaves the fifth empty", async () => {
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+
+    expect(await screen.findByLabelText("Story points")).toHaveValue("3");
+    // Verbatim, as `DateOnly`: the box holds the day, not a moment in a
+    // timezone that could move it to the 14th.
+    expect(screen.getByLabelText("Start date")).toHaveValue("2026-06-15");
+    expect(screen.getByLabelText("Due date")).toHaveValue("2026-06-26");
+    // 480 minutes on the wire, eight hours to the reader.
+    expect(screen.getByLabelText("Original estimate")).toHaveValue("8h");
+
+    const remaining = screen.getByLabelText("Remaining estimate");
+    expect(remaining).toHaveValue("");
+    expect(remaining).toHaveAttribute("placeholder", "—");
+  });
+
+  it("shows a viewer the values and lets them change none", async () => {
+    setMembership("VIEWER");
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+
+    // Disabled, not hidden: a reader without write access still has to be able
+    // to read the plan (§5.7), and the server stays the authority either way.
+    expect(await screen.findByLabelText("Story points")).toHaveValue("3");
+    for (const label of ["Story points", "Start date", "Due date", "Original estimate", "Remaining estimate"]) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
   });
 });
 

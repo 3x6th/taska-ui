@@ -731,7 +731,8 @@ textarea:disabled {
 
 .field span,
 .description-field span,
-.form-two label > span {
+.form-two label > span,
+.planning-field > span {
   color: var(--fg-2);
   font-size: 11.5px;
   font-weight: 550;
@@ -4441,6 +4442,99 @@ h1 {
   font-weight: 500;
 }
 
+/* The five planning fields in the issue panel (TAS-189), between the meta grid
+   and the description because that is where they are read.
+
+   Two columns and not the meta grid's own label-beside-value: at 480 the panel
+   gives this block about 436 of content, so a label column of 88 would leave
+   118 for the box — measured, that is under what Chrome's date control needs
+   with its picker button, and at 390 (panel 92vw, content ~318) it is 62. The
+   label therefore sits above its box, which is the same shape §4.3 gives a
+   field label everywhere else in the product, and the label recipe itself is
+   the shared one (11.5/550 --fg-2) rather than a second set of numbers.
+
+   No `color-scheme` here: it is declared once per theme on `:root`
+   (DESIGN.md §2.1 lives there), and `input[type=date]` inherits it, so the
+   browser's own picker and its yyyy-mm-dd mask follow the theme with nothing
+   set per control. Setting it again on the input would be a second place to
+   keep in step with `data-theme`. */
+.issue-planning {
+  margin-top: 20px;
+}
+
+.planning-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 13px 12px;
+}
+
+.planning-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* §4.3, inline-edit: transparent frame at rest so five boxes do not draw five
+   rectangles across the panel, the frame and the surface arriving together on
+   focus. Height, radius and padding are §2.7's and §2.5's ordinary input
+   values, not a fourth size. */
+.planning-field input {
+  width: 100%;
+  height: 38px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--fg);
+  transition: border-color var(--dur-hover) var(--ease), background-color var(--dur-hover) var(--ease);
+}
+
+/* Hover is the only thing that says these boxes are editable before one is
+   focused — there is no pencil and no edit mode (§5.5). `--surface-2` is the
+   token for an input at rest on a `--surface` plane (§2.1), which is what this
+   is for the moment the pointer is on it. */
+.planning-field input:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.planning-field input:focus {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+/* §7's ring, and it is not redundant beside the rule above: `--border-strong`
+   is a 15% alpha frame, about 1.2:1 against `--surface`, so the focused state
+   of §4.3 cannot be the focus indicator of §7 on its own. The ring is what
+   makes the field findable from the keyboard; the frame is what makes it look
+   like a box you may type in. */
+.planning-field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The same five fields in the create modal. A `fieldset` is the right element
+   for a named group of fields, and its UA chrome — border, padding, the
+   legend's own inset — is the wrong look for §1, so it is all removed and the
+   legend is given the panel's section-heading treatment (12/600 --fg-2) so the
+   group reads the same on both surfaces. The boxes themselves are `.field`
+   inputs, unchanged: in a modal a field at rest is a framed box. */
+.planning-fieldset {
+  min-width: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.planning-fieldset legend {
+  margin-bottom: 8px;
+  padding: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .description-field {
   margin-top: 20px;
 }
@@ -5005,6 +5099,7 @@ button.attachment-open:hover:not(:disabled) {
   margin-top: 24px;
 }
 
+.issue-planning h3,
 .issue-labels h3,
 .issue-links h3,
 .issue-attachments h3,
@@ -5180,12 +5275,30 @@ button.attachment-open:hover:not(:disabled) {
   align-items: flex-start;
   justify-content: center;
   padding-top: 11vh;
+  /* The other end of §4.11's 11vh. Needed only now that a modal may reach the
+     full height the layer allows: without it the tallest form ends flush with
+     the bottom edge of the screen. 16 is §2.4's canvas padding. */
+  padding-bottom: 16px;
 }
 
+/* §4.11 gives the modal a header, a body and a footer, and until TAS-189
+   nothing said which of the three yields when the body is taller than the
+   screen. The answer was none of them: `overflow: hidden` inside a layer that
+   does not scroll simply cut the bottom off. Measured at 390×844 with the
+   create form's new Planning group — the "Create issue" button sat below the
+   fold and could not be pressed at all, from any scroll position.
+   The body is the part that scrolls, exactly as in the slide-over (§4.10), so
+   the header keeps the title and the close button reachable.
+   `max-height: 100%` carries no number of its own: the layer is the viewport
+   and already holds the head room and the foot room above as padding, so 100%
+   of its content box is precisely what is left over. */
 .modal {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: 480px;
   max-width: calc(100vw - 32px);
+  max-height: 100%;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 15px;
@@ -5217,6 +5330,11 @@ button.attachment-open:hover:not(:disabled) {
 }
 
 .modal-body {
+  /* `min-height: 0` is what makes the `overflow` above it work: a flex item's
+     automatic minimum is its content, so without this the body refuses to
+     shrink and the modal grows past its own `max-height` again. */
+  min-height: 0;
+  overflow-y: auto;
   padding: 16px;
 }
 
@@ -5772,6 +5890,17 @@ button.attachment-open:hover:not(:disabled) {
 
   .form-two {
     grid-template-columns: 1fr;
+  }
+
+  /* Except the planning group, which keeps its two columns. The collapse above
+     is for the pairs of segmented controls it was written for — Type and
+     Priority need the width of three buttons each — while these five are short
+     boxes: stacked they add about 120px to the tallest form on a phone, and two
+     columns leave 157 at 390 and 122 at 320, both of which hold a date control
+     (measured). The panel's own grid does not collapse either, so the group
+     reads the same on both surfaces at every width. */
+  .planning-fieldset .form-two {
+    grid-template-columns: 1fr 1fr;
   }
 }
 

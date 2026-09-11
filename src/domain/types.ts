@@ -280,8 +280,11 @@ export interface Issue {
   /**
    * The five planning fields — `IssueResponseDto`'s `storyPoints`, `startDate`,
    * `dueDate`, `originalEstimateMinutes` and `remainingEstimateMinutes`, added
-   * by backend PR #148 (TAS-116, extracted at
-   * docs/contract/pending/pr-148-TAS-116.yml).
+   * by TAS-116 (merged PR #148) and now part of the contract proper:
+   * docs/contract/openapi.yml, backend develop `21a0d9d177a1`. The deployed
+   * gateway's own `/v3/api-docs` declares all five on `IssueResponseDto`
+   * (measured 2026-09-11, docs/ai/API-DIVERGENCE.md) — but a declaration is not
+   * a response, and no body carrying one of the five has been read.
    *
    * **`null` is the only "not set", for all five.** The wire cannot tell an
    * absent key from a JSON `null` and the server never means the difference:
@@ -309,7 +312,7 @@ export interface Issue {
  * One result of `GET /issues/search` — the contract's `IssueShortResponseDto`,
  * and **not** an `Issue`.
  *
- * Seven fields is everything the search route is ever told — six until backend
+ * Seven fields is everything the search route is ever told — six until merged
  * PR #148 added `storyPoints` to `IssueShortResponseDto`. There is no `status`,
  * no `projectId`, no `description`, no `labels`, no `updatedAt` and no
  * `version`, which is why this is its own type rather than a `Partial<Issue>`
@@ -338,9 +341,9 @@ export interface IssueSearchHit {
   /** `""` on the wire for an unassigned issue; normalised to `null` like `Issue.assigneeId`. */
   assigneeId: string | null;
   /**
-   * The **one** planning field the search DTO carries: backend PR #148 adds
-   * `storyPoints` to `IssueShortResponseDto` and adds nothing else to it — no
-   * dates, no estimates.
+   * The **one** planning field the search DTO carries: `IssueShortResponseDto`
+   * in docs/contract/openapi.yml states `storyPoints` and nothing else of the
+   * five — no dates, no estimates.
    *
    * Do not widen this type past it. The narrowness is the point — a hit that
    * grew a `dueDate` the server never sent would be drawn as an empty date on

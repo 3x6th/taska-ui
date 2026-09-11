@@ -986,9 +986,11 @@ describe("RestTaskaApi issue search", () => {
         issueType: "BUG",
         priority: "HIGH",
         assigneeId: "user-mark",
-        // Neither response states it — backend PR #148 adds `storyPoints` to
-        // `IssueShortResponseDto` and no deployed gateway carries it yet — so
-        // both hits read "not estimated" rather than `undefined`.
+        // Neither response states it. `IssueShortResponseDto` declares
+        // `storyPoints` — in the contract and in the deployed gateway's
+        // `/v3/api-docs`, measured 2026-09-11 — and a hit whose issue has no
+        // estimate still arrives without the key, so both of these read "not
+        // estimated" rather than `undefined`.
         storyPoints: null,
       },
       {
@@ -1112,8 +1114,8 @@ describe("RestTaskaApi issue list", () => {
   });
 
   it("defaults the fields toIssue folds, and leaves the rest of a bare row undefined", async () => {
-    // `ListIssuesResponseDto` marks nothing required and the five planning
-    // fields land only with backend PR #148, so a row this bare is legal — and
+    // `ListIssuesResponseDto` marks nothing required, and a gateway older than
+    // merged PR #148 states none of the five, so a row this bare is legal — and
     // a card that renders "undefined" for a story-point count is the failure.
     stubFetch({ items: [{ id: "issue-2", issueKey: "TAS-102", assigneeId: "" }], totalCount: 1 });
 
@@ -2119,9 +2121,10 @@ describe("RestTaskaApi outbox retry", () => {
  * unconditionally, the proto fields are `optional`, the gateway sets them with
  * `setIfPresent` and `GrpcIssueService` resolves an unset optional with
  * `.orElse(null)` — so a field the request omits is erased. The board sends
- * `{summary}`, `{priority}` and `{description}` one at a time, and the day
- * backend PR #148 exposes these fields those three edits would each wipe the
- * story points and both dates.
+ * `{summary}`, `{priority}` and `{description}` one at a time, and against a
+ * gateway that carries these fields — which the contract has declared since
+ * merged PR #148 — those three edits would each wipe the story points and both
+ * dates.
  *
  * What is pinned here, and cannot be seen from the mock: the exact body. A
  * partial edit re-sends the values it is keeping, a resolved `null` is omitted
@@ -2229,10 +2232,11 @@ describe("RestTaskaApi issue planning fields", () => {
   });
 
   it("sends the same three keys it always did against a gateway that has no planning fields", async () => {
-    // Backend PR #148 has not merged, so the detail read carries none of the
-    // five, every one of them resolves to `null` and every one is omitted. This
-    // is why the fix can ship before the backend does: not one request byte
-    // changes.
+    // The detail read stubbed here carries none of the five — a gateway older
+    // than merged PR #148, and, until one is measured, the only kind this
+    // client has evidence of — so every one of them resolves to `null` and
+    // every one is omitted. This is why the fix could ship ahead of the
+    // backend: not one request byte changes.
     const fetchStub = stubIssue();
 
     await new RestTaskaApi().updateIssue("project-1", "issue-1", { priority: "LOW" });

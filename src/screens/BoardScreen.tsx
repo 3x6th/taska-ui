@@ -12,9 +12,9 @@ import {
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { CreateIssueLinkInput, CreateProjectLabelInput } from "../api/TaskaApi";
+import type { CreateIssueLinkInput, CreateProjectLabelInput, UpdateIssueInput } from "../api/TaskaApi";
 import { SEARCH_QUERY_MIN_LENGTH, UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
@@ -73,6 +73,17 @@ import {
   statusLabels,
   typeMeta,
 } from "../lib/format";
+import {
+  PLANNING_EMPTY_PLACEHOLDER,
+  formatDuration,
+  formatStoryPoints,
+  parseDuration,
+  parseStoryPoints,
+  planningDrafts,
+  planningInput,
+  samePlanningDrafts,
+  type PlanningDrafts,
+} from "../lib/planning";
 import { shortKey } from "./admin/columns";
 import type { ScreenProps } from "./App";
 import { NotFoundScreen } from "./NotFoundScreen";
@@ -1077,11 +1088,25 @@ function IssuePanel({
   // this does not.
   const serverSummary = issue?.summary ?? "";
   const serverDescription = issue?.description ?? "";
-  const [synced, setSynced] = useState<{ summary: string; description: string } | null>(null);
-  if (!synced || synced.summary !== serverSummary || synced.description !== serverDescription) {
-    setSynced({ summary: serverSummary, description: serverDescription });
+  // The five planning fields ride the same pattern and for the same reason: a
+  // reader types faster than the network answers, so the input holds a draft
+  // (DESIGN.md §6, the inline-editing exception). They are one object rather
+  // than five `useState`s because they reseed together and are compared
+  // together — `samePlanningDrafts` is the comparison, and adding a sixth field
+  // fails the typecheck there instead of being silently left out of this test.
+  const serverPlanning = planningDrafts(issue);
+  const [planning, setPlanning] = useState<PlanningDrafts>(serverPlanning);
+  const [synced, setSynced] = useState<{ summary: string; description: string; planning: PlanningDrafts } | null>(null);
+  if (
+    !synced ||
+    synced.summary !== serverSummary ||
+    synced.description !== serverDescription ||
+    !samePlanningDrafts(synced.planning, serverPlanning)
+  ) {
+    setSynced({ summary: serverSummary, description: serverDescription, planning: serverPlanning });
     setSummary(serverSummary);
     setDescription(serverDescription);
+    setPlanning(serverPlanning);
   }
 
   const workflow = issue ? workflows?.[issue.issueType] : undefined;
@@ -1092,8 +1117,22 @@ function IssuePanel({
     issue && workflow ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
 
   const updateIssue = useMutation({
-    mutationFn: (patch: { summary?: string; description?: string; priority?: IssuePriority }) => taskaApi.updateIssue(projectId, issueId, patch),
+    // `UpdateIssueInput` rather than the three fields this used to name: the
+    // planning fields carry a third state the three never had — `null` means
+    // *clear it* and `undefined` means *leave it alone* — and a local shape
+    // would have to restate that distinction to be able to send it.
+    mutationFn: (patch: UpdateIssueInput) => taskaApi.updateIssue(projectId, issueId, patch),
     onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
+    // Rollback (§5.5). The summary and the description recover on their own —
+    // the value the reader typed is still the best thing to show while they fix
+    // it, and the field is free text either way. A refused planning field is
+    // not: it was refused *because* it is not a value this issue can hold, so
+    // leaving `2026-07-01` in a date box that the server still reads as
+    // `2026-06-15` would show a state that does not exist. The stored reading
+    // comes back and the message below says why. Reseeding on render cannot do
+    // this on its own: a refused write changes nothing on the server, so
+    // `synced` still matches and nothing would reseed.
+    onError: () => setPlanning(planningDrafts(issueQuery.data?.issue)),
   });
   const assignIssue = useMutation({
     mutationFn: (assigneeId: string | null) => taskaApi.assignIssue(projectId, issueId, assigneeId),
@@ -1138,6 +1177,81 @@ function IssuePanel({
   }
 
   const reporter = userById.get(issue.reporterId);
+
+  /**
+   * Put a draft back the way the server has it. Used by Escape — abandoning an
+   * edit before it is written, which is a different thing from the rollback of
+   * one that was refused.
+   */
+  const revertPlanning = (field: keyof PlanningDrafts) =>
+    setPlanning((current) => ({ ...current, [field]: serverPlanning[field] }));
+
+  /**
+   * Enter commits by blurring rather than by writing directly, so the mouse and
+   * the keyboard take the same path and there is one commit rule instead of
+   * two. Escape abandons the draft.
+   */
+  const planningKeyDown = (field: keyof PlanningDrafts) => (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "Escape") revertPlanning(field);
+  };
+
+  const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
+    setPlanning((current) => ({ ...current, [field]: value }));
+
+  /**
+   * Send one field and only that field. The body carries the single key that
+   * changed and the API layer resolves the other four from the issue as stored
+   * — which is what makes a partial edit partial on a wire that replaces (see
+   * `resolvePlanningFields` in src/api/planningFields.ts).
+   *
+   * Nothing is sent when the parsed draft already equals the stored value. The
+   * draft is normalised to the stored reading instead, so `3.0` becomes `3` and
+   * ` 8H ` becomes `8h` without spending a request that would change nothing.
+   * A draft that parsed to `NaN` is never equal to anything, so it is always
+   * sent and always refused — by `planningFieldRefusal`, in its words. This
+   * component deliberately states no bound, no format and no message of its
+   * own: two rulebooks for one field is how they come to disagree.
+   */
+  const commitStoryPoints = () => {
+    const next = parseStoryPoints(planning.storyPoints);
+    if (next === issue.storyPoints) {
+      draftOf("storyPoints")(next === null ? "" : formatStoryPoints(next));
+      return;
+    }
+    updateIssue.mutate({ storyPoints: next });
+  };
+
+  const commitEstimate = (field: "originalEstimateMinutes" | "remainingEstimateMinutes") => () => {
+    const next = parseDuration(planning[field]);
+    if (next === issue[field]) {
+      draftOf(field)(next === null ? "" : formatDuration(next));
+      return;
+    }
+    updateIssue.mutate(
+      field === "originalEstimateMinutes" ? { originalEstimateMinutes: next } : { remainingEstimateMinutes: next },
+    );
+  };
+
+  /**
+   * A date needs no parsing: `<input type="date">` holds exactly `YYYY-MM-DD`,
+   * which is `DateOnly` (an empty box is `""`). It is passed through as the
+   * string it is — a `Date` here would hand a moment in time to a field that
+   * means a calendar day.
+   */
+  const commitDate = (field: "startDate" | "dueDate") => () => {
+    const draft = planning[field].trim();
+    const next = draft === "" ? null : draft;
+    if (next === issue[field]) {
+      draftOf(field)(next ?? "");
+      return;
+    }
+    updateIssue.mutate(field === "startDate" ? { startDate: next } : { dueDate: next });
+  };
 
   return (
     <div className="panel-layer">
@@ -1229,6 +1343,98 @@ function IssuePanel({
             <span>Created</span>
             <strong className="soft-strong">{formatDateTime(issue.createdAt)}</strong>
           </div>
+
+          {/* The five planning fields (TAS-189), right under the meta they
+              belong with and above the description, because they are read in
+              the same glance as assignee and priority.
+
+              Every box is an inline edit on the terms §4.3 and §5.5 set for the
+              summary: no edit mode, commit on blur or Enter, Escape abandons.
+              The one departure from the summary is deliberate — these commit on
+              blur rather than on a debounce, because a half-typed duration or a
+              half-picked date is a value the server would refuse, and a debounce
+              would send it.
+
+              An empty box shows `—` and never `0`: for the three text fields
+              that is the placeholder below, and for the two dates it is the
+              browser's own empty date mask, which `type="date"` draws instead of
+              any placeholder we set. Both read as "not set"; neither reads as a
+              number nobody entered. */}
+          <section className="issue-planning">
+            <h3>Planning</h3>
+            <div className="planning-grid">
+              <label className="planning-field">
+                <span>Story points</span>
+                <input
+                  disabled={!canEdit}
+                  // Not `type="number"`: 1.5 is a legal value (`format: double`)
+                  // and a spinner on a story-point field invites clicking it to
+                  // a number nobody meant. `inputMode` still brings up the
+                  // decimal keypad on a phone.
+                  inputMode="decimal"
+                  onBlur={commitStoryPoints}
+                  onChange={(event) => draftOf("storyPoints")(event.target.value)}
+                  onKeyDown={planningKeyDown("storyPoints")}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  type="text"
+                  value={planning.storyPoints}
+                />
+              </label>
+              <label className="planning-field">
+                <span>Original estimate</span>
+                <input
+                  disabled={!canEdit}
+                  onBlur={commitEstimate("originalEstimateMinutes")}
+                  onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
+                  onKeyDown={planningKeyDown("originalEstimateMinutes")}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  // What the box accepts, said where it is typed rather than in
+                  // a legend nobody opens. Minutes are the wire's unit; hours
+                  // are the reader's.
+                  title="Hours and minutes, e.g. 8h, 1h 30m, 45m. A bare number is minutes."
+                  type="text"
+                  value={planning.originalEstimateMinutes}
+                />
+              </label>
+              <label className="planning-field">
+                <span>Start date</span>
+                <input
+                  disabled={!canEdit}
+                  onBlur={commitDate("startDate")}
+                  onChange={(event) => draftOf("startDate")(event.target.value)}
+                  onKeyDown={planningKeyDown("startDate")}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  type="date"
+                  value={planning.startDate}
+                />
+              </label>
+              <label className="planning-field">
+                <span>Due date</span>
+                <input
+                  disabled={!canEdit}
+                  onBlur={commitDate("dueDate")}
+                  onChange={(event) => draftOf("dueDate")(event.target.value)}
+                  onKeyDown={planningKeyDown("dueDate")}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  type="date"
+                  value={planning.dueDate}
+                />
+              </label>
+              <label className="planning-field">
+                <span>Remaining estimate</span>
+                <input
+                  disabled={!canEdit}
+                  onBlur={commitEstimate("remainingEstimateMinutes")}
+                  onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
+                  onKeyDown={planningKeyDown("remainingEstimateMinutes")}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  title="Hours and minutes, e.g. 8h, 1h 30m, 45m. A bare number is minutes."
+                  type="text"
+                  value={planning.remainingEstimateMinutes}
+                />
+              </label>
+            </div>
+          </section>
 
           {updateIssue.isError || assignIssue.isError || transitionIssue.isError || deleteIssue.isError ? (
             <div className="form-error">
@@ -3713,9 +3919,17 @@ function CreateIssueModal({
   const [description, setDescription] = useState("");
   const [issueType, setIssueType] = useState<IssueType>("TASK");
   const [priority, setPriority] = useState<IssuePriority>("MEDIUM");
+  // The five planning fields, all optional (TAS-189). Held as drafts for the
+  // same reason the panel holds them that way — the boxes are typed into — and
+  // reduced to a request body by `planningInput`, which omits what was left
+  // empty and passes on what was typed, including what it could not read.
+  const [planning, setPlanning] = useState<PlanningDrafts>(() => planningDrafts(null));
+  const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
+    setPlanning((current) => ({ ...current, [field]: value }));
 
   const createIssue = useMutation({
-    mutationFn: () => taskaApi.createIssue(projectId, { issueType, priority, summary, description }),
+    mutationFn: () =>
+      taskaApi.createIssue(projectId, { issueType, priority, summary, description, ...planningInput(planning) }),
     onSuccess: async (issue) => {
       await invalidateBoard(queryClient, projectId, issue.id);
       onCreated(issue);
@@ -3774,6 +3988,59 @@ function CreateIssueModal({
             </div>
           </label>
         </div>
+        {/* A `fieldset` because that is what a named group of related fields is
+            in HTML, and a `legend` is the only label a screen reader reads as
+            the group's own. Same five fields, same order and same parsing as
+            the panel (the helpers are shared), so what a reader learns on one
+            surface holds on the other. All optional: an empty box is omitted
+            from the request rather than sent as a zero. */}
+        <fieldset className="planning-fieldset">
+          <legend>Planning</legend>
+          <div className="form-two">
+            <label className="field">
+              <span>Story points</span>
+              <input
+                inputMode="decimal"
+                onChange={(event) => draftOf("storyPoints")(event.target.value)}
+                placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                type="text"
+                value={planning.storyPoints}
+              />
+            </label>
+            <label className="field">
+              <span>Original estimate</span>
+              <input
+                onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
+                placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                title="Hours and minutes, e.g. 8h, 1h 30m, 45m. A bare number is minutes."
+                type="text"
+                value={planning.originalEstimateMinutes}
+              />
+            </label>
+            <label className="field">
+              <span>Start date</span>
+              <input
+                onChange={(event) => draftOf("startDate")(event.target.value)}
+                type="date"
+                value={planning.startDate}
+              />
+            </label>
+            <label className="field">
+              <span>Due date</span>
+              <input onChange={(event) => draftOf("dueDate")(event.target.value)} type="date" value={planning.dueDate} />
+            </label>
+            <label className="field">
+              <span>Remaining estimate</span>
+              <input
+                onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
+                placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                title="Hours and minutes, e.g. 8h, 1h 30m, 45m. A bare number is minutes."
+                type="text"
+                value={planning.remainingEstimateMinutes}
+              />
+            </label>
+          </div>
+        </fieldset>
         {createIssue.isError ? <div className="form-error">{createIssue.error.message}</div> : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
