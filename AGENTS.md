@@ -381,6 +381,18 @@ mocked, and move on.
 
 ### Jira discipline
 
+Tickets are read by the backend owner, who does not open this repository.
+Write them dry: the problem, the measurement, "as is" and "to be" as
+`{code:json}` blocks with `// новое` and `// убрать` marks, a plain list of new
+and removed fields, rules, acceptance. No colour markup. In prose, escape
+braces as `\{projectId}` and keep JSON out of prose: Jira reads `{word}` as a
+macro and `[ {…} ]` as a link and garbles the rest of the ticket. A backend ask
+that makes a screen one read goes under epic
+[TAS-210](https://jira.ozero.dev/browse/TAS-210); before it is filed, the
+backend repository at `~/work/taska-backend` (`origin/develop`) is read so the
+ask names the layer it lands in — gateway mapper, proto field, service logic,
+or a new route — and any precedent already in the code.
+
 Two paths in, and which one a thing takes depends on who raised it.
 
 **Work the owner handed over — file it yourself, and do not ask.** "Connect
