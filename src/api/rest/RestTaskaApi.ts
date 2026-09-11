@@ -793,8 +793,18 @@ export class RestTaskaApi implements TaskaApi {
    * value identically. What is *not* checked is the resolved pair: an issue
    * whose stored dates already disagree must still be editable by its summary,
    * and the server is the one entitled to refuse that.
+   *
+   * They are checked in **two** passes, and the first one is why the read below
+   * is not the first line of this method. Eight of the ten refusals — every
+   * bound, every format, and the two dates against each other — are decided by
+   * the caller's own input, so running them with `stored = null` refuses a
+   * value that could never be stored without spending a request at all.
+   * `planningFieldRefusal` skips its stored block on `null`, so this is the
+   * same function twice rather than a second copy of the rules; the second
+   * pass, after the read, can only add the two stored-date checks.
    */
   async updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
+    refusePlanningFields(input, null);
     const current = (await this.getIssue(projectId, issueId)).issue;
     refusePlanningFields(input, current);
     const planning = resolvePlanningFields(input, current);

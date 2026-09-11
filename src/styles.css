@@ -730,9 +730,10 @@ textarea:disabled {
 }
 
 .field span,
+.field > label,
 .description-field span,
 .form-two label > span,
-.planning-field > span {
+.planning-field > label {
   color: var(--fg-2);
   font-size: 11.5px;
   font-weight: 550;
@@ -4459,13 +4460,42 @@ h1 {
    set per control. Setting it again on the input would be a second place to
    keep in step with `data-theme`. */
 .issue-planning {
-  margin-top: 20px;
+  /* 24, like every other `h3` section in the panel (`.issue-labels`,
+     `.issue-watchers`, `.issue-links`). It was 20 and was the only one. */
+  margin-top: 24px;
 }
 
+/* Two rows, not a column pair: three short boxes above and the two dates
+   below. The 2x3 grid this replaces left an empty cell under the fifth field,
+   which reads as a sixth field that failed to draw, and spent a row of panel
+   height on it. Shared with the create modal, which fits the same shape — see
+   the fieldset below. */
 .planning-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.planning-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 13px 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.planning-row.is-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.issue-planning .planning-grid {
+  gap: 13px;
+}
+
+/* Wider than the modal's, and for a reason the modal does not have: the boxes
+   below are pulled 12px left of the content rail and reclaim that 12 in width,
+   so a 12px gutter would leave two hover rectangles touching. 22 keeps 10
+   between them. */
+.issue-planning .planning-row {
+  column-gap: 22px;
 }
 
 .planning-field {
@@ -4475,26 +4505,74 @@ h1 {
   min-width: 0;
 }
 
+/* What the box accepts, under the box. `--fg-3` and 400 because it is meta
+   about a field rather than part of its label (§4.3 puts a placeholder at the
+   same weight of attention), and one line at 11.5/1.35 so a row of three
+   fields grows by 16 and not by a paragraph. */
+.planning-hint {
+  margin: 0;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
 /* §4.3, inline-edit: transparent frame at rest so five boxes do not draw five
    rectangles across the panel, the frame and the surface arriving together on
    focus. Height, radius and padding are §2.7's and §2.5's ordinary input
    values, not a fourth size. */
 .planning-field input {
-  width: 100%;
+  /* Pulled back by its own padding, exactly as `.summary-textarea` is, so the
+     value lands on the panel's content rail instead of 12px inside it — the
+     label above it is on that rail, and the two reading as one column is the
+     whole point of an inline edit with no frame at rest. The width is given
+     back so the box still reaches the right edge of its cell. */
+  width: calc(100% + 12px);
   height: 38px;
   border: 1px solid transparent;
   border-radius: 9px;
+  margin-left: -12px;
   padding: 0 12px;
   background: transparent;
   color: var(--fg);
   transition: border-color var(--dur-hover) var(--ease), background-color var(--dur-hover) var(--ease);
 }
 
+/* An empty `type="date"` draws the browser's own `dd.mm.yyyy` mask *at the text
+   colour*, which is the same weight and the same 17.9:1 as a date somebody
+   picked — so "not set" read as a value while the three boxes beside it said
+   `—` at `--fg-3`. §4.3: a placeholder is `--fg-3`. Set on `color` rather than
+   on `::-webkit-datetime-edit` so Firefox follows, and lifted on focus because
+   at that point the mask is telling the reader what to type. */
+.planning-field input[type="date"][data-empty="true"]:not(:focus),
+.field input[type="date"][data-empty="true"]:not(:focus) {
+  color: var(--fg-3);
+}
+
+/* `readOnly`, not `disabled`, for a reader without write access (§5.7): the
+   values stay at full contrast and the box keeps its place in the tab order,
+   which is what `disabled` took away — it dimmed the whole block to `.58` and
+   left nothing here reachable or selectable. What read-only must not keep is
+   the invitation to type, so no hover frame and the pointer stays an arrow.
+
+   One thing it does not keep either, and the browser decides it rather than
+   this file: Chromium draws no calendar glyph on a read-only date input
+   (measured 2026-09-11). The day itself still reads at `--fg`, which is what
+   the reader is here for. */
+.planning-field input:read-only {
+  cursor: default;
+}
+
+.planning-field input:read-only:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
 /* Hover is the only thing that says these boxes are editable before one is
    focused — there is no pencil and no edit mode (§5.5). `--surface-2` is the
    token for an input at rest on a `--surface` plane (§2.1), which is what this
    is for the moment the pointer is on it. */
-.planning-field input:hover:not(:disabled) {
+.planning-field input:hover:not(:read-only) {
   border-color: var(--border);
   background: var(--surface-2);
 }
@@ -4519,7 +4597,12 @@ h1 {
    legend's own inset — is the wrong look for §1, so it is all removed and the
    legend is given the panel's section-heading treatment (12/600 --fg-2) so the
    group reads the same on both surfaces. The boxes themselves are `.field`
-   inputs, unchanged: in a modal a field at rest is a framed box. */
+   inputs, unchanged: in a modal a field at rest is a framed box — so no rail
+   compensation here, and the frame is what aligns them.
+
+   The rows are the panel's `.planning-grid` / `.planning-row`, shared rather
+   than restated, which is what keeps the two surfaces in the same shape when
+   one of them is next edited. */
 .planning-fieldset {
   min-width: 0;
   border: 0;
@@ -5892,16 +5975,16 @@ button.attachment-open:hover:not(:disabled) {
     grid-template-columns: 1fr;
   }
 
-  /* Except the planning group, which keeps its two columns. The collapse above
-     is for the pairs of segmented controls it was written for — Type and
-     Priority need the width of three buttons each — while these five are short
-     boxes: stacked they add about 120px to the tallest form on a phone, and two
-     columns leave 157 at 390 and 122 at 320, both of which hold a date control
-     (measured). The panel's own grid does not collapse either, so the group
-     reads the same on both surfaces at every width. */
-  .planning-fieldset .form-two {
-    grid-template-columns: 1fr 1fr;
-  }
+  /* The planning group is deliberately not in that collapse and no longer has
+     to be excluded from it: it is `.planning-row`, not `.form-two`. The
+     collapse is for the pairs of segmented controls it was written for — Type
+     and Priority need the width of three buttons each — while these five are
+     short boxes. Stacked they would add about 120px to the tallest form on a
+     phone; kept as they are, the modal's body leaves 326 at 390, so the three
+     boxes of the top row get 100.0 each and the two dates get 156.0 — measured
+     in Chromium at 390x844, and both above what a date control and a duration
+     were measured to need. The panel's own rows do not collapse either, so the
+     group reads the same on both surfaces at every width. */
 }
 
 /* DESIGN.md §3 and §7: motion is an enhancement, never the carrier of meaning.

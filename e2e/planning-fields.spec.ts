@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { START_DATE_AFTER_STORED_DUE_MESSAGE } from "../src/api/planningFields";
+import { PLANNING_ESTIMATE_HINT } from "../src/lib/planning";
 
 // The five planning fields on the issue panel and in the create modal
 // (TAS-189). Mock-backed like every spec here — playwright.config.ts starts the
@@ -176,10 +177,66 @@ test("a viewer reads the plan and is offered no way to change it", async ({ page
   await page.goto(`/projects/${MOBILE_PROJECT_ID}/board`);
   const planning = await openIssuePanel(page, "MOB-5");
 
-  // Disabled rather than absent: a viewer still has to be able to read the
-  // plan, and an empty field still reads as empty rather than as nought.
+  // Read-only rather than absent or disabled (§5.7): a viewer still has to be
+  // able to read the plan — and to reach it, which is what `disabled` took
+  // away. An empty field still reads as empty rather than as nought.
   for (const label of ["Story points", "Start date", "Due date", "Original estimate", "Remaining estimate"]) {
-    await expect(planning.getByLabel(label)).toBeDisabled();
+    const field = planning.getByLabel(label);
+    await expect(field).toHaveJSProperty("readOnly", true);
+    await expect(field).toBeEnabled();
+    await field.focus();
+    await expect(field).toBeFocused();
   }
   await expect(planning.getByLabel("Remaining estimate")).toHaveAttribute("placeholder", "—");
+
+  // And nothing a read-only box can still fire reaches the server: a blur after
+  // a picker change would otherwise commit. Typing is refused by the control,
+  // so the value is unchanged and no refusal or write appears.
+  const points = planning.getByLabel("Story points");
+  const before = await points.inputValue();
+  await points.focus();
+  await page.keyboard.type("9");
+  await points.blur();
+  await expect(points).toHaveValue(before);
+  await expect(page.locator(".issue-panel .form-error")).toHaveCount(0);
+});
+
+test("says what an estimate box accepts on screen, not in a tooltip", async ({ page }) => {
+  await openBoard(page);
+  const planning = await openIssuePanel(page, "TAS-101");
+
+  // A `title` was the first answer and never fires on a touch device, so the
+  // syntax is a line under the box. Described-by rather than part of the label:
+  // the field is still called "Original estimate" and nothing else.
+  const estimate = planning.getByLabel("Original estimate");
+  await expect(estimate).toHaveAccessibleName("Original estimate");
+  await expect(estimate).toHaveAccessibleDescription(PLANNING_ESTIMATE_HINT);
+  await expect(estimate).not.toHaveAttribute("title");
+  await expect(planning.getByText(PLANNING_ESTIMATE_HINT)).toHaveCount(2);
+});
+
+test("a half-typed date leaves the stored one alone", async ({ page }) => {
+  await openBoard(page);
+  const planning = await openIssuePanel(page, "TAS-101");
+
+  // `<input type="date">` reads `""` both when it is empty and when only some
+  // of its segments are filled, and `""` means *clear it*. So a reader who
+  // starts typing a date and tabs away would erase the day the issue has —
+  // unless `validity.badInput` is consulted, which is the fix this pins.
+  const start = planning.getByLabel("Start date");
+  await start.fill("");
+  await start.click();
+  await page.keyboard.type("12");
+  await start.blur();
+
+  // The stored day is back in the box, and nothing was said about it, because
+  // nothing was sent.
+  await expect(start).toHaveValue("2026-06-15");
+  await expect(page.locator(".issue-panel .form-error")).toHaveCount(0);
+
+  // Reopened, because the assertion that matters is about the store rather than
+  // about the draft the input was holding.
+  await closePanel(page);
+  const reopened = await openIssuePanel(page, "TAS-101");
+  await expect(reopened.getByLabel("Start date")).toHaveValue("2026-06-15");
 });

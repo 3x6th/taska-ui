@@ -34,6 +34,18 @@ import type { PlanningFields, PlanningFieldsInput } from "../api/planningFields"
 export const PLANNING_EMPTY_PLACEHOLDER = "—";
 
 /**
+ * What an estimate box accepts, said under the box itself.
+ *
+ * It used to be a `title`, which is a tooltip: it never appears on a touch
+ * device and needs a hover the reader has no reason to try, so the one place
+ * the duration syntax was written was the one place most readers could not
+ * reach. Three examples rather than a grammar — they carry the unit letters,
+ * the pair, and the minutes-only case between them, and the parser accepts
+ * more than they show (a bare number is minutes) rather than less.
+ */
+export const PLANNING_ESTIMATE_HINT = "e.g. 8h, 1h 30m, 45m";
+
+/**
  * The five as the inputs hold them: display strings, `""` for "not set".
  *
  * Strings rather than the values themselves because a half-typed `1.` and a
@@ -161,6 +173,68 @@ export function planningInput(drafts: PlanningDrafts): PlanningFieldsInput {
   const remainingEstimateMinutes = parseDuration(drafts.remainingEstimateMinutes);
   if (remainingEstimateMinutes !== null) input.remainingEstimateMinutes = remainingEstimateMinutes;
   return input;
+}
+
+/**
+ * Reseed the drafts from the server's copy **one field at a time**.
+ *
+ * The panel commits a single field per request and refetches the issue
+ * afterwards, so the answer to a write of field A arrives while field B may be
+ * half-typed. Replacing all five would erase that draft — the reader's own
+ * keystrokes, thrown away by a round trip they did not start. So a draft is
+ * only overwritten where the *server's* value for that field has actually moved
+ * since the last sync: `previous` is the server copy the drafts were last
+ * seeded from, and `server` is the one that just arrived.
+ *
+ * `previous === null` is the first seed, where every field is taken.
+ *
+ * Note what this deliberately does *not* compare: the draft against the server
+ * value. A draft that merely differs is an edit in progress, and the one thing
+ * this function must never do is take it away.
+ */
+export function reseedPlanningDrafts(
+  drafts: PlanningDrafts,
+  previous: PlanningDrafts | null,
+  server: PlanningDrafts,
+): PlanningDrafts {
+  const pick = (field: keyof PlanningDrafts) =>
+    previous === null || previous[field] !== server[field] ? server[field] : drafts[field];
+  return {
+    storyPoints: pick("storyPoints"),
+    startDate: pick("startDate"),
+    dueDate: pick("dueDate"),
+    originalEstimateMinutes: pick("originalEstimateMinutes"),
+    remainingEstimateMinutes: pick("remainingEstimateMinutes"),
+  };
+}
+
+/**
+ * Roll back **only the field the refused request carried**, to the value the
+ * issue still has.
+ *
+ * A refused write changes nothing on the server, so nothing reseeds (see the
+ * panel's `synced` check) and the rollback has to be explicit. `sent` is the
+ * mutation's own variables, which is the only honest record of which field was
+ * written: rolling the whole block back would revert four drafts the server
+ * never refused, including one the reader may be typing into.
+ *
+ * `in` rather than a truthiness test, because `null` is a value here — it is
+ * how this wire spells *clear it* — and a cleared field that was refused has to
+ * come back just as much as a set one.
+ */
+export function rollbackPlanningDrafts(
+  drafts: PlanningDrafts,
+  sent: PlanningFieldsInput,
+  stored: PlanningDrafts,
+): PlanningDrafts {
+  const pick = (field: keyof PlanningDrafts) => (field in sent ? stored[field] : drafts[field]);
+  return {
+    storyPoints: pick("storyPoints"),
+    startDate: pick("startDate"),
+    dueDate: pick("dueDate"),
+    originalEstimateMinutes: pick("originalEstimateMinutes"),
+    remainingEstimateMinutes: pick("remainingEstimateMinutes"),
+  };
 }
 
 /**

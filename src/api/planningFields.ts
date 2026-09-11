@@ -46,9 +46,16 @@ import { isDateOnly } from "../domain/types";
  * ## The refusals
  *
  * All ten are `INVALID_ARGUMENT` / `400`, and all ten are applied on this side
- * of the wire so a request that cannot succeed is never spent. Five reproduce a
- * rule the server states — the negative bounds, the date format, the two dates
- * against each other, and the stored-date cross-check. The other five exist
+ * of the wire so a request that cannot succeed is never spent. Eight of them
+ * need nothing but the caller's input, which is why `RestTaskaApi.updateIssue`
+ * runs this function twice: once with `stored = null` *before* the read that an
+ * update has to make, so a value that could never be stored costs no request at
+ * all, and once after it, where the two stored-date checks below become
+ * answerable. Passing `null` skips exactly that block and nothing else.
+ *
+ * Five of the ten reproduce a rule the server states — the negative bounds, the
+ * date format, the two dates against each other, and the stored-date
+ * cross-check. The other five exist
  * because the server's answer to the input is *worse* than a refusal: it stores
  * something else, or it raises, or it fails to bind the body at all and answers
  * with a message about JSON.

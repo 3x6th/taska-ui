@@ -41,6 +41,9 @@ const {
   failIssueById,
   holdIssueById,
   releaseIssueById,
+  holdIssueUpdates,
+  heldIssueUpdateCount,
+  releaseIssueUpdates,
   heldIssueByIdCount,
   answeredIssueByIds,
   setMembership,
@@ -129,7 +132,10 @@ const {
     /** Issues created during a test, the ones deleted and the fields edited, so the list moves the way a server's would. */
     created: ReturnType<typeof makeIssue>[];
     deleted: Set<string>;
-    edits: Record<string, { summary?: string; description?: string }>;
+    edits: Record<string, { summary?: string; description?: string; storyPoints?: number | null; originalEstimateMinutes?: number | null }>;
+    /** An update held open, so a test can decide when its answer — and the refetch behind it — lands. */
+    issueUpdatesHeld: boolean;
+    issueUpdateReleases: (() => void)[];
     /** The panel's attachments section: what it lists, and how each leg answers. */
     /**
      * `GET /projects/{id}/members`. Empty for every other case here — the
@@ -221,6 +227,8 @@ const {
     issueByIdHeld: false,
     issueByIdReleases: [],
     issueByIdAnswered: [],
+    issueUpdatesHeld: false,
+    issueUpdateReleases: [],
     created: [],
     deleted: new Set<string>(),
     edits: {},
@@ -242,6 +250,12 @@ const {
     watcherWritesHeld: false,
     watcherWriteReleases: [],
     watcherCalls: { watch: 0, unwatch: 0, add: [], remove: [] },
+  };
+
+  /** The held half of an issue update — same shape as the watcher writes below. */
+  const issueUpdateWindow = async () => {
+    if (!state.issueUpdatesHeld) return;
+    await new Promise<void>((resolve) => state.issueUpdateReleases.push(resolve));
   };
 
   /** The held half of a watcher write: counted on the way in, answered when the test says so. */
@@ -327,7 +341,12 @@ const {
     // — nothing about the edit itself knows the search exists. Written here so
     // that stops being luck. Every case below edits an issue *out* of its
     // match, so the hit goes with it.
-    updateIssue: async (_projectId: string, issueId: string, patch: { summary?: string; description?: string }) => {
+    updateIssue: async (
+      _projectId: string,
+      issueId: string,
+      patch: { summary?: string; description?: string; storyPoints?: number | null; originalEstimateMinutes?: number | null },
+    ) => {
+      await issueUpdateWindow();
       state.edits[issueId] = { ...state.edits[issueId], ...patch };
       state.searchHits = state.searchHits.filter((hit) => hit.id !== issueId);
       state.searchTotal = Math.max(0, state.searchTotal - 1);
@@ -652,6 +671,18 @@ const {
     holdIssueById: (held: boolean) => {
       state.issueByIdHeld = held;
     },
+    /** Every issue update held open from here on, answer and refetch alike. */
+    holdIssueUpdates: (held: boolean) => {
+      state.issueUpdatesHeld = held;
+    },
+    /** How many updates are waiting — a release before the call arrives releases nothing. */
+    heldIssueUpdateCount: () => state.issueUpdateReleases.length,
+    /** Answers everything held, in the order it was asked. */
+    releaseIssueUpdates: () => {
+      const waiting = state.issueUpdateReleases;
+      state.issueUpdateReleases = [];
+      waiting.forEach((resolve) => resolve());
+    },
     /** Lands the oldest held read. Order is the point: it is how "resolved last" is told from "clicked last". */
     releaseIssueById: () => {
       state.issueByIdReleases.shift()?.();
@@ -677,6 +708,8 @@ const {
       state.issueByIdHeld = false;
       state.issueByIdReleases = [];
       state.issueByIdAnswered = [];
+      state.issueUpdatesHeld = false;
+      state.issueUpdateReleases = [];
       state.created = [];
       state.deleted = new Set<string>();
       state.edits = {};
@@ -1548,12 +1581,51 @@ describe("the planning fields on an issue panel", () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
     await screen.findByRole("complementary", { name: "TAS-102 issue" });
 
-    // Disabled, not hidden: a reader without write access still has to be able
-    // to read the plan (§5.7), and the server stays the authority either way.
+    // Read-only, not disabled and not hidden: a reader without write access
+    // still has to be able to read the plan (§5.7, which names `readOnly` for
+    // inline editing), and the server stays the authority either way.
+    // `disabled` was the first answer and was wrong twice over — it dims the
+    // values to a contrast the em dash cannot survive, and it takes five boxes
+    // out of the tab order, so the reader who most needs to copy a date out of
+    // here is the one who cannot reach it.
     expect(await screen.findByLabelText("Story points")).toHaveValue("3");
     for (const label of ["Story points", "Start date", "Due date", "Original estimate", "Remaining estimate"]) {
-      expect(screen.getByLabelText(label)).toBeDisabled();
+      const field = screen.getByLabelText(label);
+      expect(field).toHaveAttribute("readonly");
+      expect(field).not.toBeDisabled();
+      // Still reachable, which is the half of §5.7 that `disabled` broke.
+      field.focus();
+      expect(field).toHaveFocus();
     }
+  });
+
+  it("keeps a draft in one field while the answer to another lands", async () => {
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+
+    // The estimate is committed and its answer held, so the refetch it triggers
+    // lands *after* the second field has been typed into — which is the window
+    // the defect lived in and a tick too narrow to race.
+    holdIssueUpdates(true);
+    const estimate = await screen.findByLabelText("Original estimate");
+    // Typed as bare minutes on purpose: the draft says `240` and the server's
+    // answer reads `4h`, so the box changing is proof the *refetch* reseeded it
+    // rather than proof of what was typed into it.
+    fireEvent.change(estimate, { target: { value: "240" } });
+    fireEvent.blur(estimate);
+
+    const points = screen.getByLabelText("Story points");
+    fireEvent.change(points, { target: { value: "7" } });
+
+    // The write has to have *reached* the fake before it can be answered:
+    // `mutate` dispatches on a microtask, and releasing an empty queue releases
+    // nothing.
+    await waitFor(() => expect(heldIssueUpdateCount()).toBe(1));
+    releaseIssueUpdates();
+    await waitFor(() => expect(screen.getByLabelText("Original estimate")).toHaveValue("4h"));
+    // And the story points draft is still the reader's. Reseeding the block
+    // wholesale put `3` back here, silently, mid-edit.
+    expect(points).toHaveValue("7");
   });
 });
 

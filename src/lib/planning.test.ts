@@ -6,6 +6,8 @@ import {
   parseStoryPoints,
   planningDrafts,
   planningInput,
+  reseedPlanningDrafts,
+  rollbackPlanningDrafts,
   samePlanningDrafts,
   type PlanningDrafts,
 } from "./planning";
@@ -278,5 +280,85 @@ describe("samePlanningDrafts", () => {
     // signal that happened.
     expect(samePlanningDrafts(drafts, { ...drafts, storyPoints: "" })).toBe(false);
     expect(samePlanningDrafts(drafts, { ...drafts, dueDate: "2026-07-01" })).toBe(false);
+  });
+});
+
+describe("reseedPlanningDrafts", () => {
+  const server = planningDrafts({
+    storyPoints: 3,
+    startDate: "2026-06-15",
+    dueDate: null,
+    originalEstimateMinutes: 480,
+    remainingEstimateMinutes: null,
+  });
+
+  it("takes everything on the first seed", () => {
+    const drafts: PlanningDrafts = {
+      storyPoints: "",
+      startDate: "",
+      dueDate: "",
+      originalEstimateMinutes: "",
+      remainingEstimateMinutes: "",
+    };
+    expect(reseedPlanningDrafts(drafts, null, server)).toEqual(server);
+  });
+
+  it("replaces only the field the server moved and leaves a draft beside it alone", () => {
+    // What a commit looks like from here: the estimate was written and came
+    // back normalised, while the reader was typing a story point count into the
+    // box next to it. The second must survive the first.
+    const typing: PlanningDrafts = { ...server, storyPoints: "7", originalEstimateMinutes: "240" };
+    const answered = { ...server, originalEstimateMinutes: "4h" };
+
+    expect(reseedPlanningDrafts(typing, server, answered)).toEqual({
+      ...server,
+      storyPoints: "7",
+      originalEstimateMinutes: "4h",
+    });
+  });
+
+  it("pulls a draft back when the field it belongs to was cleared elsewhere", () => {
+    const typing: PlanningDrafts = { ...server, dueDate: "2026-07-01" };
+    // The server's own value moved to nothing — another session cleared it —
+    // and `""` is a value like any other here.
+    const answered = { ...server, startDate: "" };
+
+    const next = reseedPlanningDrafts(typing, server, answered);
+    expect(next.startDate).toBe("");
+    expect(next.dueDate).toBe("2026-07-01");
+  });
+});
+
+describe("rollbackPlanningDrafts", () => {
+  const stored = planningDrafts({
+    storyPoints: 3,
+    startDate: "2026-06-15",
+    dueDate: "2026-06-26",
+    originalEstimateMinutes: 480,
+    remainingEstimateMinutes: null,
+  });
+
+  it("puts back the field the refused request carried, and only that one", () => {
+    const drafts: PlanningDrafts = { ...stored, startDate: "2026-07-01", storyPoints: "7" };
+
+    expect(rollbackPlanningDrafts(drafts, { startDate: "2026-07-01" }, stored)).toEqual({
+      ...stored,
+      storyPoints: "7",
+    });
+  });
+
+  it("counts a cleared field as one that was sent", () => {
+    // `null` is how this wire spells "clear it", so a refused clear has to come
+    // back too — a truthiness test would leave the box empty over a value the
+    // issue still has.
+    const drafts: PlanningDrafts = { ...stored, dueDate: "" };
+
+    expect(rollbackPlanningDrafts(drafts, { dueDate: null }, stored).dueDate).toBe("2026-06-26");
+  });
+
+  it("leaves every draft alone when the request carried no planning field", () => {
+    const drafts: PlanningDrafts = { ...stored, storyPoints: "7" };
+
+    expect(rollbackPlanningDrafts(drafts, {}, stored)).toEqual(drafts);
   });
 });
