@@ -41,6 +41,9 @@ const {
   failIssueById,
   holdIssueById,
   releaseIssueById,
+  holdIssueUpdates,
+  heldIssueUpdateCount,
+  releaseIssueUpdates,
   heldIssueByIdCount,
   answeredIssueByIds,
   setMembership,
@@ -67,6 +70,23 @@ const {
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
 
+  /**
+   * The five planning fields, as `Issue` declares them — `null` being the only
+   * "not set" for all five. Spelled out in the fixtures below rather than left
+   * off them: the fake is cast to `TaskaApi`, so an issue missing a field the
+   * domain declares typechecks, renders, and tells nobody. `storyPoints: 3`
+   * with a `null` remaining estimate is the pair the panel's Planning block is
+   * asserted on, because `0`, `null` and "not sent" are three different
+   * answers and only one of them is empty.
+   */
+  const planning = {
+    storyPoints: null as number | null,
+    startDate: null as string | null,
+    dueDate: null as string | null,
+    originalEstimateMinutes: null as number | null,
+    remainingEstimateMinutes: null as number | null,
+  };
+
   const makeIssue = (id: string, issueKey: string, summary: string, description: string) => ({
     id,
     projectId: PROJECT_ID,
@@ -84,6 +104,7 @@ const {
     version: 1,
     deletedAt: null,
     labels: [] as { id: string; name: string; color: string }[],
+    ...planning,
   });
 
   const state: {
@@ -96,7 +117,7 @@ const {
     workflowFailure?: Error;
     labels: { id: string; name: string; color: string }[];
     labelCreateHeld: boolean;
-    searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null }[];
+    searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null; storyPoints: number | null }[];
     searchTotal: number;
     searchFailure?: Error;
     /** The notifications popover: what the bell lists, what it managed to mark read, and a read that fails. */
@@ -111,7 +132,10 @@ const {
     /** Issues created during a test, the ones deleted and the fields edited, so the list moves the way a server's would. */
     created: ReturnType<typeof makeIssue>[];
     deleted: Set<string>;
-    edits: Record<string, { summary?: string; description?: string }>;
+    edits: Record<string, { summary?: string; description?: string; storyPoints?: number | null; originalEstimateMinutes?: number | null }>;
+    /** An update held open, so a test can decide when its answer — and the refetch behind it — lands. */
+    issueUpdatesHeld: boolean;
+    issueUpdateReleases: (() => void)[];
     /** The panel's attachments section: what it lists, and how each leg answers. */
     /**
      * `GET /projects/{id}/members`. Empty for every other case here — the
@@ -203,6 +227,8 @@ const {
     issueByIdHeld: false,
     issueByIdReleases: [],
     issueByIdAnswered: [],
+    issueUpdatesHeld: false,
+    issueUpdateReleases: [],
     created: [],
     deleted: new Set<string>(),
     edits: {},
@@ -224,6 +250,12 @@ const {
     watcherWritesHeld: false,
     watcherWriteReleases: [],
     watcherCalls: { watch: 0, unwatch: 0, add: [], remove: [] },
+  };
+
+  /** The held half of an issue update — same shape as the watcher writes below. */
+  const issueUpdateWindow = async () => {
+    if (!state.issueUpdatesHeld) return;
+    await new Promise<void>((resolve) => state.issueUpdateReleases.push(resolve));
   };
 
   /** The held half of a watcher write: counted on the way in, answered when the test says so. */
@@ -309,7 +341,12 @@ const {
     // — nothing about the edit itself knows the search exists. Written here so
     // that stops being luck. Every case below edits an issue *out* of its
     // match, so the hit goes with it.
-    updateIssue: async (_projectId: string, issueId: string, patch: { summary?: string; description?: string }) => {
+    updateIssue: async (
+      _projectId: string,
+      issueId: string,
+      patch: { summary?: string; description?: string; storyPoints?: number | null; originalEstimateMinutes?: number | null },
+    ) => {
+      await issueUpdateWindow();
       state.edits[issueId] = { ...state.edits[issueId], ...patch };
       state.searchHits = state.searchHits.filter((hit) => hit.id !== issueId);
       state.searchTotal = Math.max(0, state.searchTotal - 1);
@@ -386,6 +423,15 @@ const {
         version: 1,
         deletedAt: null,
         labels: [],
+        // Four of the five set and the fifth `null`, which is what the panel's
+        // Planning block is read on: `480` has to come back as a duration,
+        // a date has to come back as the day it is, and the empty one has to
+        // come back empty rather than as a nought.
+        storyPoints: 3,
+        startDate: "2026-06-15",
+        dueDate: "2026-06-26",
+        originalEstimateMinutes: 480,
+        remainingEstimateMinutes: null,
         ...(state.edits[issueId] ?? {}),
       },
       history: [],
@@ -625,6 +671,18 @@ const {
     holdIssueById: (held: boolean) => {
       state.issueByIdHeld = held;
     },
+    /** Every issue update held open from here on, answer and refetch alike. */
+    holdIssueUpdates: (held: boolean) => {
+      state.issueUpdatesHeld = held;
+    },
+    /** How many updates are waiting — a release before the call arrives releases nothing. */
+    heldIssueUpdateCount: () => state.issueUpdateReleases.length,
+    /** Answers everything held, in the order it was asked. */
+    releaseIssueUpdates: () => {
+      const waiting = state.issueUpdateReleases;
+      state.issueUpdateReleases = [];
+      waiting.forEach((resolve) => resolve());
+    },
     /** Lands the oldest held read. Order is the point: it is how "resolved last" is told from "clicked last". */
     releaseIssueById: () => {
       state.issueByIdReleases.shift()?.();
@@ -650,6 +708,8 @@ const {
       state.issueByIdHeld = false;
       state.issueByIdReleases = [];
       state.issueByIdAnswered = [];
+      state.issueUpdatesHeld = false;
+      state.issueUpdateReleases = [];
       state.created = [];
       state.deleted = new Set<string>();
       state.edits = {};
@@ -951,6 +1011,7 @@ describe("the board's search and the server's", () => {
           summary: "Deployed gateway rejects an empty query",
           priority: "HIGH",
           assigneeId: null,
+          storyPoints: null,
         },
       ],
       7,
@@ -979,6 +1040,7 @@ describe("the board's search and the server's", () => {
           summary: "Deployed gateway rejects an empty query",
           priority: "HIGH",
           assigneeId: null,
+          storyPoints: null,
         },
       ],
       7,
@@ -995,7 +1057,7 @@ describe("the board's search and the server's", () => {
   });
 
   it("asks nothing until the query reaches the minimum the gateway enforces", async () => {
-    seedSearch([{ id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Short", priority: "LOW", assigneeId: null }], 7);
+    seedSearch([{ id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Short", priority: "LOW", assigneeId: null, storyPoints: null }], 7);
     renderBoard();
     await screen.findByRole("region", { name: "To Do column" });
 
@@ -1070,9 +1132,9 @@ describe("the counter after a mutation", () => {
       [
         // The card the board already holds: the search finds it too, and the
         // group must not draw it twice.
-        { id: "issue-1", issueKey: "TAS-102", issueType: "TASK", summary: "Wire the board to the gateway", priority: "MEDIUM", assigneeId: null },
+        { id: "issue-1", issueKey: "TAS-102", issueType: "TASK", summary: "Wire the board to the gateway", priority: "MEDIUM", assigneeId: null, storyPoints: null },
         // And one it does not.
-        { id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Deployed gateway rejects an empty query", priority: "HIGH", assigneeId: null },
+        { id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Deployed gateway rejects an empty query", priority: "HIGH", assigneeId: null, storyPoints: null },
       ],
       2,
     );
@@ -1475,6 +1537,95 @@ describe("a card on a board that cannot be written to", () => {
 
     const card = await screen.findByRole("button", { name: /TAS-102/ });
     await waitFor(() => expect(card).toHaveAttribute("aria-roledescription", "draggable"));
+  });
+});
+
+/**
+ * The panel's Planning block (TAS-189). One test, and it is about the reading
+ * rather than the writing: minutes have to arrive as a duration, a calendar day
+ * has to arrive as the day it is, and an unset field has to arrive **empty**.
+ *
+ * The last of those three is the whole point of the feature and the one an
+ * implementation gets wrong for free: `remainingEstimateMinutes` is `null` on
+ * this fixture, and a field drawn from `value || 0` — or a formatter asked to
+ * print `null` — puts `0m` there, which is a claim about the issue that nobody
+ * made. The editing paths are covered against the real mock in
+ * e2e/planning-fields.spec.ts, where the API layer's refusals are the ones
+ * under test.
+ */
+describe("the planning fields on an issue panel", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("reads the four the issue carries and leaves the fifth empty", async () => {
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+
+    expect(await screen.findByLabelText("Story points")).toHaveValue("3");
+    // Verbatim, as `DateOnly`: the box holds the day, not a moment in a
+    // timezone that could move it to the 14th.
+    expect(screen.getByLabelText("Start date")).toHaveValue("2026-06-15");
+    expect(screen.getByLabelText("Due date")).toHaveValue("2026-06-26");
+    // 480 minutes on the wire, eight hours to the reader.
+    expect(screen.getByLabelText("Original estimate")).toHaveValue("8h");
+
+    const remaining = screen.getByLabelText("Remaining estimate");
+    expect(remaining).toHaveValue("");
+    expect(remaining).toHaveAttribute("placeholder", "—");
+  });
+
+  it("shows a viewer the values and lets them change none", async () => {
+    setMembership("VIEWER");
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+
+    // Read-only, not disabled and not hidden: a reader without write access
+    // still has to be able to read the plan (§5.7, which names `readOnly` for
+    // inline editing), and the server stays the authority either way.
+    // `disabled` was the first answer and was wrong twice over — it dims the
+    // values to a contrast the em dash cannot survive, and it takes five boxes
+    // out of the tab order, so the reader who most needs to copy a date out of
+    // here is the one who cannot reach it.
+    expect(await screen.findByLabelText("Story points")).toHaveValue("3");
+    for (const label of ["Story points", "Start date", "Due date", "Original estimate", "Remaining estimate"]) {
+      const field = screen.getByLabelText(label);
+      expect(field).toHaveAttribute("readonly");
+      expect(field).not.toBeDisabled();
+      // Still reachable, which is the half of §5.7 that `disabled` broke.
+      field.focus();
+      expect(field).toHaveFocus();
+    }
+  });
+
+  it("keeps a draft in one field while the answer to another lands", async () => {
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+
+    // The estimate is committed and its answer held, so the refetch it triggers
+    // lands *after* the second field has been typed into — which is the window
+    // the defect lived in and a tick too narrow to race.
+    holdIssueUpdates(true);
+    const estimate = await screen.findByLabelText("Original estimate");
+    // Typed as bare minutes on purpose: the draft says `240` and the server's
+    // answer reads `4h`, so the box changing is proof the *refetch* reseeded it
+    // rather than proof of what was typed into it.
+    fireEvent.change(estimate, { target: { value: "240" } });
+    fireEvent.blur(estimate);
+
+    const points = screen.getByLabelText("Story points");
+    fireEvent.change(points, { target: { value: "7" } });
+
+    // The write has to have *reached* the fake before it can be answered:
+    // `mutate` dispatches on a microtask, and releasing an empty queue releases
+    // nothing.
+    await waitFor(() => expect(heldIssueUpdateCount()).toBe(1));
+    releaseIssueUpdates();
+    await waitFor(() => expect(screen.getByLabelText("Original estimate")).toHaveValue("4h"));
+    // And the story points draft is still the reader's. Reseeding the block
+    // wholesale put `3` back here, silently, mid-edit.
+    expect(points).toHaveValue("7");
   });
 });
 

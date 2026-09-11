@@ -2477,7 +2477,8 @@ sequence, the second while correcting the first.
 
 `BoardScreen` sends three partial bodies today — `{summary}` on blur,
 `{priority}` from the picker, `{description}` on blur. Each one would wipe story
-points and both dates the day backend PR #148 makes the fields reachable.
+points and both dates the day backend PR #148 makes the fields reachable —
+which it did on 2026-09-11, with this preservation already merged.
 
 **The UI instead:** `UpdateIssueInput` gives `undefined` and `null` different
 meanings — absent means "leave it", explicit `null` means "clear it" — and both
@@ -2486,12 +2487,23 @@ current value for anything the caller left alone. Components keep the partial
 bodies they already write; the preservation lives in the API layer, where it can
 be tested, and the full-replace semantics never reach a screen.
 
-Against today's gateway every resolved planning value is `null`, so the request
-body is byte-identical to the one sent before this change — pinned by a REST
-test rather than assumed, which is what made it safe to ship ahead of the merge.
+Against a gateway whose reads carry no planning fields every resolved value is
+`null`, so the request body is byte-identical to the one sent before this change
+— pinned by a REST test rather than assumed, which is what made it safe to ship
+ahead of the merge. **That is a property of the pre-#148 gateway, not a live
+invariant:** the deployed gateway declares the five as of 2026-09-11, so from
+the first planning write onwards a summary-only edit carries the stored values
+too. The REST test still pins the three-key body for a read that carries none,
+and that is what it proves — do not read it as "the body never grows".
 
 **Removed by:** nothing on the client, unless the backend distinguishes "not
-sent" from "sent null". Asked on TAS-116; a client that always sends the
+sent" from "sent null". Asked on TAS-116, and the merged code answers no
+(`api-contract-guard`, read at `develop @ 21a0d9d177a1`, 2026-09-11):
+`IssueMapper`'s request-side `setIfPresent` is `if (value != null)` over plain
+`Double`/`Integer`/`LocalDate` DTO fields with no `JsonNullable`, so an absent
+key and a JSON `null` arrive as the same Java `null`, both leave the proto
+optional unset, and both are written as `null` by the unconditional setters.
+A client that always sends the
 resolved value stays correct either way, which is why the question did not gate
 the work. Note the re-read makes update a two-round-trip read-modify-write with
 no optimistic concurrency available — `IssueResponseDto` carries `version` but
@@ -2561,7 +2573,7 @@ Note `0007-issue-planing-fields.sql` adds `issues_dates_chk (start_date <=
 due_date)`, so a *stored* pair can never be inconsistent — which is why
 re-sending resolved values can never trip the check by itself.
 
-### The planning-field declarations left backend PR #148, and the gateway build went red with them
+### Closed by TAS-189 (backend PR #148 merged 2026-09-11): the planning-field declarations left backend PR #148, and the gateway build went red with them
 
 - **Schemas:** `storyPoints`, `startDate`, `dueDate`, `originalEstimateMinutes`
   and `remainingEstimateMinutes` on the issue request and response DTOs — the
@@ -2593,17 +2605,37 @@ re-sending resolved values can never trip the check by itself.
 - **The UI instead:** TAS-189's API layer (merged here as PR #45) was written against the
   earlier head and stays exactly as it is — it is right about the wire the day the
   declarations come back and wrong about nothing today, since nothing in the UI reads
-  these fields yet. `docs/contract/pending/pr-148-TAS-116.yml` keeps the extract with its
-  header rewritten to say which head it describes. Nothing further is written against it
-  until the declarations return.
+  these fields yet. `docs/contract/pending/pr-148-TAS-116.yml` kept the extract with its
+  header rewritten to say which head it describes (deleted on the close below). Nothing
+  further was written against it until the declarations returned.
 - **Removed by:** backend PR #148 restoring the declarations and merging. Raised on
   TAS-116.
+- **Closed 2026-09-11.** PR #148 merged at 13:09Z from head `87bc8ed64134`, and
+  that head changes `openapi.yml` again: the five declarations are back, and
+  `develop @ 21a0d9d177a1` differs from the previous snapshot (`5941499203ae`)
+  by exactly the blocks the extract at `79187f94d135` carried, plus `required`
+  arrays on three of them (`IssueResponseDto`, `IssueShortResponseDto`,
+  `UpdateIssueResponseDto`) — diffed, not assumed. Every
+  module job on the merged head is green, api-gateway included. The deployed
+  gateway was measured the same day rather than inferred from the merge:
+  `GET /v3/api-docs` on `api.taska.ozero.dev` declares all five on
+  `IssueResponseDto` and `UpdateIssueResponseDto`, and `storyPoints` on
+  `IssueShortResponseDto` (`number`/`double`) and `BoardIssueDto`
+  (`integer`/`int32`). The snapshot is refreshed to `21a0d9d177a1` and the
+  extract is deleted. What is *not* measured: no write carrying a planning
+  field has been made against the deployed gateway yet, so every "code read"
+  caveat in the three entries above stays as written.
 
-### `storyPoints` is `double` on an open PR and `int32` in the merged contract, and the column settles it
+### `storyPoints` is `double` on the issue DTOs and `int32` on `BoardIssueDto`, and the column settles it
 
 Backend PR #148 declares `storyPoints` as `number` / `format: double` on the
-issue DTOs, and is open. `BoardIssueDto` declares the same field as `integer` /
-`format: int32`, and merged on 2026-09-09. **Updated 2026-09-09:** this is no
+issue DTOs, and merged on 2026-09-11. `BoardIssueDto` declares the same field as
+`integer` / `format: int32`, and merged on 2026-09-09. **Updated 2026-09-11:**
+both readings are now in one contract, `develop @ 21a0d9d177a1`, and the
+deployed gateway's `/v3/api-docs` carries both — `double` on the three issue
+DTOs, `int32` on the board DTO. The disagreement is no longer between branches;
+it is inside the contract, and this entry stays open until the board DTO
+widens. **As of 2026-09-09** the text below still read: this is no
 longer two open PRs disagreeing with each other, which is a worse place to be
 rather than a better one — the narrower of the two readings is now the one in
 force, and the wider one is still on a branch.
@@ -2651,10 +2683,12 @@ status itself by one probe, once the fields are reachable.
 
 ### A fractional estimate is refused by the client and nobody knows what the server does
 
-The two estimates are `format: int32` in the pending contract, `int32` in the
-proto and `integer` in the column, so a fractional value is not storable. What
-the gateway does with one is **not known and cannot be measured**: no deployed
-gateway accepts these fields, so no fractional estimate has ever been sent.
+The two estimates are `format: int32` in the contract (on `develop` since
+backend PR #148 merged, 2026-09-11), `int32` in the proto and `integer` in the
+column, so a fractional value is not storable. What the gateway does with one is
+**not known**: until 2026-09-11 no deployed gateway accepted these fields, and no
+fractional estimate has been sent to the one that now does. It can be measured
+now, with one probe against a throwaway issue; it has not been.
 
 The gateway is on Jackson 3 — `IssueMapper` imports
 `tools.jackson.databind.ObjectMapper`, `api-gateway/pom.xml` declares

@@ -40,7 +40,7 @@ states are not.
 | [TAS-186](https://jira.ozero.dev/browse/TAS-186) | Admin Users section: the accounts list over `auth.users`, block and unblock behind a confirmation with a required reason | Done | merged (PR #41) |
 | [TAS-187](https://jira.ozero.dev/browse/TAS-187) | Disable the `voltagent` plugin packs for this repository so their 60 generic agents stay out of every session's context | Done | merged (PR #42) |
 | [TAS-188](https://jira.ozero.dev/browse/TAS-188) | Bring the admin user-status writes to backend PR #146's contract — `changedAt`, `LOCKED`, and the new reset-lockout write | Done | merged (PR #43) |
-| [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | In Progress | API layer merged (PR #45); UI half open. **Blocked on the backend as of 2026-09-09**: PR #148 force-pushed away its own `openapi.yml` half, so the gateway build is red and the contract this work was written against is not on the PR any more — see `API-DIVERGENCE.md` |
+| [TAS-189](https://jira.ozero.dev/browse/TAS-189) | Issue planning fields — story points, start and due dates, both estimates (backend PR #148) | Done | merged (PR #45 API layer, PR #64 UI half). Backend PR #148 merged 2026-09-11 with its `openapi.yml` half restored; snapshot refreshed to `21a0d9d177a1` in PR #64 |
 | [TAS-190](https://jira.ozero.dev/browse/TAS-190) | Issue attachments over presigned S3 links (backend PR #147) | Done | merged (PR #48) |
 | [TAS-192](https://jira.ozero.dev/browse/TAS-192) | `.form-error` measures 3.17:1 in ten places; make the TAS-190 notice the product's error box | To Do | not started |
 | [TAS-191](https://jira.ozero.dev/browse/TAS-191) | The gateway's board endpoint in the API layer, without moving the board screen onto it (backend PR #118) | Done | merged (PRs #47, #58) |
@@ -299,6 +299,53 @@ separately:
   there is nothing visual in it.
 - Left for the second half: the planning block on the issue panel, editing, the
   create form, and two test fixtures that omit the five behind a cast.
+
+### TAS-189 — planning fields, second half: the block, the form, and the day the backend caught up
+
+- Unblocked by the backend, and measured rather than inferred. Backend PR #148
+  merged on 2026-09-11 at 13:09Z with the `openapi.yml` half that its
+  force-push had dropped two days earlier; `develop @ 21a0d9d177a1` differs from
+  the previous snapshot by exactly the extract's blocks plus `required` arrays on
+  three schemas, and the deployed gateway's `/v3/api-docs` declares the five on
+  both issue response DTOs. The snapshot moved, the pending extract went, and the
+  divergence entry closed on that measurement — not on the merge date.
+- The UI states no rule. Every field parses to a value, `null` or `NaN` and hands
+  it to the API layer; `planningFieldRefusal` answers, the panel shows the answer
+  and rolls the one field back. The consequence `api-contract-guard` liked: the
+  stored-date cross-check, which refuses a window move in one request, becomes two
+  ordered writes with a message that names the order, because the panel commits
+  one field at a time.
+- `art-director` blocked the first draft twice and was right both times. An empty
+  `<input type="date">` printed the browser's mask at `--fg`, louder than a real
+  value; and `disabled` for viewers composited the em-dash to 1.8:1 and took the
+  block out of the tab order. `readOnly` plus three `!canEdit` guards, because
+  `readOnly` does not suppress `blur`. Their layout call — a 3-column row over a
+  2-column row instead of three rows with an orphan cell — replaced the
+  orchestrator's, and the two-line hint at 390/320 was ruled ordinary for meta.
+- `release-reviewer` found the draft loss the builder's own reseed created: a
+  refetch after committing field A replaced all five drafts, so a value being
+  typed in field B vanished. Fixed per field, and the same block stopped
+  clobbering summary and description on a planning commit. The re-verdict checked
+  the regression test by reverting the block in a scratch copy, and the
+  `validity.badInput` guard by stubbing it out — a half-typed date then commits a
+  clear, which is silent data loss on a tab-out.
+- `api-contract-guard` re-ordered the REST refusal so a typo costs no `GET`, and
+  proved the two-call order identical to the one-call order over 889,785 input
+  combinations rather than by reading. The merged mapper answers TAS-116's
+  "not sent vs sent null" question: it cannot tell, so omitting the key stays the
+  right spelling of "clear".
+- Scope drift, all reported and kept: the shared `Modal` scrolls now (the taller
+  form cut off its primary action on a phone); `watchers.spec.ts` scrolls its
+  rows into view before pressing raw coordinates; a third fixture had the same
+  cast gap as the two the backlog named.
+- Deferred to `BACKLOG.md`: a fixed §4.11 modal footer, and the `pr-147` extract
+  pin that `contract:pins` reports drifted from PR #147's head.
+- Still unmeasured, stated in the PR body rather than implied away: no
+  planning-field write has reached the deployed gateway. The three probes the
+  backlog names are one request each now.
+- Verdicts: `release-reviewer` ship → ship; `art-director` do-not-ship → ship;
+  `api-contract-guard` ship → ship. Two one-line follow-ups from the re-verdicts
+  carry no verdict, as the table allows for non-blocking fixes.
 
 ### TAS-191 — the board route, and the criterion this story declines to meet
 

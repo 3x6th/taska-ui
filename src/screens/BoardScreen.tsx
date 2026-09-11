@@ -12,9 +12,9 @@ import {
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { CreateIssueLinkInput, CreateProjectLabelInput } from "../api/TaskaApi";
+import type { CreateIssueLinkInput, CreateProjectLabelInput, UpdateIssueInput } from "../api/TaskaApi";
 import { SEARCH_QUERY_MIN_LENGTH, UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
@@ -73,6 +73,20 @@ import {
   statusLabels,
   typeMeta,
 } from "../lib/format";
+import {
+  PLANNING_EMPTY_PLACEHOLDER,
+  PLANNING_ESTIMATE_HINT,
+  formatDuration,
+  formatStoryPoints,
+  parseDuration,
+  parseStoryPoints,
+  planningDrafts,
+  planningInput,
+  reseedPlanningDrafts,
+  rollbackPlanningDrafts,
+  samePlanningDrafts,
+  type PlanningDrafts,
+} from "../lib/planning";
 import { shortKey } from "./admin/columns";
 import type { ScreenProps } from "./App";
 import { NotFoundScreen } from "./NotFoundScreen";
@@ -1070,6 +1084,11 @@ function IssuePanel({
   const history = issueQuery.data?.history ?? [];
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
+  // One prefix for the Planning block's five label/field pairs and the two
+  // hints. Explicit `for`/`id` rather than a wrapping `<label>`: the hint has
+  // to sit under the box without joining the label's accessible name, and a
+  // wrapped label would read as "Original estimate e.g. 8h, 1h 30m, 45m".
+  const planningId = useId();
 
   // Reseed the drafts whenever the server copy changes. Done during render
   // rather than from an effect: the effect version cost an extra render pass
@@ -1077,11 +1096,35 @@ function IssuePanel({
   // this does not.
   const serverSummary = issue?.summary ?? "";
   const serverDescription = issue?.description ?? "";
-  const [synced, setSynced] = useState<{ summary: string; description: string } | null>(null);
-  if (!synced || synced.summary !== serverSummary || synced.description !== serverDescription) {
-    setSynced({ summary: serverSummary, description: serverDescription });
-    setSummary(serverSummary);
-    setDescription(serverDescription);
+  // The five planning fields ride the same pattern and for the same reason: a
+  // reader types faster than the network answers, so the input holds a draft
+  // (DESIGN.md §6, the inline-editing exception). They are one object rather
+  // than five `useState`s because they reseed together and are compared
+  // together — `samePlanningDrafts` is the comparison, and adding a sixth field
+  // fails the typecheck there instead of being silently left out of this test.
+  const serverPlanning = planningDrafts(issue);
+  const [planning, setPlanning] = useState<PlanningDrafts>(serverPlanning);
+  const [synced, setSynced] = useState<{ summary: string; description: string; planning: PlanningDrafts } | null>(null);
+  if (
+    !synced ||
+    synced.summary !== serverSummary ||
+    synced.description !== serverDescription ||
+    !samePlanningDrafts(synced.planning, serverPlanning)
+  ) {
+    // Field by field, against the server copy the drafts were last seeded
+    // from. One planning field is written per request and the panel refetches
+    // the issue afterwards, so the answer to a write of the due date lands
+    // while the reader may be halfway through the estimate beside it —
+    // reseeding the block wholesale would throw those keystrokes away, and the
+    // reader would watch a box they are typing in revert for no reason they
+    // can see. `reseedPlanningDrafts` takes only the fields whose *server*
+    // value moved; the summary and the description are re-read on the same
+    // terms, rather than whenever anything in the condition above changed.
+    const previous = synced;
+    setSynced({ summary: serverSummary, description: serverDescription, planning: serverPlanning });
+    if (!previous || previous.summary !== serverSummary) setSummary(serverSummary);
+    if (!previous || previous.description !== serverDescription) setDescription(serverDescription);
+    setPlanning((current) => reseedPlanningDrafts(current, previous?.planning ?? null, serverPlanning));
   }
 
   const workflow = issue ? workflows?.[issue.issueType] : undefined;
@@ -1092,8 +1135,28 @@ function IssuePanel({
     issue && workflow ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
 
   const updateIssue = useMutation({
-    mutationFn: (patch: { summary?: string; description?: string; priority?: IssuePriority }) => taskaApi.updateIssue(projectId, issueId, patch),
+    // `UpdateIssueInput` rather than the three fields this used to name: the
+    // planning fields carry a third state the three never had — `null` means
+    // *clear it* and `undefined` means *leave it alone* — and a local shape
+    // would have to restate that distinction to be able to send it.
+    mutationFn: (patch: UpdateIssueInput) => taskaApi.updateIssue(projectId, issueId, patch),
     onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
+    // Rollback (§5.5). The summary and the description recover on their own —
+    // the value the reader typed is still the best thing to show while they fix
+    // it, and the field is free text either way. A refused planning field is
+    // not: it was refused *because* it is not a value this issue can hold, so
+    // leaving `2026-07-01` in a date box that the server still reads as
+    // `2026-06-15` would show a state that does not exist. The stored reading
+    // comes back and the message below says why. Reseeding on render cannot do
+    // this on its own: a refused write changes nothing on the server, so
+    // `synced` still matches and nothing would reseed.
+    //
+    // Only the field this request carried, though — the mutation's own
+    // variables are the record of which one that was. Reverting all five would
+    // undo drafts the server never saw, including whichever box the reader
+    // moved on to while the refusal was in flight.
+    onError: (_error, sent) =>
+      setPlanning((current) => rollbackPlanningDrafts(current, sent, planningDrafts(issueQuery.data?.issue))),
   });
   const assignIssue = useMutation({
     mutationFn: (assigneeId: string | null) => taskaApi.assignIssue(projectId, issueId, assigneeId),
@@ -1138,6 +1201,104 @@ function IssuePanel({
   }
 
   const reporter = userById.get(issue.reporterId);
+
+  /**
+   * Put a draft back the way the server has it. Used by Escape — abandoning an
+   * edit before it is written, which is a different thing from the rollback of
+   * one that was refused.
+   */
+  const revertPlanning = (field: keyof PlanningDrafts) =>
+    setPlanning((current) => ({ ...current, [field]: serverPlanning[field] }));
+
+  /**
+   * Enter commits by blurring rather than by writing directly, so the mouse and
+   * the keyboard take the same path and there is one commit rule instead of
+   * two. Escape abandons the draft.
+   */
+  const planningKeyDown = (field: keyof PlanningDrafts) => (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "Escape") revertPlanning(field);
+  };
+
+  const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
+    setPlanning((current) => ({ ...current, [field]: value }));
+
+  /**
+   * Send one field and only that field. The body carries the single key that
+   * changed and the API layer resolves the other four from the issue as stored
+   * — which is what makes a partial edit partial on a wire that replaces (see
+   * `resolvePlanningFields` in src/api/planningFields.ts).
+   *
+   * Nothing is sent when the parsed draft already equals the stored value. The
+   * draft is normalised to the stored reading instead, so `3.0` becomes `3` and
+   * ` 8H ` becomes `8h` without spending a request that would change nothing.
+   * A draft that parsed to `NaN` is never equal to anything, so it is always
+   * sent and always refused — by `planningFieldRefusal`, in its words. This
+   * component deliberately states no bound, no format and no message of its
+   * own: two rulebooks for one field is how they come to disagree.
+   */
+  const commitStoryPoints = () => {
+    if (!canEdit) return;
+    const next = parseStoryPoints(planning.storyPoints);
+    if (next === issue.storyPoints) {
+      draftOf("storyPoints")(next === null ? "" : formatStoryPoints(next));
+      return;
+    }
+    updateIssue.mutate({ storyPoints: next });
+  };
+
+  const commitEstimate = (field: "originalEstimateMinutes" | "remainingEstimateMinutes") => () => {
+    if (!canEdit) return;
+    const next = parseDuration(planning[field]);
+    if (next === issue[field]) {
+      draftOf(field)(next === null ? "" : formatDuration(next));
+      return;
+    }
+    updateIssue.mutate(
+      field === "originalEstimateMinutes" ? { originalEstimateMinutes: next } : { remainingEstimateMinutes: next },
+    );
+  };
+
+  /**
+   * A date needs no parsing: `<input type="date">` holds exactly `YYYY-MM-DD`,
+   * which is `DateOnly` (an empty box is `""`). It is passed through as the
+   * string it is — a `Date` here would hand a moment in time to a field that
+   * means a calendar day.
+   */
+  const commitDate = (field: "startDate" | "dueDate") => (event: FocusEvent<HTMLInputElement>) => {
+    if (!canEdit) return;
+    // A half-typed date is not a cleared one. `<input type="date">` reports
+    // `value === ""` both when the reader emptied it and when only some of its
+    // segments are filled, and the second reads as `null` — *clear the stored
+    // date* — so tabbing out of a date the reader was halfway through typing
+    // would erase the day the issue actually has. `validity.badInput` is the
+    // only thing that tells the two apart: the browser sets it exactly when the
+    // control holds an entry it cannot turn into a date. Nothing is sent and
+    // the stored value comes back into the box, which is the whole message.
+    if (event.currentTarget.validity.badInput) {
+      // Written to the control as well as to the draft. React cannot clear a
+      // partial entry on its own: the `value` prop it holds is `""` before and
+      // after — the segments the reader typed never reached it — so a stored
+      // date of nothing would re-render to the same `""` and leave `12/--/----`
+      // standing in the box. Assigning the value is what discards the bad
+      // input, and it is assigned the same string the draft below reverts to,
+      // so the two do not drift.
+      event.currentTarget.value = serverPlanning[field];
+      revertPlanning(field);
+      return;
+    }
+    const draft = planning[field].trim();
+    const next = draft === "" ? null : draft;
+    if (next === issue[field]) {
+      draftOf(field)(next ?? "");
+      return;
+    }
+    updateIssue.mutate(field === "startDate" ? { startDate: next } : { dueDate: next });
+  };
 
   return (
     <div className="panel-layer">
@@ -1230,8 +1391,140 @@ function IssuePanel({
             <strong className="soft-strong">{formatDateTime(issue.createdAt)}</strong>
           </div>
 
+          {/* The five planning fields (TAS-189), right under the meta they
+              belong with and above the description, because they are read in
+              the same glance as assignee and priority.
+
+              Every box is an inline edit on the terms §4.3 and §5.5 set for the
+              summary: no edit mode, commit on blur or Enter, Escape abandons.
+              The one departure from the summary is deliberate — these commit on
+              blur rather than on a debounce, because a half-typed duration or a
+              half-picked date is a value the server would refuse, and a debounce
+              would send it.
+
+              An empty box shows `—` and never `0`: for the three text fields
+              that is the placeholder below, and for the two dates it is the
+              browser's own empty date mask, which `type="date"` draws instead of
+              any placeholder we set — so `data-empty` hands the CSS the one fact
+              it cannot see, and the mask is set in `--fg-3` like every other
+              placeholder in the product (§4.3). Both read as "not set"; neither
+              reads as a number nobody entered.
+
+              A reader without write access gets `readOnly` rather than
+              `disabled` (§5.7). The values are the point of the block for them
+              too: `disabled` would dim the lot, drop the em dash under 2:1, and
+              take five focusable boxes out of the tab order, so the one reader
+              most likely to be copying a date out of here could not reach it.
+              The commits below early-return on the same flag, because a
+              read-only control can still fire `blur`. */}
+          <section className="issue-planning">
+            <h3>Planning</h3>
+            <div className="planning-grid">
+              {/* Two rows rather than a column pair: the three short boxes read
+                  across the top and the two dates share the row below, which is
+                  the shape the values have. A 2×3 grid left an empty cell under
+                  the fifth field — an orphan the eye reads as a missing sixth
+                  field — and cost the panel a row of height for it. */}
+              <div className="planning-row is-three">
+                <div className="planning-field">
+                  <label htmlFor={`${planningId}-story-points`}>Story points</label>
+                  <input
+                    id={`${planningId}-story-points`}
+                    // Not `type="number"`: 1.5 is a legal value (`format: double`)
+                    // and a spinner on a story-point field invites clicking it to
+                    // a number nobody meant. `inputMode` still brings up the
+                    // decimal keypad on a phone.
+                    inputMode="decimal"
+                    onBlur={commitStoryPoints}
+                    onChange={(event) => draftOf("storyPoints")(event.target.value)}
+                    onKeyDown={planningKeyDown("storyPoints")}
+                    placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                    readOnly={!canEdit}
+                    type="text"
+                    value={planning.storyPoints}
+                  />
+                </div>
+                <div className="planning-field">
+                  <label htmlFor={`${planningId}-original-estimate`}>Original estimate</label>
+                  <input
+                    aria-describedby={`${planningId}-original-estimate-hint`}
+                    id={`${planningId}-original-estimate`}
+                    onBlur={commitEstimate("originalEstimateMinutes")}
+                    onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
+                    onKeyDown={planningKeyDown("originalEstimateMinutes")}
+                    placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                    readOnly={!canEdit}
+                    type="text"
+                    value={planning.originalEstimateMinutes}
+                  />
+                  {/* On screen rather than in a `title`: a tooltip does not fire
+                      on a touch device, so the one place the duration syntax was
+                      stated was the one place half the readers cannot reach. */}
+                  <p className="planning-hint" id={`${planningId}-original-estimate-hint`}>
+                    {PLANNING_ESTIMATE_HINT}
+                  </p>
+                </div>
+                <div className="planning-field">
+                  <label htmlFor={`${planningId}-remaining-estimate`}>Remaining estimate</label>
+                  <input
+                    aria-describedby={`${planningId}-remaining-estimate-hint`}
+                    id={`${planningId}-remaining-estimate`}
+                    onBlur={commitEstimate("remainingEstimateMinutes")}
+                    onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
+                    onKeyDown={planningKeyDown("remainingEstimateMinutes")}
+                    placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                    readOnly={!canEdit}
+                    type="text"
+                    value={planning.remainingEstimateMinutes}
+                  />
+                  <p className="planning-hint" id={`${planningId}-remaining-estimate-hint`}>
+                    {PLANNING_ESTIMATE_HINT}
+                  </p>
+                </div>
+              </div>
+              <div className="planning-row">
+                <div className="planning-field">
+                  <label htmlFor={`${planningId}-start-date`}>Start date</label>
+                  <input
+                    // The browser draws its own `dd.mm.yyyy` mask in an empty
+                    // date box, at the text colour, which reads as a value
+                    // somebody entered. This is what lets the CSS put it at
+                    // `--fg-3` — where §4.3 puts a placeholder — so an empty
+                    // date reads as empty next to the `—` in the boxes above.
+                    data-empty={planning.startDate === ""}
+                    id={`${planningId}-start-date`}
+                    onBlur={commitDate("startDate")}
+                    onChange={(event) => draftOf("startDate")(event.target.value)}
+                    onKeyDown={planningKeyDown("startDate")}
+                    readOnly={!canEdit}
+                    type="date"
+                    value={planning.startDate}
+                  />
+                </div>
+                <div className="planning-field">
+                  <label htmlFor={`${planningId}-due-date`}>Due date</label>
+                  <input
+                    data-empty={planning.dueDate === ""}
+                    id={`${planningId}-due-date`}
+                    onBlur={commitDate("dueDate")}
+                    onChange={(event) => draftOf("dueDate")(event.target.value)}
+                    onKeyDown={planningKeyDown("dueDate")}
+                    readOnly={!canEdit}
+                    type="date"
+                    value={planning.dueDate}
+                  />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* `role="alert"` because this line is the *only* account of a
+              refused write, and a planning field puts its stored value back at
+              the same moment (§5.5) — so without a live region a screen-reader
+              reader watches the box revert with nothing said. Same treatment as
+              the admin write dialogs. */}
           {updateIssue.isError || assignIssue.isError || transitionIssue.isError || deleteIssue.isError ? (
-            <div className="form-error">
+            <div className="form-error" role="alert">
               {(updateIssue.error ?? assignIssue.error ?? transitionIssue.error ?? deleteIssue.error)?.message}
             </div>
           ) : null}
@@ -3713,9 +4006,19 @@ function CreateIssueModal({
   const [description, setDescription] = useState("");
   const [issueType, setIssueType] = useState<IssueType>("TASK");
   const [priority, setPriority] = useState<IssuePriority>("MEDIUM");
+  // The five planning fields, all optional (TAS-189). Held as drafts for the
+  // same reason the panel holds them that way — the boxes are typed into — and
+  // reduced to a request body by `planningInput`, which omits what was left
+  // empty and passes on what was typed, including what it could not read.
+  const [planning, setPlanning] = useState<PlanningDrafts>(() => planningDrafts(null));
+  /** The estimate fields' `for`/`id`/`aria-describedby` prefix — see the panel's. */
+  const planningId = useId();
+  const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
+    setPlanning((current) => ({ ...current, [field]: value }));
 
   const createIssue = useMutation({
-    mutationFn: () => taskaApi.createIssue(projectId, { issueType, priority, summary, description }),
+    mutationFn: () =>
+      taskaApi.createIssue(projectId, { issueType, priority, summary, description, ...planningInput(planning) }),
     onSuccess: async (issue) => {
       await invalidateBoard(queryClient, projectId, issue.id);
       onCreated(issue);
@@ -3774,7 +4077,92 @@ function CreateIssueModal({
             </div>
           </label>
         </div>
-        {createIssue.isError ? <div className="form-error">{createIssue.error.message}</div> : null}
+        {/* A `fieldset` because that is what a named group of related fields is
+            in HTML, and a `legend` is the only label a screen reader reads as
+            the group's own. Same five fields, same order and same parsing as
+            the panel (the helpers are shared), so what a reader learns on one
+            surface holds on the other. All optional: an empty box is omitted
+            from the request rather than sent as a zero. */}
+        <fieldset className="planning-fieldset">
+          <legend>Planning</legend>
+          {/* Same two rows as the panel, and they fit: at 390 the modal's body
+              leaves 326, so a third of it is 100 — wider than the 96 the
+              shortest of these boxes needs, and the dates keep the half-width
+              row of their own that a date control was measured to need. */}
+          <div className="planning-grid">
+            <div className="planning-row is-three">
+              <label className="field">
+                <span>Story points</span>
+                <input
+                  inputMode="decimal"
+                  onChange={(event) => draftOf("storyPoints")(event.target.value)}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  type="text"
+                  value={planning.storyPoints}
+                />
+              </label>
+              {/* The two estimates take the panel's structure rather than this
+                  form's wrapping `<label>`: the hint under the box has to be
+                  described-by, not part of the field's name. */}
+              <div className="field">
+                <label htmlFor={`${planningId}-original-estimate`}>Original estimate</label>
+                <input
+                  aria-describedby={`${planningId}-original-estimate-hint`}
+                  id={`${planningId}-original-estimate`}
+                  onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  type="text"
+                  value={planning.originalEstimateMinutes}
+                />
+                <p className="planning-hint" id={`${planningId}-original-estimate-hint`}>
+                  {PLANNING_ESTIMATE_HINT}
+                </p>
+              </div>
+              <div className="field">
+                <label htmlFor={`${planningId}-remaining-estimate`}>Remaining estimate</label>
+                <input
+                  aria-describedby={`${planningId}-remaining-estimate-hint`}
+                  id={`${planningId}-remaining-estimate`}
+                  onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  type="text"
+                  value={planning.remainingEstimateMinutes}
+                />
+                <p className="planning-hint" id={`${planningId}-remaining-estimate-hint`}>
+                  {PLANNING_ESTIMATE_HINT}
+                </p>
+              </div>
+            </div>
+            <div className="planning-row">
+              <label className="field">
+                <span>Start date</span>
+                {/* As on the panel: an empty date box draws the browser's own
+                    mask, and `data-empty` is what lets it be set in `--fg-3`
+                    instead of reading as a date somebody picked. */}
+                <input
+                  data-empty={planning.startDate === ""}
+                  onChange={(event) => draftOf("startDate")(event.target.value)}
+                  type="date"
+                  value={planning.startDate}
+                />
+              </label>
+              <label className="field">
+                <span>Due date</span>
+                <input
+                  data-empty={planning.dueDate === ""}
+                  onChange={(event) => draftOf("dueDate")(event.target.value)}
+                  type="date"
+                  value={planning.dueDate}
+                />
+              </label>
+            </div>
+          </div>
+        </fieldset>
+        {createIssue.isError ? (
+          <div className="form-error" role="alert">
+            {createIssue.error.message}
+          </div>
+        ) : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel

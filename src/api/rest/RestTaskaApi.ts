@@ -216,10 +216,11 @@ type RestIssue = Omit<
   labels?: RestLabel[];
   // The five planning fields, restated as optional rather than inherited as
   // required. `Issue` promises them because the domain does; the *wire* does
-  // not, and will not until backend PR #148 deploys — until then every response
-  // this adapter reads is missing all five. Inheriting them as required would
-  // be a promise about a gateway that has never sent them, and `toIssue` would
-  // then be typed as if it had nothing to fold.
+  // not have to. The contract states them (merged PR #148) and the deployed
+  // gateway's `/v3/api-docs` declares them (measured 2026-09-11), but no
+  // response *body* carrying one of the five has been read — so inheriting them
+  // as required would be a promise about answers nobody has seen, and
+  // `toIssue` would then be typed as if it had nothing to fold.
   storyPoints?: number | null;
   startDate?: DateOnly | null;
   dueDate?: DateOnly | null;
@@ -276,7 +277,7 @@ interface RestIssueShortItem {
   issueType: IssueType;
   priority: Issue["priority"];
   assigneeId?: string | null;
-  // The only planning field `IssueShortResponseDto` grows in backend PR #148.
+  // The only planning field `IssueShortResponseDto` states (merged PR #148).
   // No dates and no estimates: see `IssueSearchHit` in src/domain/types.ts for
   // why this must not be widened to match `RestIssue` above.
   storyPoints?: number | null;
@@ -381,11 +382,12 @@ interface RestUpdateIssueResponse {
   summary: string;
   description: string;
   priority: Issue["priority"];
-  // `UpdateIssueResponseDto` carries all five after backend PR #148 and none of
-  // them before it, and even afterwards it states only the ones that are set —
-  // the gateway's mapper writes a field only when the proto optional is
-  // present. So an absent key here is "not set", never "unchanged", which is
-  // what `updateIssue` folds against the value it just sent.
+  // `UpdateIssueResponseDto` states all five (merged PR #148), and states only
+  // the ones that are set — the gateway's mapper writes a field only when the
+  // proto optional is present. So an absent key here is "not set", never
+  // "unchanged", which is what `updateIssue` folds against the value it just
+  // sent. A response older than that contract carries none of the five, which
+  // is the same absence and folds the same way.
   storyPoints?: number | null;
   startDate?: DateOnly | null;
   dueDate?: DateOnly | null;
@@ -791,8 +793,18 @@ export class RestTaskaApi implements TaskaApi {
    * value identically. What is *not* checked is the resolved pair: an issue
    * whose stored dates already disagree must still be editable by its summary,
    * and the server is the one entitled to refuse that.
+   *
+   * They are checked in **two** passes, and the first one is why the read below
+   * is not the first line of this method. Eight of the ten refusals — every
+   * bound, every format, and the two dates against each other — are decided by
+   * the caller's own input, so running them with `stored = null` refuses a
+   * value that could never be stored without spending a request at all.
+   * `planningFieldRefusal` skips its stored block on `null`, so this is the
+   * same function twice rather than a second copy of the rules; the second
+   * pass, after the read, can only add the two stored-date checks.
    */
   async updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
+    refusePlanningFields(input, null);
     const current = (await this.getIssue(projectId, issueId)).issue;
     refusePlanningFields(input, current);
     const planning = resolvePlanningFields(input, current);
@@ -1514,10 +1526,11 @@ export class RestTaskaApi implements TaskaApi {
    * one panel.
    *
    * The five planning fields are folded one by one rather than left to the
-   * spread. A spread of a response that carries none of them — which is every
-   * response until backend PR #148 deploys — produces five members that are
-   * `undefined` while their type says `number | null`: it type-checks by
-   * structural accident and renders the string "undefined" on the card.
+   * spread. A spread of a response that carries none of them — every response
+   * from a gateway older than merged PR #148, and every response whose issue
+   * simply has no plan — produces five members that are `undefined` while their
+   * type says `number | null`: it type-checks by structural accident and
+   * renders the string "undefined" on the card.
    *
    * `?? null` and never `||`. `0` is a legal story-point count and a legal
    * estimate, and `0 || null` is `null` — the one substitution that turns a

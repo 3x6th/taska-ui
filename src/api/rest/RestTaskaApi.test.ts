@@ -3,7 +3,7 @@ import { RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError, attachmentSizeRefusalMessage } from "../attachments";
 import { isMissingOrForbidden, isUndeployedRoute } from "../errors";
-import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
+import { ESTIMATE_MAX_MESSAGE, START_DATE_AFTER_STORED_DUE_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
  * The 401 path is the one piece of RestTaskaApi the UI cannot see for itself:
@@ -986,9 +986,11 @@ describe("RestTaskaApi issue search", () => {
         issueType: "BUG",
         priority: "HIGH",
         assigneeId: "user-mark",
-        // Neither response states it — backend PR #148 adds `storyPoints` to
-        // `IssueShortResponseDto` and no deployed gateway carries it yet — so
-        // both hits read "not estimated" rather than `undefined`.
+        // Neither response states it. `IssueShortResponseDto` declares
+        // `storyPoints` — in the contract and in the deployed gateway's
+        // `/v3/api-docs`, measured 2026-09-11 — and a hit whose issue has no
+        // estimate still arrives without the key, so both of these read "not
+        // estimated" rather than `undefined`.
         storyPoints: null,
       },
       {
@@ -1112,8 +1114,8 @@ describe("RestTaskaApi issue list", () => {
   });
 
   it("defaults the fields toIssue folds, and leaves the rest of a bare row undefined", async () => {
-    // `ListIssuesResponseDto` marks nothing required and the five planning
-    // fields land only with backend PR #148, so a row this bare is legal — and
+    // `ListIssuesResponseDto` marks nothing required, and a gateway older than
+    // merged PR #148 states none of the five, so a row this bare is legal — and
     // a card that renders "undefined" for a story-point count is the failure.
     stubFetch({ items: [{ id: "issue-2", issueKey: "TAS-102", assigneeId: "" }], totalCount: 1 });
 
@@ -2119,9 +2121,10 @@ describe("RestTaskaApi outbox retry", () => {
  * unconditionally, the proto fields are `optional`, the gateway sets them with
  * `setIfPresent` and `GrpcIssueService` resolves an unset optional with
  * `.orElse(null)` — so a field the request omits is erased. The board sends
- * `{summary}`, `{priority}` and `{description}` one at a time, and the day
- * backend PR #148 exposes these fields those three edits would each wipe the
- * story points and both dates.
+ * `{summary}`, `{priority}` and `{description}` one at a time, and against a
+ * gateway that carries these fields — which the contract has declared since
+ * merged PR #148 — those three edits would each wipe the story points and both
+ * dates.
  *
  * What is pinned here, and cannot be seen from the mock: the exact body. A
  * partial edit re-sends the values it is keeping, a resolved `null` is omitted
@@ -2229,10 +2232,11 @@ describe("RestTaskaApi issue planning fields", () => {
   });
 
   it("sends the same three keys it always did against a gateway that has no planning fields", async () => {
-    // Backend PR #148 has not merged, so the detail read carries none of the
-    // five, every one of them resolves to `null` and every one is omitted. This
-    // is why the fix can ship before the backend does: not one request byte
-    // changes.
+    // The detail read stubbed here carries none of the five — a gateway older
+    // than merged PR #148, and, until one is measured, the only kind this
+    // client has evidence of — so every one of them resolves to `null` and
+    // every one is omitted. This is why the fix could ship ahead of the
+    // backend: not one request byte changes.
     const fetchStub = stubIssue();
 
     await new RestTaskaApi().updateIssue("project-1", "issue-1", { priority: "LOW" });
@@ -2323,8 +2327,8 @@ describe("RestTaskaApi issue planning fields", () => {
         status: 400,
         ...(message === undefined ? {} : { message }),
       });
-      // The read happened — the stored dates are half of what is checked — and
-      // the write did not.
+      // The write did not happen. Whether the *read* did depends on which
+      // refusal it was, and that is the next test's subject.
       expect(fetchStub.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
     };
 
@@ -2348,6 +2352,44 @@ describe("RestTaskaApi issue planning fields", () => {
     await refuse({ startDate: "2026-07-01" });
     await refuse({ startDate: "2026-07-01", dueDate: null });
     await refuse({ dueDate: "2026-06-01" });
+  });
+
+  it("refuses an input-only value without spending a single request", async () => {
+    // Eight of the ten refusals are decided by the caller's input alone, so
+    // they are answered *before* the read-modify-write's read. The read is not
+    // free: it is a gateway round trip, on a route the reader is about to be
+    // told they cannot use. `NaN` is the one a form reaches by accident —
+    // `Number("abc")` — and it is refused with nothing fetched at all.
+    const fetchStub = stubIssue({ storyPoints: 3, startDate: "2026-06-15", dueDate: "2026-06-26" });
+    const api = new RestTaskaApi();
+
+    await expect(api.updateIssue("project-1", "issue-1", { storyPoints: Number.NaN })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+    });
+    expect(fetchStub).not.toHaveBeenCalled();
+
+    // The same for the other seven input-only refusals, one of each kind: a
+    // bound, a format, and the two dates against each other.
+    for (const input of [
+      { storyPoints: 1000 },
+      { storyPoints: 1.235 },
+      { originalEstimateMinutes: 30.5 },
+      { originalEstimateMinutes: 2_147_483_648 },
+      { remainingEstimateMinutes: -1 },
+      { startDate: "2026-02-30" },
+      { startDate: "2026-08-02", dueDate: "2026-08-01" },
+    ]) {
+      await expect(api.updateIssue("project-1", "issue-1", input)).rejects.toMatchObject({ status: 400 });
+    }
+    expect(fetchStub).not.toHaveBeenCalled();
+
+    // And the line the split must not cross: a stored-date refusal still needs
+    // the issue, so that one does read — and still does not write.
+    await expect(api.updateIssue("project-1", "issue-1", { startDate: "2026-07-01" })).rejects.toMatchObject({
+      message: START_DATE_AFTER_STORED_DUE_MESSAGE,
+    });
+    expect(fetchStub.mock.calls.map(([, init]) => init?.method ?? "GET")).toEqual(["GET"]);
   });
 
   it("sends only the planning fields a create states", async () => {

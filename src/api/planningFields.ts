@@ -28,15 +28,16 @@ import { isDateOnly } from "../domain/types";
  * ```
  *
  * The proto fields are `optional`, the gateway sets each one through
- * `setIfPresent` (`IssueMapper`, backend PR #148), and
+ * `setIfPresent` (`IssueMapper`, merged PR #148), and
  * `GrpcIssueService.updateIssue` resolves every unset optional with
  * `.orElse(null)`. So **`PUT /issues/{id}` is a full replace: a field the
  * request omits is erased, not preserved.** The backend's own *unit* test names
- * it — «Частичное обновление — непереданные planning fields затираются», in
- * `issue-service/src/test/java/ru/taska/service/IssuePlaningFieldsTest.java` on
- * `develop` — one `n` in `Planing`, holding the class
- * `PlanningFieldsServiceTest`, and renamed to the two-`n` spelling by backend
- * PR #148. It is Mockito over a stubbed repository, not a database test.
+ * it — «Частичное обновление — непереданные planning fields затираются», the
+ * class `PlanningFieldsServiceTest` in `issue-service`. Read at `ref=develop`
+ * on 2026-09-06, when its file was still the one-`n`
+ * `IssuePlaningFieldsTest.java`; PR #148, which has since merged, renames the
+ * file to the two-`n` spelling. It is Mockito over a stubbed repository, not a
+ * database test.
  *
  * That is why `resolvePlanningFields` exists and why deleting the re-read that
  * feeds it silently destroys user data. See `UpdateIssueInput` in
@@ -45,9 +46,16 @@ import { isDateOnly } from "../domain/types";
  * ## The refusals
  *
  * All ten are `INVALID_ARGUMENT` / `400`, and all ten are applied on this side
- * of the wire so a request that cannot succeed is never spent. Five reproduce a
- * rule the server states — the negative bounds, the date format, the two dates
- * against each other, and the stored-date cross-check. The other five exist
+ * of the wire so a request that cannot succeed is never spent. Eight of them
+ * need nothing but the caller's input, which is why `RestTaskaApi.updateIssue`
+ * runs this function twice: once with `stored = null` *before* the read that an
+ * update has to make, so a value that could never be stored costs no request at
+ * all, and once after it, where the two stored-date checks below become
+ * answerable. Passing `null` skips exactly that block and nothing else.
+ *
+ * Five of the ten reproduce a rule the server states — the negative bounds, the
+ * date format, the two dates against each other, and the stored-date
+ * cross-check. The other five exist
  * because the server's answer to the input is *worse* than a refusal: it stores
  * something else, or it raises, or it fails to bind the body at all and answers
  * with a message about JSON.
@@ -69,9 +77,11 @@ import { isDateOnly } from "../domain/types";
  *   DTO's field is an `Integer` (`openapi-generator-maven-plugin` in
  *   `api-gateway/pom.xml` generates it from the contract's `format: int32`), so
  *   this is decided by the gateway's body binding and not by any rule the
- *   services state. What that binding does with `30.5` has **not** been observed
- *   and cannot be yet: no deployed gateway accepts these fields, so no
- *   fractional estimate has ever been sent to one. It does not need to be
+ *   services state. What that binding does with `30.5` has **not** been
+ *   observed. It now *can* be: PR #148 merged on 2026-09-11 and the deployed
+ *   gateway declares the five (docs/ai/API-DIVERGENCE.md). One probe against a
+ *   throwaway issue would settle it, and no
+ *   fractional estimate has been sent yet. It does not need to be
  *   observed either, because both of the two possible answers make refusing
  *   locally right — either the mapper coerces the value and stores `30`, which
  *   is a number the reader did not type arriving back with no error anywhere,
@@ -85,7 +95,8 @@ import { isDateOnly } from "../domain/types";
  * - **an estimate that will not fit an `int32`** — the same binding, one bound
  *   further out, and the only refusal here that a form can reach by accident.
  *   `2147483647` is the ceiling in all three places the field is described:
- *   `format: int32` in the pending contract (backend PR #148), `optional int32
+ *   `format: int32` in the contract (docs/contract/openapi.yml, backend
+ *   develop `21a0d9d177a1`), `optional int32
  *   original_estimate_minutes` in `issue-service.proto`, and `integer` in the
  *   column (`0007-issue-planing-fields.sql`). A JSON number above it cannot be
  *   held by the DTO's `Integer` — that is the Java type, not a mapper setting —
@@ -121,9 +132,10 @@ import { isDateOnly } from "../domain/types";
  *   (`0007-issue-planing-fields.sql`): above 999.99 Postgres raises a numeric
  *   field overflow, so the write fails on a value the client could see was too
  *   large — which is the whole reason to refuse it here, whatever status the
- *   failure comes back as. **What that status is has not been measured.** No
- *   deployed gateway accepts these fields, so no such write has ever been made,
- *   and the number below is a *code read*, offered as one.
+ *   failure comes back as. **What that status is has not been measured.** The
+ *   five have been in the contract since PR #148 merged on 2026-09-11, and the
+ *   deployed gateway declares them, but no write carrying one has been made
+ *   against it — so the number below is a *code read*, offered as one.
  *
  *   The read says `500`, and the step that decides it is easy to miss, so it is
  *   written down rather than left to be re-derived. `GrpcExceptionHandler` does
@@ -345,10 +357,13 @@ export function resolvePlanningFields(input: PlanningFieldsInput, current: Plann
  * field, so the two spellings happen to agree today; the key is omitted anyway,
  * so nothing depends on that coincidence surviving a mapper change.
  *
- * A consequence worth stating, because it is what makes this change safe to ship
- * before backend PR #148 deploys: against today's gateway every one of these
- * resolves to `null` — the reads carry no planning fields — so the body is
- * exactly `{summary, description, priority}` and not one request byte changes.
+ * A consequence worth stating, because it is what made this change safe to ship
+ * ahead of the gateway: against a gateway whose reads carry no planning fields,
+ * every one of these resolves to `null`, so the body is exactly
+ * `{summary, description, priority}` and not one request byte changes. The
+ * deployed gateway declares the five as of 2026-09-11, so its reads may well
+ * carry them now and the property would stop being visible from the wire —
+ * which is why it is pinned in a test rather than left to be noticed.
  * The second half of that is pinned rather than read: "sends the same three keys
  * it always did against a gateway that has no planning fields", in
  * src/api/rest/RestTaskaApi.test.ts, drives a detail read carrying none of the

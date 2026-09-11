@@ -554,8 +554,9 @@ describe("MockTaskaApi", () => {
    * `PUT /issues/{issueId}` is a **full replace** on the gateway, so a field the
    * request omits is erased rather than preserved
    * (`IssueServiceImpl.updateIssue` on backend `develop`, read 2026-09-06). The
-   * board edits a summary, a description and a priority one at a time; the day
-   * backend PR #148 exposes these fields over REST, every one of those edits
+   * board edits a summary, a description and a priority one at a time; now
+   * that merged PR #148 has put these fields in the contract, every one of
+   * those edits
    * would wipe the story points and both dates unless the client re-sends what
    * it is keeping.
    *
@@ -985,8 +986,8 @@ describe("MockTaskaApi", () => {
       expect(hit).toBeDefined();
       // No status, no projectId, no description, no labels: a hit that carried
       // them would let a column or a card claim something the gateway never
-      // sent. `storyPoints` is the seventh and last — backend PR #148 adds it
-      // to `IssueShortResponseDto` and adds no dates and no estimates with it.
+      // sent. `storyPoints` is the seventh and last — `IssueShortResponseDto`
+      // states it and states no dates and no estimates with it.
       expect(Object.keys(hit ?? {}).sort()).toEqual([
         "assigneeId",
         "id",

@@ -29,6 +29,15 @@ const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, failProjects, r
     summary: string;
     priority: "LOW" | "MEDIUM" | "HIGH";
     assigneeId: string | null;
+    /**
+     * The one planning field `IssueShortResponseDto` carries
+     * (docs/contract/openapi.yml, backend develop `21a0d9d177a1`, merged PR
+     * #148) — no dates and no estimates. Stated here rather than left out
+     * because the fake is cast to `TaskaApi`, so a hit missing a field the
+     * domain declares is a shape gap nothing would report; and `null` is the
+     * honest seed for a search that does not show points.
+     */
+    storyPoints: number | null;
   }
   const now = "2026-08-01T09:00:00Z";
   const state: {
@@ -131,6 +140,7 @@ const hit = (issueKey: string, summary: string, id = issueKey.toLowerCase()) => 
   summary,
   priority: "HIGH" as const,
   assigneeId: null,
+  storyPoints: null,
 });
 
 describe("the top bar's global search", () => {

@@ -137,6 +137,14 @@ test("takes one watcher on a double-click of one row's remove, not two", async (
   // press, the list reflowed inside a frame, and the second press landed on the
   // next row's ✕ — two `DELETE`s for two people out of one gesture, with no
   // confirmation, no undo and nothing on screen naming the second person.
+  // Scrolled into view *before* the box is measured, and this line is load
+  // bearing: the presses below are raw mouse events at viewport coordinates,
+  // which — unlike `locator.click()` — scroll nothing. The panel grew a
+  // Planning block above this section in TAS-189 and the rows went under the
+  // fold at every viewport, so the box was read off-screen and both presses
+  // landed on nothing. The gesture being tested is unchanged: two presses at
+  // one fixed point, wherever that point turns out to be.
+  await first.scrollIntoViewIfNeeded();
   const box = (await first.boundingBox())!;
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
