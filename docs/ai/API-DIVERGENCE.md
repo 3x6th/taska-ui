@@ -155,7 +155,10 @@ is cheaper than splitting an entry and the reader has to be told which.
 - **Compensation:** none. Recorded so the next person to add a status knows the
   frontend will not simply follow.
 - **Removal:** narrow at the mapper the way TAS-151 did for `globalRole`, or
-  have the contract state the enum.
+  have the contract state the enum. Filed 2026-09-11: the source is
+  [TAS-217](https://jira.ozero.dev/browse/TAS-217) (`GET /meta`), the mapper
+  defence is [TAS-173](https://jira.ozero.dev/browse/TAS-173), the contract
+  `$ref` is [TAS-206](https://jira.ozero.dev/browse/TAS-206).
 
 ### Closed by measurement (TAS-195 pass): `GET /issues/{issueId}` no longer 500s on a commented issue
 
@@ -199,7 +202,9 @@ is cheaper than splitting an entry and the reader has to be told which.
 - **Compensation:** `RestTaskaApi.listProjects` maps **any** 404 to `[]`, so a
   misrouted base URL or a renamed path after a gateway deploy renders as "you
   have no projects" with no error anywhere.
-- **Removal:** [TAS-141](https://jira.ozero.dev/browse/TAS-141). Until then
+- **Removal:** [TAS-207](https://jira.ozero.dev/browse/TAS-207), re-filed from
+  TAS-141 which closed without it; [TAS-211](https://jira.ozero.dev/browse/TAS-211)
+  restates it for the enriched list. Until then
   the catch should at least be narrowed to the specific error `code`.
 
 ### Closed by TAS-147: `globalRole` is on the wire, with both values seen
@@ -392,7 +397,10 @@ Same rule as above: "Closed by" is settled, the rest is live.
   a deleted project reads as a healthy membership; and with the flag off, a
   real `MEMBER` or a co-`ADMIN` who did not create the project is silently
   demoted to `VIEWER`. The synthesis both over- and under-grants.
-- **Removal:** [TAS-137](https://jira.ozero.dev/browse/TAS-137). When it
+- **Removal:** [TAS-137](https://jira.ozero.dev/browse/TAS-137), and on top of
+  it [TAS-212](https://jira.ozero.dev/browse/TAS-212), which puts the same
+  members with names into the project read so the board needs no separate
+  member call. When it
   ships, delete `HybridTaskaApi`, drop `VITE_TASKA_ASSUME_PROJECT_ADMIN`, and
   default `VITE_TASKA_API_MODE` to `rest`. The flag lives in five places, and
   deleting only the first is what makes a removal look finished when it is
@@ -437,7 +445,9 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **User-visible effect:** activation appears to fail, or at best to end
   nowhere: in both modes the user is left at a sign-in form with no statement
   that their password was in fact set.
-- **Removal:** [TAS-141](https://jira.ozero.dev/browse/TAS-141) — either return
+- **Removal:** [TAS-204](https://jira.ozero.dev/browse/TAS-204), re-filed
+  2026-09-11 from TAS-141 which closed without it; the frontend half is
+  [TAS-208](https://jira.ozero.dev/browse/TAS-208) — either return
   tokens from the accept call, or state in the contract that the client must
   sign in afterwards (in which case the UI should collect the email and do it).
 
@@ -541,8 +551,9 @@ Everything below is the entry as it stood, in the past tense.
   terminates only if the gateway honours `unreadOnly` and durably flips
   `readAt` — if either breaks with ≥100 unread, the tab hangs in a request
   storm. Its `updatedCount` counts attempts, not confirmed changes.
-- **Removal:** [TAS-141](https://jira.ozero.dev/browse/TAS-141). Until then
-  the loop should be capped.
+- **Removal:** [TAS-216](https://jira.ozero.dev/browse/TAS-216), re-filed
+  2026-09-11 from TAS-141 which closed without it. Until then
+  the loop should be capped (TAS-202's interim half).
 
 ### An assignee cannot be cleared — by contract
 
@@ -553,7 +564,8 @@ Everything below is the entry as it stood, in the past tense.
   `UNSUPPORTED_OPERATION` error, and the board renders the "None" chip
   permanently `disabled` — an issue assigned by mistake can never be
   unassigned. The mock unassigns happily, so the modes visibly disagree.
-- **Removal:** [TAS-141](https://jira.ozero.dev/browse/TAS-141) (nullable
+- **Removal:** [TAS-215](https://jira.ozero.dev/browse/TAS-215), re-filed
+  2026-09-11 from TAS-141 (nullable
   `assigneeId` or an explicit unassign route).
 
 ### Comment ordering is unspecified
@@ -565,7 +577,8 @@ Everything below is the entry as it stood, in the past tense.
   passes the gateway's order through unsorted. If the gateway emits
   oldest-first, the thread renders inverted between modes with nothing
   failing. Unverifiable end-to-end while TAS-139 is open.
-- **Removal:** [TAS-141](https://jira.ozero.dev/browse/TAS-141) specifies the
+- **Removal:** [TAS-206](https://jira.ozero.dev/browse/TAS-206), re-filed
+  2026-09-11 from TAS-141, specifies the
   order in the contract; `RestTaskaApi` should sort explicitly meanwhile.
 
 ### `requestId` lives only in a response header
@@ -1777,6 +1790,13 @@ found"`.
   silently-ignored enum is the half that is a defect; the other two are the
   contract and the runtime disagreeing, and either side may be the one that
   moves. When it closes, the constant and the enum guard come out together.
+- **Decided 2026-09-11 with the owner; TAS-180 stays `Done`.** The minimum of
+  three is deliberate and set through the environment, so the contract moves to
+  it — `minLength: 3`, no `default` — under
+  [TAS-206](https://jira.ozero.dev/browse/TAS-206). The ignored enum becomes an
+  empty result rather than a `400`, under
+  [TAS-218](https://jira.ozero.dev/browse/TAS-218). The length constant stays
+  for good; the enum guard comes out with TAS-218.
 
 ### The search DTO carries no `status` and no `projectId`
 
@@ -1788,7 +1808,9 @@ found"`.
   really does arrive without `statusKey` and without `projectId`, so the two
   compensations built on that absence — placing a hit in a column, and deriving
   the project from the issue-key prefix — are still both required. Filed as part
-  of [TAS-205](https://jira.ozero.dev/browse/TAS-205).
+  of [TAS-205](https://jira.ozero.dev/browse/TAS-205), closed 2026-09-11 into
+  [TAS-218](https://jira.ozero.dev/browse/TAS-218), which puts `projectId`,
+  `projectKey` and `statusKey` on the hit.
   It is not a contract violation: the contract declares exactly this. It is
   recorded because of what it costs the UI.
 - **Two things follow, and both shape the feature rather than decorate it.**
@@ -2477,6 +2499,18 @@ the update route accepts no `If-Match` and no expected version, so a concurrent
 edit between the read and the write is silently clobbered. That was already true
 for the three required fields; this widens it from three to eight.
 
+Filed 2026-09-11 as [TAS-215](https://jira.ozero.dev/browse/TAS-215):
+`PATCH /issues/{issueId}` taking an expected `version`, answering `409` on a
+mismatch and the whole issue on success. Read against `develop` the same day:
+the `version` column (`NOT NULL DEFAULT 1`, `CHECK >= 1`), the `+1` in
+`IssueServiceImpl.updateIssue` and the `findActiveByIdForUpdate` row lock all
+exist, the entity carries no `@Version`, and nothing compares the counter —
+`IssueCommentRepository.updateWithVersionCheckAndAuthor` (`WHERE version =
+:version … RETURNING *`) is the precedent in the same service. Partial update
+needs `optional` on `summary`, `description` and `priority` in
+`UpdateIssueRequestBody`, which proto3 does not give them today; the planning
+fields already have it.
+
 ### `BigDecimal.equals` is scale-sensitive, so re-sending a story-point value looks like a change
 
 A consequence of the preservation above, and one the client cannot fix.
@@ -2769,7 +2803,15 @@ declared in REST and absent from the proto.
 `priority`, `description`, `createdAt` — and `labels` arriving as something a
 chip can be drawn from. Not by the route working, which it now does. Raised on
 TAS-125; the frontend half is TAS-191, and the mapper asks above are filed as
-[TAS-201](https://jira.ozero.dev/browse/TAS-201).
+[TAS-201](https://jira.ozero.dev/browse/TAS-201), closed 2026-09-11 into
+[TAS-213](https://jira.ozero.dev/browse/TAS-213). That ticket also records,
+from a read of `develop`, what is a mapper change (`issue_type`, `status_key`,
+`priority`, `watchers_count`, `comments_count` are already on
+`IssueBoardResponse` and dropped by `toRestBoardIssue`) against what needs
+proto fields (`description`, `created_at`, `updated_at`, `version`, `due_date`,
+`story_points`), that `issue_type` on the request is not `optional`, and that
+`displayName` waits on TAS-137's `GetUserDetailsByIds` — auth-service has no
+read of users by id at all on `develop`.
 
 ### The five attachment routes exist only on an open backend PR
 

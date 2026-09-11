@@ -1861,6 +1861,10 @@ search endpoint is claimed; the other is not:
   time is how a reviewable diff stops being one. Note the twelfth value —
   `MEMBER_ROLE_CHANGED` was never in the enum the contract just deleted, so the
   union and the contract already disagreed before this.
+  **Claimed 2026-09-11:** the source of truth is
+  [TAS-217](https://jira.ozero.dev/browse/TAS-217) (`GET /meta`), the mapper
+  defence is [TAS-173](https://jira.ozero.dev/browse/TAS-173), the `$ref` in
+  the contract is [TAS-206](https://jira.ozero.dev/browse/TAS-206).
 
 The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
 schema change. None was on the four open PRs this refresh was done for — they
@@ -1953,7 +1957,10 @@ is what recurs.
   removes `HybridTaskaApi` and the admin flag.
 - [TAS-141](https://jira.ozero.dev/browse/TAS-141) — contract gaps: read-all,
   nullable assignee, comment ordering, CORS-exposed `X-Request-Id`,
-  404-on-empty-projects bug. (The board-capable list DTO was dropped from it
+  404-on-empty-projects bug. **Closed in Jira 2026-09-04 with three clauses
+  open; re-filed 2026-09-11:** read-all is TAS-216, the nullable assignee is
+  TAS-215, comment ordering is TAS-206, the empty list is TAS-207 (and TAS-211
+  restates it for the enriched list). Nothing points at this key any more. (The board-capable list DTO was dropped from it
   as a duplicate of TAS-124/125 — which turned out not to cover it either;
   see the struck line below.)
 - ~~[TAS-124](https://jira.ozero.dev/browse/TAS-124) /
@@ -1983,7 +1990,10 @@ is what recurs.
   deliberately stays tokens-only. Contract-level only so far: the field has not
   been observed on the deployed gateway, which is why the frontend treats its
   absence as "not stated" rather than as an error.
-- [TAS-201](https://jira.ozero.dev/browse/TAS-201) — filed 2026-09-09 from
+- ~~[TAS-201](https://jira.ozero.dev/browse/TAS-201)~~ — **closed 2026-09-11 as a
+  duplicate of TAS-213**, epic TAS-210, with every ask below carried over,
+  including the `story_points`-not-in-proto and `displayName`-null facts. Was:
+  filed 2026-09-09 from
   TAS-191, and filed directly rather than parked here because it is a
   contract-design problem that survives on its own: `BoardIssueDto` drops
   `issueType`, `status_key` and `priority`, which `IssueBoardResponse` already
@@ -1992,3 +2002,27 @@ is what recurs.
   three smaller ones — `storyPoints` declared in REST with no `story_points` in
   the proto to fill it, `labels` sending ids under a name that reads as names,
   and `assignee.displayName` null for every assigned issue measured.
+- [TAS-210](https://jira.ozero.dev/browse/TAS-210) — **the epic, 2026-09-11.**
+  Filed 2026-09-10 as one dictionary ask, rewritten the same day into the
+  system-level ask the owner wanted ("one request per screen"), and made an
+  epic on 2026-09-11 with eight children, one per route:
+  [TAS-211](https://jira.ozero.dev/browse/TAS-211) `GET /projects` with counts,
+  members and role; [TAS-212](https://jira.ozero.dev/browse/TAS-212) the
+  project context with members, labels and all workflows;
+  [TAS-213](https://jira.ozero.dev/browse/TAS-213) the board as one read;
+  [TAS-214](https://jira.ozero.dev/browse/TAS-214) the issue panel as one read
+  plus lookup by key; [TAS-215](https://jira.ozero.dev/browse/TAS-215) `PATCH`
+  with `version`; [TAS-216](https://jira.ozero.dev/browse/TAS-216) read-all
+  and `unreadCount`; [TAS-217](https://jira.ozero.dev/browse/TAS-217) `GET
+  /meta`; [TAS-218](https://jira.ozero.dev/browse/TAS-218) search hits with
+  `projectId` and `statusKey`, empty list on an unknown filter. Each child
+  carries "as is" and "to be" JSON in `{code}` blocks and a plain list of new
+  and removed fields. TAS-203 and TAS-205 were closed into it the same day as
+  duplicates; the owner set the epic to `Highest`. The direction it serves —
+  off hybrid, in this order — is written up in `JIRA-WORKFLOW.md` under the
+  MVP cut.
+- [TAS-180](https://jira.ozero.dev/browse/TAS-180) — **stays `Done`, by the
+  owner's decision of 2026-09-11.** The three-character minimum is deliberate
+  and configurable, so the contract moves to it (TAS-206); the ignored enum
+  becomes an empty result rather than a `400` (TAS-218). Recorded as a comment
+  on the ticket, so the next re-probe does not reopen it by reflex.
