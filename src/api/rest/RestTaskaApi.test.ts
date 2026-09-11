@@ -2373,7 +2373,9 @@ describe("RestTaskaApi issue planning fields", () => {
     // bound, a format, and the two dates against each other.
     for (const input of [
       { storyPoints: 1000 },
+      { storyPoints: 1.235 },
       { originalEstimateMinutes: 30.5 },
+      { originalEstimateMinutes: 2_147_483_648 },
       { remainingEstimateMinutes: -1 },
       { startDate: "2026-02-30" },
       { startDate: "2026-08-02", dueDate: "2026-08-01" },

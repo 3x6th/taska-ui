@@ -4553,7 +4553,8 @@ h1 {
    values stay at full contrast and the box keeps its place in the tab order,
    which is what `disabled` took away — it dimmed the whole block to `.58` and
    left nothing here reachable or selectable. What read-only must not keep is
-   the invitation to type, so no hover frame and the pointer stays an arrow.
+   the invitation to type, so no hover frame and the pointer stays an arrow —
+   and the focus frame/fill is gated the same way, for the same reason.
 
    One thing it does not keep either, and the browser decides it rather than
    this file: Chromium draws no calendar glyph on a read-only date input
@@ -4577,7 +4578,7 @@ h1 {
   background: var(--surface-2);
 }
 
-.planning-field input:focus {
+.planning-field input:focus:not(:read-only) {
   border-color: var(--border-strong);
   background: var(--surface);
 }

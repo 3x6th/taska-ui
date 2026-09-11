@@ -1170,13 +1170,13 @@ the next session in this image exactly as it bit this one.
   not-in-`LOCKED` refusals are both 400. The enumeration directly below it is
   unambiguous and the sentence is wording rather than a contract claim, which is
   why it was left rather than opening another builder pass for one word.
-- **`BoardScreen.test.tsx`'s `makeIssue` fixture omits the five planning fields**
+- ~~**`BoardScreen.test.tsx`'s `makeIssue` fixture omits the five planning fields**
   (`release-reviewer`, TAS-189). The fake API is cast `as unknown as TaskaApi`,
   so every issue that suite sees has `undefined` where the type says
   `number | null`, and nothing can tell you: the cast defeats the typecheck by
   construction. `??` treats the two alike but `=== null`, `in`, `typeof` and
   `Object.entries` do not. Five `null` lines; do it with the UI half, which is
-  the code that will read them.
+  the code that will read them.~~ Done in TAS-189's UI half (2026-09-11).
 - **Two refusal-set edges where the client and the server differ harmlessly**
   (`release-reviewer`, TAS-189): the estimate rules test `Number.isInteger`
   before `< 0`, so `-1.5` is reported as "not a whole number" rather than "cannot
@@ -1187,10 +1187,11 @@ the next session in this image exactly as it bit this one.
   (`release-reviewer`, TAS-189): REST refuses a bad planning value before the
   project is checked, the mock throws `NOT_FOUND` for an inaccessible project
   first. Only observable on the pair "bad value on a project you cannot see".
-- **`GlobalSearch.test.tsx`'s `hit()` fixture omits `storyPoints`**
+- ~~**`GlobalSearch.test.tsx`'s `hit()` fixture omits `storyPoints`**
   (`api-contract-guard`, TAS-189) — same class as the `BoardScreen.test.tsx`
   line below, hidden by the same `as unknown as TaskaApi` cast. Fix both with
-  the UI half.
+  the UI half.~~ Done in TAS-189's UI half (2026-09-11): both fixtures and a
+  third one in `BoardScreen.test.tsx` carry the five fields now.
 - **`RestTaskaApi.updateIssue` does not bump `version` while the mock does**
   (`api-contract-guard`, TAS-189): the update response DTO carries no `version`,
   so REST cannot. Pre-existing parity drift, now over eight fields instead of
@@ -1208,14 +1209,21 @@ the next session in this image exactly as it bit this one.
   it would never reach the gRPC validator the divergence entry credits. Cannot
   be settled without the generated sources. It does not change what this client
   refuses, only which layer the record names.
-- **Three planning-field claims want one probe each, once backend PR #148
-  deploys** (`api-contract-guard`, TAS-189): what status a story-points value at
+- **Three planning-field claims want one probe each — reachable since
+  2026-09-11, when backend PR #148 merged and the deployed gateway's
+  `/v3/api-docs` started declaring the five** (`api-contract-guard`, TAS-189;
+  still unprobed on the UI half, which was mock-backed): what status a story-points value at
   or above 1000 actually produces (the record says 500 as a *code read* and has
   guessed wrong twice already), what the gateway does with a fractional estimate
   under Jackson 3, and which message a REST caller sees for a malformed date.
-  All three are unreachable today because the fields are unserved, all three are
-  written up as unobserved, and all three are one request each the day they are
-  reachable. Nothing else tracks them.
+  All three were unreachable while the fields were unserved, all three are
+  written up as unobserved, and all three are one request each against a
+  throwaway issue now. Nothing else tracks them.
+- **`docs/contract/pending/pr-147-TAS-131.yml` is pinned at `f53dca384486`
+  while backend PR #147's head is `deeedbf3fff8`** (`api-contract-guard`,
+  2026-09-11, from `npm run contract:pins` during TAS-189). Backend drift, not
+  ours; diff the two heads before anything else is written against TAS-190's
+  extract, and re-pin or say the contract half did not move.
 - **`TaskaApi.ts:106` calls a code read "measured"** (`frontend-builder`,
   TAS-189). It describes reading two backend services' source at PR #146's head,
   not a probe. It was not wrong when TAS-188 wrote it — the word was not
@@ -1766,6 +1774,14 @@ them blocks the story.
   not-found, or a deployed build older than the machinery. Reproduce with a fresh
   session and a short-lived token before filing; the observation is worth keeping
   because the screen it ends on tells the user the wrong thing either way.
+
+- **`.modal-actions` scrolls with the modal body, where §4.11 wants a fixed
+  footer plane** (`art-director`, 2026-09-11, TAS-189). TAS-189 made `.modal-body`
+  scroll so a tall form's primary action is reachable on a phone; the finish is
+  moving `.modal-actions` out of the body into a `--surface-2` footer with a top
+  border, which needs a footer slot on `components/Modal.tsx` and `form=` on the
+  submit buttons of all four consumers. Declined inside TAS-189 because it
+  touches every modal for a phone shorter than 844px.
 
 ## Frontend stories already filed
 

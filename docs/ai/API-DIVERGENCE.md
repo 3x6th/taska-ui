@@ -2487,12 +2487,23 @@ current value for anything the caller left alone. Components keep the partial
 bodies they already write; the preservation lives in the API layer, where it can
 be tested, and the full-replace semantics never reach a screen.
 
-Against today's gateway every resolved planning value is `null`, so the request
-body is byte-identical to the one sent before this change — pinned by a REST
-test rather than assumed, which is what made it safe to ship ahead of the merge.
+Against a gateway whose reads carry no planning fields every resolved value is
+`null`, so the request body is byte-identical to the one sent before this change
+— pinned by a REST test rather than assumed, which is what made it safe to ship
+ahead of the merge. **That is a property of the pre-#148 gateway, not a live
+invariant:** the deployed gateway declares the five as of 2026-09-11, so from
+the first planning write onwards a summary-only edit carries the stored values
+too. The REST test still pins the three-key body for a read that carries none,
+and that is what it proves — do not read it as "the body never grows".
 
 **Removed by:** nothing on the client, unless the backend distinguishes "not
-sent" from "sent null". Asked on TAS-116; a client that always sends the
+sent" from "sent null". Asked on TAS-116, and the merged code answers no
+(`api-contract-guard`, read at `develop @ 21a0d9d177a1`, 2026-09-11):
+`IssueMapper`'s request-side `setIfPresent` is `if (value != null)` over plain
+`Double`/`Integer`/`LocalDate` DTO fields with no `JsonNullable`, so an absent
+key and a JSON `null` arrive as the same Java `null`, both leave the proto
+optional unset, and both are written as `null` by the unconditional setters.
+A client that always sends the
 resolved value stays correct either way, which is why the question did not gate
 the work. Note the re-read makes update a two-round-trip read-modify-write with
 no optimistic concurrency available — `IssueResponseDto` carries `version` but
@@ -2594,16 +2605,17 @@ re-sending resolved values can never trip the check by itself.
 - **The UI instead:** TAS-189's API layer (merged here as PR #45) was written against the
   earlier head and stays exactly as it is — it is right about the wire the day the
   declarations come back and wrong about nothing today, since nothing in the UI reads
-  these fields yet. `docs/contract/pending/pr-148-TAS-116.yml` keeps the extract with its
-  header rewritten to say which head it describes. Nothing further is written against it
-  until the declarations return.
+  these fields yet. `docs/contract/pending/pr-148-TAS-116.yml` kept the extract with its
+  header rewritten to say which head it describes (deleted on the close below). Nothing
+  further was written against it until the declarations returned.
 - **Removed by:** backend PR #148 restoring the declarations and merging. Raised on
   TAS-116.
 - **Closed 2026-09-11.** PR #148 merged at 13:09Z from head `87bc8ed64134`, and
   that head changes `openapi.yml` again: the five declarations are back, and
   `develop @ 21a0d9d177a1` differs from the previous snapshot (`5941499203ae`)
-  by exactly the blocks the extract at `79187f94d135` carried, plus the
-  `required` arrays on the same five schemas — diffed, not assumed. Every
+  by exactly the blocks the extract at `79187f94d135` carried, plus `required`
+  arrays on three of them (`IssueResponseDto`, `IssueShortResponseDto`,
+  `UpdateIssueResponseDto`) — diffed, not assumed. Every
   module job on the merged head is green, api-gateway included. The deployed
   gateway was measured the same day rather than inferred from the merge:
   `GET /v3/api-docs` on `api.taska.ozero.dev` declares all five on
