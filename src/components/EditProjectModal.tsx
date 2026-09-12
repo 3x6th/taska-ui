@@ -1,13 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
 import { taskaApi } from "../api/client";
-import { isUndeployedRoute } from "../api/errors";
+import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import type { UpdateProjectInput } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import type { Project } from "../domain/types";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import { ColorSwatches, type ColorChoice } from "./ColorSwatches";
 import { Modal } from "./Modal";
+import { RequestId } from "./RequestId";
 
 /**
  * The project's own three editable fields — `PATCH /projects/{projectId}`,
@@ -16,9 +17,10 @@ import { Modal } from "./Modal";
  *
  * ADMIN only, and both callers decide that before rendering this: the board
  * from the `membershipQuery` it already holds, the projects screen from
- * `currentUserRole` on the list row or a `getMembership` fallback. Hiding the
- * control is presentation — the gateway refuses the write for everybody else
- * regardless, and a 403 arriving here is shown rather than swallowed.
+ * `currentUserRole` on the list row and from nothing else — neither spends a
+ * request of its own to find out. Hiding the control is presentation — the
+ * gateway refuses the write for everybody else regardless, and a 403 arriving
+ * here is shown rather than swallowed.
  *
  * The key is displayed and not editable, and that is the contract rather than a
  * simplification: `UpdateProjectRequestDto` has no `projectKey`, because the
@@ -163,6 +165,12 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
   // pill inside 480px is the kind of thing §1 asks not to draw.
   const badge = keyBadgeStyle(project.projectKey, project.color);
 
+  // Read through `apiErrorFacts` rather than off the error, so this block says
+  // the same things in mock mode and against the gateway: `MockApiError`
+  // carries no `requestId`, `ApiError` does, and neither shape is this
+  // component's business to know.
+  const { message, requestId } = apiErrorFacts(save.error);
+
   return (
     <Modal title="Edit project" onClose={onClose}>
       <form
@@ -235,12 +243,38 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
           // (see `HybridTaskaApi.updateProject`) — nothing the reader did
           // wrong, so it reads as a quiet note rather than the red box every
           // other refusal gets, and never as a protocol sentence to act on.
+          //
+          // Quiet, but not meta: this line is the only account of a save that
+          // did not happen, and the optimistic patch has already rolled back on
+          // the card behind the scrim by the time it is read. So it carries
+          // `.save-failed-note`'s own `--fg-2` rather than `.field-note`'s
+          // `--fg-3`, and `role="status"` — pressing Save has to answer a
+          // screen reader with something, and until PR #155 deploys this is
+          // what every admin gets.
           isUndeployedRoute(save.error, UNDEPLOYED_ROUTE_MESSAGE) ? (
-            <p className="field-note">Project edits are not on this gateway yet, so this change was not saved.</p>
+            <p className="field-note save-failed-note" role="status">
+              Project edits are not on this gateway yet, so this change was not saved.
+            </p>
           ) : (
-            <div className="form-error">{save.error.message}</div>
+            <div className="form-error">
+              <span>{message ?? "The gateway refused this change."}</span>
+              {/* The two refusals this dialog can actually receive are a 409
+                  telling the reader to retry and a 403, and for both the
+                  gateway log is the only place to learn what happened — so the
+                  id travels with the sentence, as it does in every other
+                  failure block in this product. */}
+              {requestId ? <RequestId value={requestId} /> : null}
+            </div>
           )
         ) : null}
+
+        {/* Why Save is off, said where the reader is looking rather than left
+            to be worked out: a disabled button cannot take focus, so a tooltip
+            on it would never be read. `.admin-write-hint` is the line this
+            product already wrote for exactly this. Only for the blank name —
+            "nothing has changed yet" is self-evident from the form and does not
+            need a sentence under it. */}
+        {nameIsBlank ? <p className="admin-write-hint">A project needs a name, so Save is off until there is one.</p> : null}
 
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">

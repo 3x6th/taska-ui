@@ -1,3 +1,6 @@
+import type { CSSProperties } from "react";
+import { readableTextOn } from "../lib/format";
+
 /**
  * One colour out of a short row of them, picked by clicking a round swatch.
  *
@@ -72,7 +75,18 @@ export function ColorSwatches({
           disabled={choice.disabled}
           key={choice.value ?? "automatic"}
           onClick={() => onPick(choice.value)}
-          style={{ background: choice.swatch }}
+          // The fill and the ink that reads on it, set together in one place.
+          // The dashed ring above is drawn in `--swatch-ink`, so anything laid
+          // over this fill is chosen *from* it by §2.2's own rule rather than
+          // taken from the cascade — which is the half-a-pair failure §4.4
+          // removed from `.avatar` on TAS-175: a theme token over a data-driven
+          // fill agrees with the fill only by luck. `--surface` for the dashes
+          // measured 2.26:1 against `#e3a008` in light (the seeded OPS project
+          // hashes to exactly that) and 2.69:1 against `#0052cc` in dark;
+          // `readableTextOn` lands the whole palette at 4.23–7.91:1,
+          // identically in both themes, because the ink no longer depends on
+          // the theme at all.
+          style={{ background: choice.swatch, "--swatch-ink": readableTextOn(choice.swatch) } as CSSProperties}
           title={choice.label}
           type="button"
         />

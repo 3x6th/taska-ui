@@ -107,6 +107,11 @@ test("creates a project with a description and a colour, and the card shows both
   // every reader — and until TAS-148 it reached no server either.
   await expect(dialog.getByLabel("Description")).toHaveValue("");
 
+  // What the first swatch is, in text. It is the default and the only one
+  // whose meaning is not its colour, and a `title` says nothing on a touch
+  // screen — this line is where both dialogs' dashed ring is learned.
+  await expect(dialog.getByText(/first swatch is Automatic/)).toBeVisible();
+
   // `exact`, because the Automatic swatch is named after the project key too
   // and a substring match finds both.
   await dialog.getByLabel("Key", { exact: true }).fill("DOC");

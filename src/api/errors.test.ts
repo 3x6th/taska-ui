@@ -95,14 +95,19 @@ describe("isUndeployedRoute", () => {
     ).toBe(true);
   });
 
-  // A 405 is not self-evident the way the static-resource 404 is: this
-  // gateway can refuse a method for reasons that have nothing to do with
-  // deployment, so a 405 carrying a different (or absent) code must read as
-  // the client error it is, never as "not shipped yet".
-  it("refuses a 405 that is not this signature", () => {
+  // What the code conjunct is actually for, since this gateway cannot emit a
+  // 405 carrying anything else (see `isUndeployedRoute`): a 405 that did not
+  // come from our gateway at all. Something in front of it answering with a
+  // non-JSON body leaves `RestTaskaApi.request` with no code to read and
+  // falling back to `UNKNOWN` — both shapes below are that, one where the body
+  // would not parse and one where it parsed but named no code — and neither
+  // says anything about what the gateway has shipped.
+  it("refuses a 405 that did not come from this gateway", () => {
+    expect(isUndeployedRoute(new ApiError("Request failed with 405", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE)).toBe(
+      false,
+    );
     expect(
-      isUndeployedRoute(new ApiError("Request method 'PATCH' is not supported.", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE),
+      isUndeployedRoute(new ApiError("Method Not Allowed", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE),
     ).toBe(false);
-    expect(isUndeployedRoute(new ApiError("Forbidden", "PERMISSION_DENIED", 405), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
   });
 });

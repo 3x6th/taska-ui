@@ -868,6 +868,24 @@ h1 {
   font-weight: 600;
 }
 
+/* The gateway's request id when a refusal carries one — its own line under the
+   sentence, the way the admin console's failure block already sets it, rather
+   than inheriting this block's tone. `--danger` on its own 12% tint measures
+   3.17:1 in light (the same number `.attachment-note` below records, where the
+   tone was dropped for it), and this is a string the reader has to transcribe
+   into a log query, not a decoration: §7 asks ≥4.5:1 for that, and `--fg-2` on
+   the tint is 6.25:1 light / 5.95:1 dark. Mono and 11.5px because it is a
+   verbatim machine string (§2.3, `.admin-error-detail`). */
+.form-error .request-id-line {
+  display: flex;
+  margin-top: 4px;
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
 .primary-button,
 .secondary-button,
 .clear-button,
@@ -1367,9 +1385,15 @@ h1 {
 }
 
 /* Only where the control is actually drawn. Reserving it on every card would
-   truncate the name 30px early for readers who have no edit button. */
+   truncate the name 26px early for readers who have no edit button.
+
+   26 and not 30: the button is 32 wide and sits 11 from the shell's edge, and
+   the head's own content box ends 18 in (a 1px border plus the card's 17px
+   padding), so 25 is where the two touch and 26 is the first value on §2.4's
+   scale that clears it. The 30 this rule shipped with is off that scale and
+   spent 4px of every editable card's name on slack it did not need. */
 .project-card-shell.is-editable .project-card-head {
-  padding-right: 30px;
+  padding-right: 26px;
 }
 
 .project-card-head strong {
@@ -4590,6 +4614,20 @@ h1 {
   line-height: 1.35;
 }
 
+/* One `.field-note` that is not meta, so it borrows the box and states its own
+   colour: the line saying this gateway has not shipped `PATCH /projects/{id}`
+   (TAS-148) is the *only* report that a save did not happen, after the
+   optimistic patch has already rolled the card back behind the scrim — and
+   until backend PR #155 deploys it is the path every admin takes. On the
+   modal's `--surface` plane `--fg-3` measures 3.14:1 light / 3.05:1 dark,
+   which is §7's floor for non-critical meta and this is not that; `--fg-2` is
+   7.26:1 / 6.75:1. That is the argument `.admin-write-hint` above already
+   makes, for the same reason. Still a quiet note rather than `.form-error`'s
+   red box, deliberately: nothing the reader did is wrong. */
+.save-failed-note {
+  color: var(--fg-2);
+}
+
 /* §4.3, inline-edit: transparent frame at rest so five boxes do not draw five
    rectangles across the panel, the frame and the surface arriving together on
    focus. Height, radius and padding are §2.7's and §2.5's ordinary input
@@ -5799,14 +5837,24 @@ button.attachment-open:hover:not(:disabled) {
    (§4.4's unassigned avatar). Drawn inside rather than as the border, because
    the border is the checked ring and this swatch can be checked too.
 
-   `--surface` for the dashes, not a text token: they are read against the fill
-   they sit on, which is an arbitrary hex, and the modal's own plane is the one
-   thing both themes agree the fill is not. */
+   `--swatch-ink` for the dashes, set on the swatch itself beside its
+   `background` (see ColorSwatches.tsx): the ring is read against the fill it
+   sits on, and the fill is data. A theme token here was half a pair — the same
+   failure §4.4 took out of `.avatar` on TAS-175 — and it measured it: against
+   `--surface`, two of the eight fills fall under §7's 3:1 floor in light
+   (`#e3a008` 2.26, `#0ea5e9` 2.77) and a third sits on it (`#3fa863` 3.0032),
+   one falls under it in dark (`#0052cc` 2.69), and `#e3a008` splits 2.26 light
+   against 8.13 dark. The ink `readableTextOn` picks from the fill is
+   4.23–7.91:1 across the set and the same number in both themes.
+
+   Not chasing the disabled state's 0.58 composite, which still measures
+   2.08–4.06:1 with the right ink: §2.2 rules that a systemic exception fixed by
+   §4.1's disabled recipe rather than by the palette. */
 .color-swatch.is-automatic::before {
   content: "";
   position: absolute;
   inset: 2px;
-  border: 1.5px dashed var(--surface);
+  border: 1.5px dashed var(--swatch-ink);
   border-radius: 50%;
 }
 

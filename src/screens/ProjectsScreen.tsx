@@ -1,6 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { ApiNotice } from "../components/ApiNotice";
@@ -11,7 +11,7 @@ import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { TopBar } from "../components/TopBar";
 import { PendingValue, Unknown } from "../components/Unknown";
-import type { Project, ProjectMember, ProjectRole } from "../domain/types";
+import type { Project, ProjectMember } from "../domain/types";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import type { ScreenProps } from "./App";
@@ -21,13 +21,6 @@ interface ProjectSummary {
   count: number | null;
   members: ProjectMember[] | null;
   /**
-   * The reader's own role in this project, when the list row did not state one.
-   * `null` is "we did not get an answer", which is not a role and never grants
-   * anything: the edit control stays hidden, and the server stays the
-   * authority either way (AGENTS.md).
-   */
-  role: ProjectRole | null;
-  /**
    * Why a `null` above is `null`. The query itself resolves either way — one
    * half of a card is worth drawing without the other — so this is the only
    * route the gateway's own words and its request id have out of here, and
@@ -36,33 +29,32 @@ interface ProjectSummary {
   failure: Error | null;
 }
 
-async function loadSummary(projectId: string, roleFromList: ProjectRole | null): Promise<ProjectSummary> {
-  // `allSettled`, not `all`: the issue count, the member list and the reader's
-  // role are three independent facts about one project, and they do not fail
-  // together. In hybrid mode the member read is synthesised from
-  // `GET /projects/{id}`, which is currently a 500 (TAS-162), while the issue
-  // list answers perfectly well — so joining them is how a card ends up
-  // claiming zero issues for a project that has nine.
+async function loadSummary(projectId: string): Promise<ProjectSummary> {
+  // `allSettled`, not `all`: the issue count and the member list are two
+  // independent facts about one project, and they do not fail together. In
+  // hybrid mode the member read is synthesised from `GET /projects/{id}`,
+  // which is currently a 500 (TAS-162), while the issue list answers perfectly
+  // well — so joining them is how a card ends up claiming zero issues for a
+  // project that has nine.
   //
-  // The role read is the cheapest of the three and usually costs nothing at
-  // all. `GET /projects` states `currentUserRole` on every row once backend
-  // PR #152 deploys, and this only asks when the row did not — while on the
-  // stand `HybridTaskaApi` short-circuits `getMembership` behind
-  // `VITE_TASKA_ASSUME_PROJECT_ADMIN` and makes no request either.
-  const [issues, members, role] = await Promise.allSettled([
+  // Two legs and no third. A `getMembership` fallback used to sit here for
+  // rows that state no `currentUserRole`, which against the gateway today is
+  // *every* row — backend PR #152 is open — so it fired once per card rather
+  // than never: 1 + 2N requests became 1 + 3N, and in `hybrid` with the
+  // assume-admin flag off 1 + 4N, since that leg spends a `getProject` and a
+  // `getCurrentUser` of its own. All of it to decide whether to draw a pencil
+  // opening a dialog whose Save cannot succeed until PR #155 deploys either.
+  // The row's own field is the only source now; both entry points light up by
+  // themselves the day PR #152 lands.
+  const [issues, members] = await Promise.allSettled([
     taskaApi.listIssues(projectId, { pageSize: 100 }),
     taskaApi.listMembers(projectId),
-    roleFromList ? Promise.resolve({ role: roleFromList }) : taskaApi.getMembership(projectId),
   ]);
-  // Deliberately not `[issues, members, role]`: this failure is the banner
-  // saying the *counts* could not be loaded, and a refused role read does not
-  // make a count unknown. A role nobody could read simply hides a control.
   const rejection = [issues, members].find((result) => result.status === "rejected")?.reason;
 
   return {
     count: issues.status === "fulfilled" ? (issues.value.totalCount ?? issues.value.items.length) : null,
     members: members.status === "fulfilled" ? members.value : null,
-    role: role.status === "fulfilled" ? role.value.role : null,
     failure: rejection instanceof Error ? rejection : null,
   };
 }
@@ -106,14 +98,8 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   // kept so the existing invalidation after a create still matches.
   const summaryQueries = useQueries({
     queries: projects.map((project) => ({
-      // The row's own `currentUserRole` when the gateway stated one, which
-      // skips the fallback read in `loadSummary` entirely. In the key as well
-      // as in the argument: the day backend PR #152 deploys, a summary cached
-      // from the fallback has to be replaced rather than kept. The
-      // `project-summaries` prefix is unchanged, so the invalidation after a
-      // create still matches.
-      queryKey: ["project-summaries", project.id, project.currentUserRole ?? null],
-      queryFn: () => loadSummary(project.id, project.currentUserRole ?? null),
+      queryKey: ["project-summaries", project.id],
+      queryFn: () => loadSummary(project.id),
     })),
   });
 
@@ -255,13 +241,16 @@ function ProjectCard({
   const members = summary?.members ?? null;
   const count = summary?.count ?? null;
   /**
-   * ADMIN only, from whichever source answered: the list row's own
-   * `currentUserRole` (backend PR #152) or the `getMembership` fallback in
-   * `loadSummary`. A role that could not be read is not a role, so the control
-   * is simply absent — and its absence is not the permission, which stays the
-   * server's (AGENTS.md, DESIGN.md §5.7).
+   * ADMIN only, and from the list row alone: `currentUserRole` on
+   * `GET /projects` (backend PR #152). A row that states no role is not a role,
+   * so the control is simply absent — its absence is not the permission, which
+   * stays the server's (AGENTS.md, DESIGN.md §5.7), and no request is spent
+   * here asking for one. Against the gateway today that means no pencil on any
+   * card, which is the honest picture while PR #155's `PATCH` is undeployed
+   * too; the board's own header keeps its pencil, because the membership query
+   * it draws from is already mounted for other reasons.
    */
-  const canEdit = (project.currentUserRole ?? summary?.role) === "ADMIN";
+  const canEdit = project.currentUserRole === "ADMIN";
   /**
    * A sibling of the card rather than a child of it, because the card *is* a
    * `<button>` and a button inside a button is not markup a browser will keep.
@@ -340,6 +329,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
    * created with one is committed.
    */
   const [color, setColor] = useState<string | null>(null);
+  const automaticHintId = useId();
 
   const canSubmit = useMemo(() => projectKey.trim().length >= 2 && name.trim().length >= 2, [name, projectKey]);
 
@@ -404,7 +394,23 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         </label>
         <div className="field">
           <span>Colour</span>
-          <ColorSwatches choices={choices} groupLabel="Project colour" onPick={setColor} selected={color} />
+          <ColorSwatches
+            choices={choices}
+            describedBy={automaticHintId}
+            groupLabel="Project colour"
+            onPick={setColor}
+            selected={color}
+          />
+          {/* What the first swatch is, said once for both dialogs. It is the
+              default and the only one whose meaning is not its colour, and
+              until now the dashed ring was explained by a `title` and an
+              aria-label — nothing at all on a touch screen. `--fg-3` because
+              this genuinely is meta about a field (§7), and `aria-describedby`
+              rather than a loose paragraph so it is announced on entering the
+              group instead of read past. */}
+          <p className="field-note" id={automaticHintId}>
+            The first swatch is Automatic: the project takes its colour from its key.
+          </p>
         </div>
         {create.isError ? <div className="form-error">{create.error.message}</div> : null}
         <div className="modal-actions">

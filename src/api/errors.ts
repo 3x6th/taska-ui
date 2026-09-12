@@ -98,12 +98,25 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * first — only `POST` is mapped on that path — and PR #155's
  * `PATCH /projects/{id}` meets it a second time, for the same reason; the
  * second is what this predicate is widened for, and nothing yet calls it for
- * the first. The code has to be there and not just the status, because a 405
- * is not evidence on its own the way the 404 above is: this gateway can answer
- * 405 for reasons that have nothing to do with what it has shipped, and
- * reading every one of them as "not deployed yet" would be the mistake a bare
- * 404 match would already be, for a status handed out for more reasons than
- * that one is.
+ * the first.
+ *
+ * What the `code` conjunct buys is narrower than it looks, and worth stating
+ * exactly because the obvious reading of it is false. It is **not** that this
+ * gateway answers 405 for other reasons: it cannot. `GatewayWebExceptionHandler`
+ * is an `@Order(-2)` `WebExceptionHandler`, so every unhandled exception in the
+ * chain — the router's `MethodNotAllowedException` included — reaches
+ * `GatewayErrorHandler`, where a `ResponseStatusException` takes the code from
+ * the status name and no gRPC code maps to 405 at all
+ * (`RestErrorMapper.mapGrpcCodeToHttpStatus`; permission-denied is 403). Read
+ * at `origin/develop` on 2026-09-12. So every 405 *this gateway* emits carries
+ * `METHOD_NOT_ALLOWED`, and that includes one caused by a bug of ours calling a
+ * mapped path with the wrong method — which would read here as "not deployed
+ * yet", and is the one way this arm can be wrong.
+ *
+ * What it does buy: that the 405 came from our gateway rather than from
+ * something in front of it. A proxy answering with a non-JSON body leaves
+ * `RestTaskaApi.request` with no `code` to read and falling back to `UNKNOWN`,
+ * and that failure has nothing to say about what the gateway has shipped.
  *
  * It lives here rather than beside either of its callers because it is a fact
  * about the *gateway*, in the same family as `isMissingOrForbidden`. It is

@@ -19,7 +19,6 @@ const {
   fakeApi,
   failIssuesFor,
   failMembersFor,
-  failRoleFor,
   holdProjectsList,
   holdSummaries,
   projectsRefetchStarted,
@@ -29,11 +28,13 @@ const {
   releaseSummaries,
   reset,
   roleFor,
+  statesNoRoleFor,
 } = vi.hoisted(() => {
   const state: {
     issueFailures: Set<string>;
     memberFailures: Set<string>;
-    roleFailures: Set<string>;
+    /** Rows the list answers without a `currentUserRole` — the gateway today. */
+    roleless: Set<string>;
     roles: Record<string, ProjectRole>;
     /** What the server holds after a successful edit, so a refetch agrees with it. */
     edits: Record<string, Record<string, unknown>>;
@@ -69,7 +70,7 @@ const {
   } = {
     issueFailures: new Set<string>(),
     memberFailures: new Set<string>(),
-    roleFailures: new Set<string>(),
+    roleless: new Set<string>(),
     roles: {},
     edits: {},
     refuseEdit: false,
@@ -108,7 +109,15 @@ const {
         project("project-a", "AAA", "Alpha"),
         project("project-b", "BBB", "Beta"),
         project("project-c", "CCC", "Gamma"),
-      ].map((row) => ({ ...row, ...(state.edits[row.id] ?? {}) }));
+      ].map((row) => ({
+        ...row,
+        // `currentUserRole` on the row and nowhere else (backend PR #152):
+        // this screen reads the role from the list and spends no request of
+        // its own on it. `roleless` is the other answer the wire has — the
+        // key simply missing, which is every row on the gateway today.
+        ...(state.roleless.has(row.id) ? {} : { currentUserRole: state.roles[row.id] ?? ("ADMIN" as const) }),
+        ...(state.edits[row.id] ?? {}),
+      }));
     },
     listIssues: async (projectId: string) => {
       if (state.gate) await state.gate;
@@ -132,9 +141,6 @@ const {
         },
       ];
     },
-    // The fallback role read (TAS-148). These rows carry no `currentUserRole`,
-    // which is exactly the gateway this build ships against — backend PR #152
-    // was open on 2026-09-12 — so every card here takes this path.
     updateProject: async (projectId: string, input: Record<string, unknown>) => {
       // Recorded before the possible throw below: a refusal that never wrote
       // this would let `listProjects` answer the old name on its own, and the
@@ -156,21 +162,27 @@ const {
         throw Object.assign(new Error("Project was concurrently modified by another request, please retry"), {
           code: "ABORTED",
           status: 409,
+          // As `RestTaskaApi.request` attaches it from `X-Request-Id`. A 409
+          // telling the reader to retry and a 403 are the two refusals this
+          // dialog can actually receive, and for both the gateway log is the
+          // only place to learn what happened — so the id has to reach the
+          // surface that reports them.
+          requestId: "2f1c7d40-9b3e-4a11",
         });
       }
       return { ...project(projectId, "BBB", "Beta"), id: projectId, ...state.edits[projectId] };
     },
-    getMembership: async (projectId: string) => {
-      if (state.roleFailures.has(projectId)) throw new Error(`Internal error for ${projectId}`);
-      return { role: state.roles[projectId] ?? "ADMIN", isMember: true, projectExists: true };
-    },
+    // No `getMembership` on purpose. This screen used to fall back to it for
+    // any row that stated no role, which against the gateway meant one extra
+    // request per card forever; leaving it off the fake is what makes a
+    // reintroduction fail loudly here rather than only on the network tab.
   };
 
   return {
     fakeApi: api as unknown as TaskaApi,
     failIssuesFor: (projectId: string) => state.issueFailures.add(projectId),
     failMembersFor: (projectId: string) => state.memberFailures.add(projectId),
-    failRoleFor: (projectId: string) => state.roleFailures.add(projectId),
+    statesNoRoleFor: (projectId: string) => state.roleless.add(projectId),
     refuseEdits: () => {
       state.refuseEdit = true;
     },
@@ -209,7 +221,7 @@ const {
     reset: () => {
       state.issueFailures.clear();
       state.memberFailures.clear();
-      state.roleFailures.clear();
+      state.roleless.clear();
       state.roles = {};
       state.edits = {};
       state.refuseEdit = false;
@@ -432,10 +444,11 @@ describe("filtering the project list", () => {
  * Who is offered the edit dialog, and what a card says when the description
  * the server holds is empty (TAS-148).
  *
- * These rows carry no `currentUserRole`, which is the gateway this build
- * actually ships against, so every case here runs through the `getMembership`
- * fallback in `loadSummary`. That is the point of testing it rather than the
- * list-stated role: the fallback is the branch that exists today.
+ * One source for the role and one only: `currentUserRole` on the list row
+ * (backend PR #152). The `getMembership` fallback that used to stand in for a
+ * row without one is gone — it fired on every card against the gateway, since
+ * PR #152 is open and no row states a role there — so the roleless case below
+ * is not an edge any more, it is that gateway.
  */
 describe("editing a project from its card", () => {
   beforeEach(() => {
@@ -462,14 +475,17 @@ describe("editing a project from its card", () => {
     expect(editButton("Alpha")).not.toBeInTheDocument();
   });
 
-  it("offers nothing when the role could not be read at all", async () => {
-    failRoleFor("project-a");
+  it("offers nothing, and asks nobody, when the row states no role", async () => {
+    statesNoRoleFor("project-a");
     renderProjects();
     await within(await findCard("Alpha")).findByText("9");
 
-    // A role nobody could read is not a role. The counts still arrive, which is
-    // the other half: a refused role read must not take the card's numbers
-    // down with it.
+    // A row that states no role is not a role, and this screen does not go
+    // looking for one. The counts arriving is what proves the second half: the
+    // fake has no `getMembership`, so a fallback returning to `loadSummary`
+    // would throw on the call itself and reject the whole summary — this card
+    // would then say "unknown" where it says nine, instead of quietly costing
+    // one request per card the way it did against the gateway.
     expect(editButton("Alpha")).not.toBeInTheDocument();
     expect(screen.queryByText(/Some project details could not be loaded/)).not.toBeInTheDocument();
   });
@@ -575,6 +591,10 @@ describe("saving a project edit", () => {
     // refusal reported where there is nothing left open to fix it in is a
     // refusal nobody can act on.
     expect(await within(dialog).findByText(/concurrently modified/)).toBeVisible();
+    // And the id that identifies this failure in the gateway log, beside it.
+    // A 409 asking the reader to retry is exactly the case where the sentence
+    // alone leaves them nothing to take to anyone.
+    expect(within(dialog).getByRole("button", { name: "Copy request id 2f1c7d40-9b3e-4a11" })).toBeVisible();
   });
 
   // A 405 on a path that exists for GET reads as the gateway not having
@@ -608,5 +628,8 @@ describe("saving a project edit", () => {
     // never a clear.
     fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "   " } });
     expect(within(dialog).getByRole("button", { name: "Save changes" })).toBeDisabled();
+    // Said on screen, not left to be worked out. A disabled button cannot take
+    // focus, so its own tooltip would never be read.
+    expect(within(dialog).getByText(/Save is off until there is one/)).toBeVisible();
   });
 });
