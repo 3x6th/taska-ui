@@ -2089,3 +2089,12 @@ is what recurs.
   `this.segment(...)` — noticed on TAS-219, pre-existing, harmless for the uuids
   the app actually passes. One line, and worth taking the next time that class
   is open.
+- **Two record nits from TAS-219's release review**, both one clause and neither
+  worth a commit of its own. `RestTaskaApi.getMembership` hardcodes `isMember`
+  and `projectExists` exactly as the hybrid synthesis does, but the divergence
+  bullets attribute that hardcoding to hybrid alone — it is grounded there in
+  the 403-on-a-non-member behaviour and read by nothing, so it is a wording fix
+  for the next time that section is open. And `MockTaskaStore.createProject`
+  returns the stored row without passing it through `withCurrentUserRole`, so a
+  freshly created project is the one row in the mock's `listProjects` that
+  states no role.

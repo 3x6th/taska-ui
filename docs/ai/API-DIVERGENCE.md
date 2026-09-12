@@ -620,6 +620,34 @@ Everything below is the entry as it stood, in the past tense.
   2026-09-11 from TAS-141 (nullable
   `assigneeId` or an explicit unassign route).
 
+### `GET /projects/{id}/members` states no order, and the two implementations differ
+
+- **Missing:** any ordering guarantee. `ProjectMemberRepository.findProjectMembers`
+  in project-service — backend PR #152, head `1ad6ffad815d` — has no `ORDER BY`,
+  and `ProjectMemberServiceImpl` merges the auth-service rows into the result
+  without imposing one, so two reads of the same project may answer in two
+  orders.
+- **Compensation:** `RestTaskaApi.listMembers` sorts client-side — `displayName`
+  first, rows with no name last, `userId` as the tiebreak so the order is total.
+- **The mock does not sort, and that is the half worth recording here** rather
+  than leaving in a method comment. `MockTaskaApi.listMembers` answers in seed
+  order, so the same project's members can come out in a different order in the
+  two modes: on the seeded WEB project the mock gives Anna, Sofia, Priya where
+  `rest` would give Anna, Priya, Sofia. The end-to-end suite runs on the mock, so
+  **mock-backed evidence no longer predicts the `rest` order for this list** and
+  no test in this repository can catch a regression in it.
+- **User-visible effect without the compensation:** the board's avatar stack, the
+  assignee filter and the watcher picker reshuffle between refetches in `rest`
+  mode. None of it is reachable on the stand, which runs `hybrid` and synthesises
+  a one-element list.
+- **Removal:** asked on [TAS-137](https://jira.ozero.dev/browse/TAS-137) on
+  2026-09-12, in two shapes. `ORDER BY pm.user_id` in the repository is one line
+  and has its precedent in the same interface — `getRequiredMembersInProject`
+  already ends that way — but a uuid order is not an order a UI wants, so the
+  client sort would stay. Sorting the enriched list by `displayName` in
+  `ProjectMemberServiceImpl`, after the user-details join, is what actually
+  deletes the compensation.
+
 ### Comment ordering is unspecified
 
 - **Endpoint:** `GET /projects/{id}/issues/{id}/comments`

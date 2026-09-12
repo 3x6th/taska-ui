@@ -404,6 +404,26 @@ describe("RestTaskaApi project members", () => {
     expect(result.map((member) => member.userId)).toEqual(["user-y", "user-z", "user-a", "user-b"]);
   });
 
+  it("tiebreaks on userId even when two distinct names collate equal, e.g. NFC vs NFD of the same accent", async () => {
+    // `"\u00e9x"` is one precomposed code point for an accented e, followed
+    // by "x"; `"e\u0301x"` reaches the same accented e by combining a plain
+    // "e" with a combining acute accent, then "x". Different strings by
+    // `===` (length 2 versus 3), but `localeCompare` calls them equal, which
+    // used to return 0 straight out of the name branch and strand these two
+    // on wire order instead of reaching the `userId` tiebreak below.
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-b", role: "MEMBER", displayName: "e\u0301x" },
+          { userId: "user-a", role: "MEMBER", displayName: "\u00e9x" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.userId)).toEqual(["user-a", "user-b"]);
+  });
+
   it("reads `items` as nothing, because that is not what this response is called", async () => {
     const { result } = await call(
       { items: [{ userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova" }] },
@@ -446,6 +466,25 @@ describe("RestTaskaApi project members", () => {
     // keyed on — but `user` is absent, so every screen takes its own
     // unknown-person path instead of drawing an empty name.
     expect(result).toEqual([{ userId: "user-ghost", role: "MEMBER", user: undefined }]);
+  });
+
+  it("drops a row with no `userId`, because there is nothing to key a picker option on", async () => {
+    // Not reachable off PR #152's `ProjectMemberDetailsDto`, where `userId` is
+    // the join key — this pins the mapper's own refusal to invent one, not a
+    // shape anyone has observed the gateway send.
+    const { result } = await call(
+      {
+        members: [
+          { role: "MEMBER", displayName: "No Id At All" },
+          { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result).toEqual([
+      { userId: "user-anna", role: "ADMIN", user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
+    ]);
   });
 
   it("treats a blank display name as no name rather than as a name", async () => {

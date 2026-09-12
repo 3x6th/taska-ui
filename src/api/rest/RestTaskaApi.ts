@@ -731,9 +731,23 @@ export class RestTaskaApi implements TaskaApi {
     // to this route, and an unguarded `.map` would reject with a `TypeError` —
     // no code, no request id, nothing `apiErrorFacts` can name.
     //
+    // `.filter(...)` drops a row with no `userId` before it ever reaches
+    // `toProjectMember`. `userId` is `ProjectMemberDetailsDto`'s join key (PR
+    // #152), so a row missing it is not a shape the deployed gateway sends — only
+    // the schema's empty `required` block allows it in principle. This is the
+    // mapper refusing to invent an id, not a compensation for an observed answer:
+    // unlike a nameless row, which still has a `userId` a screen can act on, an
+    // idless one has nothing to act on at all. Left in, it used to reach the
+    // watcher picker's `<select>` as an option valued `""`, colliding with that
+    // list's own placeholder and, with two such rows, with each other's React
+    // `key`.
+    //
     // `.sort(compareMembers)` after it, always — see the method doc above for
     // why the server's own order cannot be trusted.
-    return (response.members ?? []).map((member) => toProjectMember(member)).sort(compareMembers);
+    return (response.members ?? [])
+      .filter((member) => Boolean(member.userId))
+      .map((member) => toProjectMember(member))
+      .sort(compareMembers);
   }
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
@@ -2008,16 +2022,19 @@ function toProjectMember(member: RestProjectMember): ProjectMember {
  * `listMembers`'s own stability, not the server's — see that method's doc for
  * why one is needed at all. Named rows sort by `displayName`; a row with no
  * `user` sorts after every named one, because it has nothing to alphabetise
- * by. `userId` breaks every remaining tie — two rows sharing a display name,
- * or two rows with none — so the comparator is a total order and two reads of
- * the same membership can never disagree, whatever order the response body
- * arrived in.
+ * by. `userId` breaks every remaining tie — two rows `localeCompare` calls
+ * equal, whether that is the same string twice or two spellings that collate
+ * to 0 without being identical (NFC vs NFD of the same accented name, for
+ * instance), and two rows with no name — so the comparator is a total order
+ * and two reads of the same membership can never disagree, whatever order the
+ * response body arrived in.
  */
 function compareMembers(a: ProjectMember, b: ProjectMember): number {
   const nameA = a.user?.displayName ?? null;
   const nameB = b.user?.displayName ?? null;
-  if (nameA !== null && nameB !== null && nameA !== nameB) {
-    return nameA.localeCompare(nameB);
+  if (nameA !== null && nameB !== null) {
+    const byName = nameA.localeCompare(nameB);
+    if (byName !== 0) return byName;
   }
   if ((nameA === null) !== (nameB === null)) {
     return nameA === null ? 1 : -1;

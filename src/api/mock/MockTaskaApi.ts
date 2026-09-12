@@ -1517,9 +1517,10 @@ export class MockTaskaStore {
    * send for a computed-but-empty role (`src/domain/types.ts`), only the
    * missing key.
    *
-   * **Known mock divergence, not written up in docs/ai/API-DIVERGENCE.md
-   * (there is no entry for it, contrary to what an earlier version of this
-   * comment claimed):** `getProject` answers this shape even for a
+   * **Known mock divergence: no entry in docs/ai/API-DIVERGENCE.md names
+   * `getProject` by route, but the convention behind it is recorded — under the
+   * attachments section, the same one `getIssueById`'s own membership check
+   * documents:** `getProject` answers this shape even for a
    * non-member — the project row, with no `currentUserRole` — where the real
    * gateway would refuse the read with 403 before this field ever enters it.
    * `listProjects` does not share that gap: it already filters to
