@@ -26,13 +26,27 @@
 # - `role` and `currentUserRole` are `type: string` in the yml, and neither is an open set.
 #   `ProjectMapper.toRestProjectRole` (api-gateway) emits exactly ADMIN, MEMBER or VIEWER and
 #   throws 500 on anything else, so `currentUserRole` cannot arrive as UNSPECIFIED — the read
-#   fails instead. `ProjectMemberDetailsResponse.role` takes the other path: it is a proto
-#   `string`, filled by MapStruct from project-service's own `ProjectRole` enum, whose
-#   ANY_UNMAPPED target is `UNSPECIFIED`. So a member row CAN carry "UNSPECIFIED" while the
-#   project's own role cannot, and the two fields are not the same closed set.
-# - `currentUserRole` is written only under `protoDto.hasCurrentUserRole()`, so it is ABSENT
-#   rather than null for a reader the field was not computed for. `?? undefined` reads it;
-#   a `null` check alone does not.
+#   fails instead. `ProjectMemberDetailsResponse.role` takes the other path: it is a
+#   proto `string`, and MapStruct fills it from project-service's own `ProjectRole` enum by
+#   its built-in enum-to-String conversion, which is `.name()`. The `ANY_UNMAPPED ->
+#   UNSPECIFIED` value mapping in that same interface is the **inbound write** path and does
+#   not apply here, and `ck_project_members_role` in `0000-init.sql` confines the column to
+#   ADMIN, MEMBER and VIEWER — so "UNSPECIFIED" is not on the wire today. What the field's
+#   openness really means is that a role added to the enum later arrives verbatim, "OWNER"
+#   say, where the project's own role would throw a 500 instead. The two are still not the
+#   same set.
+# - `currentUserRole` is written only under `protoDto.hasCurrentUserRole()`, and what that
+#   puts on the wire is an explicit `null`, not a missing key: the api-gateway configures no
+#   Jackson inclusion — no `spring.jackson` in its application.yml, no ObjectMapper and no
+#   codec customizer — so the default ALWAYS applies. `archivedAt` on this same DTO is the
+#   existing evidence of it. A client has to read both, because a gateway without this PR
+#   omits the key entirely while one with it sends null.
+# - **The list read carries it too**, which the first reading of this PR got wrong.
+#   `ProjectService.listMyProjects` returns `Flux<ProjectCheckMembershipDto>` after this PR,
+#   and `GrpcProjectService.listMyProjects` maps it through the `toProjectResponse` overload
+#   annotated with `currentUserRole`, over a repository query that inner-joins
+#   `project_members`. So every item of `GET /projects` states the reader's role, and none of
+#   them can be null for a row that came back at all.
 # - `AvatarDto.createdAt` is declared here and is never populated: `AvatarResponse` in
 #   project-service.proto has no `created_at`, and `ProjectMapper.toAvatarDto` sets six
 #   fields, not seven. Treat it as absent.

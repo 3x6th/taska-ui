@@ -1465,7 +1465,9 @@ export class MockTaskaStore {
   }
 
   listProjects(): Project[] {
-    return this.projects.filter((project) => project.memberIds?.includes(this.currentUserId));
+    return this.projects
+      .filter((project) => project.memberIds?.includes(this.currentUserId))
+      .map((project) => this.withCurrentUserRole(project));
   }
 
   createProject(input: CreateProjectInput): Project {
@@ -1494,19 +1496,39 @@ export class MockTaskaStore {
     if (!project) {
       throw new MockApiError("NOT_FOUND", "Project not found");
     }
-    // `currentUserRole` (backend PR #152) is served here so both
-    // implementations answer the same shape: the rest leg derives the whole of
-    // `getMembership` from this field and nothing else, and a mock that left it
-    // out would make that derivation untestable against anything but a stub.
-    //
-    // A copy rather than a stored field, because the role belongs to the reader
-    // and not to the project row — written into `this.projects` it would leak
-    // one reader's role into every other answer built from that array. Absent
-    // for a non-member, exactly as the gateway leaves it absent when it
-    // computed no role; the mock's own divergence on non-members (it answers
-    // the project where the gateway answers 403) is unchanged and recorded in
-    // docs/ai/API-DIVERGENCE.md.
-    const role = this.membersByProject[projectId]?.find((member) => member.userId === this.currentUserId)?.role;
+    return this.withCurrentUserRole(project);
+  }
+
+  /**
+   * `currentUserRole` (backend PR #152), attached here so `getProject` and
+   * `listProjects` answer the same shape — and so does `rest`: PR #152
+   * rewrote `ProjectService.listMyProjects` to join `project_members` and
+   * fill the role on every row of `GET /projects` too, not only the
+   * single-project read this method used to serve alone. The rest leg derives
+   * the whole of `getMembership` from this one field, and a mock that carried
+   * it on only one of the two routes would make that derivation untestable
+   * against anything but a stub for the other.
+   *
+   * A copy rather than a stored field, because the role belongs to the reader
+   * and not to the project row — written into `this.projects` it would leak
+   * one reader's role into every other answer built from that array. Absent
+   * for a non-member, exactly as the gateway leaves it absent when it computed
+   * no role; the mock never emits the explicit `null` a deployed gateway can
+   * send for a computed-but-empty role (`src/domain/types.ts`), only the
+   * missing key.
+   *
+   * **Known mock divergence, not written up in docs/ai/API-DIVERGENCE.md
+   * (there is no entry for it, contrary to what an earlier version of this
+   * comment claimed):** `getProject` answers this shape even for a
+   * non-member — the project row, with no `currentUserRole` — where the real
+   * gateway would refuse the read with 403 before this field ever enters it.
+   * `listProjects` does not share that gap: it already filters to
+   * `project.memberIds.includes(this.currentUserId)`, the same membership
+   * `findAllByMemberUserId`'s join enforces on the wire, so every row it
+   * returns is one this reader is actually on.
+   */
+  private withCurrentUserRole(project: Project): Project {
+    const role = this.membersByProject[project.id]?.find((member) => member.userId === this.currentUserId)?.role;
     return role ? { ...project, currentUserRole: role } : project;
   }
 

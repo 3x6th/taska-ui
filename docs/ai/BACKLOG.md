@@ -2056,3 +2056,36 @@ is what recurs.
   clause is delivered while `minLength: 3`, the dropped `default`, and the two
   documents that disagree are not. The PR was CONFLICTING against develop at
   that reading, so the merge is not imminent.
+- **The board spends two identical `GET /projects/{id}` per paint, and the
+  obvious fix is a trap until PR #152 deploys** — raised by
+  `api-contract-guard` on TAS-219, 2026-09-12. `BoardScreen` runs
+  `["project", id]` and `["membership", id]` as separate queries and
+  `RestTaskaApi.getMembership` now derives from the project read, so `rest`
+  asks the same route twice on first paint and twice again on every focus
+  return. The screen reads only `role` off the membership result; nothing in
+  `src/` reads `isMember` or `projectExists` at all. So deleting
+  `membershipQuery` and taking `projectQuery.data?.currentUserRole` removes a
+  read and sharpens the TAS-163 banner to what it now means.
+  **It must not be done yet.** On the stand the gateway sends no
+  `currentUserRole`, while `HybridTaskaApi.getMembership` short-circuits to
+  ADMIN through `VITE_TASKA_ASSUME_PROJECT_ADMIN`; making the swap today would
+  floor every user on the stand to VIEWER and take write access off the board.
+  It becomes correct the day PR #152 deploys, and it belongs to
+  [TAS-202](https://jira.ozero.dev/browse/TAS-202) when it does.
+- **Two backend asks out of PR #152, raised on TAS-137 while the PR is open**
+  (2026-09-12, found by `api-contract-guard`, both verified in the PR's Java).
+  First: `ProjectMapper.toRestProjectRole` throws a 500 for a role it cannot
+  name, and after this PR *every* item of `GET /projects` passes through it, so
+  one bad membership row blanks the whole projects screen rather than one card
+  — the read path should omit the field instead, which the client already
+  floors. Second: `ProfileServiceImpl.getUserDetailsByIds` errors `NOT_FOUND`
+  when any requested id is missing, so a single dangling member id makes
+  `GET /projects/{id}/members` answer 404 for a project that has members;
+  behind it `buildProjectMemberDetailsDto` dereferences the user with no null
+  check, so fixing either half alone turns the 404 into a 500. Both are
+  hardening rather than reproductions: a CHECK constraint blocks the first
+  today and nothing has orphaned a member yet.
+- **`RestTaskaApi.getProject` interpolates the id raw** while its neighbours use
+  `this.segment(...)` — noticed on TAS-219, pre-existing, harmless for the uuids
+  the app actually passes. One line, and worth taking the next time that class
+  is open.

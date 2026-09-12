@@ -294,9 +294,13 @@ describe("RestTaskaApi current user", () => {
  * to, and they are the only check on it until the PR merges.
  *
  * Three asymmetries are what they are really for: the array is `members` and
- * not `items`; a member row's `role` is an *open* string that can arrive as
- * "UNSPECIFIED" while `currentUserRole` cannot; and `getMembership` is derived
- * from the project read rather than fetched, with VIEWER as its floor.
+ * not `items`; a member row's `role` is typed as an *open* string because
+ * MapStruct's read-side conversion is a generic `.name()` off an enum column
+ * — so a role project-service adds later, before this build has a name for
+ * it, would arrive verbatim, while `currentUserRole` cannot, because its own
+ * mapper throws 500 rather than emit anything unmapped; and `getMembership`
+ * is derived from the project read rather than fetched, with VIEWER as its
+ * floor.
  */
 describe("RestTaskaApi project members", () => {
   const answer = (status: number, body: unknown) =>
@@ -354,6 +358,52 @@ describe("RestTaskaApi project members", () => {
     ]);
   });
 
+  // `findProjectMembers` has no `ORDER BY` (see `listMembers`'s own doc), so
+  // these three pin the client-side sort rather than trusting the wire order.
+  it("sorts by display name rather than the order the response body used", async () => {
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-mark", role: "MEMBER", displayName: "Mark Ruiz", email: "mark@example.com" },
+          { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.userId)).toEqual(["user-anna", "user-mark"]);
+  });
+
+  it("puts a row with no name after every named row", async () => {
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-ghost", role: "MEMBER" },
+          { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.userId)).toEqual(["user-anna", "user-ghost"]);
+  });
+
+  it("tiebreaks on userId, so two nameless rows and two same-named rows both land in one order", async () => {
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-b", role: "MEMBER" },
+          { userId: "user-a", role: "MEMBER" },
+          { userId: "user-z", role: "MEMBER", displayName: "Anna Ivanova" },
+          { userId: "user-y", role: "MEMBER", displayName: "Anna Ivanova" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.userId)).toEqual(["user-y", "user-z", "user-a", "user-b"]);
+  });
+
   it("reads `items` as nothing, because that is not what this response is called", async () => {
     const { result } = await call(
       { items: [{ userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova" }] },
@@ -370,7 +420,7 @@ describe("RestTaskaApi project members", () => {
   });
 
   it.each([
-    ["the proto zero value the member mapper can really emit", "UNSPECIFIED"],
+    ["the proto zero value, defensive rather than reachable through this column today", "UNSPECIFIED"],
     ["a role this build has never heard of", "OWNER"],
     ["a number where a string was promised", 7],
     ["an explicit null", null],

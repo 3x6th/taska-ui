@@ -469,10 +469,11 @@ export interface TaskaApi {
    * so a 200 settles `isMember` and `projectExists`, and the role is the
    * response's `currentUserRole`.
    *
-   * When that field is absent the answer is `VIEWER`, which is a floor and not
-   * a reading of the server: it hides writes the server might still allow, and
-   * never offers one it is going to refuse. Role gating hides UI; the server
-   * stays authoritative either way.
+   * When that field is absent **or** an explicit `null` — both real answers
+   * off this wire, see `Project.currentUserRole` — the result is `VIEWER`,
+   * which is a floor and not a reading of the server: it hides writes the
+   * server might still allow, and never offers one it is going to refuse.
+   * Role gating hides UI; the server stays authoritative either way.
    */
   getMembership(projectId: string): Promise<ProjectMembership>;
   /**

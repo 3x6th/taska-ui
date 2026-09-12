@@ -119,9 +119,15 @@ interface RestUser {
 /**
  * `ProjectMemberDetailsDto` and its envelope — backend PR #152 (TAS-137), head
  * `1ad6ffad815d`. Every field is optional because that schema declares no
- * `required` block, and `role` is `unknown` for the same reason `globalRole`
- * above is: the wire value is a proto `string` whose unmapped target is
- * "UNSPECIFIED", so the set is open there even though the domain's is closed.
+ * `required` block, and `role` is `unknown` for a related but distinct reason
+ * from `globalRole` above: MapStruct fills it with its built-in
+ * enum-to-string conversion (`.name()`) off a column a CHECK constraint
+ * confines to ADMIN, MEMBER and VIEWER (`ck_project_members_role`,
+ * project-service `0000-init.sql`), so nothing outside those three is on the
+ * wire today. The type stays open here anyway, defensively, against a role
+ * the enum grows later that this build has no name for — unlike
+ * `Project.currentUserRole`, whose own mapper throws 500 rather than ever
+ * emit one.
  *
  * `avatar` is on the wire and is deliberately absent here — see `listMembers`.
  */
@@ -656,12 +662,17 @@ export class RestTaskaApi implements TaskaApi {
   async getMembership(projectId: string): Promise<ProjectMembership> {
     const project = await this.getProject(projectId);
     return {
-      // VIEWER is a floor, not a reading of the server. The gateway writes
-      // `currentUserRole` only under `hasCurrentUserRole()`, and until PR #152
-      // deploys it writes it never — so on the stand today every reader lands
-      // here. Flooring hides write affordances the server might in fact allow;
-      // defaulting the other way would offer buttons the server then refuses.
-      // The server stays authoritative either way (AGENTS.md, role gating).
+      // VIEWER is a floor, not a reading of the server. Today, before PR #152
+      // deploys, the gateway's `ProjectResponseDto` has no `currentUserRole`
+      // field at all, so every reader lands here. Once it deploys the field is
+      // always present — Jackson's default `ALWAYS` inclusion, since the
+      // api-gateway configures no override — and only the *value* depends on
+      // `hasCurrentUserRole()`: a role name when true, an explicit `null` when
+      // false. `toProjectRole` treats today's absence and tomorrow's `null`
+      // the same way and floors either to VIEWER. Flooring hides write
+      // affordances the server might in fact allow; defaulting the other way
+      // would offer buttons the server then refuses. The server stays
+      // authoritative either way (AGENTS.md, role gating).
       //
       // What the floor costs, named rather than discovered: the board's "your
       // role could not be loaded" banner (TAS-163) no longer distinguishes an
@@ -702,6 +713,16 @@ export class RestTaskaApi implements TaskaApi {
    * project-service.proto has no `created_at` and `ProjectMapper.toAvatarDto`
    * sets six fields, not seven — and `downloadUrl` is the only field of it this
    * UI would ever need.
+   *
+   * **The order below is this client's own, not the server's.**
+   * `findProjectMembers` in project-service carries no `ORDER BY`, so two reads
+   * of the same membership can come back in different orders — and no
+   * mock-backed test can ever catch that, since the mock never asks a
+   * database. Sorted by `displayName` (rows with no name last), `userId` as
+   * the tiebreak so the order is total; the avatar stack, the assignee filter
+   * and the watcher picker all read this list and would otherwise reshuffle on
+   * every refetch. The backend ask to remove this is a one-line `ORDER BY`,
+   * with a precedent already in the same repository interface.
    */
   async listMembers(projectId: string): Promise<ProjectMember[]> {
     const response = await this.request<RestProjectMembers>(`/projects/${this.segment(projectId)}/members`);
@@ -709,7 +730,10 @@ export class RestTaskaApi implements TaskaApi {
     // no `required` block, so a 200 carrying no `members` key is a legal answer
     // to this route, and an unguarded `.map` would reject with a `TypeError` —
     // no code, no request id, nothing `apiErrorFacts` can name.
-    return (response.members ?? []).map((member) => toProjectMember(member));
+    //
+    // `.sort(compareMembers)` after it, always — see the method doc above for
+    // why the server's own order cannot be trusted.
+    return (response.members ?? []).map((member) => toProjectMember(member)).sort(compareMembers);
   }
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
@@ -1931,17 +1955,28 @@ function toGlobalRole(value: unknown): GlobalRole | undefined {
 
 /**
  * The three roles the domain knows, and `null` for everything else — the field
- * missing, the proto zero value "UNSPECIFIED", a role added after this build, a
- * number where a string was promised. Same shape and the same reason as
- * `toGlobalRole` above: an unrecognised value means the server did not state a
- * role this build can act on, and passing it up would let a component compare
- * or draw it.
+ * missing, an explicit `null`, a role added after this build, a number where a
+ * string was promised. Same shape and the same reason as `toGlobalRole` above:
+ * an unrecognised value means the server did not state a role this build can
+ * act on, and passing it up would let a component compare or draw it.
  *
- * Both member rows and `Project.currentUserRole` are read through here, and
- * only the first can really produce `null` off the wire:
+ * Both member rows and `Project.currentUserRole` are read through here, for
+ * different reasons and by different routes to the same `null` — an earlier
+ * version of this comment said only the first could really produce one off
+ * the wire, citing `ANY_UNMAPPED → UNSPECIFIED`; that mapping is the inbound
+ * *write* path and was the wrong mechanism. A member row's `role` is filled by
+ * MapStruct's built-in enum-to-string conversion (`.name()`) off a column a
+ * CHECK constraint confines to ADMIN, MEMBER and VIEWER
+ * (`ck_project_members_role`, project-service `0000-init.sql`), so an
+ * unrecognised string is not actually on the wire today — the narrowing guards
+ * a role the enum grows later, arriving verbatim before this build knows its
+ * name. `currentUserRole` cannot carry that case at all:
  * `ProjectMapper.toRestProjectRole` throws 500 rather than emit an unmapped
- * project role, while a member row's `role` is a proto `string` whose
- * `ANY_UNMAPPED` target is "UNSPECIFIED".
+ * project role. What it *can* carry is an explicit JSON `null` — written
+ * whenever `hasCurrentUserRole()` is false, because the api-gateway configures
+ * no Jackson inclusion override and its default `ALWAYS` still serialises the
+ * key — which lands here as "no role", the same answer a member row's missing
+ * key gives.
  */
 function toProjectRole(value: unknown): ProjectRole | null {
   return value === "ADMIN" || value === "MEMBER" || value === "VIEWER" ? value : null;
@@ -1967,6 +2002,27 @@ function toProjectMember(member: RestProjectMember): ProjectMember {
     role: toProjectRole(member.role),
     user: displayName ? { displayName, email: member.email ?? "" } : undefined,
   };
+}
+
+/**
+ * `listMembers`'s own stability, not the server's — see that method's doc for
+ * why one is needed at all. Named rows sort by `displayName`; a row with no
+ * `user` sorts after every named one, because it has nothing to alphabetise
+ * by. `userId` breaks every remaining tie — two rows sharing a display name,
+ * or two rows with none — so the comparator is a total order and two reads of
+ * the same membership can never disagree, whatever order the response body
+ * arrived in.
+ */
+function compareMembers(a: ProjectMember, b: ProjectMember): number {
+  const nameA = a.user?.displayName ?? null;
+  const nameB = b.user?.displayName ?? null;
+  if (nameA !== null && nameB !== null && nameA !== nameB) {
+    return nameA.localeCompare(nameB);
+  }
+  if ((nameA === null) !== (nameB === null)) {
+    return nameA === null ? 1 : -1;
+  }
+  return a.userId.localeCompare(b.userId);
 }
 
 /**

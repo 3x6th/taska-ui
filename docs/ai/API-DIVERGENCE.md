@@ -452,13 +452,28 @@ Same rule as above: "Closed by" is settled, the rest is live.
   it — but any UI that wants to say "not shipped yet" about a 405 needs the
   predicate widened first, and that is also true of `PATCH /projects/{id}`
   (backend PR #155), which answers 405 for the same reason.
-- **The project *list* does not carry the role** (same story, read at PR head
-  `1ad6ffad815d`). project-service sets `currentUserRole` only on the mapper
-  overload taking `ProjectCheckMembershipDto`, which is the single-project read;
-  the overload behind `GET /projects` leaves it unset. The mock matches
-  deliberately — it serves the field from `getProject` and not from
-  `listProjects` — so a screen that wants a role per card still waits on
-  [TAS-211](https://jira.ozero.dev/browse/TAS-211).
+- **The project *list* carries the role too** (same story, read at PR head
+  `1ad6ffad815d`). This bullet first said the opposite, and it was wrong for the
+  few hours between two commits on the same branch; `api-contract-guard` caught
+  it and the backend was re-read before the correction. The mistake is worth
+  keeping visible because of *how* it was made: project-service's `ProjectMapper`
+  has two `toProjectResponse` overloads and only the one taking
+  `ProjectCheckMembershipDto` sets `currentUserRole`, which is true — but PR #152
+  also rewrote the list path to go through that same overload.
+  `ProjectService.listMyProjects` returns `Flux<ProjectCheckMembershipDto>` now,
+  `ProjectRepository.findAllByMemberUserId` joins `project_members` to fill
+  `role`, and `GrpcProjectService.listMyProjects` maps with
+  `projectMapper::toProjectResponse`, for which that argument type selects the
+  annotated overload. The join is an inner join on the reader's own membership,
+  so every item of `GET /projects` carries the reader's role and none of them can
+  be null for a row that came back at all. **Reading a mapper tells you what a
+  mapper does, not who calls it**, and the call site is the half that moved.
+
+  What follows for the mock: it serves the field from `listProjects` as well as
+  from `getProject`, because the server does. What follows for
+  [TAS-211](https://jira.ozero.dev/browse/TAS-211): its role-per-card clause is
+  already answered by PR #152, and what is left of it is `issueCount` and the
+  members-per-card, which is what makes the projects screen cost 1 + 2N today.
 - **None of this reaches the stand yet.** The `rest` leg is unreachable in
   `hybrid`, which is the deployed mode, so TAS-219 changes nothing a person can
   see there. The compensation and the flag come out under TAS-137 when the route

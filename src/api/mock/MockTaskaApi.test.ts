@@ -85,6 +85,23 @@ describe("MockTaskaApi", () => {
       await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "MEMBER" });
     });
 
+    // Backend PR #152 fills `currentUserRole` on every row of `GET /projects`
+    // too, not only the single-project read — `ProjectRepository
+    // .findAllByMemberUserId` joins `project_members` for it. `withCurrentUserRole`
+    // is what both `getProject` and `listProjects` share so the mock cannot
+    // drift into serving one route a shape the other does not.
+    it("states the role on every row of the project list too, not only the single read", async () => {
+      await expect(api.listProjects()).resolves.toContainEqual(
+        expect.objectContaining({ id: project.id, currentUserRole: "ADMIN" }),
+      );
+
+      // Mark is the first id in Mobile's own `memberIds`, so this is his
+      // project — deterministic from the seed, not an assumption.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile?.currentUserRole).toBe("ADMIN");
+    });
+
     it("agrees with getMembership about the role", async () => {
       const [fromProject, membership] = await Promise.all([
         api.getProject(project.id),
@@ -96,10 +113,12 @@ describe("MockTaskaApi", () => {
 
     it("leaves the field absent for a reader it computed no role for", async () => {
       // Anna is not on Mobile. The gateway would answer 403 to this read and
-      // the mock answers the project — a divergence that predates this field
-      // and is recorded in docs/ai/API-DIVERGENCE.md — but the field itself
-      // behaves as the gateway's does: absent, not null, when no role was
-      // computed. That absence is what the rest leg floors to VIEWER.
+      // the mock answers the project instead — a known divergence documented
+      // on `MockTaskaApi.withCurrentUserRole` rather than in
+      // docs/ai/API-DIVERGENCE.md, which has no entry for it. The field
+      // itself still behaves as a deployed gateway's absence would: missing,
+      // not an explicit `null`, when no role was computed. That absence is
+      // what the rest leg floors to VIEWER.
       await api.login({ email: "mark@example.com", password: "anything" });
       const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
       expect(mobile).toBeDefined();

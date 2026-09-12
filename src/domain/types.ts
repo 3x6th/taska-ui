@@ -117,11 +117,18 @@ export interface Project {
    * The reader's own role in this project — `currentUserRole` on
    * `ProjectResponseDto`, added by backend PR #152 (TAS-137).
    *
-   * Optional rather than nullable, and the difference is the wire's rather than
-   * a style choice: the gateway writes the field only under
-   * `protoDto.hasCurrentUserRole()`, so a reader it computed no role for gets a
-   * response with no such key at all. `?? undefined` reads it; a `null` check
-   * alone does not.
+   * Optional **and** nullable, and both for real reasons on the wire rather
+   * than a style choice — corrected here from an earlier version of this
+   * comment, which called it "optional rather than nullable" and was wrong.
+   * Nullable because the api-gateway configures no Jackson inclusion override
+   * anywhere — no `spring.jackson` block in its `application.yml`, no
+   * `ObjectMapper` or codec customizer bean — so Jackson's default `ALWAYS`
+   * inclusion applies, and a reader for whom `hasCurrentUserRole()` is false
+   * still gets the key, as an explicit `"currentUserRole": null` — exactly
+   * like `archivedAt` above. Optional because a gateway that predates PR #152
+   * does not carry the key at all. The client reads both the same way,
+   * because the gateway has not committed to sending one rather than the
+   * other.
    *
    * Typed as the closed set because it is one. `ProjectMapper.toRestProjectRole`
    * emits exactly ADMIN, MEMBER or VIEWER and throws 500 on anything else, so
@@ -132,7 +139,7 @@ export interface Project {
    * `GET /projects/{id}` on the stand answers without this field and readers of
    * it take their floor.
    */
-  currentUserRole?: ProjectRole;
+  currentUserRole?: ProjectRole | null;
   description?: string;
   // Same standing as `User.color` above: absent from the contract, present only
   // in the mock, and still the value that wins over the colour `keyBadgeStyle`
@@ -156,12 +163,18 @@ export interface ProjectMembership {
 export interface ProjectMember {
   userId: string;
   /**
-   * `null` means the server named a role this build does not recognise. That is
-   * reachable rather than defensive: the wire field is a proto `string` filled
-   * by MapStruct from project-service's own `ProjectRole` enum, whose
-   * `ANY_UNMAPPED` target is `UNSPECIFIED`, so "UNSPECIFIED" can arrive on a
-   * member row while `Project.currentUserRole` above — a different mapper, and
-   * a closed set — cannot.
+   * `null` means the server did not state a role this build can act on —
+   * corrected here from an earlier version of this comment, which named
+   * `ANY_UNMAPPED → UNSPECIFIED` as the mechanism and was wrong: that mapping
+   * is the *inbound write* path, not what fills this field. The read path is
+   * MapStruct's built-in enum-to-string conversion (`.name()`), off a column a
+   * CHECK constraint confines to ADMIN, MEMBER and VIEWER
+   * (`ck_project_members_role`, project-service `0000-init.sql`) — so
+   * "UNSPECIFIED" is not actually on the wire today. What this narrowing
+   * guards against is a role the enum grows later, returned verbatim (say
+   * "OWNER") before this build has a name for it. `Project.currentUserRole`
+   * above cannot carry even that: a different mapper, and one that throws 500
+   * rather than ever emit a role it does not recognise.
    *
    * Nothing draws this field today. Whatever eventually does reads `null` as
    * "the server did not state a role we can act on", never as a role of its own.
