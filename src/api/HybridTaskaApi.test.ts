@@ -117,6 +117,51 @@ describe("HybridTaskaApi", () => {
     expect(members[0].userId).toBe(me.id);
   });
 
+  // What exactly disappears the day PR #152 (TAS-137) deploys and these two
+  // methods become plain delegations. `addedAt` and `addedBy` are optional on
+  // `ProjectMember` since TAS-219 precisely because the wire does not carry
+  // them — this class is the only thing in the codebase that produces them, and
+  // it produces them from the project rather than from any record of when
+  // anybody joined.
+  it("synthesises the whole row from the project, timestamps included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    const [project] = await hybrid.listProjects();
+    const me = await hybrid.getCurrentUser();
+
+    await expect(hybrid.listMembers(project.id)).resolves.toEqual([
+      {
+        userId: me.id,
+        role: "ADMIN",
+        addedAt: project.createdAt,
+        addedBy: project.createdBy,
+        user: { displayName: me.displayName, email: me.email, color: me.color },
+      },
+    ]);
+  });
+
+  // The compensation does not read `currentUserRole`, and that is deliberate
+  // rather than an oversight: while PR #152 is undeployed the field never
+  // arrives, and once it does the fix is to delete this class's two
+  // compensations — `getMembership` and `listMembers` become
+  // `this.live.*` and the `assumeProjectAdmin` argument goes — not to teach the
+  // synthesis a new input. Until that happens a real MEMBER who did not create
+  // the project is a VIEWER here, which is the same floor the rest leg takes
+  // and the same direction: hide a write rather than offer a refused one.
+  it("keeps deriving the role from createdBy even when live states one", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, false);
+    const [project] = await live.listProjects();
+    const someoneElse = "00000000-0000-4000-8000-000000000000";
+    vi.spyOn(live, "getProject").mockResolvedValue({
+      ...project,
+      createdBy: someoneElse,
+      currentUserRole: "MEMBER",
+    });
+
+    await expect(hybrid.getMembership(project.id)).resolves.toMatchObject({ role: "VIEWER" });
+  });
+
   // The hybrid invents a project role; the global role is not its business. It
   // has to arrive from the wrapped implementation exactly as that one produced
   // it, or the three implementations stop being interchangeable.

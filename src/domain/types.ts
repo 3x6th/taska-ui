@@ -113,6 +113,26 @@ export interface Project {
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  /**
+   * The reader's own role in this project — `currentUserRole` on
+   * `ProjectResponseDto`, added by backend PR #152 (TAS-137).
+   *
+   * Optional rather than nullable, and the difference is the wire's rather than
+   * a style choice: the gateway writes the field only under
+   * `protoDto.hasCurrentUserRole()`, so a reader it computed no role for gets a
+   * response with no such key at all. `?? undefined` reads it; a `null` check
+   * alone does not.
+   *
+   * Typed as the closed set because it is one. `ProjectMapper.toRestProjectRole`
+   * emits exactly ADMIN, MEMBER or VIEWER and throws 500 on anything else, so
+   * an unrecognised project role fails the read instead of arriving here.
+   * `ProjectMember.role` below is the other case and is *not* a closed set.
+   *
+   * **Undeployed on 2026-09-12**: PR #152 was still open, so every
+   * `GET /projects/{id}` on the stand answers without this field and readers of
+   * it take their floor.
+   */
+  currentUserRole?: ProjectRole;
   description?: string;
   // Same standing as `User.color` above: absent from the contract, present only
   // in the mock, and still the value that wins over the colour `keyBadgeStyle`
@@ -127,11 +147,41 @@ export interface ProjectMembership {
   projectExists: boolean;
 }
 
+/**
+ * One row of `GET /projects/{projectId}/members` — `ProjectMemberDetailsDto`
+ * in backend PR #152 (TAS-137), which is where `displayName` and `email` come
+ * from. That PR was open and undeployed on 2026-09-12, so on the stand these
+ * rows are synthesised by `HybridTaskaApi` rather than read from anywhere.
+ */
 export interface ProjectMember {
   userId: string;
-  role: ProjectRole;
-  addedAt: string;
-  addedBy: string;
+  /**
+   * `null` means the server named a role this build does not recognise. That is
+   * reachable rather than defensive: the wire field is a proto `string` filled
+   * by MapStruct from project-service's own `ProjectRole` enum, whose
+   * `ANY_UNMAPPED` target is `UNSPECIFIED`, so "UNSPECIFIED" can arrive on a
+   * member row while `Project.currentUserRole` above — a different mapper, and
+   * a closed set — cannot.
+   *
+   * Nothing draws this field today. Whatever eventually does reads `null` as
+   * "the server did not state a role we can act on", never as a role of its own.
+   */
+  role: ProjectRole | null;
+  /**
+   * Both optional because `ProjectMemberDetailsDto` carries neither: the row is
+   * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else.
+   * The only values that exist are `HybridTaskaApi`'s, synthesised from the
+   * project's own `createdAt`/`createdBy` while the member route is undeployed,
+   * and nothing outside that synthesis reads them.
+   */
+  addedAt?: string;
+  addedBy?: string;
+  /**
+   * Absent when the row named nobody. Callers key off its presence to choose
+   * between drawing a person and falling to their own unknown-person path
+   * (`toUserMap` in BoardScreen filters on exactly this), so a `user` carrying
+   * a blank `displayName` would be worse than no `user` at all.
+   */
   user?: Pick<User, "displayName" | "email" | "color">;
 }
 

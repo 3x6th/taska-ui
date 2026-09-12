@@ -2276,9 +2276,12 @@ function IssueWatchersSection({
                     // and `HybridTaskaApi.listMembers` never calls the 405
                     // route: it synthesises one member — the reader, *named* —
                     // so the map names them and this arm stays shut. `rest`
-                    // does meet the 405, and there `getMembership` is equally
-                    // unmapped, so `isProjectAdmin` is false and there is no ✕
-                    // to label. What reaches it is the stand plus a failing
+                    // does meet the 405, and there `getMembership` floors to
+                    // VIEWER — since TAS-219 it derives from
+                    // `GET /projects/{id}`'s `currentUserRole`, which backend
+                    // PR #152 has not deployed — so `isProjectAdmin` is false
+                    // and there is no ✕ to label. What reaches it is the
+                    // stand plus a failing
                     // `GET /projects/{id}`: `listMembers` is built on that read
                     // and rejects with it, while
                     // `VITE_TASKA_ASSUME_PROJECT_ADMIN` short-circuits

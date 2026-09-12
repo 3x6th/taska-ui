@@ -1494,7 +1494,20 @@ export class MockTaskaStore {
     if (!project) {
       throw new MockApiError("NOT_FOUND", "Project not found");
     }
-    return project;
+    // `currentUserRole` (backend PR #152) is served here so both
+    // implementations answer the same shape: the rest leg derives the whole of
+    // `getMembership` from this field and nothing else, and a mock that left it
+    // out would make that derivation untestable against anything but a stub.
+    //
+    // A copy rather than a stored field, because the role belongs to the reader
+    // and not to the project row — written into `this.projects` it would leak
+    // one reader's role into every other answer built from that array. Absent
+    // for a non-member, exactly as the gateway leaves it absent when it
+    // computed no role; the mock's own divergence on non-members (it answers
+    // the project where the gateway answers 403) is unchanged and recorded in
+    // docs/ai/API-DIVERGENCE.md.
+    const role = this.membersByProject[projectId]?.find((member) => member.userId === this.currentUserId)?.role;
+    return role ? { ...project, currentUserRole: role } : project;
   }
 
   getMembership(projectId: string): ProjectMembership {

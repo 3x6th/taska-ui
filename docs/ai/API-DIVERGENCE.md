@@ -427,6 +427,43 @@ Same rule as above: "Closed by" is settled, the rest is live.
   TAS-137 adds — a path that answers 405 unconditionally can never answer a 401
   for "not yours".
 
+- **Refuted, and the read has a shape now** ([TAS-219](https://jira.ozero.dev/browse/TAS-219),
+  2026-09-12). The prediction above — that a shipped member read would send a
+  nameless row for *everyone* — reads `ProjectMemberResponseDto`, which is the
+  response of the two member **writes**. Backend PR #152 answers the read with
+  `ProjectMemberDetailsDto` instead, and that one carries `displayName`, `email`
+  and an `avatar`. The column of "Unknown" it forecast does not arrive with this
+  PR, and the three comments in the board's tests that argued from the write DTO
+  were corrected with it. What the read does lack is the opposite: no `addedAt`
+  and no `addedBy`, which is why both are optional on `ProjectMember` now.
+- **`/membership` is not what lands — `currentUserRole` is** (same story). PR
+  #152 adds no membership route, and none is coming: the role arrives as a field
+  on `GET /projects/{id}`. `RestTaskaApi.getMembership` derives it from the
+  project read and no longer calls a route that has never existed. An absent
+  field floors to `VIEWER`, which hides writes the server might allow rather
+  than offering writes it would refuse.
+- **Two signatures, not one** (same story; probed 2026-09-12 without a token,
+  with `GET /users/me` answering 401 in the same run as the control).
+  `GET /projects/{id}/members` answers **405**, because only POST is mapped on
+  that path, while `GET /projects/{id}/membership` answers the static-resource
+  **404**. `isUndeployedRoute` in `src/api/errors.ts` matches the 404 signature
+  only and therefore does not recognise the members route as undeployed.
+  Nothing depends on that today, because the stand runs `hybrid` and never calls
+  it — but any UI that wants to say "not shipped yet" about a 405 needs the
+  predicate widened first, and that is also true of `PATCH /projects/{id}`
+  (backend PR #155), which answers 405 for the same reason.
+- **The project *list* does not carry the role** (same story, read at PR head
+  `1ad6ffad815d`). project-service sets `currentUserRole` only on the mapper
+  overload taking `ProjectCheckMembershipDto`, which is the single-project read;
+  the overload behind `GET /projects` leaves it unset. The mock matches
+  deliberately — it serves the field from `getProject` and not from
+  `listProjects` — so a screen that wants a role per card still waits on
+  [TAS-211](https://jira.ozero.dev/browse/TAS-211).
+- **None of this reaches the stand yet.** The `rest` leg is unreachable in
+  `hybrid`, which is the deployed mode, so TAS-219 changes nothing a person can
+  see there. The compensation and the flag come out under TAS-137 when the route
+  answers on the stand, in the five places listed above.
+
 ### Accepting an invitation does not produce a session
 
 - **Endpoint:** `POST /api/v1/auth/invitations/accept` (`setPasswordByToken`).

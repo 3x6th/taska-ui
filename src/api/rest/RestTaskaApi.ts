@@ -79,6 +79,7 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  ProjectRole,
   UnwatchIssueResult,
   User,
   UserStatus,
@@ -113,6 +114,27 @@ interface RestUser {
   status: UserStatus;
   color?: string;
   globalRole?: unknown;
+}
+
+/**
+ * `ProjectMemberDetailsDto` and its envelope — backend PR #152 (TAS-137), head
+ * `1ad6ffad815d`. Every field is optional because that schema declares no
+ * `required` block, and `role` is `unknown` for the same reason `globalRole`
+ * above is: the wire value is a proto `string` whose unmapped target is
+ * "UNSPECIFIED", so the set is open there even though the domain's is closed.
+ *
+ * `avatar` is on the wire and is deliberately absent here — see `listMembers`.
+ */
+interface RestProjectMember {
+  userId?: string;
+  role?: unknown;
+  displayName?: string;
+  email?: string;
+}
+
+/** `ListProjectMemberDetailsDto` — the array is `members`, not `items`. */
+interface RestProjectMembers {
+  members?: RestProjectMember[];
 }
 
 /**
@@ -618,13 +640,76 @@ export class RestTaskaApi implements TaskaApi {
     return this.request<Project>(`/projects/${projectId}`);
   }
 
-  getMembership(projectId: string): Promise<ProjectMembership> {
-    return this.request<ProjectMembership>(`/projects/${projectId}/membership`);
+  /**
+   * Derived from `GET /projects/{projectId}`, because there is no membership
+   * route to call and PR #152 does not add one. Until TAS-219 this asked
+   * `GET /projects/{projectId}/membership`, which has never existed: probed on
+   * 2026-09-12 without a token it answers the static-resource **404**, in the
+   * same run where `GET /users/me` answered 401 — so the path is unmapped
+   * rather than merely unauthorised.
+   *
+   * The board asks for the project twice as a result, once here and once for
+   * its own header. That is one extra GET of the cheapest read the gateway has,
+   * and the alternative — taking the project from the caller — would put this
+   * method's contract in the caller's hands.
+   */
+  async getMembership(projectId: string): Promise<ProjectMembership> {
+    const project = await this.getProject(projectId);
+    return {
+      // VIEWER is a floor, not a reading of the server. The gateway writes
+      // `currentUserRole` only under `hasCurrentUserRole()`, and until PR #152
+      // deploys it writes it never — so on the stand today every reader lands
+      // here. Flooring hides write affordances the server might in fact allow;
+      // defaulting the other way would offer buttons the server then refuses.
+      // The server stays authoritative either way (AGENTS.md, role gating).
+      //
+      // What the floor costs, named rather than discovered: the board's "your
+      // role could not be loaded" banner (TAS-163) no longer distinguishes an
+      // undeployed field from a real VIEWER, because this call now succeeds
+      // where it used to 404. It still appears for the case it was built for —
+      // the project read itself failing, which is how TAS-162 shows up — and
+      // that is the case where the client genuinely knows nothing.
+      role: toProjectRole(project.currentUserRole) ?? "VIEWER",
+      // Both true on a 200, and neither is an assumption: `GET /projects/{id}`
+      // is membership-checked, so a project the reader is not on answers 403
+      // and one that does not exist answers 404 (TAS-154). Either way this
+      // method rejects rather than reporting `false`, which is the same shape
+      // the board already handles — it draws §4.18 for both, deliberately not
+      // distinguishing "no such project" from "not yours".
+      isMember: true,
+      projectExists: true,
+    };
   }
 
+  /**
+   * `GET /projects/{projectId}/members`, unwrapped from **`members`** rather
+   * than the `items` every other collection on this class uses — that is what
+   * `ListProjectMemberDetailsDto` calls its array.
+   *
+   * Written against backend PR #152 at head `1ad6ffad815d`, **open and
+   * undeployed on 2026-09-12**: probed without a token, this route answers
+   * **405**, because only POST is mapped on the path. That is not the
+   * static-resource 404 the gateway's unmapped paths answer, so
+   * `isUndeployedRoute` in src/api/errors.ts does not recognise it — and it is
+   * moot on the stand, which runs `hybrid` and never calls this method.
+   *
+   * **The row's `avatar` is dropped on purpose.** It carries a `downloadUrl`,
+   * and drawing an image where initials are today is the whole of the avatars
+   * story (backend PR #150), which lands the `Avatar` rendering and the current
+   * user's upload together rather than half of each here. Two further facts
+   * about `AvatarDto`, so the next reader does not re-derive them: `createdAt`
+   * is declared in the schema and is **never populated** — `AvatarResponse` in
+   * project-service.proto has no `created_at` and `ProjectMapper.toAvatarDto`
+   * sets six fields, not seven — and `downloadUrl` is the only field of it this
+   * UI would ever need.
+   */
   async listMembers(projectId: string): Promise<ProjectMember[]> {
-    const response = await this.request<{ items: ProjectMember[] }>(`/projects/${projectId}/members`);
-    return response.items;
+    const response = await this.request<RestProjectMembers>(`/projects/${this.segment(projectId)}/members`);
+    // `?? []` like every other collection read here: PR #152's schema declares
+    // no `required` block, so a 200 carrying no `members` key is a legal answer
+    // to this route, and an unguarded `.map` would reject with a `TypeError` —
+    // no code, no request id, nothing `apiErrorFacts` can name.
+    return (response.members ?? []).map((member) => toProjectMember(member));
   }
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
@@ -1842,6 +1927,46 @@ export class RestTaskaApi implements TaskaApi {
  */
 function toGlobalRole(value: unknown): GlobalRole | undefined {
   return value === "USER" || value === "GLOBAL_ADMIN" ? value : undefined;
+}
+
+/**
+ * The three roles the domain knows, and `null` for everything else — the field
+ * missing, the proto zero value "UNSPECIFIED", a role added after this build, a
+ * number where a string was promised. Same shape and the same reason as
+ * `toGlobalRole` above: an unrecognised value means the server did not state a
+ * role this build can act on, and passing it up would let a component compare
+ * or draw it.
+ *
+ * Both member rows and `Project.currentUserRole` are read through here, and
+ * only the first can really produce `null` off the wire:
+ * `ProjectMapper.toRestProjectRole` throws 500 rather than emit an unmapped
+ * project role, while a member row's `role` is a proto `string` whose
+ * `ANY_UNMAPPED` target is "UNSPECIFIED".
+ */
+function toProjectRole(value: unknown): ProjectRole | null {
+  return value === "ADMIN" || value === "MEMBER" || value === "VIEWER" ? value : null;
+}
+
+/**
+ * `ProjectMemberDetailsDto` → `ProjectMember`. `addedAt` and `addedBy` are not
+ * set because the DTO does not carry them.
+ *
+ * `user` is built only when the row states a `displayName`, and the blank is
+ * not passed through: every screen that draws a member decides between a person
+ * and its own unknown-person path by whether `user` is there at all
+ * (`toUserMap` filters on it, and the assignee chip's `?? "User"` cannot catch
+ * an empty string, since `"".split(" ")[0]` is `""`). A row that gives only an
+ * email is therefore an unnamed member here — nothing reads a member's email
+ * today, and whatever eventually does should choose for itself what to draw in
+ * place of a missing name rather than inherit a guess made in this file.
+ */
+function toProjectMember(member: RestProjectMember): ProjectMember {
+  const displayName = typeof member.displayName === "string" ? member.displayName.trim() : "";
+  return {
+    userId: member.userId ?? "",
+    role: toProjectRole(member.role),
+    user: displayName ? { displayName, email: member.email ?? "" } : undefined,
+  };
 }
 
 /**
