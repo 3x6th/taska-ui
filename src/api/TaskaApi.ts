@@ -960,8 +960,9 @@ export interface TaskaApi {
    * Failures arrive as `ObjectStoreError` (src/api/objectStore.ts) — the same
    * type the attachment leg throws, not a second one meaning the same thing.
    * The guarantee AGENTS.md attaches to a non-gateway method on this interface
-   * is a property of that class and is tested once, in src/api/errors.test.ts:
-   * the gateway-error predicates provably do not match it.
+   * is a property of that class and is tested once, in
+   * src/api/rest/RestTaskaApi.test.ts: the gateway-error predicates provably
+   * do not match it.
    *
    * It is a separate *method* from `putAttachmentBytes` even though the REST
    * implementation of the two is one shared private helper, because the mock is

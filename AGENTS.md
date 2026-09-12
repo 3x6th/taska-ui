@@ -133,7 +133,7 @@ afterwards.
 
 | Role | Write access | Responsibility |
 | --- | --- | --- |
-| Orchestrator (main thread) | Harness, docs and repository configuration, git, Jira, PRs | Scope, sequencing, evidence, external operations |
+| Orchestrator (main thread) | Harness, docs and repository configuration, git, Jira, PRs — **`DESIGN.md` included** | Scope, sequencing, evidence, external operations |
 | `frontend-builder` | Workspace write | The only agent, orchestrator included, that may edit production frontend code |
 | `art-director` | Read-only | Design-system conformance, UX craft, states, keyboard, light/dark parity |
 | `api-contract-guard` | Read-only | Contract conformance, enums, role gating, mock/rest/hybrid parity |
@@ -141,6 +141,18 @@ afterwards.
 
 Never run two production-code writers in parallel. Read-only agents may
 research or review concurrently when their scopes do not overlap.
+
+**`DESIGN.md` is the orchestrator's to write, and the reason is the same one**
+(added on TAS-220, 2026-09-12, after a builder wrote 47 lines into it in the
+same run that `art-director` was reviewing its code against). `art-director` is
+read-only by design, so it cannot write the system it owns, and the orchestrator
+writes on its verdict. A builder may *propose* a section and should, because it
+is the party that just learned what the system does not yet say — but a proposal
+is labelled as one and does not become the standard until the role that judges
+against it has ruled. The sharp case is not a new rule: it is a **recorded
+shortfall**. Adding your own measurement to §7's open list is how a failure
+stops being a failure, and that entry needs an explicit ruling rather than
+inheriting the list's standing.
 
 A reviewer that can edit cannot be trusted to report what it would rather
 quietly fix; a builder that can approve cannot be trusted to sign off on its own

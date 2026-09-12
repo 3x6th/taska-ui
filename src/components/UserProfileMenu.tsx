@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ImageUp, LogOut, ShieldCheck } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { taskaApi } from "../api/client";
@@ -78,6 +78,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const uploadButtonRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -101,10 +102,13 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    * own face cannot ride on a list the way every other person's does — a member
    * row carries theirs inline.
    *
-   * One request per signed-in session in practice: the key holds no screen in
-   * it, so the board's copy of this menu and the top bar's are the same query,
-   * and react-query's default `staleTime` in src/main.tsx keeps it from being
-   * re-asked as the reader moves between them.
+   * Not one request per signed-in session: `staleTime` in src/main.tsx is 20
+   * seconds, and neither `refetchOnMount` nor `refetchOnWindowFocus` is
+   * overridden here, so both react-query defaults — refetch when stale — apply.
+   * On the stand that makes it one request per navigation and per window
+   * refocus past 20 seconds. The key holds no screen in it, though, so the
+   * board's copy of this menu and the top bar's are the same query and never
+   * pay for that twice on one screen.
    *
    * Not retried for the two answers that are already final. "Missing or not
    * yours" is an answer, and so is the static-resource 404 the four avatar
@@ -183,6 +187,43 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
       await Promise.all([queryClient.invalidateQueries({ queryKey: avatarKey }), refreshMemberFaces()]);
     },
   });
+
+  /**
+   * A write in this band can blur the button that just started it, for two
+   * different reasons that land on one symptom. Removing unmounts the
+   * "Remove photo" button — `hasPhoto` drops to `false` inside `onMutate`,
+   * above — and this popover is a `role="dialog"` with no focus trap, so
+   * without a fix the next Tab would restart at the top of the document,
+   * behind the still-open dialog, rather than continuing inside the menu. A
+   * plain upload never unmounts anything, but the button that started it is
+   * the one holding focus when `busy` becomes `true`: `disabled` arrives on
+   * that same render, and Chromium blurs a focused element the instant
+   * `disabled` appears on it — the behaviour DESIGN.md §4.21 is written
+   * against. Both paths end at `<body>`, and one mechanism closes both,
+   * because the upload button is the one control in this band that is
+   * mounted on every path.
+   *
+   * So this is keyed on the *write* settling — `busy` or `remove.isPending`
+   * going from `true` to `false` — rather than on `hasPhoto`, which moves
+   * only on the remove path and never on the upload one: a first upload
+   * takes it `false → true`, a replace leaves it at `true` throughout, and
+   * neither is the `true → false` a `hasPhoto`-keyed effect looks for.
+   * `.focus()` on a still-disabled button is a no-op, so this still waits for
+   * both flags to clear before moving focus, which is the same render the
+   * button re-enables on. `wasWriteInFlight` is updated on every run
+   * regardless of `open`, so a write that settles while the menu is closed
+   * does not steal focus back on reopening it — by the time `open` flips
+   * back to `true` the ref has already caught up to the settled state, and
+   * there is no `true → false` transition left to see.
+   */
+  const wasWriteInFlight = useRef(busy || remove.isPending);
+  useEffect(() => {
+    const inFlight = busy || remove.isPending;
+    if (open && wasWriteInFlight.current && !inFlight) {
+      uploadButtonRef.current?.focus();
+    }
+    wasWriteInFlight.current = inFlight;
+  }, [busy, remove.isPending, open]);
 
   /**
    * The whole upload, written out rather than wrapped in a mutation, because
@@ -347,6 +388,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                     className="secondary-button compact-button"
                     disabled={busy || remove.isPending}
                     onClick={() => fileInput.current?.click()}
+                    ref={uploadButtonRef}
                     type="button"
                   >
                     <ImageUp aria-hidden="true" size={13} />

@@ -727,9 +727,10 @@ export interface AvatarUploadTicket {
   /**
    * The link's own lifetime in seconds, as the server states it — 900 on the
    * configuration read at the pinned head. Kept because the response declares
-   * it and because it is the server's number rather than this client's; the
-   * wording the profile menu uses comes from `AVATAR_PRESIGNED_TTL_MS`, which
-   * is the same quarter of an hour read from the same property.
+   * it and because it is the server's number rather than this client's.
+   * `AVATAR_PRESIGNED_TTL_MS` is the same quarter of an hour read from the
+   * same property, but the two are not wired together: the profile menu's
+   * "15 minutes" wording is a literal, written separately.
    */
   expiresIn: number | null;
 }

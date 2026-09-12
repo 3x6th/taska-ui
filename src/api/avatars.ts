@@ -83,8 +83,12 @@ export const AVATAR_ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/png", "image/w
  * an ordinary state of a long-open board rather than an error anybody should be
  * told about.
  *
- * Used for wording and for the mock's own expiry, never as a client-side gate
- * that would refuse a link the server would still have honoured.
+ * Used for the mock's own expiry, never as a client-side gate that would
+ * refuse a link the server would still have honoured. **Not** used for
+ * wording: nothing interpolates this constant into a sentence, so the
+ * "15 minutes" wording in the profile menu is a literal, written separately.
+ * This constant is a record of the server's `storage.presigned-url-ttl`, not
+ * its source — a reader changing one is not warned to check the other.
  */
 export const AVATAR_PRESIGNED_TTL_MS = 15 * 60 * 1000;
 

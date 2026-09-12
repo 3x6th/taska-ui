@@ -103,6 +103,63 @@ test("uploads a photo from the profile menu, then deletes it and gets the initia
   await expect(popover(page).getByRole("button", { name: "Upload a photo" })).toBeVisible();
 });
 
+/**
+ * Both cases below prove the same two things on different writes: focus
+ * lands back on the upload button once the write settles, and the popover —
+ * a `role="dialog"` with no focus trap — still has it, so the very next Tab
+ * continues the sequence inside the menu instead of restarting at the top of
+ * the document. That second assertion is the one that actually distinguishes
+ * a fix from a coincidence: focus can equal the upload button for an instant
+ * and still be about to fall through to `<body>` on the next render, and
+ * "some element inside the dialog" would pass even if Tab jumped backwards.
+ * Naming the exact next control — Anna carries no Administration entry, so it
+ * is "Log out" once "Remove photo" is gone, and "Remove photo" once an upload
+ * just mounted it — is what `edit-project.spec.ts` does for the same reason.
+ */
+
+test("returns focus to the upload button after Remove, so Tab continues inside the menu", async ({ page }) => {
+  await signIn(page);
+  await trigger(page).click();
+  await choose(page, "face.png");
+  await expect(trigger(page).locator("img")).toHaveCount(1);
+
+  // "Remove photo" unmounts along with the picture it just removed — the
+  // button the reader pressed is gone a render later — which is the harder
+  // of the two ways this band can lose focus to <body>.
+  await popover(page).getByRole("button", { name: "Remove photo" }).click();
+  await expect(trigger(page).locator("img")).toHaveCount(0);
+  await expect(popover(page).getByRole("button", { name: "Upload a photo" })).toBeFocused();
+
+  await page.keyboard.press("Tab");
+  await expect(popover(page).getByRole("button", { name: "Log out" })).toBeFocused();
+});
+
+test("returns focus to the upload button after a plain upload, so Tab continues inside the menu", async ({
+  page,
+}) => {
+  await signIn(page);
+  await trigger(page).click();
+
+  // Nothing unmounts on this path — the button that starts an upload is the
+  // same one that ends it — so the precondition has to be set up rather than
+  // produced by the previous step: focus it first, the way a keyboard reader
+  // who just activated it already would have it.
+  const uploadButton = popover(page).getByRole("button", { name: "Upload a photo" });
+  await uploadButton.focus();
+  await expect(uploadButton).toBeFocused();
+
+  await choose(page, "face.png");
+  await expect(trigger(page).locator("img")).toHaveCount(1);
+  // `disabled` arrives on this same button the moment the upload starts, and
+  // Chromium blurs a focused element the instant that happens — the button
+  // is named "Replace photo" by the time it is enabled again, so this is a
+  // fresh query rather than a re-check of the `uploadButton` handle above.
+  await expect(popover(page).getByRole("button", { name: "Replace photo" })).toBeFocused();
+
+  await page.keyboard.press("Tab");
+  await expect(popover(page).getByRole("button", { name: "Remove photo" })).toBeFocused();
+});
+
 test("replaces a photo with another, leaving one", async ({ page }) => {
   await signIn(page);
   await trigger(page).click();

@@ -2145,3 +2145,20 @@ is what recurs.
   inherit that tone — it is `--fg-2` mono at 6.25:1, because a reader has to
   transcribe it and `.attachment-note` had already recorded 3.17 as the reason
   the tone was dropped there.
+- **Five from TAS-220's release review**, recorded rather than taken. The
+  always-mounted empty live region still consumes the photo band's 7px flex gap
+  when there is no notice. The current user's avatar read refetches on mount and
+  on window focus past the 20-second stale time, so an undeployed stand pays one
+  404 per navigation rather than one per session. Neither avatars nor
+  attachments enforce the contract's 255-character `fileName` before asking for
+  an upload URL. The "15 minutes" in both expired-link sentences is a literal
+  rather than derived from the TTL constant. And `API-DIVERGENCE.md`
+  *understates* its own coverage: the failed-image fallback is exercised end to
+  end, not by unit tests alone.
+- **The avatar photo buttons and the watchers block answer the same Chromium
+  behaviour two different ways.** DESIGN.md §4.21 records that a real `disabled`
+  attribute blurs a focused element, and watchers answer it with `aria-disabled`
+  plus a guard in the handler so focus never leaves; TAS-220's photo controls
+  keep the real `disabled` and refocus once the write settles. Both work. Picking
+  one is a design ruling and a wider change than TAS-220 was, so it is here
+  rather than done.
