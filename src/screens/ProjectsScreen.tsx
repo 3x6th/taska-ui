@@ -1,23 +1,32 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search } from "lucide-react";
+import { Pencil, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
+import { ColorSwatches, type ColorChoice } from "../components/ColorSwatches";
+import { EditProjectModal } from "../components/EditProjectModal";
 import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { TopBar } from "../components/TopBar";
 import { PendingValue, Unknown } from "../components/Unknown";
-import type { Project, ProjectMember } from "../domain/types";
+import type { Project, ProjectMember, ProjectRole } from "../domain/types";
 import { useUnanswered } from "../hooks/useUnanswered";
-import { keyBadgeStyle } from "../lib/format";
+import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import type { ScreenProps } from "./App";
 
 /** `null` is "the server did not say", which a card must never round down to 0. */
 interface ProjectSummary {
   count: number | null;
   members: ProjectMember[] | null;
+  /**
+   * The reader's own role in this project, when the list row did not state one.
+   * `null` is "we did not get an answer", which is not a role and never grants
+   * anything: the edit control stays hidden, and the server stays the
+   * authority either way (AGENTS.md).
+   */
+  role: ProjectRole | null;
   /**
    * Why a `null` above is `null`. The query itself resolves either way — one
    * half of a card is worth drawing without the other — so this is the only
@@ -27,22 +36,33 @@ interface ProjectSummary {
   failure: Error | null;
 }
 
-async function loadSummary(projectId: string): Promise<ProjectSummary> {
-  // `allSettled`, not `all`: the issue count and the member list are two
-  // independent facts about one project, and they do not fail together. In
-  // hybrid mode the member read is synthesised from `GET /projects/{id}`, which
-  // is currently a 500 (TAS-162), while the issue list answers perfectly well —
-  // so joining them is how a card ends up claiming zero issues for a project
-  // that has nine.
-  const [issues, members] = await Promise.allSettled([
+async function loadSummary(projectId: string, roleFromList: ProjectRole | null): Promise<ProjectSummary> {
+  // `allSettled`, not `all`: the issue count, the member list and the reader's
+  // role are three independent facts about one project, and they do not fail
+  // together. In hybrid mode the member read is synthesised from
+  // `GET /projects/{id}`, which is currently a 500 (TAS-162), while the issue
+  // list answers perfectly well — so joining them is how a card ends up
+  // claiming zero issues for a project that has nine.
+  //
+  // The role read is the cheapest of the three and usually costs nothing at
+  // all. `GET /projects` states `currentUserRole` on every row once backend
+  // PR #152 deploys, and this only asks when the row did not — while on the
+  // stand `HybridTaskaApi` short-circuits `getMembership` behind
+  // `VITE_TASKA_ASSUME_PROJECT_ADMIN` and makes no request either.
+  const [issues, members, role] = await Promise.allSettled([
     taskaApi.listIssues(projectId, { pageSize: 100 }),
     taskaApi.listMembers(projectId),
+    roleFromList ? Promise.resolve({ role: roleFromList }) : taskaApi.getMembership(projectId),
   ]);
+  // Deliberately not `[issues, members, role]`: this failure is the banner
+  // saying the *counts* could not be loaded, and a refused role read does not
+  // make a count unknown. A role nobody could read simply hides a control.
   const rejection = [issues, members].find((result) => result.status === "rejected")?.reason;
 
   return {
     count: issues.status === "fulfilled" ? (issues.value.totalCount ?? issues.value.items.length) : null,
     members: members.status === "fulfilled" ? members.value : null,
+    role: role.status === "fulfilled" ? role.value.role : null,
     failure: rejection instanceof Error ? rejection : null,
   };
 }
@@ -51,6 +71,8 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
+  /** The project whose edit dialog is open, by id — see the render below. */
+  const [editing, setEditing] = useState<string | null>(null);
 
   const [filter, setFilter] = useState("");
 
@@ -84,8 +106,14 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   // kept so the existing invalidation after a create still matches.
   const summaryQueries = useQueries({
     queries: projects.map((project) => ({
-      queryKey: ["project-summaries", project.id],
-      queryFn: () => loadSummary(project.id),
+      // The row's own `currentUserRole` when the gateway stated one, which
+      // skips the fallback read in `loadSummary` entirely. In the key as well
+      // as in the argument: the day backend PR #152 deploys, a summary cached
+      // from the fallback has to be replaced rather than kept. The
+      // `project-summaries` prefix is unchanged, so the invalidation after a
+      // create still matches.
+      queryKey: ["project-summaries", project.id, project.currentUserRole ?? null],
+      queryFn: () => loadSummary(project.id, project.currentUserRole ?? null),
     })),
   });
 
@@ -95,6 +123,14 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   const summaryByProject = useMemo(
     () => new Map(projects.map((project, index) => [project.id, summaryQueries[index]])),
     [projects, summaryQueries],
+  );
+
+  // Resolved against the live list every render, and `null` when the row is
+  // gone: a project that disappeared between the click and the answer has no
+  // dialog to draw, and one that was renamed has a new name to draw with.
+  const editingProject = useMemo(
+    () => (editing ? (projects.find((project) => project.id === editing) ?? null) : null),
+    [editing, projects],
   );
 
   const projectsUnread = useUnanswered(projectsQuery);
@@ -187,6 +223,7 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
                 // every visit as em dashes before appearing, which said a
                 // request that was about to succeed had already failed.
                 pending={summaryByProject.get(project.id)?.isPending ?? true}
+                onEdit={() => setEditing(project.id)}
                 onOpen={() => navigate(`/projects/${project.id}/board`)}
               />
             ))}
@@ -194,6 +231,10 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
         )}
       </section>
       {creating ? <NewProjectModal onClose={() => setCreating(false)} onCreated={() => queryClient.invalidateQueries({ queryKey: ["projects"] })} /> : null}
+      {/* Held by id rather than by object, so the dialog reads the row the list
+          currently holds: its own optimistic patch lands in `["projects"]`, and
+          a captured object would go on showing the name it opened with. */}
+      {editingProject ? <EditProjectModal project={editingProject} onClose={() => setEditing(null)} /> : null}
     </main>
   );
 }
@@ -202,46 +243,83 @@ function ProjectCard({
   project,
   summary,
   pending,
+  onEdit,
   onOpen,
 }: {
   project: Project;
   summary?: ProjectSummary;
   pending: boolean;
+  onEdit: () => void;
   onOpen: () => void;
 }) {
   const members = summary?.members ?? null;
   const count = summary?.count ?? null;
+  /**
+   * ADMIN only, from whichever source answered: the list row's own
+   * `currentUserRole` (backend PR #152) or the `getMembership` fallback in
+   * `loadSummary`. A role that could not be read is not a role, so the control
+   * is simply absent — and its absence is not the permission, which stays the
+   * server's (AGENTS.md, DESIGN.md §5.7).
+   */
+  const canEdit = (project.currentUserRole ?? summary?.role) === "ADMIN";
+  /**
+   * A sibling of the card rather than a child of it, because the card *is* a
+   * `<button>` and a button inside a button is not markup a browser will keep.
+   * The shell gives the two a shared box to be positioned in and carries the
+   * hover lift for both, so the edit control does not sit still while the card
+   * it belongs to rises 2px out from under it.
+   */
   return (
-    <button className="project-card" onClick={onOpen} type="button">
-      <div className="project-card-head">
-        <span className="key-badge" style={keyBadgeStyle(project.projectKey, project.color)}>
-          {project.projectKey}
-        </span>
-        <strong>{project.name}</strong>
-      </div>
-      <p>{project.description ?? "Project workspace"}</p>
-      <div className="project-card-foot">
-        <div className="avatar-stack">
-          {(members ?? []).slice(0, 4).map((member) => (
-            <Avatar
-              key={member.userId}
-              user={member.user ? { id: member.userId, displayName: member.user.displayName, color: member.user.color } : null}
-              size="sm"
-            />
-          ))}
-          {/* Three states, not two: a number, a request still in flight, and a
-              request that failed. The `title` that used to stand in for the
-              third was hover-only — unreachable from a touch screen and from a
-              keyboard — and it called a pending read "Not loaded" as well. */}
-          <span className="member-count">
-            {pending ? <PendingValue /> : members ? members.length : <Unknown />} members
+    <div className={`project-card-shell ${canEdit ? "is-editable" : ""}`}>
+      <button className="project-card" onClick={onOpen} type="button">
+        <div className="project-card-head">
+          <span className="key-badge" style={keyBadgeStyle(project.projectKey, project.color)}>
+            {project.projectKey}
+          </span>
+          <strong>{project.name}</strong>
+        </div>
+        {/* `??` is not enough here and has not been since a description became
+            clearable: `""` is a description the server genuinely holds, and it
+            slips straight past a nullish check to render an empty paragraph
+            where the placeholder belongs (§5.6 — an empty state says so). */}
+        <p>{project.description?.trim() || "Project workspace"}</p>
+        <div className="project-card-foot">
+          <div className="avatar-stack">
+            {(members ?? []).slice(0, 4).map((member) => (
+              <Avatar
+                key={member.userId}
+                user={member.user ? { id: member.userId, displayName: member.user.displayName, color: member.user.color } : null}
+                size="sm"
+              />
+            ))}
+            {/* Three states, not two: a number, a request still in flight, and a
+                request that failed. The `title` that used to stand in for the
+                third was hover-only — unreachable from a touch screen and from a
+                keyboard — and it called a pending read "Not loaded" as well. */}
+            <span className="member-count">
+              {pending ? <PendingValue /> : members ? members.length : <Unknown />} members
+            </span>
+          </div>
+          <span className="issue-count">
+            <strong>{pending ? <PendingValue /> : count === null ? <Unknown /> : count}</strong> issues
           </span>
         </div>
-        <span className="issue-count">
-          <strong>{pending ? <PendingValue /> : count === null ? <Unknown /> : count}</strong> issues
-        </span>
-      </div>
-    </button>
+      </button>
+      {canEdit ? (
+        // Named with the project in it, because on a grid of cards "Edit
+        // project" alone is the same name eight times over and a list of
+        // buttons is one of the ways this page is read (§7).
+        <button
+          aria-label={`Edit ${project.name}`}
+          className="icon-button project-card-edit"
+          onClick={onEdit}
+          title={`Edit ${project.name}`}
+          type="button"
+        >
+          <Pencil size={14} />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -249,12 +327,47 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const queryClient = useQueryClient();
   const [projectKey, setProjectKey] = useState("API");
   const [name, setName] = useState("API Gateway");
-  const [description, setDescription] = useState("REST facade over Taska services");
+  // Empty, not "REST facade over Taska services". That sentence shipped as the
+  // box's initial value — somebody's demo text pre-typed into a form for every
+  // reader — and until this build it was also unsendable, because
+  // `RestTaskaApi.createProject` dropped `description` on the floor.
+  const [description, setDescription] = useState("");
+  /**
+   * `null` is Automatic: no `color` in the body, so the project computes one
+   * from its key. Default because it is the only choice that stays reversible
+   * — `PATCH` can change a colour but cannot take one away (TAS-145) — so a
+   * project created without one can still pick one later, and a project
+   * created with one is committed.
+   */
+  const [color, setColor] = useState<string | null>(null);
 
   const canSubmit = useMemo(() => projectKey.trim().length >= 2 && name.trim().length >= 2, [name, projectKey]);
 
+  const choices = useMemo<ColorChoice[]>(
+    () => [
+      {
+        value: null,
+        // Follows the key box as it is typed, so the swatch shows the colour
+        // this project would actually wear rather than a stand-in for one.
+        swatch: computedProjectColor(projectKey),
+        label: "Automatic colour, from the project key",
+      },
+      ...labelColorChoices.map((choice) => ({ value: choice, swatch: choice, label: `Colour ${choice}` })),
+    ],
+    [projectKey],
+  );
+
   const create = useMutation({
-    mutationFn: () => taskaApi.createProject({ projectKey, name, description }),
+    // Both trimmed and both omitted when empty: a blank description is a value
+    // the server would store, and "no description" is not the same project as
+    // one whose description is a space.
+    mutationFn: () =>
+      taskaApi.createProject({
+        projectKey: projectKey.trim(),
+        name: name.trim(),
+        ...(description.trim() ? { description: description.trim() } : {}),
+        ...(color ? { color } : {}),
+      }),
     onSuccess: async () => {
       onCreated();
       await queryClient.invalidateQueries({ queryKey: ["project-summaries"] });
@@ -277,12 +390,22 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         </label>
         <label className="field">
           <span>Name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} />
+          <input maxLength={255} value={name} onChange={(event) => setName(event.target.value)} />
         </label>
         <label className="field">
           <span>Description</span>
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} />
+          <textarea
+            maxLength={2000}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="What this project is for"
+            rows={3}
+            value={description}
+          />
         </label>
+        <div className="field">
+          <span>Colour</span>
+          <ColorSwatches choices={choices} groupLabel="Project colour" onPick={setColor} selected={color} />
+        </div>
         {create.isError ? <div className="form-error">{create.error.message}</div> : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">

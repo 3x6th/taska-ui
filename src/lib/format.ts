@@ -336,6 +336,24 @@ export const avatarColor = (userId: string, color?: string) =>
 const keyTint = (color: string) => `color-mix(in oklab, ${color} 16%, transparent)`;
 
 /**
+ * The colour a project wears when it has stated none of its own — the value
+ * `keyBadgeStyle` tints below, handed out as the solid hex so something other
+ * than a badge can draw it.
+ *
+ * Its one other caller is the colour picker (TAS-148), whose first option is
+ * "Automatic" and has to paint that option with the colour the project is
+ * actually wearing right now. Computing it a second time there would be two
+ * copies of a rule the badge under it already applies, and the day one of them
+ * changed the picker would offer a colour the badge does not draw.
+ *
+ * Always answers with a colour, including for a blank key: `fromPalette` hashes
+ * the empty string like any other seed. `keyBadgeStyle` keeps its own guard for
+ * that case rather than inheriting one from here, because "no key at all" is a
+ * statement about the badge — an unfilled pill — and not about this function.
+ */
+export const computedProjectColor = (projectKey: string) => fromPalette(labelColorChoices, projectKey?.trim());
+
+/**
  * DESIGN.md §4.5's project-key badge. The tint only — the glyph is `--fg-2`
  * from CSS, which is where this parts company with `labelChipStyle`. A label
  * survives a weak colour because its name is text sitting beside the colour;
@@ -351,8 +369,14 @@ const keyTint = (color: string) => `color-mix(in oklab, ${color} 16%, transparen
  * is also embedded in every `issueKey`, which is where the backend records the
  * same reasoning (TAS-145). So a project renamed some future way keeps its
  * colour, and the badge agrees with the keys on the cards under it.
+ *
+ * `null` as well as `undefined` on the colour, because both are real answers
+ * off the wire: backend PR #155 (TAS-145) marks `color` `nullable: true` on
+ * `ProjectResponseDto`, and the api-gateway configures no Jackson inclusion
+ * override, so a project with no colour arrives as an explicit `"color": null`
+ * rather than with the key missing. Both mean the same thing here — compute it.
  */
-export const keyBadgeStyle = (projectKey: string, color?: string) => {
+export const keyBadgeStyle = (projectKey: string, color?: string | null) => {
   if (color && isLabelColor(color)) return { background: keyTint(color) };
   // Nothing rather than a colour, when there is no key to compute one from. The
   // modals ask with `project?.projectKey ?? ""` (TAS-163's failed `getProject`
@@ -362,5 +386,5 @@ export const keyBadgeStyle = (projectKey: string, color?: string) => {
   // to this: a colour the server sent is a fact about a project, not a guess.
   const key = projectKey?.trim();
   if (!key) return undefined;
-  return { background: keyTint(fromPalette(labelColorChoices, key)) };
+  return { background: keyTint(computedProjectColor(key)) };
 };

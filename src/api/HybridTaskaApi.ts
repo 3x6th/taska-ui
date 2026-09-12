@@ -16,6 +16,7 @@ import type {
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
+  UpdateProjectInput,
   UpdateProjectLabelInput,
 } from "./TaskaApi";
 import type {
@@ -117,6 +118,33 @@ export class HybridTaskaApi implements TaskaApi {
 
   getProject(projectId: string): Promise<Project> {
     return this.live.getProject(projectId);
+  }
+
+  /**
+   * Delegated whole, and there is nothing here to stand in for: this class
+   * synthesises project *membership* out of two live reads, and a project
+   * write is neither a membership question nor something a view over live data
+   * could answer. A compensation for a write would be this class reporting a
+   * rename that never reached the server, and the next `GET /projects` would
+   * contradict it.
+   *
+   * Worth naming because the route is **not deployed**: backend PR #155
+   * (TAS-145) was open on 2026-09-12 and `PATCH /api/v1/projects/{id}` answers
+   * **405** there — the path exists for GET, so this is not even the
+   * static-resource 404 `isUndeployedRoute` matches, and no predicate in
+   * src/api/errors.ts recognises it. On the stand the dialog therefore reports
+   * the gateway's own refusal rather than a friendlier invention, which is the
+   * honest answer (docs/ai/API-DIVERGENCE.md).
+   *
+   * One thing the flag does reach sideways, for the reader who wonders: with
+   * `VITE_TASKA_ASSUME_PROJECT_ADMIN` on, `getMembership` above says ADMIN for
+   * everybody, so every reader is offered the edit control on the stand and the
+   * gateway refuses the PATCH for anyone who is not one. That is the documented
+   * shape of the flag, not a new risk — role gating hides UI, and the server
+   * stays the authority.
+   */
+  updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
+    return this.live.updateProject(projectId, input);
   }
 
   /**

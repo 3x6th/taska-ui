@@ -51,10 +51,55 @@ export interface AcceptInvitationInput {
   newPassword: string;
 }
 
+/**
+ * `CreateProjectRequestDto`. `description` and `color` are new in backend
+ * PR #155 (TAS-145) — see `docs/contract/pending/pr-155-TAS-145.yml`, open and
+ * undeployed on 2026-09-12 — and both are optional there.
+ *
+ * Creation is the one moment either field is genuinely free. Afterwards
+ * `PATCH` can still change a description and can still change a colour, but it
+ * cannot take a colour *away*: an absent `color` and an explicit `null` are the
+ * same "keep" on that route, and `""` fails the schema's hex pattern. So a
+ * project that is to stay on its computed colour has to be created without one,
+ * which is why the create form offers "Automatic" and omits the field for it
+ * rather than sending the computed value.
+ */
 export interface CreateProjectInput {
   projectKey: string;
   name: string;
+  /** 0–2000 characters. Omitted rather than sent blank when nothing was typed. */
   description?: string;
+  /** `^#[0-9A-Fa-f]{6}$`. Omitted for a project that should compute its own. */
+  color?: string;
+}
+
+/**
+ * `UpdateProjectRequestDto` — every field optional, PATCH semantics: a field
+ * that is not here is not changed.
+ *
+ * `projectKey` is deliberately absent and cannot be added: the route's own
+ * description says "project_key через этот эндпоинт изменить нельзя", and the
+ * key is the prefix of every `issueKey` in the project, so changing it would
+ * rewrite every issue's identity.
+ *
+ * The two string fields are **not symmetric**, and the asymmetry is the thing
+ * most likely to be got wrong by a reader who skims:
+ *
+ * - `description: ""` genuinely clears a description. The schema is
+ *   `maxLength: 2000` with no minimum, so the empty string is a value the
+ *   server accepts and stores.
+ * - `color: ""` clears nothing and is a **400**: the schema's
+ *   `^#[0-9A-Fa-f]{6}$` rejects it. Nor does omitting the field clear it —
+ *   `Optional<String>` in `ProjectServiceImpl.updateProject` makes an absent
+ *   field and an explicit `null` the same instruction, "keep". Choosing a
+ *   colour is therefore a one-way door until TAS-145's backend half makes it
+ *   two-way, and the picker says so rather than offering a reset that 400s.
+ */
+export interface UpdateProjectInput {
+  /** 1–255 characters. A blank name is a 400, not a clear. */
+  name?: string;
+  description?: string;
+  color?: string;
 }
 
 export interface ListIssuesParams {
@@ -109,6 +154,24 @@ export const SEARCH_QUERY_MIN_LENGTH = 3;
 
 /** The gateway's own wording for a query below that minimum, reproduced verbatim. */
 export const SEARCH_QUERY_TOO_SHORT_MESSAGE = `Search query must be at least ${SEARCH_QUERY_MIN_LENGTH} characters`;
+
+/**
+ * The contract's own spelling for a project colour — `^#[0-9A-Fa-f]{6}$`, on
+ * `CreateProjectRequestDto.color` and `UpdateProjectRequestDto.color` in
+ * backend PR #155 (TAS-145).
+ *
+ * Byte-equal to what `isLabelColor` in src/lib/format.ts tests, and
+ * deliberately **not** the same function. That one guards a value on its way
+ * into a `style` attribute and says in its own comment that it makes no claim
+ * about the contract; this one is a claim about the contract and nothing else.
+ * Merging them would mean a future tightening of either job silently changing
+ * the other — and the two do not even share a subject, since `isLabelColor`
+ * also filters avatar colours the gateway has never heard of.
+ *
+ * What it is for, concretely: `""` fails it. That is the whole reason a colour
+ * cannot be cleared through `PATCH` — see `UpdateProjectInput`.
+ */
+export const PROJECT_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 
 /**
  * The longest `reason` the admin user writes accept — `maxLength: 550` in the
@@ -457,6 +520,37 @@ export interface TaskaApi {
   listProjects(): Promise<Project[]>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
+  /**
+   * `PATCH /api/v1/projects/{projectId}` — name, description and colour, and
+   * nothing else. Answers with the whole project as the server now holds it.
+   *
+   * Written against backend PR #155 (TAS-145) at head `c4b8c2c4dd24`, pinned at
+   * `docs/contract/pending/pr-155-TAS-145.yml`. **Open and undeployed on
+   * 2026-09-12**, where the path answers **405** — it exists for GET, so this
+   * is not the static-resource 404 `isUndeployedRoute` matches and no
+   * compensation can recognise it. `HybridTaskaApi` therefore delegates this
+   * straight to the gateway and a caller on the stand sees the 405.
+   *
+   * Four things the yml does not say, read out of `ProjectServiceImpl` at that
+   * head, each of which decides something in the UI:
+   *
+   * - **ADMIN only, refused with 403.** A non-member and a member below ADMIN
+   *   both take `PERMISSION_DENIED`; a project that is not there is
+   *   `NOT_FOUND`, a 404. So a 403 from this route is "not your project to
+   *   edit" and must never be read as a dead session, and the control is not
+   *   offered below ADMIN — while the server stays the authority either way.
+   * - **An all-absent body is a 200, not a 400.** With all three fields empty
+   *   the service logs "nothing to update" and returns the project unchanged.
+   *   A caller that sends no changes gets a successful no-op, so the UI does
+   *   not need to defend against one; it declines to spend the request instead.
+   * - **A concurrent edit is `ABORTED` → 409**, "Project was concurrently
+   *   modified by another request, please retry". `isConflict` in
+   *   `src/api/errors.ts` already matches both arms of that.
+   * - **A colour cannot be returned to null**, which is why the picker's
+   *   "Automatic" option is disabled once a colour is set. See
+   *   `UpdateProjectInput` for why, and for why `description` is not the same.
+   */
+  updateProject(projectId: string, input: UpdateProjectInput): Promise<Project>;
   /**
    * The reader's own standing in one project: the role they hold, whether they
    * are a member at all, and whether the project exists.

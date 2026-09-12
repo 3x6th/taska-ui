@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   avatarColor,
   avatarColorChoices,
+  computedProjectColor,
   formatFileSize,
   issueLinkTypeLabel,
   issueLinkTypes,
@@ -298,6 +299,49 @@ describe("keyBadgeStyle", () => {
     // hands its items through unmapped.
     expect(() => keyBadgeStyle(undefined as unknown as string)).not.toThrow();
     expect(keyBadgeStyle(undefined as unknown as string)).toBeUndefined();
+  });
+
+  it("treats an explicit null colour exactly like an absent one", () => {
+    // Both are real answers off the wire: backend PR #155 marks `color`
+    // `nullable: true`, and the api-gateway sets no Jackson inclusion override,
+    // so a project with no colour arrives carrying the key with `null` in it.
+    expect(keyBadgeStyle("TAS", null)).toEqual(keyBadgeStyle("TAS"));
+  });
+});
+
+/**
+ * The colour the badge above tints, handed out solid (TAS-148). Its only other
+ * caller is the "Automatic" swatch in the project colour picker, which has to
+ * paint the option with the colour the project is wearing right now — so what
+ * is being pinned here is that the two cannot drift apart.
+ */
+describe("computedProjectColor", () => {
+  const tint = (color: string) => `color-mix(in oklab, ${color} 16%, transparent)`;
+
+  it.each([
+    ["TAS", "#6366f1"],
+    ["WEB", "#0ea5e9"],
+    ["MOB", "#ec4899"],
+    ["OPS", "#e3a008"],
+  ])("answers %s with %s, the same value the badge tints", (key, expected) => {
+    expect(computedProjectColor(key)).toBe(expected);
+    expect(keyBadgeStyle(key)).toEqual({ background: tint(expected) });
+  });
+
+  it("only ever answers with a colour the palette already offers", () => {
+    const keys = Array.from({ length: 200 }, (_, index) => `K${index}`);
+    for (const key of keys) {
+      expect(labelColorChoices).toContain(computedProjectColor(key));
+    }
+  });
+
+  it("still answers for a key the badge would refuse to paint", () => {
+    // The badge withholds its tint for a project it could not read, because an
+    // unfilled pill is the honest drawing of that. This is not a badge: it is
+    // asked by a picker that has a project in hand, and a caller that got
+    // `undefined` here would have nothing to paint the option with.
+    expect(labelColorChoices).toContain(computedProjectColor(""));
+    expect(computedProjectColor("   ")).toBe(computedProjectColor(""));
   });
 });
 

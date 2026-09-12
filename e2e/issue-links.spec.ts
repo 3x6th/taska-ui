@@ -20,7 +20,10 @@ async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   await page.getByLabel("Password").fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
-  await page.getByRole("button", { name: /Taska Platform/ }).click();
+  // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
+  // carries an "Edit <name>" button of its own, and a loose match on the
+  // project's name finds both.
+  await page.locator(".project-card", { hasText: "Taska Platform" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
   await page.locator(".issue-card", { hasText: issueKey }).click();

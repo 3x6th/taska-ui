@@ -824,6 +824,41 @@ h1 {
   outline-offset: 2px;
 }
 
+/* A form row that states something instead of taking it — the project key in
+   the edit dialog (§4.11, TAS-148). A `<dl>`, because a name and a value is
+   what it is, and deliberately not a disabled `<input>`: a greyed-out box
+   invites the reader to work out why it is grey, while the reason here is a
+   fact about the product and is written next to it.
+
+   It borrows `.field`'s stack and label ramp rather than the class itself:
+   `.field span` would then also catch the note inside the value and print it at
+   the label's weight and colour. */
+.form-static-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.form-static-field dt {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.form-static-field dd {
+  margin: 0;
+}
+
+/* Wraps rather than truncates: the sentence beside the badge is the whole
+   point of the row, and on a phone it takes the second line. */
+.project-key-static {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 9px;
+}
+
 .form-error {
   border-radius: 9px;
   padding: 8px 10px;
@@ -1276,6 +1311,22 @@ h1 {
   gap: 14px;
 }
 
+/* The card is a `<button>`, so its edit control (TAS-148) cannot live inside
+   it — a button inside a button is not markup a browser keeps. The shell is
+   the box both are positioned in, and it also owns the hover, so the card and
+   the control on top of it rise together: left on the card, the lift would
+   slide the surface 2px out from under a control that stayed still, and
+   hovering the control would not lift anything at all, because `:hover` is not
+   matched on an element the pointer is over but covered by another. */
+.project-card-shell {
+  position: relative;
+  transition: transform var(--dur-hover) var(--ease);
+}
+
+.project-card-shell:hover {
+  transform: translateY(-2px);
+}
+
 .project-card {
   width: 100%;
   min-height: 142px;
@@ -1288,15 +1339,24 @@ h1 {
   cursor: pointer;
   text-align: left;
   transition:
-    transform var(--dur-hover) var(--ease),
     border-color var(--dur-hover) var(--ease),
     box-shadow var(--dur-hover) var(--ease);
 }
 
-.project-card:hover {
+.project-card-shell:hover .project-card {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-hover);
-  transform: translateY(-2px);
+}
+
+/* Over the card's top-right corner, in the padding the head reserves below.
+   32×32 is §2.7's ordinary icon-button size and §1's target floor; it is not
+   44, which is the same gap §7 already records for every other icon button in
+   this product rather than a new one. */
+.project-card-edit {
+  position: absolute;
+  top: 11px;
+  right: 11px;
+  background: var(--surface);
 }
 
 .project-card-head {
@@ -1304,6 +1364,12 @@ h1 {
   align-items: center;
   gap: 10px;
   margin-bottom: 13px;
+}
+
+/* Only where the control is actually drawn. Reserving it on every card would
+   truncate the name 30px early for readers who have no edit button. */
+.project-card-shell.is-editable .project-card-head {
+  padding-right: 30px;
 }
 
 .project-card-head strong {
@@ -4508,8 +4574,15 @@ h1 {
 /* What the box accepts, under the box. `--fg-3` and 400 because it is meta
    about a field rather than part of its label (§4.3 puts a placeholder at the
    same weight of attention), and one line at 11.5/1.35 so a row of three
-   fields grows by 16 and not by a paragraph. */
-.planning-hint {
+   fields grows by 16 and not by a paragraph.
+
+   `.field-note` is the same thing said about a field that is not an estimate —
+   why a project key cannot be edited, why a colour cannot go back to automatic
+   (TAS-148) — and shares the rule rather than copying four declarations under
+   a second name. The estimate comment above stays because the *measurement* is
+   the planning row's; the recipe is not. */
+.planning-hint,
+.field-note {
   margin: 0;
   color: var(--fg-3);
   font-size: 11.5px;
@@ -5672,15 +5745,20 @@ button.attachment-open:hover:not(:disabled) {
   min-width: 148px;
 }
 
-.label-swatches {
+/* Shared by the label picker and the project one (TAS-148); named for the
+   control rather than for the first thing that used it, because there are two.
+   `flex-wrap` because the project group carries a ninth swatch and the modal's
+   body is 444 wide at 480 and narrower on a phone. */
+.color-swatches {
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
   padding-bottom: 5px;
 }
 
 /* A colour choice is the one control here whose meaning *is* its colour, so it
    carries a checked state a colour cannot express: the ring. */
-.label-swatch {
+.color-swatch {
   position: relative;
   width: 20px;
   height: 20px;
@@ -5708,21 +5786,39 @@ button.attachment-open:hover:not(:disabled) {
    absolutely positioned box is laid out against its ancestor's *padding* box,
    so the inset starts from a 16px square, not the 20px one on screen. -4
    measures 24×24 in the browser and fails the floor it was written for. */
-.label-swatch::after {
+.color-swatch::after {
   content: "";
   position: absolute;
   inset: -6px;
 }
 
-.label-swatch:hover {
+/* "Automatic" (TAS-148): painted with the colour the project computes from its
+   key, which means it can be byte-identical to one of the eight beside it — so
+   its meaning cannot ride on its colour (§7). The dashed inner ring is what
+   tells them apart, and dashed already means "nobody chose this" in this system
+   (§4.4's unassigned avatar). Drawn inside rather than as the border, because
+   the border is the checked ring and this swatch can be checked too.
+
+   `--surface` for the dashes, not a text token: they are read against the fill
+   they sit on, which is an arbitrary hex, and the modal's own plane is the one
+   thing both themes agree the fill is not. */
+.color-swatch.is-automatic::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1.5px dashed var(--surface);
+  border-radius: 50%;
+}
+
+.color-swatch:not(:disabled):hover {
   transform: scale(1.12);
 }
 
-.label-swatch.is-active {
+.color-swatch.is-active {
   border-color: var(--fg);
 }
 
-.label-swatch:focus-visible {
+.color-swatch:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

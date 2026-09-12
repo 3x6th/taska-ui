@@ -16,6 +16,7 @@ import type {
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
+  UpdateProjectInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
 import {
@@ -632,18 +633,53 @@ export class RestTaskaApi implements TaskaApi {
     }
   }
 
+  /**
+   * `description` and `color` are sent because backend PR #155 (TAS-145) puts
+   * them on `CreateProjectRequestDto`. Until this build they were dropped here
+   * silently, so the create form's Description box had never once reached a
+   * server — the field existed, was typed into, and went nowhere.
+   *
+   * Both omitted rather than sent empty when the caller left them out.
+   * `description: ""` would be accepted and stored as a blank description,
+   * which is a different thing from never having had one, and `color: ""`
+   * fails the schema's hex pattern outright.
+   */
   createProject(input: CreateProjectInput): Promise<Project> {
     return this.request<Project>("/projects", {
       method: "POST",
       body: {
         projectKey: input.projectKey,
         name: input.name,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.color ? { color: input.color } : {}),
       },
     });
   }
 
   getProject(projectId: string): Promise<Project> {
     return this.request<Project>(`/projects/${projectId}`);
+  }
+
+  /**
+   * `PATCH /projects/{projectId}` — see `TaskaApi.updateProject` for the four
+   * behaviours of this route that its schema does not state.
+   *
+   * Only the keys the caller actually named are sent, and the test for "named"
+   * is `!== undefined` rather than truthiness. That distinction is the whole
+   * of the description-clearing story: `description: ""` has to survive this
+   * spread, because the empty string is how a description is removed, while
+   * `description: undefined` must not become `"description": null` — the
+   * service reads that as "keep" and the caller would be told nothing changed.
+   */
+  updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
+    return this.request<Project>(`/projects/${this.segment(projectId)}`, {
+      method: "PATCH",
+      body: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.color !== undefined ? { color: input.color } : {}),
+      },
+    });
   }
 
   /**

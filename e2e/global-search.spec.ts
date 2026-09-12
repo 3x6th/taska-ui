@@ -116,7 +116,10 @@ test("filters the project list by name and by key, and says what it is showing",
 
   // The key, not only the name — it is what the cards are labelled with.
   await filter.fill("ops");
-  await expect(page.getByRole("button", { name: /Infra and Ops/ })).toBeVisible();
+  // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
+  // carries an "Edit <name>" button of its own, and a loose match on the
+  // project's name finds both.
+  await expect(page.locator(".project-card", { hasText: "Infra and Ops" })).toBeVisible();
 
   await filter.fill("no such project");
   await expect(page.getByText(/No projects match/)).toBeVisible();

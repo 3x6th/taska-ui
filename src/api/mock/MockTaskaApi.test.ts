@@ -158,6 +158,156 @@ describe("MockTaskaApi", () => {
     });
   });
 
+  /**
+   * `PATCH /projects/{projectId}` (TAS-148), written against backend PR #155 at
+   * head `c4b8c2c4dd24` — open and undeployed on 2026-09-12, where the path
+   * answers 405. So these cases pin a route this mock has never spoken to, out
+   * of `ProjectServiceImpl.updateProject` rather than out of the yml, and they
+   * are the only executable check on it until the PR merges.
+   *
+   * The two string fields are asymmetric and that is most of what is here: `""`
+   * clears a description and `""` cannot clear a colour.
+   */
+  describe("creating a project", () => {
+    it("keeps the description and the colour it was given", async () => {
+      // Both are new on `CreateProjectRequestDto` in backend PR #155, and until
+      // TAS-148 the rest leg dropped them on the floor — so the create form's
+      // Description box had never once reached a server.
+      const created = await api.createProject({
+        projectKey: "NEW",
+        name: "New Thing",
+        description: "  Something to build  ",
+        color: "#3fa863",
+      });
+
+      expect(created).toMatchObject({ projectKey: "NEW", description: "Something to build", color: "#3fa863" });
+      await expect(api.getProject(created.id)).resolves.toMatchObject({ color: "#3fa863" });
+    });
+
+    it("states no description at all when none was typed, rather than inventing one", async () => {
+      // It used to store "Project workspace" — the *card's* placeholder for a
+      // project with no description — so nothing created here could ever
+      // demonstrate the state the card draws for (TAS-148).
+      const created = await api.createProject({ projectKey: "BARE", name: "Bare" });
+
+      expect(created.description).toBeUndefined();
+      expect(created.color).toBeUndefined();
+    });
+
+    it("treats an empty colour as none given rather than refusing it", async () => {
+      // Create has no "clear" to tell an empty value from an absent one, so
+      // both legs read `""` as "no colour stated" — `RestTaskaApi` omits a
+      // falsy `color` from the body for the same reason. The update route is
+      // the opposite and deliberately so.
+      const created = await api.createProject({ projectKey: "EMPT", name: "Empty", color: "" });
+
+      expect(created.color).toBeUndefined();
+    });
+
+    it.each([["violet"], ["#12345"]])("refuses %s, which the contract pattern rejects", async (color) => {
+      await expect(api.createProject({ projectKey: "BAD", name: "Bad", color })).rejects.toThrow(/six-digit hex/);
+    });
+  });
+
+  describe("editing a project", () => {
+    it("changes the three fields the route takes, and moves updatedAt", async () => {
+      const before = await api.getProject(project.id);
+      const saved = await api.updateProject(project.id, {
+        name: "Taska Core",
+        description: "Gateway and services",
+        color: "#8b5cf6",
+      });
+
+      expect(saved).toMatchObject({
+        id: project.id,
+        name: "Taska Core",
+        description: "Gateway and services",
+        color: "#8b5cf6",
+      });
+      expect(saved.updatedAt).not.toBe(before.updatedAt);
+      // And it is stored, not merely answered with.
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ name: "Taska Core" });
+    });
+
+    it("leaves out what the body left out", async () => {
+      const before = await api.getProject(project.id);
+      const saved = await api.updateProject(project.id, { name: "Renamed only" });
+
+      expect(saved.description).toBe(before.description);
+      expect(saved.color).toBe(before.color);
+    });
+
+    it("answers an all-absent body with the project unchanged, not with a 400", async () => {
+      // The service logs "nothing to update" and returns. `updatedAt` does not
+      // move, which is what makes "nothing happened" observable rather than
+      // merely quiet.
+      const before = await api.getProject(project.id);
+      const saved = await api.updateProject(project.id, {});
+
+      expect(saved).toEqual(before);
+    });
+
+    it("clears a description with the empty string", async () => {
+      const saved = await api.updateProject(project.id, { description: "" });
+
+      expect(saved.description).toBe("");
+      // And the card's placeholder covers it: `??` would not have.
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ description: "" });
+    });
+
+    it("refuses an empty colour rather than treating it as a clear", async () => {
+      // The one-way door, stated as a test: the schema's pattern rejects `""`,
+      // and an absent `color` means "keep", so no request this client can make
+      // puts a colour back to null. TAS-145 is the backend story that changes
+      // it; until then the picker disables "Automatic" instead of offering a
+      // reset that 400s.
+      await expect(api.updateProject(project.id, { color: "" })).rejects.toThrow(/six-digit hex/);
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ color: "#0052cc" });
+    });
+
+    it.each([["violet"], ["#12345"], ["#0052CCC"]])("refuses %s, which the contract pattern rejects", async (color) => {
+      await expect(api.updateProject(project.id, { color })).rejects.toThrow(/six-digit hex/);
+    });
+
+    it("refuses a blank name rather than storing one", async () => {
+      await expect(api.updateProject(project.id, { name: "   " })).rejects.toThrow(/1 to 255/);
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ name: "Taska Platform" });
+    });
+
+    it("refuses a member below ADMIN, and says so as PERMISSION_DENIED", async () => {
+      // Mark is a MEMBER of Taska Platform. The gateway answers 403 with
+      // `PERMISSION_DENIED`; this is the same refusal without a wire under it.
+      await api.login({ email: "mark@example.com", password: "anything" });
+
+      await expect(api.updateProject(project.id, { name: "Mark was here" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ name: "Taska Platform" });
+    });
+
+    it("refuses a non-member the same way it refuses a member", async () => {
+      // Anna is not on Mobile at all. On the wire that is the same refusal the
+      // MEMBER above takes — `ProjectRoleChecker` stops a non-member before any
+      // role is looked at, and both arrive as `PERMISSION_DENIED` on 403 — so
+      // the UI must not read either one as a dead session.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.updateProject(mobile.id, { name: "Not hers" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+    });
+
+    it("answers NOT_FOUND for a project that is not there", async () => {
+      await expect(api.updateProject("00000000-0000-0000-0000-000000000000", { name: "Ghost" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+  });
+
   describe("workflow transitions", () => {
     it("moves an issue to the target status of a legal transition", async () => {
       const { items } = await api.listIssues(project.id);

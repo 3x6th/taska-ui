@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HybridTaskaApi } from "./HybridTaskaApi";
 import { MockTaskaApi } from "./mock/MockTaskaApi";
+import { isConflict } from "./errors";
 
 /**
  * HybridTaskaApi is a compensation for a gateway gap, not a feature — see
@@ -214,6 +215,84 @@ describe("HybridTaskaApi", () => {
     vi.spyOn(live, "getProject").mockRejectedValue(new Error("Internal error"));
 
     await expect(hybrid.getMembership(project.id)).rejects.toThrow("Internal error");
+  });
+
+  /**
+   * The project write (TAS-148). This class synthesises project *membership*
+   * and nothing else, and a rename is neither a membership question nor
+   * something a view over live data could answer — so it goes down untouched,
+   * body and all, and whatever comes back comes back.
+   *
+   * Sharper here than for the reads around it, because the route is **not
+   * deployed**: `PATCH /api/v1/projects/{id}` answered 405 on 2026-09-12, which
+   * is not even the static-resource 404 `isUndeployedRoute` matches. A class
+   * that compensated would be reporting a rename to a gateway that never took
+   * one, and the next `GET /projects` would contradict it.
+   */
+  it("passes a project edit straight to the live api, empty bodies and refusals included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    const updateProject = vi.spyOn(live, "updateProject");
+    const [project] = await hybrid.listProjects();
+
+    const input = { name: "Taska Core", description: "", color: "#8b5cf6" };
+    await expect(hybrid.updateProject(project.id, input)).resolves.toMatchObject({
+      name: "Taska Core",
+      description: "",
+      color: "#8b5cf6",
+    });
+    // The body arrives as written — the empty description above is the value
+    // that clears one, and a leg that tidied it away would silently do nothing.
+    expect(updateProject).toHaveBeenCalledWith(project.id, input);
+
+    // An all-absent body is a 200 with the project unchanged, and this class
+    // does not turn that into a request it skipped or an error it invented.
+    await expect(hybrid.updateProject(project.id, {})).resolves.toMatchObject({ name: "Taska Core" });
+
+    // And a refusal arrives as a refusal: the empty colour the contract's
+    // pattern rejects, which is why there is no way back to an automatic one.
+    await expect(hybrid.updateProject(project.id, { color: "" })).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
+  });
+
+  // The 409 this class must not swallow. `ABORTED` on the server maps to 409,
+  // and the mock underneath cannot produce a race — nothing in it interleaves —
+  // so the gateway's own shape is stubbed in to prove this leg passes it up
+  // with both arms `isConflict` reads still on it.
+  it("lets a concurrent-edit conflict through untouched", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    const [project] = await hybrid.listProjects();
+    vi.spyOn(live, "updateProject").mockRejectedValue(
+      Object.assign(new Error("Project was concurrently modified by another request, please retry"), {
+        code: "ABORTED",
+        status: 409,
+      }),
+    );
+
+    const failure = await hybrid.updateProject(project.id, { name: "Nope" }).catch((error: unknown) => error);
+
+    expect(isConflict(failure)).toBe(true);
+    expect((failure as Error).message).toMatch(/concurrently modified/);
+  });
+
+  // The ADMIN-only refusal, which the flag above does not soften. With
+  // `assumeProjectAdmin` on, `getMembership` says ADMIN for everybody and the
+  // board offers the control to every reader — but the write itself still goes
+  // to the server, and the server is the authority (AGENTS.md).
+  it("does not let the assumed ADMIN role talk the live api into a write", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    await live.login({ email: "mark@example.com", password: "anything" });
+    // Named rather than taken by position: Mark is a MEMBER of Taska Platform
+    // and an ADMIN of Mobile, so which project this is decides the answer.
+    const project = (await hybrid.listProjects()).find((item) => item.projectKey === "TAS")!;
+
+    await expect(hybrid.getMembership(project.id)).resolves.toMatchObject({ role: "ADMIN" });
+    await expect(hybrid.updateProject(project.id, { name: "Mark was here" })).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
   });
 
   /**
