@@ -40,12 +40,19 @@ async function loadSummary(projectId: string): Promise<ProjectSummary> {
   // Two legs and no third. A `getMembership` fallback used to sit here for
   // rows that state no `currentUserRole`, which against the gateway today is
   // *every* row — backend PR #152 is open — so it fired once per card rather
-  // than never: 1 + 2N requests became 1 + 3N, and in `hybrid` with the
-  // assume-admin flag off 1 + 4N, since that leg spends a `getProject` and a
-  // `getCurrentUser` of its own. All of it to decide whether to draw a pencil
-  // opening a dialog whose Save cannot succeed until PR #155 deploys either.
-  // The row's own field is the only source now; both entry points light up by
-  // themselves the day PR #152 lands.
+  // than never, and what it cost depended on the mode. `rest` turned
+  // 1 + 2N requests into 1 + 3N, since `getMembership` there is one more
+  // `getProject`. `hybrid` with `VITE_TASKA_ASSUME_PROJECT_ADMIN` off turned
+  // it into 1 + 4N, since `getMembership` there is that `getProject` plus a
+  // `getCurrentUser` of its own. `hybrid` with the flag on — the stand —
+  // left it at 1 + 2N, unchanged, because the assumption answers before
+  // either request goes out. No mode should pay a request to decide whether
+  // to offer a control, and the branch that would have paid one never ran
+  // against the gateway the deployed stand talks to — only the free branch
+  // did. All of it to decide whether to draw a pencil opening a dialog whose
+  // Save cannot succeed until PR #155 deploys either. The row's own field
+  // is the only source now; both entry points light up by themselves the
+  // day PR #152 lands.
   const [issues, members] = await Promise.allSettled([
     taskaApi.listIssues(projectId, { pageSize: 100 }),
     taskaApi.listMembers(projectId),

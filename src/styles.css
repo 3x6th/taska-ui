@@ -886,6 +886,8 @@ h1 {
   letter-spacing: 0.02em;
 }
 
+.form-error .copied-note { color: var(--fg-2); }
+
 .primary-button,
 .secondary-button,
 .clear-button,

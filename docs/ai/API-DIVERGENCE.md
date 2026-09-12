@@ -714,9 +714,17 @@ Everything below is the entry as it stood, in the past tense.
   `currentUserRole`, which arrives with backend PR #152 and is absent today, so
   in `rest` and in `hybrid` the card shows no pencil while the board header
   still does — the board already holds a membership read and spends nothing.
-  The alternative was a membership read per card, which is N gateway
-  round-trips to decide whether to offer a dialog whose Save cannot succeed.
-  Both entry points light up on their own when PR #152 deploys.
+  The alternative was a membership read per card, and its cost depends on the
+  mode in a way worth stating rather than averaging: **on the stand it is
+  nothing at all** — `hybrid` with `VITE_TASKA_ASSUME_PROJECT_ADMIN` returns the
+  role before any await, so the screen was 1 + 2N with the fallback and is
+  1 + 2N without it. It is N extra round-trips in `rest`, and 2N in `hybrid`
+  with the flag off, where that leg reads the project *and* the current user. So
+  the change buys nothing on the one deployment this repository has; what it
+  buys is that no mode pays a request to decide whether to offer a dialog whose
+  Save cannot succeed, and that the branch nothing exercises against a real
+  gateway is gone. Both entry points light up on their own when PR #152
+  deploys.
 - **Two asymmetries that look like one rule and are not.** A description can be
   cleared and a colour cannot. Both fields reach project-service as
   `Optional<String>`, where an absent field and an explicit null are the same
