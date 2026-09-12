@@ -2,9 +2,21 @@
 # REST endpoints for issue attachments
 #
 # Source: https://github.com/VladislavYurin/taska-backend/pull/147
-# Head commit: f53dca3844869beb63768cbba8e626fd4b2e56c1
-# PR state on 2026-09-05: open, checks green, review required
-# Base for this extract: develop @ 8b8b3c5aca210175322d5f1d092c61ffcd3cfeb3
+# Head commit: deeedbf3fff844c5fa73ac2ad360439fd632796e
+# PR state on 2026-09-12: open, MERGEABLE, base develop
+# Base for this extract: develop @ 21a0d9d177a1b4be3ae303381f453c05bbd98e13
+#
+# Re-pinned 2026-09-12 (TAS-219's run), after `npm run contract:pins` failed on the moved
+# head. Both heads' attachment sections were extracted and diffed rather than re-read on
+# faith, which is what this directory's README asks for. The five routes are byte-identical
+# across the move. One schema line changed: `CreateAttachmentUploadUrlRequestDto.sizeBytes`
+# gained `maximum: 2097152` and its description, so the 2 MB ceiling is now stated in the
+# contract instead of only in the service's configuration.
+#
+# Nothing in the shipped frontend moves with it. TAS-190 read that ceiling out of the
+# service config at the time and pinned it as `ATTACHMENT_MAX_SIZE_BYTES = 2097152` in
+# src/api/attachments.ts, which is the same number the contract now declares. The head move
+# turned a measurement into a contract; it did not change one.
 #
 # Five routes. Upload is a presigned-S3 choreography: the browser PUTs bytes to a host that is
 # not the gateway, so gateway CORS does not cover it.
@@ -285,6 +297,8 @@ components:
           type: integer
           format: int64
           minimum: 1
+          maximum: 2097152
+          description: Размер файла в байтах (максимум 2 МБ)
 
     CreateAttachmentUploadUrlResponseDto:
       type: object
