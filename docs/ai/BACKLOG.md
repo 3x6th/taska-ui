@@ -2098,3 +2098,23 @@ is what recurs.
   returns the stored row without passing it through `withCurrentUserRole`, so a
   freshly created project is the one row in the mock's `listProjects` that
   states no role.
+- **Five from TAS-148's release review**, all small and none worth its own
+  commit. `.project-card` also matches the loading skeleton, so the eighteen new
+  end-to-end locators are safe only because every one of them passes `hasText`
+  — while `global-search.spec.ts` already counts `.project-card` without it. The
+  New project form still ships pre-filled with "API" and "API Gateway", which is
+  the same demo text the pre-filled description was. The edit dialog's key badge
+  draws the project's saved colour, so picking a colour gives no preview of the
+  colour being picked. The "cannot be set back to automatic" note is wired
+  through `aria-describedby` on a `role="group"` whose swatch is `disabled` and
+  therefore unfocusable, so the sentence is reliably reachable only in browse
+  mode. And the checked-state ring on a swatch is `var(--fg)`, which on
+  `#0052cc` reads as a dark disc rather than a ring — a TAS-169 recipe that this
+  story made more visible without changing.
+- **Three comments still say the undeployed-route predicate cannot see a 405.**
+  TAS-148 widened it, and the `listMembers` comments in `TaskaApi.ts`,
+  `RestTaskaApi.ts` and `HybridTaskaApi.ts` describe backend PR #152's own 405
+  as unrecognisable. They are imprecise rather than wrong — the predicate would
+  match that signature, it is simply never called there — and they belong to a
+  different story's feature, which is why TAS-148 left them alone. Worth a pass
+  the next time that file is open for its own reasons.

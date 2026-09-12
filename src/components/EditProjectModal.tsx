@@ -1,7 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
 import { taskaApi } from "../api/client";
+import { isUndeployedRoute } from "../api/errors";
 import type { UpdateProjectInput } from "../api/TaskaApi";
+import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import type { Project } from "../domain/types";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import { ColorSwatches, type ColorChoice } from "./ColorSwatches";
@@ -44,13 +46,14 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
   const noticeId = useId();
 
   /**
-   * A colour is a one-way door until the backend half of TAS-145 lands: an
-   * absent `color` and an explicit `null` are the same "keep" on the PATCH, and
-   * `""` fails the schema's hex pattern, so nothing a client can send means
-   * "go back to computing it". Once the *server* holds a colour, Automatic is
-   * therefore offered and refused rather than quietly dropped — a picker that
-   * hid the option would leave the reader wondering where it went, and one that
-   * offered it would spend a request on a 400.
+   * A colour is a one-way door until TAS-145 lands its backend half, which is
+   * what makes it a two-way one: an absent `color` and an explicit `null` are
+   * the same "keep" on the PATCH, and `""` fails the schema's hex pattern, so
+   * nothing a client can send means "go back to computing it". Once the
+   * *server* holds a colour, Automatic is therefore offered and refused rather
+   * than quietly dropped — a picker that hid the option would leave the reader
+   * wondering where it went, and one that offered it would spend a request on
+   * a 400.
    *
    * Read from `project.color`, never from the `color` state: a choice made in
    * this dialog and not yet saved is still undoable, so picking a colour must
@@ -222,12 +225,22 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
           />
           {automaticLocked ? (
             <p className="field-note" id={noticeId}>
-              A colour cannot be set back to automatic yet — TAS-145.
+              A colour cannot be set back to automatic yet.
             </p>
           ) : null}
         </div>
 
-        {save.isError ? <div className="form-error">{save.error.message}</div> : null}
+        {save.isError ? (
+          // A 405 here means backend PR #155 has not deployed this PATCH yet
+          // (see `HybridTaskaApi.updateProject`) — nothing the reader did
+          // wrong, so it reads as a quiet note rather than the red box every
+          // other refusal gets, and never as a protocol sentence to act on.
+          isUndeployedRoute(save.error, UNDEPLOYED_ROUTE_MESSAGE) ? (
+            <p className="field-note">Project edits are not on this gateway yet, so this change was not saved.</p>
+          ) : (
+            <div className="form-error">{save.error.message}</div>
+          )
+        ) : null}
 
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">

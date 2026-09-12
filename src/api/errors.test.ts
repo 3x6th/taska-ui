@@ -80,4 +80,29 @@ describe("isUndeployedRoute", () => {
     expect(isUndeployedRoute(new ApiError("Issue not found", "NOT_FOUND", 404), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
     expect(isUndeployedRoute(new ApiError(staticResource, "INTERNAL", 500), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
   });
+
+  // The second signature (TAS-148): a path Spring maps for other methods, as
+  // measured against backend PR #152's members route and met again by PR
+  // #155's `PATCH /projects/{id}`. The message plays no part here — the
+  // `undeployedMessage` argument passed in is the 404 arm's string and this
+  // arm must not need it — so the whole test is about the status and the code.
+  it("also accepts a 405 for a path mapped to other methods, by its code alone", () => {
+    expect(
+      isUndeployedRoute(
+        new ApiError("Request method 'PATCH' is not supported.", "METHOD_NOT_ALLOWED", 405),
+        UNDEPLOYED_ROUTE_MESSAGE,
+      ),
+    ).toBe(true);
+  });
+
+  // A 405 is not self-evident the way the static-resource 404 is: this
+  // gateway can refuse a method for reasons that have nothing to do with
+  // deployment, so a 405 carrying a different (or absent) code must read as
+  // the client error it is, never as "not shipped yet".
+  it("refuses a 405 that is not this signature", () => {
+    expect(
+      isUndeployedRoute(new ApiError("Request method 'PATCH' is not supported.", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE),
+    ).toBe(false);
+    expect(isUndeployedRoute(new ApiError("Forbidden", "PERMISSION_DENIED", 405), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
+  });
 });

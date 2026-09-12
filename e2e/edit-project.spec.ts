@@ -93,7 +93,6 @@ test("offers no way back to an automatic colour once one is set, and says why", 
   const automatic = dialog.getByRole("button", { name: /Automatic colour/ });
   await expect(automatic).toBeDisabled();
   await expect(dialog.getByText(/cannot be set back to automatic yet/)).toBeVisible();
-  await expect(dialog.getByText(/TAS-145/)).toBeVisible();
 });
 
 test("creates a project with a description and a colour, and the card shows both", async ({ page }) => {

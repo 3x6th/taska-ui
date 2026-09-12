@@ -15,8 +15,13 @@ test("signs in and reaches the project list", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
   // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
   // carries an "Edit <name>" button of its own, and a loose match on the
-  // project's name finds both.
-  await expect(page.locator(".project-card", { hasText: "Taska Platform" })).toBeVisible();
+  // project's name finds both (exact: true finds neither, since the card's
+  // accessible name is its whole content and includes "loading members"
+  // while the summary queries are in flight). The role check is what the
+  // class locator gives up, so it comes back explicitly.
+  const card = page.locator(".project-card", { hasText: "Taska Platform" });
+  await expect(card).toBeVisible();
+  await expect(card).toHaveRole("button");
 });
 
 test("opens a project board with its seeded issues", async ({ page }) => {

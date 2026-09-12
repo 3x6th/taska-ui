@@ -20,8 +20,12 @@ const {
   failIssuesFor,
   failMembersFor,
   failRoleFor,
+  holdProjectsList,
   holdSummaries,
+  projectsRefetchStarted,
   refuseEdits,
+  refuseEditsAsUndeployed,
+  releaseProjectsList,
   releaseSummaries,
   reset,
   roleFor,
@@ -34,9 +38,34 @@ const {
     /** What the server holds after a successful edit, so a refetch agrees with it. */
     edits: Record<string, Record<string, unknown>>;
     refuseEdit: boolean;
+    /** The 405 signature `PATCH /projects/{id}` answers with on a gateway that has not deployed backend PR #155. */
+    refuseEditAsUndeployed: boolean;
     /** A gate the summary reads wait behind, so the pending state can be looked at. */
     gate?: Promise<void>;
     openGate?: () => void;
+    /**
+     * A second, independent gate on `listProjects` itself — held only by the
+     * rollback test below. `onSettled` invalidates `["projects"]`
+     * unconditionally, success or failure, so a save that failed still ends
+     * in a refetch; holding it is what lets that test look at the moment the
+     * rollback alone is responsible for the card, before the refetch has a
+     * chance to agree or disagree with it.
+     */
+    listGate?: Promise<void>;
+    openListGate?: () => void;
+    /**
+     * Resolves the moment a held `listProjects` call is entered, which is to
+     * say the moment `onSettled`'s `invalidateQueries` reaches this fake.
+     * `execute()` in `@tanstack/query-core` awaits `onError` *in full* before
+     * `onSettled` even starts, so this is also proof that `onError` — if the
+     * dialog has one — has already had its turn. That is what the rollback
+     * test waits on rather than the card's own re-render: a rollback this
+     * fast can beat React's next paint, so waiting for the optimistic name to
+     * become visible first, or for it to disappear on its own, both wait on a
+     * frame that may never be drawn.
+     */
+    listGateEntered?: Promise<void>;
+    resolveListGateEntered?: () => void;
   } = {
     issueFailures: new Set<string>(),
     memberFailures: new Set<string>(),
@@ -44,6 +73,7 @@ const {
     roles: {},
     edits: {},
     refuseEdit: false,
+    refuseEditAsUndeployed: false,
   };
   const now = "2026-08-01T09:00:00Z";
 
@@ -69,12 +99,17 @@ const {
       displayName: "Anna Ivanova",
       status: "ACTIVE" as const,
     }),
-    listProjects: async () =>
-      [
+    listProjects: async () => {
+      if (state.listGate) {
+        state.resolveListGateEntered?.();
+        await state.listGate;
+      }
+      return [
         project("project-a", "AAA", "Alpha"),
         project("project-b", "BBB", "Beta"),
         project("project-c", "CCC", "Gamma"),
-      ].map((row) => ({ ...row, ...(state.edits[row.id] ?? {}) })),
+      ].map((row) => ({ ...row, ...(state.edits[row.id] ?? {}) }));
+    },
     listIssues: async (projectId: string) => {
       if (state.gate) await state.gate;
       if (state.issueFailures.has(projectId)) {
@@ -101,13 +136,28 @@ const {
     // which is exactly the gateway this build ships against — backend PR #152
     // was open on 2026-09-12 — so every card here takes this path.
     updateProject: async (projectId: string, input: Record<string, unknown>) => {
+      // Recorded before the possible throw below: a refusal that never wrote
+      // this would let `listProjects` answer the old name on its own, and the
+      // rollback test could pass on that coincidence with `onError` deleted.
+      // Recording it first means a refetch answers the *new* name, so only a
+      // real rollback can show the old one.
+      state.edits[projectId] = { ...(state.edits[projectId] ?? {}), ...input };
+      // The 405 signature `isUndeployedRoute`'s second arm matches (TAS-148):
+      // the path exists for GET, so this is not the static-resource 404, and
+      // it carries the code the real gateway names rather than a message the
+      // predicate would have to parse.
+      if (state.refuseEditAsUndeployed) {
+        throw Object.assign(new Error("Request method 'PATCH' is not supported."), {
+          code: "METHOD_NOT_ALLOWED",
+          status: 405,
+        });
+      }
       if (state.refuseEdit) {
         throw Object.assign(new Error("Project was concurrently modified by another request, please retry"), {
           code: "ABORTED",
           status: 409,
         });
       }
-      state.edits[projectId] = { ...(state.edits[projectId] ?? {}), ...input };
       return { ...project(projectId, "BBB", "Beta"), id: projectId, ...state.edits[projectId] };
     },
     getMembership: async (projectId: string) => {
@@ -124,6 +174,9 @@ const {
     refuseEdits: () => {
       state.refuseEdit = true;
     },
+    refuseEditsAsUndeployed: () => {
+      state.refuseEditAsUndeployed = true;
+    },
     roleFor: (projectId: string, role: ProjectRole) => {
       state.roles[projectId] = role;
     },
@@ -138,6 +191,21 @@ const {
       state.openGate = undefined;
       open?.();
     },
+    holdProjectsList: () => {
+      state.listGate = new Promise<void>((resolve) => {
+        state.openListGate = resolve;
+      });
+      state.listGateEntered = new Promise<void>((resolve) => {
+        state.resolveListGateEntered = resolve;
+      });
+    },
+    releaseProjectsList: () => {
+      const open = state.openListGate;
+      state.listGate = undefined;
+      state.openListGate = undefined;
+      open?.();
+    },
+    projectsRefetchStarted: () => state.listGateEntered ?? Promise.resolve(),
     reset: () => {
       state.issueFailures.clear();
       state.memberFailures.clear();
@@ -145,14 +213,29 @@ const {
       state.roles = {};
       state.edits = {};
       state.refuseEdit = false;
+      state.refuseEditAsUndeployed = false;
       state.gate = undefined;
       state.openGate = undefined;
+      state.listGate = undefined;
+      state.openListGate = undefined;
+      state.listGateEntered = undefined;
+      state.resolveListGateEntered = undefined;
     },
   };
 });
 
 vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
 
+/**
+ * Returns the `QueryClient` too, which every caller but one ignores. The one
+ * that does not is the rollback test below, and for a reason specific to
+ * it: this screen briefly drops and re-adds every query observer it holds —
+ * measured, not this query alone — around the moment a save settles, so a
+ * DOM read taken right then can catch the gap between the drop and the
+ * re-add rather than either render either side of it. The cache has no such
+ * gap; `setQueryData` is what `onError` calls, straight away, and reading it
+ * back is reading the same fact `onError` itself would give a caller.
+ */
 function renderProjects() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -162,6 +245,7 @@ function renderProjects() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 /**
@@ -419,13 +503,14 @@ describe("saving a project edit", () => {
   });
 
   const openEditor = async (name: string) => {
-    renderProjects();
+    const queryClient = renderProjects();
     fireEvent.click(await screen.findByRole("button", { name: `Edit ${name}` }));
-    return screen.findByRole("dialog", { name: "Edit project" });
+    const dialog = await screen.findByRole("dialog", { name: "Edit project" });
+    return { dialog, queryClient };
   };
 
   it("shows the new name on the card at once, and closes on the answer", async () => {
-    const dialog = await openEditor("Beta");
+    const { dialog } = await openEditor("Beta");
     fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Beta Renamed" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
 
@@ -435,25 +520,84 @@ describe("saving a project edit", () => {
 
   it("puts the old name back when the save is refused, and says why", async () => {
     refuseEdits();
-    const dialog = await openEditor("Beta");
+    const { dialog, queryClient } = await openEditor("Beta");
+
+    // Held before the mutation fires: the fake now records a refused edit
+    // before it throws (see `updateProject` above), and `onSettled`
+    // invalidates `["projects"]` unconditionally — success or failure — so an
+    // unheld refetch would put that "new" name straight back regardless of
+    // whether `onError` ever ran. Held, that refetch cannot land yet, so the
+    // rollback below can only be the rollback's own doing.
+    holdProjectsList();
     fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Beta Renamed" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
 
+    // What this reads, and why it is the cache rather than the card, is the
+    // part two earlier drafts of this test got wrong. Neither direction of
+    // the card's own name is a usable signal: waiting for "Beta Renamed" to
+    // appear can wait on a frame React never draws — a rollback this fast
+    // can be batched away with the optimistic update it undoes, in the same
+    // commit, so the two never render apart — and waiting for it to
+    // disappear is already true before the mutation even starts, since the
+    // project began as "Beta". A DOM read has a second problem on top,
+    // measured rather than guessed: this screen briefly drops and re-adds
+    // every query observer it holds around the moment a save settles (every
+    // key, not only this one, so it is this screen's own render settling,
+    // not anything about the mutation), and a read taken in that gap sees
+    // neither name.
+    //
+    // `projectsRefetchStarted` sidesteps the first problem: it resolves the
+    // instant a held `listProjects` call is entered, which is `onSettled`
+    // reaching this fake, and `execute()` in `@tanstack/query-core` awaits
+    // `onError` *in full* first — so by the time it resolves, the rollback
+    // has already happened if this dialog has one, as a fact about the
+    // mutation rather than about any render of it. Reading the cache
+    // directly sidesteps the second: `setQueryData` is what `onError` calls,
+    // and it has no gap for a read to land in the way a re-rendering DOM
+    // does.
+    await projectsRefetchStarted();
+    const projects = queryClient.getQueryData<{ id: string; name: string }[]>(["projects"]);
+    expect(projects?.find((item) => item.id === "project-b")?.name).toBe("Beta");
+    expect(screen.getByRole("dialog", { name: "Edit project" })).toBeVisible();
+
+    // Released only now, and deliberately not checked again afterward: once
+    // the held refetch is allowed to land, it answers with `state.edits`'s
+    // "Beta Renamed" regardless of the rollback above, because the fake
+    // records a refused edit as if the server had kept it (the whole reason
+    // this test holds the refetch at all). A real refusal would not do that
+    // — this dialog's actual gateway leaves nothing to reconcile with — so
+    // asserting on the card again here would be testing the fake's fiction
+    // rather than the dialog. What the refetch does once it lands is not
+    // this test's question; releasing it is only to let the mutation settle
+    // so the dialog can report why.
+    releaseProjectsList();
     // The server's own sentence, in the dialog the fields are still in — a
     // refusal reported where there is nothing left open to fix it in is a
     // refusal nobody can act on.
     expect(await within(dialog).findByText(/concurrently modified/)).toBeVisible();
-    expect(screen.getByRole("dialog", { name: "Edit project" })).toBeVisible();
+  });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: cardName("Beta") })).toBeVisible());
-    expect(screen.queryByRole("button", { name: cardName("Beta Renamed") })).not.toBeInTheDocument();
+  // A 405 on a path that exists for GET reads as the gateway not having
+  // shipped this write yet (TAS-148), not as a protocol sentence for the
+  // reader to puzzle over or act on.
+  it("reads a 405 as this gateway not shipping the write yet, not as a failure to act on", async () => {
+    refuseEditsAsUndeployed();
+    const { dialog } = await openEditor("Beta");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Beta Renamed" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(await within(dialog).findByText(/not on this gateway yet/)).toBeVisible();
+    // Never the gateway's own sentence, and never the alarmed red box every
+    // other refusal in this dialog gets.
+    expect(within(dialog).queryByText(/Request method/)).not.toBeInTheDocument();
+    expect(document.querySelector(".form-error")).not.toBeInTheDocument();
   });
 
   it("spends no request on a dialog nothing was changed in", async () => {
     // An all-absent body is a 200 that changes nothing, so this is not a guard
     // against a refusal — it is a request not worth making, and a Save that
     // looked available would promise a change it was not going to make.
-    const dialog = await openEditor("Beta");
+    const { dialog } = await openEditor("Beta");
 
     expect(within(dialog).getByRole("button", { name: "Save changes" })).toBeDisabled();
 

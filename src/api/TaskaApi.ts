@@ -526,10 +526,13 @@ export interface TaskaApi {
    *
    * Written against backend PR #155 (TAS-145) at head `c4b8c2c4dd24`, pinned at
    * `docs/contract/pending/pr-155-TAS-145.yml`. **Open and undeployed on
-   * 2026-09-12**, where the path answers **405** — it exists for GET, so this
-   * is not the static-resource 404 `isUndeployedRoute` matches and no
-   * compensation can recognise it. `HybridTaskaApi` therefore delegates this
-   * straight to the gateway and a caller on the stand sees the 405.
+   * 2026-09-12**, where the path answers **405** with `code:
+   * "METHOD_NOT_ALLOWED"` — it exists for GET, so this is not the
+   * static-resource 404 arm of `isUndeployedRoute`, but its second arm
+   * (TAS-148) matches this signature too. `HybridTaskaApi` still delegates
+   * this straight to the gateway; `EditProjectModal` is what reads the 405
+   * that comes back and shows it as a quiet "not shipped yet" rather than the
+   * gateway's raw sentence.
    *
    * Four things the yml does not say, read out of `ProjectServiceImpl` at that
    * head, each of which decides something in the UI:

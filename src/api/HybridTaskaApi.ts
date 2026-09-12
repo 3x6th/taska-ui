@@ -130,11 +130,11 @@ export class HybridTaskaApi implements TaskaApi {
    *
    * Worth naming because the route is **not deployed**: backend PR #155
    * (TAS-145) was open on 2026-09-12 and `PATCH /api/v1/projects/{id}` answers
-   * **405** there — the path exists for GET, so this is not even the
-   * static-resource 404 `isUndeployedRoute` matches, and no predicate in
-   * src/api/errors.ts recognises it. On the stand the dialog therefore reports
-   * the gateway's own refusal rather than a friendlier invention, which is the
-   * honest answer (docs/ai/API-DIVERGENCE.md).
+   * **405** there, with `code: "METHOD_NOT_ALLOWED"` — the path exists for
+   * GET, so this is not the static-resource 404 arm `isUndeployedRoute`
+   * matched before TAS-148 gave it a second arm for exactly this signature.
+   * `EditProjectModal` reads that pairing and shows a quiet "not shipped yet"
+   * line instead of the gateway's raw refusal (docs/ai/API-DIVERGENCE.md).
    *
    * One thing the flag does reach sideways, for the reader who wonders: with
    * `VITE_TASKA_ASSUME_PROJECT_ADMIN` on, `getMembership` above says ADMIN for

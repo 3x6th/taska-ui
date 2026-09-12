@@ -446,12 +446,16 @@ Same rule as above: "Closed by" is settled, the rest is live.
   with `GET /users/me` answering 401 in the same run as the control).
   `GET /projects/{id}/members` answers **405**, because only POST is mapped on
   that path, while `GET /projects/{id}/membership` answers the static-resource
-  **404**. `isUndeployedRoute` in `src/api/errors.ts` matches the 404 signature
-  only and therefore does not recognise the members route as undeployed.
-  Nothing depends on that today, because the stand runs `hybrid` and never calls
-  it — but any UI that wants to say "not shipped yet" about a 405 needs the
-  predicate widened first, and that is also true of `PATCH /projects/{id}`
-  (backend PR #155), which answers 405 for the same reason.
+  **404**. `isUndeployedRoute` in `src/api/errors.ts` matched the 404 signature
+  only when this was written, and **TAS-148 widened it** to take a 405 carrying
+  the code `METHOD_NOT_ALLOWED` as a second arm — because `PATCH /projects/{id}`
+  on backend PR #155 answers 405 for the same reason, and there a person was
+  meeting the gateway's own "Request method 'PATCH' is not supported." in a red
+  box. The two arms are different evidence and the predicate says so in its own
+  comment: a 404 is a path nobody mapped, a 405 is a path mapped for other
+  methods, and only the second can be confused with a genuine client error. The
+  members route is not a caller of it — the stand runs `hybrid` and never reaches
+  that read — so nothing about this entry's behaviour moved with the widening.
 - **The project *list* carries the role too** (same story, read at PR head
   `1ad6ffad815d`). This bullet first said the opposite, and it was wrong for the
   few hours between two commits on the same branch; `api-contract-guard` caught
@@ -688,16 +692,30 @@ Everything below is the entry as it stood, in the past tense.
 - **Endpoint:** `POST /api/v1/projects`
 - **Contract:** `CreateProjectRequestDto` is `{projectKey, name}` — there is
   no `description`.
-- **Compensation:** the UI renders a Description textarea; `RestTaskaApi`
-  correctly does not send it. The field works in mock and is a silent no-op
-  against the gateway.
-- **Removal:** [TAS-145](https://jira.ozero.dev/browse/TAS-145), which was
-  widened on 2026-08-21 to accept `description` on create, and
-  [TAS-148](https://jira.ozero.dev/browse/TAS-148), whose same pass makes the
-  form actually send it. This used to point at TAS-141 and no longer does: the
-  field is landing in the project itself rather than in a contract cleanup.
-  Until then the textarea stays and stays a no-op — removing it would take the
-  field away twice.
+- **Compensation, rewritten 2026-09-12 when it stopped being true.** This entry
+  used to say "the UI renders a Description textarea; `RestTaskaApi` correctly
+  does not send it". Since [TAS-148](https://jira.ozero.dev/browse/TAS-148) it
+  sends it, and sends a `color` beside it, so the record said the opposite of
+  what shipped and the silent discard had quietly widened from one field to two.
+  Found by `release-reviewer` on that story.
+- **What happens now:** the deployed gateway takes both fields and throws them
+  away. Its `CreateProjectRequestDto` declares neither, and nothing anywhere in
+  the api-gateway makes an undeclared field an error — no `spring.jackson`
+  block, no `ObjectMapper` or codec bean, no `@JsonIgnoreProperties` in the
+  repository at all, and the generated model carries only `@JsonProperty`.
+  Spring Boot 4 on Jackson 3 leaves `FAIL_ON_UNKNOWN_PROPERTIES` off by default
+  besides, so it is two independent reasons rather than one. Settled by reading
+  `develop` at `21a0d9d177a1`, not by sending a create to the stand.
+- **User-visible effect:** a person who types a description and picks a colour
+  when creating a project gets a project with neither, and no error. The UI omits
+  both when they are empty, so the case is exactly "somebody filled the field
+  in".
+- **Removal:** backend PR #155 ([TAS-145](https://jira.ozero.dev/browse/TAS-145)),
+  which puts `description` and `color` on the create request and adds the `PATCH`
+  that edits them. Nothing in this frontend changes when it merges; the fields
+  simply stop being discarded. This entry used to point at TAS-141 and no longer
+  does: the fields are landing in the project itself rather than in a contract
+  cleanup.
 
 ### Neither a project nor a user carries a colour, and the UI draws one anyway
 
