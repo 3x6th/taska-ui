@@ -2042,3 +2042,17 @@ is what recurs.
   and configurable, so the contract moves to it (TAS-206); the ignored enum
   becomes an empty result rather than a `400` (TAS-218). Recorded as a comment
   on the ticket, so the next re-probe does not reopen it by reflex.
+- **Backend PR #153 (TAS-168) is contract hygiene, and it is half of what
+  TAS-206 asked for** — read 2026-09-12 at head `15196c123`. It lifts the
+  inline enums into named DTOs: `GlobalRoleTypeDto`, `ProjectMemberRoleDto`,
+  `OutboxServiceTypeDto`, `SortOrderDto`. Compared value by value against the
+  snapshot, the sets come out identical — nothing added, nothing removed,
+  `statusKey` untouched — so there is no frontend work in it, and no pending
+  extract was made for it, deliberately: `docs/contract/pending/` is for a PR
+  the frontend writes against, not for every open PR. What it does need on the
+  day it merges is a snapshot refresh, because it rewrites a great deal of the
+  document's text for no change of meaning, and a note on
+  [TAS-206](https://jira.ozero.dev/browse/TAS-206) that its `$ref`-the-enums
+  clause is delivered while `minLength: 3`, the dropped `default`, and the two
+  documents that disagree are not. The PR was CONFLICTING against develop at
+  that reading, so the merge is not imminent.
