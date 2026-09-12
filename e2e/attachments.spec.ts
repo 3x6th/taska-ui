@@ -28,7 +28,10 @@ async function signIn(page: Page, email = "anna@example.com") {
 }
 
 async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
-  await page.getByRole("button", { name: /Taska Platform/ }).click();
+  // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
+  // carries an "Edit <name>" button of its own, and a loose match on the
+  // project's name finds both.
+  await page.locator(".project-card", { hasText: "Taska Platform" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
   await page.locator(".issue-card", { hasText: issueKey }).click();

@@ -34,7 +34,10 @@ async function signIn(page: Page) {
 
 async function openBoard(page: Page) {
   await signIn(page);
-  await page.getByRole("button", { name: /Taska Platform/ }).click();
+  // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
+  // carries an "Edit <name>" button of its own, and a loose match on the
+  // project's name finds both.
+  await page.locator(".project-card", { hasText: "Taska Platform" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 }
 

@@ -2098,3 +2098,50 @@ is what recurs.
   returns the stored row without passing it through `withCurrentUserRole`, so a
   freshly created project is the one row in the mock's `listProjects` that
   states no role.
+- **Five from TAS-148's release review**, all small and none worth its own
+  commit. `.project-card` also matches the loading skeleton, so the eighteen new
+  end-to-end locators are safe only because every one of them passes `hasText`
+  — while `global-search.spec.ts` already counts `.project-card` without it. The
+  New project form still ships pre-filled with "API" and "API Gateway", which is
+  the same demo text the pre-filled description was. The edit dialog's key badge
+  draws the project's saved colour, so picking a colour gives no preview of the
+  colour being picked. The "cannot be set back to automatic" note is wired
+  through `aria-describedby` on a `role="group"` whose swatch is `disabled` and
+  therefore unfocusable, so the sentence is reliably reachable only in browse
+  mode. And the checked-state ring on a swatch is `var(--fg)`, which on
+  `#0052cc` reads as a dark disc rather than a ring — a TAS-169 recipe that this
+  story made more visible without changing.
+- **Three comments still say the undeployed-route predicate cannot see a 405.**
+  TAS-148 widened it, and the `listMembers` comments in `TaskaApi.ts`,
+  `RestTaskaApi.ts` and `HybridTaskaApi.ts` describe backend PR #152's own 405
+  as unrecognisable. They are imprecise rather than wrong — the predicate would
+  match that signature, it is simply never called there — and they belong to a
+  different story's feature, which is why TAS-148 left them alone. Worth a pass
+  the next time that file is open for its own reasons.
+- **Seven from TAS-148's second wave**, all recorded rather than taken, and none
+  of them changes behaviour. `MockTaskaStore.updateProject`'s comment justifies
+  checking existence before permission by §4.18's "must not tell apart", when
+  checking it first is exactly what *does* tell them apart — the behaviour
+  matches the gateway and only the stated reason is backwards. `ProjectCard`
+  compares the raw wire value of `currentUserRole`, because neither
+  `listProjects` nor `getProject` narrows it through `toProjectRole` while
+  `getMembership` does, so a role the backend enum grows would land in a field
+  typed as a closed union; it fails closed, which is why this is a line.
+  `EditProjectModal` seeds its fields once and never re-seeds, so after a 409 the
+  form still holds the reader's text over a project that has moved — last writer
+  wins, which matches a route carrying no precondition. The mock trims `name`
+  and `description` on write where the service stores them untrimmed,
+  unreachable today because both callers trim first. One test in
+  `RestTaskaApi.test.ts` asserts Jackson's `ALWAYS` inclusion against a field no
+  deployed gateway has — inert, but it is a derivation in a test's voice. The
+  colour swatches keep the label picker's 28×28 target on a 390 viewport where
+  §7 asks 44, now on a second surface, and the pseudo-element fix §7 already
+  names for `.search-box` is the same one. And a stored project colour outside
+  the eight choices draws the picker with nothing checked *and* the lock note,
+  leaving the current colour readable only from the key badge's tint.
+- **TAS-148 made [TAS-192](https://jira.ozero.dev/browse/TAS-192) an eleventh
+  site.** `.form-error`'s own sentence is `--danger` at 3.17:1 in light, and the
+  edit dialog now uses it. The request id beside it deliberately does not
+  inherit that tone — it is `--fg-2` mono at 6.25:1, because a reader has to
+  transcribe it and `.attachment-note` had already recorded 3.17 as the reason
+  the tone was dropped there.

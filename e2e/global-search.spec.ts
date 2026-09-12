@@ -116,7 +116,15 @@ test("filters the project list by name and by key, and says what it is showing",
 
   // The key, not only the name — it is what the cards are labelled with.
   await filter.fill("ops");
-  await expect(page.getByRole("button", { name: /Infra and Ops/ })).toBeVisible();
+  // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
+  // carries an "Edit <name>" button of its own, and a loose match on the
+  // project's name finds both (exact: true finds neither, since the card's
+  // accessible name is its whole content and includes "loading members"
+  // while the summary queries are in flight). The role check is what the
+  // class locator gives up, so it comes back explicitly.
+  const card = page.locator(".project-card", { hasText: "Infra and Ops" });
+  await expect(card).toBeVisible();
+  await expect(card).toHaveRole("button");
 
   await filter.fill("no such project");
   await expect(page.getByText(/No projects match/)).toBeVisible();

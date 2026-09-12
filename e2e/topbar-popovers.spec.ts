@@ -292,7 +292,10 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
     test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport widths regardless of project");
 
     await signIn(page);
-    await page.getByRole("button", { name: /Taska Platform/ }).click();
+    // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
+    // carries an "Edit <name>" button of its own, and a loose match on the
+    // project's name finds both.
+    await page.locator(".project-card", { hasText: "Taska Platform" }).click();
     await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
     for (const theme of themes) {
@@ -501,7 +504,7 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
     test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport sizes regardless of project");
 
     await signIn(page);
-    await page.getByRole("button", { name: /Taska Platform/ }).click();
+    await page.locator(".project-card", { hasText: "Taska Platform" }).click();
     await expect(page.locator(".counter")).toHaveText(/^\d+ of \d+$/);
     // The badge only exists once the project read has answered, and it is part
     // of what makes the settled bar three rows, so this is what "settled" means
@@ -752,7 +755,7 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
     test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport widths regardless of project");
 
     await signIn(page);
-    await page.getByRole("button", { name: /Taska Platform/ }).click();
+    await page.locator(".project-card", { hasText: "Taska Platform" }).click();
     await expect(page.locator(".counter")).toHaveText(/^\d+ of \d+$/);
 
     for (const width of [390, 780, 1200]) {
@@ -788,7 +791,7 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
     test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport widths regardless of project");
 
     await signIn(page);
-    await page.getByRole("button", { name: /Taska Platform/ }).click();
+    await page.locator(".project-card", { hasText: "Taska Platform" }).click();
     await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
     for (const theme of themes) {

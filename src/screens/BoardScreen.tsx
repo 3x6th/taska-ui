@@ -28,6 +28,8 @@ import { taskaApi } from "../api/client";
 import { apiErrorFacts, isMissingOrForbidden, isUndeployedRoute } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
+import { ColorSwatches } from "../components/ColorSwatches";
+import { EditProjectModal } from "../components/EditProjectModal";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
@@ -129,6 +131,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>("ALL");
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("ALL");
   const [managingLabels, setManagingLabels] = useState(false);
+  const [editingProject, setEditingProject] = useState(false);
   // What `NotificationsBell` hands to `useTriggerAnchor`: the bell's own box
   // never changes size, only its position, and this is the box whose resizing
   // moves it — the bar wraps to two rows below 820 and to three at 390 when
@@ -467,6 +470,26 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         ) : null}
         <strong className="board-project-name">{project?.name ?? "Project"}</strong>
         <span className="muted-label">Board</span>
+        {/* Beside the key and the name it edits, and before the spacer so it
+            stays with them on the row they wrap onto below 820 (§4.13). Not in
+            the trailing group: that group's order is fixed and its last member
+            is the anchor the profile popover hangs from.
+
+            `project &&` as well as the role, because the dialog is built from a
+            project rather than from an id — there is nothing to edit until the
+            read lands, and a button that opens an empty form is worse than one
+            that arrives a moment later. */}
+        {isProjectAdmin && project ? (
+          <button
+            aria-label="Edit project"
+            className="icon-button"
+            onClick={() => setEditingProject(true)}
+            title="Edit project"
+            type="button"
+          >
+            <Pencil size={15} />
+          </button>
+        ) : null}
         <div className="topbar-spacer" />
         <label className="search-box">
           <Search size={15} />
@@ -756,6 +779,14 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // back — an answer indistinguishable from "nothing carries it".
           onLabelDeleted={(labelId) => setLabelFilter((current) => (current === labelId ? "ALL" : current))}
         />
+      ) : null}
+
+      {/* `project &&` a second time, and not merely as a type narrowing: the
+          read can fail or be refetched while the dialog is open, and a dialog
+          built from a project that is no longer in hand would be editing
+          fields nobody can vouch for. */}
+      {editingProject && project ? (
+        <EditProjectModal project={project} onClose={() => setEditingProject(false)} />
       ) : null}
 
       {creating ? (
@@ -3713,7 +3744,7 @@ function ProjectLabelsModal({
    * argument would agree with the board only until the first project that has
    * one — TAS-148.
    */
-  projectColor?: string;
+  projectColor?: string | null;
   onClose: () => void;
   onLabelDeleted: (labelId: string) => void;
 }) {
@@ -3963,30 +3994,27 @@ function ProjectLabelsModal({
 /**
  * The colour choices: one is picked, never several.
  *
- * A group of `aria-pressed` buttons rather than an ARIA radio group, matching
- * the segmented controls elsewhere in this file. `role="radio"` would announce
- * a keyboard contract this does not implement — arrow keys moving the
- * selection within a single tab stop — and a promise of an interaction nobody
- * wrote is worse than the plainer control that behaves as it reads.
- *
- * The ring on the active swatch is not decoration: a checked state that only a
- * colour expressed would be unreadable to exactly the people §4.6 exists for.
+ * The control itself is `ColorSwatches` (src/components/ColorSwatches.tsx),
+ * shared with the project colour picker TAS-148 added — same eight hexes, same
+ * single choice, same ring for the checked state, so §8's "pass a prop, do not
+ * fork the component" applies. What is left here is the label-shaped contract
+ * over it: a colour is always chosen, never `null`, because a label has no
+ * "automatic".
  */
 function LabelSwatches({ onPick, selected }: { onPick: (color: string) => void; selected: string }) {
   return (
-    <div aria-label="Label colour" className="label-swatches" role="group">
-      {labelColorChoices.map((choice) => (
-        <button
-          aria-label={`Colour ${choice}`}
-          aria-pressed={selected === choice}
-          className={`label-swatch ${selected === choice ? "is-active" : ""}`}
-          key={choice}
-          onClick={() => onPick(choice)}
-          style={{ background: choice }}
-          type="button"
-        />
-      ))}
-    </div>
+    <ColorSwatches
+      choices={labelColorChoices.map((choice) => ({ value: choice, swatch: choice, label: `Colour ${choice}` }))}
+      groupLabel="Label colour"
+      // None of the options above carries a `null`, so this only narrows the
+      // shared type back to what a label can hold. Ignored rather than coerced
+      // to a default: a value this group cannot produce should do nothing, not
+      // silently pick the first colour.
+      onPick={(value) => {
+        if (value !== null) onPick(value);
+      }}
+      selected={selected}
+    />
   );
 }
 
@@ -4000,7 +4028,7 @@ function CreateIssueModal({
   projectId: string;
   projectKey: string;
   /** Same reason as `ProjectLabelsModal`: one key, one colour, on every surface. */
-  projectColor?: string;
+  projectColor?: string | null;
   onClose: () => void;
   onCreated: (issue: Issue) => void;
 }) {

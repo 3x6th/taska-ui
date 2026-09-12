@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError, attachmentSizeRefusalMessage } from "../attachments";
-import { isMissingOrForbidden, isUndeployedRoute } from "../errors";
+import { isConflict, isMissingOrForbidden, isUndeployedRoute } from "../errors";
 import { ESTIMATE_MAX_MESSAGE, START_DATE_AFTER_STORED_DUE_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
@@ -570,6 +570,163 @@ describe("RestTaskaApi project members", () => {
     // is membership-checked, so a refusal *is* the answer and the board draws
     // §4.18 from the rejection.
     await expect(new RestTaskaApi().getMembership("project-1")).rejects.toThrow("Not a member of this project");
+  });
+});
+
+/**
+ * Creating and editing a project (TAS-148), written against backend PR #155 at
+ * head `c4b8c2c4dd24` — **open and undeployed on 2026-09-12**, where
+ * `PATCH /api/v1/projects/{id}` answers 405 because only GET is mapped on that
+ * path. So these cases pin a route this leg has never spoken to, and they are
+ * the only check on it until the PR merges.
+ *
+ * What they are really about is the body: which keys are on it and which are
+ * not. The route's whole semantics are "a field that is absent is not changed",
+ * so an extra key is a change nobody asked for and a missing one is a change
+ * that silently does not happen — and the two string fields differ, because
+ * `description: ""` clears a description and `color: ""` is a 400.
+ */
+describe("RestTaskaApi project writes", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name === "X-Request-Id" ? "req-1" : null) },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const project = (extra: Record<string, unknown> = {}) => ({
+    id: "project-1",
+    projectKey: "TAS",
+    name: "Taska Platform",
+    createdBy: "user-anna",
+    createdAt: "2026-08-01T09:00:00Z",
+    updatedAt: "2026-08-01T09:00:00Z",
+    archivedAt: null,
+    description: null,
+    color: null,
+    ...extra,
+  });
+
+  const call = async <T>(body: unknown, invoke: (api: RestTaskaApi) => Promise<T>, status = 200) => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    const fetchStub = vi.fn(async (_input: string, _init?: RequestInit) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    const result = await invoke(new RestTaskaApi());
+    return { result, fetchStub };
+  };
+
+  /** The body as the gateway would parse it, which is what every case here reads. */
+  const sentBody = (fetchStub: { mock: { calls: unknown[][] } }) =>
+    JSON.parse(String((fetchStub.mock.calls[0][1] as RequestInit).body));
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the description and the colour on create, which it used to drop", async () => {
+    // Until TAS-148 this method sent `projectKey` and `name` and nothing else,
+    // so the create form's Description box reached no server at all.
+    const { fetchStub } = await call(project(), (api) =>
+      api.createProject({ projectKey: "NEW", name: "New Thing", description: "Why it exists", color: "#0052cc" }),
+    );
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects");
+    expect(sentBody(fetchStub)).toEqual({
+      projectKey: "NEW",
+      name: "New Thing",
+      description: "Why it exists",
+      color: "#0052cc",
+    });
+  });
+
+  it("omits both rather than sending them empty when the caller left them out", async () => {
+    const { fetchStub } = await call(project(), (api) => api.createProject({ projectKey: "NEW", name: "New Thing" }));
+
+    expect(sentBody(fetchStub)).toEqual({ projectKey: "NEW", name: "New Thing" });
+  });
+
+  it("PATCHes the project path with only the fields it was given", async () => {
+    const { result, fetchStub } = await call(project({ name: "Taska Core" }), (api) =>
+      api.updateProject("project-1", { name: "Taska Core" }),
+    );
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1");
+    expect((fetchStub.mock.calls[0][1] as RequestInit).method).toBe("PATCH");
+    expect(sentBody(fetchStub)).toEqual({ name: "Taska Core" });
+    expect(result.name).toBe("Taska Core");
+  });
+
+  it("sends an empty description, because that is what clears one", async () => {
+    // The test for "named" is `!== undefined`, not truthiness. Truthiness here
+    // would drop the one value that removes a description.
+    const { fetchStub } = await call(project(), (api) => api.updateProject("project-1", { description: "" }));
+
+    expect(sentBody(fetchStub)).toEqual({ description: "" });
+  });
+
+  it("sends nothing at all for a body with nothing in it", async () => {
+    // A 200 on the server, not a 400 — the service logs "nothing to update".
+    // The UI declines to spend the request; this leg does not have to.
+    const { fetchStub } = await call(project(), (api) => api.updateProject("project-1", {}));
+
+    expect(sentBody(fetchStub)).toEqual({});
+  });
+
+  it("reports a 403 as the refusal it is, with the server's own words", async () => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => answer(403, { code: "PERMISSION_DENIED", message: "Only a project admin can update a project" })),
+    );
+
+    const failure = await new RestTaskaApi()
+      .updateProject("project-1", { name: "Nope" })
+      .catch((error: unknown) => error);
+
+    // Not "you are signed out": this route refuses a non-member and a member
+    // below ADMIN with the same `PERMISSION_DENIED`, and the session is fine.
+    expect(isMissingOrForbidden(failure)).toBe(true);
+    expect(isConflict(failure)).toBe(false);
+    expect((failure as Error).message).toBe("Only a project admin can update a project");
+  });
+
+  it("recognises the concurrent-edit 409 as a conflict rather than a bad request", async () => {
+    // `ABORTED` on the server, mapped to 409 by `RestErrorMapper`. Both arms of
+    // `isConflict` match it, which is what lets the dialog say "retry" instead
+    // of "the gateway would not accept this".
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer(409, {
+          code: "ABORTED",
+          message: "Project was concurrently modified by another request, please retry",
+        }),
+      ),
+    );
+
+    const failure = await new RestTaskaApi()
+      .updateProject("project-1", { name: "Nope" })
+      .catch((error: unknown) => error);
+
+    expect(isConflict(failure)).toBe(true);
+    expect(isMissingOrForbidden(failure)).toBe(false);
+    expect((failure as Error).message).toMatch(/concurrently modified/);
+  });
+
+  it("carries a null description and a null colour through untouched", async () => {
+    // Both are `nullable: true` on `ProjectResponseDto`, and the api-gateway
+    // sets no Jackson inclusion override — so a project with neither arrives
+    // carrying both keys with `null` in them, not missing.
+    const { result } = await call(project(), (api) => api.updateProject("project-1", { name: "Taska" }));
+
+    expect(result.description).toBeNull();
+    expect(result.color).toBeNull();
   });
 });
 

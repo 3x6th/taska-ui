@@ -16,6 +16,7 @@ import type {
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
+  UpdateProjectInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
 import {
@@ -24,6 +25,7 @@ import {
   ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
   OUTBOX_RETRY_REASON_MAX_LENGTH,
   OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE,
+  PROJECT_COLOR_PATTERN,
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
@@ -111,6 +113,30 @@ const OPS_PROJECT_ID = "64d70a2b-72b0-4866-bdbf-4f71a416f9e4";
 // Mirrors how RestTaskaApi keeps its tokens in localStorage, so a reload behaves
 // the same in both modes: the id of the signed-in user, nothing secret.
 const SESSION_KEY = "taska.mockSession";
+
+/**
+ * What this store says when a project write states a colour the contract's
+ * pattern rejects. **This store's wording, not the gateway's** — nothing in the
+ * backend repository was read for it, and a Spring validation message is not a
+ * string this build has measured. Named so a reader does not take it for one.
+ *
+ * The refusal itself *is* the contract: `PROJECT_COLOR_PATTERN` is what
+ * `CreateProjectRequestDto` and `UpdateProjectRequestDto` declare, so a colour
+ * failing it is a 400 on the wire whatever the sentence turns out to say.
+ */
+const PROJECT_COLOR_REFUSAL = "Project colour must be a six-digit hex value like #0052CC";
+
+/**
+ * And when a rename asks for a name the schema cannot hold. Same standing as
+ * the sentence above: the bounds (`minLength: 1`, `maxLength: 255`) are the
+ * contract's, the words are this store's.
+ */
+const PROJECT_NAME_MAX_LENGTH = 255;
+const PROJECT_NAME_REFUSAL = `Project name must be 1 to ${PROJECT_NAME_MAX_LENGTH} characters`;
+
+/** `maxLength: 2000` on both project DTOs. A blank description is legal; a long one is not. */
+const PROJECT_DESCRIPTION_MAX_LENGTH = 2000;
+const PROJECT_DESCRIPTION_REFUSAL = `Project description must be at most ${PROJECT_DESCRIPTION_MAX_LENGTH} characters`;
 
 const WORKFLOW_ID = "11111111-1111-1111-1111-111111111111";
 const TODO_STATUS_ID = "22222222-2222-2222-2222-222222222222";
@@ -1475,9 +1501,41 @@ export class MockTaskaStore {
     if (!key || this.projects.some((project) => project.projectKey === key)) {
       throw new MockApiError("ALREADY_EXISTS", "Project key already exists");
     }
-    const project = this.project(makeId("project"), key, input.name.trim(), input.description || "Project workspace", undefined, [
-      this.currentUserId,
-    ]);
+    const name = input.name.trim();
+    if (!name || name.length > PROJECT_NAME_MAX_LENGTH) {
+      throw new MockApiError("INVALID_ARGUMENT", PROJECT_NAME_REFUSAL);
+    }
+    const description = input.description?.trim() ?? "";
+    if (description.length > PROJECT_DESCRIPTION_MAX_LENGTH) {
+      throw new MockApiError("INVALID_ARGUMENT", PROJECT_DESCRIPTION_REFUSAL);
+    }
+    // The contract's pattern, applied before the value is stored rather than
+    // after: `CreateProjectRequestDto.color` is `^#[0-9A-Fa-f]{6}$`, so a
+    // gateway would refuse this body and this store must refuse it too — one
+    // that accepted "red" would let a screen ship a colour no server takes.
+    //
+    // An empty colour is "none given" here and not a refusal, unlike on the
+    // update below, and the two are consistent rather than in tension: create
+    // has no "clear" to distinguish an empty value from an absent one, so both
+    // legs treat `""` as a project that stated no colour — `RestTaskaApi`
+    // omits a falsy `color` from the body for exactly this reason.
+    const color = input.color?.trim() ?? "";
+    if (color && !PROJECT_COLOR_PATTERN.test(color)) {
+      throw new MockApiError("INVALID_ARGUMENT", PROJECT_COLOR_REFUSAL);
+    }
+    const project = this.project(
+      makeId("project"),
+      key,
+      name,
+      // What was typed, or nothing at all — never an invented description.
+      // This used to substitute "Project workspace", which is the *card's*
+      // placeholder for a project with no description: the store was keeping
+      // the UI's own empty state as data, so no project created here could
+      // ever demonstrate the absent case the card draws for (TAS-148).
+      description || undefined,
+      color || undefined,
+      [this.currentUserId],
+    );
     this.projects.unshift(project);
     this.membersByProject[project.id] = [
       {
@@ -1496,6 +1554,76 @@ export class MockTaskaStore {
     if (!project) {
       throw new MockApiError("NOT_FOUND", "Project not found");
     }
+    return this.withCurrentUserRole(project);
+  }
+
+  /**
+   * `PATCH /projects/{projectId}` — backend PR #155 (TAS-145). Reproduces what
+   * `ProjectServiceImpl.updateProject` does at head `c4b8c2c4dd24`, including
+   * the three answers the yml does not state: the refusal is ADMIN-only and
+   * `PERMISSION_DENIED`, a missing project is `NOT_FOUND`, and a body with
+   * nothing in it is a **success** that changes nothing.
+   *
+   * The order of the two checks is the server's own and is load-bearing for
+   * §4.18: a project this reader cannot see must answer the same way as one
+   * that does not exist, so the existence check runs first and a non-member of
+   * a real project then takes the 403.
+   *
+   * `updatedAt` moves only when something actually changed, which is what makes
+   * the "nothing to update" case observable rather than merely quiet.
+   *
+   * **What this store cannot produce: the 409.** The gateway answers `ABORTED`
+   * — "Project was concurrently modified by another request, please retry" —
+   * when two writes race, and nothing here races: the store's methods run to
+   * completion synchronously and only their *resolution* is delayed. Inventing
+   * a trigger for it would be inventing a mechanism this store does not have.
+   * So the conflict exists against `rest` and `hybrid` only, `isConflict` in
+   * src/api/errors.ts is what recognises it, and the UI path is covered there.
+   */
+  updateProject(projectId: string, input: UpdateProjectInput): Project {
+    const project = this.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new MockApiError("NOT_FOUND", "Project not found");
+    }
+    if (this.getMembership(projectId).role !== "ADMIN") {
+      throw new MockApiError("PERMISSION_DENIED", "Only a project admin can edit this project");
+    }
+
+    if (input.name !== undefined) {
+      const name = input.name.trim();
+      if (!name || name.length > PROJECT_NAME_MAX_LENGTH) {
+        throw new MockApiError("INVALID_ARGUMENT", PROJECT_NAME_REFUSAL);
+      }
+    }
+    if (input.description !== undefined && input.description.length > PROJECT_DESCRIPTION_MAX_LENGTH) {
+      throw new MockApiError("INVALID_ARGUMENT", PROJECT_DESCRIPTION_REFUSAL);
+    }
+    // `""` is refused here and accepted on create, and the difference is the
+    // whole one-way-door story: the pattern rejects the empty string, so there
+    // is no value a caller can send that means "go back to no colour". An
+    // absent `color` means "keep" — `Optional<String>` on the server cannot
+    // tell it from an explicit null — so this route can set a colour and
+    // change a colour, and can never remove one (TAS-145).
+    if (input.color !== undefined && !PROJECT_COLOR_PATTERN.test(input.color)) {
+      throw new MockApiError("INVALID_ARGUMENT", PROJECT_COLOR_REFUSAL);
+    }
+
+    // Trimmed on the way in, like `createProject` above. The blank description
+    // survives that trim as `""` and is stored: it is how a description is
+    // cleared, and it is the one empty string this route treats as a value.
+    const changes: Partial<Project> = {};
+    if (input.name !== undefined) changes.name = input.name.trim();
+    if (input.description !== undefined) changes.description = input.description.trim();
+    if (input.color !== undefined) changes.color = input.color;
+
+    if (Object.keys(changes).length === 0) {
+      // The service logs "nothing to update" and answers 200 with the project
+      // as it stands. Not a 400: a caller that sends no changes has asked for
+      // nothing and is told nothing changed.
+      return this.withCurrentUserRole(project);
+    }
+
+    Object.assign(project, changes, { updatedAt: now() });
     return this.withCurrentUserRole(project);
   }
 
@@ -3399,13 +3527,21 @@ export class MockTaskaStore {
     id: string,
     projectKey: string,
     name: string,
-    description: string,
     /**
-     * Optional because the gateway has no such field: `color` is a label
-     * property in the contract, and nothing else. The seeded projects state one
-     * so the mock keeps showing the palette DESIGN.md §2.2 chose; anything
-     * created at runtime states none and is coloured from its key, which is the
-     * path the live gateway takes for every project.
+     * Undefined for a project that has none — which is now a state anything
+     * created at runtime can be in, and one an admin can return a project to
+     * by clearing the box (TAS-148). Distinct from `""` only in the store:
+     * both draw the card's placeholder, because §5.6's "no description" has to
+     * cover the blank one too.
+     */
+    description: string | undefined,
+    /**
+     * Absent from `docs/contract/openapi.yml`, which is still the authority:
+     * backend PR #155 (TAS-145) adds `color` to all three project DTOs and was
+     * open and undeployed on 2026-09-12. The seeded projects state one so the
+     * mock keeps showing the palette DESIGN.md §2.2 chose; OPS states none and
+     * is coloured from its key, which is the path a gateway without the PR
+     * takes for every project.
      */
     color: string | undefined,
     memberIds: string[],
@@ -3750,6 +3886,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async getProject(projectId: string): Promise<Project> {
     return wait(this.store.getProject(projectId));
+  }
+
+  async updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
+    return wait(this.store.updateProject(projectId, input));
   }
 
   async getMembership(projectId: string): Promise<ProjectMembership> {

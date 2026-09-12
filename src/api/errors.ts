@@ -48,9 +48,16 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * Whether this failure means "the gateway does not have this route yet" rather
  * than "the thing you asked for is not there".
  *
- * Both halves are required, and the pairing is narrow on purpose. An unmapped
- * path falls through to Spring's static-resource handler, which answers **404**
- * with a message beginning `No static resource …` — measured 2026-09-06 against
+ * Two signatures answer this, and they are different evidence rather than two
+ * readings of one status: a 404 here means nobody mapped the *path*; a 405
+ * means somebody mapped it, for a *different method*. Only the second can be
+ * confused with a genuine client error, which is why it carries a requirement
+ * the first does not need — each arm is documented where it is checked, below.
+ *
+ * **The 404 arm.** Both halves are required, and the pairing is narrow on
+ * purpose. An unmapped path falls through to Spring's static-resource
+ * handler, which answers **404** with a message beginning `No static resource
+ * …` — measured 2026-09-06 against
  * `GET /api/v1/projects/{uuid}/issues/{uuid}/attachments`, where a deployed
  * neighbour (`…/comments`) answers `401` for the same unauthenticated request
  * and the attachment routes answer this. A deployed route's own 404 says
@@ -58,8 +65,8 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * message is the whole distinction; matching the status alone would read a
  * missing issue as a missing deployment.
  *
- * The attachments panel is the only caller left. The admin user writes were the
- * first, measured the same way on 2026-08-25 against
+ * The attachments panel was this arm's first caller. The admin user writes
+ * were next, measured the same way on 2026-08-25 against
  * `POST /api/v1/admin/users/not-a-uuid/block`; backend PR #146 mapped all three
  * of those paths and they answer `400 INVALID_ARGUMENT` as of 2026-09-08, so
  * TAS-196 removed that compensation. This is the predicate working as designed
@@ -67,17 +74,12 @@ export function isMissingOrForbidden(error: unknown): boolean {
  *
  * Matched as a substring rather than by equality because the tail of the
  * message is the request path, which differs per call — and by the same token
- * it says nothing about *which* route was asked for, which is what lets one
- * predicate serve every undeployed family at once. Each family stops matching
- * the day its routes deploy — and that is all the deployment does. A check that
+ * it says nothing about *which* route was asked for, which is what lets this
+ * arm serve every undeployed family at once. Each family stops matching the
+ * day its routes deploy — and that is all the deployment does. A check that
  * goes quiet reports nothing to anyone, so the note does not remove itself: the
  * admin one stopped matching the moment PR #146's routes deployed, and still
  * had to be deleted by hand, in TAS-196, as recorded above.
- *
- * It lives here rather than beside either of its callers because it is a fact
- * about the *gateway*, in the same family as `isMissingOrForbidden`. It is
- * never true against the mock: `MockApiError` carries no HTTP status, so mock
- * mode cannot reproduce this signature at all and does not try to.
  *
  * `undeployedMessage` is **required and has no default**, which is the point of
  * taking it as a parameter at all. The measured string is pinned once, as
@@ -86,10 +88,46 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * copy of it, and two copies of a measurement are two chances to drift — which
  * is the very thing moving this predicate out of the Users section was meant to
  * stop. Every caller passes the constant, so the constant is what is matched.
+ * The 405 arm below takes no such parameter: `code` is not free text a caller
+ * has to measure and pin, it is one of a small fixed set the gateway already
+ * names.
+ *
+ * **The 405 arm** (TAS-148). A path Spring *does* recognise, but only for
+ * other methods, answers **405** with `code: "METHOD_NOT_ALLOWED"` in the
+ * body. Backend PR #152's `GET /projects/{id}/members` meets this signature
+ * first — only `POST` is mapped on that path — and PR #155's
+ * `PATCH /projects/{id}` meets it a second time, for the same reason; the
+ * second is what this predicate is widened for, and nothing yet calls it for
+ * the first.
+ *
+ * What the `code` conjunct buys is narrower than it looks, and worth stating
+ * exactly because the obvious reading of it is false. It is **not** that this
+ * gateway answers 405 for other reasons: it cannot. `GatewayWebExceptionHandler`
+ * is an `@Order(-2)` `WebExceptionHandler`, so every unhandled exception in the
+ * chain — the router's `MethodNotAllowedException` included — reaches
+ * `GatewayErrorHandler`, where a `ResponseStatusException` takes the code from
+ * the status name and no gRPC code maps to 405 at all
+ * (`RestErrorMapper.mapGrpcCodeToHttpStatus`; permission-denied is 403). Read
+ * at `origin/develop` on 2026-09-12. So every 405 *this gateway* emits carries
+ * `METHOD_NOT_ALLOWED`, and that includes one caused by a bug of ours calling a
+ * mapped path with the wrong method — which would read here as "not deployed
+ * yet", and is the one way this arm can be wrong.
+ *
+ * What it does buy: that the 405 came from our gateway rather than from
+ * something in front of it. A proxy answering with a non-JSON body leaves
+ * `RestTaskaApi.request` with no `code` to read and falling back to `UNKNOWN`,
+ * and that failure has nothing to say about what the gateway has shipped.
+ *
+ * It lives here rather than beside either of its callers because it is a fact
+ * about the *gateway*, in the same family as `isMissingOrForbidden`. It is
+ * never true against the mock: `MockApiError` carries no HTTP status, so mock
+ * mode cannot reproduce either signature at all and does not try to.
  */
 export function isUndeployedRoute(error: unknown, undeployedMessage: string): boolean {
-  const { status, message } = apiErrorFacts(error);
-  return status === 404 && message !== null && message.includes(undeployedMessage);
+  const { status, message, code } = apiErrorFacts(error);
+  const unmappedPath = status === 404 && message !== null && message.includes(undeployedMessage);
+  const mappedForOtherMethods = status === 405 && code === "METHOD_NOT_ALLOWED";
+  return unmappedPath || mappedForOtherMethods;
 }
 
 /**

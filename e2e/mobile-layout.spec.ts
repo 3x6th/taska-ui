@@ -27,7 +27,10 @@ test.describe("phone portrait", () => {
 
   test("the board's issue counter stays on one line", async ({ page }) => {
     await signIn(page);
-    await page.getByRole("button", { name: /Taska Platform/ }).click();
+    // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
+    // carries an "Edit <name>" button of its own, and a loose match on the
+    // project's name finds both.
+    await page.locator(".project-card", { hasText: "Taska Platform" }).click();
     await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
     const counter = page.locator(".counter");
@@ -155,7 +158,7 @@ test.describe("filter bar wrap band, 821-882px", () => {
     test.skip(testInfo.project.name !== "laptop", "runs once; sets its own viewport widths regardless of project");
 
     await signIn(page);
-    await page.getByRole("button", { name: /Taska Platform/ }).click();
+    await page.locator(".project-card", { hasText: "Taska Platform" }).click();
     await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
     await expect(page.locator(".counter")).toHaveText(/^\d+ of \d+$/);
 

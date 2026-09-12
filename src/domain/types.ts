@@ -140,11 +140,34 @@ export interface Project {
    * it take their floor.
    */
   currentUserRole?: ProjectRole | null;
-  description?: string;
-  // Same standing as `User.color` above: absent from the contract, present only
-  // in the mock, and still the value that wins over the colour `keyBadgeStyle`
-  // computes from the project key (TAS-148).
-  color?: string;
+  /**
+   * Both of the next two are added to `ProjectResponseDto` by backend PR #155
+   * (TAS-145), pinned at `docs/contract/pending/pr-155-TAS-145.yml`, and both
+   * are `nullable: true` there. **Open and undeployed on 2026-09-12**, so
+   * `docs/contract/openapi.yml` — the authority — still carries neither, and on
+   * the stand the only values either field ever holds are the mock's.
+   *
+   * Optional *and* nullable for the same reason `currentUserRole` above is: a
+   * gateway that predates the PR omits the key, and one that has it sends an
+   * explicit `null` for a project that stated no value, because the api-gateway
+   * configures no Jackson inclusion override. Readers must treat the two alike.
+   *
+   * An empty-string `description` is a third state and a meaningful one: the
+   * schema's `maxLength: 2000` accepts it, so `""` is how a description is
+   * cleared through `PATCH`. Anything drawing a placeholder for "no
+   * description" therefore has to cover blank as well as absent — `??` alone
+   * does not.
+   */
+  description?: string | null;
+  /**
+   * The colour an admin chose, which wins over the one `keyBadgeStyle` computes
+   * from the project key. `""` is *not* a third state here, in deliberate
+   * contrast with `description` above: the schema's `^#[0-9A-Fa-f]{6}$` rejects
+   * it, and an absent `color` and an explicit `null` both mean "keep" on the
+   * PATCH — so there is no way through the contract to put a colour back to
+   * null once one is set (TAS-145 is the backend story that would add one).
+   */
+  color?: string | null;
   memberIds?: string[];
 }
 

@@ -29,7 +29,10 @@ async function openBell(page: Page) {
 
 async function openNotifications(page: Page) {
   await signIn(page);
-  await page.getByRole("button", { name: /Taska Platform/ }).click();
+  // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
+  // carries an "Edit <name>" button of its own, and a loose match on the
+  // project's name finds both.
+  await page.locator(".project-card", { hasText: "Taska Platform" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
   await openBell(page);
@@ -127,7 +130,7 @@ test("a notification opens its issue from /admin, which is not even a project sc
 // an issue seeds an ISSUE_CREATED notification carrying a real route.
 test("a notification that already carries a route opens from /projects too", async ({ page }) => {
   await signIn(page);
-  await page.getByRole("button", { name: /Taska Platform/ }).click();
+  await page.locator(".project-card", { hasText: "Taska Platform" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
   await page.getByRole("button", { name: "New" }).click();

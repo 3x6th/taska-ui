@@ -80,4 +80,34 @@ describe("isUndeployedRoute", () => {
     expect(isUndeployedRoute(new ApiError("Issue not found", "NOT_FOUND", 404), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
     expect(isUndeployedRoute(new ApiError(staticResource, "INTERNAL", 500), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
   });
+
+  // The second signature (TAS-148): a path Spring maps for other methods, as
+  // measured against backend PR #152's members route and met again by PR
+  // #155's `PATCH /projects/{id}`. The message plays no part here — the
+  // `undeployedMessage` argument passed in is the 404 arm's string and this
+  // arm must not need it — so the whole test is about the status and the code.
+  it("also accepts a 405 for a path mapped to other methods, by its code alone", () => {
+    expect(
+      isUndeployedRoute(
+        new ApiError("Request method 'PATCH' is not supported.", "METHOD_NOT_ALLOWED", 405),
+        UNDEPLOYED_ROUTE_MESSAGE,
+      ),
+    ).toBe(true);
+  });
+
+  // What the code conjunct is actually for, since this gateway cannot emit a
+  // 405 carrying anything else (see `isUndeployedRoute`): a 405 that did not
+  // come from our gateway at all. Something in front of it answering with a
+  // non-JSON body leaves `RestTaskaApi.request` with no code to read and
+  // falling back to `UNKNOWN` — both shapes below are that, one where the body
+  // would not parse and one where it parsed but named no code — and neither
+  // says anything about what the gateway has shipped.
+  it("refuses a 405 that did not come from this gateway", () => {
+    expect(isUndeployedRoute(new ApiError("Request failed with 405", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE)).toBe(
+      false,
+    );
+    expect(
+      isUndeployedRoute(new ApiError("Method Not Allowed", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE),
+    ).toBe(false);
+  });
 });

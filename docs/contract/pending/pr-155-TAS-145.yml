@@ -1,0 +1,183 @@
+# Pending gateway contract — backend PR #155 (TAS-145)
+# Editing a project: name, description, colour — and the two of them on create
+#
+# Source: https://github.com/VladislavYurin/taska-backend/pull/155
+# Head commit: c4b8c2c4dd246e00a9da433d4b6d47e94b4ae2c3
+# PR state on 2026-09-12: open, MERGEABLE, base develop
+# Base for this extract: develop @ 21a0d9d177a1b4be3ae303381f453c05bbd98e13
+#
+# One new method on an existing path, and `description` and `color` appearing on three
+# schemas at once. `PATCH /api/v1/projects/{projectId}` answers **405** today — the path
+# exists for GET, so this is not the static-resource 404 `isUndeployedRoute` matches.
+#
+# This is NOT the contract. It is what the contract WILL say if this PR merges as it
+# stands. docs/contract/openapi.yml stays the authority until then; this file exists so a
+# reviewer without network access can audit frontend work written ahead of the merge, and
+# so the version that work was written against is pinned in history. Delete it when the PR
+# merges and the snapshot is refreshed.
+#
+# Extracted mechanically: every path and schema that is new in the PR, or whose text differs
+# from develop. Ordering follows the PR file.
+#
+# `ProjectResponseDto` is edited by this PR **and** by PR #152 (see pr-152-TAS-137.yml),
+# each showing only its own half. Whichever merges second has to carry both, so the
+# frontend's `Project` needs `currentUserRole`, `description` and `color` before either
+# lands, and neither extract alone states that.
+#
+# What `ProjectServiceImpl.updateProject` does that the yml does not say, read at the head
+# above. Where the yml and the Java disagree, the Java wins.
+#
+# - **ADMIN only, and the refusal is 403.** A non-member and a member below ADMIN both take
+#   `DomainStatus.PERMISSION_DENIED`. A missing project is `NOT_FOUND`. So the UI must not
+#   read a 403 here as "signed out" and must not offer the control to a non-admin.
+# - **An all-absent body is a 200, not a 400.** With `name`, `description` and `color` all
+#   empty the service logs "nothing to update" and returns the project unchanged.
+# - **A concurrent edit is `ABORTED`, which the gateway maps to 409**, with the message
+#   "Project was concurrently modified by another request, please retry". `isConflict` in
+#   src/api/errors.ts already matches both the status and the `ABORTED` code.
+# - **Neither `description` nor `color` can be cleared.** Both are `Optional<String>` and an
+#   absent value means "keep"; the schema says so for `color` in as many words. There is no
+#   way through this route to put a project's colour back to null so the client computes it
+#   again, which matters because that computed colour (TAS-171) is what every project badge
+#   draws today.
+
+paths:
+
+  /api/v1/projects/{projectId}:
+    # GET on this path is unchanged by the PR and lives in the snapshot.
+    patch:
+      summary: Обновляет проект (имя, описание, цвет)
+      description: >
+        Частичное обновление проекта (PATCH-семантика): поле, отсутствующее в теле запроса,
+        не изменяется. Доступно только участнику проекта с ролью ADMIN.
+      operationId: updateProject
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequestDto'
+      responses:
+        '200':
+          description: Проект успешно обновлён
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+components:
+  schemas:
+
+    # Changed: `description` and `color` are new; `name` gained maxLength and the
+    # descriptions are new throughout.
+    CreateProjectRequestDto:
+      type: object
+      required: [projectKey,name]
+      properties:
+        projectKey:
+          type: string
+          description: Ключ проекта (используется как префикс issueKey задач, например "TASKA")
+          minLength: 1
+          pattern: '^[\x21-\x7E]+$'
+        name:
+          type: string
+          description: Название проекта
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          description: Описание проекта
+          maxLength: 2000
+        color:
+          type: string
+          description: Цвет проекта в HEX формате (Пример:#0052CC)
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          example: "#0052CC"
+
+    UpdateProjectRequestDto:
+      type: object
+      description: >
+        Все поля опциональны (PATCH-семантика) — отсутствующее поле в запросе не изменяет
+        текущее значение. project_key через этот эндпоинт изменить нельзя.
+      properties:
+        name:
+          type: string
+          description: Новое имя проекта
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          description: Новое описание проекта
+          maxLength: 2000
+        color:
+          type: string
+          description: >
+            Новый цвет проекта в HEX формате. Отсутствие поля в теле запроса и его явная передача
+            как null в этой версии API неразличимы (оба означают «не менять») — явный сброс цвета
+            обратно в null (чтобы клиент снова вычислял цвет сам) через PATCH сейчас не поддерживается.
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          example: "#0052CC"
+
+    # Changed: `description` and `color` are new. `currentUserRole` is NOT here because it
+    # belongs to PR #152 — see the header.
+    ProjectResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Уникальный идентификатор проекта
+        projectKey:
+          type: string
+          description: Ключ проекта (используется как префикс issueKey задач); не меняется никаким запросом
+        name:
+          type: string
+          description: Название проекта
+        createdBy:
+          type: string
+          description: Идентификатор пользователя, создавшего проект
+        createdAt:
+          type: string
+          format: date-time
+          description: Дата и время создания проекта
+        updatedAt:
+          type: string
+          format: date-time
+          description: Дата и время последнего обновления проекта
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Дата и время архивации проекта (null, если проект не архивирован)
+        description:
+          type: string
+          nullable: true
+          description: Описание проекта (null, если не задано)
+        color:
+          type: string
+          nullable: true
+          description: >
+            Цвет проекта в HEX формате. null означает, что цвет не выбран пользователем —
+            в этом случае клиент вычисляет цвет самостоятельно (например, по id проекта).
