@@ -687,6 +687,59 @@ Everything below is the entry as it stood, in the past tense.
   is **done** — narrow that story to whatever else it still carries. The UI half
   is ours and is what the backlog line names.
 
+### `PATCH /projects/{id}` is not in the contract, so editing a project runs on the mock
+
+- **Endpoint:** `PATCH /api/v1/projects/{projectId}`, and with it `description`
+  and `color` on `CreateProjectRequestDto` and on `ProjectResponseDto`.
+- **Contract:** none of it is in `docs/contract/openapi.yml`. All of it is on
+  backend PR #155, pinned at `docs/contract/pending/pr-155-TAS-145.yml` at head
+  `c4b8c2c4dd24`, whose header carries the four readings of that PR's Java that
+  the yml does not state.
+- **Observed 2026-09-12**, probed without a token so nothing could be mutated:
+  `PATCH /api/v1/projects/{uuid}` answers **405** with code
+  `METHOD_NOT_ALLOWED` and the message "Request method 'PATCH' is not
+  supported.", because the path exists for `GET`. The preflight passes and
+  `CorsWebFilter` writes its headers before the chain, so a browser really
+  receives that body rather than an opaque CORS failure — which is what makes
+  the compensation below possible at all.
+- **Compensation:** the feature ships mock-backed, which is this repository's
+  normal mode, and the dialog reads the 405 through `isUndeployedRoute` and
+  says the route is not on this gateway yet, in a quiet note rather than the red
+  error box. Without that a person meets the gateway's own protocol sentence.
+  The optimistic update rolls back, nothing is written, and the session is
+  untouched — a 405 is produced by routing before authentication, so no token is
+  spent and no 401 path is entered.
+- **The edit control is not on the projects screen against the gateway**, and
+  that is deliberate rather than an oversight. It is gated on
+  `currentUserRole`, which arrives with backend PR #152 and is absent today, so
+  in `rest` and in `hybrid` the card shows no pencil while the board header
+  still does — the board already holds a membership read and spends nothing.
+  The alternative was a membership read per card, which is N gateway
+  round-trips to decide whether to offer a dialog whose Save cannot succeed.
+  Both entry points light up on their own when PR #152 deploys.
+- **Two asymmetries that look like one rule and are not.** A description can be
+  cleared and a colour cannot. Both fields reach project-service as
+  `Optional<String>`, where an absent field and an explicit null are the same
+  value — structurally, at three layers: the gateway generator runs with
+  `openApiNullable=false` so the DTO field is a plain `String`, the gateway
+  client sets the proto field only when it is non-null, and the service adapter
+  reads the has-bit. But an empty string is a *value*, and `description` accepts
+  one where `color` is refused twice, by the gateway's `@Pattern` and again by
+  the service's own non-blank check. So `description: ""` genuinely clears,
+  storing the empty string rather than SQL null, and there is no request that
+  returns a colour to the computed one.
+- **User-visible effect of that second half:** choosing a project colour is a
+  one-way door. The dialog draws it as one — the Automatic swatch is disabled
+  once a colour is saved, with a line saying so — rather than offering a control
+  that silently fails.
+- **Removal:** [TAS-145](https://jira.ozero.dev/browse/TAS-145) / backend PR
+  #155 for the route itself. The one-way door needs more than that PR merging
+  and was raised on TAS-145 while it is open: either an explicit clear flag on
+  the request, or the gateway generator moving to `openApiNullable=true` so a
+  null can be told from an absent field at all. The second is the general fix
+  and touches every nullable DTO in the gateway, so it is the owner's call
+  rather than ours.
+
 ### The create-project form shows a field the contract does not have
 
 - **Endpoint:** `POST /api/v1/projects`
