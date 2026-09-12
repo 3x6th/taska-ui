@@ -284,7 +284,18 @@ function ProjectCard({
             {(members ?? []).slice(0, 4).map((member) => (
               <Avatar
                 key={member.userId}
-                user={member.user ? { id: member.userId, displayName: member.user.displayName, color: member.user.color } : null}
+                user={
+                  member.user
+                    ? {
+                        id: member.userId,
+                        displayName: member.user.displayName,
+                        color: member.user.color,
+                        // Inline on the member row (backend PR #152), so a card
+                        // showing four faces still costs one member read.
+                        avatarUrl: member.user.avatarUrl,
+                      }
+                    : null
+                }
                 size="sm"
               />
             ))}

@@ -748,6 +748,48 @@ Everything below is the entry as it stood, in the past tense.
   and touches every nullable DTO in the gateway, so it is the owner's call
   rather than ours.
 
+### The avatar schema declares 5 MB and the service enforces 2 MB
+
+- **Endpoint:** `POST /api/v1/users/me/avatar/upload-url`, backend PR #150,
+  pinned at `docs/contract/pending/pr-150-TAS-129.yml` head `12e909d42dcc`.
+- **Contract:** `CreateAvatarUploadUrlRequestDto.sizeBytes` is
+  `minimum: 1, maximum: 5242880`, and its description says "макс. 5 MB".
+- **Runtime:** the size is not checked by the gateway's bean validation alone.
+  `S3StorageClient.validateFileParams` reads `storage.max-file-size-bytes` from
+  auth-service's own configuration, where it is `2097152` — 2 MB, the same
+  number the attachments bucket uses, from a separate configuration block that
+  only happens to agree.
+- **What follows:** a 3 MB image satisfies the schema, passes the gateway, and
+  is refused a layer deeper. A client that trusts the schema offers a person a
+  file the product will not take and discovers it after the request.
+- **Compensation:** `src/api/avatars.ts` enforces the number that is enforced.
+  The declared one is named beside it and never used as a limit, so the
+  disagreement is visible in the file rather than resolved silently in its
+  favour.
+- **Removal:** raised on [TAS-129](https://jira.ozero.dev/browse/TAS-129) on
+  2026-09-12 while its PR is open, with both directions offered — raise the
+  configuration to 5 MB, or put 2097152 in the schema. Either way one constant
+  moves here.
+
+### The mock hands back a `data:` URL where the gateway signs an `https` one
+
+- **Endpoints:** the avatar confirm and download reads.
+- **Divergence:** `MockTaskaApi` answers with a `data:` URL built from the bytes
+  it was handed; the gateway answers with a presigned `https` link that expires
+  in fifteen minutes.
+- **Why it is deliberate:** without it, mock mode could demonstrate *uploading*
+  an avatar and never demonstrate *having* one, which makes the whole feature
+  unclickable on the one environment the team actually uses before PR #150
+  merges.
+- **What it costs, stated so nobody discovers it:** expiry is unreachable in
+  mock, so the fallback that puts initials back when a link has gone stale is
+  proven by unit tests and by no end-to-end run. A `data:` URL also never fails
+  to load, so the failed-image path is in the same position.
+- **Removal:** none, and none wanted. It disappears with `hybrid` under
+  [TAS-209](https://jira.ozero.dev/browse/TAS-209), along with every other
+  mock-only behaviour; it is not a compensation for a gateway defect and should
+  not be filed as one.
+
 ### The create-project form shows a field the contract does not have
 
 - **Endpoint:** `POST /api/v1/projects`

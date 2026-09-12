@@ -4,10 +4,11 @@ import type { BoardParams } from "../TaskaApi";
 import type { Board, Issue, Project, Workflow } from "../../domain/types";
 import {
   ATTACHMENT_MAX_SIZE_BYTES,
-  AttachmentStoreError,
   attachmentSizeRefusalMessage,
   attachmentTypeRefusalMessage,
 } from "../attachments";
+import { AVATAR_MAX_SIZE_BYTES, avatarSizeRefusalMessage, avatarTypeRefusalMessage } from "../avatars";
+import { ObjectStoreError } from "../objectStore";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
 /**
@@ -2378,7 +2379,7 @@ describe("MockTaskaApi", () => {
       });
 
       const error = await api.putAttachmentBytes(ticket.uploadUrl, file, file.type).catch((e: unknown) => e);
-      expect(error).toBeInstanceOf(AttachmentStoreError);
+      expect(error).toBeInstanceOf(ObjectStoreError);
       // The whole point of the shape: no `status`, so nothing in
       // src/api/errors.ts reads a store failure as a gateway one.
       expect(error).toMatchObject({ code: "STORAGE_UNREACHABLE", storeStatus: null });
@@ -2721,7 +2722,7 @@ describe("MockTaskaApi", () => {
       const file = textFile("notes.txt");
       for (const url of ["", "/api/v1/upload", "javascript:void 0"]) {
         await expect(api.putAttachmentBytes(url, file, file.type)).rejects.toMatchObject({
-          name: "AttachmentStoreError",
+          name: "ObjectStoreError",
           code: "STORAGE_URL_UNUSABLE",
           storeStatus: null,
         });
@@ -2908,6 +2909,218 @@ describe("MockTaskaApi", () => {
       await expect(
         api.addIssueWatcher(project.id, issue.id, "00000000-0000-4000-8000-000000000000"),
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+  });
+  /**
+   * The avatar family — backend PR #150 (TAS-129), whose four routes are open
+   * and undeployed, so this mock is the only place the choreography can be run
+   * at all. What is pinned here is the contract's own awkward parts: the
+   * enforced ceiling that is not the declared one, the delete that cannot say
+   * whether it deleted anything, and "no avatar" being a 200 with a null rather
+   * than a 404.
+   */
+  describe("avatars", () => {
+    /** A PNG-shaped file of a size the ceiling accepts. */
+    const imageFile = (name: string, bytes = 64, type = "image/png") =>
+      new File([new Uint8Array(bytes)], name, { type });
+
+    /** The whole choreography, as the profile menu runs it. */
+    const upload = async (file: File) => {
+      const ticket = await api.createAvatarUploadUrl({
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAvatarBytes(ticket.uploadUrl, file, file.type);
+      return api.confirmAvatarUpload({
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: file.type,
+      });
+    };
+
+    beforeEach(async () => {
+      await api.login({ email: "anna@example.com", password: "anything" });
+    });
+
+    it("runs the three legs and hands back a link the confirm already carries", async () => {
+      const me = await api.getCurrentUser();
+      const file = imageFile("face.png");
+
+      const ticket = await api.createAvatarUploadUrl({
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      // A presigned URL on the object store and not on the gateway, in the
+      // avatar bucket and not the attachment one — and the signature covers the
+      // content type, which is why leg 2 may not change it.
+      expect(ticket.uploadUrl).toContain("http://127.0.0.1:9000/taska-avatars/");
+      expect(ticket.uploadUrl).toContain("X-Amz-SignedHeaders=content-type%3Bhost");
+      expect(ticket.objectKey).toBeTruthy();
+      // Fifteen minutes, as the server states it rather than as this client
+      // assumes it.
+      expect(ticket.expiresIn).toBe(900);
+
+      await api.putAvatarBytes(ticket.uploadUrl, file, file.type);
+      const avatar = await api.confirmAvatarUpload({
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: file.type,
+      });
+
+      expect(avatar).toMatchObject({
+        userId: me.id,
+        fileName: "face.png",
+        contentType: "image/png",
+        sizeBytes: file.size,
+      });
+      // The confirm answers with the link, so a freshly uploaded face needs no
+      // follow-up read.
+      expect(avatar.downloadUrl).toBeTruthy();
+      await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(avatar.downloadUrl);
+    });
+
+    it("refuses a file above the ceiling the server enforces, not the one it declares", async () => {
+      // 3 MB: inside `sizeBytes`'s declared `maximum: 5242880` and outside
+      // auth-service's `storage.max-file-size-bytes: 2097152`. A client that
+      // trusted the schema would spend a round trip and the bytes to be told
+      // this a layer deeper.
+      const threeMegabytes = 3 * 1024 * 1024;
+      expect(threeMegabytes).toBeGreaterThan(AVATAR_MAX_SIZE_BYTES);
+
+      await expect(
+        api.createAvatarUploadUrl({ fileName: "huge.png", contentType: "image/png", sizeBytes: threeMegabytes }),
+      ).rejects.toMatchObject({
+        // The ceiling alone is OUT_OF_RANGE — `RestErrorMapper` has no row for
+        // it, which is why it answers 500 over the wire while its two siblings
+        // answer 400.
+        code: "OUT_OF_RANGE",
+        message: avatarSizeRefusalMessage(threeMegabytes),
+      });
+    });
+
+    it("refuses a type outside the three-entry allowlist, in the server's own words", async () => {
+      // GIF is the one people try: an image, not on auth-service's list, and
+      // compared by exact string with no `image/*` anywhere in the chain.
+      await expect(
+        api.createAvatarUploadUrl({ fileName: "wave.gif", contentType: "image/gif", sizeBytes: 4096 }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: avatarTypeRefusalMessage("image/gif"),
+      });
+    });
+
+    it("replaces rather than appends, so a second upload leaves one avatar", async () => {
+      const me = await api.getCurrentUser();
+      const first = await upload(imageFile("first.png", 32));
+      const second = await upload(imageFile("second.png", 96));
+
+      expect(second.id).not.toBe(first.id);
+      await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(second.downloadUrl);
+      // And the first object is gone from the bucket with its row, which is
+      // where this differs from an attachment delete.
+      await expect(
+        api.confirmAvatarUpload({ objectKey: first.objectKey, fileName: "first.png", contentType: "image/png" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("deletes idempotently: twice in a row is two successes, and so is deleting nothing", async () => {
+      const me = await api.getCurrentUser();
+      await upload(imageFile("face.png"));
+
+      await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
+      await expect(api.getUserAvatarUrl(me.id)).resolves.toBeNull();
+      // The second call is the one that matters: the contract promises 204
+      // whether or not there was an avatar, so nothing here may throw and
+      // nothing may report which case it was.
+      await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
+      await expect(api.getUserAvatarUrl(me.id)).resolves.toBeNull();
+    });
+
+    it("answers a person with no avatar with null rather than a refusal", async () => {
+      const me = await api.getCurrentUser();
+      // Anna is deliberately unseeded — the profile flow starts at "no photo".
+      await expect(api.getUserAvatarUrl(me.id)).resolves.toBeNull();
+    });
+
+    it("refuses a user id this deployment has never heard of", async () => {
+      // The genuine 404 of this route, and the reason a null `url` cannot be
+      // read as one: they are different answers to different questions.
+      await expect(api.getUserAvatarUrl("00000000-0000-4000-8000-000000000000")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+
+    it("carries the avatar on the member row, so a board of faces is one read", async () => {
+      const members = await api.listMembers(project.id);
+      const sofia = members.find((member) => member.user?.displayName === "Sofia Reyes");
+      expect(sofia?.user?.avatarUrl).toMatch(/^data:image\/png;base64,/);
+      // Everyone else on the project answers `null` — the row asked, inline,
+      // and the answer was "none". Never `undefined`, which is reserved for
+      // nobody having asked.
+      const anna = members.find((member) => member.user?.displayName === "Anna Ivanova");
+      expect(anna?.user?.avatarUrl).toBeNull();
+    });
+
+    it("shows a new photo on the member row without a second request", async () => {
+      const me = await api.getCurrentUser();
+      const saved = await upload(imageFile("face.png"));
+
+      const members = await api.listMembers(project.id);
+      expect(members.find((member) => member.userId === me.id)?.user?.avatarUrl).toBe(saved.downloadUrl);
+    });
+
+    it("keeps the two buckets apart: an attachment link is not an avatar link", async () => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items[0];
+      const file = imageFile("shot.png");
+      const attachmentTicket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+
+      // S3 answers 403 for a signature it did not mint, and so does this: the
+      // object is not the thing being denied.
+      await expect(api.putAvatarBytes(attachmentTicket.uploadUrl, file, file.type)).rejects.toMatchObject({
+        name: "ObjectStoreError",
+        storeStatus: 403,
+      });
+    });
+
+    it("fails the middle leg the way a blocked preflight does, without a status", async () => {
+      // The mock reads the file name, because this failure is otherwise
+      // unreachable from a browser: nothing in the backend repository
+      // configures CORS on the bucket.
+      const file = imageFile("cors-blocked.png");
+      const ticket = await api.createAvatarUploadUrl({
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+
+      const failure = await api.putAvatarBytes(ticket.uploadUrl, file, file.type).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ObjectStoreError);
+      // No status, and no field called `status` either — see ObjectStoreError:
+      // `isMissingOrForbidden` reads `status` off any Error, and a store's
+      // refusal is not a gateway permission answer.
+      expect(failure).toMatchObject({ storeStatus: null, code: "STORAGE_UNREACHABLE" });
+    });
+
+    it("refuses a content type that differs from the one that was signed", async () => {
+      const file = imageFile("face.png");
+      const ticket = await api.createAvatarUploadUrl({
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+
+      // The presign covers `Content-Type`, so a value that differs by so much
+      // as a charset is a signature mismatch and a 403.
+      await expect(api.putAvatarBytes(ticket.uploadUrl, file, "image/jpeg")).rejects.toMatchObject({
+        storeStatus: 403,
+      });
     });
   });
 });

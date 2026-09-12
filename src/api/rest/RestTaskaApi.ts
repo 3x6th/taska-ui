@@ -3,7 +3,9 @@ import type {
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
+  ConfirmAvatarUploadInput,
   CreateAttachmentUploadUrlInput,
+  CreateAvatarUploadUrlInput,
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
@@ -28,14 +30,14 @@ import {
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
+import { attachmentRefusal, attachmentRefusalKind } from "../attachments";
+import { avatarRefusal, avatarRefusalKind } from "../avatars";
 import {
-  ATTACHMENT_STORE_REJECTED_CODE,
-  ATTACHMENT_STORE_UNREACHABLE_CODE,
-  AttachmentStoreError,
-  attachmentRefusal,
-  attachmentRefusalKind,
+  OBJECT_STORE_REJECTED_CODE,
+  OBJECT_STORE_UNREACHABLE_CODE,
+  ObjectStoreError,
   requireUsableUploadUrl,
-} from "../attachments";
+} from "../objectStore";
 import type { PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
 import {
   emptyPlanningFields,
@@ -56,6 +58,7 @@ import type {
   AdminTable,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  AvatarUploadTicket,
   Board,
   BoardIssue,
   DateOnly,
@@ -83,6 +86,7 @@ import type {
   ProjectRole,
   UnwatchIssueResult,
   User,
+  UserAvatar,
   UserStatus,
   UserStatusChange,
   WatchIssueResult,
@@ -130,13 +134,19 @@ interface RestUser {
  * `Project.currentUserRole`, whose own mapper throws 500 rather than ever
  * emit one.
  *
- * `avatar` is on the wire and is deliberately absent here — see `listMembers`.
+ * `avatar` is on the wire and **is read** since TAS-220: `AvatarDto` carries a
+ * presigned `downloadUrl`, which is the whole reason a board of faces costs one
+ * request instead of one per person. Only that field of it is modelled — the
+ * other six say nothing a member row draws, and `createdAt` among them is
+ * declared and never populated (`AvatarResponse` in project-service.proto has no
+ * `created_at`, and `ProjectMapper.toAvatarDto` sets six fields, not seven).
  */
 interface RestProjectMember {
   userId?: string;
   role?: unknown;
   displayName?: string;
   email?: string;
+  avatar?: { downloadUrl?: string } | null;
 }
 
 /** `ListProjectMemberDetailsDto` — the array is `members`, not `items`. */
@@ -519,6 +529,43 @@ interface RestAttachmentDownloadUrl {
   checksum?: string | null;
 }
 
+/**
+ * The three avatar response bodies — `CreateAvatarUploadUrlResponseDto`,
+ * `AvatarResponseDto` and `GetAvatarDownloadUrlResponseDto`, backend PR #150 at
+ * head `12e909d42dcc`.
+ *
+ * Every field optional, for the reason the attachment bodies above give: none
+ * of these schemas declares a `required` block, and none of the four routes has
+ * ever answered this client, so a field typed as guaranteed here would be a
+ * claim rather than a measurement.
+ *
+ * `url` is the one that is optional *and* explicitly `nullable` in the schema,
+ * and the two mean different things this side must not merge: absent is a
+ * response shape nobody has seen, `null` is the server saying the person has no
+ * avatar. Both reach `getUserAvatarUrl`'s caller as `null`, which is the same
+ * answer — the distinction matters to the type, not to the reader.
+ */
+interface RestAvatarUploadTicket {
+  uploadUrl?: string;
+  objectKey?: string;
+  expiresIn?: number;
+}
+
+interface RestUserAvatar {
+  id?: string;
+  userId?: string;
+  objectKey?: string;
+  fileName?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  createdAt?: string;
+  downloadUrl?: string;
+}
+
+interface RestAvatarDownloadUrl {
+  url?: string | null;
+}
+
 type RestComment = Omit<IssueComment, "updatedAt"> & {
   updatedAt?: string | null;
 };
@@ -740,15 +787,18 @@ export class RestTaskaApi implements TaskaApi {
    * `isUndeployedRoute` in src/api/errors.ts does not recognise it — and it is
    * moot on the stand, which runs `hybrid` and never calls this method.
    *
-   * **The row's `avatar` is dropped on purpose.** It carries a `downloadUrl`,
-   * and drawing an image where initials are today is the whole of the avatars
-   * story (backend PR #150), which lands the `Avatar` rendering and the current
-   * user's upload together rather than half of each here. Two further facts
-   * about `AvatarDto`, so the next reader does not re-derive them: `createdAt`
-   * is declared in the schema and is **never populated** — `AvatarResponse` in
+   * **The row's `avatar` is read, and only its `downloadUrl`** (TAS-220, which
+   * picked up what TAS-219 deliberately left: that comment said the avatars
+   * story would land the rendering and the upload together rather than half of
+   * each here, and this is that story). Reading it here is the whole reason a
+   * board full of faces is one request: the avatar is inline on the row, so
+   * nothing in this product ever calls `GET /users/{userId}/avatar` per person.
+   *
+   * The other six fields of `AvatarDto` stay dropped, and one of them is worth
+   * recording so the next reader does not re-derive it: `createdAt` is declared
+   * in the schema and is **never populated** — `AvatarResponse` in
    * project-service.proto has no `created_at` and `ProjectMapper.toAvatarDto`
-   * sets six fields, not seven — and `downloadUrl` is the only field of it this
-   * UI would ever need.
+   * sets six fields, not seven.
    *
    * **The order below is this client's own, not the server's.**
    * `findProjectMembers` in project-service carries no `ORDER BY`, so two reads
@@ -1190,7 +1240,18 @@ export class RestTaskaApi implements TaskaApi {
    * `uploadUrl` as `""`, and `fetch("")` resolves against the document, which
    * would make this a same-origin PUT of the file with cookies attached.
    */
-  async putAttachmentBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+  putAttachmentBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    return this.putPresignedBytes(uploadUrl, body, contentType);
+  }
+
+  /**
+   * The body of both direct-to-store PUTs, written once. The two callers are
+   * separate methods on `TaskaApi` because the *mock* cannot share them — an
+   * avatar ticket and an attachment ticket are minted against different buckets
+   * — but against a real store there is nothing to tell apart: a presigned URL
+   * carries everything, including which bucket it is for.
+   */
+  private async putPresignedBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
     requireUsableUploadUrl(uploadUrl);
     let response: Response;
     try {
@@ -1204,18 +1265,18 @@ export class RestTaskaApi implements TaskaApi {
       // gives script no way to learn that is what happened — the spec is
       // explicit that the reason is not exposed. Being offline and a dead host
       // land here too, so this carries no status and claims no cause.
-      throw new AttachmentStoreError(
+      throw new ObjectStoreError(
         cause instanceof Error && cause.message ? `The file store could not be reached: ${cause.message}` : "The file store could not be reached.",
-        ATTACHMENT_STORE_UNREACHABLE_CODE,
+        OBJECT_STORE_UNREACHABLE_CODE,
         null,
       );
     }
     if (!response.ok) {
       // The store's status goes in the message and in `storeStatus`, never in a
-      // field called `status`: see AttachmentStoreError.
-      throw new AttachmentStoreError(
+      // field called `status`: see ObjectStoreError.
+      throw new ObjectStoreError(
         `The file store answered ${response.status}.`,
-        ATTACHMENT_STORE_REJECTED_CODE,
+        OBJECT_STORE_REJECTED_CODE,
         response.status,
       );
     }
@@ -1255,6 +1316,85 @@ export class RestTaskaApi implements TaskaApi {
     await this.request<void>(`${this.attachmentsPath(projectId, issueId)}/${this.segment(attachmentId)}`, {
       method: "DELETE",
     });
+  }
+
+  /**
+   * Leg 1 of the avatar upload — `POST /users/me/avatar/upload-url`, backend PR
+   * #150 at head `12e909d42dcc`, **open and undeployed**: probed 2026-09-12
+   * without a token, this path and the three below it answer Spring's
+   * static-resource 404 while `GET /users/me` answered 401 in the same run.
+   * That is the first arm of `isUndeployedRoute`, which is what
+   * `UserProfileMenu` reads before it prints a refusal.
+   *
+   * Refused before the request by `refuseAvatar` below, at the ceiling the
+   * server actually enforces rather than the one the schema declares. The
+   * response's `expiresIn` is carried up rather than dropped; `uploadUrl` and
+   * `objectKey` land as `""` when absent, the way every other absent field on
+   * this class does, and `requireUsableUploadUrl` is what stops an empty one
+   * from becoming a same-origin PUT.
+   */
+  async createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): Promise<AvatarUploadTicket> {
+    refuseAvatar(input);
+    const response = await this.request<RestAvatarUploadTicket>("/users/me/avatar/upload-url", {
+      method: "POST",
+      body: { fileName: input.fileName, contentType: input.contentType, sizeBytes: input.sizeBytes },
+    });
+    return {
+      uploadUrl: response.uploadUrl ?? "",
+      objectKey: response.objectKey ?? "",
+      expiresIn: typeof response.expiresIn === "number" ? response.expiresIn : null,
+    };
+  }
+
+  /**
+   * Leg 2 — the browser's own PUT to the presigned host, sharing every word of
+   * `putAttachmentBytes`'s reasoning and its implementation
+   * (`putPresignedBytes` above): no bearer token, no `Accept`, no request id,
+   * and exactly one header — the `Content-Type` that was signed.
+   */
+  putAvatarBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    return this.putPresignedBytes(uploadUrl, body, contentType);
+  }
+
+  /**
+   * Leg 3 — `POST /users/me/avatar/confirm`, which answers with the stored
+   * avatar and its `downloadUrl`, so a freshly uploaded face needs no follow-up
+   * read.
+   *
+   * No `Idempotency-Key` and no retry wrapper, for the opposite reason to the
+   * attachment confirm's: there is one avatar per user and a repeat replaces
+   * rather than inserting a second row. Nothing here is unsafe to send twice —
+   * which is a fact about the route, not a licence this class exercises.
+   */
+  async confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar> {
+    const response = await this.request<RestUserAvatar>("/users/me/avatar/confirm", {
+      method: "POST",
+      body: { objectKey: input.objectKey, fileName: input.fileName, contentType: input.contentType },
+    });
+    return toUserAvatar(response);
+  }
+
+  /**
+   * `DELETE /users/me/avatar` — 204, and idempotent by the contract's own
+   * words. `request` returns `undefined` for a 204, so there is nothing to map
+   * and nothing this method can report about whether there was an avatar.
+   */
+  async deleteMyAvatar(): Promise<void> {
+    await this.request<void>("/users/me/avatar", { method: "DELETE" });
+  }
+
+  /**
+   * `GET /users/{userId}/avatar`. **The answer is in the field, not in the
+   * status**: `UserProfileMapper.toRestGetAvatarDownloadUrlResponse` writes
+   * `null` into `url` when the proto carries none, so "this person has no
+   * avatar" is a 200 and never a 404.
+   *
+   * An empty string is normalised to `null` for the same reason `UserAvatar`
+   * does it: `<img src="">` re-requests the current document.
+   */
+  async getUserAvatarUrl(userId: string): Promise<string | null> {
+    const response = await this.request<RestAvatarDownloadUrl>(`/users/${this.segment(userId)}/avatar`);
+    return typeof response.url === "string" && response.url ? response.url : null;
   }
 
   async listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Promise<Page<IssueComment>> {
@@ -2047,10 +2187,42 @@ function toProjectRole(value: unknown): ProjectRole | null {
  */
 function toProjectMember(member: RestProjectMember): ProjectMember {
   const displayName = typeof member.displayName === "string" ? member.displayName.trim() : "";
+  const downloadUrl = member.avatar?.downloadUrl;
   return {
     userId: member.userId ?? "",
     role: toProjectRole(member.role),
-    user: displayName ? { displayName, email: member.email ?? "" } : undefined,
+    // The avatar rides inside `user` and therefore shares its condition: a row
+    // the server named nobody in has no `user` at all, so a picture with no
+    // name to put under it is dropped with the rest of the row. That is the
+    // right side to lose it on — every caller reads `member.user` to decide
+    // between drawing a person and drawing its own unknown-person path, and a
+    // face over "Unknown" would claim an identity the response did not state.
+    //
+    // `null` and not `undefined` when the row carries no avatar: the member
+    // list *asked*, inline, and got an answer. `undefined` is reserved for
+    // "nobody has asked" (see `User.avatarUrl`), which is never the case here.
+    user: displayName
+      ? { displayName, email: member.email ?? "", avatarUrl: typeof downloadUrl === "string" && downloadUrl ? downloadUrl : null }
+      : undefined,
+  };
+}
+
+/**
+ * `AvatarResponseDto` as the domain holds it. Blanks become the domain's own
+ * spelling of "not stated", exactly as `toAttachment` does it — and
+ * `downloadUrl` becomes `null` rather than `""`, because an empty string in an
+ * `<img src>` re-requests the current document.
+ */
+function toUserAvatar(avatar: RestUserAvatar): UserAvatar {
+  return {
+    id: avatar.id ?? "",
+    userId: avatar.userId ?? "",
+    objectKey: avatar.objectKey ?? "",
+    fileName: avatar.fileName ?? "",
+    contentType: avatar.contentType ?? "",
+    sizeBytes: typeof avatar.sizeBytes === "number" ? avatar.sizeBytes : 0,
+    createdAt: avatar.createdAt ?? null,
+    downloadUrl: typeof avatar.downloadUrl === "string" && avatar.downloadUrl ? avatar.downloadUrl : null,
   };
 }
 
@@ -2199,6 +2371,42 @@ function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
   // Split exactly as `MockTaskaApi.createAttachmentUploadUrl` splits it, so the
   // two implementations answer the same file with the same code.
   const overSize = attachmentRefusalKind(input) === "size";
+  throw new ApiError(refusal, overSize ? "OUT_OF_RANGE" : "INVALID_ARGUMENT", overSize ? 500 : 400);
+}
+
+/**
+ * The same refusal for an avatar, in the server's own words, before a request
+ * is spent — and the one place where this client deliberately disagrees with
+ * the contract it was written against.
+ *
+ * **The declared ceiling is 5 MB and the enforced one is 2 MB.**
+ * `CreateAvatarUploadUrlRequestDto.sizeBytes` is declared
+ * `maximum: 5242880`, so a 3 MB image passes the gateway's bean validation and
+ * is then refused a layer deeper by `S3StorageClient.validateFileParams`,
+ * reading auth-service's `storage.max-file-size-bytes: 2097152`. Trusting the
+ * schema would mean offering someone a file the product will not take, and
+ * paying a round trip plus the bytes to find out. So the enforced number is the
+ * one enforced here; both are written down in `src/api/avatars.ts`, and the
+ * disagreement is raised on TAS-129 while the PR is open.
+ *
+ * The status and code split is `refuseAttachment`'s, for the same reason and
+ * from the same mapper: `RestErrorMapper` has no `OUT_OF_RANGE` row, so the
+ * ceiling falls to its `INTERNAL_SERVER_ERROR` default on **500** while the
+ * other two arms are `INVALID_ARGUMENT` on 400. Reproducing an answer means
+ * reproducing the one that is served.
+ *
+ * One caveat worth stating rather than implying: this is what the *deployed*
+ * gateway would answer for an over-size avatar once PR #150 ships. Nothing has
+ * measured it, because none of the four routes is deployed — it is read off the
+ * same mapper that produces the attachment answer, which *has* been read at the
+ * source, and it stays a reading until the routes exist.
+ */
+function refuseAvatar(input: CreateAvatarUploadUrlInput): void {
+  const refusal = avatarRefusal(input);
+  if (!refusal) return;
+  // Split exactly as `MockTaskaStore.createAvatarUploadUrl` splits it, so the
+  // two implementations answer the same file with the same code.
+  const overSize = avatarRefusalKind(input) === "size";
   throw new ApiError(refusal, overSize ? "OUT_OF_RANGE" : "INVALID_ARGUMENT", overSize ? 500 : 400);
 }
 

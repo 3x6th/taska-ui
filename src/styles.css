@@ -992,10 +992,16 @@ h1 {
 }
 
 .avatar {
+  position: relative;
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
+  /* The picture inside is absolutely positioned over the fill, so the circle
+     has to be its containing block — and `overflow` is the belt to
+     `border-radius: inherit`'s braces below: two rules for one corner, because
+     the one thing that must never happen here is a square photograph. */
+  overflow: hidden;
   border-radius: 50%;
   /* One fallback in two declarations, not a fill plus a universal glyph colour:
      `Avatar` sets both inline for every user it is given, and since TAS-175 the
@@ -1041,6 +1047,27 @@ h1 {
 .avatar-loading {
   background: var(--surface-3);
   animation: tk-fade 0.8s ease-in-out infinite alternate;
+}
+
+/* The photograph, when there is one (§4.4, TAS-220). Over the computed fill
+   rather than instead of it: the fill is what a slow load shows, what a picture
+   with transparency sits on, and what comes back if the link has expired — a
+   download URL lives fifteen minutes, so a stale one is an ordinary state of a
+   board left open, not an error.
+
+   `object-fit: cover` because an avatar is a circle and a photograph is not
+   square: `contain` would letterbox somebody's face inside their own colour,
+   and the default `fill` would stretch it. No transition and no entrance
+   animation — §3 forbids a frame that hides content, and a picture that fades
+   in is a picture that is missing for the length of the fade wherever animation
+   is paused. */
+.avatar-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
 }
 
 .user-profile-menu {
@@ -1162,6 +1189,82 @@ h1 {
   color: var(--fg-2);
   font-size: 11.5px;
   line-height: 1.5;
+}
+
+/* §4.16's photo controls (TAS-220). Its own band between the detail list and
+   the two way-out rows, with the same 1px divider the rest of this popover uses
+   — the alternative, hanging it off the 34px avatar in the header, puts a
+   control inside a line whose whole job is identity. */
+.user-profile-photo {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-top: 1px solid var(--border);
+  padding: 11px 14px 12px;
+}
+
+.user-profile-photo-actions {
+  display: flex;
+  align-items: center;
+  /* §2.4's inline-group gap, and a `flex` row rather than margins (§1). */
+  gap: 8px;
+}
+
+/* §4.1's destructive recipe exactly: ghost at rest, `--danger` on hover. Not
+   `--danger` at rest — that is Log out's spelling, and two red controls in one
+   popover would make the one that signs you out look ordinary.
+
+   It borrows `.link-button`'s box and overrides its colour, which is the only
+   part of that recipe that does not fit: `--fg-3` measures 3.14:1 light and
+   3.05:1 dark, which §7 allows for non-critical meta and this is not that — it
+   is a control's own label, and a destructive one. `--fg-2` is 7.26:1 / 6.75:1
+   and is what §4.1 asks a ghost button for in the first place. */
+.user-profile-photo-remove {
+  color: var(--fg-2);
+}
+
+.user-profile-photo-remove:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+/* The limit and the accepted types, before a file is chosen. `--fg-2` and not
+   `--fg-3`: §7 lets `--fg-3` carry non-critical meta only, and this line is the
+   sole statement of a rule the reader will otherwise meet as a refusal. */
+.user-profile-photo-hint {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* The refusal, and the one place in this popover that raises its voice. The
+   recipe is `.admin-write-failure`'s, which is the product's existing shape for
+   "the write did not happen and the box stays open": a 10% danger tint with
+   `--fg` on it (15.83:1 light, 14.28:1 dark) rather than `--danger` as text,
+   which measures 3.7:1 and would put the sentence under §7's 4.5:1 floor for
+   anything that is not meta. */
+.user-profile-photo-note {
+  border-radius: 8px;
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.user-profile-photo-note.is-error {
+  background: color-mix(in oklab, var(--danger) 10%, transparent);
+  padding: 7px 9px;
+  color: var(--fg);
+}
+
+/* §7's documented offset exception: this popover is `overflow: hidden`, so an
+   outer ring gets its outer edges clipped. `.user-profile-admin` and
+   `.user-profile-logout` below already draw the inward ring for the same
+   reason, and these two buttons sit in the same box. */
+.user-profile-photo button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .user-profile-actions {

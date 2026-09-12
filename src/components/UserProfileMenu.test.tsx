@@ -1,7 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskaApi } from "../api/TaskaApi";
 import type { User } from "../domain/types";
 import { UserProfileMenu } from "./UserProfileMenu";
 
@@ -13,15 +15,108 @@ const anna: User = {
   status: "ACTIVE",
 };
 
+/**
+ * The avatar half of this menu is the only part of it that talks to a server
+ * (TAS-220), so the fake stands in for the five `TaskaApi` calls it can make
+ * and records what it was asked. Hoisted because `vi.mock` is.
+ */
+const { fakeApi, state, reset, release } = vi.hoisted(() => {
+  const state: {
+    avatarUrl: string | null;
+    reads: string[];
+    deletes: number;
+    failWith?: Error;
+    confirmedUrl: string;
+    /** Holds the delete open so the optimistic frame can actually be observed. */
+    holdDelete: boolean;
+  } = {
+    avatarUrl: null,
+    reads: [],
+    deletes: 0,
+    confirmedUrl: "https://store.example/new-face.png?sig=2",
+    holdDelete: false,
+  };
+
+  let releaseDelete: (() => void) | null = null;
+  /** Lets a held delete finish — and only then does it succeed or fail. */
+  const release = () => {
+    releaseDelete?.();
+    releaseDelete = null;
+  };
+
+  const fakeApi = {
+    getUserAvatarUrl: async (userId: string) => {
+      state.reads.push(userId);
+      if (state.failWith) throw state.failWith;
+      return state.avatarUrl;
+    },
+    createAvatarUploadUrl: async () => {
+      if (state.failWith) throw state.failWith;
+      return { uploadUrl: "https://store.example/upload?sig=1", objectKey: "obj", expiresIn: 900 };
+    },
+    putAvatarBytes: async () => undefined,
+    confirmAvatarUpload: async () => {
+      state.avatarUrl = state.confirmedUrl;
+      return {
+        id: "avatar-1",
+        userId: anna.id,
+        objectKey: "obj",
+        fileName: "face.png",
+        contentType: "image/png",
+        sizeBytes: 32,
+        createdAt: null,
+        downloadUrl: state.confirmedUrl,
+      };
+    },
+    deleteMyAvatar: async () => {
+      state.deletes += 1;
+      if (state.holdDelete) await new Promise<void>((resolve) => (releaseDelete = resolve));
+      if (state.failWith) throw state.failWith;
+      state.avatarUrl = null;
+    },
+  } as unknown as TaskaApi;
+
+  const reset = () => {
+    state.avatarUrl = null;
+    state.reads = [];
+    state.deletes = 0;
+    state.failWith = undefined;
+    state.confirmedUrl = "https://store.example/new-face.png?sig=2";
+    state.holdDelete = false;
+    releaseDelete = null;
+  };
+
+  return { fakeApi, state, reset, release };
+});
+
+vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
+
 // The menu can hold a router <Link> (the Administration entry), so every case
 // renders inside a router — including the ones where the entry is absent, so a
-// missing router can never be what makes them pass.
+// missing router can never be what makes them pass. The query client is per
+// render, so one case's avatar never answers the next one's read.
 const renderMenu = (props: ComponentProps<typeof UserProfileMenu>) =>
   render(
-    <MemoryRouter>
-      <UserProfileMenu {...props} />
-    </MemoryRouter>,
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter>
+        <UserProfileMenu {...props} />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
+
+/** The file input the "Upload a photo" button drives. */
+const pick = (file: File) => {
+  const input = document.querySelector<HTMLInputElement>(".avatar-input");
+  if (!input) throw new Error("no avatar input in the popover");
+  fireEvent.change(input, { target: { files: [file] } });
+};
+
+const imageFile = (name = "face.png", bytes = 32, type = "image/png") =>
+  new File([new Uint8Array(bytes)], name, { type });
+
+beforeEach(() => {
+  reset();
+});
 
 /**
  * The degraded case is the one that matters here. Since TAS-150 a client that
@@ -209,5 +304,159 @@ describe("UserProfileMenu", () => {
 
     expect(screen.queryByText("Administration")).not.toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+  /**
+   * The avatar controls (TAS-220). Three things are pinned: that the reader's
+   * own face costs exactly one request and is not asked for again on a second
+   * open, that a refusal happens *before* any request is spent, and that the
+   * undeployed gateway is reported as undeployed rather than as a raw failure —
+   * which is the answer every reader gets until backend PR #150 ships.
+   */
+  describe("the profile photo", () => {
+    it("spends one read for the reader's own avatar and draws it in place of the initials", async () => {
+      state.avatarUrl = "https://store.example/face.png?sig=1";
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+
+      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
+      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      // The picture is in the trigger as well as in the popover, and the name
+      // stays on the circle rather than moving onto the image.
+      await waitFor(() => expect(trigger.querySelector("img")).not.toBeNull());
+      expect(trigger.querySelector("img")).toHaveAttribute("src", "https://store.example/face.png?sig=1");
+      expect(trigger.querySelector("img")).toHaveAttribute("alt", "");
+      expect(trigger.querySelector(".avatar")).toHaveAttribute("aria-label", "Anna Ivanova");
+      expect(trigger.textContent).toBe("");
+
+      fireEvent.click(trigger);
+      // Opening the menu asks nothing new: the read is keyed by user, not by
+      // whether the popover is on screen.
+      expect(state.reads).toEqual([anna.id]);
+      expect(screen.getByRole("button", { name: "Replace photo" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Remove photo" })).toBeVisible();
+    });
+
+    it("offers an upload and no removal when the server says there is no avatar", async () => {
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      expect(screen.getByRole("button", { name: "Upload a photo" })).toBeVisible();
+      // Only a successful read may say there is nothing to remove (§5.6), and
+      // this one said exactly that.
+      expect(screen.queryByRole("button", { name: "Remove photo" })).not.toBeInTheDocument();
+      // The initials are what the circle draws instead.
+      expect(screen.getAllByLabelText("Anna Ivanova")[0].textContent).toBe("AI");
+    });
+
+    it("states the enforced ceiling and the accepted types before a file is chosen", async () => {
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+
+      // 2 MB — the number auth-service enforces, not the 5 MB its own schema
+      // declares. Offering the declared one would offer a file the product
+      // refuses a layer deeper, after the bytes had already gone.
+      expect(screen.getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
+      expect(document.querySelector(".avatar-input")).toHaveAttribute("accept", "image/jpeg,image/png,image/webp");
+    });
+
+    it("runs the three legs and replaces the initials with what came back", async () => {
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
+      fireEvent.click(trigger);
+      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+
+      pick(imageFile());
+
+      await waitFor(() => expect(trigger.querySelector("img")).not.toBeNull());
+      // The confirm answers with the link, so nothing re-reads to find it.
+      expect(trigger.querySelector("img")).toHaveAttribute("src", state.confirmedUrl);
+      expect(screen.getByRole("button", { name: "Replace photo" })).toBeVisible();
+    });
+
+    it("refuses a type outside the allowlist without spending a request", async () => {
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+
+      // A GIF passes the picker on some systems — `accept` filters by the
+      // operating system's idea of a type and `File.type` is the browser's.
+      pick(imageFile("wave.gif", 32, "image/gif"));
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("wave.gif is not a type this product accepts. Choose a JPEG, PNG or WebP image."),
+        ).toBeVisible(),
+      );
+      // The person is owed the file's name, not `"Content type not allowed: …"`
+      // — that sentence is the API layer's, for parity between mock and rest.
+      expect(screen.queryByText(/Content type not allowed/)).not.toBeInTheDocument();
+    });
+
+    it("refuses a photo over the ceiling with its size, not with the server's sentence", async () => {
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+
+      pick(imageFile("huge.png", 3 * 1024 * 1024));
+
+      await waitFor(() =>
+        expect(screen.getByText("huge.png is 3 MB. The largest photo this product accepts is 2 MB.")).toBeVisible(),
+      );
+    });
+
+    it("removes the photo at once and puts it back if the server refuses", async () => {
+      state.avatarUrl = "https://store.example/face.png?sig=1";
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
+      fireEvent.click(trigger);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Remove photo" })).toBeVisible());
+
+      // Held open, because the frame being asserted is the one *between* the
+      // press and the answer: without this the refusal lands in the same batch
+      // as the optimistic patch and a passing test would prove nothing.
+      state.holdDelete = true;
+      state.failWith = Object.assign(new Error("Something went wrong"), { code: "INTERNAL_SERVER_ERROR", status: 500 });
+      fireEvent.click(screen.getByRole("button", { name: "Remove photo" }));
+
+      // Optimistic: the picture goes before the answer does.
+      await waitFor(() => expect(trigger.querySelector("img")).toBeNull());
+      release();
+      // And comes back, with the reason — a rollback nobody is told about is
+      // what §5.6 calls out.
+      await waitFor(() => expect(trigger.querySelector("img")).not.toBeNull());
+      expect(screen.getByText(/Your photo was not removed\. Something went wrong/)).toBeVisible();
+      expect(state.deletes).toBe(1);
+    });
+
+    it("says the routes are not on this gateway yet rather than printing the 404", async () => {
+      // All four avatar routes answer Spring's static-resource 404 today
+      // (probed 2026-09-12), which is the first arm of `isUndeployedRoute`.
+      state.failWith = Object.assign(
+        new Error("No static resource api/v1/users/me/avatar/upload-url for request '…'."),
+        { code: "NOT_FOUND", status: 404 },
+      );
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Upload a photo" })).toBeVisible());
+
+      pick(imageFile());
+
+      await waitFor(() =>
+        expect(screen.getByText("Profile photos are not on this gateway yet, so nothing was saved.")).toBeVisible(),
+      );
+      expect(screen.queryByText(/No static resource/)).not.toBeInTheDocument();
+    });
+
+    it("asks nothing at all when the profile itself could not be loaded", async () => {
+      // No user, no id, and therefore no `GET /users/{userId}/avatar` to make:
+      // the popover keeps Log out and says only what it knows.
+      renderMenu({ loading: false, onLogout: vi.fn() });
+      fireEvent.click(screen.getByRole("button", { name: "Open profile" }));
+
+      expect(state.reads).toEqual([]);
+      expect(screen.queryByRole("button", { name: "Upload a photo" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Log out" })).toBeVisible();
+    });
   });
 });

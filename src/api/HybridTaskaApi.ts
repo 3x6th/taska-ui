@@ -3,7 +3,9 @@ import type {
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
+  ConfirmAvatarUploadInput,
   CreateAttachmentUploadUrlInput,
+  CreateAvatarUploadUrlInput,
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
@@ -27,6 +29,7 @@ import type {
   AdminRowsQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  AvatarUploadTicket,
   Board,
   Issue,
   IssueAttachment,
@@ -47,6 +50,7 @@ import type {
   ProjectMembership,
   UnwatchIssueResult,
   User,
+  UserAvatar,
   UserStatusChange,
   WatchIssueResult,
   Workflow,
@@ -431,6 +435,52 @@ export class HybridTaskaApi implements TaskaApi {
 
   deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {
     return this.live.deleteAttachment(projectId, issueId, attachmentId);
+  }
+
+  /**
+   * All five delegated whole, and this family is the clearest case in the class:
+   * there is nothing about a person's own avatar that project membership could
+   * stand in for, which is the only thing this class synthesises.
+   *
+   * The four gateway routes are **undeployed** — probed 2026-09-12 without a
+   * token, all four answer Spring's static-resource 404 while `GET /users/me`
+   * answered 401 in the same run — so on the stand these calls fail, and they
+   * fail with the signature `isUndeployedRoute` matches. `UserProfileMenu`
+   * reads that and says the routes are not on this gateway yet, the same way
+   * `EditProjectModal` does for the project PATCH. Compensating instead would
+   * mean this class reporting a face that is in no bucket.
+   *
+   * The middle leg is where compensation stops being merely absent and becomes
+   * impossible, exactly as for attachments: `putAvatarBytes` puts bytes on a
+   * **different server**, which this class has no credentials for, no route to
+   * and no substitute for.
+   *
+   * One consequence worth naming, because a reader will look for it: the single
+   * member row `listMembers` above synthesises carries **no avatar**. It is
+   * built from `GET /users/me`, which does not have one, and the only way to
+   * fill it would be a second request per member — the very thing the inline
+   * avatar on `ProjectMemberDetailsDto` exists to avoid. So on the stand the
+   * board draws initials until PR #152 and PR #150 are both deployed, and the
+   * one place that does spend a request is the profile menu, once.
+   */
+  createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): Promise<AvatarUploadTicket> {
+    return this.live.createAvatarUploadUrl(input);
+  }
+
+  putAvatarBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    return this.live.putAvatarBytes(uploadUrl, body, contentType);
+  }
+
+  confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar> {
+    return this.live.confirmAvatarUpload(input);
+  }
+
+  deleteMyAvatar(): Promise<void> {
+    return this.live.deleteMyAvatar();
+  }
+
+  getUserAvatarUrl(userId: string): Promise<string | null> {
+    return this.live.getUserAvatarUrl(userId);
   }
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {
