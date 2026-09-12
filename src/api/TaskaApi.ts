@@ -457,7 +457,40 @@ export interface TaskaApi {
   listProjects(): Promise<Project[]>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
+  /**
+   * The reader's own standing in one project: the role they hold, whether they
+   * are a member at all, and whether the project exists.
+   *
+   * **There is no membership route and backend PR #152 does not add one.**
+   * `GET /projects/{projectId}/membership` answers the static-resource 404
+   * (probed 2026-09-12, no token, against a control that answered 401), so the
+   * `rest` leg derives all three from `GET /projects/{projectId}`: that read is
+   * membership-checked — someone else's project is a 403, not a 200 (TAS-154) —
+   * so a 200 settles `isMember` and `projectExists`, and the role is the
+   * response's `currentUserRole`.
+   *
+   * When that field is absent **or** an explicit `null` — both real answers
+   * off this wire, see `Project.currentUserRole` — the result is `VIEWER`,
+   * which is a floor and not a reading of the server: it hides writes the
+   * server might still allow, and never offers one it is going to refuse.
+   * Role gating hides UI; the server stays authoritative either way.
+   */
   getMembership(projectId: string): Promise<ProjectMembership>;
+  /**
+   * Everyone on the project, each row carrying the display name and email the
+   * server holds for them — `GET /projects/{projectId}/members`, unwrapped from
+   * `members`.
+   *
+   * The `rest` leg is written against backend PR #152, **open and undeployed**
+   * on 2026-09-12: the route answers 405 there, because only POST is mapped on
+   * that path. `HybridTaskaApi` is what the stand runs and it still synthesises
+   * a single row — the reader — until the PR merges.
+   *
+   * `addedAt` and `addedBy` are not on the wire: `ProjectMemberDetailsDto` is
+   * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else. A
+   * row's `role` may be `null`; see `ProjectMember` for why that is a real
+   * answer rather than a defensive one.
+   */
   listMembers(projectId: string): Promise<ProjectMember[]>;
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow>;

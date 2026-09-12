@@ -2042,3 +2042,59 @@ is what recurs.
   and configurable, so the contract moves to it (TAS-206); the ignored enum
   becomes an empty result rather than a `400` (TAS-218). Recorded as a comment
   on the ticket, so the next re-probe does not reopen it by reflex.
+- **Backend PR #153 (TAS-168) is contract hygiene, and it is half of what
+  TAS-206 asked for** — read 2026-09-12 at head `15196c123`. It lifts the
+  inline enums into named DTOs: `GlobalRoleTypeDto`, `ProjectMemberRoleDto`,
+  `OutboxServiceTypeDto`, `SortOrderDto`. Compared value by value against the
+  snapshot, the sets come out identical — nothing added, nothing removed,
+  `statusKey` untouched — so there is no frontend work in it, and no pending
+  extract was made for it, deliberately: `docs/contract/pending/` is for a PR
+  the frontend writes against, not for every open PR. What it does need on the
+  day it merges is a snapshot refresh, because it rewrites a great deal of the
+  document's text for no change of meaning, and a note on
+  [TAS-206](https://jira.ozero.dev/browse/TAS-206) that its `$ref`-the-enums
+  clause is delivered while `minLength: 3`, the dropped `default`, and the two
+  documents that disagree are not. The PR was CONFLICTING against develop at
+  that reading, so the merge is not imminent.
+- **The board spends two identical `GET /projects/{id}` per paint, and the
+  obvious fix is a trap until PR #152 deploys** — raised by
+  `api-contract-guard` on TAS-219, 2026-09-12. `BoardScreen` runs
+  `["project", id]` and `["membership", id]` as separate queries and
+  `RestTaskaApi.getMembership` now derives from the project read, so `rest`
+  asks the same route twice on first paint and twice again on every focus
+  return. The screen reads only `role` off the membership result; nothing in
+  `src/` reads `isMember` or `projectExists` at all. So deleting
+  `membershipQuery` and taking `projectQuery.data?.currentUserRole` removes a
+  read and sharpens the TAS-163 banner to what it now means.
+  **It must not be done yet.** On the stand the gateway sends no
+  `currentUserRole`, while `HybridTaskaApi.getMembership` short-circuits to
+  ADMIN through `VITE_TASKA_ASSUME_PROJECT_ADMIN`; making the swap today would
+  floor every user on the stand to VIEWER and take write access off the board.
+  It becomes correct the day PR #152 deploys, and it belongs to
+  [TAS-202](https://jira.ozero.dev/browse/TAS-202) when it does.
+- **Two backend asks out of PR #152, raised on TAS-137 while the PR is open**
+  (2026-09-12, found by `api-contract-guard`, both verified in the PR's Java).
+  First: `ProjectMapper.toRestProjectRole` throws a 500 for a role it cannot
+  name, and after this PR *every* item of `GET /projects` passes through it, so
+  one bad membership row blanks the whole projects screen rather than one card
+  — the read path should omit the field instead, which the client already
+  floors. Second: `ProfileServiceImpl.getUserDetailsByIds` errors `NOT_FOUND`
+  when any requested id is missing, so a single dangling member id makes
+  `GET /projects/{id}/members` answer 404 for a project that has members;
+  behind it `buildProjectMemberDetailsDto` dereferences the user with no null
+  check, so fixing either half alone turns the 404 into a 500. Both are
+  hardening rather than reproductions: a CHECK constraint blocks the first
+  today and nothing has orphaned a member yet.
+- **`RestTaskaApi.getProject` interpolates the id raw** while its neighbours use
+  `this.segment(...)` — noticed on TAS-219, pre-existing, harmless for the uuids
+  the app actually passes. One line, and worth taking the next time that class
+  is open.
+- **Two record nits from TAS-219's release review**, both one clause and neither
+  worth a commit of its own. `RestTaskaApi.getMembership` hardcodes `isMember`
+  and `projectExists` exactly as the hybrid synthesis does, but the divergence
+  bullets attribute that hardcoding to hybrid alone — it is grounded there in
+  the 403-on-a-non-member behaviour and read by nothing, so it is a wording fix
+  for the next time that section is open. And `MockTaskaStore.createProject`
+  returns the stored row without passing it through `withCurrentUserRole`, so a
+  freshly created project is the one row in the mock's `listProjects` that
+  states no role.

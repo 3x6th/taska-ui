@@ -1,0 +1,151 @@
+# Pending gateway contract — backend PR #152 (TAS-137)
+# Reading a project's members, and the current user's role in the project
+#
+# Source: https://github.com/VladislavYurin/taska-backend/pull/152
+# Head commit: 1ad6ffad815d15c09e6b2a84ddc5cb54616d0efe
+# PR state on 2026-09-12: open, MERGEABLE, base develop
+# Base for this extract: develop @ 21a0d9d177a1b4be3ae303381f453c05bbd98e13
+#
+# One new route and one new field. `GET /projects/{projectId}/members` answers 405 today,
+# because only POST is mapped on that path — not the static-resource 404 the rest of this
+# directory's routes answer, which matters because `isUndeployedRoute` in src/api/errors.ts
+# matches the 404 signature only.
+#
+# This is NOT the contract. It is what the contract WILL say if this PR merges as it
+# stands. docs/contract/openapi.yml stays the authority until then; this file exists so a
+# reviewer without network access can audit frontend work written ahead of the merge, and
+# so the version that work was written against is pinned in history. Delete it when the PR
+# merges and the snapshot is refreshed.
+#
+# Extracted mechanically: every path and schema that is new in the PR, or whose text differs
+# from develop. Ordering follows the PR file.
+#
+# Three readings of the PR's Java that the yml does not state, taken at the head above.
+# Where the yml and the Java disagree, the Java wins, because that is what goes on the wire.
+#
+# - `role` and `currentUserRole` are `type: string` in the yml, and neither is an open set.
+#   `ProjectMapper.toRestProjectRole` (api-gateway) emits exactly ADMIN, MEMBER or VIEWER and
+#   throws 500 on anything else, so `currentUserRole` cannot arrive as UNSPECIFIED — the read
+#   fails instead. `ProjectMemberDetailsResponse.role` takes the other path: it is a
+#   proto `string`, and MapStruct fills it from project-service's own `ProjectRole` enum by
+#   its built-in enum-to-String conversion, which is `.name()`. The `ANY_UNMAPPED ->
+#   UNSPECIFIED` value mapping in that same interface is the **inbound write** path and does
+#   not apply here, and `ck_project_members_role` in `0000-init.sql` confines the column to
+#   ADMIN, MEMBER and VIEWER — so "UNSPECIFIED" is not on the wire today. What the field's
+#   openness really means is that a role added to the enum later arrives verbatim, "OWNER"
+#   say, where the project's own role would throw a 500 instead. The two are still not the
+#   same set.
+# - `currentUserRole` is written only under `protoDto.hasCurrentUserRole()`, and what that
+#   puts on the wire is an explicit `null`, not a missing key: the api-gateway configures no
+#   Jackson inclusion — no `spring.jackson` in its application.yml, no ObjectMapper and no
+#   codec customizer — so the default ALWAYS applies. `archivedAt` on this same DTO is the
+#   existing evidence of it. A client has to read both, because a gateway without this PR
+#   omits the key entirely while one with it sends null.
+# - **The list read carries it too**, which the first reading of this PR got wrong.
+#   `ProjectService.listMyProjects` returns `Flux<ProjectCheckMembershipDto>` after this PR,
+#   and `GrpcProjectService.listMyProjects` maps it through the `toProjectResponse` overload
+#   annotated with `currentUserRole`, over a repository query that inner-joins
+#   `project_members`. So every item of `GET /projects` states the reader's role, and none of
+#   them can be null for a row that came back at all.
+# - `AvatarDto.createdAt` is declared here and is never populated: `AvatarResponse` in
+#   project-service.proto has no `created_at`, and `ProjectMapper.toAvatarDto` sets six
+#   fields, not seven. Treat it as absent.
+
+paths:
+
+  /api/v1/projects/{projectId}/members:
+    get:
+      description: Возвращает список участников проекта
+      operationId: getProjectMembers
+      tags:
+        - project
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: New response
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProjectMemberDetailsDto'
+
+    # POST on this path is unchanged by the PR and lives in the snapshot.
+
+components:
+  schemas:
+
+    # Changed: `currentUserRole` is new. Every other property is as develop has it.
+    ProjectResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+        projectKey:
+          type: string
+        name:
+          type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        archivedAt:
+          type: string
+          format: date-time
+          nullable: true
+        currentUserRole:
+          type: string
+
+    AvatarDto:
+      type: object
+      properties:
+        id:
+          type: string
+        objectKey:
+          type: string
+        fileName:
+          type: string
+        contentType:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+        createdAt:
+          type: string
+          format: date-time
+        downloadUrl:
+          type: string
+
+    ProjectMemberDetailsDto:
+      type: object
+      properties:
+        userId:
+          type: string
+        role:
+          type: string
+        displayName:
+          type: string
+        email:
+          type: string
+        avatar:
+          $ref: '#/components/schemas/AvatarDto'
+
+    ListProjectMemberDetailsDto:
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMemberDetailsDto'

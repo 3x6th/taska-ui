@@ -287,6 +287,293 @@ describe("RestTaskaApi current user", () => {
 });
 
 /**
+ * Project members and the reader's own role (TAS-219), written against backend
+ * PR #152 at head `1ad6ffad815d` — open and undeployed on 2026-09-12, when the
+ * member route answered 405 and `GET /projects/{id}/membership` answered the
+ * static-resource 404. So these cases pin a contract this leg has never spoken
+ * to, and they are the only check on it until the PR merges.
+ *
+ * Three asymmetries are what they are really for: the array is `members` and
+ * not `items`; a member row's `role` is typed as an *open* string because
+ * MapStruct's read-side conversion is a generic `.name()` off an enum column
+ * — so a role project-service adds later, before this build has a name for
+ * it, would arrive verbatim, while `currentUserRole` cannot, because its own
+ * mapper throws 500 rather than emit anything unmapped; and `getMembership`
+ * is derived from the project read rather than fetched, with VIEWER as its
+ * floor.
+ */
+describe("RestTaskaApi project members", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const project = (extra: Record<string, unknown> = {}) => ({
+    id: "project-1",
+    projectKey: "TAS",
+    name: "Taska Platform",
+    createdBy: "user-anna",
+    createdAt: "2026-08-01T09:00:00Z",
+    updatedAt: "2026-08-01T09:00:00Z",
+    archivedAt: null,
+    ...extra,
+  });
+
+  // The unused parameter is what types `mock.calls[0]`, and the path these
+  // cases ask for is half of what they are checking.
+  const call = async <T>(body: unknown, invoke: (api: RestTaskaApi) => Promise<T>) => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    const fetchStub = vi.fn(async (_input: string) => answer(200, body));
+    vi.stubGlobal("fetch", fetchStub);
+    const result = await invoke(new RestTaskaApi());
+    return { result, fetchStub };
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("unwraps `members`, not `items`, and asks the route the PR adds", async () => {
+    const { result, fetchStub } = await call(
+      {
+        members: [
+          { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+          { userId: "user-mark", role: "MEMBER", displayName: "Mark Ruiz", email: "mark@example.com" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1/members");
+    expect(result).toEqual([
+      { userId: "user-anna", role: "ADMIN", user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
+      { userId: "user-mark", role: "MEMBER", user: { displayName: "Mark Ruiz", email: "mark@example.com" } },
+    ]);
+  });
+
+  // `findProjectMembers` has no `ORDER BY` (see `listMembers`'s own doc), so
+  // these three pin the client-side sort rather than trusting the wire order.
+  it("sorts by display name rather than the order the response body used", async () => {
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-mark", role: "MEMBER", displayName: "Mark Ruiz", email: "mark@example.com" },
+          { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.userId)).toEqual(["user-anna", "user-mark"]);
+  });
+
+  it("puts a row with no name after every named row", async () => {
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-ghost", role: "MEMBER" },
+          { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.userId)).toEqual(["user-anna", "user-ghost"]);
+  });
+
+  it("tiebreaks on userId, so two nameless rows and two same-named rows both land in one order", async () => {
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-b", role: "MEMBER" },
+          { userId: "user-a", role: "MEMBER" },
+          { userId: "user-z", role: "MEMBER", displayName: "Anna Ivanova" },
+          { userId: "user-y", role: "MEMBER", displayName: "Anna Ivanova" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.userId)).toEqual(["user-y", "user-z", "user-a", "user-b"]);
+  });
+
+  it("tiebreaks on userId even when two distinct names collate equal, e.g. NFC vs NFD of the same accent", async () => {
+    // `"\u00e9x"` is one precomposed code point for an accented e, followed
+    // by "x"; `"e\u0301x"` reaches the same accented e by combining a plain
+    // "e" with a combining acute accent, then "x". Different strings by
+    // `===` (length 2 versus 3), but `localeCompare` calls them equal, which
+    // used to return 0 straight out of the name branch and strand these two
+    // on wire order instead of reaching the `userId` tiebreak below.
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-b", role: "MEMBER", displayName: "e\u0301x" },
+          { userId: "user-a", role: "MEMBER", displayName: "\u00e9x" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.userId)).toEqual(["user-a", "user-b"]);
+  });
+
+  it("reads `items` as nothing, because that is not what this response is called", async () => {
+    const { result } = await call(
+      { items: [{ userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova" }] },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it("answers an empty list for a 200 that carries no `members` key at all", async () => {
+    const { result } = await call({}, (api) => api.listMembers("project-1"));
+
+    expect(result).toEqual([]);
+  });
+
+  it.each([
+    ["the proto zero value, defensive rather than reachable through this column today", "UNSPECIFIED"],
+    ["a role this build has never heard of", "OWNER"],
+    ["a number where a string was promised", 7],
+    ["an explicit null", null],
+    ["nothing at all", undefined],
+  ])("lands a member role of %s as null rather than passing it up", async (_case, role) => {
+    const { result } = await call(
+      { members: [{ userId: "user-anna", role, displayName: "Anna Ivanova", email: "anna@example.com" }] },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result).toEqual([
+      { userId: "user-anna", role: null, user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
+    ]);
+  });
+
+  it("keeps a row the server did not name, with no `user` to draw a blank from", async () => {
+    const { result } = await call(
+      { members: [{ userId: "user-ghost", role: "MEMBER", email: "ghost@example.com" }] },
+      (api) => api.listMembers("project-1"),
+    );
+
+    // The id survives — it is what an avatar colour and a watcher lookup are
+    // keyed on — but `user` is absent, so every screen takes its own
+    // unknown-person path instead of drawing an empty name.
+    expect(result).toEqual([{ userId: "user-ghost", role: "MEMBER", user: undefined }]);
+  });
+
+  it("drops a row with no `userId`, because there is nothing to key a picker option on", async () => {
+    // Not reachable off PR #152's `ProjectMemberDetailsDto`, where `userId` is
+    // the join key — this pins the mapper's own refusal to invent one, not a
+    // shape anyone has observed the gateway send.
+    const { result } = await call(
+      {
+        members: [
+          { role: "MEMBER", displayName: "No Id At All" },
+          { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result).toEqual([
+      { userId: "user-anna", role: "ADMIN", user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
+    ]);
+  });
+
+  it("treats a blank display name as no name rather than as a name", async () => {
+    const { result } = await call(
+      { members: [{ userId: "user-ghost", role: "MEMBER", displayName: "   ", email: "ghost@example.com" }] },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result[0]?.user).toBeUndefined();
+  });
+
+  it("drops the avatar, and carries neither addedAt nor addedBy", async () => {
+    // Deliberate, not forgotten: the avatar is backend PR #150's story, and the
+    // two timestamps are not on `ProjectMemberDetailsDto` at all.
+    const { result } = await call(
+      {
+        members: [
+          {
+            userId: "user-anna",
+            role: "ADMIN",
+            displayName: "Anna Ivanova",
+            email: "anna@example.com",
+            avatar: {
+              id: "avatar-1",
+              objectKey: "avatars/anna.png",
+              fileName: "anna.png",
+              contentType: "image/png",
+              sizeBytes: 2048,
+              downloadUrl: "https://example.invalid/anna.png",
+            },
+          },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result[0]).not.toHaveProperty("avatar");
+    expect(result[0]?.addedAt).toBeUndefined();
+    expect(result[0]?.addedBy).toBeUndefined();
+    expect(Object.keys(result[0]?.user ?? {})).toEqual(["displayName", "email"]);
+  });
+
+  it("derives the membership from the project read, and never asks for /membership", async () => {
+    const { result, fetchStub } = await call(project({ currentUserRole: "ADMIN" }), (api) =>
+      api.getMembership("project-1"),
+    );
+
+    expect(result).toEqual({ role: "ADMIN", isMember: true, projectExists: true });
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1");
+    expect(String(fetchStub.mock.calls[0][0])).not.toContain("membership");
+  });
+
+  it.each([
+    ["MEMBER" as const],
+    ["VIEWER" as const],
+  ])("passes %s through as the role the server stated", async (role) => {
+    const { result } = await call(project({ currentUserRole: role }), (api) => api.getMembership("project-1"));
+
+    expect(result.role).toBe(role);
+  });
+
+  it.each([
+    ["the gateway has not deployed the field", {}],
+    ["the field is explicitly null", { currentUserRole: null }],
+    ["the value is one this build does not recognise", { currentUserRole: "UNSPECIFIED" }],
+  ])("floors the role to VIEWER when %s", async (_case, extra) => {
+    const { result } = await call(project(extra), (api) => api.getMembership("project-1"));
+
+    // The floor hides writes the server might still allow; the opposite default
+    // would offer buttons it then refuses. The server stays authoritative.
+    expect(result).toEqual({ role: "VIEWER", isMember: true, projectExists: true });
+  });
+
+  it("rejects rather than reporting a false absence when the project read is refused", async () => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => answer(403, { code: "PERMISSION_DENIED", message: "Not a member of this project" })),
+    );
+
+    // `isMember: false` is not an answer this method can give: the project read
+    // is membership-checked, so a refusal *is* the answer and the board draws
+    // §4.18 from the rejection.
+    await expect(new RestTaskaApi().getMembership("project-1")).rejects.toThrow("Not a member of this project");
+  });
+});
+
+/**
  * Issue links (TAS-157). The contract asks for `linkType` (a closed enum) and
  * answers with `viewLinkType` (a bare string, no enum). These cases pin that
  * asymmetry in place — the request must not drift to the response's spelling,

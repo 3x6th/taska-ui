@@ -142,12 +142,16 @@ const {
      * assignee row is not what they are about — and seeded only where a name
      * has to be resolved from an id, which is how an attachment's byline works.
      *
-     * `user` is optional because it is optional on the wire: the contract's
-     * `ProjectMemberResponseDto` states `projectId`, `userId` and `role` and no
-     * user summary at all, so a membership row that names nobody is the shape a
-     * member read shipped as written would send for *everyone*. `toUserMap`
-     * drops such a row, which is the state the watchers section had two
-     * different words for.
+     * `user` is optional because the server may not name the person. It is no
+     * longer true that it would name *nobody*: this comment reasoned from
+     * `ProjectMemberResponseDto` — which is what the two member **writes**
+     * answer with, `projectId`, `userId` and `role` — and backend PR #152's
+     * read answers with `ProjectMemberDetailsDto`, which does carry
+     * `displayName` and `email`. What survives the correction is the row this
+     * fixture is: PR #152 marks neither field required, and `RestTaskaApi`
+     * turns a row with no display name into a row with no `user` rather than
+     * one with a blank name (TAS-219). `toUserMap` drops such a row, which is
+     * the state the watchers section had two different words for.
      */
     members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER"; addedAt: string; addedBy: string; user?: { displayName: string; email: string } }[];
     attachments: {
@@ -2096,9 +2100,10 @@ describe("issue watchers", () => {
   });
 
   /**
-   * A membership row that names nobody — the shape `ProjectMemberResponseDto`
-   * actually describes, and the row `toUserMap` drops. It is the picker's half
-   * of the state the rows call "Unknown".
+   * A membership row that names nobody — a row whose `displayName` the server
+   * left out, which `RestTaskaApi` maps to a member with no `user` at all
+   * (TAS-219), and which `toUserMap` then drops. It is the picker's half of the
+   * state the rows call "Unknown".
    */
   const nameless = (userId: string) => ({
     userId,

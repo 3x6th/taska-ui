@@ -52,9 +52,26 @@ import type {
 } from "../domain/types";
 
 /**
- * API groups with gateway contracts are served by the real backend.
- * Project membership and member reads use a temporary single-admin
- * compatibility view until TAS-137 lands.
+ * API groups with gateway contracts are served by the real backend. Project
+ * membership and member reads use a temporary single-admin compatibility view,
+ * and this class is what the deployed stand runs.
+ *
+ * **The compensation is still load-bearing** (TAS-219). Backend PR #152
+ * (TAS-137) adds `GET /projects/{projectId}/members` and a `currentUserRole`
+ * field on `ProjectResponseDto`, and `RestTaskaApi` is written against it — but
+ * the PR was open and undeployed when that was written. Probed on 2026-09-12
+ * without a token: the member route answers **405**, because only POST is
+ * mapped on that path, and `GET /projects/{id}/membership` — the route
+ * `getMembership` below stands in for, and the one PR #152 does *not* add —
+ * answers the static-resource **404**. The control in the same run,
+ * `GET /users/me`, answered 401.
+ *
+ * What happens the day PR #152 deploys: `getMembership` and `listMembers` below
+ * become plain delegations to `live`, and the `assumeProjectAdmin` constructor
+ * argument goes with them — along with `VITE_TASKA_ASSUME_PROJECT_ADMIN` and
+ * its entry in docs/ai/API-DIVERGENCE.md. Nothing else in this class changes.
+ * None of it is removed before then, because until then this is the only thing
+ * standing between the stand and a board that knows nobody.
  */
 export class HybridTaskaApi implements TaskaApi {
   constructor(
@@ -102,6 +119,14 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.getProject(projectId);
   }
 
+  /**
+   * Synthesised, because the route it stands in for does not exist: probed on
+   * 2026-09-12 without a token, `GET /projects/{id}/membership` answers the
+   * static-resource 404, and PR #152 does not add it. When that PR deploys this
+   * method becomes `return this.live.getMembership(projectId)` — the rest leg
+   * already derives the answer from `GET /projects/{id}`'s `currentUserRole` —
+   * and the `assumeProjectAdmin` argument goes with it.
+   */
   async getMembership(projectId: string): Promise<ProjectMembership> {
     // With the assumption on, every field below is already decided: the role is
     // ADMIN by assumption, and the other two are constants. The project read
@@ -131,6 +156,20 @@ export class HybridTaskaApi implements TaskaApi {
     };
   }
 
+  /**
+   * One member — the reader — because the gateway has no member read yet: the
+   * route answers 405 on the stand (2026-09-12, no token; only POST is mapped
+   * on that path), which is not even the 404 signature `isUndeployedRoute`
+   * matches. `addedAt` and `addedBy` are invented from the project's own
+   * timestamps and exist nowhere else; `ProjectMemberDetailsDto` in PR #152
+   * carries neither, which is why both are optional on `ProjectMember`.
+   *
+   * When PR #152 deploys this method becomes
+   * `return this.live.listMembers(projectId)`, the two synthesised fields stop
+   * being produced at all, and the three surfaces that draw `member.user` —
+   * the assignee filter, the assignee chips and the watcher name map — start
+   * naming real people instead of the reader alone.
+   */
   async listMembers(projectId: string): Promise<ProjectMember[]> {
     const [project, currentUser] = await Promise.all([
       this.live.getProject(projectId),

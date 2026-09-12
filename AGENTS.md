@@ -442,14 +442,26 @@ you file:
   `jira_update_issue` keep underscores intact. When a comment must name a
   snake_case or SCREAMING_SNAKE identifier, describe it instead, or accept the
   mangling knowingly rather than by surprise.
-  **A fenced code block survives it** — found on TAS-125, 2026-09-09, after two
-  comments came back mangled. Observed: names inside triple backticks keep their
-  underscores, while inline backticks and `{{…}}` do not; and in the same comment
-  `status_key` came through intact in a paragraph where it was the only such name,
-  while the paragraph carrying six of them mangled all six. Emphasis pairing is
-  the likely mechanism for that difference, inferred rather than tested. So:
-  identifiers a reader has to copy go in a fenced block, and a lone identifier
-  surviving is luck rather than a rule to lean on.
+  **A fenced code block does not reliably survive it — refuted 2026-09-12**, in
+  TAS-219's run, on a comment filed to TAS-137. The claim it replaces was made on
+  TAS-125 on 2026-09-09 after two comments came back mangled, and it was true of
+  that comment: names inside triple backticks kept their underscores there, while
+  inline backticks and `{{…}}` did not, and a lone `status_key` came through
+  intact in a paragraph where it was the only such name while a paragraph
+  carrying six mangled all six.
+
+  It did not hold here. Inside triple backticks, two SCREAMING_SNAKE names came
+  back with asterisks for their underscores, and a `||` came back as a single
+  `|` — which is worse than a mangled name, because the block was quoting the
+  backend's own code and the mangling turned it into a misquote. What the two
+  observations share is a count rather than a fence: one pairable token survives,
+  several in view do not. Emphasis pairing is still the likely mechanism, still
+  inferred rather than tested.
+
+  So the rule is not "use a fence". It is **read the comment back after filing
+  it** — both of these were found that way and by no other means — and when a
+  reader must copy an identifier exactly, describe it in words or expect to post
+  a correction. Quoting somebody else's code is the case to avoid outright.
 
 ## Verification evidence
 

@@ -427,6 +427,58 @@ Same rule as above: "Closed by" is settled, the rest is live.
   TAS-137 adds — a path that answers 405 unconditionally can never answer a 401
   for "not yours".
 
+- **Refuted, and the read has a shape now** ([TAS-219](https://jira.ozero.dev/browse/TAS-219),
+  2026-09-12). The prediction above — that a shipped member read would send a
+  nameless row for *everyone* — reads `ProjectMemberResponseDto`, which is the
+  response of the two member **writes**. Backend PR #152 answers the read with
+  `ProjectMemberDetailsDto` instead, and that one carries `displayName`, `email`
+  and an `avatar`. The column of "Unknown" it forecast does not arrive with this
+  PR, and the three comments in the board's tests that argued from the write DTO
+  were corrected with it. What the read does lack is the opposite: no `addedAt`
+  and no `addedBy`, which is why both are optional on `ProjectMember` now.
+- **`/membership` is not what lands — `currentUserRole` is** (same story). PR
+  #152 adds no membership route, and none is coming: the role arrives as a field
+  on `GET /projects/{id}`. `RestTaskaApi.getMembership` derives it from the
+  project read and no longer calls a route that has never existed. An absent
+  field floors to `VIEWER`, which hides writes the server might allow rather
+  than offering writes it would refuse.
+- **Two signatures, not one** (same story; probed 2026-09-12 without a token,
+  with `GET /users/me` answering 401 in the same run as the control).
+  `GET /projects/{id}/members` answers **405**, because only POST is mapped on
+  that path, while `GET /projects/{id}/membership` answers the static-resource
+  **404**. `isUndeployedRoute` in `src/api/errors.ts` matches the 404 signature
+  only and therefore does not recognise the members route as undeployed.
+  Nothing depends on that today, because the stand runs `hybrid` and never calls
+  it — but any UI that wants to say "not shipped yet" about a 405 needs the
+  predicate widened first, and that is also true of `PATCH /projects/{id}`
+  (backend PR #155), which answers 405 for the same reason.
+- **The project *list* carries the role too** (same story, read at PR head
+  `1ad6ffad815d`). This bullet first said the opposite, and it was wrong for the
+  few hours between two commits on the same branch; `api-contract-guard` caught
+  it and the backend was re-read before the correction. The mistake is worth
+  keeping visible because of *how* it was made: project-service's `ProjectMapper`
+  has two `toProjectResponse` overloads and only the one taking
+  `ProjectCheckMembershipDto` sets `currentUserRole`, which is true — but PR #152
+  also rewrote the list path to go through that same overload.
+  `ProjectService.listMyProjects` returns `Flux<ProjectCheckMembershipDto>` now,
+  `ProjectRepository.findAllByMemberUserId` joins `project_members` to fill
+  `role`, and `GrpcProjectService.listMyProjects` maps with
+  `projectMapper::toProjectResponse`, for which that argument type selects the
+  annotated overload. The join is an inner join on the reader's own membership,
+  so every item of `GET /projects` carries the reader's role and none of them can
+  be null for a row that came back at all. **Reading a mapper tells you what a
+  mapper does, not who calls it**, and the call site is the half that moved.
+
+  What follows for the mock: it serves the field from `listProjects` as well as
+  from `getProject`, because the server does. What follows for
+  [TAS-211](https://jira.ozero.dev/browse/TAS-211): its role-per-card clause is
+  already answered by PR #152, and what is left of it is `issueCount` and the
+  members-per-card, which is what makes the projects screen cost 1 + 2N today.
+- **None of this reaches the stand yet.** The `rest` leg is unreachable in
+  `hybrid`, which is the deployed mode, so TAS-219 changes nothing a person can
+  see there. The compensation and the flag come out under TAS-137 when the route
+  answers on the stand, in the five places listed above.
+
 ### Accepting an invitation does not produce a session
 
 - **Endpoint:** `POST /api/v1/auth/invitations/accept` (`setPasswordByToken`).
@@ -567,6 +619,34 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** [TAS-215](https://jira.ozero.dev/browse/TAS-215), re-filed
   2026-09-11 from TAS-141 (nullable
   `assigneeId` or an explicit unassign route).
+
+### `GET /projects/{id}/members` states no order, and the two implementations differ
+
+- **Missing:** any ordering guarantee. `ProjectMemberRepository.findProjectMembers`
+  in project-service — backend PR #152, head `1ad6ffad815d` — has no `ORDER BY`,
+  and `ProjectMemberServiceImpl` merges the auth-service rows into the result
+  without imposing one, so two reads of the same project may answer in two
+  orders.
+- **Compensation:** `RestTaskaApi.listMembers` sorts client-side — `displayName`
+  first, rows with no name last, `userId` as the tiebreak so the order is total.
+- **The mock does not sort, and that is the half worth recording here** rather
+  than leaving in a method comment. `MockTaskaApi.listMembers` answers in seed
+  order, so the same project's members can come out in a different order in the
+  two modes: on the seeded WEB project the mock gives Anna, Sofia, Priya where
+  `rest` would give Anna, Priya, Sofia. The end-to-end suite runs on the mock, so
+  **mock-backed evidence no longer predicts the `rest` order for this list** and
+  no test in this repository can catch a regression in it.
+- **User-visible effect without the compensation:** the board's avatar stack, the
+  assignee filter and the watcher picker reshuffle between refetches in `rest`
+  mode. None of it is reachable on the stand, which runs `hybrid` and synthesises
+  a one-element list.
+- **Removal:** asked on [TAS-137](https://jira.ozero.dev/browse/TAS-137) on
+  2026-09-12, in two shapes. `ORDER BY pm.user_id` in the repository is one line
+  and has its precedent in the same interface — `getRequiredMembersInProject`
+  already ends that way — but a uuid order is not an order a UI wants, so the
+  client sort would stay. Sorting the enriched list by `displayName` in
+  `ProjectMemberServiceImpl`, after the user-details join, is what actually
+  deletes the compensation.
 
 ### Comment ordering is unspecified
 

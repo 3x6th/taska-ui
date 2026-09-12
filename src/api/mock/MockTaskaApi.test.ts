@@ -74,6 +74,90 @@ describe("MockTaskaApi", () => {
     });
   });
 
+  describe("the reader's own role on a project", () => {
+    // `currentUserRole` is what backend PR #152 adds to `ProjectResponseDto`,
+    // and it is the whole of what the rest leg derives `getMembership` from.
+    // The mock serves it so the two implementations answer the same shape —
+    // otherwise the derivation could only ever be tested against a stub.
+    it("states the role of whoever is reading, on the project read itself", async () => {
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "ADMIN" });
+      await api.login({ email: "mark@example.com", password: "anything" });
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "MEMBER" });
+    });
+
+    // Backend PR #152 fills `currentUserRole` on every row of `GET /projects`
+    // too, not only the single-project read — `ProjectRepository
+    // .findAllByMemberUserId` joins `project_members` for it. `withCurrentUserRole`
+    // is what both `getProject` and `listProjects` share so the mock cannot
+    // drift into serving one route a shape the other does not.
+    it("states the role on every row of the project list too, not only the single read", async () => {
+      await expect(api.listProjects()).resolves.toContainEqual(
+        expect.objectContaining({ id: project.id, currentUserRole: "ADMIN" }),
+      );
+
+      // Mark is the first id in Mobile's own `memberIds`, so this is his
+      // project — deterministic from the seed, not an assumption.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile?.currentUserRole).toBe("ADMIN");
+    });
+
+    it("agrees with getMembership about the role", async () => {
+      const [fromProject, membership] = await Promise.all([
+        api.getProject(project.id),
+        api.getMembership(project.id),
+      ]);
+
+      expect(fromProject.currentUserRole).toBe(membership.role);
+    });
+
+    it("leaves the field absent for a reader it computed no role for", async () => {
+      // Anna is not on Mobile. The gateway would answer 403 to this read and
+      // the mock answers the project instead — a known divergence documented
+      // on `MockTaskaApi.withCurrentUserRole` rather than in
+      // docs/ai/API-DIVERGENCE.md, which has no entry for it. The field
+      // itself still behaves as a deployed gateway's absence would: missing,
+      // not an explicit `null`, when no role was computed. That absence is
+      // what the rest leg floors to VIEWER.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+
+      await api.login({ email: "anna@example.com", password: "anything" });
+      const read = await api.getProject(mobile.id);
+
+      expect(read.currentUserRole).toBeUndefined();
+      expect("currentUserRole" in read).toBe(false);
+      await expect(api.getMembership(mobile.id)).resolves.toMatchObject({ role: "VIEWER", isMember: false });
+    });
+
+    it("does not write one reader's role into the answer the next one gets", async () => {
+      // The role belongs to the reader, not to the stored project row — so the
+      // read has to be a copy, and a second reader must not find the first
+      // one's role still on it.
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "ADMIN" });
+
+      await api.login({ email: "mark@example.com", password: "anything" });
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "MEMBER" });
+
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "ADMIN" });
+    });
+
+    it("still carries addedAt and addedBy on a member row, which the wire does not", async () => {
+      // Both are optional on `ProjectMember` since TAS-219, because
+      // `ProjectMemberDetailsDto` carries neither. The mock keeps producing
+      // them: they are seed data here, not a claim about the gateway.
+      const [first] = await api.listMembers(project.id);
+
+      expect(first.role).toBe("ADMIN");
+      expect(first.addedAt).toEqual(expect.any(String));
+      expect(first.addedBy).toEqual(expect.any(String));
+      expect(first.user?.displayName).toEqual(expect.any(String));
+    });
+  });
+
   describe("workflow transitions", () => {
     it("moves an issue to the target status of a legal transition", async () => {
       const { items } = await api.listIssues(project.id);

@@ -18,7 +18,7 @@ states are not.
 | [TAS-140](https://jira.ozero.dev/browse/TAS-140) | Agent harness, skill pins, DESIGN.md reconciliation | Done | merged (PR #7); review fixes in PR #8 |
 | [TAS-142](https://jira.ozero.dev/browse/TAS-142) | Overlay accessibility, focus-visible, review gaps | To Do | recorded in `DESIGN.md`, not started |
 | [TAS-144](https://jira.ozero.dev/browse/TAS-144) | Page not found screen for an unknown or forbidden URL | To Do | merged (PR #11) |
-| [TAS-148](https://jira.ozero.dev/browse/TAS-148) | Edit a project (name, description), key read-only | To Do | not started |
+| [TAS-148](https://jira.ozero.dev/browse/TAS-148) | Edit a project (name, description, colour), key read-only | In Progress | **was `Done` in Jira with nothing built** — no `updateProject` exists in any of the three implementations and there is no edit dialog, checked 2026-09-12. Moved back to `In Progress` with the reason on the ticket, which is what this file says to do when a row disagrees with itself. Now taken against backend PR #155, pinned as `docs/contract/pending/pr-155-TAS-145.yml` |
 | [TAS-149](https://jira.ozero.dev/browse/TAS-149) | Archive a project from the UI | To Do | not started |
 | [TAS-150](https://jira.ozero.dev/browse/TAS-150) | Route guard: send a signed-out visitor to `/login` | Done | merged (PRs #12, #13, #15) |
 | [TAS-151](https://jira.ozero.dev/browse/TAS-151) | Show the global role in the profile menu | Done | merged (PR #16) |
@@ -70,6 +70,7 @@ states are not.
 | [TAS-173](https://jira.ozero.dev/browse/TAS-173) | An unknown enum value from the backend must not blank the screen | To Do | **was `Done` without being built** — reopened 2026-09-08, see below |
 | [TAS-197](https://jira.ozero.dev/browse/TAS-197) | `GET /users/me` answers `UNSPECIFIED` for a locked account | To Do | backend ask, filed from TAS-196 |
 | [TAS-198](https://jira.ozero.dev/browse/TAS-198) | A locked account keeps access on a pre-lock token, and `refresh` renews it | To Do | backend ask, filed from TAS-196 |
+| [TAS-219](https://jira.ozero.dev/browse/TAS-219) | The member read and `currentUserRole` from the gateway — the frontend half of TAS-137 (backend PR #152) | Done | merged (PR #65). Written against `docs/contract/pending/pr-152-TAS-137.yml` while PR #152 is open, so nothing in it reaches the stand until that merges. `api-contract-guard` found one blocker — the claim that `GET /projects` does not carry the role — and it is corrected in `API-DIVERGENCE.md` rather than quietly fixed |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
