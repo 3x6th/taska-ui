@@ -458,10 +458,17 @@ you file:
   several in view do not. Emphasis pairing is still the likely mechanism, still
   inferred rather than tested.
 
+  It is not only underscores. On TAS-148, the same day, a comment's `1 + 3N` and
+  `1 + 2N` came back as `1  3N` and `1  2N` — the plus signs gone, in running
+  prose, outside any fence. Arithmetic is the quiet case: a mangled identifier
+  looks mangled, while `1  3N` looks like a typo the reader will correct for
+  themselves in the wrong direction.
+
   So the rule is not "use a fence". It is **read the comment back after filing
-  it** — both of these were found that way and by no other means — and when a
-  reader must copy an identifier exactly, describe it in words or expect to post
-  a correction. Quoting somebody else's code is the case to avoid outright.
+  it** — every one of these was found that way and by no other means — and when a
+  reader must copy an identifier or a number exactly, describe it in words or
+  expect to post a correction. Quoting somebody else's code is the case to avoid
+  outright.
 
 ## Verification evidence
 
