@@ -4,7 +4,10 @@
     {
       "name": "taska-ui",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 5173
     },
     {
@@ -15,6 +18,15 @@
         "VITE_TASKA_API_MODE=mock VITE_TASKA_API_PROXY_TARGET= npm run dev -- --port 5191 --strictPort"
       ],
       "port": 5191
+    },
+    {
+      "name": "taska-ui-hybrid-offline",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "VITE_TASKA_API_MODE=hybrid VITE_TASKA_API_PROXY_TARGET= npm run dev -- --port 5192 --strictPort"
+      ],
+      "port": 5192
     }
   ]
 }
