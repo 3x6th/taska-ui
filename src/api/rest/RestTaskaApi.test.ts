@@ -3290,10 +3290,10 @@ describe("RestTaskaApi attachments", () => {
 });
 /**
  * The four avatar routes — backend PR #150 (TAS-129), merged at `develop`
- * `368ae77355bd` and not deployed. What is pinned here is the request shape, the
- * ceiling this client enforces against the one the schema declares, and the two
- * answers a reader must not misread: a null `url` meaning "no avatar" and the
- * static-resource 404 meaning "not on this gateway yet".
+ * `368ae77355bd` and deployed on 2026-09-14. What is pinned here is the request
+ * shape, the ceiling this client enforces against the one the schema declares,
+ * and the two answers a reader must not misread: a null `url` meaning "no
+ * avatar" and the static-resource 404 meaning "not on this gateway yet".
  */
 describe("RestTaskaApi avatars", () => {
   const answer = (status: number, body: unknown) =>

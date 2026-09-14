@@ -861,9 +861,11 @@ Everything below is the entry as it stood, in the past tense.
   own acceptance criterion said avatar metadata would come back on the profile
   response; nothing merged does that.
 - **Compensation:** the profile menu reads `GET /users/{userId}/avatar` for the
-  current user on every screen it mounts on — a 10-minute stale time and no
-  refetch on focus, because every read re-signs the link and so re-downloads the
-  image. A member row needs no such read: PR #152 carries the avatar inline.
+  current user when a mount finds nothing cached, finds a cached answer more than
+  10 minutes old, or finds the last read failed for a reason other than the
+  undeployed route — never on focus. Every read re-signs the link and so
+  re-downloads the image. A member row needs no such read: PR #152 carries the
+  avatar inline.
 - **Removed by:** [TAS-223](https://jira.ozero.dev/browse/TAS-223) (epic
   TAS-210), which puts a nullable `avatar` on `GET /users/me`. It needs no proto
   or service change: `ProfileService.GetUserProfile` already exists and the

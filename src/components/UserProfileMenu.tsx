@@ -184,9 +184,9 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    * never pay for any of that twice on one screen.
    *
    * Not retried for the two answers that are already final. "Missing or not
-   * yours" is an answer, and so is the static-resource 404 the four avatar
-   * routes give today — retrying either spends a second request to be told the
-   * same thing, on every screen, for every reader, until the backend deploys.
+   * yours" is an answer, and so was the static-resource 404 the four avatar
+   * routes gave on a gateway without them — retrying either spends a second
+   * request to be told the same thing, on every screen, for every reader.
    */
   const avatarQuery = useQuery({
     queryKey: avatarKey,
@@ -755,9 +755,9 @@ function refusalText(kind: AvatarRefusalKind, file: File) {
  * but the undeployed route — which is not a failure and draws no sentence of
  * this kind (the band says the feature is not on the gateway instead).
  *
- * Once the routes deploy, the likeliest cause is a 404 from the download
- * presign, which HEADs the object first: a row pointing at an object that is
- * gone, which is what a same-key re-confirm leaves behind (see
+ * Now that the routes are deployed, the likeliest cause is a 404 from the
+ * download presign, which HEADs the object first: a row pointing at an object
+ * that is gone, which is what a same-key re-confirm leaves behind (see
  * `confirmAvatarUpload` on TaskaApi). An upload replaces that row, which is why
  * Upload stays on offer beside this sentence and Remove does not.
  */

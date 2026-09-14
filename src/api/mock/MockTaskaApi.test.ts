@@ -2919,12 +2919,13 @@ describe("MockTaskaApi", () => {
   });
   /**
    * The avatar family — backend PR #150 (TAS-129), merged at `develop`
-   * `368ae77355bd` and not deployed, so this mock is the only place the
-   * choreography can be run at all. What is pinned here is the contract's own
-   * awkward parts — the enforced ceiling that is not the declared one, the
-   * delete that cannot say whether it deleted anything, "no avatar" being a 200
-   * with a null rather than a 404 — and one of the server's: a confirm sent
-   * twice with one key deletes the picture it confirmed.
+   * `368ae77355bd` and deployed on 2026-09-14. This mock is still the only
+   * place the choreography runs in a test: nothing here calls a gateway, live
+   * or otherwise. What is pinned here is the contract's own awkward parts —
+   * the enforced ceiling that is not the declared one, the delete that cannot
+   * say whether it deleted anything, "no avatar" being a 200 with a null
+   * rather than a 404 — and one of the server's: a confirm sent twice with one
+   * key deletes the picture it confirmed.
    */
   describe("avatars", () => {
     /** A PNG-shaped file of a size the ceiling accepts. */

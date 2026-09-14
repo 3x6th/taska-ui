@@ -2,18 +2,17 @@ import { expect, test, type Page } from "@playwright/test";
 
 /**
  * The user's avatar — upload, replace, delete and show (TAS-220, backend PR
- * #150, merged and not yet deployed).
+ * #150, merged and deployed on 2026-09-14).
  *
  * Mock-backed like every spec here (playwright.config.ts starts the server with
  * VITE_TASKA_API_MODE=mock), and for this feature that is not a convenience but
- * the only possibility: the four gateway routes answer Spring's static-resource
- * 404 on the stand today, and the *middle* leg of an upload never touches the
- * gateway even once they deploy — the browser PUTs the bytes straight to an
- * object store for which nothing in the backend repository configures CORS. So
- * nothing below is evidence about a server. It pins what the UI does with each
- * answer, and the answers come from `MockTaskaStore`. The undeployed state
- * itself is not here for the same reason: the mock cannot produce that
- * signature, so `UserProfileMenu.test.tsx` covers it against a stubbed API.
+ * the only possibility: the *middle* leg of an upload never touches the
+ * gateway at all — the browser PUTs the bytes straight to an object store for
+ * which nothing in the backend repository configures CORS. So nothing below is
+ * evidence about a server. It pins what the UI does with each answer, and the
+ * answers come from `MockTaskaStore`. The undeployed state itself is not here
+ * for the same reason: the mock cannot produce that signature, so
+ * `UserProfileMenu.test.tsx` covers it against a stubbed API.
  *
  * One consequence of that store worth knowing while reading these: it hands
  * back the bytes it was given, as a `data:` URL, because it has no server to

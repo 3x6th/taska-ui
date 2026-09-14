@@ -1326,12 +1326,14 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * Leg 1 of the avatar upload — `POST /users/me/avatar/upload-url`, backend PR
-   * #150, **merged** at `develop` `368ae77355bd` and **not deployed**: probed
-   * 2026-09-12 without a token, this path and the three below it answered
-   * Spring's static-resource 404 while `GET /users/me` answered 401 in the same
-   * run, and the routes still answered it on 2026-09-14 at 11:14 UTC, after the
-   * merge. That is the first arm of `isUndeployedRoute`, which is what
-   * `UserProfileMenu` reads before it offers a control or prints a refusal.
+   * #150, **merged** at `develop` `368ae77355bd` and **deployed** later the
+   * same day: probed 2026-09-12 without a token, this path and the three below
+   * it answered Spring's static-resource 404 while `GET /users/me` answered
+   * 401 in the same run, and the routes still answered it on 2026-09-14 at
+   * 11:14 UTC, after the merge. Probed again at 13:53 UTC, this route answered
+   * 405 rather than that 404 — the first arm of `isUndeployedRoute` no longer
+   * matches on this gateway, though it is still what `UserProfileMenu` reads
+   * before it offers a control or prints a refusal.
    *
    * Refused before the request by `refuseAvatar` below, at the ceiling the
    * server actually enforces rather than the one the schema declares. The
@@ -2421,10 +2423,11 @@ function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
  * enforces 2 MB", which names what removes it. Reproducing an answer means
  * reproducing the one that is served, band by band.
  *
- * One caveat worth stating rather than implying: this is what the gateway would
- * answer once PR #150 deploys. Nothing has measured it, because none of the
- * four routes is deployed — it is read off `develop` at `368ae77355bd`, and it
- * stays a reading until the routes exist.
+ * One caveat worth stating rather than implying: this is what the gateway
+ * answers for an over-ceiling upload, read off `develop` at `368ae77355bd`
+ * rather than observed. The four routes deployed on 2026-09-14, but the
+ * probes that confirmed that — an invalid id, a wrong method — do not
+ * exercise this refusal, so it stays a reading until one does.
  */
 function refuseAvatar(input: CreateAvatarUploadUrlInput): void {
   // Bean validation, which answers before the avatar call leaves the gateway.

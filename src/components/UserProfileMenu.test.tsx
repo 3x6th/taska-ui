@@ -173,7 +173,7 @@ const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve
 
 const REQUEST_ID = "7f0e6d5c-1b2a-4c3d-9e8f-0a1b2c3d4e5f";
 
-/** The static-resource 404 all four avatar routes answer on the stand today. */
+/** The static-resource 404 a gateway without these routes answers with — how the four avatar routes answered here before they deployed on 2026-09-14. */
 const undeployed = (path: string) =>
   Object.assign(new Error(`No static resource api/v1/users/${path} for request '…'.`), {
     code: "NOT_FOUND",
@@ -449,9 +449,10 @@ describe("UserProfileMenu", () => {
    * costs one read and is not asked for again on a second open, on a focus, or
    * after a write whose answer already carried the link; that a write rewrites
    * the member rows already in the cache instead of reading every list again;
-   * that a refusal happens *before* any request is spent; and that the
-   * undeployed gateway is reported as undeployed rather than as a raw failure —
-   * which is the answer every reader gets until backend PR #150 deploys.
+   * that a refusal happens *before* any request is spent; and that a gateway
+   * without these routes is reported as such rather than as a raw failure —
+   * which was the answer every reader got until backend PR #150 deployed on
+   * 2026-09-14.
    */
   describe("the profile photo", () => {
     it("spends one read for the reader's own avatar and draws it in place of the initials", async () => {
@@ -784,12 +785,13 @@ describe("UserProfileMenu", () => {
     });
 
     it("offers no photo controls at all when its own read already met the undeployed route", async () => {
-      // The avatar routes answer Spring's static-resource 404 on the stand —
-      // all four when probed on 2026-09-12, and still on 2026-09-14 after PR
-      // #150 merged — and so the read this menu makes on mount has already
-      // answered the question every control would ask. Offering "Upload a
-      // photo" and refusing only after the file picker is an interaction built
-      // to fail.
+      // The avatar routes answered Spring's static-resource 404 on the stand
+      // before they deployed — all four when probed on 2026-09-12, and still
+      // on 2026-09-14 before PR #150 finished deploying later that day. This
+      // test reproduces that answer via a stub, since the mock cannot produce
+      // it: the read this menu makes on mount has already answered the
+      // question every control would ask. Offering "Upload a photo" and
+      // refusing only after the file picker is an interaction built to fail.
       state.readFailure = undeployed(`${anna.id}/avatar`);
       renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
       fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
@@ -808,7 +810,8 @@ describe("UserProfileMenu", () => {
       // the reader did.
       expect(document.querySelector(".user-profile-photo .is-error")).toBeNull();
       expect(screen.queryByText(/No static resource/)).not.toBeInTheDocument();
-      // Not retried either: the answer is final until the backend deploys.
+      // Not retried either: the answer is final, the way it would be on a
+      // gateway without these routes.
       expect(state.reads).toEqual([anna.id]);
     });
 

@@ -2155,8 +2155,8 @@ is what recurs.
     from the TTL constant — which is itself only an environment default.
 
   Two were closed in TAS-220's second pass on 2026-09-14. The avatar read no
-  longer refetches on mount or focus, and an undeployed signature is asked once
-  per page load. `API-DIVERGENCE.md` now says the failed-image fallback is
+  longer refetches on focus, or on a mount within 10 minutes of the last good
+  read, and an undeployed signature is asked once per page load. `API-DIVERGENCE.md` now says the failed-image fallback is
   covered end to end.
 - **TAS-220's cache write has three edges `frontend-builder` named rather than
   closed** (2026-09-14).
@@ -2169,8 +2169,23 @@ is what recurs.
   - **Shape coupling:** the menu types the project-summary cache by shape alone.
     Renaming `ProjectSummary.members` would silently stop the write, and only the
     e2e card assertion would notice.
-  - **Cancelled refetch:** cancelling an in-flight member refetch before writing
-    can delay a refresh another write had asked for.
+  - **An avatar write drops refreshes already in flight — accepted for TAS-220's
+    merge at the owner's call for speed, and the first thing to fix after it**
+    (`release-reviewer`, 2026-09-14, reproduced).
+    - **What happens:** `UserProfileMenu.tsx` around 688 and 693-695 cancels
+      *every* member or summary read already holding data, including lists the
+      write does not change. Their answers are thrown away and never re-run, and
+      the lists it writes are then marked fresh.
+    - **Reproduced:** a Remove 233 ms into an arrival refresh left the Taska
+      Platform card at 9 issues when the server said 10, still 9 five seconds
+      later. The control run without a write showed 11 of 11.
+    - **Stale until:** a mount more than 20 s later, a tab switch, or a
+      reconnect.
+    - **Fix:** cancel only the lists `withOwnFace` will change, and remember
+      which of them were fetching. Once the write has landed (after
+      `writeOwnFace` on upload, in `onSettled` on removal), run
+      `invalidateQueries({ queryKey, exact: true })` on just those keys. That is
+      at most one read per list that was already mid-read.
 - **The avatar photo buttons and the watchers block answer the same Chromium
   behaviour two different ways.** DESIGN.md §4.21 records that a real `disabled`
   attribute blurs a focused element, and watchers answer it with `aria-disabled`
@@ -2245,3 +2260,10 @@ is what recurs.
   10-minute stale time fails while an older link is still cached, the header
   keeps drawing that photo next to "Upload a photo" and "Your photo could not be
   loaded." (`UserProfileMenu.tsx` around 219, 239 and 540).
+- **`refetchQueries({ type: 'all' })` or `invalidateQueries({ refetchType: 'all' })`
+  would bypass the `enabled` guard** on an avatar query nobody is observing
+  (`release-reviewer`, 2026-09-14). Nothing calls either today.
+- **If the undeployed avatar read lands while keyboard focus is on "Upload a
+  photo", focus drops to `<body>`**, because the band removes the button
+  (`release-reviewer`, 2026-09-14). This is moot for any page loaded after the
+  routes deployed.

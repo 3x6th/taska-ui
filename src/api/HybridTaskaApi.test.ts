@@ -577,8 +577,9 @@ describe("HybridTaskaApi", () => {
     // The row is built from `GET /projects/{id}` and `GET /users/me`, and
     // neither carries an avatar. Filling it would mean one extra request per
     // member — the very thing the inline avatar on `ProjectMemberDetailsDto`
-    // exists to avoid — so the stand draws initials until PR #152 and PR #150
-    // are both deployed, and the profile menu is the one place that pays.
+    // exists to avoid — so the stand still draws initials until PR #152
+    // deploys too; PR #150 deploying did not change this row, and the profile
+    // menu is the one place that pays.
     const [self] = await hybrid.listMembers(project.id);
     expect(self.user?.avatarUrl).toBeUndefined();
   });

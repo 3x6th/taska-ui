@@ -920,18 +920,21 @@ export interface TaskaApi {
   /**
    * The four avatar routes, plus the one leg of the upload that is not a route
    * at all — backend PR #150 (TAS-129), **merged** into `develop` on 2026-09-14
-   * at `368ae77355bd` and in `docs/contract/openapi.yml` since, and **not
-   * deployed**.
+   * at `368ae77355bd` and in `docs/contract/openapi.yml` since, and **deployed**
+   * later the same day.
    *
    * All four answered Spring's static-resource **404** when probed on
    * 2026-09-12 without a token, with `GET /users/me` answering 401 in the same
    * run as the control, and the routes still answered it on 2026-09-14 at 11:14
-   * UTC, after the merge. That is the signature `isUndeployedRoute` in
-   * src/api/errors.ts matches on its first arm, so a caller must read that
-   * predicate before printing a raw failure. `UserProfileMenu` reads it twice:
-   * on its own avatar read, where it takes the photo controls away and does not
-   * ask again until the page reloads, and on each write, the way
-   * `EditProjectModal` does for the project PATCH.
+   * UTC, after the merge. Probed again at 13:53 UTC the same day, `GET
+   * /users/{id}/avatar` answered 400 `INVALID_ARGUMENT` and `POST
+   * /users/me/avatar/upload-url` answered 405 — the routes had deployed, and
+   * neither answer is the signature `isUndeployedRoute` in src/api/errors.ts
+   * matches on its first arm. A caller must still read that predicate before
+   * printing a raw failure, because the mechanism stays: `UserProfileMenu`
+   * reads it on its own avatar read, where it would take the photo controls
+   * away and not ask again until the page reloads, and on each write, the way
+   * `EditProjectModal` still does for the still-undeployed project PATCH.
    *
    * **No role gates any of these.** Three of the four are scoped to `me`, and
    * the read is authenticated and nothing more. There is therefore no
