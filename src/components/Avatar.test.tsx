@@ -58,6 +58,22 @@ describe("Avatar", () => {
     expect(circle.textContent).toBe("AI");
   });
 
+  it("insets the fill only while a picture is drawn, and gives it back with the initials", () => {
+    // The inset keeps the person's colour from ringing a photograph's
+    // anti-aliased edge. Initials have no such edge, so a link that failed must
+    // not leave them sitting on a disc a pixel smaller than everybody else's.
+    const { rerender } = render(<Avatar user={anna} />);
+    expect(screen.getByLabelText("Anna Ivanova")).not.toHaveClass("avatar-with-image");
+
+    rerender(<Avatar user={{ ...anna, avatarUrl: "https://store.example/expired.png?sig=1" }} />);
+    const circle = screen.getByLabelText("Anna Ivanova");
+    expect(circle).toHaveClass("avatar-with-image");
+
+    fireEvent.error(circle.querySelector("img")!);
+    expect(circle).not.toHaveClass("avatar-with-image");
+    expect(circle.textContent).toBe("AI");
+  });
+
   it("tries a fresh link for somebody whose last one failed", () => {
     // The natural implementation of the fallback is a boolean, and a boolean
     // remembers "this person's picture is broken" — so the replacement they

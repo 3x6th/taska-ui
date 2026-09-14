@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { ImageUp, LogOut, ShieldCheck } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
@@ -13,10 +13,11 @@ import {
 import { apiErrorFacts, isMissingOrForbidden, isUndeployedRoute } from "../api/errors";
 import { objectStoreUploadFailure } from "../api/objectStore";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
-import type { GlobalRole, User, UserStatus } from "../domain/types";
+import type { GlobalRole, ProjectMember, User, UserStatus } from "../domain/types";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { formatFileSize } from "../lib/format";
 import { Avatar } from "./Avatar";
+import { RequestId } from "./RequestId";
 
 interface UserProfileMenuProps {
   user?: User;
@@ -59,18 +60,86 @@ const globalRoleLabels: Record<GlobalRole, string> = {
   GLOBAL_ADMIN: "Global admin",
 };
 
-/** Which leg of the upload is in flight, for the line the button shows. */
-type AvatarUploadStep = "signing" | "uploading" | "confirming";
+/**
+ * How long the reader's own avatar link is trusted before a mount asks for a
+ * fresh one: ten minutes, under the fifteen a presigned link lives on
+ * auth-service's default `storage.presigned-url-ttl`.
+ *
+ * Far longer than the app's twenty-second default, because this read is not a
+ * cheap confirmation of what is already on screen. Every answer is a freshly
+ * *signed* link — the same picture under a new query string — so the browser's
+ * cache never recognises it, and every refetch downloads the image again.
+ * Shorter than the link's lifetime so that a mount never draws a link with less
+ * than five minutes left. A link that expires under a menu that stays mounted
+ * is not re-signed on a timer: `Avatar` puts the initials back, which §4.4
+ * calls the ordinary state of a screen left open. The TTL is an env-overridable
+ * default on the server and nothing on this side can read the deployed value,
+ * so this is a margin against the default, not a guarantee.
+ */
+const OWN_AVATAR_STALE_MS = 10 * 60 * 1000;
 
-const stepLabels: Record<AvatarUploadStep, string> = {
-  signing: "Preparing…",
-  uploading: "Uploading…",
-  confirming: "Saving…",
-};
+/**
+ * Every query client whose page has seen the reader's own avatar read answered
+ * with the undeployed-route signature. Once a client is in here, that read is
+ * never made again on it — so a stand without the routes pays for one 404 per
+ * page load rather than one per navigation, which is what the owner asked of
+ * this gateway. A reload is the only thing that asks again.
+ *
+ * **Why the fact lives here and not in the query's own state.** Anything the
+ * cache holds is forgotten twice over in this app: `App.tsx` calls
+ * `queryClient.clear()` on every sign-out and every expired session, and a
+ * query nobody is observing is garbage-collected after five minutes. Both are
+ * right for answers about a *session*, and this is not one — it is a fact about
+ * the gateway, the same for whoever signs in next on this page. Keyed by the
+ * client because `main.tsx` makes exactly one per page load, so the entry lives
+ * exactly as long as the page; and a test that renders with a fresh client
+ * inherits nothing from the case before it, where a module-level flag would.
+ *
+ * **Why `enabled`, and as a function.** react-query 5.101 accepts a function
+ * for `enabled`, `staleTime` and `retryOnMount`, and only `enabled` covers every
+ * path that would run the read again. A failed query with no data counts as
+ * stale before `staleTime` is even looked at, so neither a long stale time nor
+ * `'static'` stops the next mount; `retryOnMount: false` stops the mount and
+ * nothing else. A query whose observers are all disabled is skipped by
+ * `invalidateQueries` and `resetQueries` as well, and by a refetch on reconnect.
+ * As a function it is read at the moment react-query decides, not at the last
+ * render — so a second copy of this menu that mounts in the same tick as the
+ * 404 lands already sees it. A sentinel "undeployed" answer with a stale time
+ * that never expires was the other candidate: it stops every refetch too, but
+ * it is cache state, and dies with the cache on the next sign-out.
+ *
+ * Only this signature goes in. Any other failed read stays out and recovers on
+ * the next mount, the way react-query's `retryOnMount` default has it.
+ */
+const clientsWithoutAvatarRoutes = new WeakSet<QueryClient>();
 
 interface PhotoNotice {
   tone: "info" | "error";
   text: string;
+  /**
+   * The failure behind an error sentence, kept for its request id (§5.6). The
+   * sentence already quotes whatever the server said, so the id is the one
+   * thing the error still has to add.
+   */
+  error?: unknown;
+}
+
+/**
+ * The two cached shapes that draw somebody's face on a member row, as their
+ * screens hold them: the board's `["members", projectId]` is the list itself,
+ * and the project cards' `["project-summaries", projectId]` is
+ * `ProjectsScreen`'s summary, whose `members` is `null` when that half of the
+ * card did not load. Only `members` is read here; the rest of a summary is
+ * spread through untouched.
+ */
+type MemberFaceHolder = ProjectMember[] | { members: ProjectMember[] | null };
+
+const MEMBER_FACE_FAMILIES: readonly QueryKey[] = [["members"], ["project-summaries"]];
+
+/** One cached list the reader's row was rewritten in, and the face it carried before. */
+interface OwnFaceWrite {
+  queryKey: QueryKey;
+  avatarUrl: string | null | undefined;
 }
 
 export function UserProfileMenu({ user, loading = false, loggingOut = false, onLogout }: UserProfileMenuProps) {
@@ -82,7 +151,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   const popoverId = useId();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const [step, setStep] = useState<AvatarUploadStep | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState<PhotoNotice | null>(null);
   // The entry exists only for an account the server called GLOBAL_ADMIN. A
   // gateway that states no role counts as not an admin, which is lossy in the
@@ -98,17 +167,21 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   /**
    * **The one avatar in this product that costs a request**, and it is spent
    * here because there is nowhere cheaper: `GET /users/me` carries no avatar
-   * (backend PR #150 puts one nowhere near the profile read), so the reader's
-   * own face cannot ride on a list the way every other person's does — a member
-   * row carries theirs inline.
+   * (backend PR #150 put it on routes of its own), so the reader's own face
+   * cannot ride on a list the way every other person's does — a member row
+   * carries theirs inline.
    *
-   * Not one request per signed-in session: `staleTime` in src/main.tsx is 20
-   * seconds, and neither `refetchOnMount` nor `refetchOnWindowFocus` is
-   * overridden here, so both react-query defaults — refetch when stale — apply.
-   * On the stand that makes it one request per navigation and per window
-   * refocus past 20 seconds. The key holds no screen in it, though, so the
-   * board's copy of this menu and the top bar's are the same query and never
-   * pay for that twice on one screen.
+   * A successful answer is trusted for `OWN_AVATAR_STALE_MS` and never re-read
+   * on a window focus, because a re-read re-signs the link and re-downloads the
+   * picture. `refetchOnMount` keeps its default, so a mount past ten minutes —
+   * the next screen after a long stay — does read, and draws a link with its
+   * lifetime ahead of it. A *failed* read holds no answer to trust, and
+   * react-query asks again on the next mount whatever the stale time says
+   * (`retryOnMount`, left at its default) — which is how an ordinary failure
+   * recovers. The undeployed route is the one failure that does not get asked
+   * again: see `clientsWithoutAvatarRoutes`. The key holds no screen in it, so
+   * the board's copy of this menu and the top bar's are the same query and
+   * never pay for any of that twice on one screen.
    *
    * Not retried for the two answers that are already final. "Missing or not
    * yours" is an answer, and so is the static-resource 404 the four avatar
@@ -117,8 +190,19 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    */
   const avatarQuery = useQuery({
     queryKey: avatarKey,
-    enabled: Boolean(user?.id),
-    queryFn: () => taskaApi.getUserAvatarUrl(user!.id),
+    enabled: () => Boolean(user?.id) && !clientsWithoutAvatarRoutes.has(queryClient),
+    queryFn: async () => {
+      try {
+        return await taskaApi.getUserAvatarUrl(user!.id);
+      } catch (error) {
+        // Recorded before the query settles into its error, so every decision
+        // react-query makes from here on already reads it.
+        if (isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)) clientsWithoutAvatarRoutes.add(queryClient);
+        throw error;
+      }
+    },
+    staleTime: OWN_AVATAR_STALE_MS,
+    refetchOnWindowFocus: false,
     retry: (failureCount: number, error: Error) =>
       !isMissingOrForbidden(error) &&
       !isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE) &&
@@ -133,38 +217,37 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    * still not collapsed here.
    */
   const person = user ? { ...user, avatarUrl: avatarQuery.data } : undefined;
-  // Only a successful read may say there is a photo to remove (§5.6). A read
-  // that failed — the undeployed gateway included — offers no Remove rather
-  // than an ineffective one.
-  const hasPhoto = typeof avatarQuery.data === "string" && avatarQuery.data.length > 0;
-  const busy = step !== null;
-
   /**
-   * Every screen holding a member list is holding this person's avatar too —
-   * `ProjectMemberDetailsDto` carries it inline — so a photo that changed here
-   * has changed there. Both holders are named because they are two keys, not
-   * one: the board's `["members", projectId]` and the project cards'
-   * `["project-summaries", projectId]`, which carries the avatar stack. Missing
-   * the second leaves the reader looking at their old initials on the very
-   * screen they uploaded from.
+   * Three different answers from one read, and the band draws each its own way.
    *
-   * The cost is bounded and worth stating: `invalidateQueries` refetches only
-   * *active* queries, so this is one member read on the board and one summary
-   * read per visible card on `/projects` — paid once, on an action the reader
-   * took, rather than on every render.
+   * The undeployed route is not a failure of anything: the feature is not on
+   * this gateway, and this read has already said so — so the band says that and
+   * offers nothing, rather than an "Upload a photo" whose every use ends in a
+   * refusal after the file picker. Any other failed read *is* a failure, and
+   * says so with its request id. And only a read that succeeded may say there
+   * is a photo to remove (§5.6): a failed one offers no Remove rather than an
+   * ineffective one — including a background re-read that failed while an older
+   * answer is still in the cache.
+   *
+   * The undeployed answer is read from `clientsWithoutAvatarRoutes` rather than
+   * from `avatarQuery.error`, because it has to outlive that error: after a
+   * sign-out clears the cache, the next menu on this page has no error to look
+   * at and makes no read to get one, and must still draw the same band.
    */
-  const refreshMemberFaces = () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["members"] }),
-      queryClient.invalidateQueries({ queryKey: ["project-summaries"] }),
-    ]);
+  const readUndeployed = clientsWithoutAvatarRoutes.has(queryClient);
+  const readFailed = avatarQuery.isError && !readUndeployed;
+  const hasPhoto = !avatarQuery.isError && typeof avatarQuery.data === "string" && avatarQuery.data.length > 0;
 
   /**
    * Optimistic with rollback, unlike the upload below it, and the asymmetry is
    * the same one the attachments panel draws: a delete is a single call whose
    * outcome the client can predict, so the circle goes back to initials at
-   * once. An upload is three legs, one of them to a server that is not Taska,
+   * once — in this menu and on every member row the cache holds for this
+   * person. An upload is three legs, one of them to a server that is not Taska,
    * and its outcome is genuinely unknown until it lands.
+   *
+   * Nothing is read again afterwards, on either outcome. Success leaves exactly
+   * what was written, and a refusal puts back exactly what was there.
    */
   const remove = useMutation({
     mutationFn: () => taskaApi.deleteMyAvatar(),
@@ -173,20 +256,21 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
       await queryClient.cancelQueries({ queryKey: avatarKey });
       const previous = queryClient.getQueryData<string | null>(avatarKey);
       queryClient.setQueryData<string | null>(avatarKey, null);
-      return { previous };
+      const faces = user ? await writeOwnFace(queryClient, user.id, null) : [];
+      return { previous, faces };
     },
     onError: (error, _variables, context) => {
       queryClient.setQueryData(avatarKey, context?.previous);
-      setNotice({ tone: "error", text: writeFailureText(error, "removed") });
+      if (user && context) restoreOwnFaces(queryClient, user.id, context.faces);
+      setNotice({ tone: "error", text: writeFailureText(error, "removed"), error });
     },
     // Nothing is announced on success. The contract calls this idempotent —
     // 204 whether or not there was an avatar — so "your photo was removed" is a
     // sentence this client cannot actually stand behind, and the circle going
     // back to initials is the report.
-    onSettled: async () => {
-      await Promise.all([queryClient.invalidateQueries({ queryKey: avatarKey }), refreshMemberFaces()]);
-    },
   });
+
+  const writing = uploading || remove.isPending;
 
   /**
    * A write in this band can blur the button that just started it, for two
@@ -196,34 +280,33 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    * without a fix the next Tab would restart at the top of the document,
    * behind the still-open dialog, rather than continuing inside the menu. A
    * plain upload never unmounts anything, but the button that started it is
-   * the one holding focus when `busy` becomes `true`: `disabled` arrives on
-   * that same render, and Chromium blurs a focused element the instant
+   * the one holding focus when `uploading` becomes `true`: `disabled` arrives
+   * on that same render, and Chromium blurs a focused element the instant
    * `disabled` appears on it — the behaviour DESIGN.md §4.21 is written
    * against. Both paths end at `<body>`, and one mechanism closes both,
    * because the upload button is the one control in this band that is
-   * mounted on every path.
+   * mounted on every path that can write.
    *
-   * So this is keyed on the *write* settling — `busy` or `remove.isPending`
-   * going from `true` to `false` — rather than on `hasPhoto`, which moves
-   * only on the remove path and never on the upload one: a first upload
-   * takes it `false → true`, a replace leaves it at `true` throughout, and
-   * neither is the `true → false` a `hasPhoto`-keyed effect looks for.
-   * `.focus()` on a still-disabled button is a no-op, so this still waits for
-   * both flags to clear before moving focus, which is the same render the
-   * button re-enables on. `wasWriteInFlight` is updated on every run
-   * regardless of `open`, so a write that settles while the menu is closed
-   * does not steal focus back on reopening it — by the time `open` flips
-   * back to `true` the ref has already caught up to the settled state, and
-   * there is no `true → false` transition left to see.
+   * So this is keyed on the *write* settling — `writing` going from `true` to
+   * `false` — rather than on `hasPhoto`, which moves only on the remove path
+   * and never on the upload one: a first upload takes it `false → true`, a
+   * replace leaves it at `true` throughout, and neither is the `true → false`
+   * a `hasPhoto`-keyed effect looks for. `.focus()` on a still-disabled button
+   * is a no-op, so this still waits for both writes to clear before moving
+   * focus, which is the same render the button re-enables on.
+   * `wasWriteInFlight` is updated on every run regardless of `open`, so a
+   * write that settles while the menu is closed does not steal focus back on
+   * reopening it — by the time `open` flips back to `true` the ref has already
+   * caught up to the settled state, and there is no `true → false` transition
+   * left to see.
    */
-  const wasWriteInFlight = useRef(busy || remove.isPending);
+  const wasWriteInFlight = useRef(writing);
   useEffect(() => {
-    const inFlight = busy || remove.isPending;
-    if (open && wasWriteInFlight.current && !inFlight) {
+    if (open && wasWriteInFlight.current && !writing) {
       uploadButtonRef.current?.focus();
     }
-    wasWriteInFlight.current = inFlight;
-  }, [busy, remove.isPending, open]);
+    wasWriteInFlight.current = writing;
+  }, [writing, open]);
 
   /**
    * The whole upload, written out rather than wrapped in a mutation, because
@@ -237,7 +320,9 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    * middle leg goes to a server this app does not control, so a face shown
    * before the confirm would be a claim about a bucket nobody has written to
    * yet. The attachments panel makes the same call for the same choreography.
-   * What the reader gets instead is the step, on the button they pressed.
+   * What the reader gets instead is one word of progress on the line under the
+   * controls, while the button they pressed keeps its own label — three labels
+   * in turn changed its width, and moved "Remove photo" beside it each time.
    */
   const runUpload = async (file: File) => {
     setNotice(null);
@@ -253,51 +338,69 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
       return;
     }
 
-    setStep("signing");
+    setUploading(true);
     let ticket;
     try {
       // Leg 1, and the moment the fifteen-minute clock starts — which is why it
       // is asked for when the file is chosen rather than when the menu opens.
       ticket = await taskaApi.createAvatarUploadUrl(candidate);
     } catch (error) {
-      setStep(null);
-      setNotice({ tone: "error", text: writeFailureText(error, "saved") });
+      setUploading(false);
+      setNotice({ tone: "error", text: writeFailureText(error, "saved"), error });
       return;
     }
 
-    setStep("uploading");
     try {
       // Leg 2. `candidate.contentType` and not `file.type` re-read — the same
       // value today, but this is the one place where sending something even
       // slightly different from what was signed is a 403 nobody can diagnose.
       await taskaApi.putAvatarBytes(ticket.uploadUrl, file, candidate.contentType);
     } catch (error) {
-      setStep(null);
-      setNotice({ tone: "error", text: uploadFailureText(error) });
+      setUploading(false);
+      setNotice({ tone: "error", text: uploadFailureText(error), error });
       return;
     }
 
-    setStep("confirming");
+    let saved;
     try {
-      // Leg 3. Safe to send again after a failure, unlike the attachment
-      // confirm: there is one avatar per user and a repeat replaces rather than
-      // inserting a second row. Nothing retries automatically anyway — the
-      // person choosing the file again is the retry.
-      const saved = await taskaApi.confirmAvatarUpload({
+      // Leg 3, sent once per ticket and never again with the same key — not
+      // even after it fails. The server does not check that a key was minted
+      // for this reader, and a second confirm of the key the saved row already
+      // holds deletes that very object before presigning a link to it (see
+      // `confirmAvatarUpload` on TaskaApi). Nothing retries here: the person
+      // choosing the file again is the retry, and that mints a new ticket and a
+      // new key.
+      saved = await taskaApi.confirmAvatarUpload({
         objectKey: ticket.objectKey,
         fileName: file.name,
         contentType: candidate.contentType,
       });
-      setStep(null);
-      // The confirm answers with the link, so the new face is on screen without
-      // a follow-up read. The invalidation behind it is for the other holders
-      // of this query, not for this one.
-      queryClient.setQueryData<string | null>(avatarKey, saved.downloadUrl);
-      await Promise.all([queryClient.invalidateQueries({ queryKey: avatarKey }), refreshMemberFaces()]);
     } catch (error) {
-      setStep(null);
-      setNotice({ tone: "error", text: writeFailureText(error, "saved") });
+      setUploading(false);
+      setNotice({ tone: "error", text: writeFailureText(error, "saved"), error });
+      return;
     }
+
+    if (saved.downloadUrl) {
+      // The confirm answers with the link, so the new face goes on screen
+      // without a follow-up read — in this menu and on every member row the
+      // cache already holds for this person.
+      await queryClient.cancelQueries({ queryKey: avatarKey });
+      queryClient.setQueryData<string | null>(avatarKey, saved.downloadUrl);
+      if (user) await writeOwnFace(queryClient, user.id, saved.downloadUrl);
+    } else {
+      // An answer that carried no link is the one case that costs a read, and
+      // it is a read of this avatar alone: whatever it says is then written to
+      // the member rows the same way a link from the confirm would have been. A
+      // re-read that fails leaves them as they were, and the band says the photo
+      // could not be loaded.
+      await queryClient.invalidateQueries({ queryKey: avatarKey });
+      const reread = queryClient.getQueryState<string | null>(avatarKey);
+      if (user && reread?.status === "success" && reread.data !== undefined) {
+        await writeOwnFace(queryClient, user.id, reread.data);
+      }
+    }
+    setUploading(false);
   };
 
   return (
@@ -363,70 +466,103 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                   still the authority — all four routes are authenticated — but
                   there is no permission here to mirror in the UI. */}
               <div className="user-profile-photo">
-                {/* Driven by the button beside it rather than styled directly:
-                    `::file-selector-button` keeps the browser's own "No file
-                    chosen" text, and a visually hidden but focusable input puts
-                    a tab stop where nothing is visible. `hidden` takes it out of
-                    the tab order entirely. */}
-                <input
-                  accept={AVATAR_ACCEPT_ATTRIBUTE}
-                  className="avatar-input"
-                  hidden
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    // Cleared straight away so choosing the same file twice —
-                    // after a refusal, which is exactly when someone would —
-                    // still fires a change event.
-                    event.target.value = "";
-                    if (file) void runUpload(file);
-                  }}
-                  ref={fileInput}
-                  type="file"
-                />
-                <div className="user-profile-photo-actions">
-                  <button
-                    className="secondary-button compact-button"
-                    disabled={busy || remove.isPending}
-                    onClick={() => fileInput.current?.click()}
-                    ref={uploadButtonRef}
-                    type="button"
-                  >
-                    <ImageUp aria-hidden="true" size={13} />
-                    {step ? stepLabels[step] : hasPhoto ? "Replace photo" : "Upload a photo"}
-                  </button>
-                  {/* No confirmation dialog, deliberately: this is undone by
-                      uploading again, which is not what the admin section's
-                      confirmations are for. */}
-                  {hasPhoto ? (
-                    <button
-                      className="link-button user-profile-photo-remove"
-                      disabled={busy || remove.isPending}
-                      onClick={() => remove.mutate()}
-                      type="button"
+                {readUndeployed ? (
+                  // The band and its divider stay, so the menu keeps its shape
+                  // on every gateway; what goes is every control whose only
+                  // possible answer is the refusal this read already received.
+                  // The hint's own quiet line and not the error tint: nothing
+                  // failed that the reader did or can fix.
+                  <p className="user-profile-photo-hint">Profile photos are not on this gateway yet.</p>
+                ) : (
+                  <>
+                    {/* Driven by the button beside it rather than styled
+                        directly: `::file-selector-button` keeps the browser's
+                        own "No file chosen" text, and a visually hidden but
+                        focusable input puts a tab stop where nothing is
+                        visible. `hidden` takes it out of the tab order
+                        entirely. */}
+                    <input
+                      accept={AVATAR_ACCEPT_ATTRIBUTE}
+                      className="avatar-input"
+                      hidden
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        // Cleared straight away so choosing the same file twice
+                        // — after a refusal, which is exactly when someone
+                        // would — still fires a change event.
+                        event.target.value = "";
+                        if (file) void runUpload(file);
+                      }}
+                      ref={fileInput}
+                      type="file"
+                    />
+                    <div className="user-profile-photo-actions">
+                      <button
+                        className="secondary-button compact-button"
+                        disabled={writing}
+                        onClick={() => fileInput.current?.click()}
+                        ref={uploadButtonRef}
+                        type="button"
+                      >
+                        <ImageUp aria-hidden="true" size={13} />
+                        {hasPhoto ? "Replace photo" : "Upload a photo"}
+                      </button>
+                      {/* No confirmation dialog, deliberately: this is undone by
+                          uploading again, which is not what the admin section's
+                          confirmations are for. */}
+                      {hasPhoto ? (
+                        <button
+                          className="user-profile-photo-remove"
+                          disabled={writing}
+                          onClick={() => remove.mutate()}
+                          type="button"
+                        >
+                          Remove photo
+                        </button>
+                      ) : null}
+                    </div>
+                    {/* Said before a file is chosen rather than after it is
+                        refused, and it states the ceiling the server actually
+                        enforces — 2 MB, not the 5 MB its own schema declares
+                        (src/api/avatars.ts). While an upload is in flight the
+                        same line carries its progress instead: one line, so
+                        nothing below it moves either. */}
+                    <p className="user-profile-photo-hint">
+                      {uploading
+                        ? "Uploading…"
+                        : `Up to ${formatFileSize(AVATAR_MAX_SIZE_BYTES)}. ${AVATAR_ACCEPTED_SUMMARY}.`}
+                    </p>
+                    {/* A state of the menu rather than an answer to something
+                        the reader just did, so not a live region: it is usually
+                        already true when the popover opens, and a region that
+                        mounts together with its text is the shape §7 records as
+                        depending on screen-reader timing. */}
+                    {readFailed ? (
+                      <div className="user-profile-photo-note is-error">
+                        <p className="user-profile-photo-note-sentence">{readFailureText(avatarQuery.error)}</p>
+                        <PhotoNoteDetail error={avatarQuery.error} />
+                      </div>
+                    ) : null}
+                    {/* One live region that stays mounted and changes its text,
+                        rather than one that appears together with what it has
+                        to announce — §7 records the second shape as depending
+                        on screen-reader timing. Polite, not assertive: every
+                        sentence here follows something the reader just did.
+                        The region is the sentence alone, and the request id
+                        line beside it is outside it, which is the watchers
+                        box's split (§4.21) for its reason: a polite region
+                        holding the id would read a uuid aloud. Empty, the box
+                        carries no class and draws nothing. */}
+                    <div
+                      className={notice ? `user-profile-photo-note${notice.tone === "error" ? " is-error" : ""}` : ""}
                     >
-                      Remove photo
-                    </button>
-                  ) : null}
-                </div>
-                {/* Said before a file is chosen rather than after it is refused,
-                    and it states the ceiling the server actually enforces —
-                    2 MB, not the 5 MB its own schema declares
-                    (src/api/avatars.ts). */}
-                <p className="user-profile-photo-hint">
-                  Up to {formatFileSize(AVATAR_MAX_SIZE_BYTES)}. {AVATAR_ACCEPTED_SUMMARY}.
-                </p>
-                {/* One live region that stays mounted and changes its text,
-                    rather than one that appears together with what it has to
-                    announce — §7 records the second shape as depending on
-                    screen-reader timing. Polite, not assertive: every sentence
-                    here follows something the reader just did. Empty, it
-                    carries no class and takes no space. */}
-                <div
-                  aria-live="polite"
-                  className={notice ? `user-profile-photo-note${notice.tone === "error" ? " is-error" : ""}` : ""}
-                >
-                  {notice?.text ?? ""}
-                </div>
+                      <p aria-live="polite" className="user-profile-photo-note-sentence">
+                        {notice?.text ?? ""}
+                      </p>
+                      <PhotoNoteDetail error={notice?.error} />
+                    </div>
+                  </>
+                )}
               </div>
             </>
           ) : (
@@ -483,6 +619,106 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   );
 }
 
+/** The members `holder` carries, or `null` for a list that is not there. */
+function membersIn(holder: MemberFaceHolder | undefined): ProjectMember[] | null {
+  if (!holder) return null;
+  return Array.isArray(holder) ? holder : holder.members;
+}
+
+/**
+ * `holder` with the row for `userId` showing `avatarUrl` — or `undefined` when
+ * nothing in it would change, which `setQueryData` reads as "leave this query
+ * alone". A list the reader is not on, a summary whose member half failed, and
+ * a row that already shows this face are therefore not touched at all, rather
+ * than rewritten with themselves and marked fresh.
+ */
+function withOwnFace(
+  holder: MemberFaceHolder | undefined,
+  userId: string,
+  avatarUrl: string | null | undefined,
+): MemberFaceHolder | undefined {
+  const members = membersIn(holder);
+  if (!holder || !members) return undefined;
+  let changed = false;
+  const next = members.map((member) => {
+    if (member.userId !== userId || !member.user || member.user.avatarUrl === avatarUrl) return member;
+    changed = true;
+    return { ...member, user: { ...member.user, avatarUrl } };
+  });
+  if (!changed) return undefined;
+  return Array.isArray(holder) ? next : { ...holder, members: next };
+}
+
+/**
+ * Writes `avatarUrl` onto the reader's own row in every cached member list, and
+ * answers with what each of those rows carried before, so a refusal can put it
+ * back.
+ *
+ * **A cache write and not an invalidation**, and the cost is the reason.
+ * Invalidating `["project-summaries"]` on `/projects` re-runs `listIssues` *and*
+ * `listMembers` for every project on the page — 2N requests, 3N in hybrid — to
+ * change one face on a write the reader made themselves. Everything the rows
+ * need is already in hand: the confirm's `downloadUrl` for an upload, `null`
+ * for a removal.
+ *
+ * Reads already in flight for these lists are cancelled first, so one that left
+ * before the write cannot land after it and draw the old face — but only for a
+ * list that already holds data. Cancelling a *first* read reverts it to nothing
+ * and leaves it idle, which would strand a board still loading its members; a
+ * list with no data has no row to rewrite anyway, and its own answer is the one
+ * it should draw.
+ */
+async function writeOwnFace(
+  queryClient: QueryClient,
+  userId: string,
+  avatarUrl: string | null,
+): Promise<OwnFaceWrite[]> {
+  const before: OwnFaceWrite[] = [];
+  for (const family of MEMBER_FACE_FAMILIES) {
+    await queryClient.cancelQueries({ queryKey: family, predicate: (query) => query.state.data !== undefined });
+    for (const [queryKey, holder] of queryClient.getQueriesData<MemberFaceHolder>({ queryKey: family })) {
+      const row = membersIn(holder)?.find((member) => member.userId === userId && member.user);
+      if (row?.user && row.user.avatarUrl !== avatarUrl) before.push({ queryKey, avatarUrl: row.user.avatarUrl });
+    }
+    queryClient.setQueriesData<MemberFaceHolder>({ queryKey: family }, (holder) =>
+      withOwnFace(holder, userId, avatarUrl),
+    );
+  }
+  return before;
+}
+
+/**
+ * Puts back what `writeOwnFace` replaced: the reader's face in each list it
+ * changed, and nothing else — so a list that has been refreshed since keeps
+ * everything its newer answer brought.
+ */
+function restoreOwnFaces(queryClient: QueryClient, userId: string, before: OwnFaceWrite[]) {
+  for (const { queryKey, avatarUrl } of before) {
+    queryClient.setQueryData<MemberFaceHolder>(queryKey, (holder) => withOwnFace(holder, userId, avatarUrl));
+  }
+}
+
+/**
+ * The request id under a photo sentence (§5.6), on a line of its own and
+ * outside the live region, as `WatcherNoteDetail` sets it on the board.
+ *
+ * The id alone, never the gateway's words — the one place this parts from that
+ * detail line. Every sentence in this band already quotes the server's message,
+ * so a second copy here would be an echo. And nothing at all for a failure that
+ * carries no id: a store that refused the PUT, the mock, a refusal decided
+ * before any request was sent. An empty "Request ID:" promises something to
+ * copy and has nothing.
+ */
+function PhotoNoteDetail({ error }: { error: unknown }) {
+  const { requestId } = apiErrorFacts(error);
+  if (!requestId) return null;
+  return (
+    <p className="user-profile-photo-note-detail">
+      <RequestId value={requestId} />
+    </p>
+  );
+}
+
 /**
  * Why this file cannot be a photo, in the reader's terms rather than the
  * server's. The API layer throws `S3StorageClient.validateFileParams`'s own
@@ -505,10 +741,29 @@ function refusalText(kind: AvatarRefusalKind, file: File) {
 }
 
 /**
+ * What to say when the reader's own avatar could not be read, for any reason
+ * but the undeployed route — which is not a failure and draws no sentence of
+ * this kind (the band says the feature is not on the gateway instead).
+ *
+ * Once the routes deploy, the likeliest cause is a 404 from the download
+ * presign, which HEADs the object first: a row pointing at an object that is
+ * gone, which is what a same-key re-confirm leaves behind (see
+ * `confirmAvatarUpload` on TaskaApi). An upload replaces that row, which is why
+ * Upload stays on offer beside this sentence and Remove does not.
+ */
+function readFailureText(error: unknown) {
+  const message = apiErrorFacts(error).message;
+  return message ? `Your photo could not be loaded. ${message}` : "Your photo could not be loaded.";
+}
+
+/**
  * What to say when the **gateway** refused — leg 1, leg 3, or the delete.
  *
- * The undeployed arm is the one every reader meets today: all four avatar
- * routes answer Spring's static-resource 404, so without this the menu would
+ * The undeployed arm is the fallback now rather than the first thing a reader
+ * meets: when this menu's own avatar read has already answered with Spring's
+ * static-resource 404, the band offers no control that could get here. It is
+ * still reachable — a file chosen while that read is in flight, or a gateway
+ * that deploys the read before the writes — and without it the menu would
  * print "No static resource /api/v1/users/me/avatar/upload-url" at somebody who
  * did nothing wrong. `EditProjectModal` reads the same predicate for the same
  * reason (TAS-148).

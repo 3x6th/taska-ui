@@ -31,7 +31,12 @@ import {
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
 import { attachmentRefusal, attachmentRefusalKind } from "../attachments";
-import { avatarRefusal, avatarRefusalKind } from "../avatars";
+import {
+  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
+  AVATAR_DECLARED_MAX_SIZE_BYTES,
+  avatarRefusal,
+  avatarRefusalKind,
+} from "../avatars";
 import {
   OBJECT_STORE_REJECTED_CODE,
   OBJECT_STORE_UNREACHABLE_CODE,
@@ -531,8 +536,9 @@ interface RestAttachmentDownloadUrl {
 
 /**
  * The three avatar response bodies — `CreateAvatarUploadUrlResponseDto`,
- * `AvatarResponseDto` and `GetAvatarDownloadUrlResponseDto`, backend PR #150 at
- * head `12e909d42dcc`.
+ * `AvatarResponseDto` and `GetAvatarDownloadUrlResponseDto`, in
+ * `docs/contract/openapi.yml` since backend PR #150 merged at `develop`
+ * `368ae77355bd`.
  *
  * Every field optional, for the reason the attachment bodies above give: none
  * of these schemas declares a `required` block, and none of the four routes has
@@ -1320,11 +1326,12 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * Leg 1 of the avatar upload — `POST /users/me/avatar/upload-url`, backend PR
-   * #150 at head `12e909d42dcc`, **open and undeployed**: probed 2026-09-12
-   * without a token, this path and the three below it answer Spring's
-   * static-resource 404 while `GET /users/me` answered 401 in the same run.
-   * That is the first arm of `isUndeployedRoute`, which is what
-   * `UserProfileMenu` reads before it prints a refusal.
+   * #150, **merged** at `develop` `368ae77355bd` and **not deployed**: probed
+   * 2026-09-12 without a token, this path and the three below it answered
+   * Spring's static-resource 404 while `GET /users/me` answered 401 in the same
+   * run, and the routes still answered it on 2026-09-14 at 11:14 UTC, after the
+   * merge. That is the first arm of `isUndeployedRoute`, which is what
+   * `UserProfileMenu` reads before it offers a control or prints a refusal.
    *
    * Refused before the request by `refuseAvatar` below, at the ceiling the
    * server actually enforces rather than the one the schema declares. The
@@ -1361,10 +1368,13 @@ export class RestTaskaApi implements TaskaApi {
    * avatar and its `downloadUrl`, so a freshly uploaded face needs no follow-up
    * read.
    *
-   * No `Idempotency-Key` and no retry wrapper, for the opposite reason to the
-   * attachment confirm's: there is one avatar per user and a repeat replaces
-   * rather than inserting a second row. Nothing here is unsafe to send twice —
-   * which is a fact about the route, not a licence this class exercises.
+   * No `Idempotency-Key` and no retry wrapper, and the reason is not the
+   * attachment confirm's duplicate row. A repeat here is worse: the server does
+   * not check that the key was minted for the caller, and a second confirm of
+   * the key the saved row already holds deletes that very object before
+   * presigning a link to it, answers 404, and leaves a row that every later
+   * `GET /users/{userId}/avatar` answers 404 for. So one key is confirmed once,
+   * and a retry starts again at leg 1. See `confirmAvatarUpload` on TaskaApi.
    */
   async confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar> {
     const response = await this.request<RestUserAvatar>("/users/me/avatar/confirm", {
@@ -2375,33 +2385,52 @@ function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
 }
 
 /**
- * The same refusal for an avatar, in the server's own words, before a request
- * is spent — and the one place where this client deliberately disagrees with
- * the contract it was written against.
+ * The same refusal for an avatar, as the server would answer it, before a
+ * request is spent — and the one place where this client deliberately
+ * disagrees with the contract it was written against.
  *
- * **The declared ceiling is 5 MB and the enforced one is 2 MB.**
- * `CreateAvatarUploadUrlRequestDto.sizeBytes` is declared
- * `maximum: 5242880`, so a 3 MB image passes the gateway's bean validation and
- * is then refused a layer deeper by `S3StorageClient.validateFileParams`,
- * reading auth-service's `storage.max-file-size-bytes: 2097152`. Trusting the
- * schema would mean offering someone a file the product will not take, and
- * paying a round trip plus the bytes to find out. So the enforced number is the
- * one enforced here; both are written down in `src/api/avatars.ts`, and the
- * disagreement is raised on TAS-129 while the PR is open.
+ * **The declared ceiling is 5 MB and the enforced one is 2 MB**, and a size
+ * over the enforced one is refused in one of two places depending on how far
+ * over it is:
  *
- * The status and code split is `refuseAttachment`'s, for the same reason and
- * from the same mapper: `RestErrorMapper` has no `OUT_OF_RANGE` row, so the
- * ceiling falls to its `INTERNAL_SERVER_ERROR` default on **500** while the
- * other two arms are `INVALID_ARGUMENT` on 400. Reproducing an answer means
- * reproducing the one that is served.
+ * - **over 2 MB and up to 5 MB** satisfies `CreateAvatarUploadUrlRequestDto`'s
+ *   `maximum: 5242880`, passes the gateway's bean validation, and is refused a
+ *   layer deeper by `S3StorageClient.validateFileParams`, reading
+ *   auth-service's `storage.max-file-size-bytes: 2097152`. That raises
+ *   `OUT_OF_RANGE`, and `RestErrorMapper` has no row for it — the attachment
+ *   ceiling's oddity, from the same mapper — so the status falls to its
+ *   `INTERNAL_SERVER_ERROR` default: **500**.
+ * - **over 5 MB** fails the generated DTO's `@Max` as the gateway reads the
+ *   body, and `GatewayValidationExceptionHandler` answers **400**
+ *   `INVALID_ARGUMENT` with its fixed "Invalid request parameters". The token
+ *   has been checked by then — that is a call to auth-service of its own — but
+ *   the avatar call never leaves the gateway.
  *
- * One caveat worth stating rather than implying: this is what the *deployed*
- * gateway would answer for an over-size avatar once PR #150 ships. Nothing has
- * measured it, because none of the four routes is deployed — it is read off the
- * same mapper that produces the attachment answer, which *has* been read at the
- * source, and it stays a reading until the routes exist.
+ * A disallowed type is `validateFileParams`'s other arm, `INVALID_ARGUMENT` on
+ * 400 in its own words. An empty file is bean-validated too (`minimum: 1`),
+ * with the same code and status as that arm; this throws `validateFileParams`'s
+ * sentence for it rather than the gateway's, as `refuseAttachment` does, and
+ * nothing reads the difference — the menu refuses an empty file in its own
+ * words before this is reached.
+ *
+ * Trusting the schema would mean offering someone a file the product will not
+ * take, and paying a round trip plus the bytes to find out. So the enforced
+ * number is the one enforced here; both are written down in
+ * `src/api/avatars.ts`, and the disagreement is recorded in
+ * docs/ai/API-DIVERGENCE.md as "The avatar schema declares 5 MB and the service
+ * enforces 2 MB", which names what removes it. Reproducing an answer means
+ * reproducing the one that is served, band by band.
+ *
+ * One caveat worth stating rather than implying: this is what the gateway would
+ * answer once PR #150 deploys. Nothing has measured it, because none of the
+ * four routes is deployed — it is read off `develop` at `368ae77355bd`, and it
+ * stays a reading until the routes exist.
  */
 function refuseAvatar(input: CreateAvatarUploadUrlInput): void {
+  // Bean validation, which answers before the avatar call leaves the gateway.
+  if (input.sizeBytes > AVATAR_DECLARED_MAX_SIZE_BYTES) {
+    throw new ApiError(AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE, "INVALID_ARGUMENT", 400);
+  }
   const refusal = avatarRefusal(input);
   if (!refusal) return;
   // Split exactly as `MockTaskaStore.createAvatarUploadUrl` splits it, so the

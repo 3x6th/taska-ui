@@ -919,28 +919,33 @@ export interface TaskaApi {
 
   /**
    * The four avatar routes, plus the one leg of the upload that is not a route
-   * at all — backend PR #150 (TAS-129), pinned at
-   * `docs/contract/pending/pr-150-TAS-129.yml`, **open and undeployed**.
+   * at all — backend PR #150 (TAS-129), **merged** into `develop` on 2026-09-14
+   * at `368ae77355bd` and in `docs/contract/openapi.yml` since, and **not
+   * deployed**.
    *
-   * All four answer Spring's static-resource **404** today (probed 2026-09-12
-   * without a token, with `GET /users/me` answering 401 in the same run as the
-   * control), which is the signature `isUndeployedRoute` in src/api/errors.ts
-   * matches on its first arm. So a caller that shows a refusal must read that
-   * predicate before printing a raw failure — `UserProfileMenu` does, the same
-   * way `EditProjectModal` does for the project PATCH.
+   * All four answered Spring's static-resource **404** when probed on
+   * 2026-09-12 without a token, with `GET /users/me` answering 401 in the same
+   * run as the control, and the routes still answered it on 2026-09-14 at 11:14
+   * UTC, after the merge. That is the signature `isUndeployedRoute` in
+   * src/api/errors.ts matches on its first arm, so a caller must read that
+   * predicate before printing a raw failure. `UserProfileMenu` reads it twice:
+   * on its own avatar read, where it takes the photo controls away and does not
+   * ask again until the page reloads, and on each write, the way
+   * `EditProjectModal` does for the project PATCH.
    *
-   * **No role gates any of these.** Three of the four are scoped to `me` and
-   * change nothing but the caller's own row, and the read is authenticated and
-   * nothing more. There is therefore no `ADMIN`/`MEMBER`/`VIEWER` question here
-   * at all — a `VIEWER` of every project in the product still owns their own
-   * face — and nothing in the UI hides these controls from anybody.
+   * **No role gates any of these.** Three of the four are scoped to `me`, and
+   * the read is authenticated and nothing more. There is therefore no
+   * `ADMIN`/`MEMBER`/`VIEWER` question here at all — a `VIEWER` of every project
+   * in the product still owns their own face — and nothing in the UI hides
+   * these controls from anybody.
    *
    * Where the choreography differs from attachments, and it is worth stating
-   * because the two look interchangeable: this one is **replace**, not append.
-   * A user has one avatar, a second confirm takes the place of the first, and
-   * `DELETE` is declared idempotent — 204 whether or not there was anything to
-   * delete. That is why nothing here carries the attachment confirm's "never
-   * retry" warning: there is no table to insert a duplicate row into.
+   * because the two look interchangeable: this one is **replace**, not append —
+   * a user has one avatar, and a confirm takes the place of the one before —
+   * and `DELETE` is declared idempotent, 204 whether or not there was anything
+   * to delete. **Neither makes the confirm safe to send twice.** See
+   * `confirmAvatarUpload` below: repeating it is not a duplicate row, as it is
+   * for an attachment, but a deleted picture.
    */
   createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): Promise<AvatarUploadTicket>;
 
@@ -973,13 +978,30 @@ export interface TaskaApi {
   putAvatarBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void>;
 
   /**
-   * Leg 3: the gateway heads the object in the bucket, re-measures it against
-   * auth-service's own ceiling, stores the metadata and answers with the
-   * avatar — `downloadUrl` included, so a freshly uploaded face needs no
-   * follow-up read.
+   * Leg 3: auth-service heads the object in the bucket, re-measures it against
+   * its own 2 MB ceiling — deleting an object over it and answering 500
+   * `OUT_OF_RANGE` — replaces the user's row, deletes the *previous* row's
+   * object, and answers with the avatar, `downloadUrl` and `createdAt`
+   * included. So a freshly uploaded face needs no follow-up read: the link to
+   * draw is in the answer.
    *
-   * Safe to call again after a failure, unlike the attachment confirm: there is
-   * one avatar per user and a second confirm replaces rather than duplicates.
+   * **Never send one `objectKey` here twice**, not even after a failure. Read
+   * at `develop` `368ae77355bd` (`ProfileServiceImpl.confirmAvatarUpload`), and
+   * a defect of the server's rather than a rule of the contract's:
+   *
+   * - nothing checks that the key was minted for the caller, so a confirm can
+   *   point the caller's row at somebody else's object — which the next replace
+   *   or removal on either side then deletes;
+   * - the row is replaced first and the old row's object deleted after, before
+   *   the new link is presigned. A second confirm of the key the saved row
+   *   already holds therefore deletes that very object as the "old" one, and the
+   *   presign's HEAD then fails with a 404. The confirm answers the 404, the row
+   *   stays pointing at nothing, and every `GET /users/{userId}/avatar` for that
+   *   user answers 404 from then on — until an upload replaces the row or a
+   *   removal deletes it.
+   *
+   * A retry is a new ticket: the person chooses the file again, and leg 1 mints
+   * a new key. `MockTaskaApi` reproduces the defect rather than hiding it.
    */
   confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar>;
 

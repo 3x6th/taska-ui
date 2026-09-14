@@ -2,16 +2,18 @@ import { expect, test, type Page } from "@playwright/test";
 
 /**
  * The user's avatar — upload, replace, delete and show (TAS-220, backend PR
- * #150).
+ * #150, merged and not yet deployed).
  *
  * Mock-backed like every spec here (playwright.config.ts starts the server with
  * VITE_TASKA_API_MODE=mock), and for this feature that is not a convenience but
  * the only possibility: the four gateway routes answer Spring's static-resource
- * 404 today, and the *middle* leg of an upload never touches the gateway even
- * once they ship — the browser PUTs the bytes straight to an object store for
- * which nothing in the backend repository configures CORS. So nothing below is
- * evidence about a server. It pins what the UI does with each answer, and the
- * answers come from `MockTaskaStore`.
+ * 404 on the stand today, and the *middle* leg of an upload never touches the
+ * gateway even once they deploy — the browser PUTs the bytes straight to an
+ * object store for which nothing in the backend repository configures CORS. So
+ * nothing below is evidence about a server. It pins what the UI does with each
+ * answer, and the answers come from `MockTaskaStore`. The undeployed state
+ * itself is not here for the same reason: the mock cannot produce that
+ * signature, so `UserProfileMenu.test.tsx` covers it against a stubbed API.
  *
  * One consequence of that store worth knowing while reading these: it hands
  * back the bytes it was given, as a `data:` URL, because it has no server to
@@ -73,6 +75,13 @@ test("uploads a photo from the profile menu, then deletes it and gets the initia
   await expect(trigger(page).locator(".avatar")).toHaveText("AI");
   await expect(trigger(page).locator("img")).toHaveCount(0);
 
+  // The project card behind the menu holds Anna's member row too. Sofia's face
+  // being drawn is what says the card's summary has loaded — so the change
+  // below can only have come from the menu writing into it, not from the
+  // card's own first answer arriving late.
+  const card = page.locator(".project-card", { hasText: "Taska Platform" });
+  await expect(card.locator(".avatar-stack img")).toHaveCount(1);
+
   await trigger(page).click();
   await expect(popover(page).getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
   // Nothing to remove yet, and the menu says so by not offering it — only a
@@ -93,6 +102,11 @@ test("uploads a photo from the profile menu, then deletes it and gets the initia
   // And the picture actually decoded, rather than merely being requested.
   expect(await trigger(page).locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
 
+  // The new face is on the card as well, through the summary the card already
+  // held: the menu writes it there rather than having every card on the page
+  // read its issues and members again.
+  await expect(card.locator(".avatar-stack img")).toHaveCount(2);
+
   // The button now offers the other two operations.
   await expect(popover(page).getByRole("button", { name: "Replace photo" })).toBeVisible();
   await popover(page).getByRole("button", { name: "Remove photo" }).click();
@@ -101,6 +115,88 @@ test("uploads a photo from the profile menu, then deletes it and gets the initia
   await expect(trigger(page).locator("img")).toHaveCount(0);
   await expect(trigger(page).locator(".avatar")).toHaveText("AI");
   await expect(popover(page).getByRole("button", { name: "Upload a photo" })).toBeVisible();
+  await expect(card.locator(".avatar-stack img")).toHaveCount(1);
+});
+
+test("gives Remove photo a real target in the control colour, and a focus ring the popover does not clip", async ({
+  page,
+}) => {
+  await signIn(page);
+  await trigger(page).click();
+  await choose(page, "face.png");
+  const remove = popover(page).getByRole("button", { name: "Remove photo" });
+  await expect(remove).toBeVisible();
+
+  const resting = await remove.evaluate((button) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--fg-2)";
+    button.append(probe);
+    const fg2 = getComputedStyle(probe).color;
+    probe.remove();
+    const box = button.getBoundingClientRect();
+    return { width: box.width, height: box.height, color: getComputedStyle(button).color, fg2 };
+  });
+  // §1's floor for anything clickable. The `.link-button` box this used to wear
+  // was the text alone, 85.6×18.7.
+  expect(resting.height).toBeGreaterThanOrEqual(28);
+  expect(resting.width).toBeGreaterThanOrEqual(28);
+  // A control's own label, so `--fg-2` (§4.1) — not the `--fg-3` that
+  // `.link-button`, declared later at the same specificity, used to impose.
+  expect(resting.color).toBe(resting.fg2);
+
+  // From the keyboard, because `:focus-visible` is what is under test: the ring
+  // is §7's outward one, and the band's padding keeps all of it inside the
+  // popover's `overflow: hidden`.
+  await popover(page).getByRole("button", { name: "Replace photo" }).focus();
+  await page.keyboard.press("Tab");
+  await expect(remove).toBeFocused();
+  const ring = await remove.evaluate((button) => {
+    const pop = button.closest(".user-profile-popover") as HTMLElement;
+    const style = getComputedStyle(button);
+    const panel = getComputedStyle(pop);
+    const spread = parseFloat(style.outlineOffset) + parseFloat(style.outlineWidth);
+    const b = button.getBoundingClientRect();
+    const p = pop.getBoundingClientRect();
+    const border = parseFloat(panel.borderTopWidth);
+    return {
+      offset: style.outlineOffset,
+      width: style.outlineWidth,
+      clearLeft: b.left - spread - (p.left + border),
+      clearRight: p.right - border - (b.right + spread),
+      clearTop: b.top - spread - (p.top + border),
+      clearBottom: p.bottom - border - (b.bottom + spread),
+    };
+  });
+  expect(ring.offset).toBe("2px");
+  expect(ring.width).toBe("2px");
+  expect(Math.min(ring.clearLeft, ring.clearRight, ring.clearTop, ring.clearBottom)).toBeGreaterThanOrEqual(0);
+});
+
+test("keeps a refused file's long name inside the popover", async ({ page }) => {
+  await signIn(page);
+  await trigger(page).click();
+
+  // One unbroken word, the way a camera or a download names a file. The refusal
+  // quotes it, and before `overflow-wrap: anywhere` the sentence ran through the
+  // popover's edge, where `overflow: hidden` cut it off mid-name.
+  const name = `IMG_${"20260914111400".repeat(6)}_screenshot_from_the_long_meeting.gif`;
+  await choose(page, name, Buffer.from("GIF89a"), "image/gif");
+  const note = popover(page).locator(".user-profile-photo-note.is-error");
+  await expect(note).toContainText(name);
+
+  const fit = await note.evaluate((element) => {
+    const pop = element.closest(".user-profile-popover") as HTMLElement;
+    const box = element.getBoundingClientRect();
+    const panel = pop.getBoundingClientRect();
+    return {
+      overflow: element.scrollWidth - element.clientWidth,
+      clearRight: panel.right - box.right,
+      clearLeft: box.left - panel.left,
+    };
+  });
+  expect(fit.overflow).toBeLessThanOrEqual(0);
+  expect(fit.clearRight).toBeGreaterThanOrEqual(0);
+  expect(fit.clearLeft).toBeGreaterThanOrEqual(0);
 });
 
 /**

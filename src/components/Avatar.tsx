@@ -46,7 +46,11 @@ export function Avatar({ user, label, size = "md", className = "", loading = fal
   const src = !loading && user?.avatarUrl && user.avatarUrl !== failedUrl ? user.avatarUrl : null;
   return (
     <span
-      className={`avatar ${sizeClass[size]} ${!user && !loading ? "avatar-empty" : ""} ${loading ? "avatar-loading" : ""} ${className}`}
+      // `avatar-with-image` only while a picture is actually being drawn, so a
+      // link that fails to load gives the circle back its full fill along with
+      // its initials: the inset exists to keep the fill from ringing a
+      // photograph's edge, and with no photograph there is no edge to ring.
+      className={`avatar ${sizeClass[size]} ${!user && !loading ? "avatar-empty" : ""} ${loading ? "avatar-loading" : ""} ${src ? "avatar-with-image" : ""} ${className}`}
       // The glyph travels with the fill and is computed from it (TAS-175), so
       // the two are set together or not at all: half of this pair — a fill with
       // the stylesheet's white still under it — is the unreadable case.

@@ -42,6 +42,8 @@ import {
 } from "../attachments";
 import {
   AVATAR_BUCKET,
+  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
+  AVATAR_DECLARED_MAX_SIZE_BYTES,
   AVATAR_MAX_SIZE_BYTES,
   AVATAR_MOCK_STORE_ORIGIN,
   AVATAR_PRESIGNED_TTL_MS,
@@ -1034,6 +1036,14 @@ export class MockTaskaStore {
       sizeBytes: 219,
       createdAt: ts(12, 5),
       downloadUrl: SEEDED_AVATAR_PNG,
+    });
+    // And the object that row points at, in the bucket. A read presigns
+    // through a HEAD of the object (see `getUserAvatarUrl`), so a row with
+    // nothing behind it is the broken state, not a seeded one.
+    this.avatarObjects.set("seeded-avatar-sofia", {
+      contentType: "image/png",
+      sizeBytes: 219,
+      dataUrl: SEEDED_AVATAR_PNG,
     });
 
     this.projects = [
@@ -2620,31 +2630,40 @@ export class MockTaskaStore {
   }
 
   /**
-   * Leg 1 of the avatar upload, in the order auth-service runs it: the file is
-   * judged before anything else, exactly as it is for an attachment and for the
-   * same mechanical reason — `S3StorageClient.validateFileParams` is called
-   * synchronously at the top of `createPresignedUploadUrl`, before a `Mono` is
-   * returned at all, so the refusal escapes before any later check subscribes.
+   * Leg 1 of the avatar upload, in the order the request meets its checks —
+   * which is **not** the attachment one's, where the file is judged first. The
+   * gateway authenticates the request and bean-validates its body before the
+   * avatar call leaves it, and auth-service then runs `verifyUserExists` and
+   * only after that — inside a `Mono.defer` — `createPresignedUploadUrl`, whose
+   * `S3StorageClient.validateFileParams` judges the file. So:
+   *
+   * - a `sizeBytes` past the schema's declared 5 MB is the gateway's 400
+   *   `INVALID_ARGUMENT`, "Invalid request parameters", before anything else;
+   * - then the caller has to exist, which `currentUser()` stands in for;
+   * - then the type, and the enforced **2 MB** — `OUT_OF_RANGE`, which answers
+   *   500 over the wire because `RestErrorMapper` has no row for it.
+   *
+   * An empty file is bean-validated at the gateway too, with the same code as
+   * the type arm; this throws `validateFileParams`'s sentence for it, as
+   * `RestTaskaApi.refuseAvatar` does. See `src/api/avatars.ts` for both
+   * ceilings; `refuseAvatar` answers each of these files with the same code, so
+   * a 3 MB photo and a 6 MB one are each stopped identically in both modes.
    *
    * **There is no role to check here.** The route is scoped to `me`, so the
-   * only question the server can ask is whether there is a session — which is
-   * the one thing this store does gate.
-   *
-   * The ceiling applied is auth-service's **2 MB**, not the schema's declared
-   * 5 MB. See `src/api/avatars.ts`; `RestTaskaApi.refuseAvatar` refuses the same
-   * file with the same code, so a 3 MB photo is stopped identically in both
-   * modes rather than only in one of them.
+   * only questions the server can ask are whether the request carries a valid
+   * session and whether its user exists.
    */
   createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): AvatarUploadTicket {
+    if (input.sizeBytes > AVATAR_DECLARED_MAX_SIZE_BYTES) {
+      throw new MockApiError("INVALID_ARGUMENT", AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE);
+    }
+    const user = this.currentUser();
     const refusal = avatarRefusal(input);
     if (refusal) {
-      // The same split `refuseAvatar` uses: only the ceiling is OUT_OF_RANGE,
-      // and it is the arm that answers 500 over the wire because
-      // `RestErrorMapper` has no row for it.
+      // The same split `refuseAvatar` uses: only the ceiling is OUT_OF_RANGE.
       const code = avatarRefusalKind(input) === "size" ? "OUT_OF_RANGE" : "INVALID_ARGUMENT";
       throw new MockApiError(code, refusal);
     }
-    const user = this.currentUser();
 
     const objectKey = makeId("avatar-object");
     const signedAt = new Date();
@@ -2723,14 +2742,29 @@ export class MockTaskaStore {
   }
 
   /**
-   * Leg 3: the object has to exist, it is re-measured against the ceiling, and
-   * the row is written — **replacing** whatever the user had before, because
-   * `user_id` is what identifies an avatar and there is only ever one.
+   * Leg 3, in `ProfileServiceImpl.confirmAvatarUpload`'s order at `develop`
+   * `368ae77355bd`: the object has to exist, it is re-measured against the
+   * ceiling, the row is written — **replacing** whatever the user had before,
+   * because `user_id` is what identifies an avatar and there is only ever one —
+   * then the *previous* row's object is deleted, and only then is the download
+   * link presigned, through a HEAD of the object the new row points at.
    *
-   * That replacement is the whole difference from the attachment confirm, which
-   * inserts unconditionally into a table with no unique key and which no client
-   * may ever retry. Here a repeat is a no-op with a new object key, so nothing
-   * in this feature carries that warning.
+   * **That order is a server defect, and this reproduces it** rather than
+   * quietly doing the sensible thing — the attachment DELETE's precedent
+   * (`deleteAttachment` above): reproduce the implementation, and flag it. The
+   * server does not check that the key was minted for the caller (neither does
+   * this: the ticket is consulted only for its failure trigger), and it does
+   * not notice when the "previous" object *is* the one being confirmed. So a
+   * second confirm of the key the saved row already holds deletes that object,
+   * fails its presign's HEAD with a 404, and leaves the row pointing at
+   * nothing; every read of that user's avatar answers 404 from then on, until an
+   * upload replaces the row or a removal deletes it. A mock that treated the
+   * repeat as a harmless no-op would teach its callers that retrying a confirm
+   * is safe, which on the server it is exactly not. The profile menu never sends
+   * a key twice, and its tests pin that.
+   *
+   * The 404's text on the server is the storage SDK's own, which nothing here
+   * can reproduce; the code is the part that is.
    */
   confirmAvatarUpload(input: ConfirmAvatarUploadInput): UserAvatar {
     const user = this.currentUser();
@@ -2753,8 +2787,6 @@ export class MockTaskaStore {
     }
 
     const previous = this.avatars.get(user.id);
-    if (previous) this.avatarObjects.delete(previous.objectKey);
-
     const avatar: MockAvatar = {
       id: makeId("avatar"),
       userId: user.id,
@@ -2767,7 +2799,15 @@ export class MockTaskaStore {
       createdAt: now(),
       downloadUrl: stored.dataUrl,
     };
+    // Row first, old object second, presign last — the server's order, and the
+    // whole of the defect described above.
     this.avatars.set(user.id, avatar);
+    if (previous) this.avatarObjects.delete(previous.objectKey);
+    if (!this.avatarObjects.has(avatar.objectKey)) {
+      // Mirrors a server defect: the key confirmed was the saved row's own, so
+      // the delete above just removed the object this row points at.
+      throw new MockApiError("NOT_FOUND", "Object not found in storage");
+    }
     return { ...avatar };
   }
 
@@ -2790,12 +2830,20 @@ export class MockTaskaStore {
   /**
    * `null` for a user with no avatar, and **that is a 200**, not a 404: the
    * gateway's mapper writes `null` into `url` when the proto carries none, so a
-   * caller reads the field rather than the status. A user id nobody knows is
-   * the genuine 404.
+   * caller reads the field rather than the status. A user id nobody knows is a
+   * genuine 404 — and so is a row whose object is gone, because
+   * `S3StorageClient.createPresignedDownloadUrl` HEADs the object before it
+   * signs anything. The only way this store gets such a row is the same-key
+   * re-confirm defect in `confirmAvatarUpload` above.
    */
   getUserAvatarUrl(userId: string): string | null {
     this.getUser(userId);
-    return this.avatars.get(userId)?.downloadUrl ?? null;
+    const avatar = this.avatars.get(userId);
+    if (!avatar) return null;
+    if (!this.avatarObjects.has(avatar.objectKey)) {
+      throw new MockApiError("NOT_FOUND", "Object not found in storage");
+    }
+    return avatar.downloadUrl;
   }
 
   listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Page<IssueComment> {
@@ -3924,14 +3972,25 @@ export class MockTaskaStore {
    *
    * `null` and not `undefined` for a person with no avatar: this row *asked*,
    * inline, and got an answer. See `User.avatarUrl`.
+   *
+   * Also `null` for a row whose object is gone — the state the same-key
+   * re-confirm defect in `confirmAvatarUpload` leaves — rather than the bytes
+   * this store still happens to hold: there is no object left to presign, and a
+   * face the server cannot serve should not be drawn. That is this store's
+   * choice and not a reading of the gateway. The member read is backend PR #152,
+   * still open, and docs/ai/API-DIVERGENCE.md ("PR #152's member rows never carry
+   * an avatar (pending)") records that its presign has no per-row fallback, so
+   * there one such row fails the whole member read — which this does not
+   * reproduce.
    */
   private userSummary(userId: string): ProjectMember["user"] {
     const user = this.getUser(userId);
+    const avatar = this.avatars.get(userId);
     return {
       displayName: user.displayName,
       email: user.email,
       color: user.color,
-      avatarUrl: this.avatars.get(userId)?.downloadUrl ?? null,
+      avatarUrl: avatar && this.avatarObjects.has(avatar.objectKey) ? avatar.downloadUrl : null,
     };
   }
 

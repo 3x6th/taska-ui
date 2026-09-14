@@ -19,9 +19,12 @@
  * taken, or offering files its server will refuse. The next reader will want to
  * merge them; this paragraph is the answer.
  *
- * Every value below was read at backend PR #150's head `12e909d42dcc`, pinned
- * in `docs/contract/pending/pr-150-TAS-129.yml`. Re-read them when that pin
- * moves.
+ * Every value below was read at backend `develop` `368ae77355bd`, where PR #150
+ * (TAS-129) merged on 2026-09-14 and where `docs/contract/openapi.yml` is
+ * pinned: the contract's schemas, auth-service's `application.yml`, and the
+ * shared storage client that reads it. Re-read them when that snapshot is
+ * refreshed or auth-service's storage configuration changes — the second can
+ * move without the first.
  */
 
 /**
@@ -32,16 +35,25 @@
  * `minimum: 1, maximum: 5242880`, and its description says 5 MB in as many
  * words. What actually enforces the size is the shared
  * `S3StorageClient.validateFileParams`, reading `storage.max-file-size-bytes`
- * from **auth-service's** own `application.yml`, which is `2097152 # 2 MB`. So
- * a 3 MB image passes the gateway's bean validation and is refused a layer
- * deeper, after a round trip.
+ * from **auth-service's** own `application.yml`, where it is a bare literal,
+ * `2097152 # 2 MB`, with no env override. So an image is refused in one of two
+ * places, and the two do not answer alike:
+ *
+ * - **over 2 MB and up to 5 MB** passes the gateway's bean validation, reaches
+ *   auth-service, and is refused there after a round trip — `OUT_OF_RANGE`,
+ *   which `RestErrorMapper` has no row for, so the status is **500**;
+ * - **over 5 MB** never reaches the avatar service: the gateway checks the
+ *   token first (a call of its own to auth-service), then the generated DTO's
+ *   `@Max` fails as the body is read, and the gateway answers **400**
+ *   `INVALID_ARGUMENT` with its fixed "Invalid request parameters".
  *
  * This client enforces the number that is enforced. The declared one is
  * `AVATAR_DECLARED_MAX_SIZE_BYTES` below, named so that a reader who has the
- * schema open can see that the disagreement is known rather than missed. It was
- * raised on TAS-129 while that PR is open; if the backend settles it by raising
- * the *configuration* to match the schema instead, one constant moves and
- * nothing else in this file does.
+ * schema open can see that the disagreement is known rather than missed. It is
+ * recorded in docs/ai/API-DIVERGENCE.md as "The avatar schema declares 5 MB and
+ * the service enforces 2 MB", which names what removes it; if the backend
+ * settles it by raising the *configuration* to match the schema instead, one
+ * constant moves and nothing else in this file does.
  *
  * Checked twice on the server, not once, exactly as attachments are:
  * `validateFileParams` refuses an over-size *request* at leg 1, and the confirm
@@ -50,12 +62,27 @@
 export const AVATAR_MAX_SIZE_BYTES = 2097152;
 
 /**
- * What `CreateAvatarUploadUrlRequestDto` says the ceiling is. Deliberately not
- * used as a limit anywhere — it exists so that this file states both numbers
- * and so a reader diffing it against the schema finds the disagreement written
- * down rather than having to rediscover it.
+ * What `CreateAvatarUploadUrlRequestDto` says the ceiling is. Never used as a
+ * limit — nothing a person can choose gets past the enforced 2 MB above to meet
+ * it — so that this file states both numbers and a reader diffing it against
+ * the schema finds the disagreement written down rather than rediscovering it.
+ *
+ * It does decide one thing: *which* refusal the implementations standing in for
+ * the server throw for a size past it. Above this number the gateway's bean
+ * validation answers before the avatar call leaves the gateway, with
+ * `AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE` below.
  */
 export const AVATAR_DECLARED_MAX_SIZE_BYTES = 5242880;
+
+/**
+ * The gateway's answer for a `sizeBytes` past the declared `maximum`, word for
+ * word: `GatewayValidationExceptionHandler`'s fixed sentence, sent on **400**
+ * with `INVALID_ARGUMENT` for any body the generated DTO's bean validation
+ * refuses — the generator runs with `useValidation`, so `maximum: 5242880`
+ * becomes `@Max`. It names no field and no number, which is the gateway's
+ * choice rather than a sentence this client would have written.
+ */
+export const AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE = "Invalid request parameters";
 
 /**
  * The three MIME types the server accepts, **verbatim and in the order
@@ -75,7 +102,10 @@ export const AVATAR_ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/png", "image/w
 
 /**
  * How long a presigned avatar URL is honoured — `storage.presigned-url-ttl`,
- * 15 minutes, and the same value signs both the upload and the download link.
+ * whose default is 15 minutes, and the same value signs both the upload and the
+ * download link. A default and not a literal: the property reads
+ * `${MINIO_PRESIGNED_URL_TTL:15m}`, so an environment can change it and nothing
+ * on this side can see that it has.
  *
  * **The download side is the one that matters here**, and it is why `Avatar`
  * falls back to initials instead of showing a broken image: a `downloadUrl`
@@ -93,21 +123,23 @@ export const AVATAR_ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/png", "image/w
 export const AVATAR_PRESIGNED_TTL_MS = 15 * 60 * 1000;
 
 /**
- * `storage.bucket` for auth-service — only ever used to shape the mock's
- * presigned URLs, so that what a reader sees in mock mode has the same shape as
- * the deployed stand's. Not the attachments bucket, and the two are configured
- * separately.
+ * `storage.bucket` for auth-service, or rather its default —
+ * `${MINIO_BUCKET_AVATARS:taska-avatars}`, which an environment can override —
+ * only ever used to shape the mock's presigned URLs, so that what a reader sees
+ * in mock mode has the same shape as a default deployment's. Not the
+ * attachments bucket, and the two are configured separately.
  */
 export const AVATAR_BUCKET = "taska-avatars";
 
 /**
- * The host the mock signs its upload links against, and **the one value in this
- * file that is not a reading of the backend**: the pinned extract records
- * auth-service's bucket, its ceiling, its allowlist and its TTL, and does not
- * record its `storage.public-url`. This is the address the *attachments* block
- * checks in, reproduced here so a reader in mock mode sees a link with the
- * right shape — absolute, not the gateway — rather than a claim about where
- * auth-service's store actually lives.
+ * The host the mock signs its upload links against: auth-service's own
+ * `storage.public-url` default, `${MINIO_PUBLIC_URL:http://127.0.0.1:9000}` —
+ * a reading of the backend, like the bucket, the ceilings, the allowlist and
+ * the TTL above, and the same loopback default the attachments block carries. It is reproduced so a reader in mock
+ * mode sees a link with the right shape — absolute, and not the gateway — and
+ * it says nothing about where a deployment's store actually lives: a loopback
+ * address cannot be the stand's, and whether the stand overrides it is unknown
+ * until the first real upload from its origin.
  *
  * Nothing outside `MockTaskaStore` reads it. `RestTaskaApi` PUTs to whatever
  * the gateway signed, and never to this.

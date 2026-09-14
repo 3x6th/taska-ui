@@ -2145,20 +2145,73 @@ is what recurs.
   inherit that tone — it is `--fg-2` mono at 6.25:1, because a reader has to
   transcribe it and `.attachment-note` had already recorded 3.17 as the reason
   the tone was dropped there.
-- **Five from TAS-220's release review**, recorded rather than taken. The
-  always-mounted empty live region still consumes the photo band's 7px flex gap
-  when there is no notice. The current user's avatar read refetches on mount and
-  on window focus past the 20-second stale time, so an undeployed stand pays one
-  404 per navigation rather than one per session. Neither avatars nor
-  attachments enforce the contract's 255-character `fileName` before asking for
-  an upload URL. The "15 minutes" in both expired-link sentences is a literal
-  rather than derived from the TTL constant. And `API-DIVERGENCE.md`
-  *understates* its own coverage: the failed-image fallback is exercised end to
-  end, not by unit tests alone.
+- **Five from TAS-220's release review**, recorded rather than taken. Three
+  remain open:
+  - The always-mounted empty live region still consumes the photo band's 7px
+    flex gap when there is no notice.
+  - Neither avatars nor attachments enforce the contract's 255-character
+    `fileName` before asking for an upload URL.
+  - The "15 minutes" in both expired-link sentences is a literal, not derived
+    from the TTL constant — which is itself only an environment default.
+
+  Two were closed in TAS-220's second pass on 2026-09-14. The avatar read no
+  longer refetches on mount or focus, and an undeployed signature is asked once
+  per page load. `API-DIVERGENCE.md` now says the failed-image fallback is
+  covered end to end.
+- **TAS-220's cache write has three edges `frontend-builder` named rather than
+  closed** (2026-09-14).
+  - **Hybrid, once PR #150 deploys:** the write puts the reader's face on hybrid's
+    synthesised member row, and the next members refetch takes it off again.
+  - **Shape coupling:** the menu types the project-summary cache by shape alone.
+    Renaming `ProjectSummary.members` would silently stop the write, and only the
+    e2e card assertion would notice.
+  - **Cancelled refetch:** cancelling an in-flight member refetch before writing
+    can delay a refresh another write had asked for.
 - **The avatar photo buttons and the watchers block answer the same Chromium
   behaviour two different ways.** DESIGN.md §4.21 records that a real `disabled`
   attribute blurs a focused element, and watchers answer it with `aria-disabled`
   plus a guard in the handler so focus never leaves; TAS-220's photo controls
   keep the real `disabled` and refocus once the write settles. Both work. Picking
   one is a design ruling and a wider change than TAS-220 was, so it is here
-  rather than done.
+  rather than done. **Ruled by `art-director` on 2026-09-14: the photo band
+  follows §4.21.** Focus sits on `<body>` for the whole write, and the disabled
+  button is the only progress signal. Not taken in TAS-220's second pass, which
+  was already the blockers plus six notes.
+- **The avatars bucket's cross-origin leg is configured nowhere in the backend
+  repository** (`api-contract-guard`, 2026-09-14, TAS-220). auth-service's
+  `storage.public-url` defaults to `http://127.0.0.1:9000`, and no CORS rule for
+  `taska-avatars` exists anywhere. The presigner also sets no path-style option,
+  so the URL shape the stand hands out is unverified. The attachments half is
+  already raised on TAS-131. Whether the stand's environment overrides any of it
+  is unknown, and the first upload from taska.ozero.dev after the deploy is the
+  measurement, not another reading.
+- **An avatar confirm can fail after it has committed** (`api-contract-guard`,
+  2026-09-14). The presign and its HEAD run after the transaction. When they
+  fail, the new avatar is saved, yet the menu says nothing was saved and does
+  not re-read — which the attachments panel does. The backend half would be to
+  answer with `downloadUrl: null` rather than fail.
+- **The PUT-leg tests never assert that `isUndeployedRoute` is false against an
+  `ObjectStoreError`** (`RestTaskaApi.test.ts` around 3157 and 3409), and the
+  avatar block has no blocked-preflight case of its own (`api-contract-guard`,
+  2026-09-14). The condition AGENTS.md sets for a leg that is not a gateway
+  request holds by construction, but no test holds it.
+- **In hybrid, once PR #150 deploys, the menu will show the reader's photo while
+  the board shows their initials**, until hybrid's `listMembers` delegates
+  (`api-contract-guard`, 2026-09-14).
+- **Four from TAS-220's `art-director` verdict, recorded rather than taken**
+  (2026-09-14).
+  - The trigger and menu header show initials for one avatar read on every cold
+    load: 148–164 ms on the mock. Drawing the bare fill while the read is pending
+    would avoid it; widening `loading` instead would disable the trigger and Log
+    out with it.
+  - The store-unreachable and expired-link sentences, shared with attachments,
+    run to four lines in a 276px menu and explain infrastructure. One sentence
+    plus "choose the photo again" would do (§1, §5.4).
+  - The board's "New" is `disabled` rather than hidden for a VIEWER
+    (`BoardScreen.tsx:509`), against §5.7. This predates TAS-220.
+  - `.compact-button:hover` (`styles.css:4573`) sticks after a tap on touch,
+    which is a product-wide `@media (hover: hover)` question.
+  - Beside those: the undeployed-route state *can* be driven in Playwright
+    against the hybrid dev server, with every `/api` request answered inside the
+    page and every external request aborted. The e2e suite is mock-only by
+    design, so that would be a new kind of spec rather than one more case.

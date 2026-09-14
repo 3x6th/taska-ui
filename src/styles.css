@@ -1068,6 +1068,24 @@ h1 {
   height: 100%;
   border-radius: inherit;
   object-fit: cover;
+  /* The picture's own edge, now that the fill no longer reaches it (below): the
+     same hairline §1 separates everything else with, drawn inside the image so
+     the circle keeps its size. */
+  outline: 1px solid var(--border);
+  outline-offset: -1px;
+}
+
+/* A circle holding a picture stops its fill a pixel short of the edge. Without
+   this the circle's anti-aliased rim blends the photograph with the person's
+   colour, and every face wears a thin coloured ring — plainest on a light photo
+   over a saturated fill. The picture still covers the whole circle, because
+   `inset: 0` above is measured from the padding box, so the pixel of padding is
+   under the image rather than beside it; `border-box` keeps the diameter where
+   §2.7 puts it. A stack's `2px --surface` border sits outside the padding and
+   is unaffected. */
+.avatar-with-image {
+  padding: 1px;
+  background-clip: content-box;
 }
 
 .user-profile-menu {
@@ -1210,20 +1228,33 @@ h1 {
   gap: 8px;
 }
 
-/* §4.1's destructive recipe exactly: ghost at rest, `--danger` on hover. Not
-   `--danger` at rest — that is Log out's spelling, and two red controls in one
-   popover would make the one that signs you out look ordinary.
+/* §4.1's destructive recipe: a ghost button — no border, `--fg-2` at rest —
+   with `--surface-2` and `--danger` under the pointer. Not `--danger` at rest —
+   that is Log out's spelling, and two red controls in one popover would make
+   the one that signs you out look ordinary.
 
-   It borrows `.link-button`'s box and overrides its colour, which is the only
-   part of that recipe that does not fit: `--fg-3` measures 3.14:1 light and
-   3.05:1 dark, which §7 allows for non-critical meta and this is not that — it
-   is a control's own label, and a destructive one. `--fg-2` is 7.26:1 / 6.75:1
-   and is what §4.1 asks a ghost button for in the first place. */
+   A box of its own rather than `.link-button`'s, for two measured reasons.
+   That class is declared further down this file at the same specificity, so its
+   `--fg-3` beat the override that used to sit here and the label rendered at
+   3.14:1 light / 3.05:1 dark — §7's floor for non-critical meta, and a
+   destructive control's own label is not meta. And its box is the text and
+   nothing more, 85.6×18.7, under §1's 28×28 floor for anything clickable.
+   29 tall is the `.compact-button` beside it, so the pair shares one line;
+   `--fg-2` is 7.26:1 / 6.75:1 on the popover's `--surface`. */
 .user-profile-photo-remove {
+  display: inline-flex;
+  align-items: center;
+  height: 29px;
+  border-radius: 8px;
+  padding: 0 9px;
   color: var(--fg-2);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .user-profile-photo-remove:hover:not(:disabled) {
+  background: var(--surface-2);
   color: var(--danger);
 }
 
@@ -1249,6 +1280,10 @@ h1 {
   color: var(--fg-2);
   font-size: 11px;
   line-height: 1.45;
+  /* A refusal quotes the file's name, and a name is one unbroken word as often
+     as not: without this it ran straight through the popover's edge at 390,
+     where `overflow: hidden` cut it off mid-name. */
+  overflow-wrap: anywhere;
   text-wrap: pretty;
 }
 
@@ -1258,13 +1293,41 @@ h1 {
   color: var(--fg);
 }
 
-/* §7's documented offset exception: this popover is `overflow: hidden`, so an
-   outer ring gets its outer edges clipped. `.user-profile-admin` and
-   `.user-profile-logout` below already draw the inward ring for the same
-   reason, and these two buttons sit in the same box. */
+/* The sentence inside the box, and the live region: a `<p>` of its own so the
+   request id line beside it can stay out of the announcement. It takes its type
+   from the box and only needs the margin off. */
+.user-profile-photo-note-sentence {
+  margin: 0;
+}
+
+/* "Copied" on the danger tint. `.copied-note`'s own `--fg-3` comes to 2.78:1
+   light / 2.76:1 dark on this 10% tint, composited over `--surface` the way §7
+   says to measure it — under §7's 3:1 floor for meta. `--fg-2`, which the id
+   beside it already wears, is 6.43:1 / 6.11:1. Same answer
+   `.form-error .copied-note` gives for the same kind of ground. */
+.user-profile-photo-note .copied-note {
+  color: var(--fg-2);
+}
+
+/* The id is wider than this box: the button with a uuid in 11px mono and its
+   copy icon measures 276.6px on one line, and the note leaves 228. So it breaks
+   inside its own button — where a button's default centred text set the second
+   half in the middle, reading like a second string rather than the rest of the
+   first. Measured in the 276px menu, which is its width at every viewport from
+   300 up. */
+.user-profile-photo-note-detail .request-id {
+  text-align: start;
+}
+
+/* §7's ring as written — `2px --accent`, offset outward — and not the `-2px`
+   exception `.user-profile-admin` and `.user-profile-logout` take below. That
+   exception is for a row running the popover's full width, whose outer ring
+   `overflow: hidden` would cut; these buttons sit inside the band's 14px
+   padding, 15px from the popover's outer edge, so a ring reaching 4px out never
+   comes near the clip. */
 .user-profile-photo button:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 
 .user-profile-actions {
@@ -4036,9 +4099,14 @@ h1 {
    ground is --surface rather than a tint, where the same --fg-2 measures 7.26:1
    light / 6.75:1 dark — and --fg-3 there is 3.14 / 3.05, over §7's 3:1 meta
    floor by a hair and still the wrong choice, because a string whose whole
-   purpose is to be read out and pasted into a ticket is not meta. */
+   purpose is to be read out and pasted into a ticket is not meta.
+
+   The profile menu's photo band joins it on the same terms (TAS-220). Its box
+   is the 10% danger tint rather than `--surface`, where --fg-2 comes to 6.43:1
+   light / 6.11:1 dark, composited over the popover's --surface. */
 .watcher-note-detail,
-.api-notice-detail {
+.api-notice-detail,
+.user-profile-photo-note-detail {
   display: flex;
   flex-wrap: wrap;
   align-items: center;

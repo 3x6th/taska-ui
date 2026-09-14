@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 import { ATTACHMENT_MAX_SIZE_BYTES, attachmentSizeRefusalMessage } from "../attachments";
-import { AVATAR_MAX_SIZE_BYTES, avatarSizeRefusalMessage } from "../avatars";
+import {
+  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
+  AVATAR_DECLARED_MAX_SIZE_BYTES,
+  AVATAR_MAX_SIZE_BYTES,
+  avatarSizeRefusalMessage,
+} from "../avatars";
 import { ObjectStoreError } from "../objectStore";
 import { isConflict, isMissingOrForbidden, isUndeployedRoute } from "../errors";
 import { ESTIMATE_MAX_MESSAGE, START_DATE_AFTER_STORED_DUE_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
@@ -3284,11 +3289,11 @@ describe("RestTaskaApi attachments", () => {
   });
 });
 /**
- * The four avatar routes — backend PR #150 (TAS-129), open and undeployed. What
- * is pinned here is the request shape, the ceiling this client enforces against
- * the one the schema declares, and the two answers a reader must not misread:
- * a null `url` meaning "no avatar" and the static-resource 404 meaning "not on
- * this gateway yet".
+ * The four avatar routes — backend PR #150 (TAS-129), merged at `develop`
+ * `368ae77355bd` and not deployed. What is pinned here is the request shape, the
+ * ceiling this client enforces against the one the schema declares, and the two
+ * answers a reader must not misread: a null `url` meaning "no avatar" and the
+ * static-resource 404 meaning "not on this gateway yet".
  */
 describe("RestTaskaApi avatars", () => {
   const answer = (status: number, body: unknown) =>
@@ -3356,6 +3361,21 @@ describe("RestTaskaApi avatars", () => {
       message: avatarSizeRefusalMessage(threeMegabytes),
     });
 
+    // The second band. Past the schema's own `maximum: 5242880`, the generated
+    // DTO's `@Max` fails as the gateway reads the body, and
+    // `GatewayValidationExceptionHandler` answers with its fixed sentence on
+    // 400 — the avatar call never leaves the gateway, so this is not the 500
+    // above with a bigger number in it.
+    const sixMegabytes = 6 * 1024 * 1024;
+    expect(sixMegabytes).toBeGreaterThan(AVATAR_DECLARED_MAX_SIZE_BYTES);
+    await expect(
+      api.createAvatarUploadUrl({ fileName: "huger.png", contentType: "image/png", sizeBytes: sixMegabytes }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
+    });
+
     await expect(
       api.createAvatarUploadUrl({ fileName: "wave.gif", contentType: "image/gif", sizeBytes: 4096 }),
     ).rejects.toMatchObject({
@@ -3369,7 +3389,7 @@ describe("RestTaskaApi avatars", () => {
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400 });
 
     // Nothing went out, and the codes are the ones MockTaskaStore throws for
-    // the same three files, so the two modes cannot disagree about which
+    // the same four files, so the two modes cannot disagree about which
     // pictures are uploadable or about what refused them.
     expect(fetchStub).not.toHaveBeenCalled();
   });
@@ -3433,6 +3453,7 @@ describe("RestTaskaApi avatars", () => {
         fileName: "face.png",
         contentType: "image/png",
         sizeBytes: 4096,
+        createdAt: "2026-09-14T11:14:00Z",
         downloadUrl: "https://store.example/face.png?sig=2",
       }),
     );
@@ -3451,9 +3472,10 @@ describe("RestTaskaApi avatars", () => {
       contentType: "image/png",
     });
     expect(avatar.downloadUrl).toBe("https://store.example/face.png?sig=2");
-    // Declared in the schema and never seen populated on its sibling DTO, so
-    // this side promises nothing about it rather than inventing a timestamp.
-    expect(avatar.createdAt).toBeNull();
+    // Filled on this DTO, unlike its sibling on a member row: `UserAvatar`'s
+    // `createdAt` is an audited `@CreatedDate` and both mappers carry it
+    // through (`develop` `368ae77355bd`).
+    expect(avatar.createdAt).toBe("2026-09-14T11:14:00Z");
   });
 
   it("normalises a confirm that answered without a link, rather than putting an empty string in an img", async () => {
@@ -3468,7 +3490,10 @@ describe("RestTaskaApi avatars", () => {
     // `<img src="">` re-requests the current document — a real request to a
     // real server for a picture that is not there.
     expect(avatar.downloadUrl).toBeNull();
-    expect(avatar).toMatchObject({ objectKey: "", fileName: "", contentType: "", sizeBytes: 0 });
+    // And a timestamp the answer did not carry is `null`, not an invented one:
+    // the schema declares no `required` block, and the gateway's own mapper
+    // writes `null` for an all-zero timestamp.
+    expect(avatar).toMatchObject({ objectKey: "", fileName: "", contentType: "", sizeBytes: 0, createdAt: null });
   });
 
   it("deletes with no body and reads the 204 as a success", async () => {

@@ -442,13 +442,16 @@ export class HybridTaskaApi implements TaskaApi {
    * there is nothing about a person's own avatar that project membership could
    * stand in for, which is the only thing this class synthesises.
    *
-   * The four gateway routes are **undeployed** — probed 2026-09-12 without a
-   * token, all four answer Spring's static-resource 404 while `GET /users/me`
-   * answered 401 in the same run — so on the stand these calls fail, and they
-   * fail with the signature `isUndeployedRoute` matches. `UserProfileMenu`
-   * reads that and says the routes are not on this gateway yet, the same way
-   * `EditProjectModal` does for the project PATCH. Compensating instead would
-   * mean this class reporting a face that is in no bucket.
+   * The four gateway routes are **undeployed** — backend PR #150 merged at
+   * `develop` `368ae77355bd` on 2026-09-14 and has not reached the stand. Probed
+   * 2026-09-12 without a token, all four answered Spring's static-resource 404
+   * while `GET /users/me` answered 401 in the same run, and the routes still
+   * answered it on 2026-09-14 at 11:14 UTC — so on the stand these calls fail,
+   * and they fail with the signature `isUndeployedRoute` matches.
+   * `UserProfileMenu` reads that and says the routes are not on this gateway
+   * yet, the same way `EditProjectModal` does for the project PATCH.
+   * Compensating instead would mean this class reporting a face that is in no
+   * bucket.
    *
    * The middle leg is where compensation stops being merely absent and becomes
    * impossible, exactly as for attachments: `putAvatarBytes` puts bytes on a
@@ -461,7 +464,8 @@ export class HybridTaskaApi implements TaskaApi {
    * fill it would be a second request per member — the very thing the inline
    * avatar on `ProjectMemberDetailsDto` exists to avoid. So on the stand the
    * board draws initials until PR #152 and PR #150 are both deployed, and the
-   * one place that does spend a request is the profile menu, once.
+   * one place that does spend a request is the profile menu, for the reader's
+   * own face.
    */
   createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): Promise<AvatarUploadTicket> {
     return this.live.createAvatarUploadUrl(input);

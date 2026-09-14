@@ -7,7 +7,13 @@ import {
   attachmentSizeRefusalMessage,
   attachmentTypeRefusalMessage,
 } from "../attachments";
-import { AVATAR_MAX_SIZE_BYTES, avatarSizeRefusalMessage, avatarTypeRefusalMessage } from "../avatars";
+import {
+  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
+  AVATAR_DECLARED_MAX_SIZE_BYTES,
+  AVATAR_MAX_SIZE_BYTES,
+  avatarSizeRefusalMessage,
+  avatarTypeRefusalMessage,
+} from "../avatars";
 import { ObjectStoreError } from "../objectStore";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
@@ -2912,12 +2918,13 @@ describe("MockTaskaApi", () => {
     });
   });
   /**
-   * The avatar family — backend PR #150 (TAS-129), whose four routes are open
-   * and undeployed, so this mock is the only place the choreography can be run
-   * at all. What is pinned here is the contract's own awkward parts: the
-   * enforced ceiling that is not the declared one, the delete that cannot say
-   * whether it deleted anything, and "no avatar" being a 200 with a null rather
-   * than a 404.
+   * The avatar family — backend PR #150 (TAS-129), merged at `develop`
+   * `368ae77355bd` and not deployed, so this mock is the only place the
+   * choreography can be run at all. What is pinned here is the contract's own
+   * awkward parts — the enforced ceiling that is not the declared one, the
+   * delete that cannot say whether it deleted anything, "no avatar" being a 200
+   * with a null rather than a 404 — and one of the server's: a confirm sent
+   * twice with one key deletes the picture it confirmed.
    */
   describe("avatars", () => {
     /** A PNG-shaped file of a size the ceiling accepts. */
@@ -2988,16 +2995,34 @@ describe("MockTaskaApi", () => {
       // this a layer deeper.
       const threeMegabytes = 3 * 1024 * 1024;
       expect(threeMegabytes).toBeGreaterThan(AVATAR_MAX_SIZE_BYTES);
+      expect(threeMegabytes).toBeLessThanOrEqual(AVATAR_DECLARED_MAX_SIZE_BYTES);
 
       await expect(
         api.createAvatarUploadUrl({ fileName: "huge.png", contentType: "image/png", sizeBytes: threeMegabytes }),
       ).rejects.toMatchObject({
-        // The ceiling alone is OUT_OF_RANGE — `RestErrorMapper` has no row for
-        // it, which is why it answers 500 over the wire while its two siblings
-        // answer 400.
+        // This band alone is OUT_OF_RANGE — `RestErrorMapper` has no row for it,
+        // which is why it answers 500 over the wire while its siblings answer
+        // 400.
         code: "OUT_OF_RANGE",
         message: avatarSizeRefusalMessage(threeMegabytes),
       });
+    });
+
+    it("refuses a file past the declared ceiling the way the gateway does, before the avatar service is asked", async () => {
+      // 6 MB is past the schema's own `maximum`, so the generated DTO's `@Max`
+      // fails as the gateway reads the body: its fixed sentence on 400, and the
+      // storage client's number never comes into it.
+      const sixMegabytes = 6 * 1024 * 1024;
+      expect(sixMegabytes).toBeGreaterThan(AVATAR_DECLARED_MAX_SIZE_BYTES);
+
+      await expect(
+        api.createAvatarUploadUrl({ fileName: "huger.png", contentType: "image/png", sizeBytes: sixMegabytes }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE });
+      // Even for a type the allowlist would also refuse: bean validation is the
+      // earlier of the two checks.
+      await expect(
+        api.createAvatarUploadUrl({ fileName: "huger.gif", contentType: "image/gif", sizeBytes: sixMegabytes }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE });
     });
 
     it("refuses a type outside the three-entry allowlist, in the server's own words", async () => {
@@ -3023,6 +3048,65 @@ describe("MockTaskaApi", () => {
       await expect(
         api.confirmAvatarUpload({ objectKey: first.objectKey, fileName: "first.png", contentType: "image/png" }),
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("reproduces the server's defect: confirming one key twice deletes the picture it confirmed", async () => {
+      const me = await api.getCurrentUser();
+      const file = imageFile("face.png");
+      const ticket = await api.createAvatarUploadUrl({ fileName: file.name, contentType: file.type, sizeBytes: file.size });
+      await api.putAvatarBytes(ticket.uploadUrl, file, file.type);
+      const confirm = () =>
+        api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
+
+      const saved = await confirm();
+      await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(saved.downloadUrl);
+
+      // Mirrors `ProfileServiceImpl.confirmAvatarUpload` at `develop`
+      // `368ae77355bd`: the row is replaced, then the *previous* row's object is
+      // deleted — which here is the object being confirmed — and then the
+      // presign HEADs it and fails. A no-op here instead would tell every
+      // caller that re-sending a confirm is safe.
+      await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+      // The row survives, pointing at nothing, so the read is a 404 from now on
+      // rather than the null of somebody with no avatar…
+      await expect(api.getUserAvatarUrl(me.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      // …a third attempt at the key finds no object at all…
+      await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
+      // …and no member row draws a face that nothing can serve.
+      const members = await api.listMembers(project.id);
+      expect(members.find((member) => member.userId === me.id)?.user?.avatarUrl).toBeNull();
+
+      // An upload replaces the broken row, and that is the way out the menu
+      // offers.
+      const fresh = await upload(imageFile("again.png", 96));
+      await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(fresh.downloadUrl);
+    });
+
+    it("gets out of that state by a removal too, which answers 204 like any other", async () => {
+      const me = await api.getCurrentUser();
+      const file = imageFile("face.png");
+      const ticket = await api.createAvatarUploadUrl({ fileName: file.name, contentType: file.type, sizeBytes: file.size });
+      await api.putAvatarBytes(ticket.uploadUrl, file, file.type);
+      const confirm = () =>
+        api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
+      await confirm();
+      await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+      // The row goes, and deleting an object that is already gone is not an
+      // error on the store's side either.
+      await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
+      await expect(api.getUserAvatarUrl(me.id)).resolves.toBeNull();
+    });
+
+    it("draws the seeded face through the same read as an uploaded one", async () => {
+      // Sofia's seeded row now has its object in the bucket, so the HEAD a read
+      // presigns through finds it — a row with nothing behind it is the broken
+      // state above, not a seed.
+      const members = await api.listMembers(project.id);
+      const sofia = members.find((member) => member.user?.displayName === "Sofia Reyes");
+      expect(sofia).toBeDefined();
+      await expect(api.getUserAvatarUrl(sofia!.userId)).resolves.toMatch(/^data:image\/png;base64,/);
     });
 
     it("deletes idempotently: twice in a row is two successes, and so is deleting nothing", async () => {

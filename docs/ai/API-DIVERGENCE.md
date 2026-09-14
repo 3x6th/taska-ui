@@ -748,28 +748,153 @@ Everything below is the entry as it stood, in the past tense.
   and touches every nullable DTO in the gateway, so it is the owner's call
   rather than ours.
 
+### The avatar routes are merged but not deployed
+
+- **Endpoints:** all four — `POST /api/v1/users/me/avatar/upload-url`,
+  `POST /api/v1/users/me/avatar/confirm`, `DELETE /api/v1/users/me/avatar`,
+  `GET /api/v1/users/{userId}/avatar`.
+- **Contract:** in the snapshot since backend PR #150 merged into `develop` at
+  `368ae77355bd` on 2026-09-14.
+- **Observed, measured 2026-09-14 11:14 UTC without a token:**
+  `GET /users/not-a-uuid/avatar` and `GET /users/me/avatar/upload-url` both
+  answered **404** `No static resource …` (request ids
+  `ead1b87c-8097-4f1a-ae15-383b73643adf`, `47817ea1-001f-4fc8-b64c-b9447eeb51f0`),
+  while `GET /users/me` answered **401** in the same run
+  (`940ada12-06e9-45e3-b400-1f204e021a58`) — so the 404s are routing, not
+  permissions. The owner confirmed the same day that the merge did not deploy,
+  and asked that the stand not be probed again until the backend is fixed.
+- **Compensation:** every avatar failure goes through `isUndeployedRoute` first.
+  Once the current user's avatar read has met that signature, it is not asked
+  again for the rest of the page session — not on retry, not on the next mount,
+  not on focus — so an undeployed stand costs one 404 per page load rather than
+  one per navigation. The profile menu then offers no photo controls at all,
+  only the sentence that photos are not on this gateway yet; a write that meets
+  the signature says the same.
+- **Removed by:** a deploy of `develop` at or after `368ae77` to
+  `api.taska.ozero.dev`, confirmed by one upload from the deployed origin — the
+  routes have never answered this client.
+
 ### The avatar schema declares 5 MB and the service enforces 2 MB
 
-- **Endpoint:** `POST /api/v1/users/me/avatar/upload-url`, backend PR #150,
-  pinned at `docs/contract/pending/pr-150-TAS-129.yml` head `12e909d42dcc`.
+- **Endpoint:** `POST /api/v1/users/me/avatar/upload-url`, in the snapshot since
+  `develop` `368ae77355bd`. Backend PR #150 merged on 2026-09-14 with this
+  unchanged.
 - **Contract:** `CreateAvatarUploadUrlRequestDto.sizeBytes` is
   `minimum: 1, maximum: 5242880`, and its description says "макс. 5 MB".
 - **Runtime:** the size is not checked by the gateway's bean validation alone.
   `S3StorageClient.validateFileParams` reads `storage.max-file-size-bytes` from
   auth-service's own configuration, where it is `2097152` — 2 MB, the same
   number the attachments bucket uses, from a separate configuration block that
-  only happens to agree.
+  only happens to agree. Read at `368ae77`, the refusals split into two bands:
+  - **2 MB < size ≤ 5 MB** passes bean validation and meets `OUT_OF_RANGE` in
+    auth-service, which `RestErrorMapper` has no row for, so the gateway answers
+    **500** — the same missing row the attachments entry below describes. The
+    confirm's re-measure of an over-size object deletes it and answers the same
+    500.
+  - **size > 5 MB** fails the generated `@Max(5242880)` and the gateway answers
+    **400** `INVALID_ARGUMENT` "Invalid request parameters" before the avatar
+    call reaches auth-service. The token check has already called auth-service
+    by then, so "before auth-service" alone would be wrong. The rest client and
+    the mock refuse this band with the same status and message.
 - **What follows:** a 3 MB image satisfies the schema, passes the gateway, and
-  is refused a layer deeper. A client that trusts the schema offers a person a
-  file the product will not take and discovers it after the request.
-- **Compensation:** `src/api/avatars.ts` enforces the number that is enforced.
-  The declared one is named beside it and never used as a limit, so the
-  disagreement is visible in the file rather than resolved silently in its
-  favour.
-- **Removal:** raised on [TAS-129](https://jira.ozero.dev/browse/TAS-129) on
-  2026-09-12 while its PR is open, with both directions offered — raise the
-  configuration to 5 MB, or put 2097152 in the schema. Either way one constant
-  moves here.
+  is refused a layer deeper as a server error. A client that trusts the schema
+  offers a person a file the product will not take and discovers it after the
+  request.
+- **Compensation:** `src/api/avatars.ts` enforces the number that is enforced,
+  refusing before a request is sent. The declared one is named beside it and
+  never used as a limit, so the disagreement is visible in the file rather than
+  resolved silently in its favour. The rest client's refusal for an over-size
+  file is synthesised in the shape the gateway would answer.
+- **Removal:** [TAS-222](https://jira.ozero.dev/browse/TAS-222), filed
+  2026-09-14 — put 2097152 in the schema and add the `OUT_OF_RANGE` row, or
+  raise the configuration to 5 MB. Either way one constant moves here. It was
+  first raised on TAS-129 on 2026-09-12 while PR #150 was open; the comment went
+  unanswered and TAS-129 closed as Done, which is why the removal needed a
+  ticket of its own.
+
+### The avatar limits are pinned from auth-service's YAML, not from the contract
+
+- **Contract:** `contentType` is an open string, and the ceiling is the 5 MB
+  above.
+- **Runtime, read at `368ae77`:** `auth-service/src/main/resources/application.yml`
+  carries the 2097152 ceiling and a three-entry allowlist — `image/jpeg`,
+  `image/png`, `image/webp`, matched by exact string — as literals. The bucket
+  (`MINIO_BUCKET_AVATARS`, default `taska-avatars`) and the presigned TTL
+  (`MINIO_PRESIGNED_URL_TTL`, default 15 minutes) are environment defaults the
+  stand can override.
+- **Compensation:** the ceiling, the allowlist and the TTL are constants in
+  `src/api/avatars.ts`, and the menu states the ceiling and the types before a
+  file is chosen. The allowlist is closed where the backend can grow it without
+  touching the contract.
+- **Removed by:** the contract or a dictionary read stating the limits. None is
+  filed; the natural home is the dictionaries read under
+  [TAS-217](https://jira.ozero.dev/browse/TAS-217), which does not list upload
+  limits today. Same position as the attachment limits entry below.
+
+### The current user's avatar costs a second read, because `GET /users/me` carries none
+
+- **Endpoints:** `GET /api/v1/users/me`, `GET /api/v1/users/{userId}/avatar`.
+- **Contract:** `ValidateAccessTokenResponseDto` is
+  `{id, login, email, displayName, status, globalRole}` — no avatar. TAS-129's
+  own acceptance criterion said avatar metadata would come back on the profile
+  response; nothing merged does that.
+- **Compensation:** the profile menu reads `GET /users/{userId}/avatar` for the
+  current user on every screen it mounts on — a 10-minute stale time and no
+  refetch on focus, because every read re-signs the link and so re-downloads the
+  image. A member row needs no such read: PR #152 carries the avatar inline.
+- **Removed by:** [TAS-223](https://jira.ozero.dev/browse/TAS-223) (epic
+  TAS-210), which puts a nullable `avatar` on `GET /users/me`. It needs no proto
+  or service change: `ProfileService.GetUserProfile` already exists and the
+  gateway never calls it.
+
+### Avatar confirm trusts any `objectKey`
+
+- **Endpoints:** `POST /api/v1/users/me/avatar/confirm`, `DELETE /api/v1/users/me/avatar`.
+- **Contract:** says nothing about whose key may be confirmed.
+- **Runtime, read at `368ae77` and not measured:**
+  `ProfileServiceImpl.confirmAvatarUpload` checks only that the object exists and
+  fits the ceiling. The key is a bare UUID bound to nobody, `user_avatars` has no
+  unique constraint on `object_key`, and the key is readable by any
+  authenticated user — in the path of the presigned link from
+  `GET /users/{userId}/avatar`, and on PR #152's member rows as
+  `avatar.objectKey`. So one user can confirm another's key and then delete it
+  with `DELETE /users/me/avatar`. Separately, confirming the **same key twice**
+  deletes the object the saved row points at and then fails, and every later
+  avatar read for that user answers 404, because the download presign issues a
+  HEAD first.
+- **Compensation:** the menu never re-sends a key, and no comment in `src/api`
+  licenses a retry of confirm. The mock reproduces the same-key behaviour so the
+  defect is visible there rather than papered over.
+- **Removed by:** [TAS-221](https://jira.ozero.dev/browse/TAS-221), filed
+  2026-09-14 with priority High and to be fixed before PR #150 deploys.
+
+### `upload-url` declares 200 and answers 201
+
+- **Endpoint:** `POST /api/v1/users/me/avatar/upload-url`.
+- **Contract:** `200`. **Runtime, read at `368ae77`:** the controller answers
+  `ResponseEntity.status(HttpStatus.CREATED)`, so 201.
+- **Compensation:** none needed — the rest client reads any 2xx as success.
+- **Removed by:** a clause in [TAS-222](https://jira.ozero.dev/browse/TAS-222).
+
+### PR #152's member rows never carry an avatar (pending)
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/members`, backend PR #152, pin
+  `docs/contract/pending/pr-152-TAS-137.yml`, whose head has since moved to
+  `7fa04ba94096` without changing its `openapi.yml`.
+- **Contract (pending):** `ProjectMemberDetailsDto.avatar` with a `downloadUrl`.
+- **Runtime, read at `7fa04ba` and not measured:**
+  `UserRepository.findUsersWithAvatars` selects no avatar id, and
+  `ProfileMapper.toProto` attaches the avatar only when that id is present, so
+  every member row carries `avatar: null`. `enrichWithAvatarUrl` also has no
+  per-row fallback, so one missing object or a MinIO outage fails the whole
+  member read.
+- **What follows:** once PR #150 and PR #152 both deploy as they stand, every
+  face on the board is initials, even for people who uploaded a photo, and one
+  broken avatar blanks the member list.
+- **Compensation:** none — the client draws initials when a row carries no
+  avatar, and that is the correct reading of the row.
+- **Removed by:** the fix on PR #152, raised on
+  [TAS-137](https://jira.ozero.dev/browse/TAS-137) on 2026-09-14.
 
 ### The mock hands back a `data:` URL where the gateway signs an `https` one
 
@@ -779,12 +904,15 @@ Everything below is the entry as it stood, in the past tense.
   in fifteen minutes.
 - **Why it is deliberate:** without it, mock mode could demonstrate *uploading*
   an avatar and never demonstrate *having* one, which makes the whole feature
-  unclickable on the one environment the team actually uses before PR #150
-  merges.
-- **What it costs, stated so nobody discovers it:** expiry is unreachable in
-  mock, so the fallback that puts initials back when a link has gone stale is
-  proven by unit tests and by no end-to-end run. A `data:` URL also never fails
-  to load, so the failed-image path is in the same position.
+  unclickable on the one environment the team actually uses until the avatar
+  routes deploy — which, as the entry above records, the merge of PR #150 did
+  not do.
+- **What it costs, stated so nobody discovers it:** expiry cannot happen in
+  mock, and a `data:` URL never fails to load. The fallback that puts initials
+  back is still covered end to end: `e2e/avatar.spec.ts` ("comes back to initials
+  when a link no longer loads") swaps a face's link for one the network refuses
+  with 403, which is what an expired presigned GET looks like from the browser.
+  What no end-to-end run can show is the expiry itself.
 - **Removal:** none, and none wanted. It disappears with `hybrid` under
   [TAS-209](https://jira.ozero.dev/browse/TAS-209), along with every other
   mock-only behaviour; it is not a compensation for a gateway defect and should
