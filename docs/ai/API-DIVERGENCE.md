@@ -748,42 +748,52 @@ Everything below is the entry as it stood, in the past tense.
   and touches every nullable DTO in the gateway, so it is the owner's call
   rather than ours.
 
-### The avatar routes are merged but not deployed
+### The avatar routes deployed hours after they merged
 
 - **Endpoints:** all four — `POST /api/v1/users/me/avatar/upload-url`,
   `POST /api/v1/users/me/avatar/confirm`, `DELETE /api/v1/users/me/avatar`,
   `GET /api/v1/users/{userId}/avatar`.
 - **Contract:** in the snapshot since backend PR #150 merged into `develop` at
   `368ae77355bd` on 2026-09-14.
-- **Observed, measured 2026-09-14 11:14 UTC without a token:**
+- **Observed, not deployed — 2026-09-14 11:14 UTC, without a token:**
   `GET /users/not-a-uuid/avatar` and `GET /users/me/avatar/upload-url` both
   answered **404** `No static resource …` (request ids
   `ead1b87c-8097-4f1a-ae15-383b73643adf`, `47817ea1-001f-4fc8-b64c-b9447eeb51f0`),
   while `GET /users/me` answered **401** in the same run
-  (`940ada12-06e9-45e3-b400-1f204e021a58`) — so the 404s are routing, not
-  permissions. The owner confirmed the same day that the merge did not deploy,
-  and asked that the stand not be probed again until the backend is fixed.
-- **Compensation:** every avatar failure goes through `isUndeployedRoute` first.
-  Once the current user's avatar read has met that signature, it is not asked
-  again for the rest of the page session — not on retry, not on the next mount,
-  not on focus — so an undeployed stand costs one 404 per page load rather than
-  one per navigation. The profile menu then offers no photo controls at all,
-  only the sentence that photos are not on this gateway yet; a write that meets
-  the signature says the same.
-- **Why it did not deploy, read from the backend's Actions rather than the
+  (`940ada12-06e9-45e3-b400-1f204e021a58`) — so the 404s were routing, not
+  permissions. The owner confirmed the deploy had not happened and asked that the
+  stand not be probed while the backend was being fixed.
+- **Why it had not deployed, read from the backend's Actions rather than the
   stand:** nothing deployed `develop` on merge when PR #150 landed at 06:31 UTC.
-  An auto-deploy to stage (`.github/workflows/deploy-stage.yml`) arrived later
+  The auto-deploy to stage (`.github/workflows/deploy-stage.yml`) arrived later
   with PR #156 at `4215398`. Its first run,
   [34844739202](https://github.com/VladislavYurin/taska-backend/actions/runs/34844739202),
   failed at "Set GIT_COMMIT in Dokploy": `DOKPLOY_URL`, `DOKPLOY_API_KEY` and
   `DOKPLOY_COMPOSE_ID` were empty in the job (`curl: (3) URL rejected: No host
-  part in the URL`), so the deploy step was skipped. Once those secrets exist,
-  the next push to `develop` ships PR #150 — with
-  [TAS-221](https://jira.ozero.dev/browse/TAS-221) open unless it lands first.
-  Whether that stage is `api.taska.ozero.dev` is not verified.
-- **Removed by:** a deploy of `develop` at or after `368ae77` to
-  `api.taska.ozero.dev`, confirmed by one upload from the deployed origin — the
-  routes have never answered this client.
+  part in the URL`), so the deploy step was skipped. The second run, for
+  `f16e772` at 13:31 UTC, failed too.
+- **Observed, deployed — 2026-09-14 13:53 UTC, once, after the owner said the
+  avatars should now be on the backend:** `GET /users/not-a-uuid/avatar` answered
+  **400** `INVALID_ARGUMENT` (`627a2dcc-2eb9-4de3-9514-62aa3685499d`), the path
+  converter refusing the id, and `GET /users/me/avatar/upload-url` answered
+  **405** `METHOD_NOT_ALLOWED` (`aee41dd7-62d0-495a-ad2e-83f13590da5b`), the path
+  mapped for `POST`. `GET /users/me` answered **401**
+  (`f0873b76-c90d-4e0e-905c-98c9375bb690`). Both stage-deploy runs still show
+  failure, so this deploy did not come from that workflow, and which `develop`
+  commit is running is not known from outside. It shipped with
+  [TAS-221](https://jira.ozero.dev/browse/TAS-221) open.
+- **Compensation, kept and now dormant:** every avatar failure still goes
+  through `isUndeployedRoute` first. Once the current user's avatar read meets
+  that signature, it is not asked again for the rest of the page session, so an
+  undeployed stand costs one 404 per page load rather than one per navigation,
+  and the menu offers no photo controls, only the sentence that photos are not on
+  this gateway yet. Against a deployed gateway it never fires. Accepted cost: a
+  tab opened before the deploy keeps that sentence until it is reloaded.
+- **Removed by:** nothing left to remove in code — the signature check is the
+  general mechanism every route family uses. The remaining measurement is one
+  real upload from `taska.ozero.dev`: the cross-origin PUT to the avatars bucket
+  has never been exercised, and its CORS and public URL are configured nowhere
+  in the backend repository (see `docs/ai/BACKLOG.md`).
 
 ### The avatar schema declares 5 MB and the service enforces 2 MB
 
