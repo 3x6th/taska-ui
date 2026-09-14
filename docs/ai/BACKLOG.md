@@ -2160,8 +2160,12 @@ is what recurs.
   covered end to end.
 - **TAS-220's cache write has three edges `frontend-builder` named rather than
   closed** (2026-09-14).
-  - **Hybrid, once PR #150 deploys:** the write puts the reader's face on hybrid's
-    synthesised member row, and the next members refetch takes it off again.
+  - **The face flip-flops wherever member rows carry no avatar.** In hybrid once
+    PR #150 deploys, the write puts the reader's face on hybrid's synthesised
+    member row, and the next members refetch takes it off again. The menu keeps
+    the photo while the board shows initials until hybrid's `listMembers`
+    delegates. The same happens in rest against PR #152's head until its
+    missing avatar id is fixed (TAS-137).
   - **Shape coupling:** the menu types the project-summary cache by shape alone.
     Renaming `ProjectSummary.members` would silently stop the write, and only the
     e2e card assertion would notice.
@@ -2195,9 +2199,6 @@ is what recurs.
   avatar block has no blocked-preflight case of its own (`api-contract-guard`,
   2026-09-14). The condition AGENTS.md sets for a leg that is not a gateway
   request holds by construction, but no test holds it.
-- **In hybrid, once PR #150 deploys, the menu will show the reader's photo while
-  the board shows their initials**, until hybrid's `listMembers` delegates
-  (`api-contract-guard`, 2026-09-14).
 - **Four from TAS-220's `art-director` verdict, recorded rather than taken**
   (2026-09-14).
   - The trigger and menu header show initials for one avatar read on every cold
@@ -2215,3 +2216,32 @@ is what recurs.
     against the hybrid dev server, with every `/api` request answered inside the
     page and every external request aborted. The e2e suite is mock-only by
     design, so that would be a new kind of spec rather than one more case.
+- **Member reads re-sign every face on each refetch** (`api-contract-guard`,
+  2026-09-14, TAS-220 re-verdict). Past the 20-second stale time, every refetch of
+  a member list downloads every full-size face again. The menu's own read is
+  fixed, but member rows are not. TAS-202's interim focus-off shrinks it, and
+  removing it needs a backend ask nobody has filed: stable links or a thumbnail.
+- **A missing avatar object would put auth-service's raw S3 SDK text in the
+  menu**, because `S3ExceptionHandler` passes `e.getMessage()` through and the
+  photo sentence quotes the server's message (`api-contract-guard`, 2026-09-14).
+  The exact text is not verified.
+- **`MockTaskaApi.ts` around 2640 says the over-5 MB check comes "before anything
+  else"**, but the gateway checks the token first, while the mock checks the size
+  before `currentUser()`. The UI cannot reach the difference
+  (`api-contract-guard`, 2026-09-14).
+- **Escape inside the profile menu sends focus to `<body>`** (`art-director`,
+  2026-09-14). The next Tab lands on "Filter projects". This predates TAS-220 —
+  the handler is identical on `main` — but both photo writes now hand focus back
+  to the upload button, so Escape is the usual way out. The same component
+  already returns focus to the trigger when Administration is chosen. The fix is
+  one line: on Escape, if focus was inside the popover, focus the trigger after
+  closing.
+- **"Remove photo" on hover is `--danger` on `--surface-2`: 3.24:1 light, 5.19:1
+  dark** (`art-director`, 2026-09-14, from its own recipe). It is the same gap as
+  Log out's resting `--danger` at 3.68:1 (§4.16, TAS-142 note), so the two should
+  be decided together.
+- **A failed re-read can leave a stale photo beside "could not be loaded"**
+  (`art-director`, 2026-09-14, from code, not reproduced). When the read past the
+  10-minute stale time fails while an older link is still cached, the header
+  keeps drawing that photo next to "Upload a photo" and "Your photo could not be
+  loaded." (`UserProfileMenu.tsx` around 219, 239 and 540).

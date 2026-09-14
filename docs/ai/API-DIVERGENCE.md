@@ -770,6 +770,17 @@ Everything below is the entry as it stood, in the past tense.
   one per navigation. The profile menu then offers no photo controls at all,
   only the sentence that photos are not on this gateway yet; a write that meets
   the signature says the same.
+- **Why it did not deploy, read from the backend's Actions rather than the
+  stand:** nothing deployed `develop` on merge when PR #150 landed at 06:31 UTC.
+  An auto-deploy to stage (`.github/workflows/deploy-stage.yml`) arrived later
+  with PR #156 at `4215398`. Its first run,
+  [34844739202](https://github.com/VladislavYurin/taska-backend/actions/runs/34844739202),
+  failed at "Set GIT_COMMIT in Dokploy": `DOKPLOY_URL`, `DOKPLOY_API_KEY` and
+  `DOKPLOY_COMPOSE_ID` were empty in the job (`curl: (3) URL rejected: No host
+  part in the URL`), so the deploy step was skipped. Once those secrets exist,
+  the next push to `develop` ships PR #150 — with
+  [TAS-221](https://jira.ozero.dev/browse/TAS-221) open unless it lands first.
+  Whether that stage is `api.taska.ozero.dev` is not verified.
 - **Removed by:** a deploy of `develop` at or after `368ae77` to
   `api.taska.ozero.dev`, confirmed by one upload from the deployed origin — the
   routes have never answered this client.
@@ -794,8 +805,9 @@ Everything below is the entry as it stood, in the past tense.
   - **size > 5 MB** fails the generated `@Max(5242880)` and the gateway answers
     **400** `INVALID_ARGUMENT` "Invalid request parameters" before the avatar
     call reaches auth-service. The token check has already called auth-service
-    by then, so "before auth-service" alone would be wrong. The rest client and
-    the mock refuse this band with the same status and message.
+    by then, so "before auth-service" alone would be wrong. The rest client
+    refuses this band with the same status, code and message. The mock has no
+    HTTP status to give, so it matches the code and the message.
 - **What follows:** a 3 MB image satisfies the schema, passes the gateway, and
   is refused a layer deeper as a server error. A client that trusts the schema
   offers a person a file the product will not take and discovers it after the
@@ -893,6 +905,12 @@ Everything below is the entry as it stood, in the past tense.
   broken avatar blanks the member list.
 - **Compensation:** none — the client draws initials when a row carries no
   avatar, and that is the correct reading of the row.
+- **The mock follows the fix, not the head.** It draws faces on member rows,
+  and for a row whose object is gone it draws no face rather than failing the
+  read. That is defensible for an open PR, and the code comment says so. It also
+  means mock-backed tests do not predict PR #152's head: against 7fa04ba, rest
+  would show initials for everyone and, for a missing object, no member list at
+  all.
 - **Removed by:** the fix on PR #152, raised on
   [TAS-137](https://jira.ozero.dev/browse/TAS-137) on 2026-09-14.
 

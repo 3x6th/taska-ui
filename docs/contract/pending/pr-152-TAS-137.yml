@@ -2,14 +2,21 @@
 # Reading a project's members, and the current user's role in the project
 #
 # Source: https://github.com/VladislavYurin/taska-backend/pull/152
-# Head commit: 1ad6ffad815d15c09e6b2a84ddc5cb54616d0efe
-# PR state on 2026-09-12: open, MERGEABLE, base develop
+# Head commit: 7fa04ba94096e6a6c06af41e181883f741e80646
+# PR state on 2026-09-14: open, MERGEABLE, base develop
+# Re-pinned 2026-09-14 from 1ad6ffad815d without re-extracting: the one commit between the two
+# heads (7fa04ba, "TAS-168: apply review fixes") changes no openapi.yml, so every declaration
+# below is unchanged. Its behaviour did change, and TAS-219/TAS-220 were re-read against it by
+# api-contract-guard the same day: an UNSPECIFIED or unknown role maps to null instead of a 500,
+# a member whose user is missing arrives without displayName/email/avatar instead of failing the
+# read, and every member row carries `avatar: null` because the query selects no avatar id —
+# raised on TAS-137 (docs/ai/API-DIVERGENCE.md, "PR #152's member rows never carry an avatar").
 # Base for this extract: develop @ 21a0d9d177a1b4be3ae303381f453c05bbd98e13
 #
 # One new route and one new field. `GET /projects/{projectId}/members` answers 405 today,
 # because only POST is mapped on that path — not the static-resource 404 the rest of this
-# directory's routes answer, which matters because `isUndeployedRoute` in src/api/errors.ts
-# matches the 404 signature only.
+# directory's routes answer. `isUndeployedRoute` in src/api/errors.ts matched the 404 signature
+# only when this was written; TAS-148 gave it a second arm for exactly this 405.
 #
 # This is NOT the contract. It is what the contract WILL say if this PR merges as it
 # stands. docs/contract/openapi.yml stays the authority until then; this file exists so a

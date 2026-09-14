@@ -936,6 +936,37 @@ describe("UserProfileMenu", () => {
       expect(screen.getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
     });
 
+    it("shows only the write refusal, not a second box, when a write is refused after the read already failed", async () => {
+      // Both boxes carry the same class and sit one after the other in the
+      // band. Before this fix a failed read followed by a refused write drew
+      // both at once — two red boxes for one line of text each (art-director,
+      // 2026-09-14, 390 dark).
+      state.readFailure = Object.assign(new Error("Not Found"), {
+        code: "NOT_FOUND",
+        status: 404,
+        requestId: REQUEST_ID,
+      });
+      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+      await screen.findByText("Your photo could not be loaded. Not Found");
+      expect(document.querySelectorAll(".user-profile-photo-note")).toHaveLength(1);
+
+      // A GIF passes the picker on some systems, and this refusal is decided
+      // without a request (see "refuses a type outside the allowlist" above).
+      pick(imageFile("wave.gif", 32, "image/gif"));
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("wave.gif is not a type this product accepts. Choose a JPEG, PNG or WebP image."),
+        ).toBeVisible(),
+      );
+      // The newer answer wins: the read failure's box is gone rather than
+      // stacked under the write refusal's, so exactly one remains.
+      expect(screen.queryByText("Your photo could not be loaded. Not Found")).not.toBeInTheDocument();
+      expect(document.querySelectorAll(".user-profile-photo-note")).toHaveLength(1);
+    });
+
     it("asks nothing at all when the profile itself could not be loaded", async () => {
       // No user, no id, and therefore no `GET /users/{userId}/avatar` to make:
       // the popover keeps Log out and says only what it knows.

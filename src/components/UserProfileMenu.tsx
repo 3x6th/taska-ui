@@ -536,8 +536,18 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                         the reader just did, so not a live region: it is usually
                         already true when the popover opens, and a region that
                         mounts together with its text is the shape §7 records as
-                        depending on screen-reader timing. */}
-                    {readFailed ? (
+                        depending on screen-reader timing.
+
+                        Suppressed while a write notice is showing or a write is
+                        in flight: without this, a failed read followed by a
+                        refused write drew two red boxes stacked in the band
+                        (art-director, 2026-09-14). The newer answer wins, and
+                        this box returns once the notice clears, if the read is
+                        still failed. `remove` cannot be the write in flight
+                        here — its button only exists once a read has
+                        succeeded, so `readFailed` and `remove.isPending` are
+                        never both true. */}
+                    {readFailed && !notice && !uploading ? (
                       <div className="user-profile-photo-note is-error">
                         <p className="user-profile-photo-note-sentence">{readFailureText(avatarQuery.error)}</p>
                         <PhotoNoteDetail error={avatarQuery.error} />
