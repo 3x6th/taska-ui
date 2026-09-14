@@ -4,7 +4,8 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import { BoardScreen } from "./BoardScreen";
-import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError } from "../api/attachments";
+import { ATTACHMENT_MAX_SIZE_BYTES } from "../api/attachments";
+import { ObjectStoreError } from "../api/objectStore";
 
 /**
  * The board reads five things and used to show a failure in only one of them.
@@ -1865,7 +1866,7 @@ describe("issue attachments", () => {
   it("names a blocked cross-origin PUT as a network-or-CORS problem, not as 'upload failed'", async () => {
     // The shape a refused preflight takes: no status anywhere, because the
     // browser does not tell script why.
-    failUpload("put", new AttachmentStoreError("The file store could not be reached: Failed to fetch", "STORAGE_UNREACHABLE", null));
+    failUpload("put", new ObjectStoreError("The file store could not be reached: Failed to fetch", "STORAGE_UNREACHABLE", null));
     renderBoard(ISSUE_PATH);
     await section();
     chooseFile();
@@ -1877,7 +1878,7 @@ describe("issue attachments", () => {
   });
 
   it("reads a store 403 as an expired upload link rather than as a permission failure", async () => {
-    failUpload("put", new AttachmentStoreError("The file store answered 403.", "STORAGE_REJECTED", 403));
+    failUpload("put", new ObjectStoreError("The file store answered 403.", "STORAGE_REJECTED", 403));
     renderBoard(ISSUE_PATH);
     await section();
     chooseFile();

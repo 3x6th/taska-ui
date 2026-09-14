@@ -2145,3 +2145,125 @@ is what recurs.
   inherit that tone — it is `--fg-2` mono at 6.25:1, because a reader has to
   transcribe it and `.attachment-note` had already recorded 3.17 as the reason
   the tone was dropped there.
+- **Five from TAS-220's release review**, recorded rather than taken. Three
+  remain open:
+  - The always-mounted empty live region still consumes the photo band's 7px
+    flex gap when there is no notice.
+  - Neither avatars nor attachments enforce the contract's 255-character
+    `fileName` before asking for an upload URL.
+  - The "15 minutes" in both expired-link sentences is a literal, not derived
+    from the TTL constant — which is itself only an environment default.
+
+  Two were closed in TAS-220's second pass on 2026-09-14. The avatar read no
+  longer refetches on focus, or on a mount within 10 minutes of the last good
+  read, and an undeployed signature is asked once per page load. `API-DIVERGENCE.md` now says the failed-image fallback is
+  covered end to end.
+- **TAS-220's cache write has three edges `frontend-builder` named rather than
+  closed** (2026-09-14).
+  - **The face flip-flops wherever member rows carry no avatar.** In hybrid once
+    PR #150 deploys, the write puts the reader's face on hybrid's synthesised
+    member row, and the next members refetch takes it off again. The menu keeps
+    the photo while the board shows initials until hybrid's `listMembers`
+    delegates. The same happens in rest against PR #152's head until its
+    missing avatar id is fixed (TAS-137).
+  - **Shape coupling:** the menu types the project-summary cache by shape alone.
+    Renaming `ProjectSummary.members` would silently stop the write, and only the
+    e2e card assertion would notice.
+  - **An avatar write drops refreshes already in flight — accepted for TAS-220's
+    merge at the owner's call for speed, and the first thing to fix after it**
+    (`release-reviewer`, 2026-09-14, reproduced).
+    - **What happens:** `UserProfileMenu.tsx` around 688 and 693-695 cancels
+      *every* member or summary read already holding data, including lists the
+      write does not change. Their answers are thrown away and never re-run, and
+      the lists it writes are then marked fresh.
+    - **Reproduced:** a Remove 233 ms into an arrival refresh left the Taska
+      Platform card at 9 issues when the server said 10, still 9 five seconds
+      later. The control run without a write showed 11 of 11.
+    - **Stale until:** a mount more than 20 s later, a tab switch, or a
+      reconnect.
+    - **Fix:** cancel only the lists `withOwnFace` will change, and remember
+      which of them were fetching. Once the write has landed (after
+      `writeOwnFace` on upload, in `onSettled` on removal), run
+      `invalidateQueries({ queryKey, exact: true })` on just those keys. That is
+      at most one read per list that was already mid-read.
+- **The avatar photo buttons and the watchers block answer the same Chromium
+  behaviour two different ways.** DESIGN.md §4.21 records that a real `disabled`
+  attribute blurs a focused element, and watchers answer it with `aria-disabled`
+  plus a guard in the handler so focus never leaves; TAS-220's photo controls
+  keep the real `disabled` and refocus once the write settles. Both work. Picking
+  one is a design ruling and a wider change than TAS-220 was, so it is here
+  rather than done. **Ruled by `art-director` on 2026-09-14: the photo band
+  follows §4.21.** Focus sits on `<body>` for the whole write, and the disabled
+  button is the only progress signal. Not taken in TAS-220's second pass, which
+  was already the blockers plus six notes.
+- **The avatars bucket's cross-origin leg is configured nowhere in the backend
+  repository** (`api-contract-guard`, 2026-09-14, TAS-220). auth-service's
+  `storage.public-url` defaults to `http://127.0.0.1:9000`, and no CORS rule for
+  `taska-avatars` exists anywhere. The presigner also sets no path-style option,
+  so the URL shape the stand hands out is unverified. The attachments half is
+  already raised on TAS-131. Whether the stand's environment overrides any of it
+  is unknown, and the first upload from taska.ozero.dev after the deploy is the
+  measurement, not another reading.
+- **An avatar confirm can fail after it has committed** (`api-contract-guard`,
+  2026-09-14). The presign and its HEAD run after the transaction. When they
+  fail, the new avatar is saved, yet the menu says nothing was saved and does
+  not re-read — which the attachments panel does. The backend half would be to
+  answer with `downloadUrl: null` rather than fail.
+- **The PUT-leg tests never assert that `isUndeployedRoute` is false against an
+  `ObjectStoreError`** (`RestTaskaApi.test.ts` around 3157 and 3409), and the
+  avatar block has no blocked-preflight case of its own (`api-contract-guard`,
+  2026-09-14). The condition AGENTS.md sets for a leg that is not a gateway
+  request holds by construction, but no test holds it.
+- **Four from TAS-220's `art-director` verdict, recorded rather than taken**
+  (2026-09-14).
+  - The trigger and menu header show initials for one avatar read on every cold
+    load: 148–164 ms on the mock. Drawing the bare fill while the read is pending
+    would avoid it; widening `loading` instead would disable the trigger and Log
+    out with it.
+  - The store-unreachable and expired-link sentences, shared with attachments,
+    run to four lines in a 276px menu and explain infrastructure. One sentence
+    plus "choose the photo again" would do (§1, §5.4).
+  - The board's "New" is `disabled` rather than hidden for a VIEWER
+    (`BoardScreen.tsx:509`), against §5.7. This predates TAS-220.
+  - `.compact-button:hover` (`styles.css:4573`) sticks after a tap on touch,
+    which is a product-wide `@media (hover: hover)` question.
+  - Beside those: the undeployed-route state *can* be driven in Playwright
+    against the hybrid dev server, with every `/api` request answered inside the
+    page and every external request aborted. The e2e suite is mock-only by
+    design, so that would be a new kind of spec rather than one more case.
+- **Member reads re-sign every face on each refetch** (`api-contract-guard`,
+  2026-09-14, TAS-220 re-verdict). Past the 20-second stale time, every refetch of
+  a member list downloads every full-size face again. The menu's own read is
+  fixed, but member rows are not. TAS-202's interim focus-off shrinks it, and
+  removing it needs a backend ask nobody has filed: stable links or a thumbnail.
+- **A missing avatar object would put auth-service's raw S3 SDK text in the
+  menu**, because `S3ExceptionHandler` passes `e.getMessage()` through and the
+  photo sentence quotes the server's message (`api-contract-guard`, 2026-09-14).
+  The exact text is not verified.
+- **`MockTaskaApi.ts` around 2640 says the over-5 MB check comes "before anything
+  else"**, but the gateway checks the token first, while the mock checks the size
+  before `currentUser()`. The UI cannot reach the difference
+  (`api-contract-guard`, 2026-09-14).
+- **Escape inside the profile menu sends focus to `<body>`** (`art-director`,
+  2026-09-14). The next Tab lands on "Filter projects". This predates TAS-220 —
+  the handler is identical on `main` — but both photo writes now hand focus back
+  to the upload button, so Escape is the usual way out. The same component
+  already returns focus to the trigger when Administration is chosen. The fix is
+  one line: on Escape, if focus was inside the popover, focus the trigger after
+  closing.
+- **"Remove photo" on hover is `--danger` on `--surface-2`: 3.24:1 light, 5.19:1
+  dark** (`art-director`, 2026-09-14, from its own recipe). It is the same gap as
+  Log out's resting `--danger` at 3.68:1 (§4.16, TAS-142 note), so the two should
+  be decided together.
+- **A failed re-read can leave a stale photo beside "could not be loaded"**
+  (`art-director`, 2026-09-14, from code, not reproduced). When the read past the
+  10-minute stale time fails while an older link is still cached, the header
+  keeps drawing that photo next to "Upload a photo" and "Your photo could not be
+  loaded." (`UserProfileMenu.tsx` around 219, 239 and 540).
+- **`refetchQueries({ type: 'all' })` or `invalidateQueries({ refetchType: 'all' })`
+  would bypass the `enabled` guard** on an avatar query nobody is observing
+  (`release-reviewer`, 2026-09-14). Nothing calls either today.
+- **If the undeployed avatar read lands while keyboard focus is on "Upload a
+  photo", focus drops to `<body>`**, because the band removes the button
+  (`release-reviewer`, 2026-09-14). This is moot for any page loaded after the
+  routes deployed.

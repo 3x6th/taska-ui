@@ -3,7 +3,9 @@ import type {
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
+  ConfirmAvatarUploadInput,
   CreateAttachmentUploadUrlInput,
+  CreateAvatarUploadUrlInput,
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
@@ -34,14 +36,27 @@ import {
   ATTACHMENT_MAX_SIZE_BYTES,
   ATTACHMENT_PRESIGNED_TTL_MS,
   ATTACHMENT_STORE_ORIGIN,
-  ATTACHMENT_STORE_REJECTED_CODE,
-  ATTACHMENT_STORE_UNREACHABLE_CODE,
-  AttachmentStoreError,
   attachmentRefusal,
   attachmentRefusalKind,
   attachmentSizeRefusalMessage,
-  requireUsableUploadUrl,
 } from "../attachments";
+import {
+  AVATAR_BUCKET,
+  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
+  AVATAR_DECLARED_MAX_SIZE_BYTES,
+  AVATAR_MAX_SIZE_BYTES,
+  AVATAR_MOCK_STORE_ORIGIN,
+  AVATAR_PRESIGNED_TTL_MS,
+  avatarRefusal,
+  avatarRefusalKind,
+  avatarSizeRefusalMessage,
+} from "../avatars";
+import {
+  OBJECT_STORE_REJECTED_CODE,
+  OBJECT_STORE_UNREACHABLE_CODE,
+  ObjectStoreError,
+  requireUsableUploadUrl,
+} from "../objectStore";
 import type { PlanningFields, PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
 import { emptyPlanningFields, planningFieldRefusal, resolvePlanningFields } from "../planningFields";
 import type {
@@ -53,6 +68,7 @@ import type {
   AdminTable,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  AvatarUploadTicket,
   Board,
   BoardColumn,
   Issue,
@@ -81,6 +97,7 @@ import type {
   ProjectMembership,
   UnwatchIssueResult,
   User,
+  UserAvatar,
   UserStatus,
   UserStatusChange,
   WatchIssueResult,
@@ -88,6 +105,15 @@ import type {
 } from "../../domain/types";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
 import { classifyColumnType } from "../../lib/adminColumnTypes";
+
+/**
+ * The seeded avatar's bytes, inline. A 48×48 two-tone PNG of a head and
+ * shoulders — not a photograph and not meant to be one; it exists so that an
+ * avatar drawn from an image is visibly different from an avatar drawn from a
+ * fill and initials.
+ */
+const SEEDED_AVATAR_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAoklEQVR42u3XwQ2FMAwDUG/EnSUYmhn+CswBd2h/G1TXQZY8wJMaNQ6WdZMKDDLIoEKO3z4fdCFKmQCqaN6YMEgTNmGcJmbCUE3AlBwU0PSaDPoyKKzpMvnJDOKCvDoybnvFPqTYGBU7teLV4bssxVALfYxafeilpt0EmqbRBKamxQSy5q8JfE3dhCmaiikJiKApmTKAaJpHk0G9ILLmbpIDnTSYWlsbCRnnAAAAAElFTkSuQmCC";
 
 const ANNA_ID = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
 const MARK_ID = "e65186a2-b807-42ae-a66f-711be116a93b";
@@ -178,6 +204,12 @@ export const MOCK_ATTACHMENT_TRIGGERS = {
   confirmFails: "confirm-fails",
 } as const;
 
+// The avatar upload reads the same four names out of the same
+// `uploadBehaviourFor`, so a file called `cors-blocked.png` fails the middle leg
+// there too. Named after attachments because that is where they were written
+// and where three of the four are demonstrated; a second, identical table under
+// a second name would be two things to keep in step for no reader's benefit.
+
 type MockUploadBehaviour = "ok" | "storeUnreachable" | "storeRefused" | "confirmFails";
 
 /** One presigned upload this mock has handed out and is still willing to honour. */
@@ -197,6 +229,51 @@ interface MockStoredObject {
   contentType: string;
   sizeBytes: number;
   checksum: string;
+}
+
+/**
+ * One presigned **avatar** upload this mock has handed out. Separate from
+ * `MockUploadTicket` above, and the separation is the point: an avatar ticket
+ * is minted by a different route family against a different bucket, and a mock
+ * that honoured either link on either leg would let a caller cross the two
+ * without anything noticing.
+ */
+interface MockAvatarTicket {
+  objectKey: string;
+  userId: string;
+  /** Exactly the value signed at leg 1. Leg 2 compares byte for byte, as S3 does. */
+  contentType: string;
+  /** Epoch ms. Past it, leg 2 answers 403 — the store's answer for a stale signature. */
+  expiresAt: number;
+  behaviour: MockUploadBehaviour;
+}
+
+/**
+ * A user's avatar as this store holds it, which is `AvatarResponseDto` plus the
+ * one thing a real store keeps and a metadata row does not: the bytes.
+ *
+ * `downloadUrl` is a **`data:` URL built from what was actually PUT**, and that
+ * is a deliberate divergence from the gateway, which signs an `https` link
+ * against MinIO. The reason is that this mock has no server to serve bytes
+ * back from: a presigned-looking link to `127.0.0.1:9000` would 404 in every
+ * environment anybody actually opens this in, so mock mode could demonstrate
+ * uploading an avatar and never demonstrate *having* one — and the e2e suite,
+ * which is mock-backed by construction, could not tell a picture that replaced
+ * the initials from one that failed to load and fell back to them.
+ *
+ * Nothing reads the URL's shape. `Avatar` puts it in an `<img src>` and falls
+ * back to initials when it does not load, which is the same code path either
+ * way.
+ */
+interface MockAvatar {
+  id: string;
+  userId: string;
+  objectKey: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  createdAt: string;
+  downloadUrl: string;
 }
 
 interface StoredAttachment {
@@ -233,6 +310,24 @@ const mockChecksum = (bytes: Uint8Array) => {
     out += hash.toString(16).padStart(8, "0");
   }
   return out;
+};
+
+/**
+ * The bytes that were PUT, as something an `<img>` can actually draw — see
+ * `MockAvatar` for why this store hands back a `data:` URL where the gateway
+ * signs an `https` one.
+ *
+ * Chunked rather than `btoa(String.fromCharCode(...bytes))`: spreading a
+ * megabyte-scale array into an argument list overflows the call stack, and the
+ * ceiling this feature allows is two megabytes.
+ */
+const dataUrlFor = (bytes: Uint8Array, contentType: string) => {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return `data:${contentType};base64,${btoa(binary)}`;
 };
 
 /** Which failure this file name asks for, or a plain upload. */
@@ -741,6 +836,21 @@ export class MockTaskaStore {
   private storeObjects = new Map<string, MockStoredObject>();
   /** Presigned uploads handed out and not yet spent, keyed by the URL itself. */
   private uploadTickets = new Map<string, MockUploadTicket>();
+  /**
+   * One avatar per user at most, keyed by user id — which is the shape of the
+   * server's own table and the reason nothing here has to guard against
+   * duplicates: a second confirm replaces the row rather than inserting beside
+   * it, and `DELETE` is idempotent because deleting from a map twice is.
+   */
+  private avatars = new Map<string, MockAvatar>();
+  /** Presigned avatar uploads handed out and not yet spent, keyed by the URL. */
+  private avatarTickets = new Map<string, MockAvatarTicket>();
+  /**
+   * The avatar bucket: object key to what was PUT under it, bytes included.
+   * Separate from `storeObjects` above for the same reason the tickets are —
+   * two buckets, and an attachment key must not resolve as an avatar.
+   */
+  private avatarObjects = new Map<string, { contentType: string; sizeBytes: number; dataUrl: string }>();
   private projectLabels: ProjectLabel[];
   /**
    * Which labels an issue carries, held as ids against `projectLabels` rather
@@ -896,6 +1006,45 @@ export class MockTaskaStore {
         globalRole: "USER",
       },
     ];
+
+    /**
+     * One seeded avatar, and one only — Sofia's.
+     *
+     * Somebody has to have a picture before anybody uploads one, or mock mode
+     * can never show what the member-row path actually draws: `listMembers`
+     * carries the avatar inline, which is what makes a board of faces one read,
+     * and a seed of nobody would leave that code unexercised until a reviewer
+     * uploaded something by hand.
+     *
+     * **Not Anna**, deliberately. She is the account every e2e spec and every
+     * screenshot signs in as, and the flow this feature is built for starts at
+     * "no avatar": upload it, watch it replace the initials, delete it, watch
+     * the initials come back. Seeding the reader's own face would take the
+     * first of those four steps away from the only environment that can run it.
+     *
+     * The PNG is 219 bytes of two-tone head-and-shoulders — recognisably a
+     * picture and not a coloured disc, which is the one thing it has to be to
+     * prove an image rendered rather than a fill. It is a `data:` URL because
+     * this store has no server to serve bytes from; see `MockAvatar`.
+     */
+    this.avatars.set(SOFIA_ID, {
+      id: "3a1d6f70-5f3e-4d2b-9d0c-8c8e2d4b6a11",
+      userId: SOFIA_ID,
+      objectKey: "seeded-avatar-sofia",
+      fileName: "sofia.png",
+      contentType: "image/png",
+      sizeBytes: 219,
+      createdAt: ts(12, 5),
+      downloadUrl: SEEDED_AVATAR_PNG,
+    });
+    // And the object that row points at, in the bucket. A read presigns
+    // through a HEAD of the object (see `getUserAvatarUrl`), so a row with
+    // nothing behind it is the broken state, not a seeded one.
+    this.avatarObjects.set("seeded-avatar-sofia", {
+      contentType: "image/png",
+      sizeBytes: 219,
+      dataUrl: SEEDED_AVATAR_PNG,
+    });
 
     this.projects = [
       // Not `#6366f1`, which is what this key computes to: a seed equal to the
@@ -1673,7 +1822,14 @@ export class MockTaskaStore {
 
   listMembers(projectId: string): ProjectMember[] {
     this.getProject(projectId);
-    return this.membersByProject[projectId] ?? [];
+    // The nested summary is rebuilt per read rather than served out of the
+    // stored row: an avatar can change without the membership changing, and the
+    // server's own row is a join that is evaluated when it is asked for. A row
+    // that named nobody still names nobody.
+    return (this.membersByProject[projectId] ?? []).map((member) => ({
+      ...member,
+      user: member.user ? this.userSummary(member.userId) : undefined,
+    }));
   }
 
   getWorkflow(): Workflow {
@@ -2283,7 +2439,7 @@ export class MockTaskaStore {
 
   /**
    * Leg 2 — the browser's own PUT, standing in for a server this app cannot
-   * reach. Every refusal here is an `AttachmentStoreError` rather than a
+   * reach. Every refusal here is an `ObjectStoreError` rather than a
    * `MockApiError`, because the thing refusing is not the gateway and the panel
    * has to be able to tell.
    */
@@ -2298,27 +2454,27 @@ export class MockTaskaStore {
     if (!ticket) {
       // A URL this store never signed. S3 answers 403 for an unparseable or
       // unknown signature, not 404 — the object is not the thing being denied.
-      throw new AttachmentStoreError("The file store answered 403.", ATTACHMENT_STORE_REJECTED_CODE, 403);
+      throw new ObjectStoreError("The file store answered 403.", OBJECT_STORE_REJECTED_CODE, 403);
     }
     if (ticket.behaviour === "storeUnreachable") {
-      throw new AttachmentStoreError(
+      throw new ObjectStoreError(
         "The file store could not be reached: Failed to fetch",
-        ATTACHMENT_STORE_UNREACHABLE_CODE,
+        OBJECT_STORE_UNREACHABLE_CODE,
         null,
       );
     }
     if (ticket.behaviour === "storeRefused") {
-      throw new AttachmentStoreError("The file store answered 500.", ATTACHMENT_STORE_REJECTED_CODE, 500);
+      throw new ObjectStoreError("The file store answered 500.", OBJECT_STORE_REJECTED_CODE, 500);
     }
     if (Date.now() > ticket.expiresAt) {
-      throw new AttachmentStoreError("The file store answered 403.", ATTACHMENT_STORE_REJECTED_CODE, 403);
+      throw new ObjectStoreError("The file store answered 403.", OBJECT_STORE_REJECTED_CODE, 403);
     }
     // The signature covers `Content-Type`, so a value that differs by so much
     // as a charset is a signature mismatch and a 403. Reproduced because it is
     // the single easiest rule in this feature to break from the UI side, and
     // the only place it can ever be caught before production.
     if (ticket.contentType !== contentType) {
-      throw new AttachmentStoreError("The file store answered 403.", ATTACHMENT_STORE_REJECTED_CODE, 403);
+      throw new ObjectStoreError("The file store answered 403.", OBJECT_STORE_REJECTED_CODE, 403);
     }
 
     this.storeObjects.set(ticket.objectKey, {
@@ -2471,6 +2627,223 @@ export class MockTaskaStore {
       fileName: attachment.fileName,
       deletedAt: attachment.deletedAt,
     });
+  }
+
+  /**
+   * Leg 1 of the avatar upload, in the order the request meets its checks —
+   * which is **not** the attachment one's, where the file is judged first. The
+   * gateway authenticates the request and bean-validates its body before the
+   * avatar call leaves it, and auth-service then runs `verifyUserExists` and
+   * only after that — inside a `Mono.defer` — `createPresignedUploadUrl`, whose
+   * `S3StorageClient.validateFileParams` judges the file. So:
+   *
+   * - a `sizeBytes` past the schema's declared 5 MB is the gateway's 400
+   *   `INVALID_ARGUMENT`, "Invalid request parameters", before anything else;
+   * - then the caller has to exist, which `currentUser()` stands in for;
+   * - then the type, and the enforced **2 MB** — `OUT_OF_RANGE`, which answers
+   *   500 over the wire because `RestErrorMapper` has no row for it.
+   *
+   * An empty file is bean-validated at the gateway too, with the same code as
+   * the type arm; this throws `validateFileParams`'s sentence for it, as
+   * `RestTaskaApi.refuseAvatar` does. See `src/api/avatars.ts` for both
+   * ceilings; `refuseAvatar` answers each of these files with the same code, so
+   * a 3 MB photo and a 6 MB one are each stopped identically in both modes.
+   *
+   * **There is no role to check here.** The route is scoped to `me`, so the
+   * only questions the server can ask are whether the request carries a valid
+   * session and whether its user exists.
+   */
+  createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): AvatarUploadTicket {
+    if (input.sizeBytes > AVATAR_DECLARED_MAX_SIZE_BYTES) {
+      throw new MockApiError("INVALID_ARGUMENT", AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE);
+    }
+    const user = this.currentUser();
+    const refusal = avatarRefusal(input);
+    if (refusal) {
+      // The same split `refuseAvatar` uses: only the ceiling is OUT_OF_RANGE.
+      const code = avatarRefusalKind(input) === "size" ? "OUT_OF_RANGE" : "INVALID_ARGUMENT";
+      throw new MockApiError(code, refusal);
+    }
+
+    const objectKey = makeId("avatar-object");
+    const signedAt = new Date();
+    const behaviour = uploadBehaviourFor(input.fileName);
+    const query = new URLSearchParams({
+      "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+      "X-Amz-Credential": `minioadmin/${signedAt.toISOString().slice(0, 10).replace(/-/g, "")}/us-east-1/s3/aws4_request`,
+      "X-Amz-Date": `${signedAt.toISOString().replace(/[-:]/g, "").slice(0, 15)}Z`,
+      "X-Amz-Expires": String(Math.round(AVATAR_PRESIGNED_TTL_MS / 1000)),
+      "X-Amz-SignedHeaders": "content-type;host",
+      "X-Amz-Signature": mockChecksum(new TextEncoder().encode(`${objectKey}:${input.contentType}`)),
+    });
+    const uploadUrl = `${AVATAR_MOCK_STORE_ORIGIN}/${AVATAR_BUCKET}/${objectKey}?${query.toString()}`;
+
+    this.avatarTickets.set(uploadUrl, {
+      objectKey,
+      userId: user.id,
+      contentType: input.contentType,
+      // A file whose name asks for it gets a ticket that expired a minute ago,
+      // which is the only way anybody can see what a stale link looks like
+      // without waiting a quarter of an hour.
+      expiresAt: input.fileName.toLowerCase().includes(MOCK_ATTACHMENT_TRIGGERS.expiredTicket)
+        ? Date.now() - 60_000
+        : Date.now() + AVATAR_PRESIGNED_TTL_MS,
+      behaviour,
+    });
+
+    return { uploadUrl, objectKey, expiresIn: Math.round(AVATAR_PRESIGNED_TTL_MS / 1000) };
+  }
+
+  /**
+   * Leg 2 — the browser's own PUT, standing in for a server this app cannot
+   * reach. Every refusal is an `ObjectStoreError` rather than a `MockApiError`,
+   * because the thing refusing is not the gateway and the caller has to be able
+   * to tell.
+   *
+   * The bytes are kept, not just measured: `confirmAvatarUpload` turns them
+   * into the `data:` URL that stands in for a presigned GET (see `MockAvatar`),
+   * so what is drawn afterwards is the image that was actually sent.
+   */
+  putAvatarBytes(uploadUrl: string, bytes: Uint8Array, contentType: string): void {
+    // Before the lookup, and for the same reason `RestTaskaApi` checks before
+    // its `fetch`: an unusable link is not a store that said no.
+    requireUsableUploadUrl(uploadUrl);
+    const ticket = this.avatarTickets.get(uploadUrl);
+    if (!ticket) {
+      // A URL this store never signed — including a perfectly good *attachment*
+      // link, which is exactly the crossing the two ticket maps exist to catch.
+      // S3 answers 403 for an unparseable or unknown signature, not 404.
+      throw new ObjectStoreError("The file store answered 403.", OBJECT_STORE_REJECTED_CODE, 403);
+    }
+    if (ticket.behaviour === "storeUnreachable") {
+      throw new ObjectStoreError(
+        "The file store could not be reached: Failed to fetch",
+        OBJECT_STORE_UNREACHABLE_CODE,
+        null,
+      );
+    }
+    if (ticket.behaviour === "storeRefused") {
+      throw new ObjectStoreError("The file store answered 500.", OBJECT_STORE_REJECTED_CODE, 500);
+    }
+    if (Date.now() > ticket.expiresAt) {
+      throw new ObjectStoreError("The file store answered 403.", OBJECT_STORE_REJECTED_CODE, 403);
+    }
+    // The signature covers `Content-Type`, so a value that differs by so much
+    // as a charset is a signature mismatch and a 403.
+    if (ticket.contentType !== contentType) {
+      throw new ObjectStoreError("The file store answered 403.", OBJECT_STORE_REJECTED_CODE, 403);
+    }
+
+    this.avatarObjects.set(ticket.objectKey, {
+      contentType,
+      sizeBytes: bytes.length,
+      dataUrl: dataUrlFor(bytes, contentType),
+    });
+  }
+
+  /**
+   * Leg 3, in `ProfileServiceImpl.confirmAvatarUpload`'s order at `develop`
+   * `368ae77355bd`: the object has to exist, it is re-measured against the
+   * ceiling, the row is written — **replacing** whatever the user had before,
+   * because `user_id` is what identifies an avatar and there is only ever one —
+   * then the *previous* row's object is deleted, and only then is the download
+   * link presigned, through a HEAD of the object the new row points at.
+   *
+   * **That order is a server defect, and this reproduces it** rather than
+   * quietly doing the sensible thing — the attachment DELETE's precedent
+   * (`deleteAttachment` above): reproduce the implementation, and flag it. The
+   * server does not check that the key was minted for the caller (neither does
+   * this: the ticket is consulted only for its failure trigger), and it does
+   * not notice when the "previous" object *is* the one being confirmed. So a
+   * second confirm of the key the saved row already holds deletes that object,
+   * fails its presign's HEAD with a 404, and leaves the row pointing at
+   * nothing; every read of that user's avatar answers 404 from then on, until an
+   * upload replaces the row or a removal deletes it. A mock that treated the
+   * repeat as a harmless no-op would teach its callers that retrying a confirm
+   * is safe, which on the server it is exactly not. The profile menu never sends
+   * a key twice, and its tests pin that.
+   *
+   * The 404's text on the server is the storage SDK's own, which nothing here
+   * can reproduce; the code is the part that is.
+   */
+  confirmAvatarUpload(input: ConfirmAvatarUploadInput): UserAvatar {
+    const user = this.currentUser();
+    const ticket = [...this.avatarTickets.values()].find((item) => item.objectKey === input.objectKey);
+    if (ticket?.behaviour === "confirmFails") {
+      // The object stays in the bucket with no row pointing at it. Nothing
+      // sweeps those — the same orphan an attachment confirm leaves.
+      throw new MockApiError("UNAVAILABLE", "The avatar could not be recorded. Please try again.");
+    }
+
+    const stored = this.avatarObjects.get(input.objectKey);
+    if (!stored) {
+      throw new MockApiError("NOT_FOUND", "Object not found in storage");
+    }
+    if (stored.sizeBytes > AVATAR_MAX_SIZE_BYTES) {
+      // The server deletes the oversized object before refusing, so the key
+      // stops resolving for a second attempt too.
+      this.avatarObjects.delete(input.objectKey);
+      throw new MockApiError("OUT_OF_RANGE", avatarSizeRefusalMessage(stored.sizeBytes));
+    }
+
+    const previous = this.avatars.get(user.id);
+    const avatar: MockAvatar = {
+      id: makeId("avatar"),
+      userId: user.id,
+      objectKey: input.objectKey,
+      fileName: input.fileName,
+      // The row keeps the *request's* content type, not the object's, exactly
+      // as the attachment row does: the metadata only contributes the size.
+      contentType: input.contentType,
+      sizeBytes: stored.sizeBytes,
+      createdAt: now(),
+      downloadUrl: stored.dataUrl,
+    };
+    // Row first, old object second, presign last — the server's order, and the
+    // whole of the defect described above.
+    this.avatars.set(user.id, avatar);
+    if (previous) this.avatarObjects.delete(previous.objectKey);
+    if (!this.avatarObjects.has(avatar.objectKey)) {
+      // Mirrors a server defect: the key confirmed was the saved row's own, so
+      // the delete above just removed the object this row points at.
+      throw new MockApiError("NOT_FOUND", "Object not found in storage");
+    }
+    return { ...avatar };
+  }
+
+  /**
+   * Idempotent, in the contract's own words: 204 whether or not there was
+   * anything to delete, so this returns the same nothing either way and the
+   * caller cannot learn which it was.
+   */
+  deleteMyAvatar(): void {
+    const user = this.currentUser();
+    const avatar = this.avatars.get(user.id);
+    if (!avatar) return;
+    this.avatars.delete(user.id);
+    // The bytes go too. A real delete "удаляет запись из БД и файл из
+    // хранилища" — which is the one place this family differs from attachments,
+    // where the object is deliberately left behind.
+    this.avatarObjects.delete(avatar.objectKey);
+  }
+
+  /**
+   * `null` for a user with no avatar, and **that is a 200**, not a 404: the
+   * gateway's mapper writes `null` into `url` when the proto carries none, so a
+   * caller reads the field rather than the status. A user id nobody knows is a
+   * genuine 404 — and so is a row whose object is gone, because
+   * `S3StorageClient.createPresignedDownloadUrl` HEADs the object before it
+   * signs anything. The only way this store gets such a row is the same-key
+   * re-confirm defect in `confirmAvatarUpload` above.
+   */
+  getUserAvatarUrl(userId: string): string | null {
+    this.getUser(userId);
+    const avatar = this.avatars.get(userId);
+    if (!avatar) return null;
+    if (!this.avatarObjects.has(avatar.objectKey)) {
+      throw new MockApiError("NOT_FOUND", "Object not found in storage");
+    }
+    return avatar.downloadUrl;
   }
 
   listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Page<IssueComment> {
@@ -3589,12 +3962,35 @@ export class MockTaskaStore {
     return user;
   }
 
+  /**
+   * The nested summary a member row carries — and it is built **at read time**,
+   * never stored, because the avatar in it changes without the membership
+   * changing. `ProjectMemberDetailsDto` carries the avatar inline, which is
+   * what makes a board of faces one request; a summary frozen into
+   * `membersByProject` at construction would have been a board that never
+   * noticed anybody's new picture.
+   *
+   * `null` and not `undefined` for a person with no avatar: this row *asked*,
+   * inline, and got an answer. See `User.avatarUrl`.
+   *
+   * Also `null` for a row whose object is gone — the state the same-key
+   * re-confirm defect in `confirmAvatarUpload` leaves — rather than the bytes
+   * this store still happens to hold: there is no object left to presign, and a
+   * face the server cannot serve should not be drawn. That is this store's
+   * choice and not a reading of the gateway. The member read is backend PR #152,
+   * still open, and docs/ai/API-DIVERGENCE.md ("PR #152's member rows never carry
+   * an avatar (pending)") records that its presign has no per-row fallback, so
+   * there one such row fails the whole member read — which this does not
+   * reproduce.
+   */
   private userSummary(userId: string): ProjectMember["user"] {
     const user = this.getUser(userId);
+    const avatar = this.avatars.get(userId);
     return {
       displayName: user.displayName,
       email: user.email,
       color: user.color,
+      avatarUrl: avatar && this.avatarObjects.has(avatar.objectKey) ? avatar.downloadUrl : null,
     };
   }
 
@@ -4061,6 +4457,35 @@ export class MockTaskaApi implements TaskaApi {
   async deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {
     this.store.deleteAttachment(projectId, issueId, attachmentId);
     await wait(null);
+  }
+
+  async createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): Promise<AvatarUploadTicket> {
+    return wait(this.store.createAvatarUploadUrl(input));
+  }
+
+  /**
+   * Reads the blob here rather than in the store because this is the only layer
+   * that may be asynchronous — and it reads the *bytes*, not just `size`,
+   * because the store keeps them: what it hands back afterwards is the image
+   * that was actually sent.
+   */
+  async putAvatarBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    const bytes = new Uint8Array(await body.arrayBuffer());
+    this.store.putAvatarBytes(uploadUrl, bytes, contentType);
+    await wait(null);
+  }
+
+  async confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar> {
+    return wait(this.store.confirmAvatarUpload(input));
+  }
+
+  async deleteMyAvatar(): Promise<void> {
+    this.store.deleteMyAvatar();
+    await wait(null);
+  }
+
+  async getUserAvatarUrl(userId: string): Promise<string | null> {
+    return wait(this.store.getUserAvatarUrl(userId));
   }
 
   async listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

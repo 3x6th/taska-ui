@@ -6,6 +6,7 @@ import type {
   AdminRowsQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  AvatarUploadTicket,
   Board,
   DateOnly,
   Issue,
@@ -30,6 +31,7 @@ import type {
   ProjectMembership,
   UnwatchIssueResult,
   User,
+  UserAvatar,
   UserStatusChange,
   WatchIssueResult,
   Workflow,
@@ -481,6 +483,39 @@ export interface ConfirmAttachmentUploadInput {
   contentType: string;
 }
 
+/**
+ * Leg 1's request for an avatar — `CreateAvatarUploadUrlRequestDto` (backend PR
+ * #150). Identical in shape to the attachment one above, and separate from it
+ * for the reason `src/api/avatars.ts` gives at length: the two are validated by
+ * two services reading two configurations that agree today by coincidence.
+ *
+ * `sizeBytes` is declared `maximum: 5242880` and enforced at `2097152`. Every
+ * implementation refuses the second number before sending anything, so this
+ * field never carries a value the server would take a round trip to refuse.
+ */
+export interface CreateAvatarUploadUrlInput {
+  fileName: string;
+  /**
+   * The browser's own `File.type`, passed through untouched. This exact string
+   * is what gets signed into the presigned URL, so whatever is sent here must
+   * be sent again, byte for byte, on the PUT.
+   */
+  contentType: string;
+  sizeBytes: number;
+}
+
+/**
+ * The confirm's request — `ConfirmAvatarUploadRequestDto`. No size, exactly as
+ * the attachment confirm has none: the server re-measures the object it finds
+ * in the bucket rather than believing the client.
+ */
+export interface ConfirmAvatarUploadInput {
+  objectKey: string;
+  fileName: string;
+  /** The same value sent at leg 1. Stored as the avatar's `contentType`. */
+  contentType: string;
+}
+
 export interface ListCommentsParams {
   page?: number;
   pageSize?: number;
@@ -825,8 +860,9 @@ export interface TaskaApi {
    * case or appending a charset would produce a signature mismatch that the
    * store answers with a 403 nobody can explain.
    *
-   * Failures arrive as `AttachmentStoreError`, never as an `ApiError`. See that
-   * class for why the store's status must not travel in a field named `status`.
+   * Failures arrive as `ObjectStoreError` (src/api/objectStore.ts), never as an
+   * `ApiError`. See that class for why the store's status must not travel in a
+   * field named `status`.
    *
    * `uploadUrl` is checked before it is used, by every implementation, through
    * `requireUsableUploadUrl`: an empty or relative string would resolve against
@@ -880,6 +916,123 @@ export interface TaskaApi {
    * on the storage client. The UI must not describe this as removing the file.
    */
   deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void>;
+
+  /**
+   * The four avatar routes, plus the one leg of the upload that is not a route
+   * at all — backend PR #150 (TAS-129), **merged** into `develop` on 2026-09-14
+   * at `368ae77355bd` and in `docs/contract/openapi.yml` since, and **deployed**
+   * later the same day.
+   *
+   * All four answered Spring's static-resource **404** when probed on
+   * 2026-09-12 without a token, with `GET /users/me` answering 401 in the same
+   * run as the control, and the routes still answered it on 2026-09-14 at 11:14
+   * UTC, after the merge. Probed again at 13:53 UTC the same day, `GET
+   * /users/{id}/avatar` answered 400 `INVALID_ARGUMENT` and `POST
+   * /users/me/avatar/upload-url` answered 405 — the routes had deployed, and
+   * neither answer is the signature `isUndeployedRoute` in src/api/errors.ts
+   * matches on its first arm. A caller must still read that predicate before
+   * printing a raw failure, because the mechanism stays: `UserProfileMenu`
+   * reads it on its own avatar read, where it would take the photo controls
+   * away and not ask again until the page reloads, and on each write, the way
+   * `EditProjectModal` still does for the still-undeployed project PATCH.
+   *
+   * **No role gates any of these.** Three of the four are scoped to `me`, and
+   * the read is authenticated and nothing more. There is therefore no
+   * `ADMIN`/`MEMBER`/`VIEWER` question here at all — a `VIEWER` of every project
+   * in the product still owns their own face — and nothing in the UI hides
+   * these controls from anybody.
+   *
+   * Where the choreography differs from attachments, and it is worth stating
+   * because the two look interchangeable: this one is **replace**, not append —
+   * a user has one avatar, and a confirm takes the place of the one before —
+   * and `DELETE` is declared idempotent, 204 whether or not there was anything
+   * to delete. **Neither makes the confirm safe to send twice.** See
+   * `confirmAvatarUpload` below: repeating it is not a duplicate row, as it is
+   * for an attachment, but a deleted picture.
+   */
+  createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): Promise<AvatarUploadTicket>;
+
+  /**
+   * **The second method on this interface that does not talk to the gateway**,
+   * and it is here for exactly the reason the attachment one is: the seam that
+   * swaps mock for rest has to sit at the same level as the thing it stands in
+   * for, or the end-to-end suite has no structural guarantee that it makes no
+   * real network call.
+   *
+   * `contentType` is passed separately from the blob and must be
+   * **byte-identical** to the value given to `createAvatarUploadUrl`: the
+   * presign covers the `Content-Type` header, so recomputing it, normalising
+   * its case or appending a charset is a signature mismatch the store answers
+   * with a 403 nobody can explain.
+   *
+   * Failures arrive as `ObjectStoreError` (src/api/objectStore.ts) — the same
+   * type the attachment leg throws, not a second one meaning the same thing.
+   * The guarantee AGENTS.md attaches to a non-gateway method on this interface
+   * is a property of that class and is tested once, in
+   * src/api/rest/RestTaskaApi.test.ts: the gateway-error predicates provably
+   * do not match it.
+   *
+   * It is a separate *method* from `putAttachmentBytes` even though the REST
+   * implementation of the two is one shared private helper, because the mock is
+   * not shared: an avatar ticket and an attachment ticket are minted by
+   * different routes against different buckets, and a mock that honoured either
+   * link on either leg would let a caller cross them without noticing.
+   */
+  putAvatarBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void>;
+
+  /**
+   * Leg 3: auth-service heads the object in the bucket, re-measures it against
+   * its own 2 MB ceiling — deleting an object over it and answering 500
+   * `OUT_OF_RANGE` — replaces the user's row, deletes the *previous* row's
+   * object, and answers with the avatar, `downloadUrl` and `createdAt`
+   * included. So a freshly uploaded face needs no follow-up read: the link to
+   * draw is in the answer.
+   *
+   * **Never send one `objectKey` here twice**, not even after a failure. Read
+   * at `develop` `368ae77355bd` (`ProfileServiceImpl.confirmAvatarUpload`), and
+   * a defect of the server's rather than a rule of the contract's:
+   *
+   * - nothing checks that the key was minted for the caller, so a confirm can
+   *   point the caller's row at somebody else's object — which the next replace
+   *   or removal on either side then deletes;
+   * - the row is replaced first and the old row's object deleted after, before
+   *   the new link is presigned. A second confirm of the key the saved row
+   *   already holds therefore deletes that very object as the "old" one, and the
+   *   presign's HEAD then fails with a 404. The confirm answers the 404, the row
+   *   stays pointing at nothing, and every `GET /users/{userId}/avatar` for that
+   *   user answers 404 from then on — until an upload replaces the row or a
+   *   removal deletes it.
+   *
+   * A retry is a new ticket: the person chooses the file again, and leg 1 mints
+   * a new key. `MockTaskaApi` reproduces the defect rather than hiding it.
+   */
+  confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar>;
+
+  /**
+   * `DELETE /users/me/avatar` — **idempotent by the contract's own words**
+   * ("Идемпотентная операция. Если аватар отсутствует, завершается успешно"),
+   * 204 either way. So a client can neither learn nor report whether there was
+   * anything to remove, and must not phrase the outcome as though it had.
+   */
+  deleteMyAvatar(): Promise<void>;
+
+  /**
+   * `GET /users/{userId}/avatar` — a presigned GET for one person, freshly
+   * signed per call and good for fifteen minutes.
+   *
+   * **"No avatar" is a 200 with a null `url`, not a 404.**
+   * `UserProfileMapper.toRestGetAvatarDownloadUrlResponse` writes `null` when
+   * the proto carries no url, so a caller must read the field rather than the
+   * status — which is why this returns `string | null` and not an object with a
+   * possibly-empty string in it.
+   *
+   * **Never call this in a loop.** A member list carries each row's avatar
+   * inline (`ProjectMemberDetailsDto.avatar.downloadUrl`, backend PR #152), so
+   * a board full of faces is one read. This method exists for the one case that
+   * has no list to ride on: the current user, whose profile read carries no
+   * avatar at all.
+   */
+  getUserAvatarUrl(userId: string): Promise<string | null>;
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
   addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;

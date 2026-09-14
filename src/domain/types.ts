@@ -67,6 +67,68 @@ export interface User {
   // because UNSPECIFIED collapses to the same absence. Never inferred from the
   // JWT, and it grants nothing on its own — the server stays authoritative.
   globalRole?: GlobalRole;
+  /**
+   * A presigned link to this person's avatar, good for fifteen minutes on
+   * auth-service's default link lifetime, or `null` when they have none.
+   * **`GET /users/me` does not carry it** and no gateway profile read does —
+   * backend PR #150 (TAS-129, merged at `develop` `368ae77355bd`) put the avatar
+   * on routes of its own and left the user DTO as it was — so nothing fills this
+   * in from a profile response and a reader must not infer that the gateway
+   * sends one.
+   *
+   * Two things fill it, and they cost very different amounts. A *member row*
+   * carries the avatar inline (`ProjectMemberDetailsDto.avatar.downloadUrl`,
+   * backend PR #152), so a board full of faces is one read. The *current user*
+   * is the one case that costs a request of its own,
+   * `GET /users/{userId}/avatar`, which `UserProfileMenu` spends on a mount: a
+   * successful answer is reused for ten minutes, nothing is re-read on a window
+   * focus, and once the read has met the undeployed route it is not made again
+   * until the page reloads.
+   *
+   * `undefined` and `null` are not the same answer and the distinction is the
+   * reason this is not simply `string | null`: absent means nobody has asked,
+   * `null` means the server was asked and said there is no avatar. Only the
+   * second is a fact about the person. Nothing draws a difference between them
+   * today — both fall to initials — but a spinner over "we have not asked" and
+   * initials over "there is none" is the shape this would grow into, and
+   * collapsing them now would make that unreachable.
+   */
+  avatarUrl?: string | null;
+}
+
+/**
+ * `AvatarResponseDto` — what `POST /users/me/avatar/confirm` answers with once
+ * the bytes are in the bucket (backend PR #150, TAS-129, in
+ * `docs/contract/openapi.yml` since it merged at `develop` `368ae77355bd`).
+ *
+ * Only `downloadUrl` is drawn. The rest is modelled because the response
+ * declares it and because a client that throws away what the server said cannot
+ * later notice it changed — not because anything reads it.
+ */
+export interface UserAvatar {
+  id: string;
+  userId: string;
+  objectKey: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  /**
+   * **Filled** by the server: `UserAvatar.createdAt` is an audited
+   * `@CreatedDate`, `ProfileMapper.toAvatarDto` copies it and the gateway's
+   * `UserProfileMapper` maps it onto the response (read at `develop`
+   * `368ae77355bd`). Still `string | null` rather than `string`, because the
+   * schema declares no `required` block and that mapper writes `null` for an
+   * all-zero timestamp — so an answer without it is a shape to survive, not one
+   * this side may rule out. Not to be confused with the sibling `AvatarDto` on a
+   * member row (PR #152), which declares the field and never populates it.
+   */
+  createdAt: string | null;
+  /**
+   * `null` rather than `""` for an answer that carried no link. An empty string
+   * in an `<img src>` re-requests the current document, which is a real request
+   * to a real server for a picture that is not there.
+   */
+  downloadUrl: string | null;
 }
 
 /**
@@ -217,8 +279,14 @@ export interface ProjectMember {
    * between drawing a person and falling to their own unknown-person path
    * (`toUserMap` in BoardScreen filters on exactly this), so a `user` carrying
    * a blank `displayName` would be worse than no `user` at all.
+   *
+   * `avatarUrl` rides along because `ProjectMemberDetailsDto` carries the
+   * avatar **inline**, with its own `downloadUrl` (backend PR #152). That is
+   * what makes a board of faces one read rather than one request per person,
+   * and it is why nothing in this product ever calls
+   * `GET /users/{userId}/avatar` in a loop.
    */
-  user?: Pick<User, "displayName" | "email" | "color">;
+  user?: Pick<User, "displayName" | "email" | "color" | "avatarUrl">;
 }
 
 export interface WorkflowStatus {
@@ -645,6 +713,42 @@ export interface AttachmentUploadTicket {
   uploadUrl: string;
   /** Opaque; a bare UUID today. The only thing leg 3 identifies the object by. */
   objectKey: string;
+}
+
+/**
+ * What leg 1 of an **avatar** upload hands back — `CreateAvatarUploadUrlResponseDto`
+ * (backend PR #150, merged at `develop` `368ae77355bd`). Same shape as the
+ * attachment ticket above plus the one field that DTO adds, and deliberately a
+ * separate type: the two are minted by two services against two buckets, and a
+ * ticket for one is not a ticket for the other.
+ */
+export interface AvatarUploadTicket {
+  /**
+   * A presigned S3 URL on auth-service's `storage.public-url` — a loopback
+   * address unless the deployment overrides it — and **not on the gateway**.
+   * The signature is in the query string, it covers the `Content-Type` header,
+   * and it is honoured for auth-service's `storage.presigned-url-ttl` from the
+   * moment this ticket was minted: 15 minutes by default, and an environment
+   * may set it otherwise.
+   */
+  uploadUrl: string;
+  /**
+   * Opaque — a bare UUID at `368ae77355bd`. The only thing the confirm
+   * identifies the object by, and it must be confirmed **once**: see
+   * `confirmAvatarUpload` on TaskaApi for what a second confirm of the same key
+   * does.
+   */
+  objectKey: string;
+  /**
+   * The link's own lifetime in seconds, as the server states it — 900 under
+   * auth-service's default `MINIO_PRESIGNED_URL_TTL` of 15m, and whatever an
+   * environment that overrides it says otherwise. Kept because the response
+   * declares it and because it is the server's number rather than this
+   * client's. `AVATAR_PRESIGNED_TTL_MS` records the same default, but the two
+   * are not wired together: the profile menu's "15 minutes" wording is a
+   * literal, written separately.
+   */
+  expiresIn: number | null;
 }
 
 /** `GetAttachmentDownloadUrlResponseDto` — a presigned GET, and the checksum again. */

@@ -21,9 +21,9 @@ import {
   ATTACHMENT_ACCEPT_ATTRIBUTE,
   ATTACHMENT_MAX_SIZE_BYTES,
   attachmentRefusalKind,
-  attachmentUploadFailure,
   type AttachmentRefusalKind,
 } from "../api/attachments";
+import { objectStoreUploadFailure } from "../api/objectStore";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isMissingOrForbidden, isUndeployedRoute } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
@@ -545,7 +545,20 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               type="button"
             >
               <Avatar
-                user={member.user ? { id: member.userId, displayName: member.user.displayName, color: member.user.color } : null}
+                user={
+                  member.user
+                    ? {
+                        id: member.userId,
+                        displayName: member.user.displayName,
+                        color: member.user.color,
+                        // Already on the row this filter is built from, so
+                        // carrying it costs nothing and *not* carrying it would
+                        // give one person a face on a card and initials in the
+                        // filter beside it.
+                        avatarUrl: member.user.avatarUrl,
+                      }
+                    : null
+                }
                 size="sm"
               />
             </button>
@@ -839,7 +852,7 @@ function BoardColumn({
   issues: Issue[];
   /** The issue list never arrived: this column knows nothing about its contents. */
   issuesUnknown: boolean;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   canEdit: boolean;
   onAdd: () => void;
   onOpenIssue: (issueId: string) => void;
@@ -890,7 +903,7 @@ function IssueCard({
   onOpen,
 }: {
   issue: Issue;
-  user?: Pick<User, "id" | "displayName" | "color"> | null;
+  user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
   canEdit: boolean;
   onOpen: (issueId: string) => void;
 }) {
@@ -917,7 +930,7 @@ function IssueCard({
   );
 }
 
-function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "id" | "displayName" | "color"> | null }) {
+function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null }) {
   return (
     <>
       <span className="issue-card-meta">
@@ -970,7 +983,7 @@ function SearchHitsGroup({
   loading: boolean;
   projectId: string;
   query: string;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
 }) {
   return (
     <section aria-label="Other matches from the server" className="search-hits">
@@ -1088,7 +1101,7 @@ function IssuePanel({
    * as an answer rather than simply leaving a row bare.
    */
   membersUnknown: boolean;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   canEdit: boolean;
   /**
    * Narrower than `canEdit`, and only the attachments section reads it: an
@@ -1395,7 +1408,18 @@ function IssuePanel({
                   key={member.userId}
                   label={member.user?.displayName.split(" ")[0] ?? "User"}
                   onClick={() => assignIssue.mutate(member.userId)}
-                  user={member.user ? { id: member.userId, displayName: member.user.displayName, color: member.user.color } : null}
+                  user={
+                    member.user
+                      ? {
+                          id: member.userId,
+                          displayName: member.user.displayName,
+                          color: member.user.color,
+                          // Same row, same reason as the filter above: the
+                          // picture is already in hand.
+                          avatarUrl: member.user.avatarUrl,
+                        }
+                      : null
+                  }
                 />
               ))}
             </div>
@@ -1719,7 +1743,7 @@ function IssueWatchersSection({
   /** The member read answered. Three states, not two — see the panel's own prop. */
   membersAnswered: boolean;
   membersUnknown: boolean;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   /**
    * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`, both of
    * which the contract marks "только project ADMIN". Presentation only — the
@@ -2399,7 +2423,7 @@ function IssueWatchersSection({
  * `named: true`, for the reason the lookup below gives.
  */
 function watcherSubject(
-  userById: Map<string, Pick<User, "id" | "displayName" | "color">>,
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>,
   userId: string,
   currentUserId?: string,
 ): { name: string; named: boolean; reader: boolean } {
@@ -3011,7 +3035,7 @@ function IssueAttachmentsSection({
   canEdit: boolean;
   isProjectAdmin: boolean;
   currentUserId?: string;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
 }) {
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -3438,7 +3462,7 @@ function countByName(attachments: IssueAttachment[] | undefined, fileName: strin
  * borrow the CORS sentence, which would name a cause that was never reached.
  */
 function uploadFailureText(error: unknown, fileName: string) {
-  const failure = attachmentUploadFailure(error);
+  const failure = objectStoreUploadFailure(error);
   if (!failure) {
     return `${fileName} was not uploaded. ${apiErrorFacts(error).message ?? "The upload failed."}`;
   }
@@ -3465,7 +3489,7 @@ function CommentsSection({
   issueId: string;
   canComment: boolean;
   currentUserId?: string;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
 }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -3591,7 +3615,7 @@ function CommentItem({
   onDelete,
 }: {
   comment: IssueComment;
-  author?: Pick<User, "id" | "displayName" | "color">;
+  author?: Pick<User, "id" | "displayName" | "color" | "avatarUrl">;
   canManage: boolean;
   editing: boolean;
   pending: boolean;
@@ -3658,7 +3682,7 @@ function AssigneeChip({
   disabled,
   onClick,
 }: {
-  user: Pick<User, "id" | "displayName" | "color"> | null;
+  user: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
   label: string;
   active: boolean;
   disabled: boolean;
@@ -3679,8 +3703,8 @@ function ActivityItem({
   isLast,
 }: {
   event: IssueHistoryEvent;
-  user?: Pick<User, "id" | "displayName" | "color">;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color">>;
+  user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl">;
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   isLast: boolean;
 }) {
   return (
@@ -4219,12 +4243,18 @@ function toUserMap(members: ProjectMember[]) {
           id: member.userId,
           displayName: member.user!.displayName,
           color: member.user!.color,
+          // Straight off the member row, which carries it inline (backend PR
+          // #152) — so every face this map draws costs nothing beyond the one
+          // member read the board already makes. Nothing here ever asks
+          // `GET /users/{userId}/avatar`, which would be one request per person
+          // on the board.
+          avatarUrl: member.user!.avatarUrl,
         },
       ]),
   );
 }
 
-function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, "id" | "displayName" | "color">>) {
+function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>) {
   if (event.eventType === "CREATED") return "created this issue";
   if (event.eventType === "TRANSITIONED") {
     const fromStatus = event.payload.from ?? event.payload.fromStatus;

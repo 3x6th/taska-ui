@@ -3,7 +3,9 @@ import type {
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
+  ConfirmAvatarUploadInput,
   CreateAttachmentUploadUrlInput,
+  CreateAvatarUploadUrlInput,
   CreateIssueInput,
   CreateIssueLinkInput,
   CreateProjectInput,
@@ -27,6 +29,7 @@ import type {
   AdminRowsQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
+  AvatarUploadTicket,
   Board,
   Issue,
   IssueAttachment,
@@ -47,6 +50,7 @@ import type {
   ProjectMembership,
   UnwatchIssueResult,
   User,
+  UserAvatar,
   UserStatusChange,
   WatchIssueResult,
   Workflow,
@@ -431,6 +435,59 @@ export class HybridTaskaApi implements TaskaApi {
 
   deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {
     return this.live.deleteAttachment(projectId, issueId, attachmentId);
+  }
+
+  /**
+   * All five delegated whole, and this family is the clearest case in the class:
+   * there is nothing about a person's own avatar that project membership could
+   * stand in for, which is the only thing this class synthesises.
+   *
+   * The four gateway routes **were undeployed** — backend PR #150 merged at
+   * `develop` `368ae77355bd` on 2026-09-14. Probed 2026-09-12 without a token,
+   * all four answered Spring's static-resource 404 while `GET /users/me`
+   * answered 401 in the same run, and the routes still answered it on
+   * 2026-09-14 at 11:14 UTC. They deployed later that day: probed again at
+   * 13:53 UTC, `GET /users/{id}/avatar` answered 400 INVALID_ARGUMENT and
+   * `POST /users/me/avatar/upload-url` answered 405 — neither the
+   * static-resource signature `isUndeployedRoute` matches. `UserProfileMenu`
+   * read that signature and hid the photo controls while it held; on this
+   * gateway it no longer does, the same mechanism `EditProjectModal` still
+   * exercises for the still-undeployed project PATCH. Compensating instead
+   * would mean this class reporting a face that is in no bucket.
+   *
+   * The middle leg is where compensation stops being merely absent and becomes
+   * impossible, exactly as for attachments: `putAvatarBytes` puts bytes on a
+   * **different server**, which this class has no credentials for, no route to
+   * and no substitute for.
+   *
+   * One consequence worth naming, because a reader will look for it: the single
+   * member row `listMembers` above synthesises carries **no avatar**. It is
+   * built from `GET /users/me`, which does not have one, and the only way to
+   * fill it would be a second request per member — the very thing the inline
+   * avatar on `ProjectMemberDetailsDto` exists to avoid. So on the stand the
+   * board still draws initials until PR #152 deploys too — PR #150 deploying
+   * did not change this row, since `GET /users/me` never carried one — and the
+   * one place that does spend a request is the profile menu, for the reader's
+   * own face.
+   */
+  createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): Promise<AvatarUploadTicket> {
+    return this.live.createAvatarUploadUrl(input);
+  }
+
+  putAvatarBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void> {
+    return this.live.putAvatarBytes(uploadUrl, body, contentType);
+  }
+
+  confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar> {
+    return this.live.confirmAvatarUpload(input);
+  }
+
+  deleteMyAvatar(): Promise<void> {
+    return this.live.deleteMyAvatar();
+  }
+
+  getUserAvatarUrl(userId: string): Promise<string | null> {
+    return this.live.getUserAvatarUrl(userId);
   }
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

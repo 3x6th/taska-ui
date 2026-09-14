@@ -522,6 +522,68 @@ describe("HybridTaskaApi", () => {
     expect(remove).toHaveBeenCalledWith(project.id, issue.id, self.userId);
   });
 
+  /**
+   * The avatar family. There is nothing here for this class to synthesise —
+   * project membership is the only thing it can — so what is pinned is that it
+   * adds nothing, including to the one member row it does invent.
+   */
+  it("delegates all five avatar calls untouched", async () => {
+    const live = liveApi();
+    const create = vi.spyOn(live, "createAvatarUploadUrl");
+    const put = vi.spyOn(live, "putAvatarBytes");
+    const confirm = vi.spyOn(live, "confirmAvatarUpload");
+    const remove = vi.spyOn(live, "deleteMyAvatar");
+    const read = vi.spyOn(live, "getUserAvatarUrl");
+
+    const hybrid = new HybridTaskaApi(live, true);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const me = await hybrid.getCurrentUser();
+
+    const file = new File([new Uint8Array(32)], "face.png", { type: "image/png" });
+    const candidate = { fileName: file.name, contentType: file.type, sizeBytes: file.size };
+    const ticket = await hybrid.createAvatarUploadUrl(candidate);
+    expect(create).toHaveBeenCalledWith(candidate);
+
+    await hybrid.putAvatarBytes(ticket.uploadUrl, file, file.type);
+    expect(put).toHaveBeenCalledWith(ticket.uploadUrl, file, file.type);
+
+    const confirmInput = { objectKey: ticket.objectKey, fileName: file.name, contentType: file.type };
+    const saved = await hybrid.confirmAvatarUpload(confirmInput);
+    expect(confirm).toHaveBeenCalledWith(confirmInput);
+
+    await expect(hybrid.getUserAvatarUrl(me.id)).resolves.toBe(saved.downloadUrl);
+    expect(read).toHaveBeenCalledWith(me.id);
+
+    await hybrid.deleteMyAvatar();
+    expect(remove).toHaveBeenCalledTimes(1);
+    await expect(hybrid.getUserAvatarUrl(me.id)).resolves.toBeNull();
+  });
+
+  it("leaves its synthesised member row without an avatar rather than spending a request per member", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live, true);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const [project] = await hybrid.listProjects();
+
+    const file = new File([new Uint8Array(32)], "face.png", { type: "image/png" });
+    const ticket = await hybrid.createAvatarUploadUrl({
+      fileName: file.name,
+      contentType: file.type,
+      sizeBytes: file.size,
+    });
+    await hybrid.putAvatarBytes(ticket.uploadUrl, file, file.type);
+    await hybrid.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
+
+    // The row is built from `GET /projects/{id}` and `GET /users/me`, and
+    // neither carries an avatar. Filling it would mean one extra request per
+    // member — the very thing the inline avatar on `ProjectMemberDetailsDto`
+    // exists to avoid — so the stand still draws initials until PR #152
+    // deploys too; PR #150 deploying did not change this row, and the profile
+    // menu is the one place that pays.
+    const [self] = await hybrid.listMembers(project.id);
+    expect(self.user?.avatarUrl).toBeUndefined();
+  });
+
   it("passes a store failure straight up rather than compensating for it", async () => {
     const live = liveApi();
     const hybrid = new HybridTaskaApi(live, true);

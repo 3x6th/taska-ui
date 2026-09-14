@@ -110,6 +110,8 @@ was written against it.
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
 | `pr-147-TAS-131.yml` | [#147](https://github.com/VladislavYurin/taska-backend/pull/147) | TAS-131 | TAS-190 |
+| `pr-152-TAS-137.yml` | [#152](https://github.com/VladislavYurin/taska-backend/pull/152) | TAS-137 | TAS-219 |
+| `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
 
 `pr-118-TAS-125.yml` was here for TAS-125 / TAS-191 and was deleted on 2026-09-09
 when backend PR #118 merged and the snapshot was refreshed to develop
@@ -121,8 +123,19 @@ was refreshed to develop `21a0d9d177a1`. The merged declarations are the ones th
 extract pinned at `79187f94d135`, checked by diffing the two snapshots rather than
 by re-reading the PR — the lesson above, applied in the other direction.
 
-One open PR deliberately has no extract: backend
-[#150](https://github.com/VladislavYurin/taska-backend/pull/150) (TAS-129, user
-avatars) changes the contract and is open, but nothing in this repository is
-written against it, and an extract nobody audits is a pin to keep current for
-free. Write one the day a story here needs it.
+`pr-150-TAS-129.yml` was here for TAS-129 / TAS-220 and was deleted on 2026-09-14
+when backend PR #150 merged and the snapshot was refreshed to develop
+`368ae77355bd`. The PR was one commit that never moved, so the merge brought in
+exactly the head the extract pinned at `12e909d42dcc`, and the four avatar paths
+and five schemas in the refreshed snapshot are byte-identical to that head's.
+That was checked against the head rather than against the extract, and the
+distinction earned its keep: the extract was not the mechanical copy its own
+header claimed. It was missing fourteen `example` and `description` lines and the
+`$ref` under `default:` on `GET /users/{userId}/avatar`. None of that is on the
+wire, but an extract is worth only as much as its fidelity, so the other three
+were measured the same day, block by block against their pinned heads.
+`pr-147-TAS-131.yml` is complete. `pr-152-TAS-137.yml` and `pr-155-TAS-145.yml`
+each leave out one operation on a path their PR extends: `POST` on
+`/projects/{projectId}/members` and `GET` on `/projects/{projectId}`. Both are
+already in the snapshot unchanged, so a reader who has the snapshot loses
+nothing.

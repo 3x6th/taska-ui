@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
-import { ATTACHMENT_MAX_SIZE_BYTES, AttachmentStoreError, attachmentSizeRefusalMessage } from "../attachments";
+import { ATTACHMENT_MAX_SIZE_BYTES, attachmentSizeRefusalMessage } from "../attachments";
+import {
+  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
+  AVATAR_DECLARED_MAX_SIZE_BYTES,
+  AVATAR_MAX_SIZE_BYTES,
+  avatarSizeRefusalMessage,
+} from "../avatars";
+import { ObjectStoreError } from "../objectStore";
 import { isConflict, isMissingOrForbidden, isUndeployedRoute } from "../errors";
 import { ESTIMATE_MAX_MESSAGE, START_DATE_AFTER_STORED_DUE_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 
@@ -353,8 +360,16 @@ describe("RestTaskaApi project members", () => {
 
     expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1/members");
     expect(result).toEqual([
-      { userId: "user-anna", role: "ADMIN", user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
-      { userId: "user-mark", role: "MEMBER", user: { displayName: "Mark Ruiz", email: "mark@example.com" } },
+      {
+        userId: "user-anna",
+        role: "ADMIN",
+        user: { displayName: "Anna Ivanova", email: "anna@example.com", avatarUrl: null },
+      },
+      {
+        userId: "user-mark",
+        role: "MEMBER",
+        user: { displayName: "Mark Ruiz", email: "mark@example.com", avatarUrl: null },
+      },
     ]);
   });
 
@@ -452,7 +467,11 @@ describe("RestTaskaApi project members", () => {
     );
 
     expect(result).toEqual([
-      { userId: "user-anna", role: null, user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
+      {
+        userId: "user-anna",
+        role: null,
+        user: { displayName: "Anna Ivanova", email: "anna@example.com", avatarUrl: null },
+      },
     ]);
   });
 
@@ -483,7 +502,13 @@ describe("RestTaskaApi project members", () => {
     );
 
     expect(result).toEqual([
-      { userId: "user-anna", role: "ADMIN", user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
+      {
+        userId: "user-anna",
+        role: "ADMIN",
+        // `null`, not absent: the row carried no avatar and the row is where
+        // the question is answered, inline (TAS-220).
+        user: { displayName: "Anna Ivanova", email: "anna@example.com", avatarUrl: null },
+      },
     ]);
   });
 
@@ -496,9 +521,13 @@ describe("RestTaskaApi project members", () => {
     expect(result[0]?.user).toBeUndefined();
   });
 
-  it("drops the avatar, and carries neither addedAt nor addedBy", async () => {
-    // Deliberate, not forgotten: the avatar is backend PR #150's story, and the
-    // two timestamps are not on `ProjectMemberDetailsDto` at all.
+  it("takes the avatar's download link off the row and nothing else, and carries neither addedAt nor addedBy", async () => {
+    // TAS-220 picks up what TAS-219 deliberately left: `AvatarDto` is on the
+    // wire with a presigned `downloadUrl`, and reading it here is what makes a
+    // board of faces one request rather than one per person. The other six
+    // fields stay dropped — none of them is drawn, and `createdAt` among them
+    // is declared and never populated. The two timestamps are not on
+    // `ProjectMemberDetailsDto` at all.
     const { result } = await call(
       {
         members: [
@@ -524,7 +553,52 @@ describe("RestTaskaApi project members", () => {
     expect(result[0]).not.toHaveProperty("avatar");
     expect(result[0]?.addedAt).toBeUndefined();
     expect(result[0]?.addedBy).toBeUndefined();
-    expect(Object.keys(result[0]?.user ?? {})).toEqual(["displayName", "email"]);
+    expect(result[0]?.user).toEqual({
+      displayName: "Anna Ivanova",
+      email: "anna@example.com",
+      avatarUrl: "https://example.invalid/anna.png",
+    });
+  });
+
+  it("reads a row whose avatar is null, or whose avatar carries no link, as no avatar", async () => {
+    // Two shapes the schema allows and one answer, because both mean the same
+    // thing to a reader — and `""` matters more than it looks: an empty string
+    // in an `<img src>` re-requests the current document.
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "a@example.com", avatar: null },
+          { userId: "user-mark", role: "MEMBER", displayName: "Mark Lee", email: "m@example.com", avatar: {} },
+          {
+            userId: "user-sofia",
+            role: "MEMBER",
+            displayName: "Sofia Reyes",
+            email: "s@example.com",
+            avatar: { downloadUrl: "" },
+          },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    expect(result.map((member) => member.user?.avatarUrl)).toEqual([null, null, null]);
+  });
+
+  it("drops a picture the server gave no name to, rather than drawing a face over Unknown", async () => {
+    const { result } = await call(
+      {
+        members: [
+          { userId: "user-ghost", role: "MEMBER", avatar: { downloadUrl: "https://example.invalid/ghost.png" } },
+        ],
+      },
+      (api) => api.listMembers("project-1"),
+    );
+
+    // The avatar rides inside `user`, so it shares its condition. Every screen
+    // reads `member.user` to choose between drawing a person and taking its own
+    // unknown-person path, and a face over "Unknown" would claim an identity
+    // the response never stated.
+    expect(result[0]?.user).toBeUndefined();
   });
 
   it("derives the membership from the project read, and never asks for /membership", async () => {
@@ -3064,7 +3138,7 @@ describe("RestTaskaApi attachments", () => {
     // `javascript:` URL is absolute and still not somewhere to send a file.
     for (const url of ["", "/api/v1/projects", "javascript:void 0"]) {
       const error = await api.putAttachmentBytes(url, new Blob(["x"]), "text/plain").catch((e: unknown) => e);
-      expect(error).toBeInstanceOf(AttachmentStoreError);
+      expect(error).toBeInstanceOf(ObjectStoreError);
       expect(error).toMatchObject({ code: "STORAGE_URL_UNUSABLE", storeStatus: null });
       // Store-shaped, so no `status` for `isMissingOrForbidden` to read: the
       // gateway did answer, but it did not fail, and nothing was sent.
@@ -3092,7 +3166,7 @@ describe("RestTaskaApi attachments", () => {
       .putAttachmentBytes("https://store.example/obj", new Blob(["x"]), "text/plain")
       .catch((e: unknown) => e);
 
-    expect(error).toBeInstanceOf(AttachmentStoreError);
+    expect(error).toBeInstanceOf(ObjectStoreError);
     expect(error).toMatchObject({ code: "STORAGE_UNREACHABLE", storeStatus: null });
     // The load-bearing assertion of this whole block: `isMissingOrForbidden`
     // and `isConflict` read `status` and `code` off any Error, so a store
@@ -3210,6 +3284,277 @@ describe("RestTaskaApi attachments", () => {
 
     // Measured against the deployed gateway on 2026-09-06: these routes answer
     // this, while `…/comments` answers 401 for the same unauthenticated call.
+    expect(error).toMatchObject({ status: 404, message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE) });
+    expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+  });
+});
+/**
+ * The four avatar routes — backend PR #150 (TAS-129), merged at `develop`
+ * `368ae77355bd` and deployed on 2026-09-14. What is pinned here is the request
+ * shape, the ceiling this client enforces against the one the schema declares,
+ * and the two answers a reader must not misread: a null `url` meaning "no
+ * avatar" and the static-resource 404 meaning "not on this gateway yet".
+ */
+describe("RestTaskaApi avatars", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const calls = (stub: ReturnType<typeof vi.fn>) => stub.mock.calls as unknown as [string, RequestInit][];
+
+  const USER = "3f1f5a2e-0000-4000-8000-000000000001";
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the three fields leg 1 requires and reads the ticket back, expiry included", async () => {
+    const fetchStub = vi.fn(async () =>
+      answer(200, { uploadUrl: "https://store.example/avatar?sig=1", objectKey: "obj", expiresIn: 900 }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const ticket = await new RestTaskaApi().createAvatarUploadUrl({
+      fileName: "face.png",
+      contentType: "image/png",
+      sizeBytes: 4096,
+    });
+
+    expect(calls(fetchStub)[0][0]).toBe("/api/v1/users/me/avatar/upload-url");
+    expect(JSON.parse(String(calls(fetchStub)[0][1].body)) as unknown).toEqual({
+      fileName: "face.png",
+      contentType: "image/png",
+      sizeBytes: 4096,
+    });
+    expect(ticket).toEqual({ uploadUrl: "https://store.example/avatar?sig=1", objectKey: "obj", expiresIn: 900 });
+  });
+
+  it("enforces the 2 MB the server applies, not the 5 MB its own schema declares", async () => {
+    const fetchStub = vi.fn(async () => answer(200, {}));
+    vi.stubGlobal("fetch", fetchStub);
+    const api = new RestTaskaApi();
+
+    // 3 MB passes `sizeBytes`'s declared `maximum: 5242880` and fails
+    // `S3StorageClient.validateFileParams`, which reads auth-service's
+    // `storage.max-file-size-bytes: 2097152`. The schema is the thing that is
+    // wrong here, and this is the assertion that says so.
+    const threeMegabytes = 3 * 1024 * 1024;
+    expect(threeMegabytes).toBeLessThan(5242880);
+    expect(threeMegabytes).toBeGreaterThan(AVATAR_MAX_SIZE_BYTES);
+
+    await expect(
+      api.createAvatarUploadUrl({ fileName: "huge.png", contentType: "image/png", sizeBytes: threeMegabytes }),
+    ).rejects.toMatchObject({
+      // `RestErrorMapper` has no `OUT_OF_RANGE` row, so the ceiling falls to its
+      // INTERNAL_SERVER_ERROR default — the same oddity the attachment ceiling
+      // has, and pinned as a fact about the gateway rather than a preference.
+      code: "OUT_OF_RANGE",
+      status: 500,
+      message: avatarSizeRefusalMessage(threeMegabytes),
+    });
+
+    // The second band. Past the schema's own `maximum: 5242880`, the generated
+    // DTO's `@Max` fails as the gateway reads the body, and
+    // `GatewayValidationExceptionHandler` answers with its fixed sentence on
+    // 400 — the avatar call never leaves the gateway, so this is not the 500
+    // above with a bigger number in it.
+    const sixMegabytes = 6 * 1024 * 1024;
+    expect(sixMegabytes).toBeGreaterThan(AVATAR_DECLARED_MAX_SIZE_BYTES);
+    await expect(
+      api.createAvatarUploadUrl({ fileName: "huger.png", contentType: "image/png", sizeBytes: sixMegabytes }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
+    });
+
+    await expect(
+      api.createAvatarUploadUrl({ fileName: "wave.gif", contentType: "image/gif", sizeBytes: 4096 }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      status: 400,
+      message: "Content type not allowed: image/gif",
+    });
+
+    await expect(
+      api.createAvatarUploadUrl({ fileName: "empty.png", contentType: "image/png", sizeBytes: 0 }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400 });
+
+    // Nothing went out, and the codes are the ones MockTaskaStore throws for
+    // the same four files, so the two modes cannot disagree about which
+    // pictures are uploadable or about what refused them.
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("PUTs the bytes to the presigned URL with the signed content type and nothing else", async () => {
+    const fetchStub = vi.fn(async () => answer(200, undefined));
+    vi.stubGlobal("fetch", fetchStub);
+    window.localStorage.setItem("taska.accessToken", "a-real-token");
+
+    const body = new Blob(["png"], { type: "image/png" });
+    await new RestTaskaApi().putAvatarBytes("https://store.example/avatar?X-Amz-Signature=abc", body, "image/png");
+
+    const [url, init] = calls(fetchStub)[0];
+    expect(url).toBe("https://store.example/avatar?X-Amz-Signature=abc");
+    expect(init.method).toBe("PUT");
+    // Exactly one header, and no bearer token: a token sent alongside a
+    // query-string signature can itself fail the signature.
+    expect(init.headers).toEqual({ "Content-Type": "image/png" });
+    expect(String(JSON.stringify(init.headers))).not.toContain("Bearer");
+  });
+
+  it("sends nothing at all when the upload link is not an absolute http URL", async () => {
+    const fetchStub = vi.fn(async () => answer(200, undefined));
+    vi.stubGlobal("fetch", fetchStub);
+    const api = new RestTaskaApi();
+
+    for (const url of ["", "/api/v1/users/me", "javascript:void 0"]) {
+      const error = await api.putAvatarBytes(url, new Blob(["x"]), "image/png").catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ObjectStoreError);
+      expect(error).toMatchObject({ code: "STORAGE_URL_UNUSABLE", storeStatus: null });
+      // Store-shaped, so no `status` for `isMissingOrForbidden` to read.
+      expect((error as { status?: unknown }).status).toBeUndefined();
+    }
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("keeps a store failure out of reach of the gateway predicates", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(403, undefined)));
+
+    const error = await new RestTaskaApi()
+      .putAvatarBytes("https://store.example/avatar", new Blob(["x"]), "image/png")
+      .catch((e: unknown) => e);
+
+    // One error type for both cross-origin legs (src/api/objectStore.ts), and
+    // the guarantee AGENTS.md attaches to it holds for this caller as well: a
+    // store's 403 is a signature that is no longer accepted, not "missing or
+    // not yours".
+    expect(error).toBeInstanceOf(ObjectStoreError);
+    expect(error).toMatchObject({ code: "STORAGE_REJECTED", storeStatus: 403 });
+    expect((error as { status?: unknown }).status).toBeUndefined();
+    expect(isMissingOrForbidden(error)).toBe(false);
+    expect(isConflict(error)).toBe(false);
+  });
+
+  it("confirms with the three fields the contract asks for and reads the avatar back", async () => {
+    const fetchStub = vi.fn(async () =>
+      answer(200, {
+        id: "avatar-1",
+        userId: USER,
+        objectKey: "obj",
+        fileName: "face.png",
+        contentType: "image/png",
+        sizeBytes: 4096,
+        createdAt: "2026-09-14T11:14:00Z",
+        downloadUrl: "https://store.example/face.png?sig=2",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const avatar = await new RestTaskaApi().confirmAvatarUpload({
+      objectKey: "obj",
+      fileName: "face.png",
+      contentType: "image/png",
+    });
+
+    expect(calls(fetchStub)[0][0]).toBe("/api/v1/users/me/avatar/confirm");
+    expect(JSON.parse(String(calls(fetchStub)[0][1].body)) as unknown).toEqual({
+      objectKey: "obj",
+      fileName: "face.png",
+      contentType: "image/png",
+    });
+    expect(avatar.downloadUrl).toBe("https://store.example/face.png?sig=2");
+    // Filled on this DTO, unlike its sibling on a member row: `UserAvatar`'s
+    // `createdAt` is an audited `@CreatedDate` and both mappers carry it
+    // through (`develop` `368ae77355bd`).
+    expect(avatar.createdAt).toBe("2026-09-14T11:14:00Z");
+  });
+
+  it("normalises a confirm that answered without a link, rather than putting an empty string in an img", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { id: "avatar-1", userId: USER })));
+
+    const avatar = await new RestTaskaApi().confirmAvatarUpload({
+      objectKey: "obj",
+      fileName: "face.png",
+      contentType: "image/png",
+    });
+
+    // `<img src="">` re-requests the current document — a real request to a
+    // real server for a picture that is not there.
+    expect(avatar.downloadUrl).toBeNull();
+    // And a timestamp the answer did not carry is `null`, not an invented one:
+    // the schema declares no `required` block, and the gateway's own mapper
+    // writes `null` for an all-zero timestamp.
+    expect(avatar).toMatchObject({ objectKey: "", fileName: "", contentType: "", sizeBytes: 0, createdAt: null });
+  });
+
+  it("deletes with no body and reads the 204 as a success", async () => {
+    const fetchStub = vi.fn(async () => answer(204, undefined));
+    vi.stubGlobal("fetch", fetchStub);
+
+    await expect(new RestTaskaApi().deleteMyAvatar()).resolves.toBeUndefined();
+
+    const [url, init] = calls(fetchStub)[0];
+    expect(url).toBe("/api/v1/users/me/avatar");
+    expect(init.method).toBe("DELETE");
+    expect(init.body).toBeUndefined();
+    // Idempotent by the contract's own words, so a second call is the same
+    // request and the same answer — there is nothing here to make conditional.
+    await expect(new RestTaskaApi().deleteMyAvatar()).resolves.toBeUndefined();
+  });
+
+  it("reads a null url as no avatar rather than as a failure", async () => {
+    const fetchStub = vi.fn(async () => answer(200, { url: null }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    // The whole point of this route's shape: "no avatar" is a **200** with a
+    // null field, because `UserProfileMapper.toRestGetAvatarDownloadUrlResponse`
+    // writes null when the proto carries no url. A caller reading the status
+    // would call this an error.
+    await expect(new RestTaskaApi().getUserAvatarUrl(USER)).resolves.toBeNull();
+    expect(calls(fetchStub)[0][0]).toBe(`/api/v1/users/${USER}/avatar`);
+  });
+
+  it("reads an absent url and an empty one as the same no-avatar answer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(200, {})));
+    await expect(new RestTaskaApi().getUserAvatarUrl(USER)).resolves.toBeNull();
+
+    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { url: "" })));
+    await expect(new RestTaskaApi().getUserAvatarUrl(USER)).resolves.toBeNull();
+  });
+
+  it("hands back the link when there is one", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { url: "https://store.example/face.png?sig=3" })));
+
+    await expect(new RestTaskaApi().getUserAvatarUrl(USER)).resolves.toBe("https://store.example/face.png?sig=3");
+  });
+
+  it("passes the undeployed-route 404 through so the menu can say which 404 it is", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer(404, {
+          code: "NOT_FOUND",
+          message: "No static resource api/v1/users/me/avatar/upload-url for request '…'.",
+        }),
+      ),
+    );
+
+    const error = await new RestTaskaApi()
+      .createAvatarUploadUrl({ fileName: "face.png", contentType: "image/png", sizeBytes: 10 })
+      .catch((e: unknown) => e);
+
+    // Probed against the deployed gateway on 2026-09-12 without a token: all
+    // four avatar routes answer this while `GET /users/me` answers 401.
     expect(error).toMatchObject({ status: 404, message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE) });
     expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
   });
