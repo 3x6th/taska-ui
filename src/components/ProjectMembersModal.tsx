@@ -98,9 +98,15 @@ interface ProjectMembersModalProps {
   /**
    * The board's reading of the reader's role, from the membership query it
    * already holds — so this dialog spends no request deciding what to offer.
-   * Presentation only: the server refuses all three writes for anybody else.
+   * One value with three kinds of answer, the way the board reads it since
+   * TAS-226: `undefined` while that read has not answered; `null` when it
+   * failed or answered with no role this build knows — the two cases the board
+   * puts a banner up for; otherwise the role the server stated.
+   *
+   * Only `ADMIN` gets controls. Presentation only: the server refuses all three
+   * writes for anybody else.
    */
-  isProjectAdmin: boolean;
+  readerRole: ProjectRole | null | undefined;
   /** `undefined` until `GET /users/me` answers; until then no row is marked as the reader's. */
   currentUserId?: string;
   onClose: () => void;
@@ -142,10 +148,11 @@ export function ProjectMembersModal({
   projectId,
   projectKey,
   projectColor,
-  isProjectAdmin,
+  readerRole,
   currentUserId,
   onClose,
 }: ProjectMembersModalProps) {
+  const isProjectAdmin = readerRole === "ADMIN";
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
@@ -699,9 +706,17 @@ export function ProjectMembersModal({
             {count !== undefined ? <span className="count-pill">{count}</span> : null}
           </h3>
 
-          {isProjectAdmin ? null : (
+          {/* Why there are no controls, said only as far as the server said it
+              (DESIGN.md §4.21 and §5.7, TAS-226): the admin rule is the reason
+              for a reader the server named a MEMBER or a VIEWER, and for a role
+              nobody stated it would be inventing the answer — so that reader is
+              told the role is unknown, which the board's banner also says, under
+              this dialog's scrim. Nothing while the role is still being read. */}
+          {readerRole === "MEMBER" || readerRole === "VIEWER" ? (
             <p className="member-readonly-note">Only a project admin can add, change or remove members.</p>
-          )}
+          ) : readerRole === null ? (
+            <p className="member-readonly-note">Your role on this project is unknown, so members cannot be changed here.</p>
+          ) : null}
 
           {membersUnread.unanswered ? (
             <div className="member-note is-error">

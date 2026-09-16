@@ -21,9 +21,9 @@ import type { Project } from "../domain/types";
 
 // Seed facts these cases lean on, named rather than looked up so a changed seed
 // fails loudly here instead of quietly testing something else. Anna is the
-// only ADMIN of Taska Platform; Mark, Sofia and Tom are its MEMBERs; Mark is
-// also the seed's only GLOBAL_ADMIN; Priya is a real account on two other
-// projects and not on this one.
+// only ADMIN of Taska Platform; Mark and Sofia are its MEMBERs and Tom its
+// VIEWER (since TAS-226); Mark is also the seed's only GLOBAL_ADMIN; Priya is a
+// real account on two other projects and not on this one.
 const TASKA = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
 const ANNA = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
 const MARK = "e65186a2-b807-42ae-a66f-711be116a93b";
@@ -193,9 +193,12 @@ describe("MockTaskaApi member writes", () => {
     it("refuses a non-admin once the target is a real member", async () => {
       await signIn("mark@example.com");
 
-      const facts = await refusal(api.changeProjectMemberRole(TASKA, TOM, "VIEWER"));
+      // A real change for Tom, who is the seed's VIEWER, so nothing about the
+      // refusal can be the write being a no-op.
+      const facts = await refusal(api.changeProjectMemberRole(TASKA, TOM, "MEMBER"));
       expect(facts.code).toBe("PERMISSION_DENIED");
       expect(facts.message).toBe(`User with id: ${MARK} is not an admin of project: ${TASKA}`);
+      await expect(rowFor(TOM)).resolves.toMatchObject({ role: "VIEWER" });
     });
 
     it.each([
@@ -219,7 +222,7 @@ describe("MockTaskaApi member writes", () => {
       await expect(api.changeProjectMemberRole(TASKA, ANNA, "MEMBER")).resolves.toMatchObject({ role: "MEMBER" });
       await expect(api.getMembership(TASKA)).resolves.toMatchObject({ role: "MEMBER", isMember: true });
 
-      const facts = await refusal(api.changeProjectMemberRole(TASKA, TOM, "VIEWER"));
+      const facts = await refusal(api.changeProjectMemberRole(TASKA, TOM, "MEMBER"));
       expect(facts.code).toBe("PERMISSION_DENIED");
     });
   });

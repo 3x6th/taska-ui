@@ -149,11 +149,12 @@ const refusal = (code: string, status: number, message: string, requestId = "req
   Object.assign(new Error(message), { code, status, requestId });
 
 /**
- * `currentUserId` is Anna unless a case passes the key: passing it as
- * `undefined` is the dialog opened before `GET /users/me` answered, which is a
- * state of its own and not a default.
+ * `currentUserId` is Anna and `readerRole` is ADMIN unless a case passes the
+ * key: passing either as `undefined` is a read that has not answered yet —
+ * `GET /users/me` for the first, the board's membership read for the second —
+ * which is a state of its own and not a default.
  */
-type PanelProps = { isProjectAdmin?: boolean; currentUserId?: string };
+type PanelProps = { readerRole?: ProjectRole | null; currentUserId?: string };
 
 function renderPanel(props: PanelProps = {}) {
   const queryClient = new QueryClient({
@@ -168,10 +169,10 @@ function renderPanel(props: PanelProps = {}) {
   const panel = (next: PanelProps) => (
     <ProjectMembersModal
       currentUserId={"currentUserId" in next ? next.currentUserId : ANNA}
-      isProjectAdmin={next.isProjectAdmin ?? true}
       onClose={onClose}
       projectId={PROJECT}
       projectKey="TAS"
+      readerRole={"readerRole" in next ? next.readerRole : "ADMIN"}
     />
   );
   const tree = (next: PanelProps) => (
@@ -201,7 +202,7 @@ beforeEach(() => {
 
 describe("ProjectMembersModal", () => {
   it("shows every member to a reader who is not an admin, with no control to change any of them", async () => {
-    renderPanel({ isProjectAdmin: false, currentUserId: MARK });
+    renderPanel({ readerRole: "MEMBER", currentUserId: MARK });
 
     expect(await within(dialog()).findByText("Anna Ivanova")).toBeVisible();
     expect(within(rowOf("Anna Ivanova")).getByText("Admin")).toBeVisible();
@@ -216,6 +217,45 @@ describe("ProjectMembersModal", () => {
     expect(within(dialog()).queryByRole("button", { name: /^Remove/ })).toBeNull();
     // Focus is inside the dialog even with nothing to type into (§7).
     expect(within(dialog()).getByRole("heading", { name: /Current members/ })).toHaveFocus();
+  });
+
+  it("shows a VIEWER the list and no control, for the same reason it gives a MEMBER", async () => {
+    state.members = state.members.map((member) => (member.userId === SOFIA ? { ...member, role: "VIEWER" } : member));
+    renderPanel({ readerRole: "VIEWER", currentUserId: SOFIA });
+
+    expect(await within(dialog()).findByText("Anna Ivanova")).toBeVisible();
+    expect(within(rowOf("Sofia Reyes")).getByText("Viewer")).toBeVisible();
+    expect(within(dialog()).getByText("Only a project admin can add, change or remove members.")).toBeVisible();
+    expect(within(dialog()).queryByRole("textbox")).toBeNull();
+    expect(within(dialog()).queryByRole("combobox")).toBeNull();
+    expect(within(dialog()).queryByRole("button", { name: /^Remove/ })).toBeNull();
+  });
+
+  // TAS-226: a role the server did not state — a read that failed, or one that
+  // answered with no role this build knows — is not a MEMBER or a VIEWER, and
+  // the admin rule is not the reason the dialog may give. The board says why in
+  // a banner, which this dialog's scrim covers.
+  it("shows a reader whose role is unknown the list, no control, and that the role is the unknown part", async () => {
+    renderPanel({ readerRole: null });
+
+    expect(await within(dialog()).findByText("Mark Lee")).toBeVisible();
+    expect(
+      within(dialog()).getByText("Your role on this project is unknown, so members cannot be changed here."),
+    ).toBeVisible();
+    expect(within(dialog()).queryByText("Only a project admin can add, change or remove members.")).toBeNull();
+    expect(within(dialog()).queryByRole("textbox")).toBeNull();
+    expect(within(dialog()).queryByRole("combobox")).toBeNull();
+    expect(within(dialog()).queryByRole("button", { name: /^Remove/ })).toBeNull();
+  });
+
+  it("offers nothing and explains nothing while the role is still being read", async () => {
+    renderPanel({ readerRole: undefined });
+
+    expect(await within(dialog()).findByText("Mark Lee")).toBeVisible();
+    expect(within(dialog()).queryByRole("textbox")).toBeNull();
+    expect(within(dialog()).queryByRole("button", { name: /^Remove/ })).toBeNull();
+    expect(within(dialog()).queryByText(/Only a project admin/)).toBeNull();
+    expect(within(dialog()).queryByText(/Your role on this project is unknown/)).toBeNull();
   });
 
   it("adds by user ID: refuses a malformed one, draws the pending row, then the member the server names", async () => {
@@ -624,7 +664,7 @@ describe("ProjectMembersModal", () => {
 
     // The board re-read the role — a 403 on some other write, or a change made
     // elsewhere — and it is not ADMIN any more.
-    rerender({ isProjectAdmin: false });
+    rerender({ readerRole: "MEMBER" });
 
     await waitFor(() => expect(within(dialog()).queryByText("Mark Lee will lose access to this project.")).toBeNull());
     expect(

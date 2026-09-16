@@ -844,11 +844,14 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       {managingMembers ? (
         <ProjectMembersModal
           currentUserId={meQuery.data?.id}
-          isProjectAdmin={isProjectAdmin}
           onClose={() => setManagingMembers(false)}
           projectColor={project?.color}
           projectId={projectId}
           projectKey={project?.projectKey ?? ""}
+          // The same `role` every permission above reads, with a failed read
+          // folded into `null`: the dialog tells a role nobody stated from a
+          // role the server named, as the board's two banners do.
+          readerRole={roleUnknown ? null : role}
         />
       ) : null}
 

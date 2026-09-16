@@ -5,8 +5,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // Mock-backed like every spec here (playwright.config.ts starts the server with
 // VITE_TASKA_API_MODE=mock): any seeded user signs in with any password. Anna
 // is the only ADMIN of Taska Platform; Mark is a MEMBER of it (and the seed's
-// only GLOBAL_ADMIN, which the route gives no exemption); Priya is a real
-// account on two other projects and not on this one.
+// only GLOBAL_ADMIN, which the route gives no exemption) and Tom its VIEWER
+// (since TAS-226); Priya is a real account on two other projects and not on
+// this one.
 //
 // **Nothing below is evidence about the gateway.** Every rule the dialog reacts
 // to — the last-admin refusal, the order of the checks, an unknown id accepted
@@ -125,20 +126,26 @@ test("an admin row with no account does not let the only real admin step down", 
   await expect(anna.getByText(/You are this project’s only admin, so/)).toBeVisible();
 });
 
-test("a member who is not an admin sees everyone and no control", async ({ page }) => {
-  const dialog = await openMembers(page, "mark@example.com");
+for (const reader of [
+  { email: "mark@example.com", name: "Mark Lee", role: "Member", article: "a MEMBER" },
+  { email: "tom@example.com", name: "Tom Becker", role: "Viewer", article: "a VIEWER" },
+]) {
+  test(`${reader.article} sees everyone and no control`, async ({ page }) => {
+    const dialog = await openMembers(page, reader.email);
 
-  await expect(dialog.locator(".member-row")).toHaveCount(4);
-  await expect(row(dialog, "Mark Lee")).toContainText("(you)");
-  await expect(row(dialog, "Anna Ivanova")).toContainText("Admin");
-  await expect(dialog.getByText("Only a project admin can add, change or remove members.")).toBeVisible();
+    await expect(dialog.locator(".member-row")).toHaveCount(4);
+    await expect(row(dialog, reader.name)).toContainText("(you)");
+    await expect(row(dialog, reader.name)).toContainText(reader.role);
+    await expect(row(dialog, "Anna Ivanova")).toContainText("Admin");
+    await expect(dialog.getByText("Only a project admin can add, change or remove members.")).toBeVisible();
 
-  // Absent from the markup rather than hidden — and the server refuses these
-  // writes for a MEMBER regardless (DESIGN.md §5.7).
-  await expect(dialog.getByLabel("Add by user ID")).toHaveCount(0);
-  await expect(dialog.getByRole("combobox")).toHaveCount(0);
-  await expect(dialog.getByRole("button", { name: /^Remove/ })).toHaveCount(0);
-});
+    // Absent from the markup rather than hidden — and the server refuses these
+    // writes for anybody but an ADMIN regardless (DESIGN.md §5.7).
+    await expect(dialog.getByLabel("Add by user ID")).toHaveCount(0);
+    await expect(dialog.getByRole("combobox")).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: /^Remove/ })).toHaveCount(0);
+  });
+}
 
 test("the only admin cannot step down until there is another, and then the controls leave with the role", async ({
   page,
