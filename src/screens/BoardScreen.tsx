@@ -715,8 +715,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               `error` to print either — there was no failure to carry one. */}
           {roleUnstated ? (
             <ApiNotice>
-              Your role came back without a value this app recognises, so editing is off — an unknown role, not a
-              read-only project.
+              Your role came back empty or unrecognised, so editing is off — an unknown role, not a read-only
+              project.
             </ApiNotice>
           ) : null}
           {issuesUnknown ? (
@@ -1813,13 +1813,14 @@ function IssueWatchersSection({
   membersUnknown: boolean;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   /**
-   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}` when the
-   * subscriber is somebody else — the case the contract marks "только project
-   * ADMIN". When the subscriber is the reader themselves the server applies
-   * `watch-issue-roles` instead (same rule as `canWatch` below), but this
-   * section renders both controls only for an ADMIN regardless, so a MEMBER
-   * never reaches either route through it. Presentation only — the server
-   * checks again (DESIGN.md §5.7).
+   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`. The
+   * contract marks both ADMIN-only with no self-case exception, but
+   * issue-service applies `watch-issue-roles` instead when the subscriber is
+   * the reader themselves (same rule as `canWatch` below) — the contract and
+   * the server disagree there, and TAS-228 asks the backend which is
+   * intended. This section renders both controls only for an ADMIN
+   * regardless, so a MEMBER never reaches either route through it.
+   * Presentation only — the server checks again (DESIGN.md §5.7).
    */
   isProjectAdmin: boolean;
   /**
@@ -2147,6 +2148,7 @@ function IssueWatchersSection({
   // that state a refused write would otherwise be explained by whatever the
   // refetch said instead.
   const readError = watchersQuery.data === undefined ? watchersQuery.error : null;
+  const toggleHintId = useId();
   // The line beside the toggle, and the only place a reader is told why it is
   // off. Whether they are on the list is true for every reader and always said.
   // The invitation is only for a role the server lets through, and the reason —
@@ -2204,6 +2206,7 @@ function IssueWatchersSection({
              * flight together can be applied by the server in either order, and
              * the loser decides the subscription.
              */
+            aria-describedby={toggleHintId}
             aria-disabled={toggling || undefined}
             aria-pressed={watching}
             className={`secondary-button compact-button watch-toggle${watching ? " is-watching" : ""}`}
@@ -2228,7 +2231,7 @@ function IssueWatchersSection({
             {watching ? <Eye size={13} /> : <EyeOff size={13} />}
             {watching ? "Watching" : "Watch"}
           </button>
-          <span className="watcher-toggle-hint">{toggleHint}</span>
+          <span className="watcher-toggle-hint" id={toggleHintId}>{toggleHint}</span>
         </div>
       ) : null}
 

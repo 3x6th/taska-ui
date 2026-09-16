@@ -921,7 +921,7 @@ describe("board failures the user can see", () => {
     const alert = await screen.findByRole("alert");
     // Its own sentence: "could not be loaded" would be false about a read that
     // answered, and "read-only" would be the VIEWER it is not.
-    expect(alert).toHaveTextContent(/came back without a value this app recognises/i);
+    expect(alert).toHaveTextContent(/came back empty or unrecognised/i);
     expect(alert).not.toHaveTextContent(/could not be loaded/i);
     expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
     // Nothing failed, so there is no message or request id to print under it.
@@ -938,7 +938,7 @@ describe("board failures the user can see", () => {
     holdMembership(true);
     void queryClient.refetchQueries({ queryKey: membershipKey });
     await waitFor(() => expect(queryClient.getQueryState(membershipKey)?.fetchStatus).toBe("fetching"));
-    expect(screen.getByRole("alert")).toHaveTextContent(/came back without a value this app recognises/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/came back empty or unrecognised/i);
     expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
 
     // And an answer that names a role takes both away together.
@@ -2348,6 +2348,11 @@ describe("issue watchers", () => {
     expect(toggle).toBeDisabled();
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(panel.getByText("As a viewer, you cannot add yourself to this issue's watcher list.")).toBeVisible();
+    // The hint is linked, not just adjacent: a screen reader announces it as
+    // the toggle's description rather than as an unrelated line of text.
+    expect(toggle).toHaveAccessibleDescription(
+      "As a viewer, you cannot add yourself to this issue's watcher list.",
+    );
     // No invitation the server would refuse.
     expect(panel.queryByText(/^Add yourself/)).toBeNull();
     expect(panel.queryByLabelText("Add a watcher")).toBeNull();

@@ -778,18 +778,22 @@ export interface TaskaApi {
    *   unsubscribe themselves, and the panel's toggle is live only for the two
    *   roles that rule lets through (TAS-226). Until TAS-226 this comment said
    *   the opposite, reading the contract's silence as permission.
-   * - `addIssueWatcher` and `removeIssueWatcher` are project-`ADMIN` only when
-   *   the subscriber is somebody else, said in the contract's own summaries
-   *   ("только project ADMIN", and "Viewer/MEMBER без роли ADMIN не может
-   *   удалить чужого watcher") and in the server's `manage-watchers-roles`.
-   *   When the subscriber is the caller, the same `checkMutationRole` cited
-   *   above picks `watch-issue-roles` instead, so a MEMBER may use either
-   *   route on themselves too — a case the contract's summaries do not
-   *   describe. `MockTaskaStore.requireWatcherAdmin` refuses a MEMBER either
-   *   way, which the UI never reaches: both controls are already hidden from
-   *   anyone who is not an ADMIN. Only the actor's role is checked, never the
-   *   subscriber's, so an ADMIN may subscribe a VIEWER. Hiding those two
-   *   controls is presentation; the server decides.
+   * - `addIssueWatcher` and `removeIssueWatcher` are project-`ADMIN` only,
+   *   full stop, in the contract's own summaries and descriptions ("только
+   *   project ADMIN", "Доступно только пользователю с ролью ADMIN в
+   *   проекте", and "Viewer/MEMBER без роли ADMIN не может удалить чужого
+   *   watcher") and in the server's `manage-watchers-roles` — none of the
+   *   three carves out a self case. issue-service disagrees on exactly that
+   *   case: the same `checkMutationRole` cited above picks
+   *   `watch-issue-roles` instead when the subscriber is the caller, so a
+   *   MEMBER may use either route on themselves too. So on the self case the
+   *   contract and the server disagree, rather than the contract staying
+   *   silent; TAS-228 asks the backend which side is intended.
+   *   `MockTaskaStore.requireWatcherAdmin` follows the contract and refuses a
+   *   MEMBER either way, which the UI never reaches: both controls are
+   *   already hidden from anyone who is not an ADMIN. Only the actor's role
+   *   is checked, never the subscriber's, so an ADMIN may subscribe a
+   *   VIEWER. Hiding those two controls is presentation; the server decides.
    *
    * The `me` pair takes the user from the JWT and sends no body, which is why
    * neither signature has a `userId`. Passing one would be a lie about the
