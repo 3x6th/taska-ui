@@ -1812,6 +1812,14 @@ frontend story is blocked by its backend half and ships mock-first meanwhile.
 - [TAS-149](https://jira.ozero.dev/browse/TAS-149) — archive a project from
   the UI, plus the read-only board state for an archived one. Blocked by
   TAS-146.
+  **Backend PR #159, which implements TAS-146, would not give it that board**
+  (read at head `eda5169`, open and unreviewed, 2026-09-16). issue-service's
+  `ProjectAccessChecker` refuses an archived project on every access check,
+  including the reads: get, list, board and search each answer 400
+  (`FAILED_PRECONDITION`). Meanwhile `listMyProjects` still returns the project.
+  The project would show on the projects screen and its board would not open.
+  Raised on TAS-146 before its review. Do not build TAS-149 against #159 until
+  that comment is answered.
 - [TAS-150](https://jira.ozero.dev/browse/TAS-150) — filed as a bug: no route
   guard exists, so a signed-out deep link lands on an empty projects screen
   with no way back to `/login`. Carries the auth-lifecycle item that used to
@@ -2321,7 +2329,8 @@ is what recurs.
 - **A stale comment in `src/styles.css` (~l.3312-3316)** still describes the
   Events "not deployed" note, which went away in TAS-194. It is unrelated to
   TAS-224; `frontend-builder` noticed it and left it alone.
-- **A read that answers 200 with no role silently floors to VIEWER**
+- ~~**A read that answers 200 with no role silently floors to VIEWER**~~
+  **Graduated 2026-09-16 into [TAS-226](https://jira.ozero.dev/browse/TAS-226).**
   (`release-reviewer`, TAS-224). `RestTaskaApi.getMembership` maps a missing or
   `null` `currentUserRole` to `VIEWER`, and TAS-163's banner shows only when the
   read *fails*. So a project-service older than the gateway would make every
@@ -2331,7 +2340,8 @@ is what recurs.
   (12:00 UTC 2026-09-16), so it is not reachable today. The fix is to treat a 200
   with no role as unknown and show the banner, as the board already does for a
   failed read.
-- **A VIEWER is offered Watch, and the server refuses it** (`release-reviewer`,
+- ~~**A VIEWER is offered Watch, and the server refuses it**~~ **Graduated
+  2026-09-16 into [TAS-226](https://jira.ozero.dev/browse/TAS-226).** (`release-reviewer`,
   TAS-224, pre-existing). issue-service sets `watch-issue-roles: ADMIN,MEMBER`
   (`application.yml:59`) and applies it to watching yourself
   (`IssueWatcherServiceImpl.java:175-177`). The toggle is ungated
@@ -2339,8 +2349,8 @@ is what recurs.
   The write is optimistic with rollback, so nothing is lost: the reader sees the
   refusal. The contract says nothing about it. The fix is to gate the toggle on
   `canEdit`, align the mock, and record it in `API-DIVERGENCE.md` if it stays.
-- **The assignee chips offer VIEWER members, and the server refuses them as
-  assignees** (`release-reviewer`, TAS-224). issue-service checks the assignee's
+- ~~**The assignee chips offer VIEWER members, and the server refuses them as
+  assignees**~~ **Graduated 2026-09-16 into [TAS-226](https://jira.ozero.dev/browse/TAS-226).** (`release-reviewer`, TAS-224). issue-service checks the assignee's
   role against `assign-issue-roles: ADMIN,MEMBER` (`IssueServiceImpl.java:182-184`),
   while `BoardScreen.tsx` ~1402-1426 draws a chip for every member. It became
   reachable in TAS-224, because the chips used to list only the reader. Nothing
