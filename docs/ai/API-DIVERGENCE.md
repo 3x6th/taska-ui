@@ -782,11 +782,18 @@ Everything below is the entry as it stood, in the past tense.
   means leaving such a row on a project of the shared stand. project-service
   checks the id's shape, that the actor is an ADMIN of the project and that the
   target is not already on it. It never asks auth-service. Any well-formed UUID
-  answers `201`, and `GET …/members` then returns the row with `userId` and
-  `role` and nothing else: `ProfileServiceImpl.getUserDetailsByIds` drops an id
-  it has no user for without a word. That lookup does not filter by status, so
-  INVITED and BLOCKED accounts come back named. **A member row with neither a
-  name nor an email means no account holds that id.**
+  answers `201`. `GET …/members` then returns that row with `displayName: ""`,
+  `email: ""` and `avatar: null` beside `userId` and `role`, for three reasons:
+  `ProfileServiceImpl.getUserDetailsByIds` drops an id it has no user for without
+  a word; `ProjectMemberMapper.toProjectMemberResponse` skips the null name and
+  email, so proto3 sends its `""` defaults; and the gateway's
+  `ProjectMapper.toProjectMemberDetailsDto` copies them. That lookup does not
+  filter by status, so INVITED and BLOCKED accounts come back named. **A member
+  row whose name is empty or absent means no account came back for that id.**
+  The lookup's own Javadoc says it answers `NOT_FOUND` when any id is missing,
+  and the code does not. If the code is ever made to match, one row like this
+  fails `GET …/members` for every reader of the project, and the dialog can no
+  longer draw the row it would remove.
 - **The routes are deployed.** Measured without a token on 2026-09-16 at
   21:37 UTC: `POST …/members`, `PATCH …/members/{userId}` and
   `DELETE …/members/{userId}` each answer `401`; `PUT` on the same path answers
@@ -811,18 +818,39 @@ Everything below is the entry as it stood, in the past tense.
   open confirmation closes, and a late press is re-checked, under the same
   rule. `MockTaskaApi` and `RestTaskaApi` keep the server's rule, because they
   must not claim a refusal the gateway would not give. Found by
-  `release-reviewer` on TAS-158. TAS-227 stops *new* ADMIN rows with no account
-  from being written. It does not remove the ones added before it lands. So
-  the stricter count comes out only once no such ADMIN row is left on any
-  project, not when TAS-227 closes.
+  `release-reviewer` on TAS-158. TAS-227 stops new rows like this from being
+  written but removes none that exist. So this rule goes only once TAS-227 is
+  deployed **and** the stand holds no ADMIN row without an account. Because
+  `project_members` and `users` live in separate databases (`project_db`,
+  `auth_db`), that is a check by script, not a migration. The rule covers only
+  an id with no account. A BLOCKED admin, or one INVITED who never activated,
+  comes back named, so the dialog still lets the only admin who can sign in
+  step down beside one. Member rows carry no `status`, so the client cannot
+  tell (`api-contract-guard`, TAS-158).
+- **Change and remove check the target before the actor, and that discloses
+  membership.** Any signed-in user who knows a project id gets `404` for a
+  `userId` that is not on the project and `403` for one that is, on both
+  `PATCH` and `DELETE` (`ProjectMemberValidatorImpl.validateBeforeModify`; add
+  checks the actor first). `MockTaskaApi` mirrors that order, because parity
+  with the server is the rule, and `TaskaApi.ts` describes it. Filed as
+  [TAS-229](https://jira.ozero.dev/browse/TAS-229). When it lands, the order in
+  `MockTaskaApi`'s modify check, that doc and one case in
+  `src/api/members.test.ts` change with it (`api-contract-guard`, TAS-158).
 - **The client is stricter about the id's spelling than the server.** Both
   implementations refuse anything that is not the canonical 8-4-4-4-12 form
   before sending (`isUserId`, `src/api/members.ts`). Java's `UUID.fromString`
   also accepts short groups like `1-1-1-1-1`. That is a documented narrowing,
   not a divergence to remove: nobody pastes that spelling of a real id.
 - **Removal:** [TAS-227](https://jira.ozero.dev/browse/TAS-227). The add should
-  answer `404` before saving. Once it does, the add row shows that refusal. The
-  "Unknown" rendering stays for rows written before the fix.
+  refuse an id no account holds before saving, with an answer the client can
+  tell apart from this route's existing `404 NOT_FOUND` for a missing project.
+  `addFailureText` reads every 404 on add as "This project could not be found".
+  So a `404` for the person would show a false sentence until that function
+  changes with it. The ticket therefore asks for `400 INVALID_ARGUMENT` naming
+  `body.addedMemberId`, which is what the same field's shape refusal already
+  is. The dialog shows that truthfully, as "Nobody was added" with the server's
+  words beneath it. The "Unknown" rendering stays for rows written before the
+  fix.
 
 ### Comment ordering is unspecified
 

@@ -2436,3 +2436,61 @@ is what recurs.
     `GET /meta`: a cross-service rpc.
 
   Worth filing when TAS-214 or TAS-217 is next discussed, not before.
+
+### Left by TAS-158 (project members dialog, 2026-09-17)
+
+- **Nobody can see their own user ID anywhere in the product** (`builder`,
+  TAS-158). Adding a member takes an exact ID until TAS-204 brings search, and
+  today only a `GLOBAL_ADMIN` can find an ID (Administration → Data →
+  auth → users). A project ADMIN who is not a global admin has to be handed the
+  ID by somebody. Cheap fix: "User ID" with a copy button in the profile menu
+  (§4.16). It is outside TAS-158's scope, and it matters for exactly as long as
+  the ID field does.
+- **Removing a member leaves their assignments and watcher subscriptions**
+  (`builder`, `api-contract-guard`, TAS-158). project-service writes
+  `MemberRemoved`, and only notification-service consumes it. The board then
+  draws that assignee as somebody the member list cannot name. This is a
+  product question for the backend: should removal unassign, or should the
+  board say "no longer on this project"? It is not filed.
+- **Member writes do not name the person, so every add re-reads the list**
+  (`api-contract-guard`, TAS-158). The ask is priced, not filed:
+  - proto: `AddProjectMemberResponse` and `ChangeProjectMemberRoleResponse` gain
+    the `ProjectMemberDetailsDto` fields;
+  - service: the lookup TAS-227 adds;
+  - gateway mapper: `toRestAdd…` and `toRestChange…`;
+  - contract: `ProjectMemberResponseDto`.
+
+  It depends on [TAS-227](https://jira.ozero.dev/browse/TAS-227) and sits next
+  to [TAS-212](https://jira.ozero.dev/browse/TAS-212). It must not copy
+  TAS-225's avatar lookup, where one unreadable avatar fails the whole answer.
+  Worth filing when TAS-212 is next discussed.
+- **An admin who cannot sign in still counts as cover** (`api-contract-guard`,
+  TAS-158). A BLOCKED admin, or one INVITED who never activated, comes back
+  named, so the dialog lets the only admin who can sign in step down beside one.
+  Member rows carry no `status`, so the client cannot tell. A real fix spans the
+  auth repository, both protos, both mappers and the contract. It is recorded in
+  `API-DIVERGENCE.md` beside the no-account rule.
+- **Two admins in separate sessions can step down at the same moment**
+  (`release-reviewer`, TAS-158). If a no-account admin row is the only other
+  ADMIN, the project is left with no admin who can sign in. No client can
+  prevent it; TAS-227 plus a cleanup of existing rows removes the precondition.
+- **The role select applies on change** (`builder`, TAS-158). On Windows, arrow
+  keys on a closed `<select>` send one PATCH per press. Presses during a write
+  are ignored, so it cannot race itself, but each step is a real write. Not
+  seen on macOS, where arrows open the list.
+- **A pending add row can vanish a beat early** (`builder`, TAS-158). A role
+  change cancels an in-flight member refetch, and an add waiting on that refetch
+  loses its pending row before the real row arrives.
+- **The member read's retry rule exists twice** (`builder`, TAS-158). The dialog
+  holds a copy of the board's rule, because a screen file cannot export it, and
+  the two must stay identical.
+- **One extra member GET after removing yourself** (`release-reviewer`,
+  TAS-158). React Router 7 navigates at low priority, so the dialog can re-render
+  first and re-create an empty members query. On the gateway it answers 403, and
+  no data survives.
+- **Layering and test placement** (`builder`, TAS-158):
+  - `ProjectMembersModal` imports `shortKey` from `screens/admin/columns.ts`, so
+    a component depends on a screen module.
+  - The member write tests live in `src/api/members.test.ts` rather than the
+    Mock and Rest test files, to stay clear of TAS-226, which was open in
+    another session. Fold them in when either file is next touched.
