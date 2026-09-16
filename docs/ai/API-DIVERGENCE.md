@@ -670,6 +670,41 @@ Everything below is the entry as it stood, in the past tense.
   2026-09-11 from TAS-141 (nullable
   `assigneeId` or an explicit unassign route).
 
+### Watching yourself and being assigned are role-gated by issue-service, and the contract states neither rule
+
+- **Endpoints:** `PUT` and `DELETE /api/v1/projects/{projectId}/issues/{issueId}/watchers/me`,
+  and `PUT /api/v1/issues/{issueId}/assignee`.
+- **Contract:** the two routes that change *somebody else's* subscription say
+  "только project ADMIN" in their summary. The `…/watchers/me` pair states no
+  role and lists a `403` without saying who gets it. The assignee route states
+  no role at all, neither for the person assigning nor for the person assigned.
+- **Runtime** (read in the Java at backend `develop` `1cfe4d7`, which is
+  deployed; not probed with a token): issue-service's
+  `application.yml` sets `issue.allowed-roles.watch-issue-roles: ADMIN,MEMBER`
+  and `assign-issue-roles: ADMIN,MEMBER`.
+  `IssueWatcherServiceImpl.checkMutationRole` applies `watch-issue-roles` to
+  the actor when they watch or unwatch themselves, so a VIEWER can do neither.
+  When the target is somebody else it applies `manage-watchers-roles: ADMIN`,
+  again to the actor only, so an ADMIN may subscribe a VIEWER. The assign path
+  in `IssueServiceImpl` checks `assign-issue-roles` for the actor **and** for
+  the assignee, and a `null` assignee skips the second check. Refusals are `403`
+  in `ProjectRoleChecker`'s words, "Access denied" for a non-member and "Not
+  allowed role" for a member.
+- **Compensation** ([TAS-226](https://jira.ozero.dev/browse/TAS-226)): the UI
+  mirrors all three rules. The watch toggle is disabled outside ADMIN and MEMBER
+  and still shows the reader's state. The assignee chips offer only ADMIN and
+  MEMBER rows, and keep a demoted current assignee as a disabled active chip.
+  `MockTaskaStore` refuses the same cases, in its own words. Until TAS-226 the
+  toggle was live for every reader, on a code comment that read the contract's
+  silence as "no role".
+- **Switching off:** there is no flag. The client cannot read
+  `issue.allowed-roles`, so if either list changes on the server the UI keeps
+  offering the old set, and no contract diff will show it.
+- **Removal:** closes when the contract states the roles for these three
+  routes, as it already does for the ADMIN watcher routes. Nothing is filed for
+  that yet; the natural home is the contract-hygiene ask
+  [TAS-206](https://jira.ozero.dev/browse/TAS-206).
+
 ### `GET /projects/{id}/members` states no order, and the two implementations differ
 
 - **Missing:** an ordering guarantee **in the contract**. The runtime has one
