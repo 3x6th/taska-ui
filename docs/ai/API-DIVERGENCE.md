@@ -828,10 +828,15 @@ Everything below is the entry as it stood, in the past tense.
   step down beside one. Member rows carry no `status`, so the client cannot
   tell (`api-contract-guard`, TAS-158).
 - **Change and remove check the target before the actor, and that discloses
-  membership.** Any signed-in user who knows a project id gets `404` for a
-  `userId` that is not on the project and `403` for one that is, on both
-  `PATCH` and `DELETE` (`ProjectMemberValidatorImpl.validateBeforeModify`; add
-  checks the actor first). `MockTaskaApi` mirrors that order, because parity
+  membership.** Anyone signed in who is not an ADMIN of a project and knows its
+  id gets `404` for a `userId` that is not on the project and `403` for one
+  that is, on both `PATCH` and `DELETE`
+  (`ProjectMemberValidatorImpl.validateBeforeModify`; add checks the actor
+  first). The dialog shows that `404` as "nothing changed" and does not re-read
+  the reader's role. So a reader who was demoted in another session keeps the
+  admin controls until something else re-reads their role. The client does not
+  re-read the role on every `404`, because that would add reads to cover a
+  server ordering. `MockTaskaApi` mirrors that order, because parity
   with the server is the rule, and `TaskaApi.ts` describes it. Filed as
   [TAS-229](https://jira.ozero.dev/browse/TAS-229). When it lands, the order in
   `MockTaskaApi`'s modify check, that doc and one case in
