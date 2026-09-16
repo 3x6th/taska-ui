@@ -473,6 +473,47 @@ describe("HybridTaskaApi", () => {
   });
 
   /**
+   * The three member writes (TAS-158), delegated whole. Unstubbed, so what comes
+   * back is live's own answer — the added row, the changed role, the row gone —
+   * and the one refusal checked is the one this feature is most careful about:
+   * the last ADMIN, which has to arrive with its `FAILED_PRECONDITION` code
+   * intact for the dialog to say why.
+   */
+  it("delegates all three member writes untouched, the last-admin refusal included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const me = await hybrid.getCurrentUser();
+    const project = (await hybrid.listProjects()).find((item) => item.projectKey === "TAS")!;
+    // A well-formed id nobody holds: the add must not care (TAS-227).
+    const userId = "0b1c2d3e-4f50-4617-8a9b-0c1d2e3f4a5b";
+
+    const add = vi.spyOn(live, "addProjectMember");
+    const change = vi.spyOn(live, "changeProjectMemberRole");
+    const remove = vi.spyOn(live, "removeProjectMember");
+
+    await expect(hybrid.addProjectMember(project.id, userId, "VIEWER")).resolves.toEqual({
+      projectId: project.id,
+      userId,
+      role: "VIEWER",
+    });
+    expect(add).toHaveBeenCalledWith(project.id, userId, "VIEWER");
+
+    await expect(hybrid.changeProjectMemberRole(project.id, userId, "MEMBER")).resolves.toMatchObject({
+      role: "MEMBER",
+    });
+    expect(change).toHaveBeenCalledWith(project.id, userId, "MEMBER");
+
+    await hybrid.removeProjectMember(project.id, userId);
+    expect(remove).toHaveBeenCalledWith(project.id, userId);
+    expect((await hybrid.listMembers(project.id)).some((member) => member.userId === userId)).toBe(false);
+
+    const refusal = await hybrid.removeProjectMember(project.id, me.id).catch((error: unknown) => error);
+    expect(isConflict(refusal)).toBe(true);
+    expect(refusal).toMatchObject({ code: "FAILED_PRECONDITION" });
+  });
+
+  /**
    * The avatar family, delegated whole — including the leg that PUTs to the
    * object store rather than to the gateway. What is pinned is that nothing is
    * added on the way through.

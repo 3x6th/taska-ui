@@ -31,6 +31,7 @@ import {
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
 import { attachmentRefusal } from "../attachments";
+import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import {
   AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
   AVATAR_DECLARED_MAX_SIZE_BYTES,
@@ -88,6 +89,7 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  ProjectMemberWriteResult,
   ProjectRole,
   UnwatchIssueResult,
   User,
@@ -863,6 +865,48 @@ export class RestTaskaApi implements TaskaApi {
       .filter((member) => Boolean(member.userId))
       .map((member) => toProjectMember(member))
       .sort(compareMembers);
+  }
+
+  /**
+   * `POST /projects/{projectId}/members` with `{ userId, role }`, answered 201
+   * with `ProjectMemberResponseDto`. See `TaskaApi.addProjectMember` for the
+   * refusals and the order the server checks them in.
+   *
+   * The id goes out as the caller gave it, once `requireMemberUserId` has
+   * accepted it. Trimming and lower-casing are the caller's job
+   * (`normalizeUserId`, src/api/members.ts): a layer that repaired its input
+   * would make a padded id succeed through here while the same body from any
+   * other client is a 400.
+   */
+  async addProjectMember(projectId: string, userId: string, role: ProjectRole): Promise<ProjectMemberWriteResult> {
+    requireMemberUserId(userId);
+    const response = await this.request<RestProjectMemberWrite | undefined>(
+      `/projects/${this.segment(projectId)}/members`,
+      { method: "POST", body: { userId, role } },
+    );
+    return toProjectMemberWriteResult(response, projectId, userId);
+  }
+
+  /** `PATCH /projects/{projectId}/members/{userId}` with `{ role }`, answered 200 with the same DTO. */
+  async changeProjectMemberRole(
+    projectId: string,
+    userId: string,
+    role: ProjectRole,
+  ): Promise<ProjectMemberWriteResult> {
+    requireMemberUserId(userId);
+    const response = await this.request<RestProjectMemberWrite | undefined>(
+      `/projects/${this.segment(projectId)}/members/${this.segment(userId)}`,
+      { method: "PATCH", body: { role } },
+    );
+    return toProjectMemberWriteResult(response, projectId, userId);
+  }
+
+  /** `DELETE /projects/{projectId}/members/{userId}`, answered 204 with no body. */
+  async removeProjectMember(projectId: string, userId: string): Promise<void> {
+    requireMemberUserId(userId);
+    await this.request<void>(`/projects/${this.segment(projectId)}/members/${this.segment(userId)}`, {
+      method: "DELETE",
+    });
   }
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
@@ -2218,9 +2262,14 @@ function toProjectRole(value: unknown): ProjectRole | null {
  * and its own unknown-person path by whether `user` is there at all
  * (`toUserMap` filters on it, and the assignee chip's `?? "User"` cannot catch
  * an empty string, since `"".split(" ")[0]` is `""`). A row that gives only an
- * email is therefore an unnamed member here — nothing reads a member's email
- * today, and whatever eventually does should choose for itself what to draw in
- * place of a missing name rather than inherit a guess made in this file.
+ * email is therefore an unnamed member here. The members panel (TAS-158) is the
+ * one reader of a member's email, and it reads it only beside a name — an
+ * unnamed row draws the id and says no account came back for it. That sentence
+ * leans on auth-service rather than on this file: `users.display_name` is
+ * `NOT NULL` and an invitation refuses a blank one, so an email with no name is
+ * not a shape its lookup produces for an account that exists (read at backend
+ * `develop` `1cfe4d79f074`). A row the lookup has no account for arrives with
+ * neither (TAS-227).
  */
 function toProjectMember(member: RestProjectMember): ProjectMember {
   const displayName = typeof member.displayName === "string" ? member.displayName.trim() : "";
@@ -2242,6 +2291,56 @@ function toProjectMember(member: RestProjectMember): ProjectMember {
       ? { displayName, email: member.email ?? "", avatarUrl: typeof downloadUrl === "string" && downloadUrl ? downloadUrl : null }
       : undefined,
   };
+}
+
+/**
+ * `ProjectMemberResponseDto` — what the add and the role change answer with.
+ * Every field optional because the schema declares no `required` block; `role`
+ * is `unknown` for the reason `RestProjectMember.role` is, although this one
+ * goes through `ProjectMapper.toRestProjectRole` and so arrives as one of the
+ * three or as `null` (read at backend `develop` `1cfe4d79f074`).
+ */
+interface RestProjectMemberWrite {
+  projectId?: string;
+  userId?: string;
+  role?: unknown;
+}
+
+/**
+ * The write's answer as the domain holds it. `projectId` and `userId` fall back
+ * to the request's own, which named both — an answer that omitted one is still
+ * about the membership that was asked for, and an empty string there would be
+ * an id nobody can act on. The fallback is the caller's spelling of the id; the
+ * server's is lower-case, which is only different for a caller that did not
+ * normalise.
+ *
+ * `role` does not fall back to the role that was asked for. A role the answer
+ * does not state is exactly the case `null` exists for, and filling it from the
+ * request would report a change the server never confirmed.
+ */
+function toProjectMemberWriteResult(
+  response: RestProjectMemberWrite | undefined,
+  projectId: string,
+  userId: string,
+): ProjectMemberWriteResult {
+  return {
+    projectId: response?.projectId || projectId,
+    userId: response?.userId || userId,
+    role: toProjectRole(response?.role),
+  };
+}
+
+/**
+ * The id every member write names, refused before the request when it is not
+ * one — as `INVALID_ARGUMENT` on `400`, the shape `requireSearchQuery` and
+ * `requireAdminWriteReason` below use, with the same sentence the mock uses. The
+ * server would refuse most of these too, with its own wording, and accept a few
+ * spellings this does not; `isUserId` (src/api/members.ts) says which and why.
+ */
+function requireMemberUserId(userId: string): void {
+  if (!isUserId(userId)) {
+    throw new ApiError(MEMBER_USER_ID_REFUSAL_MESSAGE, "INVALID_ARGUMENT", 400);
+  }
 }
 
 /**

@@ -39,6 +39,7 @@ import {
   attachmentRefusal,
   attachmentSizeRefusalMessage,
 } from "../attachments";
+import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import {
   AVATAR_BUCKET,
   AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
@@ -94,6 +95,8 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  ProjectMemberWriteResult,
+  ProjectRole,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -449,6 +452,22 @@ const requirePlanningFields = (input: PlanningFieldsInput, stored: StoredPlannin
   if (refusal) {
     throw new MockApiError(refusal.code, refusal.message);
   }
+};
+
+/**
+ * The id a member write names, as the server would hold it — or the refusal
+ * `requireMemberUserId` in src/api/rest/RestTaskaApi.ts throws for the same
+ * input, with the same code and the same sentence, before anything is looked
+ * up. Lower-cased on the way in because that is what the server's own parse
+ * does: `UUID.fromString` accepts either case and the stored form, which every
+ * later read answers with, is lower-case. So an upper-case id finds the row a
+ * lower-case one would, here as there.
+ */
+const memberWriteId = (userId: string): string => {
+  if (!isUserId(userId)) {
+    throw new MockApiError("INVALID_ARGUMENT", MEMBER_USER_ID_REFUSAL_MESSAGE);
+  }
+  return userId.toLowerCase();
 };
 
 /**
@@ -1841,6 +1860,125 @@ export class MockTaskaStore {
       ...member,
       user: member.user ? this.userSummary(member.userId) : undefined,
     }));
+  }
+
+  /**
+   * `POST /projects/{projectId}/members` (TAS-158). Reproduces
+   * `ProjectMemberValidatorImpl.validateBeforeAdd` at backend `develop`
+   * `1cfe4d79f074` — its order and its sentences, which name ids because the
+   * server's do — after the shape check every member write shares (see
+   * `memberWriteId`).
+   *
+   * **An id nobody holds is added, not refused** (TAS-227). The server does not
+   * ask auth-service whether the user exists, so any well-formed id is a 201,
+   * and the row comes back from `GET …/members` with no name and no email. This
+   * store does the same: the row is stored with no `user`, and `listMembers`
+   * keeps it that way. Refusing it here would be the one false claim this route
+   * could make.
+   *
+   * `memberIds` moves with the row. It is what `listProjects` filters on — the
+   * mock's stand-in for the membership join `GET /projects` makes on the wire —
+   * so without it an added person would not see the project and a removed one
+   * still would.
+   */
+  addProjectMember(projectId: string, userId: string, role: ProjectRole): ProjectMemberWriteResult {
+    const id = memberWriteId(userId);
+    const rows = this.memberRowsForWrite(projectId);
+    if (rows.find((member) => member.userId === this.currentUserId)?.role !== "ADMIN") {
+      throw new MockApiError(
+        "PERMISSION_DENIED",
+        `Actor ${this.currentUserId} is not an admin of project: ${projectId}`,
+      );
+    }
+    if (rows.some((member) => member.userId === id)) {
+      throw new MockApiError("ALREADY_EXISTS", `User with id: ${id} already exists in project: ${projectId}`);
+    }
+    rows.push({
+      userId: id,
+      role,
+      addedAt: now(),
+      addedBy: this.currentUserId,
+      // Whether a summary exists is decided once, here, and `listMembers`
+      // rebuilds it on every read only for a row that has one — which is how an
+      // unknown id stays unnamed. Nothing in this store creates a user later.
+      user: this.users.some((user) => user.id === id) ? this.userSummary(id) : undefined,
+    });
+    const project = this.projects.find((item) => item.id === projectId);
+    if (project) project.memberIds = [...(project.memberIds ?? []), id];
+    return { projectId, userId: id, role };
+  }
+
+  /**
+   * `PATCH /projects/{projectId}/members/{userId}`. The whole of the server's
+   * refusal order lives in `memberForModify`; a `PATCH` that names the role the
+   * member already holds is written anyway, as `updateRole` writes it — except
+   * for the last ADMIN, whom the server refuses to touch at all.
+   */
+  changeProjectMemberRole(projectId: string, userId: string, role: ProjectRole): ProjectMemberWriteResult {
+    const target = this.memberForModify(projectId, userId);
+    target.role = role;
+    return { projectId, userId: target.userId, role };
+  }
+
+  /**
+   * `DELETE /projects/{projectId}/members/{userId}`. Only the membership goes,
+   * as on the server: an issue assigned to the person keeps its assignee, and a
+   * subscription of theirs keeps its row.
+   */
+  removeProjectMember(projectId: string, userId: string): void {
+    const target = this.memberForModify(projectId, userId);
+    this.membersByProject[projectId] = this.memberRowsForWrite(projectId).filter((member) => member !== target);
+    const project = this.projects.find((item) => item.id === projectId);
+    if (project) project.memberIds = (project.memberIds ?? []).filter((memberId) => memberId !== target.userId);
+  }
+
+  /**
+   * The rows `getRequiredMembersInProject` reads before any member write, and
+   * its one refusal: no rows is `NOT_FOUND`, in the validator's own words that
+   * the project does not exist. The server's read is every ADMIN plus the actor
+   * and the target, so it comes back empty for a real project only if that
+   * project has no ADMIN — and through these routes it cannot lose its last
+   * one, while creating a project makes its creator one (`ProjectServiceImpl`).
+   * This store reads all of a project's rows, which is the same answer for
+   * every project it can hold.
+   */
+  private memberRowsForWrite(projectId: string): ProjectMember[] {
+    const rows = this.membersByProject[projectId];
+    if (!rows?.length) {
+      throw new MockApiError("NOT_FOUND", `Project: ${projectId} doesn't exist`);
+    }
+    return rows;
+  }
+
+  /**
+   * `validateBeforeModify`, shared by the role change and the removal, in the
+   * validator's order — and the order is the part worth copying exactly: the
+   * target's membership is checked **before** the actor's role, so a non-admin
+   * asking about somebody who is not on the project is told `NOT_FOUND`, not
+   * `PERMISSION_DENIED`. Then the last-admin rule, which is
+   * `FAILED_PRECONDITION` (a 400 on the wire) and counts every ADMIN row the
+   * project has, the actor's own included.
+   */
+  private memberForModify(projectId: string, userId: string): ProjectMember {
+    const id = memberWriteId(userId);
+    const rows = this.memberRowsForWrite(projectId);
+    const target = rows.find((member) => member.userId === id);
+    if (!target) {
+      throw new MockApiError(
+        "NOT_FOUND",
+        `Project member with id ${id} was not found in project with id ${projectId}`,
+      );
+    }
+    if (rows.find((member) => member.userId === this.currentUserId)?.role !== "ADMIN") {
+      throw new MockApiError(
+        "PERMISSION_DENIED",
+        `User with id: ${this.currentUserId} is not an admin of project: ${projectId}`,
+      );
+    }
+    if (target.role === "ADMIN" && rows.filter((member) => member.role === "ADMIN").length <= 1) {
+      throw new MockApiError("FAILED_PRECONDITION", `Can't modify last admin: ${id} in project: ${projectId}`);
+    }
+    return target;
   }
 
   getWorkflow(): Workflow {
@@ -4391,6 +4529,23 @@ export class MockTaskaApi implements TaskaApi {
 
   async listMembers(projectId: string): Promise<ProjectMember[]> {
     return wait(this.store.listMembers(projectId));
+  }
+
+  async addProjectMember(projectId: string, userId: string, role: ProjectRole): Promise<ProjectMemberWriteResult> {
+    return wait(this.store.addProjectMember(projectId, userId, role));
+  }
+
+  async changeProjectMemberRole(
+    projectId: string,
+    userId: string,
+    role: ProjectRole,
+  ): Promise<ProjectMemberWriteResult> {
+    return wait(this.store.changeProjectMemberRole(projectId, userId, role));
+  }
+
+  async removeProjectMember(projectId: string, userId: string): Promise<void> {
+    this.store.removeProjectMember(projectId, userId);
+    await wait(null);
   }
 
   async getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {

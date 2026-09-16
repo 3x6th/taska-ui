@@ -48,6 +48,8 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  ProjectMemberWriteResult,
+  ProjectRole,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -127,6 +129,18 @@ export class HybridTaskaApi implements TaskaApi {
 
   listMembers(projectId: string): Promise<ProjectMember[]> {
     return this.live.listMembers(projectId);
+  }
+
+  addProjectMember(projectId: string, userId: string, role: ProjectRole): Promise<ProjectMemberWriteResult> {
+    return this.live.addProjectMember(projectId, userId, role);
+  }
+
+  changeProjectMemberRole(projectId: string, userId: string, role: ProjectRole): Promise<ProjectMemberWriteResult> {
+    return this.live.changeProjectMemberRole(projectId, userId, role);
+  }
+
+  removeProjectMember(projectId: string, userId: string): Promise<void> {
+    return this.live.removeProjectMember(projectId, userId);
   }
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {

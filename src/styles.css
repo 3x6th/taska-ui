@@ -4106,7 +4106,8 @@ h1 {
    light / 6.11:1 dark, composited over the popover's --surface. */
 .watcher-note-detail,
 .api-notice-detail,
-.user-profile-photo-note-detail {
+.user-profile-photo-note-detail,
+.member-note-detail {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -5147,7 +5148,8 @@ button.issue-link-open:hover {
    the box is defined by its border and its stripe. Padding is on §2.4's scale
    (7 / 11); the 10 this rule used to carry is not on it. */
 .attachment-note,
-.watcher-note {
+.watcher-note,
+.member-note {
   margin: 0 0 12px;
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
@@ -5168,7 +5170,8 @@ button.issue-link-open:hover {
    separately rather than renamed to something generic so neither section's
    markup has to change to say what it already says. */
 .attachment-note.is-error,
-.watcher-note.is-error {
+.watcher-note.is-error,
+.member-note.is-error {
   border-left-color: var(--danger);
 }
 
@@ -6089,6 +6092,273 @@ button.attachment-open:hover:not(:disabled) {
 
 .label-edit-form input:focus {
   border-color: var(--accent);
+}
+
+/* ==================== Project members (TAS-158) ====================
+   The members dialog: an add form for a project ADMIN, and the list every
+   reader sees. The notice box and its detail line are not declared here — they
+   join `.watcher-note` and `.watcher-note-detail` by selector further up, for
+   the reason those groups give: one recipe for one kind of box. Every colour
+   below is a §2.1 token or a `color-mix` of one. */
+.members-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.member-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+
+/* The line under the id field, in both of its jobs: at rest it is the only
+   account of why a person is added by an id rather than by name, and once
+   something is typed it is the only account of why Add is off. Neither is meta,
+   so `--fg-2` rather than `.field-note`'s `--fg-3` — the argument
+   `.attachment-hint` and `.admin-write-hint` already make — and one class for
+   both, so the slot does not change tone as the reader types. The read-only
+   note is the same sentence-shaped explanation for a reader with no controls. */
+.member-add-hint,
+.member-readonly-note {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-wrap: pretty;
+}
+
+.member-add-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.member-role-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+/* Both role selects, at the compact control height beside them (29, the same
+   pairing `.issue-link-target select` and its button use). §2.5 gives a select
+   radius 9 and §4.3 the recessed fill at rest, lifted on focus. */
+.member-role-field select,
+.member-role-select {
+  flex: none;
+  height: 29px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 0 6px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.member-role-field select:focus,
+.member-role-select:focus {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+/* In flight: the select keeps focus and answers nothing until its write lands
+   (the component guards the change). The cursor says so without the 0.58 fade,
+   which would flash on every role change for the ~200ms it takes. */
+.member-role-select[aria-disabled="true"] {
+  cursor: progress;
+}
+
+/* Add is `aria-disabled` rather than `disabled` for the §4.21 reason, and gets
+   `button:disabled`'s look back by hand, as the watcher form's Add does. */
+.member-add-actions .primary-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+/* Only the sentence is the live region; see the component. With no notice the
+   region is an empty paragraph in a box with no class of its own, so it takes
+   no height and no margin while it waits. */
+.member-note-sentence {
+  margin: 0;
+}
+
+.members-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  margin: 0 0 10px;
+  border-radius: 6px;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* After the shared rule above on purpose, which zeroes the margin: the note sits
+   under the heading, closer to it than the heading's own 10 would put it, and
+   keeps that 10 before the list. */
+.member-readonly-note {
+  margin: -4px 0 10px;
+}
+
+.member-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Wraps so the two things a row can grow below itself — the last-admin note
+   and the confirmation — take a full line under the controls rather than
+   squeezing the name. */
+.member-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-height: 40px;
+  padding: 5px 0;
+}
+
+.member-who {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.member-name {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "(you)" annotates the name; it is not part of it. */
+.member-you {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+
+/* The email under a name is not meta — two people can share a display name and
+   cannot share an address (§5.8's Users rows make the same call) — so `--fg-2`. */
+.member-line {
+  overflow: hidden;
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The whole id of a row nobody could name, set as the machine string it is
+   (§2.3) and allowed to break anywhere: on a phone the column is ~140px and the
+   id is 36 characters, and cutting it would take away the only handle the row
+   has. */
+.member-id {
+  color: var(--fg-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.member-row.is-pending .member-id {
+  color: var(--fg);
+}
+
+.member-role-label {
+  flex: none;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+/* §4.1's destructive ghost: `--danger` only under the pointer or while its
+   question is open, never at rest. */
+.member-row .icon-button:hover,
+.member-row .icon-button[aria-expanded="true"] {
+  background: var(--surface-2);
+  color: var(--danger);
+}
+
+/* Under the name column rather than under the avatar: 32 is the avatar (24)
+   plus the row's gap (8). */
+.member-row-note {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 32px;
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.member-confirm {
+  display: flex;
+  flex-basis: 100%;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 8px;
+  margin: 2px 0 2px 32px;
+  border-radius: 9px;
+  padding: 7px 8px 7px 11px;
+  background: var(--surface-2);
+}
+
+.member-confirm-sentence {
+  flex: 1 1 180px;
+  margin: 0;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.member-confirm-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+/* The answer that changes something. Not `--danger` text, which measures under
+   §7's 4.5:1 on these grounds; the edge carries the warning and the word
+   carries the meaning. Placed after `.compact-button:hover`, which has the same
+   specificity and would otherwise paint it accent. */
+.member-confirm-accept {
+  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
+  color: var(--fg);
+}
+
+.member-confirm-accept:hover {
+  border-color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 10%, transparent);
+  color: var(--fg);
+}
+
+/* §4.1's ring on everything focusable in the dialog that has no ring of its
+   own. `.icon-button` already has one product-wide (TAS-185); the heading is in
+   the list because the dialog focuses it. */
+.members-panel .primary-button:focus-visible,
+.members-panel .secondary-button:focus-visible,
+.member-role-field select:focus-visible,
+.member-role-select:focus-visible,
+.members-heading:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 @media (max-width: 820px) {
