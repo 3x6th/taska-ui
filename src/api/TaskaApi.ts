@@ -657,6 +657,12 @@ export interface TaskaApi {
    * `addProjectMember`, `changeProjectMemberRole` and `removeProjectMember`;
    * `HybridTaskaApi` passes all three straight to the gateway.
    *
+   * Deployed: probed without a token on 2026-09-16 at 21:37 UTC, `POST …/members`,
+   * `PATCH …/members/{userId}` and `DELETE …/members/{userId}` each answer 401
+   * and a `PUT` answers 405, where `GET /users/me` answered 401 and an unmapped
+   * path the static-resource 404 as the controls. So on that stand a 404 from any
+   * of the three is the resource's own answer rather than a missing route.
+   *
    * **ADMIN of that project, and nobody else** — a `GLOBAL_ADMIN` included, who
    * gets no exemption. Hiding the controls below ADMIN is presentation; the
    * server decides, and a 403 arriving here is shown rather than swallowed.

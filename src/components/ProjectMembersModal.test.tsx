@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
@@ -57,6 +57,10 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
      */
     listHeld: false,
     listReleases: [] as (() => void)[],
+    /** Who `GET /users/me` says is reading, for the cases where the dialog opened before it answered. */
+    me: { id: "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6" } as { id: string },
+    meFailure: undefined as Error | undefined,
+    meReads: 0,
     adds: [] as [string, string, ProjectRole][],
     roleChanges: [] as [string, string, ProjectRole][],
     removals: [] as [string, string][],
@@ -68,6 +72,11 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
   };
 
   const api = {
+    getCurrentUser: async () => {
+      state.meReads += 1;
+      if (state.meFailure) throw state.meFailure;
+      return { ...state.me, login: "reader", email: "reader@example.com", displayName: "Reader", status: "ACTIVE" };
+    },
     listMembers: async () => {
       if (state.listHeld) await new Promise<void>((resolve) => state.listReleases.push(resolve));
       if (state.listFailure) throw state.listFailure;
@@ -109,6 +118,9 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
     state.releases = [];
     state.listHeld = false;
     state.listReleases = [];
+    state.me = { id: "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6" };
+    state.meFailure = undefined;
+    state.meReads = 0;
     state.adds = [];
     state.roleChanges = [];
     state.removals = [];
@@ -136,35 +148,44 @@ vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
 const refusal = (code: string, status: number, message: string, requestId = "req-7f0e6d5c") =>
   Object.assign(new Error(message), { code, status, requestId });
 
-function renderPanel(props: { isProjectAdmin?: boolean; currentUserId?: string } = {}) {
+/**
+ * `currentUserId` is Anna unless a case passes the key: passing it as
+ * `undefined` is the dialog opened before `GET /users/me` answered, which is a
+ * state of its own and not a default.
+ */
+type PanelProps = { isProjectAdmin?: boolean; currentUserId?: string };
+
+function renderPanel(props: PanelProps = {}) {
   const queryClient = new QueryClient({
     // `retryDelay` rather than `retry`: the dialog states its own retry rule on
     // the member read, which a default here would not reach.
     defaultOptions: { queries: { retry: false, retryDelay: 1 }, mutations: { retry: false } },
   });
   const onClose = vi.fn();
-  render(
+  // A rerender passes the same tree with other props, so React keeps the router
+  // and the dialog mounted and only the props change — which is what a role the
+  // board re-read does to the dialog it is showing.
+  const panel = (next: PanelProps) => (
+    <ProjectMembersModal
+      currentUserId={"currentUserId" in next ? next.currentUserId : ANNA}
+      isProjectAdmin={next.isProjectAdmin ?? true}
+      onClose={onClose}
+      projectId={PROJECT}
+      projectKey="TAS"
+    />
+  );
+  const tree = (next: PanelProps) => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/projects/${PROJECT}/board`]}>
         <Routes>
-          <Route
-            element={
-              <ProjectMembersModal
-                currentUserId={props.currentUserId ?? ANNA}
-                isProjectAdmin={props.isProjectAdmin ?? true}
-                onClose={onClose}
-                projectId={PROJECT}
-                projectKey="TAS"
-              />
-            }
-            path="/projects/:projectId/board"
-          />
+          <Route element={panel(next)} path="/projects/:projectId/board" />
           <Route element={<p>Projects page</p>} path="/projects" />
         </Routes>
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
-  return { queryClient, onClose };
+  const { rerender } = render(tree(props));
+  return { queryClient, onClose, rerender: (next: PanelProps) => rerender(tree(next)) };
 }
 
 const dialog = () => screen.getByRole("dialog", { name: "Members" });
@@ -474,5 +495,253 @@ describe("ProjectMembersModal", () => {
     expect(within(dialog()).getByRole("button", { name: "Copy request id req-read" })).toBeVisible();
     expect(within(dialog()).queryByText("No members came back for this project.")).toBeNull();
     expect(within(dialog()).queryByRole("list")).toBeNull();
+  });
+
+  /**
+   * The last-admin guard, counted the way that keeps a project manageable
+   * rather than the way the server counts. project-service counts every ADMIN
+   * row, so an admin whose id no account came back for (TAS-227) would let the
+   * only real admin step down and leave nobody who can sign in and manage the
+   * project.
+   */
+  describe("an admin row with no account beside the only real admin", () => {
+    const realAdminAndUnknownAdmins = (unknownAdmins: string[]) => [
+      state.person(ANNA, "ADMIN"),
+      ...unknownAdmins.map((id) => state.person(id, "ADMIN")),
+      state.person(MARK, "MEMBER"),
+    ];
+
+    it("offers the real admin neither a demotion nor a removal, and still lets the row with no account be removed", async () => {
+      state.members = realAdminAndUnknownAdmins([NOBODY]);
+      renderPanel();
+
+      await within(dialog()).findByText("Anna Ivanova");
+      const anna = rowOf("Anna Ivanova");
+      expect(within(anna).queryByRole("combobox")).toBeNull();
+      expect(within(anna).queryByRole("button", { name: /Remove/ })).toBeNull();
+      expect(
+        within(anna).getByText(
+          "You are this project’s only admin with an account — the other admin is an ID no account came back for — so your role cannot change and you cannot be removed until someone with an account is an admin.",
+        ),
+      ).toBeVisible();
+
+      // The row with no account keeps the server's count, which is two.
+      const unknown = within(dialog()).getByText(NOBODY).closest("li") as HTMLElement;
+      fireEvent.click(within(unknown).getByRole("button", { name: "Remove the member with ID 0b1c2d3e from this project" }));
+      fireEvent.click(within(unknown).getByRole("button", { name: "Remove" }));
+
+      await waitFor(() => expect(state.removals).toEqual([[PROJECT, NOBODY]]));
+      // With it gone Anna is the only admin by either count, and the note says
+      // the plain thing again.
+      expect(
+        await within(rowOf("Anna Ivanova")).findByText(
+          "You are this project’s only admin, so your role cannot change and you cannot be removed until someone else is an admin.",
+        ),
+      ).toBeVisible();
+    });
+
+    it("says so for more than one admin row with no account", async () => {
+      state.members = realAdminAndUnknownAdmins([NOBODY, "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"]);
+      renderPanel();
+
+      expect(
+        await within(dialog()).findByText(/— the other admins are IDs no account came back for —/),
+      ).toBeVisible();
+    });
+  });
+
+  describe("an open question whose row stops offering it", () => {
+    const twoRealAdmins = () =>
+      state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" as const } : member));
+    const markDemoted = () =>
+      state.members.map((member) => (member.userId === MARK ? { ...member, role: "MEMBER" as const } : member));
+
+    it("closes when the list moves under it, sends nothing, and says why", async () => {
+      state.members = twoRealAdmins();
+      const { queryClient } = renderPanel();
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove yourself from this project" }));
+      expect(within(dialog()).getByRole("button", { name: "Remove me" })).toBeVisible();
+
+      // A refetch, or another write, lands: Mark is not an admin any more, so
+      // Anna is the only one and the removal the strip offers is forbidden.
+      act(() => {
+        queryClient.setQueryData<ProjectMember[]>(["members", PROJECT], markDemoted());
+      });
+
+      await waitFor(() => expect(within(dialog()).queryByRole("button", { name: "Remove me" })).toBeNull());
+      expect(within(dialog()).queryByRole("button", { name: "Remove yourself from this project" })).toBeNull();
+      expect(within(dialog()).getByText(/You are this project’s only admin, so/)).toBeVisible();
+      expect(within(dialog()).getByText("The member list changed before you confirmed, so nothing was sent.")).toBeVisible();
+      // The strip took focus with it; it is caught on the heading, not left on <body>.
+      expect(within(dialog()).getByRole("heading", { name: /Current members/ })).toHaveFocus();
+      expect(state.removals).toHaveLength(0);
+    });
+
+    it("refuses a press that lands after the list moved but before the strip was redrawn", async () => {
+      state.members = twoRealAdmins();
+      const { queryClient } = renderPanel();
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove yourself from this project" }));
+      const removeMe = within(dialog()).getByRole("button", { name: "Remove me" });
+
+      // The cache moves and the press follows in the same tick, before
+      // react-query has told the dialog: the handler still belongs to the render
+      // that drew the strip.
+      queryClient.setQueryData<ProjectMember[]>(["members", PROJECT], markDemoted());
+      fireEvent.click(removeMe);
+
+      expect(within(dialog()).getByText("The member list changed before you confirmed, so nothing was sent.")).toBeVisible();
+      await waitFor(() => expect(within(dialog()).queryByRole("button", { name: "Remove me" })).toBeNull());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(state.removals).toHaveLength(0);
+    });
+
+    it("closes a self-demotion the same way once the reader is the only admin", async () => {
+      state.members = twoRealAdmins();
+      const { queryClient } = renderPanel();
+
+      fireEvent.change(await within(dialog()).findByRole("combobox", { name: "Your role" }), {
+        target: { value: "VIEWER" },
+      });
+      expect(within(dialog()).getByRole("button", { name: "Make me Viewer" })).toBeVisible();
+
+      act(() => {
+        queryClient.setQueryData<ProjectMember[]>(["members", PROJECT], markDemoted());
+      });
+
+      await waitFor(() => expect(within(dialog()).queryByRole("button", { name: "Make me Viewer" })).toBeNull());
+      expect(within(dialog()).queryByRole("combobox", { name: "Your role" })).toBeNull();
+      expect(state.roleChanges).toHaveLength(0);
+    });
+  });
+
+  it("closes an open question when the reader's own role stops being admin, and says that was the reason", async () => {
+    const { rerender } = renderPanel();
+
+    fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Mark Lee from this project" }));
+    expect(within(dialog()).getByText("Mark Lee will lose access to this project.")).toBeVisible();
+
+    // The board re-read the role — a 403 on some other write, or a change made
+    // elsewhere — and it is not ADMIN any more.
+    rerender({ isProjectAdmin: false });
+
+    await waitFor(() => expect(within(dialog()).queryByText("Mark Lee will lose access to this project.")).toBeNull());
+    expect(
+      within(dialog()).getByText("Your role on this project changed before you confirmed, so nothing was sent."),
+    ).toBeVisible();
+    expect(within(dialog()).getByRole("heading", { name: /Current members/ })).toHaveFocus();
+    expect(state.removals).toHaveLength(0);
+  });
+
+  it("drops every cached read of the board a reader removed themselves from, and keeps other projects' reads", async () => {
+    state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
+    const { queryClient } = renderPanel();
+    // What the board had cached: re-entered from history or a link within the
+    // cache's lifetime, these would draw the board as ADMIN with controls whose
+    // every write is a 403.
+    queryClient.setQueryData(["project", PROJECT], { id: PROJECT });
+    queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+    queryClient.setQueryData(["issues", PROJECT, "ALL"], { items: [], page: 0, pageSize: 100, totalCount: 0 });
+    queryClient.setQueryData(["project-summaries", PROJECT], { count: 0, members: [], failure: null });
+    queryClient.setQueryData(["project", OTHER_PROJECT], { id: OTHER_PROJECT });
+    queryClient.setQueryData(["issue-search", "all-projects", "login"], { items: [], totalCount: 0 });
+
+    fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove yourself from this project" }));
+    fireEvent.click(within(rowOf("Anna Ivanova")).getByRole("button", { name: "Remove me" }));
+
+    expect(await screen.findByText("Projects page")).toBeVisible();
+    for (const key of [
+      ["project", PROJECT],
+      ["membership", PROJECT],
+      ["members", PROJECT],
+      ["issues", PROJECT, "ALL"],
+      ["project-summaries", PROJECT],
+    ]) {
+      expect(queryClient.getQueryState(key), JSON.stringify(key)).toBeUndefined();
+    }
+    expect(queryClient.getQueryData(["project", OTHER_PROJECT])).toEqual({ id: OTHER_PROJECT });
+    expect(queryClient.getQueryData(["issue-search", "all-projects", "login"])).toBeDefined();
+  });
+
+  describe("before GET /users/me has answered", () => {
+    const twoRealAdmins = () =>
+      state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" as const } : member));
+
+    it("asks before any admin is demoted, in words that do not assume who is reading", async () => {
+      state.members = twoRealAdmins();
+      renderPanel({ currentUserId: undefined });
+
+      fireEvent.change(await within(dialog()).findByRole("combobox", { name: "Role of Mark Lee" }), {
+        target: { value: "MEMBER" },
+      });
+
+      const row = rowOf("Mark Lee");
+      expect(
+        within(row).getByText(
+          "Mark Lee will stop being an admin of this project. If that is you, only another admin can make you one again.",
+        ),
+      ).toBeVisible();
+      expect(state.roleChanges).toHaveLength(0);
+
+      fireEvent.click(within(row).getByRole("button", { name: "Change to Member" }));
+      await waitFor(() => expect(state.roleChanges).toEqual([[PROJECT, MARK, "MEMBER"]]));
+
+      // A role change that is not a demotion from ADMIN cannot take the reader's
+      // own admin away, so it does not ask.
+      fireEvent.change(within(dialog()).getByRole("combobox", { name: "Role of Sofia Reyes" }), {
+        target: { value: "VIEWER" },
+      });
+      await waitFor(() => expect(state.roleChanges).toContainEqual([PROJECT, SOFIA, "VIEWER"]));
+    });
+
+    it("finds out who was removed and takes a reader who removed themselves back to their projects", async () => {
+      state.members = twoRealAdmins();
+      const { queryClient } = renderPanel({ currentUserId: undefined });
+      queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Anna Ivanova from this project" }));
+      const row = rowOf("Anna Ivanova");
+      expect(
+        within(row).getByText("Anna Ivanova will lose access to this project. If that is you, you will go back to your projects."),
+      ).toBeVisible();
+      fireEvent.click(within(row).getByRole("button", { name: "Remove" }));
+
+      expect(await screen.findByText("Projects page")).toBeVisible();
+      expect(state.meReads).toBe(1);
+      expect(queryClient.getQueryState(["membership", PROJECT])).toBeUndefined();
+    });
+
+    it("stays on the board when the reader turns out to have removed somebody else", async () => {
+      state.members = twoRealAdmins();
+      renderPanel({ currentUserId: undefined });
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Mark Lee from this project" }));
+      fireEvent.click(within(rowOf("Mark Lee")).getByRole("button", { name: "Remove" }));
+
+      await waitFor(() => expect(state.meReads).toBe(1));
+      await waitFor(() => expect(within(dialog()).queryByText("Mark Lee")).toBeNull());
+      expect(screen.queryByText("Projects page")).toBeNull();
+      expect(dialog()).toBeVisible();
+    });
+
+    it("falls back to the board's own no-access state when the profile cannot be read either", async () => {
+      state.members = twoRealAdmins();
+      state.meFailure = refusal("UNAVAILABLE", 503, "Service unavailable", "req-me");
+      const { queryClient } = renderPanel({ currentUserId: undefined });
+      queryClient.setQueryData(["project", PROJECT], { id: PROJECT });
+      queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Anna Ivanova from this project" }));
+      fireEvent.click(within(rowOf("Anna Ivanova")).getByRole("button", { name: "Remove" }));
+
+      // Reset, not removed and not merely invalidated: the entries are still
+      // there with no data, so the board's next read answers from nothing and a
+      // 403 reaches its no-access state instead of hiding under a kept answer.
+      await waitFor(() => expect(queryClient.getQueryState(["membership", PROJECT])?.data).toBeUndefined());
+      expect(queryClient.getQueryState(["membership", PROJECT])).toBeDefined();
+      expect(queryClient.getQueryState(["project", PROJECT])?.data).toBeUndefined();
+      expect(screen.queryByText("Projects page")).toBeNull();
+    });
   });
 });

@@ -101,6 +101,30 @@ test("an ID nobody holds is added and drawn as that ID, never as a person", asyn
   await expect(row(dialog, NOBODY_ID)).toHaveCount(0);
 });
 
+test("an admin row with no account does not let the only real admin step down", async ({ page }) => {
+  const dialog = await openMembers(page);
+
+  await dialog.getByLabel("Add by user ID").fill(NOBODY_ID);
+  await dialog.getByLabel("Role", { exact: true }).selectOption("ADMIN");
+  await dialog.getByRole("button", { name: "Add", exact: true }).click();
+  const unknown = row(dialog, NOBODY_ID);
+  await expect(unknown).toContainText("Admin");
+
+  // The server counts two admins now and would let Anna leave — and then nobody
+  // could sign in and manage the project. The dialog counts admins with an
+  // account for her row, so she is still the only one.
+  const anna = row(dialog, "Anna Ivanova");
+  await expect(anna.getByText(/You are this project’s only admin with an account/)).toBeVisible();
+  await expect(anna.getByRole("combobox")).toHaveCount(0);
+  await expect(anna.getByRole("button", { name: /Remove/ })).toHaveCount(0);
+
+  // The row with no account keeps the server's count, and can go.
+  await unknown.getByRole("button", { name: "Remove the member with ID 0b1c2d3e from this project" }).click();
+  await unknown.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(row(dialog, NOBODY_ID)).toHaveCount(0);
+  await expect(anna.getByText(/You are this project’s only admin, so/)).toBeVisible();
+});
+
 test("a member who is not an admin sees everyone and no control", async ({ page }) => {
   const dialog = await openMembers(page, "mark@example.com");
 
