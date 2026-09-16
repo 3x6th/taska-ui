@@ -2314,7 +2314,7 @@ is what recurs.
 - **The watcher picker's empty state could say "the whole project" now.**
   TAS-193 narrowed it to "those the client can see", because the synthesised
   member list could not tell one member from all of them. Since TAS-224 the
-  list is the gateway's in every mode. The narrow sentence is still true, so
+  list is the gateway's in every mode but `mock`. The narrow sentence is still true, so
   this is a wording decision for `art-director`, not a defect (`DESIGN.md`
   §4.21).
 - **A stale comment in `src/styles.css` (~l.3312-3316)** still describes the

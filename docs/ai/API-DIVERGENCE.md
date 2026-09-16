@@ -991,10 +991,12 @@ Everything below is the entry as it stood, in the past tense.
 - **What follows, and it is the stand now:** since TAS-224 made hybrid read this
   route, every face on the board is initials, even for people who uploaded a
   photo. The reader's own face appears through TAS-220's cache write and goes at
-  the next members refetch. One broken avatar blanks the member list: the board
-  keeps "members could not be read", because `retryUnlessMissing` retries
-  neither 404 nor 403, and every project card that includes that person shows
-  the failure.
+  the next members refetch. One broken avatar blanks the member list, and
+  `retryUnlessMissing` retries neither 404 nor 403, so it stays blank. Mostly the
+  board says nothing about it: no assignee chips, and "Unknown" as the reporter.
+  Only the issue panel's watcher section says the members could not be read,
+  and only to an ADMIN with an issue open. Every project card that includes that
+  person shows its members as unknown.
 - **Compensation:** none — the client draws initials when a row carries no
   avatar, and that is the correct reading of the row.
 - **The mock follows the fix, not the server.** It draws faces on member rows,
@@ -3413,9 +3415,10 @@ the deployed origin says more than any amount of reading. Raised on TAS-131.
 **The routes have deployed** (`GET …/attachments` answered 401 without a token
 on 2026-09-16), so the measurement is possible now, and it has not been taken.
 At develop `1cfe4d7` nothing in the backend repository configures the bucket's
-CORS or its public URL yet (`docker-compose.yml:193-198`, `.env.docker.example:41`).
+CORS yet (`docker-compose.yml:193-198`). The public URL *is* configured, but as
+loopback (issue-service `application.yml:116`, `.env.docker.example:41`).
 
-### Closed by backend PR #147: an over-size attachment answered 500, because `RestErrorMapper` had no `OUT_OF_RANGE` row
+### Closed by backend PR #147's head move: the over-size attachment 500 was a reading of an older head
 
 - **Closed 2026-09-16**, recorded in TAS-224. PR #147 shipped both conditions in
   this entry's `Removed by` line: `RestErrorMapper.java:12` maps `OUT_OF_RANGE` to
@@ -3426,7 +3429,16 @@ CORS or its public URL yet (`docker-compose.yml:193-198`, `.env.docker.example:4
     issue-service, like its two siblings;
   - the confirm's re-measure answers **400** `OUT_OF_RANGE`.
 
-  TAS-224 moved the client's two synthesised refusals from 500 to those answers.
+  TAS-224 moved the status and code of the client's two synthesised refusals to
+  those answers. The message stays the service's own sentence, and
+  `RestTaskaApi` says so.
+- **The 500 never reached a gateway, and this record kept it four days too
+  long.** It was a reading of PR #147's older head `f53dca38`. The head
+  `deeedbf`, committed 2026-09-09, already carried both the `RestErrorMapper`
+  row and `maximum: 2097152`. The re-pin on 2026-09-12 (`3e40127`) took the
+  YAML half and missed the Java half, so the client went on faking a 500 until
+  `api-contract-guard` read the merged Java on TAS-224. No gateway served these
+  routes before the merge, so nobody ever met the 500.
 - **The record below is kept as it stood before the merge.**
 
 The three pre-flight refusals do not share a status, and the one a reader is
