@@ -799,6 +799,20 @@ Everything below is the entry as it stood, in the past tense.
   the same way, so the e2e suite exercises the row the stand can actually
   produce. A mock that refused the id would be a false statement about the
   route.
+- **The dialog is stricter than the server about the last admin**, because of
+  the row above. The server refuses to demote or remove an ADMIN only when the
+  project has at most one ADMIN row, whether or not an account holds it. An
+  admin added under an ID nobody holds would therefore let the only real admin
+  step down, and nobody could manage the members again: member writes are
+  ADMIN-only, and a `GLOBAL_ADMIN` gets no exemption. So `ProjectMembersModal`
+  counts only ADMIN rows that have an account before it offers a named admin
+  the role select or removal. The note under that row says why. A row with no
+  account keeps the server's count, so the real admin can always remove it. An
+  open confirmation closes, and a late press is re-checked, under the same
+  rule. `MockTaskaApi` and `RestTaskaApi` keep the server's rule, because they
+  must not claim a refusal the gateway would not give. Found by
+  `release-reviewer` on TAS-158. Goes away with TAS-227, because the ADMIN row
+  with no account can then no longer be written.
 - **The client is stricter about the id's spelling than the server.** Both
   implementations refuse anything that is not the canonical 8-4-4-4-12 form
   before sending (`isUserId`, `src/api/members.ts`). Java's `UUID.fromString`
