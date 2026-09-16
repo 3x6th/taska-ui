@@ -41,7 +41,8 @@
  *
  * - **over 2 MB and up to 5 MB** passes the gateway's bean validation, reaches
  *   auth-service, and is refused there after a round trip — `OUT_OF_RANGE`,
- *   which `RestErrorMapper` has no row for, so the status is **500**;
+ *   which `RestErrorMapper` maps to **400** since backend PR #147 gave it the
+ *   row (read at `develop` `1cfe4d79f074`; a 500 before);
  * - **over 5 MB** never reaches the avatar service: the gateway checks the
  *   token first (a call of its own to auth-service), then the generated DTO's
  *   `@Max` fails as the body is read, and the gateway answers **400**

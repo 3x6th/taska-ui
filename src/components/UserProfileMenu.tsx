@@ -666,7 +666,7 @@ function withOwnFace(
  *
  * **A cache write and not an invalidation**, and the cost is the reason.
  * Invalidating `["project-summaries"]` on `/projects` re-runs `listIssues` *and*
- * `listMembers` for every project on the page — 2N requests, 3N in hybrid — to
+ * `listMembers` for every project on the page — 2N requests — to
  * change one face on a write the reader made themselves. Everything the rows
  * need is already in hand: the confirm's `downloadUrl` for an upload, `null`
  * for a removal.

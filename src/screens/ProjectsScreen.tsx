@@ -31,28 +31,22 @@ interface ProjectSummary {
 
 async function loadSummary(projectId: string): Promise<ProjectSummary> {
   // `allSettled`, not `all`: the issue count and the member list are two
-  // independent facts about one project, and they do not fail together. In
-  // hybrid mode the member read is synthesised from `GET /projects/{id}`,
-  // which is currently a 500 (TAS-162), while the issue list answers perfectly
+  // independent facts about one project, and they do not fail together. When
+  // `GET /projects/{id}` was a 500 (TAS-162), the member read that `hybrid`
+  // then synthesised from it failed while the issue list answered perfectly
   // well — so joining them is how a card ends up claiming zero issues for a
-  // project that has nine.
+  // project that has nine. They are two separate gateway reads now, and still
+  // fail apart: on the stand one unreadable avatar object fails the whole member
+  // read with a 404, 403 or 503 (see `TaskaApi.listMembers`) while the issue
+  // list answers.
   //
   // Two legs and no third. A `getMembership` fallback used to sit here for
-  // rows that state no `currentUserRole`, which against the gateway today is
-  // *every* row — backend PR #152 is open — so it fired once per card rather
-  // than never, and what it cost depended on the mode. `rest` turned
-  // 1 + 2N requests into 1 + 3N, since `getMembership` there is one more
-  // `getProject`. `hybrid` with `VITE_TASKA_ASSUME_PROJECT_ADMIN` off turned
-  // it into 1 + 4N, since `getMembership` there is that `getProject` plus a
-  // `getCurrentUser` of its own. `hybrid` with the flag on — the stand —
-  // left it at 1 + 2N, unchanged, because the assumption answers before
-  // either request goes out. No mode should pay a request to decide whether
-  // to offer a control, and the branch that would have paid one never ran
-  // against the gateway the deployed stand talks to — only the free branch
-  // did. All of it to decide whether to draw a pencil opening a dialog whose
-  // Save cannot succeed until PR #155 deploys either. The row's own field
-  // is the only source now; both entry points light up by themselves the
-  // day PR #152 lands.
+  // rows that state no `currentUserRole` — every row, before backend TAS-137
+  // deployed — so it fired once per card rather than never, and in `rest` it
+  // turned 1 + 2N requests into 1 + 3N. No mode should pay a request to decide
+  // whether to offer a control, all of it to draw a pencil opening a dialog
+  // whose Save cannot succeed until PR #155 deploys either. The row's own
+  // field is the only source.
   const [issues, members] = await Promise.allSettled([
     taskaApi.listIssues(projectId, { pageSize: 100 }),
     taskaApi.listMembers(projectId),
@@ -249,13 +243,17 @@ function ProjectCard({
   const count = summary?.count ?? null;
   /**
    * ADMIN only, and from the list row alone: `currentUserRole` on
-   * `GET /projects` (backend PR #152). A row that states no role is not a role,
-   * so the control is simply absent — its absence is not the permission, which
-   * stays the server's (AGENTS.md, DESIGN.md §5.7), and no request is spent
-   * here asking for one. Against the gateway today that means no pencil on any
-   * card, which is the honest picture while PR #155's `PATCH` is undeployed
-   * too; the board's own header keeps its pencil, because the membership query
-   * it draws from is already mounted for other reasons.
+   * `GET /projects` (backend TAS-137, PR #152). A row that states no role is
+   * not a role, so the control is simply absent — its absence is not the
+   * permission, which stays the server's (AGENTS.md, DESIGN.md §5.7), and no
+   * request is spent here asking for one. Before TAS-137 deployed no row on the
+   * stand stated one, so no card carried a pencil. Now every `GET /projects`
+   * item carries the reader's role (read at `develop` `1cfe4d79f074`), so on
+   * the stand an ADMIN's cards show the pencil, and Save reaches
+   * `EditProjectModal`'s "not on this gateway yet" note while PR #155's `PATCH`
+   * is still undeployed — TAS-148's designed state, not a defect. The board's
+   * own header draws its pencil from the membership query it already mounts
+   * for other reasons.
    */
   const canEdit = project.currentUserRole === "ADMIN";
   /**
@@ -290,8 +288,10 @@ function ProjectCard({
                         id: member.userId,
                         displayName: member.user.displayName,
                         color: member.user.color,
-                        // Inline on the member row (backend PR #152), so a card
-                        // showing four faces still costs one member read.
+                        // Declared inline on the member row (backend TAS-137),
+                        // so a card showing four faces still costs one member
+                        // read. The deployed read fills it for nobody yet (see
+                        // `User.avatarUrl`), so the stack draws initials.
                         avatarUrl: member.user.avatarUrl,
                       }
                     : null

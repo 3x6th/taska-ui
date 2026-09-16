@@ -136,8 +136,8 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
     // what was actually stored.
     //
     // With one exception, and it is about the reader rather than the project:
-    // `currentUserRole` (backend PR #152) is not a field this response is
-    // *about*, and the two PRs are separate, so a merged gateway may well
+    // `currentUserRole` (backend TAS-137, PR #152) is not a field this response
+    // is *about*, and the two PRs are separate, so a merged gateway may well
     // answer a write with an explicit `currentUserRole: null` simply because
     // the update path did not compute one. Spread in, that would take the edit
     // control off the card this dialog just saved, until the refetch below put
@@ -240,7 +240,7 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
 
         {save.isError ? (
           // A 405 here means backend PR #155 has not deployed this PATCH yet
-          // (see `HybridTaskaApi.updateProject`) — nothing the reader did
+          // (see `TaskaApi.updateProject`) — nothing the reader did
           // wrong, so it reads as a quiet note rather than the red box every
           // other refusal gets, and never as a protocol sentence to act on.
           //

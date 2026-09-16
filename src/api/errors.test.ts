@@ -68,10 +68,11 @@ describe("isUndeployedRoute", () => {
   // ever been seen with that status. Dropping the status arm does not simplify
   // the measurement, it generalises beyond it: the predicate would then fire on
   // any future response that happens to carry the string, and a 5xx is the
-  // example that would hurt, because the attachments panel answers "broken" and
+  // example that would hurt, because the profile menu answers "broken" and
   // "incomplete" differently — on "undeployed" it says this gateway does not
-  // serve attachments yet and takes the upload control away. Relax this to a
-  // message-only match and every other test in this repository still passes.
+  // serve profile photos yet, takes the photo controls away and does not ask
+  // again until the page reloads. Relax this to a message-only match and every
+  // other test in this repository still passes.
   // Compensating for behaviour nobody has observed is the thing
   // docs/ai/API-DIVERGENCE.md exists to refuse; matching only what was observed
   // is the same rule read forwards.
@@ -82,10 +83,11 @@ describe("isUndeployedRoute", () => {
   });
 
   // The second signature (TAS-148): a path Spring maps for other methods, as
-  // measured against backend PR #152's members route and met again by PR
-  // #155's `PATCH /projects/{id}`. The message plays no part here — the
-  // `undeployedMessage` argument passed in is the 404 arm's string and this
-  // arm must not need it — so the whole test is about the status and the code.
+  // measured against the members route before backend PR #152 deployed, and
+  // met again by PR #155's `PATCH /projects/{id}`. The message plays no part
+  // here — the `undeployedMessage` argument passed in is the 404 arm's string
+  // and this arm must not need it — so the whole test is about the status and
+  // the code.
   it("also accepts a 405 for a path mapped to other methods, by its code alone", () => {
     expect(
       isUndeployedRoute(

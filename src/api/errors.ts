@@ -69,8 +69,11 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * were next, measured the same way on 2026-08-25 against
  * `POST /api/v1/admin/users/not-a-uuid/block`; backend PR #146 mapped all three
  * of those paths and they answer `400 INVALID_ARGUMENT` as of 2026-09-08, so
- * TAS-196 removed that compensation. This is the predicate working as designed
- * rather than a reason to distrust it.
+ * TAS-196 removed that compensation. The attachment routes followed: backend
+ * PR #147 merged, they answered `401` without a token on 2026-09-16, and
+ * TAS-224 removed the panel's branch. `UserProfileMenu` still reads this arm
+ * for the avatar routes. This is the predicate working as designed rather than
+ * a reason to distrust it.
  *
  * Matched as a substring rather than by equality because the tail of the
  * message is the request path, which differs per call — and by the same token
@@ -79,7 +82,8 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * day its routes deploy — and that is all the deployment does. A check that
  * goes quiet reports nothing to anyone, so the note does not remove itself: the
  * admin one stopped matching the moment PR #146's routes deployed, and still
- * had to be deleted by hand, in TAS-196, as recorded above.
+ * had to be deleted by hand, in TAS-196, and the attachments one in TAS-224, as
+ * recorded above.
  *
  * `undeployedMessage` is **required and has no default**, which is the point of
  * taking it as a parameter at all. The measured string is pinned once, as
@@ -94,11 +98,12 @@ export function isMissingOrForbidden(error: unknown): boolean {
  *
  * **The 405 arm** (TAS-148). A path Spring *does* recognise, but only for
  * other methods, answers **405** with `code: "METHOD_NOT_ALLOWED"` in the
- * body. Backend PR #152's `GET /projects/{id}/members` meets this signature
- * first — only `POST` is mapped on that path — and PR #155's
- * `PATCH /projects/{id}` meets it a second time, for the same reason; the
- * second is what this predicate is widened for, and nothing yet calls it for
- * the first.
+ * body. `GET /projects/{id}/members` met this signature first, while backend
+ * PR #152 was undeployed and only `POST` was mapped on that path — it answers
+ * `401` without a token since TAS-137 deployed (measured 2026-09-16) — and PR
+ * #155's `PATCH /projects/{id}` meets it a second time, for the same reason.
+ * The second is what this predicate was widened for; nothing ever called it
+ * for the first.
  *
  * What the `code` conjunct buys is narrower than it looks, and worth stating
  * exactly because the obvious reading of it is false. It is **not** that this

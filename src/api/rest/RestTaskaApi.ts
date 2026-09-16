@@ -30,7 +30,7 @@ import {
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
 } from "../TaskaApi";
-import { attachmentRefusal, attachmentRefusalKind } from "../attachments";
+import { attachmentRefusal } from "../attachments";
 import {
   AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
   AVATAR_DECLARED_MAX_SIZE_BYTES,
@@ -127,21 +127,27 @@ interface RestUser {
 }
 
 /**
- * `ProjectMemberDetailsDto` and its envelope — backend PR #152 (TAS-137), head
- * `1ad6ffad815d`. Every field is optional because that schema declares no
- * `required` block, and `role` is `unknown` for a related but distinct reason
- * from `globalRole` above: MapStruct fills it with its built-in
+ * `ProjectMemberDetailsDto` and its envelope — backend TAS-137 (PR #152), in
+ * `docs/contract/openapi.yml` since `develop` `1cfe4d79f074`. Every field is
+ * optional because that schema declares no `required` block, and `role` is
+ * `unknown` for a related but distinct reason from `globalRole` above, read at
+ * the PR's head `1ad6ffad815d`: MapStruct fills it with its built-in
  * enum-to-string conversion (`.name()`) off a column a CHECK constraint
  * confines to ADMIN, MEMBER and VIEWER (`ck_project_members_role`,
  * project-service `0000-init.sql`), so nothing outside those three is on the
  * wire today. The type stays open here anyway, defensively, against a role
  * the enum grows later that this build has no name for — unlike
- * `Project.currentUserRole`, whose own mapper throws 500 rather than ever
- * emit one.
+ * `Project.currentUserRole`, whose own mapper returns `null` rather than ever
+ * emit one (read at `develop` `1cfe4d79f074`).
  *
- * `avatar` is on the wire and **is read** since TAS-220: `AvatarDto` carries a
+ * `avatar` is declared and **is read** since TAS-220: `AvatarDto` carries a
  * presigned `downloadUrl`, which is the whole reason a board of faces costs one
- * request instead of one per person. Only that field of it is modelled — the
+ * request instead of one per person. **The deployed read fills it for nobody
+ * yet**: auth-service's `UserRepository.findUsersWithAvatars` selects no avatar
+ * id and `ProfileMapper` attaches an avatar only when that id is present (read
+ * at `develop` `1cfe4d79f074`), so every row arrives without one. It is read
+ * anyway, because it is the contract's field and starts working the day
+ * auth-service selects the id. Only that field of it is modelled — the
  * other six say nothing a member row draws, and `createdAt` among them is
  * declared and never populated (`AvatarResponse` in project-service.proto has no
  * `created_at`, and `ProjectMapper.toAvatarDto` sets six fields, not seven).
@@ -503,10 +509,11 @@ interface RestUnwatchIssueResponse {
 
 /**
  * `IssueAttachmentDto`. Optional throughout, like `RestIssueLink` above and for
- * the same reason: the extract in `docs/contract/pending/pr-147-TAS-131.yml`
- * does mark seven of the eight `required`, but this endpoint family has never
- * answered this client — it is not on the deployed gateway — so a field typed
- * as guaranteed here would be a claim rather than a measurement. `toAttachment`
+ * the same reason: `docs/contract/openapi.yml` does mark seven of the eight
+ * `required` (backend PR #147, merged), but what is measured about this family
+ * on the deployed gateway is that its routes exist — they answered 401 without a
+ * token on 2026-09-16 — and not what their bodies carry, so a field typed as
+ * guaranteed here would be a claim rather than a measurement. `toAttachment`
  * turns each blank into the domain's own spelling of "not stated".
  */
 interface RestIssueAttachment {
@@ -737,11 +744,13 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * Derived from `GET /projects/{projectId}`, because there is no membership
-   * route to call and PR #152 does not add one. Until TAS-219 this asked
-   * `GET /projects/{projectId}/membership`, which has never existed: probed on
-   * 2026-09-12 without a token it answers the static-resource **404**, in the
-   * same run where `GET /users/me` answered 401 — so the path is unmapped
-   * rather than merely unauthorised.
+   * route to call: backend TAS-137 put the role on the project read as
+   * `currentUserRole` instead of adding one. Until TAS-219 this asked
+   * `GET /projects/{projectId}/membership`, which has never existed: probed
+   * without a token it answered the static-resource **404** on 2026-09-12, in
+   * the same run where `GET /users/me` answered 401, and still did on
+   * 2026-09-16, after TAS-137 deployed — so the path is unmapped rather than
+   * merely unauthorised.
    *
    * The board asks for the project twice as a result, once here and once for
    * its own header. That is one extra GET of the cheapest read the gateway has,
@@ -751,24 +760,25 @@ export class RestTaskaApi implements TaskaApi {
   async getMembership(projectId: string): Promise<ProjectMembership> {
     const project = await this.getProject(projectId);
     return {
-      // VIEWER is a floor, not a reading of the server. Today, before PR #152
-      // deploys, the gateway's `ProjectResponseDto` has no `currentUserRole`
-      // field at all, so every reader lands here. Once it deploys the field is
-      // always present — Jackson's default `ALWAYS` inclusion, since the
-      // api-gateway configures no override — and only the *value* depends on
-      // `hasCurrentUserRole()`: a role name when true, an explicit `null` when
-      // false. `toProjectRole` treats today's absence and tomorrow's `null`
-      // the same way and floors either to VIEWER. Flooring hides write
-      // affordances the server might in fact allow; defaulting the other way
-      // would offer buttons the server then refuses. The server stays
-      // authoritative either way (AGENTS.md, role gating).
+      // VIEWER is a floor, not a reading of the server — and since backend
+      // TAS-137 deployed, a defensive one that no 200 from this route reaches.
+      // Before the deploy the gateway's `ProjectResponseDto` had no
+      // `currentUserRole` field at all, and every reader landed here. Now every
+      // 200 states a role: the route refuses a non-member with 403, and a
+      // member's row holds a NOT NULL role a CHECK constraint confines to the
+      // three (read at `develop` `1cfe4d79f074`). The one `null` the gateway
+      // writes is on the `POST /projects` response, which never comes here.
+      // `toProjectRole` still treats a `null`, an absent key and a value it
+      // does not recognise the same way, and this floors all three to VIEWER.
+      // Flooring hides write affordances the server might in fact allow;
+      // defaulting the other way would offer buttons the server then refuses.
+      // The server stays authoritative either way (AGENTS.md, role gating).
       //
-      // What the floor costs, named rather than discovered: the board's "your
-      // role could not be loaded" banner (TAS-163) no longer distinguishes an
-      // undeployed field from a real VIEWER, because this call now succeeds
-      // where it used to 404. It still appears for the case it was built for —
-      // the project read itself failing, which is how TAS-162 shows up — and
-      // that is the case where the client genuinely knows nothing.
+      // The board's "your role could not be loaded" banner (TAS-163) is for
+      // the other case — the project read itself failing, where the client
+      // genuinely knows nothing — and since TAS-224 that case reaches the
+      // deployed stand too, where `hybrid` used to answer the role without
+      // asking.
       role: toProjectRole(project.currentUserRole) ?? "VIEWER",
       // Both true on a 200, and neither is an assumption: `GET /projects/{id}`
       // is membership-checked, so a project the reader is not on answers 403
@@ -786,19 +796,28 @@ export class RestTaskaApi implements TaskaApi {
    * than the `items` every other collection on this class uses — that is what
    * `ListProjectMemberDetailsDto` calls its array.
    *
-   * Written against backend PR #152 at head `1ad6ffad815d`, **open and
-   * undeployed on 2026-09-12**: probed without a token, this route answers
-   * **405**, because only POST is mapped on the path. That is not the
-   * static-resource 404 the gateway's unmapped paths answer, so
-   * `isUndeployedRoute` in src/api/errors.ts does not recognise it — and it is
-   * moot on the stand, which runs `hybrid` and never calls this method.
+   * Written against backend PR #152 at head `1ad6ffad815d` while it was open,
+   * when this route answered **405** (2026-09-12, no token: only POST was
+   * mapped on the path). The PR merged into `develop` `1cfe4d79f074` and is
+   * deployed — measured on 2026-09-16 without a token, the route answers 401 —
+   * and since TAS-224 the stand calls this method through `hybrid`.
    *
    * **The row's `avatar` is read, and only its `downloadUrl`** (TAS-220, which
    * picked up what TAS-219 deliberately left: that comment said the avatars
    * story would land the rendering and the upload together rather than half of
    * each here, and this is that story). Reading it here is the whole reason a
-   * board full of faces is one request: the avatar is inline on the row, so
-   * nothing in this product ever calls `GET /users/{userId}/avatar` per person.
+   * board full of faces is one request: the avatar is declared inline on the
+   * row, so nothing in this product ever calls `GET /users/{userId}/avatar` per
+   * person. On `develop` `1cfe4d79f074` no row carries one yet — see
+   * `RestProjectMember` — so the board draws initials for everyone.
+   *
+   * **One unreadable avatar object fails this whole read.** `enrichWithAvatarUrl`
+   * HEADs and presigns every avatar owner's object with no per-row fallback, so
+   * a missing object answers **404**, a storage refusal **403** and MinIO being
+   * down **503** (read at `develop` `1cfe4d79f074`) — the first two the very
+   * statuses this route gives a missing project and a reader with no access.
+   * The board's `retryUnlessMissing` does not retry a 404 or a 403, so it keeps
+   * saying the members could not be read.
    *
    * The other six fields of `AvatarDto` stay dropped, and one of them is worth
    * recording so the next reader does not re-derive it: `createdAt` is declared
@@ -806,28 +825,30 @@ export class RestTaskaApi implements TaskaApi {
    * project-service.proto has no `created_at` and `ProjectMapper.toAvatarDto`
    * sets six fields, not seven.
    *
-   * **The order below is this client's own, not the server's.**
-   * `findProjectMembers` in project-service carries no `ORDER BY`, so two reads
-   * of the same membership can come back in different orders — and no
-   * mock-backed test can ever catch that, since the mock never asks a
-   * database. Sorted by `displayName` (rows with no name last), `userId` as
-   * the tiebreak so the order is total; the avatar stack, the assignee filter
-   * and the watcher picker all read this list and would otherwise reshuffle on
-   * every refetch. The backend ask to remove this is a one-line `ORDER BY`,
-   * with a precedent already in the same repository interface.
+   * **The order below is this client's own, not the server's.** The server's
+   * is stable now: `findProjectMembers` in project-service ends
+   * `ORDER BY pm.user_id ASC` on `develop` `1cfe4d79f074`, and nothing
+   * downstream reorders it — it had no `ORDER BY` at the head this was first
+   * written against, which is what the sort used to be for. It stays for a
+   * different reason: a uuid order is not one a reader can use, and the avatar
+   * stack, the assignee filter and the watcher picker all read this list.
+   * Sorted by `displayName` (rows with no name last), `userId` as the tiebreak
+   * so the order is total. What would remove this is the server sorting by name
+   * after it joins in the user details, not the `ORDER BY` it already has.
    */
   async listMembers(projectId: string): Promise<ProjectMember[]> {
     const response = await this.request<RestProjectMembers>(`/projects/${this.segment(projectId)}/members`);
-    // `?? []` like every other collection read here: PR #152's schema declares
-    // no `required` block, so a 200 carrying no `members` key is a legal answer
-    // to this route, and an unguarded `.map` would reject with a `TypeError` —
-    // no code, no request id, nothing `apiErrorFacts` can name.
+    // `?? []` like every other collection read here:
+    // `ListProjectMemberDetailsDto` declares no `required` block, so a 200
+    // carrying no `members` key is a legal answer to this route, and an
+    // unguarded `.map` would reject with a `TypeError` — no code, no request
+    // id, nothing `apiErrorFacts` can name.
     //
     // `.filter(...)` drops a row with no `userId` before it ever reaches
-    // `toProjectMember`. `userId` is `ProjectMemberDetailsDto`'s join key (PR
-    // #152), so a row missing it is not a shape the deployed gateway sends — only
-    // the schema's empty `required` block allows it in principle. This is the
-    // mapper refusing to invent an id, not a compensation for an observed answer:
+    // `toProjectMember`. `userId` is `ProjectMemberDetailsDto`'s join key (read
+    // at PR #152's head), so a row missing it is not a shape the gateway sends —
+    // only the schema's empty `required` block allows it in principle. This is
+    // the mapper refusing to invent an id, not a compensation for an observed answer:
     // unlike a nameless row, which still has a `userId` a screen can act on, an
     // idless one has nothing to act on at all. Left in, it used to reach the
     // watcher picker's `<select>` as an option valued `""`, colliding with that
@@ -835,7 +856,7 @@ export class RestTaskaApi implements TaskaApi {
     // `key`.
     //
     // `.sort(compareMembers)` after it, always — see the method doc above for
-    // why the server's own order cannot be trusted.
+    // why the server's own order is not the one drawn.
     return (response.members ?? [])
       .filter((member) => Boolean(member.userId))
       .map((member) => toProjectMember(member))
@@ -2172,13 +2193,15 @@ function toGlobalRole(value: unknown): GlobalRole | undefined {
  * (`ck_project_members_role`, project-service `0000-init.sql`), so an
  * unrecognised string is not actually on the wire today — the narrowing guards
  * a role the enum grows later, arriving verbatim before this build knows its
- * name. `currentUserRole` cannot carry that case at all:
- * `ProjectMapper.toRestProjectRole` throws 500 rather than emit an unmapped
- * project role. What it *can* carry is an explicit JSON `null` — written
- * whenever `hasCurrentUserRole()` is false, because the api-gateway configures
- * no Jackson inclusion override and its default `ALWAYS` still serialises the
- * key — which lands here as "no role", the same answer a member row's missing
- * key gives.
+ * name. `currentUserRole` cannot carry that case at all: at `develop`
+ * `1cfe4d79f074` `ProjectMapper.toRestProjectRole` returns `null` rather than
+ * emit an unmapped project role. What it *can* carry is an explicit JSON
+ * `null` — the api-gateway configures no Jackson inclusion override, so its
+ * default `ALWAYS` still serialises the key of a response built without a
+ * role — which lands here as "no role", the same answer a member row's missing
+ * key gives. No read builds one: a 200 from `GET /projects/{id}` or from
+ * `GET /projects` always states the reader's role, and the only such response
+ * is the one `POST /projects` answers with.
  */
 function toProjectRole(value: unknown): ProjectRole | null {
   return value === "ADMIN" || value === "MEMBER" || value === "VIEWER" ? value : null;
@@ -2239,15 +2262,16 @@ function toUserAvatar(avatar: RestUserAvatar): UserAvatar {
 }
 
 /**
- * `listMembers`'s own stability, not the server's — see that method's doc for
- * why one is needed at all. Named rows sort by `displayName`; a row with no
+ * `listMembers`'s own order, not the server's — see that method's doc for why
+ * one is needed at all. Named rows sort by `displayName`; a row with no
  * `user` sorts after every named one, because it has nothing to alphabetise
  * by. `userId` breaks every remaining tie — two rows `localeCompare` calls
  * equal, whether that is the same string twice or two spellings that collate
  * to 0 without being identical (NFC vs NFD of the same accented name, for
- * instance), and two rows with no name — so the comparator is a total order
- * and two reads of the same membership can never disagree, whatever order the
- * response body arrived in.
+ * instance), and two rows with no name — so the comparator is a total order,
+ * and the name order it draws does not depend on the order the response body
+ * arrived in. The server's own order is stable by `userId` now; this is for
+ * name order only, and no longer what stops the list reshuffling.
  */
 function compareMembers(a: ProjectMember, b: ProjectMember): number {
   const nameA = a.user?.displayName ?? null;
@@ -2333,57 +2357,44 @@ function refusePlanningFields(input: PlanningFieldsInput, stored: StoredPlanning
 
 /**
  * The file refusals from src/api/attachments.ts, thrown as the gateway's own
- * answer so a file stopped here is indistinguishable from one stopped there —
- * which is why the over-size arm synthesises a **500** where its two siblings
- * get a 400. That is not a typo, and the three arms genuinely do not share an
- * answer. Read off backend PR #147's head `f53dca38`:
+ * answer so a file stopped here is indistinguishable from one stopped there.
+ * Since backend PR #147 merged, all three arms share that answer: **400**
+ * `INVALID_ARGUMENT` (read at `develop` `1cfe4d79f074`).
  *
  * - **disallowed type** — reaches `S3StorageClient.validateFileParams`, which
  *   raises `DomainStatus.INVALID_ARGUMENT`. `RestErrorMapper` maps that to
  *   **400** and `GatewayErrorHandler` writes the gRPC code's own name into
- *   `code`, so `INVALID_ARGUMENT` on 400.
- * - **empty file** — never reaches `validateFileParams` at all. `sizeBytes`
- *   carries `minimum: 1` in the contract and the gateway generates its
- *   interfaces with `useValidation`, so `@Min(1)` fails first and
- *   `GatewayValidationExceptionHandler` answers **400** `INVALID_ARGUMENT`.
- *   Same code, same status; only the *message* differs, because that handler
- *   sends its fixed `"Invalid request parameters"` rather than
- *   `validateFileParams`'s sentence. This throws the sentence, which is the one
- *   part of the gateway's answer it does not reproduce — nobody reads it: the
- *   panel refuses an empty file in its own words before this is reached.
- * - **over-size** — the request DTO states no `maximum` and the value is
- *   positive, so both earlier guards pass and `validateFileParams` raises
- *   `DomainStatus.OUT_OF_RANGE`. `GrpcExceptionMapper` has an explicit
- *   `case OUT_OF_RANGE -> Status.OUT_OF_RANGE`, so `code` is `"OUT_OF_RANGE"` —
- *   and `RestErrorMapper.mapGrpcCodeToHttpStatus` **has no `OUT_OF_RANGE`
- *   case**, so the status falls through its `default ->
- *   INTERNAL_SERVER_ERROR`. A file one byte too large is a **500**.
+ *   `code` (read at PR #147's head `f53dca38`).
+ * - **empty file** and **over-size** — never reach issue-service at all.
+ *   `sizeBytes` carries `minimum: 1` and `maximum: 2097152` in the contract,
+ *   and the gateway generates its interfaces with `useValidation`, so `@Min(1)`
+ *   or `@Max(2097152)` fails first and `GatewayValidationExceptionHandler`
+ *   answers **400** `INVALID_ARGUMENT` with its fixed
+ *   `"Invalid request parameters"`. This throws `validateFileParams`'s sentence
+ *   for both instead, which is the one part of the gateway's answer it does not
+ *   reproduce — nobody reads it: the panel refuses both in its own words before
+ *   this is reached.
  *
- * An earlier version of this comment cited the mapping table in `common-lib`'s
- * `DomainStatus` javadoc, which sends `OUT_OF_RANGE` to 400, and concluded the
- * flattened 400 was therefore right. That table is documentation of intent in a
- * library the gateway does not consult; what the gateway executes is
- * `RestErrorMapper`, and it does not implement that row. Reproducing an answer
- * means reproducing the one that is served.
+ * The ceiling used to be the odd one out. Until PR #147 merged, the DTO stated
+ * no `maximum`, so an over-size file reached `validateFileParams` and was
+ * refused `OUT_OF_RANGE` — which `RestErrorMapper` had no row for, so it fell
+ * to a **500**, and this function synthesised that 500. The merge brought both
+ * the `maximum` and the row (`OUT_OF_RANGE` → 400), which is what
+ * docs/ai/API-DIVERGENCE.md named as the removal of that 500. The leg-3
+ * re-measure still refuses an oversized object with `OUT_OF_RANGE`, on 400 now.
  *
- * Synthesising a 500 costs nothing here, and that was checked rather than
- * assumed: no reader in the attachment path branches on `status` — the panel
- * takes `apiErrorFacts(error).message` and prints it — and the only
- * `status >= 500` readers in this build are `userWriteFailure`
- * (src/screens/admin/users.ts) and `AdminError` (src/screens/admin/), neither
- * of which any attachment failure reaches. `HybridTaskaApi` forwards this leg to `live` untouched.
- *
- * Recorded in docs/ai/API-DIVERGENCE.md, and it disappears when the backend
- * adds the missing row — or a `maximum` to `sizeBytes`, which would move the
- * ceiling into bean validation and make it a 400 like its siblings.
+ * Nothing reads the status that changed: the panel takes
+ * `apiErrorFacts(error).message`, and the only `status >= 500` readers in this
+ * build are `userWriteFailure` (src/screens/admin/users.ts) and `AdminError`
+ * (src/screens/admin/), which no attachment failure reaches. `HybridTaskaApi`
+ * forwards this leg to `live` untouched.
  */
 function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
   const refusal = attachmentRefusal(input);
   if (!refusal) return;
-  // Split exactly as `MockTaskaApi.createAttachmentUploadUrl` splits it, so the
-  // two implementations answer the same file with the same code.
-  const overSize = attachmentRefusalKind(input) === "size";
-  throw new ApiError(refusal, overSize ? "OUT_OF_RANGE" : "INVALID_ARGUMENT", overSize ? 500 : 400);
+  // One code for all three arms, as `MockTaskaStore.createAttachmentUploadUrl`
+  // throws it, so the two implementations answer the same file the same way.
+  throw new ApiError(refusal, "INVALID_ARGUMENT", 400);
 }
 
 /**
@@ -2399,9 +2410,9 @@ function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
  *   `maximum: 5242880`, passes the gateway's bean validation, and is refused a
  *   layer deeper by `S3StorageClient.validateFileParams`, reading
  *   auth-service's `storage.max-file-size-bytes: 2097152`. That raises
- *   `OUT_OF_RANGE`, and `RestErrorMapper` has no row for it — the attachment
- *   ceiling's oddity, from the same mapper — so the status falls to its
- *   `INTERNAL_SERVER_ERROR` default: **500**.
+ *   `OUT_OF_RANGE`, which `RestErrorMapper` maps to **400** since backend PR
+ *   #147 gave it the row (read at `develop` `1cfe4d79f074`) — it fell to a
+ *   500 before, the same oddity the attachment ceiling had.
  * - **over 5 MB** fails the generated DTO's `@Max` as the gateway reads the
  *   body, and `GatewayValidationExceptionHandler` answers **400**
  *   `INVALID_ARGUMENT` with its fixed "Invalid request parameters". The token
@@ -2424,10 +2435,15 @@ function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
  * reproducing the one that is served, band by band.
  *
  * One caveat worth stating rather than implying: this is what the gateway
- * answers for an over-ceiling upload, read off `develop` at `368ae77355bd`
- * rather than observed. The four routes deployed on 2026-09-14, but the
- * probes that confirmed that — an invalid id, a wrong method — do not
- * exercise this refusal, so it stays a reading until one does.
+ * answers for an over-ceiling upload, read off `develop` — at `368ae77355bd`,
+ * and the status mapping again at `1cfe4d79f074` — rather than observed. The
+ * four routes deployed on 2026-09-14, but the probes that confirmed that — an
+ * invalid id, a wrong method — do not exercise this refusal, so it stays a
+ * reading until one does.
+ *
+ * Nothing reads the status either band carries: the profile menu refuses both
+ * before a request, and prints `apiErrorFacts(error).message` for anything the
+ * gateway refuses.
  */
 function refuseAvatar(input: CreateAvatarUploadUrlInput): void {
   // Bean validation, which answers before the avatar call leaves the gateway.
@@ -2437,9 +2453,10 @@ function refuseAvatar(input: CreateAvatarUploadUrlInput): void {
   const refusal = avatarRefusal(input);
   if (!refusal) return;
   // Split exactly as `MockTaskaStore.createAvatarUploadUrl` splits it, so the
-  // two implementations answer the same file with the same code.
+  // two implementations answer the same file with the same code. The status is
+  // 400 for every arm.
   const overSize = avatarRefusalKind(input) === "size";
-  throw new ApiError(refusal, overSize ? "OUT_OF_RANGE" : "INVALID_ARGUMENT", overSize ? 500 : 400);
+  throw new ApiError(refusal, overSize ? "OUT_OF_RANGE" : "INVALID_ARGUMENT", 400);
 }
 
 /**

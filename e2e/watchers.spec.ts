@@ -103,8 +103,7 @@ test("keeps a populated list under an unpressed toggle", async ({ page }) => {
   await expect(watchers.getByRole("button", { name: "Watch", exact: true })).toHaveAttribute("aria-pressed", "false");
   await expect(watchers.getByText("(you)")).toHaveCount(0);
   // Priya is not a member of this project, so `GET /projects/{id}/members`
-  // cannot name her — the state every watcher is in against the deployed
-  // gateway, where that read is a 405 (TAS-137). The row is drawn anyway.
+  // cannot name her. The row is drawn anyway.
   await expect(watchers.getByText("Unknown")).toBeVisible();
 });
 

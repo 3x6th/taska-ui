@@ -295,17 +295,20 @@ describe("RestTaskaApi current user", () => {
 
 /**
  * Project members and the reader's own role (TAS-219), written against backend
- * PR #152 at head `1ad6ffad815d` — open and undeployed on 2026-09-12, when the
- * member route answered 405 and `GET /projects/{id}/membership` answered the
- * static-resource 404. So these cases pin a contract this leg has never spoken
- * to, and they are the only check on it until the PR merges.
+ * PR #152 at head `1ad6ffad815d` while it was open — the member route answered
+ * 405 on 2026-09-12, and `GET /projects/{id}/membership` answered the
+ * static-resource 404. The PR merged into `develop` `1cfe4d79f074` and is
+ * deployed: measured on 2026-09-16 without a token, the member route answers
+ * 401, and `docs/contract/openapi.yml` carries it and `currentUserRole`. Since
+ * TAS-224 `hybrid` delegates both reads here, so this is the leg the stand
+ * runs.
  *
  * Three asymmetries are what they are really for: the array is `members` and
  * not `items`; a member row's `role` is typed as an *open* string because
  * MapStruct's read-side conversion is a generic `.name()` off an enum column
  * — so a role project-service adds later, before this build has a name for
  * it, would arrive verbatim, while `currentUserRole` cannot, because its own
- * mapper throws 500 rather than emit anything unmapped; and `getMembership`
+ * mapper returns `null` rather than emit anything unmapped; and `getMembership`
  * is derived from the project read rather than fetched, with VIEWER as its
  * floor.
  */
@@ -373,8 +376,9 @@ describe("RestTaskaApi project members", () => {
     ]);
   });
 
-  // `findProjectMembers` has no `ORDER BY` (see `listMembers`'s own doc), so
-  // these three pin the client-side sort rather than trusting the wire order.
+  // The server's order is stable, by `user_id`, which is not an order a UI
+  // wants (see `listMembers`'s own doc), so these pin the client-side name sort
+  // rather than the wire order.
   it("sorts by display name rather than the order the response body used", async () => {
     const { result } = await call(
       {
@@ -488,9 +492,9 @@ describe("RestTaskaApi project members", () => {
   });
 
   it("drops a row with no `userId`, because there is nothing to key a picker option on", async () => {
-    // Not reachable off PR #152's `ProjectMemberDetailsDto`, where `userId` is
-    // the join key — this pins the mapper's own refusal to invent one, not a
-    // shape anyone has observed the gateway send.
+    // Not reachable off `ProjectMemberDetailsDto` as backend PR #152 builds it,
+    // where `userId` is the join key — this pins the mapper's own refusal to
+    // invent one, not a shape anyone has observed the gateway send.
     const { result } = await call(
       {
         members: [
@@ -522,12 +526,14 @@ describe("RestTaskaApi project members", () => {
   });
 
   it("takes the avatar's download link off the row and nothing else, and carries neither addedAt nor addedBy", async () => {
-    // TAS-220 picks up what TAS-219 deliberately left: `AvatarDto` is on the
-    // wire with a presigned `downloadUrl`, and reading it here is what makes a
-    // board of faces one request rather than one per person. The other six
-    // fields stay dropped — none of them is drawn, and `createdAt` among them
-    // is declared and never populated. The two timestamps are not on
-    // `ProjectMemberDetailsDto` at all.
+    // TAS-220 picks up what TAS-219 deliberately left: `AvatarDto` is declared
+    // on the row with a presigned `downloadUrl`, and reading it here is what
+    // makes a board of faces one request rather than one per person. The
+    // deployed read fills it for nobody yet (see `RestProjectMember`), so this
+    // body is the contract's shape rather than one the stand sends today. The
+    // other six fields stay dropped — none of them is drawn, and `createdAt`
+    // among them is declared and never populated. The two timestamps are not
+    // on `ProjectMemberDetailsDto` at all.
     const { result } = await call(
       {
         members: [
@@ -622,7 +628,7 @@ describe("RestTaskaApi project members", () => {
   });
 
   it.each([
-    ["the gateway has not deployed the field", {}],
+    ["the key is absent, as it was before TAS-137 deployed", {}],
     ["the field is explicitly null", { currentUserRole: null }],
     ["the value is one this build does not recognise", { currentUserRole: "UNSPECIFIED" }],
   ])("floors the role to VIEWER when %s", async (_case, extra) => {
@@ -3082,17 +3088,18 @@ describe("RestTaskaApi attachments", () => {
       api.createAttachmentUploadUrl(PROJECT, ISSUE, { fileName: "a.txt", contentType: "text/plain", sizeBytes: 0 }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400 });
 
-    // The odd one, and pinned as a fact about the deployed gateway rather than
-    // as a preference: `RestErrorMapper` has no `OUT_OF_RANGE` row, so a file
-    // one byte too large falls through its INTERNAL_SERVER_ERROR default. An
-    // earlier version of this test asserted 400 and was pinning a comment that
-    // had read the mapping table in `DomainStatus`'s javadoc — which the
-    // gateway does not consult — instead of the mapper it runs.
+    // The one that used to be odd, and pinned as a fact about the gateway rather
+    // than as a preference. Until backend PR #147 merged, a file one byte too
+    // large reached issue-service, was refused OUT_OF_RANGE, and fell to a 500
+    // because `RestErrorMapper` had no row for that code. The merge added the
+    // row and put `maximum: 2097152` on the request DTO, so the gateway's bean
+    // validation now refuses the size first: 400 INVALID_ARGUMENT, like its
+    // siblings (read at `develop` `1cfe4d79f074`).
     await expect(
       api.createAttachmentUploadUrl(PROJECT, ISSUE, { fileName: "a.txt", contentType: "text/plain", sizeBytes: ATTACHMENT_MAX_SIZE_BYTES + 1 }),
     ).rejects.toMatchObject({
-      code: "OUT_OF_RANGE",
-      status: 500,
+      code: "INVALID_ARGUMENT",
+      status: 400,
       message: attachmentSizeRefusalMessage(ATTACHMENT_MAX_SIZE_BYTES + 1),
     });
 
@@ -3268,25 +3275,6 @@ describe("RestTaskaApi attachments", () => {
     expect(calls(fetchStub)[0][0]).toBe(`/api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments/${ATTACHMENT}`);
     expect(calls(fetchStub)[0][1].method).toBe("DELETE");
   });
-
-  it("passes the undeployed-route 404 through so the panel can say which 404 it is", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        answer(404, {
-          code: "NOT_FOUND",
-          message: `No static resource api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments for request '…'.`,
-        }),
-      ),
-    );
-
-    const error = await new RestTaskaApi().listAttachments(PROJECT, ISSUE).catch((e: unknown) => e);
-
-    // Measured against the deployed gateway on 2026-09-06: these routes answer
-    // this, while `…/comments` answers 401 for the same unauthenticated call.
-    expect(error).toMatchObject({ status: 404, message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE) });
-    expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
-  });
 });
 /**
  * The four avatar routes — backend PR #150 (TAS-129), merged at `develop`
@@ -3353,19 +3341,19 @@ describe("RestTaskaApi avatars", () => {
     await expect(
       api.createAvatarUploadUrl({ fileName: "huge.png", contentType: "image/png", sizeBytes: threeMegabytes }),
     ).rejects.toMatchObject({
-      // `RestErrorMapper` has no `OUT_OF_RANGE` row, so the ceiling falls to its
-      // INTERNAL_SERVER_ERROR default — the same oddity the attachment ceiling
-      // has, and pinned as a fact about the gateway rather than a preference.
+      // OUT_OF_RANGE on 400: `RestErrorMapper` has mapped that code to 400 since
+      // backend PR #147 (read at `develop` `1cfe4d79f074`); it fell to a 500
+      // before. Pinned as a fact about the gateway rather than a preference.
       code: "OUT_OF_RANGE",
-      status: 500,
+      status: 400,
       message: avatarSizeRefusalMessage(threeMegabytes),
     });
 
     // The second band. Past the schema's own `maximum: 5242880`, the generated
     // DTO's `@Max` fails as the gateway reads the body, and
     // `GatewayValidationExceptionHandler` answers with its fixed sentence on
-    // 400 — the avatar call never leaves the gateway, so this is not the 500
-    // above with a bigger number in it.
+    // 400 — the avatar call never leaves the gateway, so this is a different
+    // code from the band above, not the same refusal with a bigger number in it.
     const sixMegabytes = 6 * 1024 * 1024;
     expect(sixMegabytes).toBeGreaterThan(AVATAR_DECLARED_MAX_SIZE_BYTES);
     await expect(
@@ -3554,7 +3542,8 @@ describe("RestTaskaApi avatars", () => {
       .catch((e: unknown) => e);
 
     // Probed against the deployed gateway on 2026-09-12 without a token: all
-    // four avatar routes answer this while `GET /users/me` answers 401.
+    // four avatar routes answered this while `GET /users/me` answered 401. They
+    // deployed on 2026-09-14; `UserProfileMenu` still reads the signature.
     expect(error).toMatchObject({ status: 404, message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE) });
     expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
   });

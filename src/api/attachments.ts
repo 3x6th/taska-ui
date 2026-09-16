@@ -17,40 +17,49 @@
  */
 
 /**
- * The largest file the server will store, **2 MB exactly**.
+ * The largest file the server will store, **2 MB exactly** — and stated in two
+ * places on the backend, which agree.
  *
- * Read out of `issue-service/src/main/resources/application.yml` at backend PR
- * #147's head `f53dca38`, where the line is
+ * **The contract states it**: `CreateAttachmentUploadUrlRequestDto.sizeBytes`
+ * carries `maximum: 2097152` in `docs/contract/openapi.yml`, since backend PR
+ * #147 merged, and that is the source this constant is pinned from. **The
+ * service states it too**, in `issue-service/src/main/resources/application.yml`
+ * — read at PR #147's head `f53dca38`, an earlier head than the `deeedbf` it
+ * merged from — where the line is
  *
  * ```yaml
  * storage:
  *   max-file-size-bytes: 2097152 # 2 MB
  * ```
  *
- * — a bare YAML literal with **no `${…}` env override**, unlike every other
- * property in that block (`presigned-url-ttl`, `bucket`, `endpoint`,
- * `public-url` and the rest all take one). So on today's backend this number
- * cannot be moved by configuration and is the same in every environment, which
- * is what makes pinning it here safe.
+ * — a bare YAML literal with **no `${…}` env override**, as
+ * `allowed-content-types` below is too; `presigned-url-ttl`, `bucket`,
+ * `endpoint` and `public-url` take one. So this number cannot be moved by
+ * configuration and is the same in every environment, which is what makes
+ * pinning it here safe.
  *
- * **It becomes a lie the moment that line changes**, and nothing on this side
+ * **It becomes a lie the moment either one changes**, and nothing on this side
  * will notice: the frontend would refuse a file the server would have taken, or
  * — worse, and the direction that costs a round trip and an orphaned object —
  * accept one the server refuses at `confirm` after the bytes are already in the
- * bucket. Re-read that line when the pin in `docs/contract/pending/` moves.
+ * bucket. Re-read both whenever the `develop` commit pinned in
+ * `docs/contract/openapi.yml` moves.
  *
- * Checked twice on the server, not once: `S3StorageClient.validateFileParams`
- * refuses an over-size *request* at leg 1, and
- * `validateAndGetUploadedObjectMetadata` re-measures the stored object at leg 3
- * and deletes it if it is over. This constant exists so neither of those is
- * ever the first time anybody hears about the limit.
+ * Checked twice on the server, not once: the gateway's bean validation refuses
+ * an over-size *request* at leg 1, before issue-service is asked (400
+ * `INVALID_ARGUMENT`; `S3StorageClient.validateFileParams` one layer down would
+ * refuse it too), and `validateAndGetUploadedObjectMetadata` re-measures the
+ * stored object at leg 3 and deletes it if it is over (400 `OUT_OF_RANGE`).
+ * This constant exists so neither of those is ever the first time anybody
+ * hears about the limit.
  */
 export const ATTACHMENT_MAX_SIZE_BYTES = 2097152;
 
 /**
  * The thirteen MIME types the server accepts, **verbatim and in the order the
  * YAML lists them** (`storage.allowed-content-types`, same file and same
- * commit).
+ * commit). Unlike the ceiling above, the contract does not state this list: the
+ * YAML is its only source.
  *
  * `S3StorageClient.validateFileParams` tests them with
  * `List.contains(contentType)` — an exact string comparison. There is no

@@ -8,10 +8,11 @@ interface AvatarProps {
    * `avatarColor`. Every caller that knows who this is passes one; only the
    * unassigned and loading circles are drawn without a user at all.
    *
-   * `avatarUrl` is what turns the circle into a picture. It arrives with the
-   * member row for anybody on a project and from one read of
-   * `GET /users/{userId}/avatar` for the reader themselves; absent or `null`,
-   * this draws exactly what it drew before TAS-220.
+   * `avatarUrl` is what turns the circle into a picture. The contract puts it
+   * on the member row for anybody on a project — which the deployed member read
+   * does not fill yet, see `User.avatarUrl` — and one read of
+   * `GET /users/{userId}/avatar` fetches it for the reader themselves; absent
+   * or `null`, this draws exactly what it drew before TAS-220.
    */
   user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
   label?: string;

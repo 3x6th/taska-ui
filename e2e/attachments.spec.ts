@@ -3,15 +3,14 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // Mock-backed like every spec here (playwright.config.ts starts the server with
 // VITE_TASKA_API_MODE=mock): any seeded user signs in with any password.
 //
-// **This is the only place the attachment feature can be exercised at all.**
-// The five gateway routes ship in backend PR #147 and are not deployed —
-// measured 2026-09-06, they answer Spring's static-resource 404 while their
-// neighbour `…/comments` answers 401 — and the *middle* leg of an upload never
-// touches the gateway even once they are: the browser PUTs the bytes straight
-// to an S3-compatible store whose only checked-in address is
-// `http://127.0.0.1:9000` and for which nothing in the backend repository
-// configures CORS. So nothing below is evidence about a server. It pins what
-// the UI does with each answer, and the answers come from `MockTaskaStore`.
+// The five gateway routes are merged (backend PR #147) and deployed — they
+// answered Spring's static-resource 404 on 2026-09-06 and `401` without a
+// token on 2026-09-16 — but the *middle* leg of an upload never touches the
+// gateway: the browser PUTs the bytes straight to an S3-compatible store whose
+// only checked-in address is `http://127.0.0.1:9000` and for which nothing in
+// the backend repository configured CORS when PR #147 was read at its head
+// `f53dca38`. So nothing below is evidence about a server. It pins what the UI
+// does with each answer, and the answers come from `MockTaskaStore`.
 //
 // The seed puts two files on TAS-101 from two different people, which is what
 // makes the split delete rule visible: Anna is an ADMIN of Taska Platform and

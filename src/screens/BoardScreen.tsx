@@ -15,7 +15,7 @@ import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Sea
 import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput, UpdateIssueInput } from "../api/TaskaApi";
-import { SEARCH_QUERY_MIN_LENGTH, UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
+import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
   ATTACHMENT_ACCEPT_ATTRIBUTE,
@@ -25,7 +25,7 @@ import {
 } from "../api/attachments";
 import { objectStoreUploadFailure } from "../api/objectStore";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isMissingOrForbidden, isUndeployedRoute } from "../api/errors";
+import { apiErrorFacts, isMissingOrForbidden } from "../api/errors";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
@@ -1715,9 +1715,9 @@ interface WatcherNotice {
  *
  * *A watcher carries a `userId` and no name.* It is resolved through the same
  * `userById` map that names the assignee, the reporter and an attachment's
- * uploader — one mechanism, and it fails in one way: `GET /projects/{id}/members`
- * is a 405 on the deployed gateway (TAS-137), so in `rest` mode every watcher
- * draws as "Unknown", exactly as the reporter line already does. That symmetry
+ * uploader — one mechanism, and it fails in one way: when
+ * `GET /projects/{id}/members` fails, or names nobody for that id, the watcher
+ * draws as "Unknown", exactly as the reporter line does. That symmetry
  * is the argument for reusing the map rather than inventing a second lookup,
  * and it is *not* a reason to defer the ADMIN half: a remove names a `userId`,
  * which every row already carries, so it needs no name at all; and an add needs
@@ -1747,8 +1747,7 @@ function IssueWatchersSection({
   /**
    * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`, both of
    * which the contract marks "только project ADMIN". Presentation only — the
-   * server checks again, and in `hybrid` with `VITE_TASKA_ASSUME_PROJECT_ADMIN`
-   * this is `true` for everybody (DESIGN.md §5.7).
+   * server checks again (DESIGN.md §5.7).
    */
   isProjectAdmin: boolean;
 }) {
@@ -2189,14 +2188,13 @@ function IssueWatchersSection({
       ) : null}
       {/* `membersAnswered`, not `!membersUnknown`: a read still in flight is
           neither an answer nor a failure, and this sentence needs a landed one.
-          What it may then say is narrower than it looks. In `hybrid` — the
-          default, and the mode the deployed stand runs — `listMembers`
-          *succeeds* with exactly one element, the reader themselves, because the
-          gateway has no member read (TAS-137). So a sentence about "everyone on
-          this project" would be told to an ADMIN of a ten-person project on the
-          strength of a list of one, and nothing in the UI can tell a synthesised
-          answer from a real one. The claim is therefore about the list that came
-          back, which is true either way; §5.6's boundary above still keeps a
+          What it may then say is narrower than it looks. It was narrowed in
+          TAS-193, while `hybrid` answered the member read itself with a list of
+          one — the reader — that nothing in the UI could tell from a real
+          answer. Since TAS-224 the list is the gateway's own, and the sentence
+          stays about the list that came back rather than about the project: that
+          claim is true of any answer, and widening it is a decision about copy,
+          not a consequence of the read. §5.6's boundary above still keeps a
           *failed* read from producing a sentence at all. */}
       {isProjectAdmin && answer && membersAnswered && addable.length === 0 ? (
         <p className="issue-links-empty">
@@ -2325,25 +2323,16 @@ function IssueWatchersSection({
                     // project its ADMIN, so an admin is always in the list
                     // `userById` is built from and this arm never runs there.
                     //
-                    // Where it *can* run is narrower than "the deployed stand's
-                    // 405", which is what this comment said until the sentences
-                    // below were fixed to match it. The stand runs `hybrid`,
-                    // and `HybridTaskaApi.listMembers` never calls the 405
-                    // route: it synthesises one member — the reader, *named* —
-                    // so the map names them and this arm stays shut. `rest`
-                    // does meet the 405, and there `getMembership` floors to
-                    // VIEWER — since TAS-219 it derives from
-                    // `GET /projects/{id}`'s `currentUserRole`, which backend
-                    // PR #152 has not deployed — so `isProjectAdmin` is false
-                    // and there is no ✕ to label. What reaches it is the
-                    // stand plus a failing
-                    // `GET /projects/{id}`: `listMembers` is built on that read
-                    // and rejects with it, while
-                    // `VITE_TASKA_ASSUME_PROJECT_ADMIN` short-circuits
-                    // `getMembership` before any request and keeps the control
-                    // on screen — the same coupling API-DIVERGENCE.md records
-                    // for TAS-162. A ruling about that case, then, not a
-                    // screenshot of it; the unit suite is where it is held.
+                    // Where it *can* run: whenever the member read
+                    // (`GET /projects/{id}/members`) fails while the project
+                    // read succeeds with ADMIN — two separate gateway reads in
+                    // every mode but `mock` since TAS-224, which took out the
+                    // synthesis that used to tie the first to the second. On
+                    // the stand one way that happens is a single unreadable
+                    // avatar object, which fails the whole member read with a
+                    // 404, 403 or 503 (see `TaskaApi.listMembers`). A ruling
+                    // about that case, then, not a screenshot of it; the unit
+                    // suite is where it is held.
                     aria-label={
                       named
                         ? `Remove ${name} from watchers`
@@ -3236,7 +3225,6 @@ function IssueAttachmentsSection({
    * would explain an action the reader just took.
    */
   const readError = attachmentsQuery.error;
-  const undeployed = isUndeployedRoute(readError, UNDEPLOYED_ROUTE_MESSAGE);
 
   return (
     <section className="issue-attachments">
@@ -3245,7 +3233,7 @@ function IssueAttachmentsSection({
         {attachments.length ? <span className="count-pill">{attachments.length}</span> : null}
       </h3>
 
-      {canEdit && !undeployed ? (
+      {canEdit ? (
         <div className="attachment-picker">
           {/* Driven by the button beside it rather than styled directly: a
               `::file-selector-button` keeps the browser's own "No file chosen"
@@ -3297,17 +3285,11 @@ function IssueAttachmentsSection({
         {notice?.text ?? ""}
       </div>
 
-      {/* A 404 from this list has more than one cause — a missing issue, a
-          soft-deleted one, and a gateway that has not deployed these routes —
-          so it is never read as "this issue is gone" and never hides the
-          section. Only the undeployed signature gets its own quiet sentence;
-          everything else is shown as the failure it was. */}
-      {undeployed ? (
-        <p className="issue-links-empty">
-          Attachments are not on this gateway yet, so this issue&rsquo;s files cannot be listed (backend TAS-131).
-        </p>
-      ) : null}
-      {readError && !undeployed ? <div className="attachment-note is-error">{readError.message}</div> : null}
+      {/* A 404 from this list has more than one cause — a missing issue, or a
+          soft-deleted one — so it is never read as "this issue is gone" and
+          never hides the section. Every failure is shown as the failure it
+          was. */}
+      {readError ? <div className="attachment-note is-error">{readError.message}</div> : null}
 
       {attachmentsQuery.isPending ? <p className="issue-links-empty">Loading attachments</p> : null}
       {/* Only a successful empty answer may say there are none. */}
@@ -4243,9 +4225,13 @@ function toUserMap(members: ProjectMember[]) {
           id: member.userId,
           displayName: member.user!.displayName,
           color: member.user!.color,
-          // Straight off the member row, which carries it inline (backend PR
-          // #152) — so every face this map draws costs nothing beyond the one
-          // member read the board already makes. Nothing here ever asks
+          // Straight off the member row, which declares it inline
+          // (`ProjectMemberDetailsDto.avatar`, docs/contract/openapi.yml) — so
+          // every face this map draws costs nothing beyond the one member read
+          // the board already makes. The deployed read fills it for nobody yet
+          // (see `User.avatarUrl`), so the board draws initials, and the
+          // reader's own face shows only through the profile menu's cache write
+          // until the next member refetch. Nothing here ever asks
           // `GET /users/{userId}/avatar`, which would be one request per person
           // on the board.
           avatarUrl: member.user!.avatarUrl,
