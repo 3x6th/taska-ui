@@ -2399,8 +2399,11 @@ is what recurs.
 - **The mock refuses a MEMBER who adds or removes themselves through the ADMIN
   watcher routes, and issue-service allows it** (`release-reviewer`, TAS-226).
   `checkMutationRole` applies `watch-issue-roles` whenever the target is the
-  caller. The UI never makes that call. Recorded in the TAS-226 entry of
-  `API-DIVERGENCE.md`; the fix is `requireWatcherAdmin` checking the target.
+  caller, while the contract calls both routes ADMIN-only, so the mock follows
+  the contract. The UI never makes that call. Recorded in the TAS-226 entry of
+  `API-DIVERGENCE.md`. **Waits on [TAS-228](https://jira.ozero.dev/browse/TAS-228)**:
+  if the backend describes what its code does, `requireWatcherAdmin` starts
+  checking the target; if it changes the code, the mock is already right.
 - **The mock checks no caller role on create, update, transition, delete,
   links, comments, or the actor half of assign** (`builder`, `release-reviewer`,
   TAS-226). It does check attachment uploads (`requireUploadRole`) and watcher
@@ -2413,3 +2416,20 @@ is what recurs.
   later with pages navigating mid-wait. They passed alone and on two later full
   runs. Candidate fix: `server.watch.ignored` for `.claude/worktrees/**` in the
   Vite config.
+- **The watchers section's 403 fallback sentence names the wrong rule for the
+  `…/me` pair** (`api-contract-guard`, TAS-226). `watcherFailureText`
+  (`BoardScreen.tsx` ~2602-2604) says only a project admin may change who else
+  watches, and it also serves watch and unwatch, where the rule is ADMIN or
+  MEMBER acting on themselves. It is unreachable: the gateway always sends a
+  `message` (`GatewayErrorHandler.java:36`), and so does the mock.
+- **The client hard-codes three of issue-service's role lists** (`api-contract-guard`,
+  TAS-226), and they can differ per deployment. An ask was priced and is not
+  filed. [TAS-214](https://jira.ozero.dev/browse/TAS-214) already asks for
+  `watchers` and `isWatching` on the issue read. What would remain:
+  - `watchersCount` and `watchedByMe`: proto fields 22 and 23 are already filled
+    by `GrpcIssueService.getIssue`, and the gateway mapper drops them.
+  - `canWatch` on the issue read: proto, service and mapper.
+  - The role policy in [TAS-217](https://jira.ozero.dev/browse/TAS-217)'s
+    `GET /meta`: a cross-service rpc.
+
+  Worth filing when TAS-214 or TAS-217 is next discussed, not before.

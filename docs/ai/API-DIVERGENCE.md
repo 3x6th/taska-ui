@@ -670,47 +670,66 @@ Everything below is the entry as it stood, in the past tense.
   2026-09-11 from TAS-141 (nullable
   `assigneeId` or an explicit unassign route).
 
-### Watching yourself and being assigned are role-gated by issue-service, and the contract states neither rule
+### Five watcher and assignee writes are role-gated by issue-service; the contract gets two of them wrong for the self case and names no role on three
 
-- **Endpoints:** `PUT` and `DELETE /api/v1/projects/{projectId}/issues/{issueId}/watchers/me`,
-  and `PUT /api/v1/issues/{issueId}/assignee`.
-- **Contract:** the two routes that change *somebody else's* subscription say
-  "только project ADMIN" in their summary. The `…/watchers/me` pair states no
-  role and lists a `403` without saying who gets it. The assignee route states
-  no role at all, neither for the person assigning nor for the person assigned.
-- **Runtime** (read in the Java at backend `develop` `1cfe4d7`, which is
-  deployed; not probed with a token): issue-service's
-  `application.yml` sets `issue.allowed-roles.watch-issue-roles: ADMIN,MEMBER`
-  and `assign-issue-roles: ADMIN,MEMBER`.
-  `IssueWatcherServiceImpl.checkMutationRole` applies `watch-issue-roles` to
-  the actor when they watch or unwatch themselves, so a VIEWER can do neither.
-  When the target is somebody else it applies `manage-watchers-roles: ADMIN`,
-  again to the actor only, so an ADMIN may subscribe a VIEWER. The same split
-  applies to the two ADMIN watcher routes. The gateway passes the body's
-  `userId` through as the target, so when the caller names themselves the rule
-  is `watch-issue-roles`, not ADMIN, and a MEMBER may add or remove themselves
-  there. `MockTaskaStore.requireWatcherAdmin` refuses that call, and the UI
-  never makes it. The assign path in `IssueServiceImpl` (lines 182-184) checks
-  `assign-issue-roles` for the actor, and for the assignee too unless the actor
-  assigns themselves. A `null` assignee never reaches it: the contract makes
-  `assigneeId` required, the gRPC layer rejects anything that is not a UUID, and
-  the client refuses `null` first (see "An assignee cannot be cleared — by
-  contract" above). Refusals are `403` in `ProjectRoleChecker`'s words: "Access
-  denied" for a non-member and "Not allowed role" for a member.
+- **Endpoints:**
+  - `PUT` and `DELETE /api/v1/projects/{projectId}/issues/{issueId}/watchers/me`;
+  - `POST /api/v1/projects/{projectId}/issues/{issueId}/watchers` (the
+    subscriber's `userId` in the body) and `DELETE …/watchers/{userId}` (in the
+    path);
+  - `PUT /api/v1/issues/{issueId}/assignee`.
+- **Contract:** `POST …/watchers` and `DELETE …/watchers/{userId}` say
+  "Доступно только пользователю с ролью ADMIN в проекте", with no exception for
+  callers naming themselves (`docs/contract/openapi.yml` ~1766-1768 and
+  ~1902-1904). The `…/watchers/me` pair states no role and lists a `403` without
+  saying who gets it. The assignee route states no role for the person assigning
+  or for the person assigned.
+- **Runtime** (defaults read in the Java at backend `develop` `1cfe4d7`; not
+  probed with a token): issue-service's `application.yml` (lines 45, 59, 61)
+  sets `issue.allowed-roles.assign-issue-roles` to `ADMIN,MEMBER`,
+  `watch-issue-roles` to `ADMIN,MEMBER` and `manage-watchers-roles` to `ADMIN`.
+  Each is an environment-variable default. `IssueWatcherServiceImpl.checkMutationRole`
+  (168-180) reads only the actor's role: `watch-issue-roles` when the target is
+  the actor, `manage-watchers-roles` when it is somebody else. All four watcher
+  writes go through it. The gateway names the target from the path on
+  `DELETE …/watchers/{userId}` and from the body on `POST …/watchers`
+  (`WatchersController` 96-105). The `…/me` pair names nobody, so the target
+  is the caller. Three things follow:
+  - a VIEWER can neither watch nor unwatch themselves;
+  - an ADMIN may subscribe a VIEWER;
+  - **a MEMBER may add or remove themselves through the two routes the contract
+    calls ADMIN-only.**
+
+  The assign path in `IssueServiceImpl` (178-184) checks `assign-issue-roles`
+  for the actor, and for the assignee too unless the actor assigns themselves.
+  A `null` assignee never reaches it: the contract makes `assigneeId` required,
+  the gRPC layer rejects anything that is not a UUID, and the client refuses
+  `null` first (see "An assignee cannot be cleared — by contract" above).
+  Refusals are `403` in `ProjectRoleChecker`'s words: "Access denied" for a
+  non-member and "Not allowed role" for a member.
 - **Compensation** ([TAS-226](https://jira.ozero.dev/browse/TAS-226)): the UI
-  mirrors all three rules. The watch toggle is disabled outside ADMIN and MEMBER
-  and still shows the reader's state. The assignee chips offer only ADMIN and
-  MEMBER rows, and keep a demoted current assignee as a disabled active chip.
-  `MockTaskaStore` refuses the same cases, in its own words. Until TAS-226 the
-  toggle was live for every reader, on a code comment that read the contract's
-  silence as "no role".
+  mirrors the defaults.
+  - The watch toggle is disabled outside ADMIN and MEMBER, and still shows the
+    reader's state.
+  - The assignee chips offer only ADMIN and MEMBER rows, and keep a demoted
+    current assignee as a disabled active chip.
+  - `MockTaskaStore` refuses the same cases, in its own words. On the self case
+    of the two ADMIN routes it follows the contract: `requireWatcherAdmin`
+    refuses a MEMBER. The UI never makes that call, because both controls
+    render only for an ADMIN.
+
+  Until TAS-226 the toggle was live for every reader, because a code comment
+  took the contract's silence on `…/watchers/me` to mean "no role".
 - **Switching off:** there is no flag. The client cannot read
-  `issue.allowed-roles`, so if either list changes on the server the UI keeps
-  offering the old set, and no contract diff will show it.
-- **Removal:** closes when the contract states the roles for these three
-  routes, as it already does for the ADMIN watcher routes. Nothing is filed for
-  that yet; the natural home is the contract-hygiene ask
-  [TAS-206](https://jira.ozero.dev/browse/TAS-206).
+  `issue.allowed-roles`, and the lists are environment variables whose stand
+  values live in the deploy environment, not in the repository. A change there
+  needs no commit and no contract diff, and the UI keeps offering the old set.
+  "Read at `1cfe4d7`" proves the defaults, not the stand's values.
+- **Removal:** [TAS-228](https://jira.ozero.dev/browse/TAS-228) asks for the
+  roles on all five routes to be stated in the contract. It also asks the
+  backend to settle the self case of the two ADMIN routes, either by describing
+  what the code does or by making `checkMutationRole` decide by route. The mock's
+  self case waits on that answer rather than following either side now.
 
 ### `GET /projects/{id}/members` states no order, and the two implementations differ
 
