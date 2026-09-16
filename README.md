@@ -28,17 +28,9 @@ npm run build
 
 ## API Mode
 
-The default `hybrid` mode sends auth, projects, issues, workflow and notifications to API Gateway. Until TAS-137 provides project membership and member read endpoints, hybrid mode exposes the current user as the project's only visible member.
+The default `hybrid` mode sends every call to API Gateway. Until TAS-224 it made up the project's members and the reader's role on the client, because the gateway could not read them. TAS-137 added both reads, so hybrid now passes everything through and behaves exactly like `rest`. TAS-209 makes `rest` the default and deletes `hybrid`. The `VITE_TASKA_ASSUME_PROJECT_ADMIN` flag that came with the old member view is gone, and every reader now gets the role the gateway reports.
 
-For the temporary admin-only test environment:
-
-```bash
-VITE_TASKA_ASSUME_PROJECT_ADMIN=true
-```
-
-Remove this flag after TAS-137 is deployed. It is a UI compatibility switch; backend authorization remains authoritative.
-
-To opt into REST-only mode once the remaining gateway endpoints are available:
+To use REST-only mode:
 
 ```bash
 VITE_TASKA_API_MODE=rest

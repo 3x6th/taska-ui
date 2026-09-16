@@ -35,9 +35,10 @@ needs, the UI ships against the mock and the gap is recorded in
 removable, and **priced** — every compensation you find comes with the backend
 change that removes it, not only with a record that it exists.
 
-The direction since 2026-09-11 is off hybrid: `HybridTaskaApi` and
-`VITE_TASKA_ASSUME_PROJECT_ADMIN` are to be deleted, and every screen is to get
-its data in one read. Anything that adds a new synthesis, a new per-row
+The direction since 2026-09-11 is off hybrid: `HybridTaskaApi` is to be
+deleted, and every screen is to get its data in one read. Its member and role
+synthesis came out in TAS-224, together with `VITE_TASKA_ASSUME_PROJECT_ADMIN`,
+so the class passes every call through until TAS-209 deletes it. Anything that adds a new synthesis, a new per-row
 request, a new client-side count, or a new hard-coded enum member is a blocker
 under that direction, even when it is locally tidy.
 

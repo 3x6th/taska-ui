@@ -43,8 +43,9 @@ contract is silent on something the UI needs — stop and record it in
 compensating UI behaviour, and the Jira key that will remove it. Do not absorb
 the difference into a component and move on.
 
-This has already happened: `VITE_TASKA_ASSUME_PROJECT_ADMIN` exists purely
-because the contract has no membership or member-read endpoints (`TAS-137`).
+This has already happened: `VITE_TASKA_ASSUME_PROJECT_ADMIN` existed purely
+because the contract had no membership or member-read endpoints. It came out in
+`TAS-224` once `TAS-137` answered on the stand.
 
 ## Autonomy
 

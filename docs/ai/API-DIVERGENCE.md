@@ -109,7 +109,12 @@ is cheaper than splitting an entry and the reader has to be told which.
   compensation written for the 500 turns out to be the right shape for the 403.
 - **What is still owed here:** only
   [TAS-137](https://jira.ozero.dev/browse/TAS-137), which removes the coupling
-  that turned this endpoint into a permissions outage.
+  that turned this endpoint into a permissions outage. **Nothing is owed now
+  (TAS-224, 2026-09-16).** TAS-137 did not remove the coupling. It made the
+  coupling the contract: the role is a field of this read (`currentUserRole`,
+  api-gateway `ProjectMapper.java:52-54` at develop `1cfe4d7`). A failed
+  project read now means an unknown role, which is TAS-163's state and is
+  drawn as such.
   [TAS-162](https://jira.ozero.dev/browse/TAS-162) is answered, and the
   non-member case this entry used to wait on is the bullet directly above.
 
@@ -131,7 +136,10 @@ is cheaper than splitting an entry and the reader has to be told which.
   workflow read was also failing the membership read, so `canEdit` was false and
   every droppable disabled — nothing could be dropped and the fabricated
   workflow was inert. With the flag on, `canEdit` is now unconditionally true on
-  the stand, so the fabricated workflow is live.
+  the stand, so the fabricated workflow is live. **Since TAS-224 the flag is
+  gone:** `canEdit` is ADMIN or MEMBER, from the `currentUserRole` that every
+  project read answering 200 carries. For readers in those two roles the
+  fabricated workflow is still live.
 - **The shape of the bug is this file's whole subject:** the fallback is a
   reasonable *loading* default and a lie as a *failure* default, and one
   `undefined` check cannot tell those apart. Note the notice gate on the board
@@ -324,7 +332,45 @@ The entry as it stood:
 Same rule as above: "Closed by" is settled, the rest is live.
 
 
-### No membership or member-read endpoints
+### Closed by TAS-224: membership and member reads are deployed, and the synthesis came out
+
+- **Closed 2026-09-16** in [TAS-224](https://jira.ozero.dev/browse/TAS-224).
+  Backend PR #152 (TAS-137) merged into `develop` as `1cfe4d79f074` and deployed
+  the same day. Measured at 12:34 UTC without a token:
+  `GET /projects/{uuid}/members` answers **401**, where on 2026-09-12 it answered
+  405. `GET /projects/{uuid}/membership` still answers the static-resource 404
+  and is not coming, because the role is `currentUserRole` on the project read.
+  `GET /users/me` answered 401 as the control. `HybridTaskaApi.getMembership`
+  and `listMembers` now delegate to `RestTaskaApi`.
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN` is removed from all five places this entry
+  lists below. The class itself, and `rest` as the default, are
+  [TAS-209](https://jira.ozero.dev/browse/TAS-209)'s.
+- **What the deploy settled, read at `1cfe4d7` by `api-contract-guard`** (read
+  in the Java, not probed with a token):
+  - **The 401 risk below is answered.** On this route a 401 comes only from the
+    token check: a missing header, an expired or invalid JWT, or a user row
+    that is gone (`BearerTokenExtractor.java:32-47`, `JwtValidator.java:39-44`,
+    `AuthServiceImpl.java:171-175`). A non-member gets **403** "User has no
+    access to project" (project-service `ProjectMemberServiceImpl.java:142-147`),
+    and `GLOBAL_ADMIN` gets no bypass. A project that does not exist gets
+    **404** "Project not found", checked before membership. So a member reading
+    somebody else's project is shown the Not-found screen and is not signed out.
+  - **`currentUserRole` is never absent and never `null` on a read that answers
+    200.** `GET /projects/{id}` refuses a non-member, so every 200 has a
+    membership row whose `role` is `NOT NULL` under a CHECK; `GET /projects`
+    inner-joins that row. The client's `VIEWER` floor is kept as a defensive
+    default that a 200 cannot reach. The only `null` is on the `POST /projects`
+    response, which is mapped without a role.
+  - **TAS-163's "your role could not be determined" state is reachable on the
+    stand again.** The flag made it unreachable there (see "What this costs"
+    below), and with the flag gone a failed project read shows it.
+  - **The member row's `avatar` is declared and never filled.** That, and one
+    unreadable avatar object failing the whole read, are the open entry
+    "Member rows never carry an avatar", filed as
+    [TAS-225](https://jira.ozero.dev/browse/TAS-225).
+- **The record below is kept as it stood before the deploy.** Its "Missing",
+  "Compensation", "User-visible effect" and "Risk while open" bullets describe
+  the stand up to 2026-09-16.
 
 - **Missing:** `GET /projects/{id}/membership`, `GET /projects/{id}/members`
   (the contract has only `POST /members` and `PATCH/DELETE /members/{userId}`).
@@ -528,7 +574,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
   focus) against a fake `TaskaApi`. That closes the behaviour, not the gap: no
   test in this repository drives the real path end to end.
 - **Removal:** nothing schedules it. It disappears when `rest` becomes the
-  default mode (after [TAS-137](https://jira.ozero.dev/browse/TAS-137)) and the
+  default mode ([TAS-209](https://jira.ozero.dev/browse/TAS-209), now that TAS-137 has deployed) and the
   e2e suite can run against a gateway that rejects tokens.
 
 ### Closed by TAS-195: the board hydration outlived its contract reason, and then its runtime one
@@ -626,11 +672,14 @@ Everything below is the entry as it stood, in the past tense.
 
 ### `GET /projects/{id}/members` states no order, and the two implementations differ
 
-- **Missing:** any ordering guarantee. `ProjectMemberRepository.findProjectMembers`
-  in project-service — backend PR #152, head `1ad6ffad815d` — has no `ORDER BY`,
-  and `ProjectMemberServiceImpl` merges the auth-service rows into the result
-  without imposing one, so two reads of the same project may answer in two
-  orders.
+- **Missing:** an ordering guarantee **in the contract**. The runtime has one
+  since PR #152's review fix merged (`7fa04ba`, develop `1cfe4d7`):
+  `ProjectMemberRepository.findProjectMembers` ends `ORDER BY pm.user_id ASC`
+  (project-service `ProjectMemberRepository.java:40`), and nothing after it
+  reorders. `concatMap` keeps batch order, the merge walks the member list
+  rather than the auth-service answer, and the gateway maps with `forEach`. So
+  the wire order is stable, by `userId`. It was not when this entry was written
+  at head `1ad6ffad815d`, which had no `ORDER BY` at all.
 - **Compensation:** `RestTaskaApi.listMembers` sorts client-side — `displayName`
   first, rows with no name last, `userId` as the tiebreak so the order is total.
 - **The mock does not sort, and that is the half worth recording here** rather
@@ -640,17 +689,21 @@ Everything below is the entry as it stood, in the past tense.
   `rest` would give Anna, Priya, Sofia. The end-to-end suite runs on the mock, so
   **mock-backed evidence no longer predicts the `rest` order for this list** and
   no test in this repository can catch a regression in it.
-- **User-visible effect without the compensation:** the board's avatar stack, the
-  assignee filter and the watcher picker reshuffle between refetches in `rest`
-  mode. None of it is reachable on the stand, which runs `hybrid` and synthesises
-  a one-element list.
+- **User-visible effect without the compensation:** before `7fa04ba`, the board's
+  avatar stack, the assignee filter and the watcher picker would reshuffle between
+  refetches. Now they would sit in uuid order, which is stable and means nothing
+  to a reader. Since TAS-224 the stand reads this route too, so the client sort
+  exists for **name order**, not against reshuffling.
 - **Removal:** asked on [TAS-137](https://jira.ozero.dev/browse/TAS-137) on
   2026-09-12, in two shapes. `ORDER BY pm.user_id` in the repository is one line
   and has its precedent in the same interface — `getRequiredMembersInProject`
   already ends that way — but a uuid order is not an order a UI wants, so the
   client sort would stay. Sorting the enriched list by `displayName` in
   `ProjectMemberServiceImpl`, after the user-details join, is what actually
-  deletes the compensation.
+  deletes the compensation. **The first shape shipped and the second did not**
+  (`1cfe4d7`), and TAS-137 is `Done`. Nothing owns the name order now. It is
+  worth an ask only when TAS-212 puts members into the project read, which is
+  where it belongs.
 
 ### Comment ordering is unspecified
 
@@ -725,6 +778,12 @@ Everything below is the entry as it stood, in the past tense.
   Save cannot succeed, and that the branch nothing exercises against a real
   gateway is gone. Both entry points light up on their own when PR #152
   deploys.
+  **They did, on 2026-09-16** (TAS-224). Every `GET /projects` item now carries
+  the reader's role: project-service `ProjectRepository.java:27-29` inner-joins
+  the reader's membership, at develop `1cfe4d7`. So on the stand an ADMIN's
+  cards show the pencil, and Save lands on the 405 "not shipped yet" line above
+  while PR #155 is open. That is the state this entry designed, now reached on
+  the stand.
 - **Two asymmetries that look like one rule and are not.** A description can be
   cleared and a colour cannot. Both fields reach project-service as
   `Optional<String>`, where an absent field and an explicit null are the same
@@ -811,7 +870,10 @@ Everything below is the entry as it stood, in the past tense.
     auth-service, which `RestErrorMapper` has no row for, so the gateway answers
     **500** — the same missing row the attachments entry below describes. The
     confirm's re-measure of an over-size object deletes it and answers the same
-    500.
+    500. **Since backend PR #147** (squash `0bfced0`, in develop `1cfe4d7`)
+    `RestErrorMapper` has that row (`RestErrorMapper.java:12`), so both answer
+    **400** `OUT_OF_RANGE`. That was read in the Java, not probed. TAS-224 moved
+    the rest client's synthesised refusal from 500 to match.
   - **size > 5 MB** fails the generated `@Max(5242880)` and the gateway answers
     **400** `INVALID_ARGUMENT` "Invalid request parameters" before the avatar
     call reaches auth-service. The token check has already called auth-service
@@ -819,7 +881,8 @@ Everything below is the entry as it stood, in the past tense.
     refuses this band with the same status, code and message. The mock has no
     HTTP status to give, so it matches the code and the message.
 - **What follows:** a 3 MB image satisfies the schema, passes the gateway, and
-  is refused a layer deeper as a server error. A client that trusts the schema
+  is refused a layer deeper, as a server error until PR #147 and as a 400
+  `OUT_OF_RANGE` since. A client that trusts the schema
   offers a person a file the product will not take and discovers it after the
   request.
 - **Compensation:** `src/api/avatars.ts` enforces the number that is enforced,
@@ -829,7 +892,8 @@ Everything below is the entry as it stood, in the past tense.
   file is synthesised in the shape the gateway would answer.
 - **Removal:** [TAS-222](https://jira.ozero.dev/browse/TAS-222), filed
   2026-09-14 — put 2097152 in the schema and add the `OUT_OF_RANGE` row, or
-  raise the configuration to 5 MB. Either way one constant moves here. It was
+  raise the configuration to 5 MB. **The `OUT_OF_RANGE` row shipped with PR #147.**
+  The 5 MB against 2 MB disagreement, and 201 against 200, remain. Either way one constant moves here. It was
   first raised on TAS-129 on 2026-09-12 while PR #150 was open; the comment went
   unanswered and TAS-129 closed as Done, which is why the removal needed a
   ticket of its own.
@@ -864,8 +928,10 @@ Everything below is the entry as it stood, in the past tense.
   current user when a mount finds nothing cached, finds a cached answer more than
   10 minutes old, or finds the last read failed for a reason other than the
   undeployed route — never on focus. Every read re-signs the link and so
-  re-downloads the image. A member row needs no such read: PR #152 carries the
-  avatar inline.
+  re-downloads the image. A member row was meant to need no such read, because
+  PR #152 declares the avatar inline. At develop `1cfe4d7` it is declared and
+  never filled ([TAS-225](https://jira.ozero.dev/browse/TAS-225)), so today the
+  profile menu is the only place a face comes from.
 - **Removed by:** [TAS-223](https://jira.ozero.dev/browse/TAS-223) (epic
   TAS-210), which puts a nullable `avatar` on `GET /users/me`. It needs no proto
   or service change: `ProfileService.GetUserProfile` already exists and the
@@ -880,12 +946,15 @@ Everything below is the entry as it stood, in the past tense.
   fits the ceiling. The key is a bare UUID bound to nobody, `user_avatars` has no
   unique constraint on `object_key`, and the key is readable by any
   authenticated user — in the path of the presigned link from
-  `GET /users/{userId}/avatar`, and on PR #152's member rows as
-  `avatar.objectKey`. So one user can confirm another's key and then delete it
+  `GET /users/{userId}/avatar`. PR #152's member rows were to carry it as
+  `avatar.objectKey`, but they carry no avatar at `1cfe4d7` (TAS-225). So one
+  user can confirm another's key and then delete it
   with `DELETE /users/me/avatar`. Separately, confirming the **same key twice**
   deletes the object the saved row points at and then fails, and every later
   avatar read for that user answers 404, because the download presign issues a
-  HEAD first.
+  HEAD first. **Since PR #152 deployed this reaches further:** the member read
+  HEADs every avatar owner with no per-row fallback, so `GET …/members` answers
+  404 in **every project that user belongs to** (TAS-225).
 - **Compensation:** the menu never re-sends a key, and no comment in `src/api`
   licenses a retry of confirm. The mock reproduces the same-key behaviour so the
   defect is visible there rather than papered over.
@@ -900,31 +969,45 @@ Everything below is the entry as it stood, in the past tense.
 - **Compensation:** none needed — the rest client reads any 2xx as success.
 - **Removed by:** a clause in [TAS-222](https://jira.ozero.dev/browse/TAS-222).
 
-### PR #152's member rows never carry an avatar (pending)
+### Member rows never carry an avatar, and one unreadable avatar fails the whole member read
 
-- **Endpoint:** `GET /api/v1/projects/{projectId}/members`, backend PR #152, pin
-  `docs/contract/pending/pr-152-TAS-137.yml`, whose head has since moved to
-  `7fa04ba94096` without changing its `openapi.yml`.
-- **Contract (pending):** `ProjectMemberDetailsDto.avatar` with a `downloadUrl`.
-- **Runtime, read at `7fa04ba` and not measured:**
+- **Endpoint:** `GET /api/v1/projects/{projectId}/members`. Backend PR #152
+  merged into `develop` `1cfe4d79f074` on 2026-09-16 **without the fix** and is
+  deployed. This entry was titled "(pending)" while the PR was open.
+- **Contract:** `ProjectMemberDetailsDto.avatar` with a `downloadUrl`, in the
+  snapshot since TAS-224.
+- **Runtime, read at `7fa04ba` and again at `1cfe4d7`, not measured:**
   `UserRepository.findUsersWithAvatars` selects no avatar id, and
   `ProfileMapper.toProto` attaches the avatar only when that id is present, so
   every member row carries `avatar: null`. `enrichWithAvatarUrl` also has no
   per-row fallback, so one missing object or a MinIO outage fails the whole
-  member read.
-- **What follows:** once PR #150 and PR #152 both deploy as they stand, every
-  face on the board is initials, even for people who uploaded a photo, and one
-  broken avatar blanks the member list.
+  member read. `1ad6ffa` selected `a.id AS "avatar.id"`, and `7fa04ba` switched
+  to `avatar_` aliases and dropped that line. `ProfileServiceImplIT` asserts
+  `downloadUrl` and never the id, so the suite stays green. The failure keeps
+  the storage's status: a missing key answers **404** `NOT_FOUND`, a storage
+  refusal **403** `PERMISSION_DENIED`, MinIO down **503**
+  (`S3ExceptionHandler.java:24-39`). Those are the same 404 and 403 this route
+  answers for "Project not found" and "User has no access to project".
+- **What follows, and it is the stand now:** since TAS-224 made hybrid read this
+  route, every face on the board is initials, even for people who uploaded a
+  photo. The reader's own face appears through TAS-220's cache write and goes at
+  the next members refetch. One broken avatar blanks the member list: the board
+  keeps "members could not be read", because `retryUnlessMissing` retries
+  neither 404 nor 403, and every project card that includes that person shows
+  the failure.
 - **Compensation:** none — the client draws initials when a row carries no
   avatar, and that is the correct reading of the row.
-- **The mock follows the fix, not the head.** It draws faces on member rows,
+- **The mock follows the fix, not the server.** It draws faces on member rows,
   and for a row whose object is gone it draws no face rather than failing the
-  read. That is defensible for an open PR, and the code comment says so. It also
-  means mock-backed tests do not predict PR #152's head: against 7fa04ba, rest
-  would show initials for everyone and, for a missing object, no member list at
-  all.
-- **Removed by:** the fix on PR #152, raised on
-  [TAS-137](https://jira.ozero.dev/browse/TAS-137) on 2026-09-14.
+  read. That was defensible for an open PR. Now that the PR has merged without
+  the fix, it is a recorded parity gap: mock-backed tests do not predict the
+  stand, where rest shows initials for everyone and, for a missing object, no
+  member list at all.
+- **Removed by:** [TAS-225](https://jira.ozero.dev/browse/TAS-225) (epic
+  TAS-210), filed 2026-09-16 from TAS-224. It is one column plus a per-row
+  `onErrorResume` in auth-service, with no proto or gateway change. First raised
+  on [TAS-137](https://jira.ozero.dev/browse/TAS-137) on 2026-09-14; PR #152
+  merged without it.
 
 ### The mock hands back a `data:` URL where the gateway signs an `https` one
 
@@ -1088,7 +1171,11 @@ Everything below is the entry as it stood, in the past tense.
   `/projects/{projectId}` and `/issues/{issueId}`, run against the same foreign
   project in the same session. The two that answer neither `200` nor `403` —
   `…/members` and `…/members/{userId}` — do so because `GET` is unmapped there at
-  all, which is TAS-137's gap and not a membership question.
+  all, which is TAS-137's gap and not a membership question. **Since 2026-09-16
+  `GET …/members` is mapped** (TAS-137 deployed) and refuses a non-member with
+  **403** (project-service `ProjectMemberServiceImpl.java:142-147` at `1cfe4d7`),
+  which leaves the workflow read still the only exception. `…/members/{userId}`
+  is still unmapped for `GET`.
 - **What it discloses:** that the project exists, and its workflow
   configuration — status keys, transition names, sort order. On this stand every
   project shares one "Default workflow", so today it discloses nothing a member
@@ -2576,7 +2663,9 @@ The entry itself, in the past tense:
   404 from these three writes now means what it says: there is no such user. The
   predicate survives in `src/api/errors.ts` and `UNDEPLOYED_ROUTE_MESSAGE` in
   `src/api/TaskaApi.ts` beside it, because the attachment routes still need them
-  — backend PR #147 is open — which is why TAS-190 moved the predicate out of
+  — backend PR #147 is open (it merged 2026-09-14 and deployed; TAS-224 removed
+  the attachment caller, and `UserProfileMenu` and `EditProjectModal` are the
+  callers left) — which is why TAS-190 moved the predicate out of
   `src/screens/admin/users.ts` in the first place. Every other failure keeps the
   section's ordinary taxonomy.
 - **The response timestamp is `changedAt`, and this entry has now been wrong
@@ -2654,7 +2743,8 @@ The entry itself, in the past tense:
   The old removal instruction said the `UNDEPLOYED_ROUTE_MESSAGE` constant and
   `isUndeployedRoute` came out in the same pass. **They did not, and the
   instruction was already stale when it was followed.** TAS-190 gave both a
-  second caller — the attachment routes, whose backend PR #147 is still open —
+  second caller — the attachment routes, whose backend PR #147 was still open
+  then —
   so deleting them would have taken a live compensation with it. This is the
   ordinary failure mode of a removal note: it names the code to delete at the
   moment the divergence is found, and code acquires callers afterwards. Read the
@@ -3206,7 +3296,21 @@ proto fields (`description`, `created_at`, `updated_at`, `version`, `due_date`,
 `displayName` waits on TAS-137's `GetUserDetailsByIds` — auth-service has no
 read of users by id at all on `develop`.
 
-### The five attachment routes exist only on an open backend PR
+### Closed by TAS-224: the five attachment routes are merged and deployed
+
+- **Closed 2026-09-16** in [TAS-224](https://jira.ozero.dev/browse/TAS-224),
+  under this entry's own `Removal:` line. Backend PR #147 merged on 2026-09-14 as
+  squash `0bfced0` of head `deeedbf3fff8`. Its routes and schemas in the snapshot
+  refreshed to develop `1cfe4d79f074` equal that head's, compared as parsed YAML.
+  Re-probed once as asked, at 12:34 UTC without a token:
+  `GET …/issues/{uuid}/attachments` answers **401**, with `GET /users/me`
+  answering 401 as the control, so the route is mapped. The pending extract is
+  deleted, and so is the attachments section's undeployed-route branch.
+  `isUndeployedRoute` stays. The admin writes it was waiting on deployed on
+  2026-09-08, but it still has two callers: `UserProfileMenu` for the avatar
+  routes and `EditProjectModal` for `PATCH /projects/{id}`, which is still on the
+  open PR #155.
+- **The record below is kept as it stood before the merge.**
 
 - **Endpoints:** `GET`/`POST` on
   `/api/v1/projects/{projectId}/issues/{issueId}/attachments`, `POST
@@ -3265,7 +3369,10 @@ too. The leniency is one method wide.
 
 **Removed by:** the backend adding the `switchIfEmpty` or the contract dropping
 the 404 — one or the other, and the role-check gap wants fixing regardless of
-which. Raised on TAS-131.
+which. Raised on TAS-131. **TAS-131 is `Done`:** PR #147 merged without the fix,
+and at develop `1cfe4d7` the code is as described
+(`AttachmentServiceImpl.java:100-120`). Nothing owns this now; it is a
+`BACKLOG.md` line until it is filed.
 
 ### One third of the attachment flow never touches the gateway, and nothing configures CORS for it
 
@@ -3303,8 +3410,24 @@ exercisable before any of this is settled.
 
 **Removed by:** a measurement, once the routes deploy — one upload attempt from
 the deployed origin says more than any amount of reading. Raised on TAS-131.
+**The routes have deployed** (`GET …/attachments` answered 401 without a token
+on 2026-09-16), so the measurement is possible now, and it has not been taken.
+At develop `1cfe4d7` nothing in the backend repository configures the bucket's
+CORS or its public URL yet (`docker-compose.yml:193-198`, `.env.docker.example:41`).
 
-### An over-size attachment answers 500, because `RestErrorMapper` has no `OUT_OF_RANGE` row
+### Closed by backend PR #147: an over-size attachment answered 500, because `RestErrorMapper` had no `OUT_OF_RANGE` row
+
+- **Closed 2026-09-16**, recorded in TAS-224. PR #147 shipped both conditions in
+  this entry's `Removed by` line: `RestErrorMapper.java:12` maps `OUT_OF_RANGE` to
+  400, and `CreateAttachmentUploadUrlRequestDto.sizeBytes` carries
+  `maximum: 2097152`. Read at develop `1cfe4d7`, not probed:
+  - an over-size file at `upload-url` fails the generated `@Max(2097152)` and
+    answers **400** `INVALID_ARGUMENT` "Invalid request parameters" before
+    issue-service, like its two siblings;
+  - the confirm's re-measure answers **400** `OUT_OF_RANGE`.
+
+  TAS-224 moved the client's two synthesised refusals from 500 to those answers.
+- **The record below is kept as it stood before the merge.**
 
 The three pre-flight refusals do not share a status, and the one a reader is
 most likely to meet is the odd one.
@@ -3348,8 +3471,10 @@ siblings. Raised on TAS-131.
 
 ### The attachment limits are pinned from the backend's YAML, not from the contract
 
-The contract states neither. `issue-service/src/main/resources/application.yml`
-does: a **2 MB** ceiling exactly (`2097152`), as a YAML literal with **no env
+The contract stated neither until PR #147 merged. Since develop `1cfe4d7` it
+states the ceiling — `maximum: 2097152` on `CreateAttachmentUploadUrlRequestDto.sizeBytes`
+— and still not the allowlist. `issue-service/src/main/resources/application.yml`
+does, unchanged: a **2 MB** ceiling exactly (`2097152`), as a YAML literal with **no env
 override** unlike every neighbouring storage property, and a **thirteen-entry
 MIME allowlist** matched by exact string with no wildcards and no case folding.
 
@@ -3371,7 +3496,8 @@ expired window rather than as a permission failure.
 
 **Removed by:** the contract stating the limits. Until then each constant is a
 snapshot of a YAML line and says so — the 2 MB becomes a lie the moment that
-line changes, and nothing here would notice.
+line changes, and nothing here would notice. **Half removed by PR #147:** the
+ceiling is contract now, and the allowlist and the TTL are still YAML only.
 
 ### `projectId` in the attachment paths is not an access check, and the mock is stricter
 
@@ -3409,7 +3535,12 @@ standing in for* a VIEWER rather than against the role it names.
 with no `ORDER BY` and the contract promises nothing, so the gateway's order is
 physical-row order and can change under a `VACUUM`. The mock sorts by
 `createdAt` ascending. Same shape as the unmeasured search ordering recorded
-above.
+above. **Read again at develop `1cfe4d7`, the order is looser than that.**
+`listAttachments` presigns each row with `flatMap`
+(`AttachmentServiceImpl.java:79-83`), so rows come back in the order their HEAD
+requests complete, and two identical reads can differ. Not recorded until now,
+either: one missing object fails the HEAD, and the **whole list** answers 404.
+That is the same shape as the member read's avatar failure (TAS-225).
 
 **The UI instead:** nothing — no screen constructs a mismatched pair, and a
 non-member never reaches the board at all, because the project read refuses
@@ -3428,7 +3559,9 @@ and the separate `download-url` call is required anyway.
 **The UI instead:** call `download-url` when the reader asks for the file, which
 is what the contract describes. **Removed by:** the backend either surfacing the
 URL it already computes or not computing it. Raised on TAS-131; a backend
-efficiency defect, not a client compensation.
+efficiency defect, not a client compensation. TAS-131 is `Done` with this
+unchanged at `1cfe4d7` (`IssueAttachmentMapper.java:36-49`), so it is owned by
+nothing but `BACKLOG.md` for now.
 
 ### `sortableColumns` and `filterableColumns` are empty for `auth.users`, which decides a section's controls
 
