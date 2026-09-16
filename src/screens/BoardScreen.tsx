@@ -1138,11 +1138,14 @@ function IssuePanel({
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   canEdit: boolean;
   /**
-   * Narrower than `canEdit`, and only the attachments section reads it: an
-   * attachment somebody *else* uploaded may be deleted by an `ADMIN` and by
-   * nobody else (`delete-attachment-roles` in issue-service's own config),
-   * while your own needs only `ADMIN` or `MEMBER`. Same shape as the label
-   * writes TAS-119 gated, and the same standing: hiding the control is
+   * Narrower than `canEdit`, and read by two sections, not one. The
+   * attachments section gates its delete button on it: an attachment
+   * somebody *else* uploaded may be deleted by an `ADMIN` and by nobody else
+   * (`delete-attachment-roles` in issue-service's own config), while your own
+   * needs only `ADMIN` or `MEMBER`. Since TAS-193 the watchers section gates
+   * its add-picker and its per-row remove on it too — see that section's own
+   * prop doc for which routes those actually check. Same shape as the label
+   * writes TAS-119 gated, and the same standing: hiding a control is
    * presentation, the server decides.
    */
   isProjectAdmin: boolean;
@@ -1810,9 +1813,13 @@ function IssueWatchersSection({
   membersUnknown: boolean;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   /**
-   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`, both of
-   * which the contract marks "только project ADMIN". Presentation only — the
-   * server checks again (DESIGN.md §5.7).
+   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}` when the
+   * subscriber is somebody else — the case the contract marks "только project
+   * ADMIN". When the subscriber is the reader themselves the server applies
+   * `watch-issue-roles` instead (same rule as `canWatch` below), but this
+   * section renders both controls only for an ADMIN regardless, so a MEMBER
+   * never reaches either route through it. Presentation only — the server
+   * checks again (DESIGN.md §5.7).
    */
   isProjectAdmin: boolean;
   /**

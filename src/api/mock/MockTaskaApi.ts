@@ -2075,8 +2075,16 @@ export class MockTaskaStore {
    * `assign-issue-roles` (ADMIN, MEMBER) as well as the caller (read at
    * `develop` `1cfe4d7`, TAS-226), which the contract does not state. So a
    * VIEWER is refused as an assignee, and so is somebody who is not on the
-   * project at all — this store used to accept any user it knew of. Unassigning
-   * (`null`) names nobody and skips the check, as the server's does.
+   * project at all — this store used to accept any user it knew of.
+   *
+   * Unassigning (`null`) skips the check here, but that is this store's own
+   * shortcut, not the server's. `IssueServiceImpl.assignIssue` skips the
+   * assignee check only when the actor assigns *themselves*
+   * (`actorUserId.equals(assigneeId)`), never for an absent one — its
+   * `assigneeId` parameter is a plain `UUID`, and a `null` never reaches it:
+   * the contract makes the field required, and `RestTaskaApi.assignIssue(null)`
+   * already refuses it client-side (see "An assignee cannot be cleared — by
+   * contract" in `docs/ai/API-DIVERGENCE.md`).
    *
    * The caller's own role is still not checked here, like every other issue
    * write in this store; only the assignee half was in TAS-226's scope.

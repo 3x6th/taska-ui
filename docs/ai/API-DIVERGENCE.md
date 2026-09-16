@@ -685,11 +685,18 @@ Everything below is the entry as it stood, in the past tense.
   `IssueWatcherServiceImpl.checkMutationRole` applies `watch-issue-roles` to
   the actor when they watch or unwatch themselves, so a VIEWER can do neither.
   When the target is somebody else it applies `manage-watchers-roles: ADMIN`,
-  again to the actor only, so an ADMIN may subscribe a VIEWER. The assign path
-  in `IssueServiceImpl` checks `assign-issue-roles` for the actor **and** for
-  the assignee, and a `null` assignee skips the second check. Refusals are `403`
-  in `ProjectRoleChecker`'s words, "Access denied" for a non-member and "Not
-  allowed role" for a member.
+  again to the actor only, so an ADMIN may subscribe a VIEWER. The same split
+  applies to the two ADMIN watcher routes. The gateway passes the body's
+  `userId` through as the target, so when the caller names themselves the rule
+  is `watch-issue-roles`, not ADMIN, and a MEMBER may add or remove themselves
+  there. `MockTaskaStore.requireWatcherAdmin` refuses that call, and the UI
+  never makes it. The assign path in `IssueServiceImpl` (lines 182-184) checks
+  `assign-issue-roles` for the actor, and for the assignee too unless the actor
+  assigns themselves. A `null` assignee never reaches it: the contract makes
+  `assigneeId` required, the gRPC layer rejects anything that is not a UUID, and
+  the client refuses `null` first (see "An assignee cannot be cleared — by
+  contract" above). Refusals are `403` in `ProjectRoleChecker`'s words: "Access
+  denied" for a non-member and "Not allowed role" for a member.
 - **Compensation** ([TAS-226](https://jira.ozero.dev/browse/TAS-226)): the UI
   mirrors all three rules. The watch toggle is disabled outside ADMIN and MEMBER
   and still shows the reader's state. The assignee chips offer only ADMIN and

@@ -2367,3 +2367,32 @@ is what recurs.
   too: the `maximum` alone decides the `upload-url` refusal. `API-DIVERGENCE.md`
   tells it correctly. Left for the next pass through those files, at the owner's
   preference for speed over another builder round.
+
+### Left by TAS-226 (role gating on the issue panel, 2026-09-17)
+
+- **A disabled `.secondary-button` still takes its hover styling** (`builder`,
+  `release-reviewer`). `.secondary-button:hover` (`src/styles.css` ~919) has no
+  `:not(:disabled)`. That was already true of the disabled transition buttons and
+  the label form's Add. TAS-226's disabled watch toggle makes it visible on a
+  pressed "Watching". The fade and the `not-allowed` cursor still apply.
+  `art-director`'s call, product-wide.
+- **An unknown role leaves the issue panel's disabled controls without a reason
+  inside the panel** (`builder`, `release-reviewer`). The panel covers the board's
+  role banner. That applies to TAS-163's failed read and to TAS-226's role-less
+  200, and no deployed 200 produces the second today. If a reason is wanted, the
+  workflow note inside the panel (`BoardScreen.tsx` ~1418) is the pattern.
+- **The mock refuses a MEMBER who adds or removes themselves through the ADMIN
+  watcher routes, and issue-service allows it** (`release-reviewer`, TAS-226).
+  `checkMutationRole` applies `watch-issue-roles` whenever the target is the
+  caller. The UI never makes that call. Recorded in the TAS-226 entry of
+  `API-DIVERGENCE.md`; the fix is `requireWatcherAdmin` checking the target.
+- **The mock checks no actor role on assign or on the other issue writes**
+  (`builder`, TAS-226). Only the assignee half of `assign-issue-roles` was
+  mirrored. The UI gates those writes on `canEdit`, so no mock-backed screen
+  reaches the gap.
+- **A git worktree inside the repository can reload the e2e dev server mid-run**
+  (`builder`, TAS-226). At 23:43 on 2026-09-16 another session checked out
+  `.claude/worktrees/tas-158-members/` and five desktop specs failed seconds
+  later with pages navigating mid-wait. They passed alone and on two later full
+  runs. Candidate fix: `server.watch.ignored` for `.claude/worktrees/**` in the
+  Vite config.
