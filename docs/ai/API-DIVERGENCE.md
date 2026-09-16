@@ -811,8 +811,10 @@ Everything below is the entry as it stood, in the past tense.
   open confirmation closes, and a late press is re-checked, under the same
   rule. `MockTaskaApi` and `RestTaskaApi` keep the server's rule, because they
   must not claim a refusal the gateway would not give. Found by
-  `release-reviewer` on TAS-158. Goes away with TAS-227, because the ADMIN row
-  with no account can then no longer be written.
+  `release-reviewer` on TAS-158. TAS-227 stops *new* ADMIN rows with no account
+  from being written. It does not remove the ones added before it lands. So
+  the stricter count comes out only once no such ADMIN row is left on any
+  project, not when TAS-227 closes.
 - **The client is stricter about the id's spelling than the server.** Both
   implementations refuse anything that is not the canonical 8-4-4-4-12 form
   before sending (`isUserId`, `src/api/members.ts`). Java's `UUID.fromString`
