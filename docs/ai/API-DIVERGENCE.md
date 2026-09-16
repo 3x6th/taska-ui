@@ -670,7 +670,7 @@ Everything below is the entry as it stood, in the past tense.
   2026-09-11 from TAS-141 (nullable
   `assigneeId` or an explicit unassign route).
 
-### Five watcher and assignee writes are role-gated by issue-service; the contract gets two of them wrong for the self case and names no role on three
+### Five watcher and assignee writes are role-gated by issue-service; on two the contract and the server disagree about the self case, and on three the contract names no role
 
 - **Endpoints:**
   - `PUT` and `DELETE /api/v1/projects/{projectId}/issues/{issueId}/watchers/me`;
@@ -728,8 +728,9 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** [TAS-228](https://jira.ozero.dev/browse/TAS-228) asks for the
   roles on all five routes to be stated in the contract. It also asks the
   backend to settle the self case of the two ADMIN routes, either by describing
-  what the code does or by making `checkMutationRole` decide by route. The mock's
-  self case waits on that answer rather than following either side now.
+  what the code does or by making `checkMutationRole` decide by route. Until
+  it is answered the mock keeps following the contract on that case, and does
+  not move to the server's behaviour.
 
 ### `GET /projects/{id}/members` states no order, and the two implementations differ
 
