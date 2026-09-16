@@ -2370,26 +2370,43 @@ is what recurs.
 
 ### Left by TAS-226 (role gating on the issue panel, 2026-09-17)
 
-- **A disabled `.secondary-button` still takes its hover styling** (`builder`,
-  `release-reviewer`). `.secondary-button:hover` (`src/styles.css` ~919) has no
-  `:not(:disabled)`. That was already true of the disabled transition buttons and
-  the label form's Add. TAS-226's disabled watch toggle makes it visible on a
-  pressed "Watching". The fade and the `not-allowed` cursor still apply.
-  `art-director`'s call, product-wide.
+- **A disabled button still takes its hover styling** (`builder`,
+  `release-reviewer`). Three rules apply it with no `:not(:disabled)`:
+  `.secondary-button:hover` (`src/styles.css` ~919), `.compact-button:hover`
+  (~4641, which turns the border and the text accent), and
+  `.watch-toggle.is-watching:hover` (~5359, which deepens the tint). That was
+  already true of the disabled transition buttons and the label form's Add.
+  TAS-226's disabled watch toggle makes it visible on a pressed "Watching". A fix
+  on the first rule alone leaves the other two. The fade and the `not-allowed`
+  cursor still apply. `art-director` ruled it non-blocking (TAS-226) and gave the
+  fix: `.secondary-button:where(:not(:disabled)):hover` and the same for the
+  other selectors in that grouped rule and in the two later rules. `:where()`
+  keeps the specificity, while a bare `:not(:disabled)` adds (0,1,0) and would
+  beat hover rules further down. The same change should settle a mismatch:
+  §4.1 (`DESIGN.md` ~358) says `opacity:.5; pointer-events:none`, and the
+  shipped `button:disabled` (`src/styles.css` ~108) uses `.58` and `not-allowed`.
 - **An unknown role leaves the issue panel's disabled controls without a reason
   inside the panel** (`builder`, `release-reviewer`). The panel covers the board's
   role banner. That applies to TAS-163's failed read and to TAS-226's role-less
   200, and no deployed 200 produces the second today. If a reason is wanted, the
   workflow note inside the panel (`BoardScreen.tsx` ~1418) is the pattern.
+- **"Active" on a chip is only border and tint, and no screen reader hears it**
+  (`art-director`, TAS-226, pre-existing). `AssigneeChip` (`BoardScreen.tsx`
+  ~3796) and the Priority segmented buttons (~1487-1497) expose no
+  `aria-pressed`. TAS-226's demoted assignee is one of those chips, kept active so
+  the issue does not read as unassigned. The Relation control (~2963) already
+  does it right. §7: colour is never the only signal.
 - **The mock refuses a MEMBER who adds or removes themselves through the ADMIN
   watcher routes, and issue-service allows it** (`release-reviewer`, TAS-226).
   `checkMutationRole` applies `watch-issue-roles` whenever the target is the
   caller. The UI never makes that call. Recorded in the TAS-226 entry of
   `API-DIVERGENCE.md`; the fix is `requireWatcherAdmin` checking the target.
-- **The mock checks no actor role on assign or on the other issue writes**
-  (`builder`, TAS-226). Only the assignee half of `assign-issue-roles` was
-  mirrored. The UI gates those writes on `canEdit`, so no mock-backed screen
-  reaches the gap.
+- **The mock checks no caller role on create, update, transition, delete,
+  links, comments, or the actor half of assign** (`builder`, `release-reviewer`,
+  TAS-226). It does check attachment uploads (`requireUploadRole`) and watcher
+  writes, and since TAS-226 the assignee half of `assign-issue-roles`. The UI
+  gates the unchecked writes on `canEdit`, so no mock-backed screen reaches the
+  gap.
 - **A git worktree inside the repository can reload the e2e dev server mid-run**
   (`builder`, TAS-226). At 23:43 on 2026-09-16 another session checked out
   `.claude/worktrees/tas-158-members/` and five desktop specs failed seconds
