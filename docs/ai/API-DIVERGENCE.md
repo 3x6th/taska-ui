@@ -678,11 +678,15 @@ Everything below is the entry as it stood, in the past tense.
     subscriber's `userId` in the body) and `DELETE …/watchers/{userId}` (in the
     path);
   - `PUT /api/v1/issues/{issueId}/assignee`.
-- **Contract:** `POST …/watchers` and `DELETE …/watchers/{userId}` say
+- **Contract:** `POST …/watchers` and `DELETE …/watchers/{userId}` both say
   "Доступно только пользователю с ролью ADMIN в проекте", with no exception for
   callers naming themselves (`docs/contract/openapi.yml` ~1766-1768 and
-  ~1902-1904). The `…/watchers/me` pair states no role and lists a `403` without
-  saying who gets it. The assignee route states no role for the person assigning
+  ~1902-1904). The DELETE description has one more line (~1905): "Viewer/MEMBER
+  без роли ADMIN не может удалить чужого watcher". It puts the restriction on
+  somebody else's watcher. That is the one hint in the contract that the self
+  case may be intended there, and it bears on the choice TAS-228 asks for. The
+  `…/watchers/me` pair states no role and lists a `403` without saying who gets
+  it. The assignee route states no role for the person assigning
   or for the person assigned.
 - **Runtime** (defaults read in the Java at backend `develop` `1cfe4d7`; not
   probed with a token): issue-service's `application.yml` (lines 45, 59, 61)
@@ -693,7 +697,8 @@ Everything below is the entry as it stood, in the past tense.
   the actor, `manage-watchers-roles` when it is somebody else. All four watcher
   writes go through it. The gateway names the target from the path on
   `DELETE …/watchers/{userId}` and from the body on `POST …/watchers`
-  (`WatchersController` 96-105). The `…/me` pair names nobody, so the target
+  (`WatchersController` 80-105, `GrpcIssueWatcherServiceClient` 119-169). The
+  `…/me` pair names nobody, so the target
   is the caller. Three things follow:
   - a VIEWER can neither watch nor unwatch themselves;
   - an ADMIN may subscribe a VIEWER;
