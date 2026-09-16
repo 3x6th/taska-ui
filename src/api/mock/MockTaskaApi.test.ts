@@ -127,8 +127,9 @@ describe("MockTaskaApi", () => {
       // docs/ai/API-DIVERGENCE.md, which has no entry for it. The field is
       // missing when no role was computed — the mock's shape; a deployed
       // gateway would not answer this read at all, and states a role on every
-      // 200 it does give — and the rest leg floors a missing or `null` role to
-      // VIEWER regardless.
+      // 200 it does give. The rest leg would read the missing role as
+      // `role: null`, never as VIEWER (TAS-226); this store's `getMembership`
+      // answers VIEWER for a non-member because that is its documented stand-in.
       await api.login({ email: "mark@example.com", password: "anything" });
       const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
       expect(mobile).toBeDefined();
@@ -153,6 +154,23 @@ describe("MockTaskaApi", () => {
 
       await api.login({ email: "anna@example.com", password: "anything" });
       await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "ADMIN" });
+    });
+
+    it("seeds one VIEWER who is a member, not only the non-member standing in for one", async () => {
+      // Tom on Taska Platform (TAS-226). Every VIEWER path before him ran
+      // through a non-member, which the gateway refuses on membership before it
+      // reads a role — so this is the first seeded reader whose VIEWER is the
+      // role itself.
+      const tom = (await api.listMembers(project.id)).find((member) => member.user?.displayName === "Tom Becker");
+      expect(tom?.role).toBe("VIEWER");
+
+      await api.login({ email: "tom@example.com", password: "anything" });
+      await expect(api.getMembership(project.id)).resolves.toEqual({
+        role: "VIEWER",
+        isMember: true,
+        projectExists: true,
+      });
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "VIEWER" });
     });
 
     it("still carries addedAt and addedBy on a member row, which the wire does not", async () => {
@@ -363,6 +381,72 @@ describe("MockTaskaApi", () => {
       expect(event).toBeDefined();
       expect(event!.payload.from).toBe("TODO");
       expect(event!.payload.to).toBeTruthy();
+    });
+  });
+
+  /**
+   * `PUT /issues/{issueId}/assignee`. issue-service holds the assignee to
+   * `assign-issue-roles` (ADMIN, MEMBER), not only the caller (TAS-226), and the
+   * contract says neither — so these pin the assignee half. Anna, the default
+   * reader, is the ADMIN of Taska Platform.
+   */
+  describe("assigning an issue", () => {
+    const issueByKey = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+
+    const memberNamed = async (displayName: string) => {
+      const member = (await api.listMembers(project.id)).find((item) => item.user?.displayName === displayName);
+      if (!member) throw new Error(`no ${displayName} on the project`);
+      return member;
+    };
+
+    it("assigns a MEMBER", async () => {
+      const issue = await issueByKey("TAS-102");
+      const mark = await memberNamed("Mark Lee");
+      expect(mark.role).toBe("MEMBER");
+
+      await expect(api.assignIssue(project.id, issue.id, mark.userId)).resolves.toMatchObject({
+        assigneeId: mark.userId,
+      });
+    });
+
+    it("refuses a VIEWER as the assignee, and changes nothing", async () => {
+      const issue = await issueByKey("TAS-102");
+      const tom = await memberNamed("Tom Becker");
+      expect(tom.role).toBe("VIEWER");
+
+      await expect(api.assignIssue(project.id, issue.id, tom.userId)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      await expect(api.getIssue(project.id, issue.id)).resolves.toMatchObject({
+        issue: { assigneeId: issue.assigneeId, version: issue.version },
+      });
+    });
+
+    it("refuses somebody who is not on the project, where it used to take anyone it knew", async () => {
+      const issue = await issueByKey("TAS-102");
+      // Priya is on WEB and MOB and not on Taska Platform. She exists, so what
+      // refuses her here is the role check, not the user lookup.
+      await api.login({ email: "priya@example.com", password: "anything" });
+      const priya = await api.getCurrentUser();
+      await api.login({ email: "anna@example.com", password: "anything" });
+
+      await expect(api.assignIssue(project.id, issue.id, priya.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+    });
+
+    it("still unassigns an issue a VIEWER holds, because nobody is named to check", async () => {
+      // TAS-110 is Tom's from before he was a VIEWER — the seeded shape of a
+      // demotion after the assignment.
+      const issue = await issueByKey("TAS-110");
+      expect(issue.assigneeId).toBe((await memberNamed("Tom Becker")).userId);
+
+      await expect(api.assignIssue(project.id, issue.id, null)).resolves.toMatchObject({ assigneeId: null });
     });
   });
 
@@ -2597,12 +2681,13 @@ describe("MockTaskaApi", () => {
       // rather than pasted in as a second copy of a seed literal.
       //
       // Neither half is the role it stands for. The seed gives `memberIds[0]`
-      // ADMIN and everybody else MEMBER, and Mark is Mobile's first member, so
-      // the allowed side below is an ADMIN; and no seeded member is a VIEWER
-      // anywhere, so the refused side is a non-member that `getMembership`
-      // answers `VIEWER` for. Against the gateway that second substitution is
-      // not equivalent — a non-member is refused on `!isMember` before a role
-      // is read at all — which is why it is written down here and in
+      // ADMIN, and Mark is Mobile's first member, so the allowed side below is
+      // an ADMIN; and the refused side is a non-member that `getMembership`
+      // answers `VIEWER` for — Mobile has no VIEWER member, the seed's one being
+      // Tom on Taska Platform (TAS-226), and MOB-5 is where the seeded
+      // attachment is. Against the gateway that second substitution is not
+      // equivalent — a non-member is refused on `!isMember` before a role is
+      // read at all — which is why it is written down here and in
       // docs/ai/API-DIVERGENCE.md rather than passed off as a VIEWER test.
       await api.login({ email: "mark@example.com", password: "anything" });
       const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
@@ -2870,35 +2955,75 @@ describe("MockTaskaApi", () => {
         code: "PERMISSION_DENIED",
       });
 
-      // The contract puts no role on `…/watchers/me`, so neither does this.
+      // `watch-issue-roles` is ADMIN and MEMBER, so a MEMBER keeps the me pair
+      // — the contract states no role for it, and the server has this one.
       await expect(api.unwatchIssue(project.id, issue.id)).resolves.toMatchObject({ removed: true });
       await expect(api.watchIssue(project.id, issue.id)).resolves.toMatchObject({ watchersCount: 3 });
     });
 
-    it("lets a VIEWER watch an issue they can read", async () => {
+    it("refuses a VIEWER both halves of the me pair, and still lets them read who watches", async () => {
+      // This case used to assert the opposite — "lets a VIEWER watch an issue
+      // they can read" — on the belief that the contract's silence about
+      // `…/watchers/me` meant no role. issue-service's `watch-issue-roles` is
+      // ADMIN and MEMBER (TAS-226).
+      //
       // `listProjects` answers a non-member nothing, so Mobile has to be found
       // as somebody who belongs to it before Anna — who does not — can be the
       // VIEWER of it. The same two-step every other cross-project case here
-      // uses. No seeded member is a VIEWER anywhere, so a non-member stands in
-      // for one (docs/ai/API-DIVERGENCE.md).
+      // uses, and the same non-member standing in for a VIEWER
+      // (docs/ai/API-DIVERGENCE.md); the seeded VIEWER member is the next case.
       await api.login({ email: "mark@example.com", password: "anything" });
       const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
       expect(mobile).toBeDefined();
       if (!mobile) return;
       const { items } = await api.listIssues(mobile.id, { pageSize: 100 });
-      const issue = items.find((item) => item.issueKey === "MOB-6");
+      const issue = items.find((item) => item.issueKey === "MOB-5");
       expect(issue).toBeDefined();
       if (!issue) return;
 
       await api.login({ email: "anna@example.com", password: "anything" });
       await expect(api.getMembership(mobile.id)).resolves.toMatchObject({ role: "VIEWER" });
-      // The contract puts no role on `…/watchers/me`, so a reader who can open
-      // the issue may subscribe to it — this is the one control in the panel a
-      // VIEWER keeps.
-      await expect(api.watchIssue(mobile.id, issue.id)).resolves.toMatchObject({ watchersCount: 1 });
+      await expect(api.watchIssue(mobile.id, issue.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      // Refused with nothing to remove too: the role is what is refused, so this
+      // is not the `removed: false` a MEMBER would be told.
+      await expect(api.unwatchIssue(mobile.id, issue.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      // Neither refusal wrote anything, and reading the list is not gated.
+      await expect(api.listIssueWatchers(mobile.id, issue.id)).resolves.toMatchObject({ totalCount: 1 });
       // And still cannot touch anybody else's subscription.
       await expect(api.addIssueWatcher(mobile.id, issue.id, "anything")).rejects.toMatchObject({
         code: "PERMISSION_DENIED",
+      });
+    });
+
+    it("refuses the seeded VIEWER member the same way, on a project they belong to", async () => {
+      // Tom is a member of Taska Platform with the role VIEWER, so this is the
+      // refusal for the role itself rather than for a non-member standing in.
+      // Anna subscribed him to TAS-110, so his unwatch has something to remove
+      // and is refused all the same.
+      const unwatched = await openIssue("TAS-102");
+      const watched = await openIssue("TAS-110");
+      await api.login({ email: "tom@example.com", password: "anything" });
+      const tom = await api.getCurrentUser();
+
+      await expect(api.watchIssue(project.id, unwatched.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      await expect(api.unwatchIssue(project.id, watched.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      const { watchers, totalCount } = await api.listIssueWatchers(project.id, watched.id);
+      expect(totalCount).toBe(1);
+      expect(watchers.map((watcher) => watcher.userId)).toEqual([tom.id]);
+    });
+
+    it("lets an ADMIN subscribe a VIEWER, because only the actor's role is checked", async () => {
+      // The other side of the same rule: `manage-watchers-roles` is read off
+      // whoever is subscribing somebody else, never off the person subscribed —
+      // which is why the watcher picker offers every member, a VIEWER included.
+      const issue = await openIssue("TAS-102");
+      const tom = (await api.listMembers(project.id)).find((member) => member.user?.displayName === "Tom Becker");
+      expect(tom?.role).toBe("VIEWER");
+      if (!tom) return;
+
+      await expect(api.addIssueWatcher(project.id, issue.id, tom.userId)).resolves.toMatchObject({
+        watcher: { userId: tom.userId },
+        watchersCount: 1,
       });
     });
 

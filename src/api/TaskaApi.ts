@@ -603,13 +603,17 @@ export interface TaskaApi {
    * and `projectExists`, and the role is the response's `currentUserRole`.
    *
    * Every 200 from that read states a role name: it refuses a non-member with
-   * 403, and a member's role is never null (see `Project.currentUserRole`). The
-   * result is still floored to `VIEWER` when the field is `null`, absent — as
-   * it was on every response before TAS-137 deployed — or a value this build
-   * does not know. That floor is a defensive default, unreachable from a 200 on
-   * the deployed gateway, and not a reading of the server: it hides writes the
-   * server might still allow, and never offers one it is going to refuse.
-   * Role gating hides UI; the server stays authoritative either way.
+   * 403, and a member's role is never null (see `Project.currentUserRole`).
+   * When the field is `null`, absent — as it was on every response before
+   * TAS-137 deployed — or a value this build does not know, the answer is
+   * `role: null`, and nothing is put in its place. Until TAS-226 that was
+   * floored to `VIEWER`, which claimed a permission the server never stated and
+   * left the board read-only without a word about why. The board now treats
+   * `null` as it treats a failed read: nothing writable, and a banner saying so.
+   * It resolves rather than rejects, because the read did not fail — a
+   * rejection would bring the retry and the error classification of
+   * `src/api/errors.ts` to a request that answered. Role gating hides UI; the
+   * server stays authoritative either way.
    *
    * A failed project read rejects this call, in every implementation that
    * reads one. Since TAS-224 that includes the deployed stand, where `hybrid`
@@ -765,15 +769,31 @@ export interface TaskaApi {
    * The five watcher routes (`TAS-193`), backend PR #144. Two families, and the
    * split is a permission rather than a shape:
    *
-   * - `listIssueWatchers` and the `…/watchers/me` pair are for **whoever is
-   *   reading**. The contract states no role for any of the three, so this
-   *   build states none either: a `VIEWER` may subscribe themselves to an issue
-   *   they can read, and the watch toggle is the one control in the issue panel
-   *   that is not behind `canEdit`.
-   * - `addIssueWatcher` and `removeIssueWatcher` are project-`ADMIN` only, said
-   *   in the contract's own summaries ("только project ADMIN", and
-   *   "Viewer/MEMBER без роли ADMIN не может удалить чужого watcher"). Hiding
-   *   those two controls is presentation; the server decides.
+   * - `listIssueWatchers` and the `…/watchers/me` pair are about **whoever is
+   *   reading**. The contract states no role for any of the three, and the
+   *   server has one for the pair anyway: issue-service's `watch-issue-roles`
+   *   is `ADMIN,MEMBER`, checked against the reader's own role when they watch
+   *   or unwatch themselves (`IssueWatcherServiceImpl.checkMutationRole`, read
+   *   at `develop` `1cfe4d7`). So a `VIEWER` can neither subscribe nor
+   *   unsubscribe themselves, and the panel's toggle is live only for the two
+   *   roles that rule lets through (TAS-226). Until TAS-226 this comment said
+   *   the opposite, reading the contract's silence as permission.
+   * - `addIssueWatcher` and `removeIssueWatcher` are project-`ADMIN` only,
+   *   full stop, in the contract's own summaries and descriptions ("только
+   *   project ADMIN", "Доступно только пользователю с ролью ADMIN в
+   *   проекте", and "Viewer/MEMBER без роли ADMIN не может удалить чужого
+   *   watcher") and in the server's `manage-watchers-roles` — none of the
+   *   three carves out a self case. issue-service disagrees on exactly that
+   *   case: the same `checkMutationRole` cited above picks
+   *   `watch-issue-roles` instead when the subscriber is the caller, so a
+   *   MEMBER may use either route on themselves too. So on the self case the
+   *   contract and the server disagree, rather than the contract staying
+   *   silent; TAS-228 asks the backend which side is intended.
+   *   `MockTaskaStore.requireWatcherAdmin` follows the contract and refuses a
+   *   MEMBER either way, which the UI never reaches: both controls are
+   *   already hidden from anyone who is not an ADMIN. Only the actor's role
+   *   is checked, never the subscriber's, so an ADMIN may subscribe a
+   *   VIEWER. Hiding those two controls is presentation; the server decides.
    *
    * The `me` pair takes the user from the JWT and sends no body, which is why
    * neither signature has a `userId`. Passing one would be a lie about the

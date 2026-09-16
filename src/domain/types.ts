@@ -250,7 +250,21 @@ export interface Project {
 }
 
 export interface ProjectMembership {
-  role: ProjectRole;
+  /**
+   * The reader's role in this project, or `null` when the server answered and
+   * stated no role this build can act on — the same meaning `ProjectMember.role`
+   * gives its `null` below. In `rest` and `hybrid` that is a project read whose
+   * `currentUserRole` is absent, an explicit `null`, or a value `toProjectRole`
+   * does not recognise; no 200 from the deployed gateway carries one (see
+   * `Project.currentUserRole`). The mock never answers it.
+   *
+   * **Not a VIEWER, and never floored to one** (TAS-226, which removed that
+   * floor). VIEWER is a permission the server stated; `null` is the absence of
+   * any statement, and the board draws the two apart — a VIEWER's board is
+   * quietly read-only, an unstated role's board is read-only *and says why*,
+   * the way a failed read does.
+   */
+  role: ProjectRole | null;
   isMember: boolean;
   projectExists: boolean;
 }
@@ -278,8 +292,11 @@ export interface ProjectMember {
    * above cannot carry even that: a different mapper, which returns `null`
    * rather than ever emit a role it does not recognise.
    *
-   * Nothing draws this field today. Whatever eventually does reads `null` as
-   * "the server did not state a role we can act on", never as a role of its own.
+   * The issue panel's assignee chips read it (TAS-226): issue-service takes
+   * only an ADMIN or a MEMBER as an assignee, so only those rows are offered,
+   * and a `null` is not — "the server did not state a role we can act on" is
+   * never read as a role of its own, and an assignability nobody stated is not
+   * the client's to offer.
    */
   role: ProjectRole | null;
   /**

@@ -309,8 +309,8 @@ describe("RestTaskaApi current user", () => {
  * — so a role project-service adds later, before this build has a name for
  * it, would arrive verbatim, while `currentUserRole` cannot, because its own
  * mapper returns `null` rather than emit anything unmapped; and `getMembership`
- * is derived from the project read rather than fetched, with VIEWER as its
- * floor.
+ * is derived from the project read rather than fetched, with no floor under it —
+ * a role it cannot read is `null`, not VIEWER (TAS-226).
  */
 describe("RestTaskaApi project members", () => {
   const answer = (status: number, body: unknown) =>
@@ -631,12 +631,14 @@ describe("RestTaskaApi project members", () => {
     ["the key is absent, as it was before TAS-137 deployed", {}],
     ["the field is explicitly null", { currentUserRole: null }],
     ["the value is one this build does not recognise", { currentUserRole: "UNSPECIFIED" }],
-  ])("floors the role to VIEWER when %s", async (_case, extra) => {
+  ])("answers no role, rather than VIEWER, when %s", async (_case, extra) => {
     const { result } = await call(project(extra), (api) => api.getMembership("project-1"));
 
-    // The floor hides writes the server might still allow; the opposite default
-    // would offer buttons it then refuses. The server stays authoritative.
-    expect(result).toEqual({ role: "VIEWER", isMember: true, projectExists: true });
+    // Resolved, not rejected: the read answered, so nothing here is a failure to
+    // retry or classify. And `null`, not the VIEWER it used to be floored to —
+    // VIEWER is a permission the server states, and this answer states none. The
+    // board draws the two differently (TAS-226).
+    expect(result).toEqual({ role: null, isMember: true, projectExists: true });
   });
 
   it("rejects rather than reporting a false absence when the project read is refused", async () => {

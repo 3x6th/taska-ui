@@ -232,11 +232,24 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
   const issues = useMemo(() => issuesQuery.data?.items ?? [], [issuesQuery.data]);
   const projectLabels = useMemo(() => projectLabelsQuery.data ?? [], [projectLabelsQuery.data]);
-  const canEdit = membershipQuery.data?.role === "ADMIN" || membershipQuery.data?.role === "MEMBER";
+  // `undefined` until the membership read answers, and `null` once it has
+  // answered with no role this build can act on (`ProjectMembership.role`).
+  // Every permission below and the unstated-role banner read this one value.
+  const role = membershipQuery.data?.role;
+  const canEdit = role === "ADMIN" || role === "MEMBER";
   // Narrower than `canEdit` on purpose: TAS-119 lets a MEMBER put labels on an
   // issue but reserves creating, renaming and deleting the project's labels for
   // its ADMIN. The server enforces both; this only decides what is offered.
-  const isProjectAdmin = membershipQuery.data?.role === "ADMIN";
+  const isProjectAdmin = role === "ADMIN";
+  // issue-service's `watch-issue-roles` (ADMIN, MEMBER), which it checks against
+  // the reader's own role when they watch or unwatch themselves — a rule the
+  // contract does not state (TAS-226). The same two roles as `canEdit` today,
+  // and a name of its own because it is a separate rule on the server that can
+  // move without the other.
+  const canWatch = role === "ADMIN" || role === "MEMBER";
+  // A reader the server *named* a VIEWER, as against one it named nothing. Only
+  // this reader may be told that their role is the reason a control is off.
+  const isProjectViewer = role === "VIEWER";
   // Each of these is the same single fact as the behaviour beside it, never a
   // second opinion about the same query: `canEdit` is "the membership answer
   // says so", and `roleUnread.unanswered` is "there is no membership answer and
@@ -263,6 +276,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // presented without a word is what made TAS-163 invisible. This says which
   // of the two it is; it never invents a role.
   const roleUnknown = roleUnread.unanswered;
+  // The other way to have no role: the read answered and named none this build
+  // can act on. Until TAS-226 the rest leg turned that into VIEWER, so the board
+  // went read-only in silence — TAS-163 again, through a 200. It is read off
+  // `role`, the value `canEdit` reads, so no refetch can put the banner and the
+  // controls out of step: a refetch keeps `data`, and both with it, and an
+  // answer that states a role moves both in the same render.
+  const roleUnstated = role === null;
   // Failure is not zero. With no issue list, "0" in a column head, "0 of 0" in
   // the filter bar and "Drop issues here" in every column are three claims
   // about the project made by a request that never answered — the last of them
@@ -670,6 +690,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           count stop mattering. */}
       {projectUnread.unanswered ||
       roleUnknown ||
+      roleUnstated ||
       issuesUnknown ||
       workflowUnknown ||
       transitionIssue.isError ||
@@ -687,6 +708,15 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           {roleUnknown ? (
             <ApiNotice error={roleUnread.error}>
               Your role could not be loaded, so editing is off — a failed read, not a read-only project.
+            </ApiNotice>
+          ) : null}
+          {/* Its own sentence, because the one above would be false here: the
+              read did not fail, it answered without a role this app knows. No
+              `error` to print either — there was no failure to carry one. */}
+          {roleUnstated ? (
+            <ApiNotice>
+              Your role came back empty or unrecognised, so editing is off — an unknown role, not a read-only
+              project.
             </ApiNotice>
           ) : null}
           {issuesUnknown ? (
@@ -774,6 +804,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           userById={userById}
           canEdit={canEdit}
           isProjectAdmin={isProjectAdmin}
+          canWatch={canWatch}
+          isProjectViewer={isProjectViewer}
           currentUserId={meQuery.data?.id}
           workflows={workflowQuery.data}
           workflowUnknown={workflowUnknown}
@@ -1078,6 +1110,8 @@ function IssuePanel({
   userById,
   canEdit,
   isProjectAdmin,
+  canWatch,
+  isProjectViewer,
   currentUserId,
   workflows,
   workflowUnknown,
@@ -1104,14 +1138,21 @@ function IssuePanel({
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   canEdit: boolean;
   /**
-   * Narrower than `canEdit`, and only the attachments section reads it: an
-   * attachment somebody *else* uploaded may be deleted by an `ADMIN` and by
-   * nobody else (`delete-attachment-roles` in issue-service's own config),
-   * while your own needs only `ADMIN` or `MEMBER`. Same shape as the label
-   * writes TAS-119 gated, and the same standing: hiding the control is
+   * Narrower than `canEdit`, and read by two sections, not one. The
+   * attachments section gates its delete button on it: an attachment
+   * somebody *else* uploaded may be deleted by an `ADMIN` and by nobody else
+   * (`delete-attachment-roles` in issue-service's own config), while your own
+   * needs only `ADMIN` or `MEMBER`. Since TAS-193 the watchers section gates
+   * its add-picker and its per-row remove on it too — see that section's own
+   * prop doc for which routes those actually check. Same shape as the label
+   * writes TAS-119 gated, and the same standing: hiding a control is
    * presentation, the server decides.
    */
   isProjectAdmin: boolean;
+  /** `watch-issue-roles`, for the watch toggle only — see `canWatch` on the board. */
+  canWatch: boolean;
+  /** The server named this reader a VIEWER, the one case the toggle's hint may give the role as its reason. */
+  isProjectViewer: boolean;
   currentUserId?: string;
   workflows?: WorkflowsByIssueType;
   /** The workflow read failed; these buttons are the keyboard path a drag has. */
@@ -1401,27 +1442,46 @@ function IssuePanel({
             <span>Assignee</span>
             <div className="chip-row">
               <AssigneeChip active={!issue.assigneeId} label="None" onClick={() => undefined} user={null} disabled />
-              {members.map((member) => (
-                <AssigneeChip
-                  active={issue.assigneeId === member.userId}
-                  disabled={!canEdit}
-                  key={member.userId}
-                  label={member.user?.displayName.split(" ")[0] ?? "User"}
-                  onClick={() => assignIssue.mutate(member.userId)}
-                  user={
-                    member.user
-                      ? {
-                          id: member.userId,
-                          displayName: member.user.displayName,
-                          color: member.user.color,
-                          // Same row, same reason as the filter above: the
-                          // picture is already in hand.
-                          avatarUrl: member.user.avatarUrl,
-                        }
-                      : null
-                  }
-                />
-              ))}
+              {/* Offered only to the people the server takes as an assignee
+                  (`canBeAssigned`), where every member used to get a chip and a
+                  VIEWER's was a request the server refuses.
+
+                  The current assignee stays whatever their role is now: somebody
+                  assigned and then demoted is still who holds the issue, and
+                  dropping the chip would draw it as unassigned. That chip is the
+                  assignment, not an offer — `disabled`, like "None" beside it,
+                  because pressing an active chip sends the assignment again, and
+                  for this person that is the refused request. The board's
+                  assignee filter keeps everyone: it asks who holds an issue,
+                  not who may. */}
+              {members
+                .filter((member) => canBeAssigned(member) || member.userId === issue.assigneeId)
+                .map((member) => {
+                  const assignable = canBeAssigned(member);
+                  return (
+                    <AssigneeChip
+                      active={issue.assigneeId === member.userId}
+                      disabled={!canEdit || !assignable}
+                      key={member.userId}
+                      label={member.user?.displayName.split(" ")[0] ?? "User"}
+                      onClick={() => {
+                        if (canEdit && assignable) assignIssue.mutate(member.userId);
+                      }}
+                      user={
+                        member.user
+                          ? {
+                              id: member.userId,
+                              displayName: member.user.displayName,
+                              color: member.user.color,
+                              // Same row, same reason as the filter above: the
+                              // picture is already in hand.
+                              avatarUrl: member.user.avatarUrl,
+                            }
+                          : null
+                      }
+                    />
+                  );
+                })}
             </div>
             <span>Priority</span>
             <div className="segmented compact fit">
@@ -1597,11 +1657,14 @@ function IssuePanel({
             />
           </label>
 
-          {/* Above the other three sections on purpose. It is the only one
-              every reader can act on — labels, links and files all need write
-              access — and it is the one whose state has to be legible without
-              hunting. It also keeps the toggle above the fold at 1440×900 and
-              one short scroll away at 390×844. */}
+          {/* Above the other three sections on purpose: it is the one whose
+              state has to be legible without hunting, and that state — whether
+              you are watching — is about the reader rather than the issue, so
+              it matters to every reader. Not every reader can change it: since
+              TAS-226 the toggle follows the server's `watch-issue-roles`, and a
+              VIEWER sees their subscription without a way to change it. It
+              also keeps the toggle above the fold at 1440×900 and one short
+              scroll away at 390×844. */}
           <IssueWatchersSection
             projectId={projectId}
             issueId={issueId}
@@ -1611,6 +1674,8 @@ function IssuePanel({
             membersUnknown={membersUnknown}
             userById={userById}
             isProjectAdmin={isProjectAdmin}
+            canWatch={canWatch}
+            isProjectViewer={isProjectViewer}
           />
 
           <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
@@ -1690,9 +1755,10 @@ interface WatcherNotice {
 }
 
 /**
- * The five watcher routes (TAS-193): the list, the `…/watchers/me` pair every
- * reader owns, and the two project-`ADMIN` routes that subscribe and
- * unsubscribe somebody else.
+ * The five watcher routes (TAS-193): the list, the `…/watchers/me` pair a reader
+ * uses on their own subscription — an ADMIN or a MEMBER only, by the server's
+ * `watch-issue-roles` (TAS-226) — and the two project-`ADMIN` routes that
+ * subscribe and unsubscribe somebody else.
  *
  * **Three things here are not obvious and each has cost somebody an hour.**
  *
@@ -1734,6 +1800,8 @@ function IssueWatchersSection({
   membersUnknown,
   userById,
   isProjectAdmin,
+  canWatch,
+  isProjectViewer,
 }: {
   projectId: string;
   issueId: string;
@@ -1745,11 +1813,31 @@ function IssueWatchersSection({
   membersUnknown: boolean;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   /**
-   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`, both of
-   * which the contract marks "только project ADMIN". Presentation only — the
-   * server checks again (DESIGN.md §5.7).
+   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`. The
+   * contract marks both ADMIN-only with no self-case exception, but
+   * issue-service applies `watch-issue-roles` instead when the subscriber is
+   * the reader themselves (same rule as `canWatch` below) — the contract and
+   * the server disagree there, and TAS-228 asks the backend which is
+   * intended. This section renders both controls only for an ADMIN
+   * regardless, so a MEMBER never reaches either route through it.
+   * Presentation only — the server checks again (DESIGN.md §5.7).
    */
   isProjectAdmin: boolean;
+  /**
+   * The gate on the reader's own `…/watchers/me` pair: issue-service's
+   * `watch-issue-roles`, ADMIN and MEMBER. False for a VIEWER, and false while
+   * the role is unknown — not yet read, failed, or stated as nothing this build
+   * knows — because a subscription change the server may refuse is not this
+   * section's to offer. Presentation only, like the one above.
+   */
+  canWatch: boolean;
+  /**
+   * The server named this reader a VIEWER. Only then may the toggle's hint give
+   * the role as its reason; an unknown role is explained by the board's banner,
+   * and calling it VIEWER here would invent the answer that banner says is
+   * missing.
+   */
+  isProjectViewer: boolean;
 }) {
   const queryClient = useQueryClient();
   const [picked, setPicked] = useState("");
@@ -2060,6 +2148,22 @@ function IssueWatchersSection({
   // that state a refused write would otherwise be explained by whatever the
   // refetch said instead.
   const readError = watchersQuery.data === undefined ? watchersQuery.error : null;
+  const toggleHintId = useId();
+  // The line beside the toggle, and the only place a reader is told why it is
+  // off. Whether they are on the list is true for every reader and always said.
+  // The invitation is only for a role the server lets through, and the reason —
+  // the role — only for a reader the server named a VIEWER. An unknown role gets
+  // the state and nothing more: the board's banner says why, and "viewer" here
+  // would be inventing the answer that banner reports missing.
+  const toggleHint = watching
+    ? canWatch || !isProjectViewer
+      ? "You are on this issue's watcher list."
+      : "You are on this issue's watcher list. As a viewer, you cannot remove yourself."
+    : canWatch
+      ? "Add yourself to this issue's watcher list."
+      : isProjectViewer
+        ? "As a viewer, you cannot add yourself to this issue's watcher list."
+        : "You are not on this issue's watcher list.";
 
   return (
     <section className="issue-watchers">
@@ -2087,28 +2191,38 @@ function IssueWatchersSection({
         <div className="watcher-toggle-row">
           <button
             /**
-             * `aria-disabled`, never `disabled`, and this is the one line in
-             * the section worth defending. A `disabled` button loses focus in
-             * Chromium the moment the attribute lands, so pressing Enter on
-             * this toggle dropped focus to `<body>` for the length of the
-             * request and the *second* Enter went nowhere — a keyboard user
-             * could watch an issue and then not unwatch it without tabbing in
-             * from the top of the document again. Caught by the keyboard case
-             * in `e2e/watchers.spec.ts`, which is why that case exists.
+             * `aria-disabled`, never `disabled`, while a write is in flight,
+             * and this is the one line in the section worth defending. A
+             * `disabled` button loses focus in Chromium the moment the
+             * attribute lands, so pressing Enter on this toggle dropped focus
+             * to `<body>` for the length of the request and the *second* Enter
+             * went nowhere — a keyboard user could watch an issue and then not
+             * unwatch it without tabbing in from the top of the document again.
+             * Caught by the keyboard case in `e2e/watchers.spec.ts`, which is
+             * why that case exists.
              *
              * The guard moves into the handler with it. Leaving the press live
              * would be worse than a dead 200ms: a `PUT` and a `DELETE` in
              * flight together can be applied by the server in either order, and
              * the loser decides the subscription.
              */
+            aria-describedby={toggleHintId}
             aria-disabled={toggling || undefined}
             aria-pressed={watching}
             className={`secondary-button compact-button watch-toggle${watching ? " is-watching" : ""}`}
-            // The one control in this panel that is not behind `canEdit`: the
-            // contract puts no role on `…/watchers/me`, and watching is
-            // per-reader.
+            // The other kind of off, and a real `disabled` with §4.1's fade:
+            // §4.21's exception for a control that is not coming back. Until
+            // TAS-226 this toggle was live for every reader, on the belief that
+            // the contract's silence about `…/watchers/me` meant no role — and
+            // issue-service refuses a VIEWER both halves (`watch-issue-roles`).
+            // The in-flight rule above is about focus taken from a control the
+            // reader has just pressed, and this one could not have been. While
+            // the role is still being read it is off the same way, like every
+            // write control on the board; nothing can be focused on a button
+            // that was never enabled, so lifting it takes nothing away.
+            disabled={!canWatch}
             onClick={() => {
-              if (toggling) return;
+              if (!canWatch || toggling) return;
               if (watching) unwatchIssue.mutate();
               else watchIssue.mutate();
             }}
@@ -2117,9 +2231,7 @@ function IssueWatchersSection({
             {watching ? <Eye size={13} /> : <EyeOff size={13} />}
             {watching ? "Watching" : "Watch"}
           </button>
-          <span className="watcher-toggle-hint">
-            {watching ? "You are on this issue's watcher list." : "Add yourself to this issue's watcher list."}
-          </span>
+          <span className="watcher-toggle-hint" id={toggleHintId}>{toggleHint}</span>
         </div>
       ) : null}
 
@@ -2254,11 +2366,12 @@ function IssueWatchersSection({
             const mine = Boolean(currentUserId) && watcher.userId === currentUserId;
             // The member map is the only source of names in this section, and
             // there is exactly one person it may fail on whom the UI can name
-            // anyway: the reader. A VIEWER who is not a member of the project
-            // can still watch an issue in it, and that row used to read
-            // "Unknown (you)" — a screen saying it does not know who you are,
-            // beside a mark saying it does. `GET /users/me` answered that
-            // question before this section drew anything. The rule lives in
+            // anyway: the reader. It misses them when the member read fails —
+            // one unreadable avatar object fails it on the stand — or when
+            // their own row names nobody, and that row used to read "Unknown
+            // (you)" — a screen saying it does not know who you are, beside a
+            // mark saying it does. `GET /users/me` answered that question
+            // before this section drew anything. The rule lives in
             // `watcherSubject` rather than here now, because the sentences
             // below needed the same one and had been given a different one.
             //
@@ -3655,6 +3768,18 @@ function CommentItem({
       </div>
     </article>
   );
+}
+
+/**
+ * Whether the server will take this member as an assignee. issue-service checks
+ * `assign-issue-roles` (ADMIN, MEMBER) against the assignee as well as against
+ * whoever assigns (read at `develop` `1cfe4d7`, TAS-226), and the contract
+ * states neither half. A `null` role is not assignable here: the server said
+ * nothing this build can act on, and an assignability nobody stated is not the
+ * client's to offer. The server stays the authority either way.
+ */
+function canBeAssigned(member: ProjectMember): boolean {
+  return member.role === "ADMIN" || member.role === "MEMBER";
 }
 
 function AssigneeChip({

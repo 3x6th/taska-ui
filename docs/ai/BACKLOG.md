@@ -1812,6 +1812,14 @@ frontend story is blocked by its backend half and ships mock-first meanwhile.
 - [TAS-149](https://jira.ozero.dev/browse/TAS-149) — archive a project from
   the UI, plus the read-only board state for an archived one. Blocked by
   TAS-146.
+  **Backend PR #159, which implements TAS-146, would not give it that board**
+  (read at head `eda5169`, open and unreviewed, 2026-09-16). issue-service's
+  `ProjectAccessChecker` refuses an archived project on every access check,
+  including the reads: get, list, board and search each answer 400
+  (`FAILED_PRECONDITION`). Meanwhile `listMyProjects` still returns the project.
+  The project would show on the projects screen and its board would not open.
+  Raised on TAS-146 before its review. Do not build TAS-149 against #159 until
+  that comment is answered.
 - [TAS-150](https://jira.ozero.dev/browse/TAS-150) — filed as a bug: no route
   guard exists, so a signed-out deep link lands on an empty projects screen
   with no way back to `/login`. Carries the auth-lifecycle item that used to
@@ -2321,7 +2329,8 @@ is what recurs.
 - **A stale comment in `src/styles.css` (~l.3312-3316)** still describes the
   Events "not deployed" note, which went away in TAS-194. It is unrelated to
   TAS-224; `frontend-builder` noticed it and left it alone.
-- **A read that answers 200 with no role silently floors to VIEWER**
+- ~~**A read that answers 200 with no role silently floors to VIEWER**~~
+  **Graduated 2026-09-16 into [TAS-226](https://jira.ozero.dev/browse/TAS-226).**
   (`release-reviewer`, TAS-224). `RestTaskaApi.getMembership` maps a missing or
   `null` `currentUserRole` to `VIEWER`, and TAS-163's banner shows only when the
   read *fails*. So a project-service older than the gateway would make every
@@ -2331,7 +2340,8 @@ is what recurs.
   (12:00 UTC 2026-09-16), so it is not reachable today. The fix is to treat a 200
   with no role as unknown and show the banner, as the board already does for a
   failed read.
-- **A VIEWER is offered Watch, and the server refuses it** (`release-reviewer`,
+- ~~**A VIEWER is offered Watch, and the server refuses it**~~ **Graduated
+  2026-09-16 into [TAS-226](https://jira.ozero.dev/browse/TAS-226).** (`release-reviewer`,
   TAS-224, pre-existing). issue-service sets `watch-issue-roles: ADMIN,MEMBER`
   (`application.yml:59`) and applies it to watching yourself
   (`IssueWatcherServiceImpl.java:175-177`). The toggle is ungated
@@ -2339,8 +2349,8 @@ is what recurs.
   The write is optimistic with rollback, so nothing is lost: the reader sees the
   refusal. The contract says nothing about it. The fix is to gate the toggle on
   `canEdit`, align the mock, and record it in `API-DIVERGENCE.md` if it stays.
-- **The assignee chips offer VIEWER members, and the server refuses them as
-  assignees** (`release-reviewer`, TAS-224). issue-service checks the assignee's
+- ~~**The assignee chips offer VIEWER members, and the server refuses them as
+  assignees**~~ **Graduated 2026-09-16 into [TAS-226](https://jira.ozero.dev/browse/TAS-226).** (`release-reviewer`, TAS-224). issue-service checks the assignee's
   role against `assign-issue-roles: ADMIN,MEMBER` (`IssueServiceImpl.java:182-184`),
   while `BoardScreen.tsx` ~1402-1426 draws a chip for every member. It became
   reachable in TAS-224, because the chips used to list only the reader. Nothing
@@ -2357,3 +2367,69 @@ is what recurs.
   too: the `maximum` alone decides the `upload-url` refusal. `API-DIVERGENCE.md`
   tells it correctly. Left for the next pass through those files, at the owner's
   preference for speed over another builder round.
+
+### Left by TAS-226 (role gating on the issue panel, 2026-09-17)
+
+- **A disabled button still takes its hover styling** (`builder`,
+  `release-reviewer`). Three rules apply it with no `:not(:disabled)`:
+  `.secondary-button:hover` (`src/styles.css` ~919), `.compact-button:hover`
+  (~4641, which turns the border and the text accent), and
+  `.watch-toggle.is-watching:hover` (~5359, which deepens the tint). That was
+  already true of the disabled transition buttons and the label form's Add.
+  TAS-226's disabled watch toggle makes it visible on a pressed "Watching". A fix
+  on the first rule alone leaves the other two. The fade and the `not-allowed`
+  cursor still apply. `art-director` ruled it non-blocking (TAS-226) and gave the
+  fix: `.secondary-button:where(:not(:disabled)):hover` and the same for the
+  other selectors in that grouped rule and in the two later rules. `:where()`
+  keeps the specificity, while a bare `:not(:disabled)` adds (0,1,0) and would
+  beat hover rules further down. The same change should settle a mismatch:
+  §4.1 (`DESIGN.md` ~358) says `opacity:.5; pointer-events:none`, and the
+  shipped `button:disabled` (`src/styles.css` ~108) uses `.58` and `not-allowed`.
+- **An unknown role leaves the issue panel's disabled controls without a reason
+  inside the panel** (`builder`, `release-reviewer`). The panel covers the board's
+  role banner. That applies to TAS-163's failed read and to TAS-226's role-less
+  200, and no deployed 200 produces the second today. If a reason is wanted, the
+  workflow note inside the panel (`BoardScreen.tsx` ~1418) is the pattern.
+- **"Active" on a chip is only border and tint, and no screen reader hears it**
+  (`art-director`, TAS-226, pre-existing). `AssigneeChip` (`BoardScreen.tsx`
+  ~3796) and the Priority segmented buttons (~1487-1497) expose no
+  `aria-pressed`. TAS-226's demoted assignee is one of those chips, kept active so
+  the issue does not read as unassigned. The Relation control (~2963) already
+  does it right. §7: colour is never the only signal.
+- **The mock refuses a MEMBER who adds or removes themselves through the ADMIN
+  watcher routes, and issue-service allows it** (`release-reviewer`, TAS-226).
+  `checkMutationRole` applies `watch-issue-roles` whenever the target is the
+  caller, while the contract calls both routes ADMIN-only, so the mock follows
+  the contract. The UI never makes that call. Recorded in the TAS-226 entry of
+  `API-DIVERGENCE.md`. **Waits on [TAS-228](https://jira.ozero.dev/browse/TAS-228)**:
+  if the backend describes what its code does, `requireWatcherAdmin` starts
+  checking the target; if it changes the code, the mock is already right.
+- **The mock checks no caller role on create, update, transition, delete,
+  links, comments, or the actor half of assign** (`builder`, `release-reviewer`,
+  TAS-226). It does check attachment uploads (`requireUploadRole`) and watcher
+  writes, and since TAS-226 the assignee half of `assign-issue-roles`. The UI
+  gates the unchecked writes on `canEdit`, so no mock-backed screen reaches the
+  gap.
+- **A git worktree inside the repository can reload the e2e dev server mid-run**
+  (`builder`, TAS-226). At 23:43 on 2026-09-16 another session checked out
+  `.claude/worktrees/tas-158-members/` and five desktop specs failed seconds
+  later with pages navigating mid-wait. They passed alone and on two later full
+  runs. Candidate fix: `server.watch.ignored` for `.claude/worktrees/**` in the
+  Vite config.
+- **The watchers section's 403 fallback sentence names the wrong rule for the
+  `…/me` pair** (`api-contract-guard`, TAS-226). `watcherFailureText`
+  (`BoardScreen.tsx` ~2602-2604) says only a project admin may change who else
+  watches, and it also serves watch and unwatch, where the rule is ADMIN or
+  MEMBER acting on themselves. It is unreachable: the gateway always sends a
+  `message` (`GatewayErrorHandler.java:36`), and so does the mock.
+- **The client hard-codes three of issue-service's role lists** (`api-contract-guard`,
+  TAS-226), and they can differ per deployment. An ask was priced and is not
+  filed. [TAS-214](https://jira.ozero.dev/browse/TAS-214) already asks for
+  `watchers` and `isWatching` on the issue read. What would remain:
+  - `watchersCount` and `watchedByMe`: proto fields 22 and 23 are already filled
+    by `GrpcIssueService.getIssue`, and the gateway mapper drops them.
+  - `canWatch` on the issue read: proto, service and mapper.
+  - The role policy in [TAS-217](https://jira.ozero.dev/browse/TAS-217)'s
+    `GET /meta`: a cross-service rpc.
+
+  Worth filing when TAS-214 or TAS-217 is next discussed, not before.

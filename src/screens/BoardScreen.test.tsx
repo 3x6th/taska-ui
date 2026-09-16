@@ -48,6 +48,8 @@ const {
   heldIssueByIdCount,
   answeredIssueByIds,
   setMembership,
+  seedAssignee,
+  assignCalls,
   failMembership,
   holdMembership,
   failProject,
@@ -110,7 +112,8 @@ const {
   });
 
   const state: {
-    membership: { role: "ADMIN" | "MEMBER" | "VIEWER"; isMember: boolean; projectExists: boolean };
+    /** `role: null` is an answered read that named no role this build knows — not a failure, and not a VIEWER. */
+    membership: { role: "ADMIN" | "MEMBER" | "VIEWER" | null; isMember: boolean; projectExists: boolean };
     membershipFailure?: Error;
     membershipHeld: boolean;
     projectFailure?: Error;
@@ -156,7 +159,10 @@ const {
      * (TAS-219). `toUserMap` drops such a row, which is the state the watchers
      * section had two different words for.
      */
-    members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER"; addedAt: string; addedBy: string; user?: { displayName: string; email: string } }[];
+    members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER" | null; addedAt: string; addedBy: string; user?: { displayName: string; email: string } }[];
+    /** Who the panel's issue is assigned to, and every assignment the panel sent. */
+    assigneeId: string | null;
+    assignCalls: (string | null)[];
     attachments: {
       id: string;
       issueId: string;
@@ -242,6 +248,8 @@ const {
     deleted: new Set<string>(),
     edits: {},
     members: [],
+    assigneeId: null,
+    assignCalls: [],
     attachments: [],
     confirmLandsAnyway: false,
     confirmCalls: 0,
@@ -427,7 +435,7 @@ const {
         description: "",
         status: "TODO" as const,
         priority: "MEDIUM" as const,
-        assigneeId: null,
+        assigneeId: state.assigneeId,
         reporterId: "user-anna",
         createdAt: now,
         updatedAt: now,
@@ -449,6 +457,13 @@ const {
     }),
     listIssueLabels: async () => [],
     listIssueLinks: async () => [],
+    // Counted, and answered the way a server that took it would: the chips are
+    // gated on who the server accepts, so what matters is what was *sent*.
+    assignIssue: async (_projectId: string, _issueId: string, assigneeId: string | null) => {
+      state.assignCalls.push(assigneeId);
+      state.assigneeId = assigneeId;
+      return { ...makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", ""), assigneeId };
+    },
     /**
      * The watchers section's five calls. The list answers with the array *and*
      * the count as two independent facts, because that is what the contract
@@ -560,9 +575,13 @@ const {
 
   return {
     fakeApi: api as unknown as TaskaApi,
-    setMembership: (role: "ADMIN" | "MEMBER" | "VIEWER") => {
+    setMembership: (role: "ADMIN" | "MEMBER" | "VIEWER" | null) => {
       state.membership = { role, isMember: true, projectExists: true };
     },
+    seedAssignee: (assigneeId: string | null) => {
+      state.assigneeId = assigneeId;
+    },
+    assignCalls: () => [...state.assignCalls],
     failMembership: (error: Error) => {
       state.membershipFailure = error;
     },
@@ -726,6 +745,8 @@ const {
       state.deleted = new Set<string>();
       state.edits = {};
       state.members = [];
+      state.assigneeId = null;
+      state.assignCalls = [];
       state.attachments = [];
       state.attachmentsFailure = undefined;
       state.attachmentsHeld = false;
@@ -887,6 +908,47 @@ describe("board failures the user can see", () => {
     await screen.findByText("To Do");
     expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // An answered read that names no role this build can act on — the project
+  // read's `currentUserRole` absent, `null` or unrecognised. Until TAS-226 the
+  // rest leg floored that to VIEWER, and the board went read-only as silently
+  // as TAS-163's did, from a request that had not even failed.
+  it("says so when the role came back as nothing it recognises, and keeps writes off", async () => {
+    setMembership(null);
+    renderBoard();
+
+    const alert = await screen.findByRole("alert");
+    // Its own sentence: "could not be loaded" would be false about a read that
+    // answered, and "read-only" would be the VIEWER it is not.
+    expect(alert).toHaveTextContent(/came back empty or unrecognised/i);
+    expect(alert).not.toHaveTextContent(/could not be loaded/i);
+    expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+    // Nothing failed, so there is no message or request id to print under it.
+    expect(screen.queryByRole("button", { name: /Copy request id/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps that banner and the switched-off controls in step across a refetch", async () => {
+    setMembership(null);
+    const queryClient = renderBoard();
+    await screen.findByRole("alert");
+
+    // In flight, the query keeps the answer it is replacing — so both halves
+    // stay, because both read that one answer.
+    holdMembership(true);
+    void queryClient.refetchQueries({ queryKey: membershipKey });
+    await waitFor(() => expect(queryClient.getQueryState(membershipKey)?.fetchStatus).toBe("fetching"));
+    expect(screen.getByRole("alert")).toHaveTextContent(/came back empty or unrecognised/i);
+    expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+
+    // And an answer that names a role takes both away together.
+    holdMembership(false);
+    setMembership("ADMIN");
+    void queryClient.refetchQueries({ queryKey: membershipKey });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
   });
 
   it("explains a project that failed to load instead of falling back to the word Project", async () => {
@@ -1643,6 +1705,74 @@ describe("the planning fields on an issue panel", () => {
 });
 
 /**
+ * The assignee chips (TAS-226). issue-service checks `assign-issue-roles`
+ * (ADMIN, MEMBER) against the assignee as well as against whoever assigns, so
+ * a chip for anybody else was an offer the server refuses. The one exception
+ * is the current assignee, who is the assignment whatever their role has
+ * become since.
+ */
+describe("the assignee chips on an issue panel", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+
+  const row = (userId: string, displayName: string, role: "ADMIN" | "MEMBER" | "VIEWER" | null) => ({
+    userId,
+    role,
+    addedAt: "2026-08-01T09:00:00Z",
+    addedBy: "user-anna",
+    user: { displayName, email: `${displayName.split(" ")[0].toLowerCase()}@example.com` },
+  });
+
+  /** The words on the chips, in order — the avatar beside each is not part of it. */
+  const chipLabels = () =>
+    [...document.querySelectorAll(".meta-grid .assignee-chip span:last-child")].map((node) => node.textContent);
+
+  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("offers only the members the server takes as an assignee", async () => {
+    seedMembers([
+      row("user-anna", "Anna Ivanova", "ADMIN"),
+      row("user-mark", "Mark Lee", "MEMBER"),
+      row("user-tom", "Tom Becker", "VIEWER"),
+      // A role the server did not state in a form this build knows: not a
+      // VIEWER, and not assignable either — nobody said it may be.
+      row("user-omar", "Omar Haddad", null),
+    ]);
+    renderBoard(ISSUE_PATH);
+    await openPanel();
+
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Anna", "Mark"]));
+    // The board's filter is a read and keeps all four: it asks who holds an
+    // issue, not who may be given one.
+    expect(document.querySelectorAll(".filterbar .avatar-filter")).toHaveLength(4);
+  });
+
+  it("keeps a demoted assignee on screen as the assignment, and will not send it again", async () => {
+    seedMembers([row("user-anna", "Anna Ivanova", "ADMIN"), row("user-tom", "Tom Becker", "VIEWER")]);
+    seedAssignee("user-tom");
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    await waitFor(() => expect(chipLabels()).toEqual(["None", "Anna", "Tom"]));
+    const tom = panel.getByRole("button", { name: /^Tom Becker/ });
+    expect(tom).toHaveClass("is-active");
+    // Pressing an active chip sends the assignment again, and for a VIEWER that
+    // is the request the server refuses.
+    expect(tom).toBeDisabled();
+    fireEvent.click(tom);
+    expect(assignCalls()).toEqual([]);
+
+    // The chip beside it is still an offer.
+    fireEvent.click(panel.getByRole("button", { name: /^Anna Ivanova/ }));
+    await waitFor(() => expect(assignCalls()).toEqual(["user-anna"]));
+  });
+});
+
+/**
  * A create is optimistic, so a new label is drawn the instant it is asked for,
  * carrying `optimisticLabelId` until the server answers with a real one. That
  * placeholder is for the *list*: it is not an address, and every route that
@@ -2064,8 +2194,9 @@ describe("issue attachments", () => {
  *   the array it happened to send, and a write states one without a refetch;
  * - an unwatch that removed nothing is reported as exactly that — not as a
  *   change, and not as a failure;
- * - the toggle belongs to every reader, including a `VIEWER`, while the two
- *   ADMIN controls are gated;
+ * - the toggle is live for an ADMIN or a MEMBER only — the server's
+ *   `watch-issue-roles` (TAS-226) — and shows everybody else their subscription
+ *   without a way to change it, while the two ADMIN controls are gated on ADMIN;
  * - a refused ADMIN add puts the row back and says why;
  * - and a member read that failed does not get presented as a project with
  *   nobody left to add.
@@ -2201,18 +2332,96 @@ describe("issue watchers", () => {
     expect(panel.queryByText(/nothing was removed/i)).toBeNull();
   });
 
-  it("leaves the toggle to a VIEWER and takes both admin controls away", async () => {
+  it("shows a VIEWER their subscription, gives them no way to change it, and says why", async () => {
+    // This case used to assert an enabled toggle, on the belief that the
+    // contract's silence about `…/watchers/me` meant no role. issue-service's
+    // `watch-issue-roles` is ADMIN and MEMBER, and refuses a VIEWER (TAS-226).
     setMembership("VIEWER");
     seedMembers([member(SOFIA, "Sofia Reyes")]);
     seedWatchers([watcher(SOFIA)], 1);
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
-    // The one control in this panel that is not behind `canEdit`: the contract
-    // puts no role on `…/watchers/me`.
-    expect(await panel.findByRole("button", { name: "Watch" })).toBeEnabled();
+    const toggle = await panel.findByRole("button", { name: "Watch" });
+    // A real `disabled` — §4.21's exception for a control that is not coming
+    // back — while the state it would change stays on screen.
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(panel.getByText("As a viewer, you cannot add yourself to this issue's watcher list.")).toBeVisible();
+    // The hint is linked, not just adjacent: a screen reader announces it as
+    // the toggle's description rather than as an unrelated line of text.
+    expect(toggle).toHaveAccessibleDescription(
+      "As a viewer, you cannot add yourself to this issue's watcher list.",
+    );
+    // No invitation the server would refuse.
+    expect(panel.queryByText(/^Add yourself/)).toBeNull();
     expect(panel.queryByLabelText("Add a watcher")).toBeNull();
     expect(panel.queryByRole("button", { name: /^Remove / })).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(watcherCalls()).toMatchObject({ watch: 0, unwatch: 0 });
+  });
+
+  it("tells a VIEWER already on the list that they cannot take themselves off it", async () => {
+    // Reachable on the server: an ADMIN may subscribe a VIEWER — only the
+    // ADMIN's role is checked — and a MEMBER who watched can be demoted after.
+    setMembership("VIEWER");
+    seedMembers([member(ANNA, "Anna Ivanova")]);
+    seedWatchers([watcher(ANNA)], 1);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const toggle = await panel.findByRole("button", { name: "Watching" });
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(
+      panel.getByText("You are on this issue's watcher list. As a viewer, you cannot remove yourself."),
+    ).toBeVisible();
+
+    fireEvent.click(toggle);
+    expect(watcherCalls()).toMatchObject({ watch: 0, unwatch: 0 });
+  });
+
+  it("keeps the toggle off while the role is unknown, without calling the reader a viewer", async () => {
+    // An answered read with no role this build knows. The board's banner says
+    // why; this line must not say "viewer", which is exactly what is unknown.
+    setMembership(null);
+    seedWatchers([watcher(SOFIA)], 1);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const toggle = await panel.findByRole("button", { name: "Watch" });
+    expect(toggle).toBeDisabled();
+    expect(panel.getByText("You are not on this issue's watcher list.")).toBeVisible();
+    expect(panel.queryByText(/viewer/i)).toBeNull();
+  });
+
+  it("keeps the toggle off after a failed role read, and says nothing about a role there", async () => {
+    failMembership(Object.assign(new Error("Internal error"), { status: 500 }));
+    seedWatchers([watcher(ANNA)], 1);
+    renderBoard(ISSUE_PATH);
+
+    // Past the retry, so this is the failed state and not the in-flight one
+    // that happens to look the same.
+    await screen.findByText(/role could not be loaded/i, undefined, AFTER_RETRY);
+    const panel = await section();
+    expect(await panel.findByRole("button", { name: "Watching" })).toBeDisabled();
+    expect(panel.getByText("You are on this issue's watcher list.")).toBeVisible();
+    expect(panel.queryByText(/viewer/i)).toBeNull();
+  });
+
+  it("leaves the toggle live for a MEMBER", async () => {
+    setMembership("MEMBER");
+    seedWatchers([], 0, 1);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    const toggle = await panel.findByRole("button", { name: "Watch" });
+    expect(toggle).toBeEnabled();
+    expect(panel.getByText("Add yourself to this issue's watcher list.")).toBeVisible();
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(watcherCalls().watch).toBe(1));
   });
 
   it("offers an admin the picker and a remove per row", async () => {
@@ -2302,10 +2511,12 @@ describe("issue watchers", () => {
   });
 
   it("names the reader in their own row when the member list cannot", async () => {
-    // A reader who is not a member of the project can still watch an issue in
-    // it, and then the member map has no row to name them from. The one person
-    // it may never fail on is the reader: `GET /users/me` named them before
-    // this section drew a row.
+    // A reader can be on the list without being in the member map — their own
+    // row names nobody, or the member read came back without them — and then
+    // the map has no row to name them from. The one person it may never fail on
+    // is the reader: `GET /users/me` named them before this section drew a row.
+    // A VIEWER can be on the list without having watched anything: an ADMIN
+    // may subscribe them, and that checks only the ADMIN's role.
     setMembership("VIEWER");
     seedMembers([member(SOFIA, "Sofia Reyes")]);
     seedWatchers([watcher(ANNA), watcher(SOFIA)], 2);
