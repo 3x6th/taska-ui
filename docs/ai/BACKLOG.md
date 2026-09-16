@@ -2410,12 +2410,15 @@ is what recurs.
   writes, and since TAS-226 the assignee half of `assign-issue-roles`. The UI
   gates the unchecked writes on `canEdit`, so no mock-backed screen reaches the
   gap.
-- **A git worktree inside the repository can reload the e2e dev server mid-run**
+- ~~**A git worktree inside the repository can reload the e2e dev server mid-run**
   (`builder`, TAS-226). At 23:43 on 2026-09-16 another session checked out
   `.claude/worktrees/tas-158-members/` and five desktop specs failed seconds
   later with pages navigating mid-wait. They passed alone and on two later full
   runs. Candidate fix: `server.watch.ignored` for `.claude/worktrees/**` in the
-  Vite config.
+  Vite config.~~ **Fixed in TAS-158**, which was that worktree:
+  `server.watch.ignored` now carries `**/.claude/worktrees/**`, appended to Vite's
+  own ignores. It protects a checkout's dev server only once that checkout has
+  the change.
 - **The watchers section's 403 fallback sentence names the wrong rule for the
   `…/me` pair** (`api-contract-guard`, TAS-226). `watcherFailureText`
   (`BoardScreen.tsx` ~2602-2604) says only a project admin may change who else
