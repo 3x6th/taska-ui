@@ -453,6 +453,9 @@ describe("ProjectMembersModal", () => {
         "You are this project’s only admin, so your role cannot change and you cannot be removed until someone else is an admin.",
       ),
     ).toBeVisible();
+    // An empty place where the button would be, so the role text lines up with
+    // the selects in the rows below it; hidden from the accessibility tree.
+    expect(row.querySelector(".member-remove-slot")).toHaveAttribute("aria-hidden", "true");
   });
 
   it("asks before an admin demotes themselves, then re-reads their role so the controls can leave", async () => {
@@ -471,7 +474,7 @@ describe("ProjectMembersModal", () => {
       within(row).getByText("You will stop being an admin of this project, and only another admin can make you one again."),
     ).toBeVisible();
 
-    fireEvent.click(within(row).getByRole("button", { name: "Make me Member" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Change to Member" }));
 
     await waitFor(() => expect(state.roleChanges).toEqual([[PROJECT, ANNA, "MEMBER"]]));
     expect(
@@ -644,13 +647,13 @@ describe("ProjectMembersModal", () => {
       fireEvent.change(await within(dialog()).findByRole("combobox", { name: "Your role" }), {
         target: { value: "VIEWER" },
       });
-      expect(within(dialog()).getByRole("button", { name: "Make me Viewer" })).toBeVisible();
+      expect(within(dialog()).getByRole("button", { name: "Change to Viewer" })).toBeVisible();
 
       act(() => {
         queryClient.setQueryData<ProjectMember[]>(["members", PROJECT], markDemoted());
       });
 
-      await waitFor(() => expect(within(dialog()).queryByRole("button", { name: "Make me Viewer" })).toBeNull());
+      await waitFor(() => expect(within(dialog()).queryByRole("button", { name: "Change to Viewer" })).toBeNull());
       expect(within(dialog()).queryByRole("combobox", { name: "Your role" })).toBeNull();
       expect(state.roleChanges).toHaveLength(0);
     });
@@ -784,4 +787,250 @@ describe("ProjectMembersModal", () => {
       expect(screen.queryByText("Projects page")).toBeNull();
     });
   });
+  /**
+   * Every refusal a write can meet on these routes, in the dialog's words, with
+   * the server's own under them and the request id beside those. The sentences
+   * are pinned because each says what did *not* happen after an optimistic
+   * change, and a 403 is also the moment the reader's role is read again.
+   */
+  describe("refusals", () => {
+    const REFUSED = "The server refused: only a project admin can change members, and your role on this project may have changed.";
+    const membershipReRead = (queryClient: QueryClient) =>
+      waitFor(() => expect(queryClient.getQueryState(["membership", PROJECT])?.isInvalidated).toBe(true));
+
+    it.each([
+      [
+        "an add",
+        () => {
+          state.addFailure = refusal("PERMISSION_DENIED", 403, `Actor ${ANNA} is not an admin of project: ${PROJECT}`, "req-403");
+        },
+        () => {
+          fireEvent.change(within(dialog()).getByLabelText("Add by user ID"), { target: { value: PRIYA } });
+          fireEvent.click(within(dialog()).getByRole("button", { name: "Add" }));
+        },
+      ],
+      [
+        "a role change",
+        () => {
+          state.roleFailure = refusal("PERMISSION_DENIED", 403, `User with id: ${ANNA} is not an admin of project: ${PROJECT}`, "req-403");
+        },
+        () => {
+          fireEvent.change(within(dialog()).getByRole("combobox", { name: "Role of Mark Lee" }), { target: { value: "VIEWER" } });
+        },
+      ],
+      [
+        "a removal",
+        () => {
+          state.removeFailure = refusal("PERMISSION_DENIED", 403, `User with id: ${ANNA} is not an admin of project: ${PROJECT}`, "req-403");
+        },
+        () => {
+          fireEvent.click(within(dialog()).getByRole("button", { name: "Remove Mark Lee from this project" }));
+          fireEvent.click(within(rowOf("Mark Lee")).getByRole("button", { name: "Remove" }));
+        },
+      ],
+    ])("a 403 on %s says the server refused, keeps its words and request id, and re-reads the role", async (_case, arrange, act403) => {
+      arrange();
+      const { queryClient } = renderPanel();
+      queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+      await within(dialog()).findByText("Mark Lee");
+
+      act403();
+
+      expect(await within(dialog()).findByText(REFUSED)).toBeVisible();
+      expect(within(dialog()).getByText(/is not an admin of project:/)).toBeVisible();
+      expect(within(dialog()).getByRole("button", { name: "Copy request id req-403" })).toBeVisible();
+      expect(within(dialog()).getByText(REFUSED).closest(".member-note")).toHaveClass("is-error");
+      await membershipReRead(queryClient);
+      // Whatever was drawn before the answer is back where it was.
+      expect(within(rowOf("Mark Lee")).getByText("mark@example.com")).toBeVisible();
+    });
+
+    it("a 404 on an add says the project could not be found, with the server's words and request id", async () => {
+      state.addFailure = refusal("NOT_FOUND", 404, `Project: ${PROJECT} doesn't exist`, "req-404-add");
+      renderPanel();
+      await within(dialog()).findByText("Mark Lee");
+
+      fireEvent.change(within(dialog()).getByLabelText("Add by user ID"), { target: { value: PRIYA } });
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Add" }));
+
+      expect(await within(dialog()).findByText("This project could not be found, so nobody was added.")).toBeVisible();
+      expect(within(dialog()).getByText(`Project: ${PROJECT} doesn't exist`)).toBeVisible();
+      expect(within(dialog()).getByRole("button", { name: "Copy request id req-404-add" })).toBeVisible();
+    });
+
+    it("a 404 on a role change says the member is not on the project any more", async () => {
+      state.roleFailure = refusal(
+        "NOT_FOUND",
+        404,
+        `Project member with id ${MARK} was not found in project with id ${PROJECT}`,
+        "req-404-role",
+      );
+      renderPanel();
+
+      fireEvent.change(await within(dialog()).findByRole("combobox", { name: "Role of Mark Lee" }), {
+        target: { value: "VIEWER" },
+      });
+
+      expect(
+        await within(dialog()).findByText("Mark Lee is not a member of this project any more, so nothing changed."),
+      ).toBeVisible();
+      expect(within(dialog()).getByText(/was not found in project with id/)).toBeVisible();
+      expect(within(dialog()).getByRole("button", { name: "Copy request id req-404-role" })).toBeVisible();
+    });
+
+    it("a 404 on a removal is information, not a failure: the row stays gone, and the server's words stay", async () => {
+      state.removeFailure = refusal(
+        "NOT_FOUND",
+        404,
+        `Project member with id ${MARK} was not found in project with id ${PROJECT}`,
+        "req-404-remove",
+      );
+      renderPanel();
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Mark Lee from this project" }));
+      // Held, so what keeps the row gone is the dialog, not a re-read.
+      state.listHeld = true;
+      fireEvent.click(within(rowOf("Mark Lee")).getByRole("button", { name: "Remove" }));
+
+      const sentence = await within(dialog()).findByText(
+        "Mark Lee is not a member of this project any more, so nothing changed.",
+      );
+      expect(sentence.closest(".member-note")).not.toHaveClass("is-error");
+      expect(within(dialog()).getByText(/was not found in project with id/)).toBeVisible();
+      expect(within(dialog()).getByRole("button", { name: "Copy request id req-404-remove" })).toBeVisible();
+      expect(within(dialog()).queryByText("mark@example.com")).toBeNull();
+    });
+
+    it("a 404 on removing your own row means somebody removed you first, and takes you to your projects", async () => {
+      state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
+      state.removeFailure = refusal(
+        "NOT_FOUND",
+        404,
+        `Project member with id ${ANNA} was not found in project with id ${PROJECT}`,
+        "req-404-self",
+      );
+      const { queryClient } = renderPanel();
+      queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove yourself from this project" }));
+      fireEvent.click(within(rowOf("Anna Ivanova")).getByRole("button", { name: "Remove me" }));
+
+      expect(await screen.findByText("Projects page")).toBeVisible();
+      expect(queryClient.getQueryState(["membership", PROJECT])).toBeUndefined();
+    });
+
+    it("a FAILED_PRECONDITION on a removal puts the row back and names the last-admin reason", async () => {
+      state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
+      state.removeFailure = refusal(
+        "FAILED_PRECONDITION",
+        400,
+        `Can't modify last admin: ${MARK} in project: ${PROJECT}`,
+        "req-last-admin-remove",
+      );
+      renderPanel();
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Mark Lee from this project" }));
+      state.listHeld = true;
+      fireEvent.click(within(rowOf("Mark Lee")).getByRole("button", { name: "Remove" }));
+
+      expect(
+        await within(dialog()).findByText("Mark Lee is this project’s only admin, so they were not removed."),
+      ).toBeVisible();
+      expect(within(dialog()).getByText(`Can't modify last admin: ${MARK} in project: ${PROJECT}`)).toBeVisible();
+      expect(within(dialog()).getByRole("button", { name: "Copy request id req-last-admin-remove" })).toBeVisible();
+      // Put back by the rollback, with the re-read held.
+      expect(within(rowOf("Mark Lee")).getByText("mark@example.com")).toBeVisible();
+    });
+
+    it("brings the notice into view when it appears, without a scroll behaviour to animate", async () => {
+      const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+      state.removeFailure = refusal("INTERNAL", 500, "Internal error", "req-500-scroll");
+      renderPanel();
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Sofia Reyes from this project" }));
+      fireEvent.click(within(rowOf("Sofia Reyes")).getByRole("button", { name: "Remove" }));
+      await within(dialog()).findByText("Sofia Reyes was not removed from this project.");
+
+      await waitFor(() => {
+        const index = scrolled.mock.contexts.findIndex(
+          (element) => element instanceof Element && element.classList.contains("member-note"),
+        );
+        expect(index).toBeGreaterThanOrEqual(0);
+        expect(scrolled.mock.calls[index]).toEqual([{ block: "nearest" }]);
+      });
+      scrolled.mockRestore();
+    });
+  });
+
+  it("does not count a promotion still in flight as cover for the only real admin", async () => {
+    // The reviewer's case: beside an admin with no account, a promotion drawn
+    // at once used to unfreeze Anna, and her own removal could reach the server
+    // before — or instead of — the promotion.
+    state.members = [state.person(ANNA, "ADMIN"), state.person(NOBODY, "ADMIN"), state.person(MARK, "MEMBER")];
+    state.held = true;
+    renderPanel();
+
+    fireEvent.change(await within(dialog()).findByRole("combobox", { name: "Role of Mark Lee" }), {
+      target: { value: "ADMIN" },
+    });
+    await waitFor(() => expect(within(dialog()).getByRole("combobox", { name: "Role of Mark Lee" })).toHaveValue("ADMIN"));
+
+    // Drawn as an admin, and still no cover while the write is out.
+    const anna = rowOf("Anna Ivanova");
+    expect(within(anna).queryByRole("button", { name: "Remove yourself from this project" })).toBeNull();
+    expect(within(anna).queryByRole("combobox", { name: "Your role" })).toBeNull();
+    expect(within(anna).getByText(/You are this project’s only admin with an account/)).toBeVisible();
+
+    release();
+
+    // Landed: Mark is an admin with an account, and Anna may step down.
+    expect(await within(rowOf("Anna Ivanova")).findByRole("button", { name: "Remove yourself from this project" })).toBeVisible();
+    expect(within(rowOf("Anna Ivanova")).getByRole("combobox", { name: "Your role" })).toBeVisible();
+  });
+
+  it("does not count a demotion still in flight as cover either", async () => {
+    // Why the rule is "an admin before the write and after it", not "the role
+    // before the write": counted at its old role, Mark's demotion would still
+    // cover Anna until it landed — beside an admin with no account, the same
+    // project nobody can manage.
+    state.members = [state.person(ANNA, "ADMIN"), state.person(MARK, "ADMIN"), state.person(NOBODY, "ADMIN")];
+    state.held = true;
+    renderPanel();
+
+    await within(dialog()).findByText("Anna Ivanova");
+    expect(within(rowOf("Anna Ivanova")).getByRole("button", { name: "Remove yourself from this project" })).toBeVisible();
+
+    fireEvent.change(within(dialog()).getByRole("combobox", { name: "Role of Mark Lee" }), {
+      target: { value: "MEMBER" },
+    });
+
+    await waitFor(() =>
+      expect(within(rowOf("Anna Ivanova")).queryByRole("button", { name: "Remove yourself from this project" })).toBeNull(),
+    );
+    expect(within(rowOf("Anna Ivanova")).getByText(/You are this project’s only admin with an account/)).toBeVisible();
+  });
+
+  it("counts the reader's own row as an account even when the member read named nobody on it", async () => {
+    // A real account with a blank display name arrives with no `user`. As the
+    // only real admin beside an admin with no account, it has to stay frozen.
+    state.members = [
+      { userId: ANNA, role: "ADMIN" as const, user: undefined },
+      state.person(NOBODY, "ADMIN"),
+      state.person(MARK, "MEMBER"),
+    ];
+    renderPanel();
+
+    const anna = (await within(dialog()).findByText(ANNA)).closest("li") as HTMLElement;
+    expect(within(anna).getByText("You")).toBeVisible();
+    expect(within(anna).queryByText("No account came back for this ID.")).toBeNull();
+    expect(within(anna).queryByRole("button", { name: /Remove/ })).toBeNull();
+    expect(within(anna).queryByRole("combobox")).toBeNull();
+    expect(within(anna).getByText(/You are this project’s only admin with an account/)).toBeVisible();
+
+    // The row that really has no account is still the removable one.
+    const unknown = within(dialog()).getByText(NOBODY).closest("li") as HTMLElement;
+    expect(within(unknown).getByText("No account came back for this ID.")).toBeVisible();
+    expect(within(unknown).getByRole("button", { name: "Remove the member with ID 0b1c2d3e from this project" })).toBeVisible();
+  });
+
 });

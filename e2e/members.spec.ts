@@ -168,7 +168,7 @@ test("the only admin cannot step down until there is another, and then the contr
   await expect(mine).toBeVisible();
   await mine.selectOption("MEMBER");
   await expect(anna.getByText(/You will stop being an admin of this project/)).toBeVisible();
-  await anna.getByRole("button", { name: "Make me Member" }).click();
+  await anna.getByRole("button", { name: "Change to Member" }).click();
 
   await expect(dialog.getByText("You are now a Member of this project, so only an admin can change its members.")).toBeVisible();
   // Her role was read again: the add form and every row control are gone, and

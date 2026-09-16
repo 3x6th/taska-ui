@@ -83,11 +83,37 @@ type PendingConfirm = { kind: "remove"; userId: string } | { kind: "demote"; use
  * server's count and stays removable. `unnamedAdmins` is how many admin rows
  * with no account sit beside a frozen admin, which is what the note under it
  * has to say.
+ *
+ * Two refinements keep the rule honest about what the server holds right now:
+ *
+ * - **Cover has to be settled.** A row whose role write is still out counts
+ *   as an admin only if it was one before the write and is one after it. A
+ *   promotion in flight is drawn at once, and counted at once it let the only
+ *   real admin step down behind a promotion the server might refuse or apply
+ *   late — which, beside an admin with no account, is the project nobody can
+ *   manage again. Counting it at its pre-write role alone would not do either:
+ *   a demotion in flight would then count as cover it is about to stop being.
+ * - **The reader's own row always has an account**, whatever the member read
+ *   says about it: the reader is signed in. A real account whose display name
+ *   comes back blank reads as nameless (`toProjectMember` in RestTaskaApi.ts),
+ *   and counted as "no account" the reader's own admin row would stop covering
+ *   anybody, and stop being protected as the last admin with one.
  */
 interface RowControls {
   frozen: { unnamedAdmins: number } | null;
   canChangeRole: boolean;
   canRemove: boolean;
+}
+
+/** A role write still out, by user id, with the role that row held before it. */
+type RolesInFlight = Readonly<Record<string, ProjectRole | null>>;
+
+/** Everything the last-admin rule reads, gathered so the row, the strip and the press read the same thing. */
+interface AdminGuard {
+  members: ProjectMember[];
+  rolesInFlight: RolesInFlight;
+  currentUserId?: string;
+  isProjectAdmin: boolean;
 }
 
 interface ProjectMembersModalProps {
@@ -165,10 +191,25 @@ export function ProjectMembersModal({
    * filter the board by before the server had agreed they exist.
    */
   const [pendingAdds, setPendingAdds] = useState<{ userId: string; role: ProjectRole }[]>([]);
-  /** Rows whose role write is out, so their select stops answering until it lands. */
-  const [rolesInFlight, setRolesInFlight] = useState<string[]>([]);
+  /**
+   * Rows whose role write is out, with the role each held before it: their
+   * select stops answering until it lands, and none of them counts as another
+   * admin's cover meanwhile (`RowControls`).
+   */
+  const [rolesInFlight, setRolesInFlight] = useState<RolesInFlight>({});
   const [pendingConfirm, setConfirm] = useState<PendingConfirm | null>(null);
   const [notice, setNotice] = useState<MemberNotice | null>(null);
+  /**
+   * The notice sits above the list, and the refusal it explains is usually about
+   * a row further down — so on a list long enough to scroll, a rolled-back write
+   * would say why out of sight. It is brought into view when it changes.
+   * `nearest` moves nothing when it is already visible, and there is no
+   * `behavior`: an instant jump has nothing to degrade under reduced motion.
+   */
+  const noticeBox = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (notice) noticeBox.current?.scrollIntoView({ block: "nearest" });
+  }, [notice]);
   const fieldId = useId();
   const roleId = useId();
   const hintId = useId();
@@ -213,7 +254,9 @@ export function ProjectMembersModal({
    * (a 403's own, for one). Where focus goes when the strip leaves under it is
    * the effect further down.
    */
-  const confirmOffered = pendingConfirm !== null && offersConfirm(pendingConfirm, members, isProjectAdmin);
+  const guard = (list: ProjectMember[] | undefined): AdminGuard | undefined =>
+    list && { members: list, rolesInFlight, currentUserId, isProjectAdmin };
+  const confirmOffered = pendingConfirm !== null && offersConfirm(pendingConfirm, guard(members));
   if (pendingConfirm !== null && !confirmOffered) {
     setConfirm(null);
     if (notice === null) setNotice({ tone: "info", text: isProjectAdmin ? LIST_CHANGED_TEXT : ROLE_CHANGED_TEXT });
@@ -303,11 +346,13 @@ export function ProjectMembersModal({
       taskaApi.changeProjectMemberRole(projectId, input.userId, input.role),
     onMutate: async (input) => {
       setNotice(null);
-      setRolesInFlight((current) => [...current, input.userId]);
-      await queryClient.cancelQueries({ queryKey: membersKey });
+      // Read before the optimistic write below, and recorded with the row, so
+      // the guard can tell a promotion still in flight from an admin who is one.
       const previous = queryClient.getQueryData<ProjectMember[]>(membersKey)?.find(
         (member) => member.userId === input.userId,
       )?.role;
+      setRolesInFlight((current) => ({ ...current, [input.userId]: previous ?? null }));
+      await queryClient.cancelQueries({ queryKey: membersKey });
       queryClient.setQueryData<ProjectMember[]>(membersKey, (current) =>
         current?.map((member) => (member.userId === input.userId ? { ...member, role: input.role } : member)),
       );
@@ -339,7 +384,7 @@ export function ProjectMembersModal({
       setNotice({ tone: "error", text: roleFailureText(error, subjectOf(member, currentUserId)), error });
     },
     onSettled: async (_result, _error, input) => {
-      setRolesInFlight((current) => current.filter((userId) => userId !== input.userId));
+      setRolesInFlight(({ [input.userId]: _settled, ...rest }) => rest);
       await refresh(mayBeSelf(input.userId));
     },
   });
@@ -357,44 +402,20 @@ export function ProjectMembersModal({
       return { row: index >= 0 ? list?.[index] : undefined, index };
     },
     onSuccess: async (_result, userId) => {
-      if (userId === currentUserId) {
-        leaveProject();
-        return;
-      }
-      if (readerKnown) return;
-      // Nobody could tell whose row this was when it was asked — `GET /users/me`
-      // had not answered — so it is asked now, through the board's own `["me"]`
-      // entry, which joins a read still in flight rather than starting another.
-      // A reader who removed themselves leaves exactly as above; one who removed
-      // somebody else carries on with the ordinary refresh in `onSettled`.
-      const me = await queryClient
-        .fetchQuery({ queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser() })
-        .catch(() => null);
-      if (me?.id === userId) {
-        leaveProject();
-        return;
-      }
-      if (!me) {
-        // Still nobody to compare with. The board's own no-access state is the
-        // answer then, and it is reachable only without cached data:
-        // `useUnanswered` counts a kept answer as an answer, so a refetch that
-        // 403s under cached data changes nothing on screen. Resetting drops the
-        // two reads the board gates on and asks again — a reader who removed
-        // themselves meets §4.18, anybody else gets the board back one read
-        // later.
-        await Promise.all([
-          queryClient.resetQueries({ queryKey: ["project", projectId] }),
-          queryClient.resetQueries({ queryKey: ["membership", projectId] }),
-        ]);
-      }
+      await leaveIfReaderIsGone(userId);
     },
-    onError: (error, userId, context) => {
+    onError: async (error, userId, context) => {
       const member = context?.row ?? { userId };
       const subject = subjectOf(member, currentUserId);
       if (isMissing(error)) {
         // The end state is the one that was asked for, so nothing comes back.
-        // What did not happen is the removal, and that is worth a sentence.
-        setNotice({ tone: "info", text: notMemberText(subject) });
+        // What did not happen is the removal, and that is worth a sentence —
+        // with the server's own words and request id under it, as every other
+        // refusal has. And if the row was the reader's, somebody removed them
+        // first: they have no board here either, and leave as a removal of
+        // their own would.
+        if (await leaveIfReaderIsGone(userId)) return;
+        setNotice({ tone: "info", text: notMemberText(subject), error });
         return;
       }
       if (context?.row) {
@@ -417,6 +438,43 @@ export function ProjectMembersModal({
       await refresh(mayBeSelf(userId));
     },
   });
+
+  /**
+   * After a row is gone from the server — removed by this press, or found
+   * already gone by it — whether that row was the reader's, and if so, leaving.
+   * Answers whether the reader left.
+   *
+   * When nobody could tell whose row it was at the press — `GET /users/me` had
+   * not answered — it is asked now, through the board's own `["me"]` entry,
+   * which joins a read still in flight rather than starting another. If that
+   * cannot be read either, the board's own no-access state is the answer, and it
+   * is reachable only without cached data: `useUnanswered` counts a kept answer
+   * as an answer, so a refetch that 403s under cached data changes nothing on
+   * screen. Resetting drops the two reads the board gates on and asks again — a
+   * reader who removed themselves meets §4.18, anybody else gets the board back
+   * one read later.
+   */
+  const leaveIfReaderIsGone = async (userId: string): Promise<boolean> => {
+    if (userId === currentUserId) {
+      leaveProject();
+      return true;
+    }
+    if (readerKnown) return false;
+    const me = await queryClient
+      .fetchQuery({ queryKey: ["me"], queryFn: () => taskaApi.getCurrentUser() })
+      .catch(() => null);
+    if (me?.id === userId) {
+      leaveProject();
+      return true;
+    }
+    if (!me) {
+      await Promise.all([
+        queryClient.resetQueries({ queryKey: ["project", projectId] }),
+        queryClient.resetQueries({ queryKey: ["membership", projectId] }),
+      ]);
+    }
+    return false;
+  };
 
   /**
    * The reader removed themselves, and this board is not theirs any more: every
@@ -540,7 +598,7 @@ export function ProjectMembersModal({
     // this render drew it: the strip is closed as soon as a render sees the
     // guard flip, but a press can land between the cache moving and that render.
     // Nothing is sent then, and the reader is told why.
-    if (!offersConfirm(confirm, queryClient.getQueryData<ProjectMember[]>(membersKey), isProjectAdmin)) {
+    if (!offersConfirm(confirm, guard(queryClient.getQueryData<ProjectMember[]>(membersKey)))) {
       setConfirm(null);
       setNotice({ tone: "info", text: LIST_CHANGED_TEXT });
       heading.current?.focus();
@@ -617,7 +675,6 @@ export function ProjectMembersModal({
 
   const badge = keyBadgeStyle(projectKey, projectColor);
   const count = members?.length;
-  const counts = adminCounts(members ?? []);
 
   return (
     <Modal
@@ -693,7 +750,7 @@ export function ProjectMembersModal({
         {/* One polite region that stays mounted and changes its text (§7), and
             only the sentence is in it: the detail line carries a request id,
             which is for copying, not for hearing. */}
-        <div className={notice ? `member-note${notice.tone === "error" ? " is-error" : ""}` : undefined}>
+        <div className={notice ? `member-note${notice.tone === "error" ? " is-error" : ""}` : undefined} ref={noticeBox}>
           <p aria-live="polite" className="member-note-sentence">
             {notice?.text ?? ""}
           </p>
@@ -733,7 +790,7 @@ export function ProjectMembersModal({
             <ul className="member-list">
               {(members ?? []).map((member) => {
                 const subject = subjectOf(member, currentUserId);
-                const controls = rowControls(member, counts, isProjectAdmin);
+                const controls = rowControls(member, { members: members ?? [], rolesInFlight, currentUserId, isProjectAdmin });
                 const confirming = confirm?.userId === member.userId ? confirm : null;
                 return (
                   <MemberRow
@@ -745,7 +802,7 @@ export function ProjectMembersModal({
                     onAcceptConfirm={acceptConfirm}
                     onCancelConfirm={cancelConfirm}
                     onPickRole={(nextRole) => {
-                      if (rolesInFlight.includes(member.userId)) return;
+                      if (Object.hasOwn(rolesInFlight, member.userId)) return;
                       // An admin stepping down asks first, and so does every
                       // ADMIN demotion while the reader is unknown: any of them
                       // may be their own.
@@ -764,7 +821,7 @@ export function ProjectMembersModal({
                     }}
                     onToggleRemove={() => openRemoveConfirm(member.userId)}
                     readerKnown={readerKnown}
-                    roleInFlight={rolesInFlight.includes(member.userId)}
+                    roleInFlight={Object.hasOwn(rolesInFlight, member.userId)}
                     selectRef={(node) => {
                       if (node) selects.current.set(member.userId, node);
                       else selects.current.delete(member.userId);
@@ -836,6 +893,9 @@ function MemberRow({
   const confirmId = useId();
   const cancelButton = useRef<HTMLButtonElement | null>(null);
   const named = Boolean(member.user);
+  // The reader's own row stands for an account even when the read named nobody
+  // on it: they are signed in (see `RowControls`).
+  const withAccount = named || subject.self;
   const { frozen, canChangeRole, canRemove } = controls;
 
   // Into the question as soon as it is asked, on the button that changes
@@ -868,14 +928,9 @@ function MemberRow({
               readerKnown ? "" : " If that is you, you will go back to your projects."
             }`
           : "The membership for this ID will be removed.";
+  // The sentence above already says who; the answer only has to say what.
   const confirmLabel =
-    confirm?.kind === "demote"
-      ? subject.self
-        ? `Make me ${roleLabels[confirm.role]}`
-        : `Change to ${roleLabels[confirm.role]}`
-      : subject.self
-        ? "Remove me"
-        : "Remove";
+    confirm?.kind === "demote" ? `Change to ${roleLabels[confirm.role]}` : subject.self ? "Remove me" : "Remove";
 
   return (
     <li className="member-row">
@@ -902,6 +957,10 @@ function MemberRow({
         </span>
         {named ? (
           member.user?.email ? <span className="member-line">{member.user.email}</span> : null
+        ) : withAccount ? (
+          // The reader's own row with no name on it: their id, and no sentence
+          // saying no account came back — they are signed in to that account.
+          <span className="member-id">{member.userId}</span>
         ) : (
           <>
             {/* The whole id, selectable: for a row like this it is the only
@@ -947,6 +1006,10 @@ function MemberRow({
         >
           <Trash2 size={14} />
         </button>
+      ) : isProjectAdmin ? (
+        // Where the button would be, so this row's role sits in the same column
+        // as the selects around it.
+        <span aria-hidden="true" className="member-remove-slot" />
       ) : null}
 
       {isProjectAdmin && frozen ? <p className="member-row-note">{frozenNoteText(subject, frozen.unnamedAdmins)}</p> : null}
@@ -993,48 +1056,56 @@ function MemberNoteDetail({ error }: { error: unknown }) {
   );
 }
 
-/** How many ADMIN rows the list holds, and how many of them have an account. */
-function adminCounts(members: ProjectMember[]): { admins: number; adminsWithAccount: number } {
-  const admins = members.filter((member) => member.role === "ADMIN");
-  return { admins: admins.length, adminsWithAccount: admins.filter((member) => member.user).length };
+/** Whether a row stands for an account: the member read named it, or it is the signed-in reader's own. */
+function hasAccount(member: ProjectMember, currentUserId: string | undefined): boolean {
+  return Boolean(member.user) || (currentUserId !== undefined && member.userId === currentUserId);
 }
 
-/** See `RowControls` for why a row with an account and a row without are counted differently. */
-function rowControls(
-  member: ProjectMember,
-  counts: { admins: number; adminsWithAccount: number },
-  isProjectAdmin: boolean,
-): RowControls {
-  const frozen =
-    member.role !== "ADMIN"
-      ? null
-      : member.user
-        ? counts.adminsWithAccount <= 1
-          ? { unnamedAdmins: counts.admins - counts.adminsWithAccount }
-          : null
-        : counts.admins <= 1
-          ? { unnamedAdmins: 0 }
-          : null;
+/** An ADMIN now, and — if its role write is still out — an ADMIN before that write too. */
+function isSettledAdmin(member: ProjectMember, rolesInFlight: RolesInFlight): boolean {
+  if (member.role !== "ADMIN") return false;
+  return !Object.hasOwn(rolesInFlight, member.userId) || rolesInFlight[member.userId] === "ADMIN";
+}
+
+/**
+ * See `RowControls` for why a row with an account and a row without are counted
+ * differently, and why only settled admins are cover. A row is frozen when it is
+ * an ADMIN and no *other* row covers it: a settled admin, with an account when
+ * this row has one.
+ */
+function rowControls(member: ProjectMember, guard: AdminGuard): RowControls {
+  const { members, rolesInFlight, currentUserId, isProjectAdmin } = guard;
+  const withAccount = hasAccount(member, currentUserId);
+  const cover = members.filter(
+    (other) =>
+      other.userId !== member.userId &&
+      isSettledAdmin(other, rolesInFlight) &&
+      (!withAccount || hasAccount(other, currentUserId)),
+  ).length;
+  const unnamedAdmins = members.filter(
+    (other) => other.role === "ADMIN" && !hasAccount(other, currentUserId),
+  ).length;
+  const frozen = member.role === "ADMIN" && cover === 0 ? { unnamedAdmins: withAccount ? unnamedAdmins : 0 } : null;
   return {
     frozen,
     // A role select only for a person: a row with no account has nobody to give
     // a role to, and a role the server did not state has no current value to
     // show — both keep their removal.
-    canChangeRole: isProjectAdmin && Boolean(member.user) && frozen === null && member.role !== null,
+    canChangeRole: isProjectAdmin && withAccount && frozen === null && member.role !== null,
     canRemove: isProjectAdmin && frozen === null,
   };
 }
 
 /**
  * Whether the row a question is about still offers the control that asked it,
- * judged against `members` — the rendered list during render, and the cache's
- * own copy at the moment of the press. A demotion has to still be a demotion:
- * a row that is no longer ADMIN has nothing left to step down from.
+ * judged against the guard's list — the rendered one during render, and the
+ * cache's own copy at the moment of the press. A demotion has to still be a
+ * demotion: a row that is no longer ADMIN has nothing left to step down from.
  */
-function offersConfirm(confirm: PendingConfirm, members: ProjectMember[] | undefined, isProjectAdmin: boolean): boolean {
-  const member = members?.find((row) => row.userId === confirm.userId);
-  if (!members || !member) return false;
-  const controls = rowControls(member, adminCounts(members), isProjectAdmin);
+function offersConfirm(confirm: PendingConfirm, guard: AdminGuard | undefined): boolean {
+  const member = guard?.members.find((row) => row.userId === confirm.userId);
+  if (!guard || !member) return false;
+  const controls = rowControls(member, guard);
   return confirm.kind === "remove" ? controls.canRemove : controls.canChangeRole && member.role === "ADMIN";
 }
 

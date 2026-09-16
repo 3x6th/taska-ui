@@ -6193,7 +6193,7 @@ button.attachment-open:hover:not(:disabled) {
   align-items: center;
   gap: 7px;
   width: fit-content;
-  margin: 0 0 10px;
+  margin: 0 0 11px;
   border-radius: 6px;
   color: var(--fg-2);
   font-size: 12px;
@@ -6201,10 +6201,10 @@ button.attachment-open:hover:not(:disabled) {
 }
 
 /* After the shared rule above on purpose, which zeroes the margin: the note sits
-   under the heading, closer to it than the heading's own 10 would put it, and
-   keeps that 10 before the list. */
+   under the heading, closer to it than the heading's own 11 would put it, and
+   keeps that 11 before the list. */
 .member-readonly-note {
-  margin: -4px 0 10px;
+  margin: -4px 0 11px;
 }
 
 .member-list {
@@ -6225,7 +6225,7 @@ button.attachment-open:hover:not(:disabled) {
   flex-wrap: wrap;
   gap: 4px 8px;
   min-height: 40px;
-  padding: 5px 0;
+  padding: 6px 0;
 }
 
 .member-who {
@@ -6294,6 +6294,16 @@ button.attachment-open:hover:not(:disabled) {
   color: var(--danger);
 }
 
+/* Where the remove button would be, on an ADMIN's row that offers none — the
+   last admin's. Without it that row's role text sits 40px right of every select
+   above and below it (the button's 32 plus the gap), and the role column
+   zig-zags down the list. Empty and `aria-hidden`: it holds a place, not a
+   meaning. */
+.member-remove-slot {
+  width: 32px;
+  flex: none;
+}
+
 /* Under the name column rather than under the avatar: 32 is the avatar (24)
    plus the row's gap (8). */
 .member-row-note {
@@ -6306,16 +6316,26 @@ button.attachment-open:hover:not(:disabled) {
   text-wrap: pretty;
 }
 
+/* From the name column to the right edge — 32 in from the left, the avatar
+   and the row's gap, like the note above — stated as its own basis rather than
+   left to `flex-basis: 100%` shrinking by its margin.
+
+   The border is not decoration. `--surface-2` against the modal's `--surface`
+   measures 1.14:1 light and 1.04:1 dark, so without an edge the strip has none
+   in dark at all; `--border` brings it to 1.20 / 1.22 (art-director, measured),
+   the argument `.admin-write-target` already makes. The padding gives back the
+   pixel the border takes on each side, so the box keeps its height. */
 .member-confirm {
   display: flex;
-  flex-basis: 100%;
+  flex: 0 0 calc(100% - 32px);
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px 8px;
   margin: 2px 0 2px 32px;
+  border: 1px solid var(--border);
   border-radius: 9px;
-  padding: 7px 8px 7px 11px;
+  padding: 6px 7px 6px 10px;
   background: var(--surface-2);
 }
 

@@ -16,10 +16,11 @@ import type { ProjectRole } from "../domain/types";
  * `enum: [ADMIN, MEMBER, VIEWER]` on both `AddProjectMemberRequestDto.role` and
  * `ChangeProjectMemberRoleRequestDto.role`.
  *
- * Closed, and closed on the wire too: the gateway's
- * `ProjectMapper.toGrpcProjectRole` answers 400 for anything else, and for a
- * missing role, before project-service is asked (read at backend `develop`
- * `1cfe4d79f074`).
+ * Closed, and closed on the wire too: the gateway decodes `role` into its
+ * generated `RoleEnum` under `@Valid`/`@NotNull`, so any other value, or none,
+ * is `400 INVALID_ARGUMENT` "Invalid request parameters" from
+ * `GatewayValidationExceptionHandler` before project-service is asked (read at
+ * backend `develop` `1cfe4d79f074`, not measured).
  */
 export const PROJECT_ROLES: readonly ProjectRole[] = ["ADMIN", "MEMBER", "VIEWER"];
 

@@ -668,14 +668,20 @@ export interface TaskaApi {
    * server decides, and a 403 arriving here is shown rather than swallowed.
    *
    * What the yml does not say, read out of `ProjectMemberValidatorImpl`,
-   * `GrpcProjectService` and the gateway's `ProjectMapper` and `RestErrorMapper`
-   * at backend `develop` `1cfe4d79f074` — read, not measured on the stand:
+   * `GrpcProjectService` and the gateway's `GatewayValidationExceptionHandler`
+   * and `RestErrorMapper` at backend `develop` `1cfe4d79f074` — read, not
+   * measured on the stand:
    *
    * - **The order of the refusals is the server's, and it is not the same for
    *   add as for the other two.** Shape comes first on all three. A missing or
-   *   unrecognised `role` is a 400 from the gateway itself
-   *   (`ProjectMapper.toGrpcProjectRole`), before project-service is asked; an
-   *   id `UUID.fromString` rejects is `400 INVALID_ARGUMENT` from
+   *   unrecognised `role` is `400 INVALID_ARGUMENT` "Invalid request parameters"
+   *   from the gateway's own request validation
+   *   (`GatewayValidationExceptionHandler`): the generated `RoleEnum.fromValue`
+   *   refuses an unknown value while the body is decoded, and `@NotNull`
+   *   refuses a missing one, so `ProjectMapper.toGrpcProjectRole`'s own 400 is
+   *   not reached from these routes. It comes after the token check and before
+   *   project-service is asked; an id `UUID.fromString` rejects is
+   *   `400 INVALID_ARGUMENT` from
    *   project-service's transport ("body.addedMemberId must be a valid UUID",
    *   `changedMemberId` and `deletedMemberId` on the other two), before any row
    *   is read. Then one locked read of the project's member rows
