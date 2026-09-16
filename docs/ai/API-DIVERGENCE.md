@@ -772,6 +772,42 @@ Everything below is the entry as it stood, in the past tense.
   worth an ask only when TAS-212 puts members into the project read, which is
   where it belongs.
 
+### Adding a member does not check that the person exists
+
+- **Endpoint:** `POST /api/v1/projects/{projectId}/members`
+- **Contract:** `AddProjectMemberRequestDto` requires `userId` and `role` and
+  says nothing about an id that no account holds. The schema does not even
+  declare `format: uuid`.
+- **Runtime — read at backend `develop` `1cfe4d7`, not measured.** Measuring it
+  means leaving such a row on a project of the shared stand. project-service
+  checks the id's shape, that the actor is an ADMIN of the project and that the
+  target is not already on it. It never asks auth-service. Any well-formed UUID
+  answers `201`, and `GET …/members` then returns the row with `userId` and
+  `role` and nothing else: `ProfileServiceImpl.getUserDetailsByIds` drops an id
+  it has no user for without a word. That lookup does not filter by status, so
+  INVITED and BLOCKED accounts come back named. **A member row with neither a
+  name nor an email means no account holds that id.**
+- **The routes are deployed.** Measured without a token on 2026-09-16 at
+  21:37 UTC: `POST …/members`, `PATCH …/members/{userId}` and
+  `DELETE …/members/{userId}` each answer `401`; `PUT` on the same path answers
+  `405`. The controls: `GET /users/me` answers `401`, and an unmapped
+  `…/nonexistent-route/…` answers the static-resource `404`. So a `404` from a
+  member write is the service's own answer, not a route that is missing.
+- **Compensation:** none that hides it. `ProjectMembersModal` (TAS-158) draws
+  such a row as "Unknown", with the full id and "No account came back for this
+  ID.", and removal is its only control. `MockTaskaApi` accepts an unknown id
+  the same way, so the e2e suite exercises the row the stand can actually
+  produce. A mock that refused the id would be a false statement about the
+  route.
+- **The client is stricter about the id's spelling than the server.** Both
+  implementations refuse anything that is not the canonical 8-4-4-4-12 form
+  before sending (`isUserId`, `src/api/members.ts`). Java's `UUID.fromString`
+  also accepts short groups like `1-1-1-1-1`. That is a documented narrowing,
+  not a divergence to remove: nobody pastes that spelling of a real id.
+- **Removal:** [TAS-227](https://jira.ozero.dev/browse/TAS-227). The add should
+  answer `404` before saving. Once it does, the add row shows that refusal. The
+  "Unknown" rendering stays for rows written before the fix.
+
 ### Comment ordering is unspecified
 
 - **Endpoint:** `GET /projects/{id}/issues/{id}/comments`
