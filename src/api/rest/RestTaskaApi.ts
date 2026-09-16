@@ -511,10 +511,11 @@ interface RestUnwatchIssueResponse {
  * `IssueAttachmentDto`. Optional throughout, like `RestIssueLink` above and for
  * the same reason: `docs/contract/openapi.yml` does mark seven of the eight
  * `required` (backend PR #147, merged), but what is measured about this family
- * on the deployed gateway is that its routes exist — they answered 401 without a
- * token on 2026-09-16 — and not what their bodies carry, so a field typed as
- * guaranteed here would be a claim rather than a measurement. `toAttachment`
- * turns each blank into the domain's own spelling of "not stated".
+ * on the deployed gateway is that its list route exists — it answered 401
+ * without a token on 2026-09-16 — and not what any body carries, so a field
+ * typed as guaranteed here would be a claim rather than a measurement.
+ * `toAttachment` turns each blank into the domain's own spelling of "not
+ * stated".
  */
 interface RestIssueAttachment {
   id?: string;
@@ -816,8 +817,11 @@ export class RestTaskaApi implements TaskaApi {
    * a missing object answers **404**, a storage refusal **403** and MinIO being
    * down **503** (read at `develop` `1cfe4d79f074`) — the first two the very
    * statuses this route gives a missing project and a reader with no access.
-   * The board's `retryUnlessMissing` does not retry a 404 or a 403, so it keeps
-   * saying the members could not be read.
+   * The board's `retryUnlessMissing` does not retry a 404 or a 403, and the
+   * failure is mostly silent: only the watcher section of an open issue says the
+   * members could not be read, and only to an ADMIN. Everywhere else there are
+   * simply no assignee chips and no people in the assignee filter, and the
+   * reporter reads "Unknown".
    *
    * The other six fields of `AvatarDto` stay dropped, and one of them is worth
    * recording so the next reader does not re-derive it: `createdAt` is declared
@@ -2358,8 +2362,8 @@ function refusePlanningFields(input: PlanningFieldsInput, stored: StoredPlanning
 /**
  * The file refusals from src/api/attachments.ts, thrown as the gateway's own
  * answer so a file stopped here is indistinguishable from one stopped there.
- * Since backend PR #147 merged, all three arms share that answer: **400**
- * `INVALID_ARGUMENT` (read at `develop` `1cfe4d79f074`).
+ * All three arms share that answer: **400** `INVALID_ARGUMENT` (read at
+ * `develop` `1cfe4d79f074`).
  *
  * - **disallowed type** — reaches `S3StorageClient.validateFileParams`, which
  *   raises `DomainStatus.INVALID_ARGUMENT`. `RestErrorMapper` maps that to
@@ -2375,13 +2379,17 @@ function refusePlanningFields(input: PlanningFieldsInput, stored: StoredPlanning
  *   reproduce — nobody reads it: the panel refuses both in its own words before
  *   this is reached.
  *
- * The ceiling used to be the odd one out. Until PR #147 merged, the DTO stated
- * no `maximum`, so an over-size file reached `validateFileParams` and was
- * refused `OUT_OF_RANGE` — which `RestErrorMapper` had no row for, so it fell
- * to a **500**, and this function synthesised that 500. The merge brought both
- * the `maximum` and the row (`OUT_OF_RANGE` → 400), which is what
- * docs/ai/API-DIVERGENCE.md named as the removal of that 500. The leg-3
- * re-measure still refuses an oversized object with `OUT_OF_RANGE`, on 400 now.
+ * The ceiling used to be the odd one out here, synthesised as a **500** that no
+ * gateway ever answered. It was a reading of backend PR #147's older head
+ * `f53dca38`, where the DTO stated no `maximum`, so an over-size file reached
+ * `validateFileParams` and was refused `OUT_OF_RANGE` — which `RestErrorMapper`
+ * had no row for, so it fell to a 500. The PR's head moved to `deeedbf`
+ * (committed 2026-09-09) with both the `maximum` and the row
+ * (`OUT_OF_RANGE` → 400), which removed the 500 before any gateway served these
+ * routes. This repository re-pinned that head on 2026-09-12 and updated the
+ * YAML half — the extract gained the `maximum` — but missed the Java half, and
+ * kept synthesising the 500 until TAS-224 caught it. The leg-3 re-measure still
+ * refuses an oversized object with `OUT_OF_RANGE`, on 400.
  *
  * Nothing reads the status that changed: the panel takes
  * `apiErrorFacts(error).message`, and the only `status >= 500` readers in this

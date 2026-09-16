@@ -69,9 +69,10 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * were next, measured the same way on 2026-08-25 against
  * `POST /api/v1/admin/users/not-a-uuid/block`; backend PR #146 mapped all three
  * of those paths and they answer `400 INVALID_ARGUMENT` as of 2026-09-08, so
- * TAS-196 removed that compensation. The attachment routes followed: backend
- * PR #147 merged, they answered `401` without a token on 2026-09-16, and
- * TAS-224 removed the panel's branch. `UserProfileMenu` still reads this arm
+ * TAS-196 removed that compensation. The attachment routes followed: they
+ * merged with backend PR #147 and are deployed — their list route answered
+ * `401` without a token on 2026-09-16 — and TAS-224 removed the panel's
+ * branch. `UserProfileMenu` still reads this arm
  * for the avatar routes. This is the predicate working as designed rather than
  * a reason to distrust it.
  *

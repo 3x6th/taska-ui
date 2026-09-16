@@ -58,6 +58,7 @@ const {
   holdLabelCreate,
   failMembers,
   holdMembers,
+  memberReads,
   seedWatchers,
   failWatchersRead,
   holdWatchersRead,
@@ -193,6 +194,8 @@ const {
     /** `GET /projects/{id}/members` failing. */
     membersFailure?: Error;
     membersHeld: boolean;
+    /** Every member read that went out, answered or not, so a retried read can be told from a single one. */
+    membersReads: number;
     /**
      * The watchers section. `watchers` and `watchersTotal` are held apart
      * deliberately: the whole point of the count is that it is a field the
@@ -248,6 +251,7 @@ const {
     deleteHeld: false,
     deleteReleases: [],
     membersHeld: false,
+    membersReads: 0,
     watchers: [],
     watchersTotal: null,
     watchersCountAfterWrite: null,
@@ -301,6 +305,7 @@ const {
       return state.membership;
     },
     listMembers: async () => {
+      state.membersReads += 1;
       if (state.membersHeld) return new Promise(() => {});
       if (state.membersFailure) throw state.membersFailure;
       return state.members;
@@ -623,6 +628,7 @@ const {
     holdMembers: (held: boolean) => {
       state.membersHeld = held;
     },
+    memberReads: () => state.membersReads,
     /** The list read's two answers, stated apart so a test can make them disagree. */
     seedWatchers: (watchers: typeof state.watchers, totalCount: number | null, countAfterWrite: number | null = null) => {
       state.watchers = watchers;
@@ -734,6 +740,7 @@ const {
       state.deleteReleases = [];
       state.membersFailure = undefined;
       state.membersHeld = false;
+      state.membersReads = 0;
       state.watchers = [];
       state.watchersTotal = null;
       state.watchersCountAfterWrite = null;
@@ -2347,11 +2354,46 @@ describe("issue watchers", () => {
 
     const panel = await section();
     expect(await panel.findByText(/members could not be read/i, undefined, AFTER_RETRY)).toBeVisible();
+    // Asked twice: a 500 is a genuine failure and gets its one retry before the
+    // section says anything. The 404 case below is measured against this —
+    // without it, a member query that lost its retry option would still pass
+    // there, since this harness defaults to no retries at all.
+    expect(memberReads()).toBe(2);
     expect(panel.queryByLabelText("Add a watcher")).toBeNull();
     // The rest of the section still works: the row is there, unnamed, and an
     // admin can still remove it — a remove names a `userId`, which the row
     // already carries.
     expect(panel.getByRole("button", { name: `Remove watcher ${SOFIA}` })).toBeEnabled();
+  });
+
+  it("stays on the board, and asks once, when the member read is refused with a 404", async () => {
+    // The shape the stand's member read takes when one avatar object behind it
+    // is unreadable: the whole read fails with NOT_FOUND (or PERMISSION_DENIED)
+    // — the pair a missing or forbidden project answers with too, and the pair
+    // `isMissingOrForbidden` recognises (see `TaskaApi.listMembers`). The
+    // message is this fixture's own; nothing on screen prints it.
+    failMembers(Object.assign(new Error("Not found"), { status: 404, code: "NOT_FOUND" }));
+    seedWatchers([watcher(SOFIA)], 1);
+    const queryClient = renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText(/members could not be read/i, undefined, AFTER_RETRY)).toBeVisible();
+
+    // The board stays. §4.18's screen keys on the *project* read alone, and
+    // that one answered — a 404 about the members is not a 404 about the page.
+    expect(screen.queryByRole("heading", { name: /page not found/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
+
+    // And the read went out once. `retryUnlessMissing` takes the 404 as an
+    // answer: the query settled into its error on the first failure — a retry
+    // would have counted two failures before `error` was reached — and nothing
+    // is waiting to ask again.
+    expect(memberReads()).toBe(1);
+    expect(queryClient.getQueryState(["members", PROJECT_ID])).toMatchObject({
+      status: "error",
+      fetchStatus: "idle",
+      fetchFailureCount: 1,
+    });
   });
 
   it("draws a watcher the member list cannot name without dropping the row", async () => {

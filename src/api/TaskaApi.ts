@@ -633,7 +633,10 @@ export interface TaskaApi {
    * object answers 404, a storage refusal 403 and a store that is down 503 —
    * the first two the same statuses this route gives a missing project and a
    * reader with no access (read at `develop` `1cfe4d79f074`). The board does not
-   * retry a 404 or a 403, and says the members could not be read.
+   * retry a 404 or a 403, and says almost nothing about the failure: only the
+   * watcher section of an open issue says the members could not be read, and
+   * only to an ADMIN. Everywhere else it is silent — the assignee filter and
+   * the assignee chips offer nobody, and the reporter reads "Unknown".
    *
    * `addedAt` and `addedBy` are not on the wire: `ProjectMemberDetailsDto` is
    * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else. A
@@ -850,9 +853,15 @@ export interface TaskaApi {
    * from issue-service, and the empty file and the ceiling from the gateway's
    * own bean validation (`minimum: 1`, `maximum: 2097152`) before issue-service
    * is asked. The ceiling is checked again at leg 3, where an oversized object
-   * answers `400` `OUT_OF_RANGE`. Until backend PR #147 merged, the ceiling was
-   * a **500** here, because `RestErrorMapper` had no `OUT_OF_RANGE` row and the
-   * DTO no `maximum`; both arrived with it (read at `develop` `1cfe4d79f074`).
+   * answers `400` `OUT_OF_RANGE` (read at `develop` `1cfe4d79f074`).
+   *
+   * This comment said the ceiling was a **500** until TAS-224, and no gateway
+   * ever answered one: that was a reading of backend PR #147's older head
+   * `f53dca38`, where the DTO had no `maximum` and `RestErrorMapper` no
+   * `OUT_OF_RANGE` row. The PR's head moved to `deeedbf` (committed 2026-09-09)
+   * with both, which removed the 500 before any gateway served these routes.
+   * The re-pin to that head on 2026-09-12 updated the YAML half — the extract
+   * gained the `maximum` — but missed the Java half, and TAS-224 caught it.
    * `refuseAttachment` in src/api/rest/RestTaskaApi.ts traces the chain and
    * reproduces it.
    */
@@ -1313,8 +1322,9 @@ export interface TaskaApi {
  * deployed all three, so `POST /api/v1/admin/users/not-a-uuid/block` answers
  * `400 INVALID_ARGUMENT` as of 2026-09-08 where it answered this 404 on
  * 2026-08-25, and TAS-196 took that compensation out. The attachments panel was
- * the other — backend PR #147 merged on 2026-09-14, its routes answered `401`
- * without a token on 2026-09-16, and TAS-224 took that branch out.
+ * the other — its routes merged with backend PR #147 on 2026-09-14 and are
+ * deployed, the list route answered `401` without a token on 2026-09-16, and
+ * TAS-224 took that branch out.
  *
  * Pinned here rather than inline in a component for the reason
  * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a

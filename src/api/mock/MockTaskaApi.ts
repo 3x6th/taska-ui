@@ -2388,15 +2388,18 @@ export class MockTaskaStore {
   ): AttachmentUploadTicket {
     const refusal = attachmentRefusal(input);
     if (refusal) {
-      // One code for all three, as the gateway answers this leg since backend
-      // PR #147 merged: an unusable type is INVALID_ARGUMENT from issue-service,
-      // and the empty file and the ceiling are INVALID_ARGUMENT from the
-      // gateway's own bean validation (`minimum: 1`, `maximum: 2097152`),
-      // before issue-service is asked. The ceiling was OUT_OF_RANGE on a 500
-      // here until then. `MockApiError` carries no status, so the code is the
-      // whole of what this side can express; `refuseAttachment` in
-      // RestTaskaApi.ts carries the status and states the chain. Leg 3's
-      // re-measure below is still OUT_OF_RANGE.
+      // One code for all three, as the gateway answers this leg: an unusable
+      // type is INVALID_ARGUMENT from issue-service, and the empty file and the
+      // ceiling are INVALID_ARGUMENT from the gateway's own bean validation
+      // (`minimum: 1`, `maximum: 2097152`), before issue-service is asked. This
+      // store threw OUT_OF_RANGE for the ceiling until TAS-224, from a reading
+      // of backend PR #147's older head `f53dca38`; the head moved to `deeedbf`
+      // (2026-09-09) with the `maximum` and `RestErrorMapper`'s OUT_OF_RANGE row
+      // before any gateway served this route, and the 2026-09-12 re-pin updated
+      // the YAML half but missed the Java half. `MockApiError` carries no
+      // status, so the code is the whole of what this side can express;
+      // `refuseAttachment` in RestTaskaApi.ts carries the status and states the
+      // chain. Leg 3's re-measure below is still OUT_OF_RANGE.
       throw new MockApiError("INVALID_ARGUMENT", refusal);
     }
     const issue = this.findIssue(projectId, issueId);

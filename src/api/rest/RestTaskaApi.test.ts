@@ -3089,12 +3089,14 @@ describe("RestTaskaApi attachments", () => {
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400 });
 
     // The one that used to be odd, and pinned as a fact about the gateway rather
-    // than as a preference. Until backend PR #147 merged, a file one byte too
-    // large reached issue-service, was refused OUT_OF_RANGE, and fell to a 500
-    // because `RestErrorMapper` had no row for that code. The merge added the
-    // row and put `maximum: 2097152` on the request DTO, so the gateway's bean
-    // validation now refuses the size first: 400 INVALID_ARGUMENT, like its
-    // siblings (read at `develop` `1cfe4d79f074`).
+    // than as a preference: `maximum: 2097152` on the request DTO makes the
+    // gateway's bean validation refuse the size first, 400 INVALID_ARGUMENT like
+    // its siblings (read at `develop` `1cfe4d79f074`). This test asserted a 500
+    // until TAS-224, which no gateway ever answered: it was a reading of backend
+    // PR #147's older head `f53dca38`, with no `maximum` and no OUT_OF_RANGE row
+    // in `RestErrorMapper`. The head moved to `deeedbf` (2026-09-09) with both,
+    // before any gateway served the route; the 2026-09-12 re-pin updated the
+    // YAML half and missed the Java half.
     await expect(
       api.createAttachmentUploadUrl(PROJECT, ISSUE, { fileName: "a.txt", contentType: "text/plain", sizeBytes: ATTACHMENT_MAX_SIZE_BYTES + 1 }),
     ).rejects.toMatchObject({

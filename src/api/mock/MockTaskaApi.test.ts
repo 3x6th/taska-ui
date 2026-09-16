@@ -2370,9 +2370,10 @@ describe("MockTaskaApi", () => {
         code: "INVALID_ARGUMENT",
         message: "File size must be positive, got: 0",
       });
-      // INVALID_ARGUMENT, not OUT_OF_RANGE: since backend PR #147 merged, the
-      // contract's `maximum: 2097152` refuses the size in the gateway's own bean
-      // validation, before the issue service that would say OUT_OF_RANGE.
+      // INVALID_ARGUMENT, not OUT_OF_RANGE: the contract's `maximum: 2097152`
+      // refuses the size in the gateway's own bean validation, before the issue
+      // service that would say OUT_OF_RANGE — as it already did at backend
+      // PR #147's head `deeedbf`, before any gateway served the route.
       await expect(ask(ATTACHMENT_MAX_SIZE_BYTES + 1)).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
         message: attachmentSizeRefusalMessage(ATTACHMENT_MAX_SIZE_BYTES + 1),
