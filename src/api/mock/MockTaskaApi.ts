@@ -37,7 +37,6 @@ import {
   ATTACHMENT_PRESIGNED_TTL_MS,
   ATTACHMENT_STORE_ORIGIN,
   attachmentRefusal,
-  attachmentRefusalKind,
   attachmentSizeRefusalMessage,
 } from "../attachments";
 import {
@@ -187,11 +186,6 @@ const DONE_STATUS_ID = "44444444-4444-4444-4444-444444444444";
  * Triggering on the file name rather than on a flag keeps the seam out of the
  * production API surface: nothing on `TaskaApi` grows a test parameter, and a
  * reader can exercise a failure by renaming a file on their desktop.
- *
- * Not in this list, because this mock structurally cannot produce it: the
- * undeployed-route signature. That is a **404 with `No static resource` in the
- * message**, and `MockApiError` carries no HTTP status at all — by design, see
- * src/api/errors.ts. It only exists against `rest` and `hybrid`.
  */
 export const MOCK_ATTACHMENT_TRIGGERS = {
   /** Leg 2 rejects with no response at all, the way a blocked CORS preflight does. */
@@ -1475,12 +1469,10 @@ export class MockTaskaStore {
     // **Priya on TAS-103 is the deliberate one.** She is a member of WEB and
     // MOB and not of TAS, so `GET /projects/{TAS}/members` does not name her
     // and her row draws as "Unknown" — the same sentence the reporter line
-    // prints for an id it cannot resolve. That is the state every watcher is in
-    // against the deployed gateway, where the member read is a 405 (TAS-137),
-    // and seeding it means the case is on screen in the one environment
-    // anybody looks at instead of only in `rest` mode, which nobody runs. It
-    // also demonstrates the half of this feature that needs no member list at
-    // all: her row can be removed by an ADMIN, because a remove names a
+    // prints for an id it cannot resolve. Every other seeded watcher is named,
+    // so without her that state would be on screen only when a member read
+    // fails. It also demonstrates the half of this feature that needs no member
+    // list at all: her row can be removed by an ADMIN, because a remove names a
     // `userId` and the row already carries one.
     const watcherSeed: [string, string, string][] = [
       ["TAS-101", ANNA_ID, ANNA_ID],
@@ -1777,22 +1769,24 @@ export class MockTaskaStore {
   }
 
   /**
-   * `currentUserRole` (backend PR #152), attached here so `getProject` and
-   * `listProjects` answer the same shape — and so does `rest`: PR #152
-   * rewrote `ProjectService.listMyProjects` to join `project_members` and
-   * fill the role on every row of `GET /projects` too, not only the
-   * single-project read this method used to serve alone. The rest leg derives
-   * the whole of `getMembership` from this one field, and a mock that carried
-   * it on only one of the two routes would make that derivation untestable
-   * against anything but a stub for the other.
+   * `currentUserRole` (backend TAS-137, PR #152), attached here so `getProject`
+   * and `listProjects` answer the same shape — and so does `rest`: PR #152,
+   * read at head `1ad6ffad815d`, rewrote `ProjectService.listMyProjects` to
+   * join `project_members` and fill the role on every row of `GET /projects`
+   * too, not only the single-project read this method used to serve alone. The
+   * rest leg derives the whole of `getMembership` from this one field, and a
+   * mock that carried it on only one of the two routes would make that
+   * derivation untestable against anything but a stub for the other.
    *
    * A copy rather than a stored field, because the role belongs to the reader
    * and not to the project row — written into `this.projects` it would leak
    * one reader's role into every other answer built from that array. Absent
-   * for a non-member, exactly as the gateway leaves it absent when it computed
-   * no role; the mock never emits the explicit `null` a deployed gateway can
-   * send for a computed-but-empty role (`src/domain/types.ts`), only the
-   * missing key.
+   * for a non-member, which is the mock's own shape: a deployed gateway answers
+   * a non-member's project read with 403 rather than a project (see the
+   * divergence below), states the reader's role on every 200, and writes an
+   * explicit `null` only on the `POST /projects` response
+   * (`src/domain/types.ts`). Every reader treats an absent key and a `null`
+   * alike.
    *
    * **Known mock divergence: no entry in docs/ai/API-DIVERGENCE.md names
    * `getProject` by route, but the convention behind it is recorded — under the
@@ -2394,15 +2388,19 @@ export class MockTaskaStore {
   ): AttachmentUploadTicket {
     const refusal = attachmentRefusal(input);
     if (refusal) {
-      // Two codes, split the way the server splits them: an unusable type or a
-      // non-positive size is INVALID_ARGUMENT, and only the ceiling is
-      // OUT_OF_RANGE. They do not share an HTTP status either — the ceiling is
-      // a 500, because `RestErrorMapper` has no `OUT_OF_RANGE` row and falls to
-      // its INTERNAL_SERVER_ERROR default. `MockApiError` carries no status, so
-      // the code is the whole of what this side can express; `refuseAttachment`
-      // in RestTaskaApi.ts carries the status and states the chain.
-      const code = attachmentRefusalKind(input) === "size" ? "OUT_OF_RANGE" : "INVALID_ARGUMENT";
-      throw new MockApiError(code, refusal);
+      // One code for all three, as the gateway answers this leg: an unusable
+      // type is INVALID_ARGUMENT from issue-service, and the empty file and the
+      // ceiling are INVALID_ARGUMENT from the gateway's own bean validation
+      // (`minimum: 1`, `maximum: 2097152`), before issue-service is asked. This
+      // store threw OUT_OF_RANGE for the ceiling until TAS-224, from a reading
+      // of backend PR #147's older head `f53dca38`; the head moved to `deeedbf`
+      // (2026-09-09) with the `maximum` and `RestErrorMapper`'s OUT_OF_RANGE row
+      // before any gateway served this route, and the 2026-09-12 re-pin updated
+      // the YAML half but missed the Java half. `MockApiError` carries no
+      // status, so the code is the whole of what this side can express;
+      // `refuseAttachment` in RestTaskaApi.ts carries the status and states the
+      // chain. Leg 3's re-measure below is still OUT_OF_RANGE.
+      throw new MockApiError("INVALID_ARGUMENT", refusal);
     }
     const issue = this.findIssue(projectId, issueId);
     this.requireUploadRole(projectId);
@@ -2641,7 +2639,8 @@ export class MockTaskaStore {
    *   `INVALID_ARGUMENT`, "Invalid request parameters", before anything else;
    * - then the caller has to exist, which `currentUser()` stands in for;
    * - then the type, and the enforced **2 MB** — `OUT_OF_RANGE`, which answers
-   *   500 over the wire because `RestErrorMapper` has no row for it.
+   *   400 over the wire since backend PR #147 gave `RestErrorMapper` a row for
+   *   it (a 500 before).
    *
    * An empty file is bean-validated at the gateway too, with the same code as
    * the type arm; this throws `validateFileParams`'s sentence for it, as
@@ -3965,7 +3964,7 @@ export class MockTaskaStore {
   /**
    * The nested summary a member row carries — and it is built **at read time**,
    * never stored, because the avatar in it changes without the membership
-   * changing. `ProjectMemberDetailsDto` carries the avatar inline, which is
+   * changing. `ProjectMemberDetailsDto` declares the avatar inline, which is
    * what makes a board of faces one request; a summary frozen into
    * `membersByProject` at construction would have been a board that never
    * noticed anybody's new picture.
@@ -3977,11 +3976,23 @@ export class MockTaskaStore {
    * re-confirm defect in `confirmAvatarUpload` leaves — rather than the bytes
    * this store still happens to hold: there is no object left to presign, and a
    * face the server cannot serve should not be drawn. That is this store's
-   * choice and not a reading of the gateway. The member read is backend PR #152,
-   * still open, and docs/ai/API-DIVERGENCE.md ("PR #152's member rows never carry
-   * an avatar (pending)") records that its presign has no per-row fallback, so
-   * there one such row fails the whole member read — which this does not
-   * reproduce.
+   * choice and not a reading of the gateway.
+   *
+   * **Two known parity gaps with the deployed member read**, both deliberate,
+   * both where this store is the kinder of the two, and neither predicted by
+   * mock-backed evidence. The read is backend TAS-137 (PR #152, merged and
+   * deployed), and at `develop` `1cfe4d79f074`:
+   *
+   * - it fills no row's avatar at all — auth-service's `findUsersWithAvatars`
+   *   selects no avatar id and `ProfileMapper` attaches an avatar only when the
+   *   id is present — where this store draws the faces the contract declares;
+   * - one unreadable avatar object fails the **whole** read, because
+   *   `enrichWithAvatarUrl` HEADs and presigns every avatar owner's object with
+   *   no per-row fallback: 404 for a missing object, 403 for a storage refusal,
+   *   503 with the store down. This store drops that one face and answers the
+   *   rest.
+   *
+   * docs/ai/API-DIVERGENCE.md records the pair.
    */
   private userSummary(userId: string): ProjectMember["user"] {
     const user = this.getUser(userId);

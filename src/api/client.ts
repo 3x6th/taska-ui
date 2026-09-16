@@ -8,7 +8,6 @@ const mode = import.meta.env.VITE_TASKA_API_MODE || "hybrid";
 // In dev "/api/v1" goes through the Vite proxy to the gateway (see vite.config.ts);
 // deployed builds point directly at the gateway via VITE_TASKA_API_BASE_URL.
 const baseUrl = import.meta.env.VITE_TASKA_API_BASE_URL || "/api/v1";
-const assumeProjectAdmin = import.meta.env.VITE_TASKA_ASSUME_PROJECT_ADMIN === "true";
 
 function createApi(): TaskaApi {
   switch (mode) {
@@ -17,9 +16,9 @@ function createApi(): TaskaApi {
     case "rest":
       return new RestTaskaApi(baseUrl);
     default:
-      // "hybrid": gateway-backed APIs are live. Membership/member reads use
-      // the temporary admin compatibility view until TAS-137 is deployed.
-      return new HybridTaskaApi(new RestTaskaApi(baseUrl), assumeProjectAdmin);
+      // "hybrid": a pass-through to the gateway since TAS-224, kept as the
+      // default until TAS-209 switches it to "rest" and deletes the class.
+      return new HybridTaskaApi(new RestTaskaApi(baseUrl));
   }
 }
 

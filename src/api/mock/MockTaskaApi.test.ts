@@ -82,21 +82,23 @@ describe("MockTaskaApi", () => {
   });
 
   describe("the reader's own role on a project", () => {
-    // `currentUserRole` is what backend PR #152 adds to `ProjectResponseDto`,
-    // and it is the whole of what the rest leg derives `getMembership` from.
-    // The mock serves it so the two implementations answer the same shape —
-    // otherwise the derivation could only ever be tested against a stub.
+    // `currentUserRole` is what backend TAS-137 (PR #152) added to
+    // `ProjectResponseDto`, and it is the whole of what the rest leg derives
+    // `getMembership` from. The mock serves it so the two implementations
+    // answer the same shape — otherwise the derivation could only ever be
+    // tested against a stub.
     it("states the role of whoever is reading, on the project read itself", async () => {
       await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "ADMIN" });
       await api.login({ email: "mark@example.com", password: "anything" });
       await expect(api.getProject(project.id)).resolves.toMatchObject({ currentUserRole: "MEMBER" });
     });
 
-    // Backend PR #152 fills `currentUserRole` on every row of `GET /projects`
-    // too, not only the single-project read — `ProjectRepository
-    // .findAllByMemberUserId` joins `project_members` for it. `withCurrentUserRole`
-    // is what both `getProject` and `listProjects` share so the mock cannot
-    // drift into serving one route a shape the other does not.
+    // Backend PR #152, read at head `1ad6ffad815d`, fills `currentUserRole` on
+    // every row of `GET /projects` too, not only the single-project read —
+    // `ProjectRepository.findAllByMemberUserId` joins `project_members` for
+    // it. `withCurrentUserRole` is what both `getProject` and `listProjects`
+    // share so the mock cannot drift into serving one route a shape the other
+    // does not.
     it("states the role on every row of the project list too, not only the single read", async () => {
       await expect(api.listProjects()).resolves.toContainEqual(
         expect.objectContaining({ id: project.id, currentUserRole: "ADMIN" }),
@@ -122,10 +124,11 @@ describe("MockTaskaApi", () => {
       // Anna is not on Mobile. The gateway would answer 403 to this read and
       // the mock answers the project instead — a known divergence documented
       // on `MockTaskaApi.withCurrentUserRole` rather than in
-      // docs/ai/API-DIVERGENCE.md, which has no entry for it. The field
-      // itself still behaves as a deployed gateway's absence would: missing,
-      // not an explicit `null`, when no role was computed. That absence is
-      // what the rest leg floors to VIEWER.
+      // docs/ai/API-DIVERGENCE.md, which has no entry for it. The field is
+      // missing when no role was computed — the mock's shape; a deployed
+      // gateway would not answer this read at all, and states a role on every
+      // 200 it does give — and the rest leg floors a missing or `null` role to
+      // VIEWER regardless.
       await api.login({ email: "mark@example.com", password: "anything" });
       const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
       expect(mobile).toBeDefined();
@@ -2236,10 +2239,10 @@ describe("MockTaskaApi", () => {
 
   /**
    * The three-legged upload, every way it can be refused, and the two rules
-   * that decide what the panel is allowed to say afterwards. This is the only
-   * place the feature can be exercised at all until backend TAS-131 deploys, so
-   * the fidelity of these branches is the deliverable rather than scaffolding
-   * for it.
+   * that decide what the panel is allowed to say afterwards. Backend TAS-131
+   * has deployed since this was written, but this store is still the one place
+   * every refusal below can be produced on demand, so the fidelity of these
+   * branches is the deliverable rather than scaffolding for it.
    */
   describe("attachments", () => {
     /** A file the allowlist accepts, of a size the ceiling accepts. */
@@ -2367,8 +2370,12 @@ describe("MockTaskaApi", () => {
         code: "INVALID_ARGUMENT",
         message: "File size must be positive, got: 0",
       });
+      // INVALID_ARGUMENT, not OUT_OF_RANGE: the contract's `maximum: 2097152`
+      // refuses the size in the gateway's own bean validation, before the issue
+      // service that would say OUT_OF_RANGE — as it already did at backend
+      // PR #147's head `deeedbf`, before any gateway served the route.
       await expect(ask(ATTACHMENT_MAX_SIZE_BYTES + 1)).rejects.toMatchObject({
-        code: "OUT_OF_RANGE",
+        code: "INVALID_ARGUMENT",
         message: attachmentSizeRefusalMessage(ATTACHMENT_MAX_SIZE_BYTES + 1),
       });
       // Inclusive: 2097152 is the largest accepted, not the smallest refused.
@@ -2785,8 +2792,8 @@ describe("MockTaskaApi", () => {
 
     it("seeds a watcher who is not a member of the project, so the unnamed row is reachable", async () => {
       // Priya belongs to WEB and MOB, not to TAS. `GET /projects/{TAS}/members`
-      // therefore cannot name her, which is the state *every* watcher is in
-      // against the deployed gateway (TAS-137).
+      // therefore cannot name her, and her row is the one seeded watcher the
+      // section has to draw unnamed.
       const issue = await openIssue("TAS-103");
       const { watchers } = await api.listIssueWatchers(project.id, issue.id);
       const members = new Set((await api.listMembers(project.id)).map((member) => member.userId));
@@ -3001,9 +3008,9 @@ describe("MockTaskaApi", () => {
       await expect(
         api.createAvatarUploadUrl({ fileName: "huge.png", contentType: "image/png", sizeBytes: threeMegabytes }),
       ).rejects.toMatchObject({
-        // This band alone is OUT_OF_RANGE — `RestErrorMapper` has no row for it,
-        // which is why it answers 500 over the wire while its siblings answer
-        // 400.
+        // This band alone is OUT_OF_RANGE. Over the wire it answers 400 like its
+        // siblings — backend PR #147 gave `RestErrorMapper` the row it lacked,
+        // and it answered 500 before — so the code is the only difference.
         code: "OUT_OF_RANGE",
         message: avatarSizeRefusalMessage(threeMegabytes),
       });

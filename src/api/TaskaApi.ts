@@ -564,10 +564,10 @@ export interface TaskaApi {
    * 2026-09-12**, where the path answers **405** with `code:
    * "METHOD_NOT_ALLOWED"` — it exists for GET, so this is not the
    * static-resource 404 arm of `isUndeployedRoute`, but its second arm
-   * (TAS-148) matches this signature too. `HybridTaskaApi` still delegates
-   * this straight to the gateway; `EditProjectModal` is what reads the 405
-   * that comes back and shows it as a quiet "not shipped yet" rather than the
-   * gateway's raw sentence.
+   * (TAS-148) matches this signature too. `HybridTaskaApi` delegates this
+   * straight to the gateway, like everything else; `EditProjectModal` is what
+   * reads the 405 that comes back and shows it as a quiet "not shipped yet"
+   * rather than the gateway's raw sentence.
    *
    * Four things the yml does not say, read out of `ProjectServiceImpl` at that
    * head, each of which decides something in the UI:
@@ -593,19 +593,28 @@ export interface TaskaApi {
    * The reader's own standing in one project: the role they hold, whether they
    * are a member at all, and whether the project exists.
    *
-   * **There is no membership route and backend PR #152 does not add one.**
-   * `GET /projects/{projectId}/membership` answers the static-resource 404
-   * (probed 2026-09-12, no token, against a control that answered 401), so the
-   * `rest` leg derives all three from `GET /projects/{projectId}`: that read is
-   * membership-checked — someone else's project is a 403, not a 200 (TAS-154) —
-   * so a 200 settles `isMember` and `projectExists`, and the role is the
-   * response's `currentUserRole`.
+   * **There is no membership route, and none is coming**: backend TAS-137 put
+   * the role on the project read instead. `GET /projects/{projectId}/membership`
+   * answers the static-resource 404 (probed without a token on 2026-09-12 and
+   * again on 2026-09-16, after TAS-137 deployed, each time against a control
+   * that answered 401), so the `rest` leg derives all three from
+   * `GET /projects/{projectId}`: that read is membership-checked — someone
+   * else's project is a 403, not a 200 (TAS-154) — so a 200 settles `isMember`
+   * and `projectExists`, and the role is the response's `currentUserRole`.
    *
-   * When that field is absent **or** an explicit `null` — both real answers
-   * off this wire, see `Project.currentUserRole` — the result is `VIEWER`,
-   * which is a floor and not a reading of the server: it hides writes the
+   * Every 200 from that read states a role name: it refuses a non-member with
+   * 403, and a member's role is never null (see `Project.currentUserRole`). The
+   * result is still floored to `VIEWER` when the field is `null`, absent — as
+   * it was on every response before TAS-137 deployed — or a value this build
+   * does not know. That floor is a defensive default, unreachable from a 200 on
+   * the deployed gateway, and not a reading of the server: it hides writes the
    * server might still allow, and never offers one it is going to refuse.
    * Role gating hides UI; the server stays authoritative either way.
+   *
+   * A failed project read rejects this call, in every implementation that
+   * reads one. Since TAS-224 that includes the deployed stand, where `hybrid`
+   * used to answer without asking — so the board's "your role could not be
+   * loaded" state (TAS-163) is reachable there.
    */
   getMembership(projectId: string): Promise<ProjectMembership>;
   /**
@@ -613,10 +622,21 @@ export interface TaskaApi {
    * server holds for them — `GET /projects/{projectId}/members`, unwrapped from
    * `members`.
    *
-   * The `rest` leg is written against backend PR #152, **open and undeployed**
-   * on 2026-09-12: the route answers 405 there, because only POST is mapped on
-   * that path. `HybridTaskaApi` is what the stand runs and it still synthesises
-   * a single row — the reader — until the PR merges.
+   * Backend TAS-137 (PR #152), merged into `develop` `1cfe4d79f074` and in
+   * `docs/contract/openapi.yml`. Deployed: probed without a token on 2026-09-16
+   * the route answers 401, where it answered 405 on 2026-09-12. The `rest` leg
+   * was written against the PR before it merged, and since TAS-224 `hybrid`
+   * delegates to it, so this is the read the stand makes.
+   *
+   * **One unreadable avatar object fails the whole read.** The server HEADs and
+   * presigns every avatar owner's object with no per-row fallback, so a missing
+   * object answers 404, a storage refusal 403 and a store that is down 503 —
+   * the first two the same statuses this route gives a missing project and a
+   * reader with no access (read at `develop` `1cfe4d79f074`). The board does not
+   * retry a 404 or a 403, and says almost nothing about the failure: only the
+   * watcher section of an open issue says the members could not be read, and
+   * only to an ADMIN. Everywhere else it is silent — the assignee filter and
+   * the assignee chips offer nobody, and the reporter reads "Unknown".
    *
    * `addedAt` and `addedBy` are not on the wire: `ProjectMemberDetailsDto` is
    * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else. A
@@ -829,10 +849,21 @@ export interface TaskaApi {
    * the server refuses all three, so a mock that accepted them would hide the
    * failure from the e2e suite.
    *
-   * The three refusals do not share an answer: the first two are `400`
-   * `INVALID_ARGUMENT`, and the ceiling is `OUT_OF_RANGE` on **500**, because
-   * the gateway's `RestErrorMapper` has no `OUT_OF_RANGE` row. `refuseAttachment`
-   * in src/api/rest/RestTaskaApi.ts traces the whole chain and reproduces it.
+   * All three answer the same at this leg, `400` `INVALID_ARGUMENT`: the type
+   * from issue-service, and the empty file and the ceiling from the gateway's
+   * own bean validation (`minimum: 1`, `maximum: 2097152`) before issue-service
+   * is asked. The ceiling is checked again at leg 3, where an oversized object
+   * answers `400` `OUT_OF_RANGE` (read at `develop` `1cfe4d79f074`).
+   *
+   * This comment said the ceiling was a **500** until TAS-224, and no gateway
+   * ever answered one: that was a reading of backend PR #147's older head
+   * `f53dca38`, where the DTO had no `maximum` and `RestErrorMapper` no
+   * `OUT_OF_RANGE` row. The PR's head moved to `deeedbf` (committed 2026-09-09)
+   * with both, which removed the 500 before any gateway served these routes.
+   * The re-pin to that head on 2026-09-12 updated the YAML half — the extract
+   * gained the `maximum` — but missed the Java half, and TAS-224 caught it.
+   * `refuseAttachment` in src/api/rest/RestTaskaApi.ts traces the chain and
+   * reproduces it.
    */
   createAttachmentUploadUrl(
     projectId: string,
@@ -982,8 +1013,9 @@ export interface TaskaApi {
 
   /**
    * Leg 3: auth-service heads the object in the bucket, re-measures it against
-   * its own 2 MB ceiling — deleting an object over it and answering 500
-   * `OUT_OF_RANGE` — replaces the user's row, deletes the *previous* row's
+   * its own 2 MB ceiling — deleting an object over it and answering 400
+   * `OUT_OF_RANGE`, a 500 until backend PR #147 gave `RestErrorMapper` the row
+   * — replaces the user's row, deletes the *previous* row's
    * object, and answers with the avatar, `downloadUrl` and `createdAt`
    * included. So a freshly uploaded face needs no follow-up read: the link to
    * draw is in the answer.
@@ -1026,11 +1058,13 @@ export interface TaskaApi {
    * status — which is why this returns `string | null` and not an object with a
    * possibly-empty string in it.
    *
-   * **Never call this in a loop.** A member list carries each row's avatar
-   * inline (`ProjectMemberDetailsDto.avatar.downloadUrl`, backend PR #152), so
-   * a board full of faces is one read. This method exists for the one case that
-   * has no list to ride on: the current user, whose profile read carries no
-   * avatar at all.
+   * **Never call this in a loop.** A member list declares each row's avatar
+   * inline (`ProjectMemberDetailsDto.avatar.downloadUrl`, backend TAS-137), so
+   * a board full of faces is one read — and on the deployed gateway no row
+   * carries one yet (see `User.avatarUrl`), which is a backend fix to wait for
+   * rather than a reason to fetch faces one person at a time. This method exists
+   * for the one case that has no list to ride on: the current user, whose
+   * profile read carries no avatar at all.
    */
   getUserAvatarUrl(userId: string): Promise<string | null>;
 
@@ -1279,19 +1313,26 @@ export interface TaskaApi {
  * **substring** paired with the 404 — never by equality — because the tail
  * carries the request path, so an equality check would never fire.
  *
- * **One caller: the attachments panel** (`src/screens/BoardScreen.tsx`), whose
- * five routes ship in backend PR #147 and are still open. The admin user writes
- * were the original caller and are no longer one — PR #146 deployed all three,
- * so `POST /api/v1/admin/users/not-a-uuid/block` answers `400 INVALID_ARGUMENT`
- * as of 2026-09-08 where it answered this 404 on 2026-08-25, and TAS-196 took
- * that compensation out.
+ * **Two callers pass it.** `UserProfileMenu`, for the avatar routes — deployed
+ * on 2026-09-14, so this 404 no longer comes back for them — and
+ * `EditProjectModal`, for `PATCH /projects/{id}`, which is still undeployed but
+ * answers with the 405 that `isUndeployedRoute`'s other arm reads rather than
+ * with this 404. Two callers are gone. The admin user writes were the original
+ * one — PR #146
+ * deployed all three, so `POST /api/v1/admin/users/not-a-uuid/block` answers
+ * `400 INVALID_ARGUMENT` as of 2026-09-08 where it answered this 404 on
+ * 2026-08-25, and TAS-196 took that compensation out. The attachments panel was
+ * the other — its routes merged with backend PR #147 on 2026-09-14 and are
+ * deployed, the list route answered `401` without a token on 2026-09-16, and
+ * TAS-224 took that branch out.
  *
  * Pinned here rather than inline in a component for the reason
  * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a
  * measurement, and it belongs where the measurement can be read.
  *
  * The *signature* removes itself; the *code* does not, and this build has now
- * shipped the worked example twice. The day PR #146 deployed the three admin
+ * shipped the worked example three times — the attachments branch above is the
+ * third, taken out by hand in TAS-224. The day PR #146 deployed the three admin
  * user routes they began answering for themselves and this string stopped
  * matching them — silently, with nothing reported to anyone; deleting the
  * branch, the dialog copy and the divergence entry was a separate act, done by

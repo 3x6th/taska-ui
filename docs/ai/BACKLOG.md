@@ -12,10 +12,14 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Conscious decisions to revisit
 
-- **`VITE_TASKA_ASSUME_PROJECT_ADMIN=true` is a deploy variable.** Every
+- ~~**`VITE_TASKA_ASSUME_PROJECT_ADMIN=true` is a deploy variable.** Every
   signed-in user gets the ADMIN surface of the UI. Accepted by the owner while
   the stand has no external users; falls away with TAS-137. Until then, no
-  passing permission check proves role gating works.
+  passing permission check proves role gating works.~~ **Fell away 2026-09-16
+  in [TAS-224](https://jira.ozero.dev/browse/TAS-224).** TAS-137 deployed, and
+  the flag was removed from the code, the workflow, `.env.example`, the README
+  and the repository variable. Each reader now gets the role the gateway
+  reports.
 - **The single stand is dev and prod at once.** Mock-backed features deploy so
   the team can click them; that is the point of the stand, not a risk.
 
@@ -160,7 +164,8 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   whose stated point is that watching is what *any* reader can do is a
   full-width `--surface-2` slab only a project ADMIN can use, sitting between
   the toggle and the list — 63px of the block's 259. On the stand, where
-  `VITE_TASKA_ASSUME_PROJECT_ADMIN` shows it to everyone, every reader pays it.
+  `VITE_TASKA_ASSUME_PROJECT_ADMIN` showed it to everyone, every reader paid it;
+  since TAS-224 only a project ADMIN does.
   Collapsing it behind a compact "Add a watcher" button that reveals the select
   would recover the space and demote an ADMIN control below the reader's.
   Explicitly taste, not a defect; the section order matches labels and links and
@@ -195,7 +200,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   this repository's own record. `DESIGN.md` §4.21 states that the stand runs
   `VITE_TASKA_ASSUME_PROJECT_ADMIN`, which shows the ADMIN controls to everyone
   **precisely so that a 403 is reachable by ordinary clicking** — so what is
-  missing is a run against the stand, not a special gateway. The screenshots
+  missing is a run against the stand, not a special gateway. **No longer true
+  since TAS-224:** the flag is gone, the controls follow the real role, and a
+  403 on the stand now needs a role that changed between the read and the click. The screenshots
   that exist for these tones are the stylesheet drawn onto the live document
   (the `admin-console.spec.ts` technique, labelled as such in the script and the
   spec), which covers the colour and type of a line whose recipe is shared by
@@ -1004,6 +1011,10 @@ time.
   and eighteen of that screen's twenty-seven requests exist to produce it. The
   story removes the count until [TAS-137](https://jira.ozero.dev/browse/TAS-137)
   lands rather than making it cheaper or fixing its grammar.
+  **TAS-137 landed, and since TAS-224 the count is real.** So `1 members` now
+  shows only on a project with one member, and it is a plain plural bug again:
+  one line at `ProjectsScreen.tsx:307`. The request cost is still TAS-202's
+  problem.
 
 ### Left open by TAS-175 (from `art-director`, 2026-08-22)
 
@@ -1650,7 +1661,8 @@ were not.
 Two states in this change could not be exercised at runtime at all, and that is
 worth keeping: **the mock has no failing path for `searchIssues`**, so the error
 branch of both new reads is reviewed from source; and `VIEWER` is unreachable
-while `VITE_TASKA_ASSUME_PROJECT_ADMIN` is set. Neither is a defect. Both are
+while `VITE_TASKA_ASSUME_PROJECT_ADMIN` is set (it was, then; the flag went in
+TAS-224). Neither is a defect. Both are
 places where "verified" would be the wrong word.
 
 ### Left over from the TAS-179 contract pass (`api-contract-guard`, 2026-08-23)
@@ -1969,8 +1981,9 @@ is what recurs.
 
 - [TAS-139](https://jira.ozero.dev/browse/TAS-139) — 500 on commented issues;
   the one item that breaks the deployed board today.
-- [TAS-137](https://jira.ozero.dev/browse/TAS-137) — membership/member reads;
-  removes `HybridTaskaApi` and the admin flag.
+- [TAS-137](https://jira.ozero.dev/browse/TAS-137) — membership/member reads.
+  **Done:** merged as backend PR #152 and deployed 2026-09-16. The synthesis and
+  the admin flag came out in TAS-224; `HybridTaskaApi` itself goes in TAS-209.
 - [TAS-141](https://jira.ozero.dev/browse/TAS-141) — contract gaps: read-all,
   nullable assignee, comment ordering, CORS-exposed `X-Request-Id`,
   404-on-empty-projects bug. **Closed in Jira 2026-09-04 with three clauses
@@ -2072,8 +2085,17 @@ is what recurs.
   floor every user on the stand to VIEWER and take write access off the board.
   It becomes correct the day PR #152 deploys, and it belongs to
   [TAS-202](https://jira.ozero.dev/browse/TAS-202) when it does.
-- **Two backend asks out of PR #152, raised on TAS-137 while the PR is open**
-  (2026-09-12, found by `api-contract-guard`, both verified in the PR's Java).
+  **That day was 2026-09-16.** PR #152 is deployed, and TAS-224 removed the
+  flag and made hybrid delegate, so the precondition holds. Hybrid now asks for
+  the project twice per paint too. The swap is still TAS-202's.
+- ~~**Two backend asks out of PR #152, raised on TAS-137 while the PR is open**
+  (2026-09-12, found by `api-contract-guard`, both verified in the PR's Java).~~
+  **Both fixed before the merge** — true at `1ad6ffa`, fixed in `7fa04ba`, and
+  re-read at develop `1cfe4d7` by `api-contract-guard` on TAS-224:
+  `toRestProjectRole` returns `null` for a role it cannot name instead of
+  throwing, and `getUserDetailsByIds` drops a missing id while
+  `buildProjectMemberDetailsDto` null-checks the user, so such a row arrives
+  nameless rather than failing the read. Kept below as it was written.
   First: `ProjectMapper.toRestProjectRole` throws a 500 for a role it cannot
   name, and after this PR *every* item of `GET /projects` passes through it, so
   one bad membership row blanks the whole projects screen rather than one card
@@ -2091,13 +2113,15 @@ is what recurs.
   is open.
 - **Two record nits from TAS-219's release review**, both one clause and neither
   worth a commit of its own. `RestTaskaApi.getMembership` hardcodes `isMember`
-  and `projectExists` exactly as the hybrid synthesis does, but the divergence
-  bullets attribute that hardcoding to hybrid alone — it is grounded there in
+  and `projectExists` exactly as the hybrid synthesis did (there is no synthesis
+  since TAS-224), but the divergence bullets attribute that hardcoding to hybrid alone — it is grounded there in
   the 403-on-a-non-member behaviour and read by nothing, so it is a wording fix
   for the next time that section is open. And `MockTaskaStore.createProject`
   returns the stored row without passing it through `withCurrentUserRole`, so a
   freshly created project is the one row in the mock's `listProjects` that
-  states no role.
+  states no role. The create *response* without a role is in parity: the
+  gateway's `POST /projects` maps through the overload that sets none (read at
+  `1cfe4d7` on TAS-224).
 - **Five from TAS-148's release review**, all small and none worth its own
   commit. `.project-card` also matches the loading skeleton, so the eighteen new
   end-to-end locators are safe only because every one of them passes `hasText`
@@ -2165,7 +2189,10 @@ is what recurs.
     member row, and the next members refetch takes it off again. The menu keeps
     the photo while the board shows initials until hybrid's `listMembers`
     delegates. The same happens in rest against PR #152's head until its
-    missing avatar id is fixed (TAS-137).
+    missing avatar id is fixed (TAS-137). **Since TAS-224 hybrid delegates, and
+    the flip-flop is unchanged**, because PR #152 merged without the avatar id.
+    It lasts until auth-service selects `a.id AS avatar_id`
+    ([TAS-225](https://jira.ozero.dev/browse/TAS-225)).
   - **Shape coupling:** the menu types the project-summary cache by shape alone.
     Renaming `ProjectSummary.members` would silently stop the write, and only the
     e2e card assertion would notice.
@@ -2267,3 +2294,66 @@ is what recurs.
   photo", focus drops to `<body>`**, because the band removes the button
   (`release-reviewer`, 2026-09-14). This is moot for any page loaded after the
   routes deployed.
+
+### Left by TAS-224 (members and role from the gateway, 2026-09-16)
+
+- **A blocked or invited account with a still-valid token meets "not found"
+  rather than a sign-out.** Read by `api-contract-guard` at develop `1cfe4d7`:
+  `AuthServiceImpl.java:202-209` answers **403** on every protected route for a
+  `BLOCKED` or `INVITED` user whose JWT has not expired, and
+  `isMissingOrForbidden` draws the not-found screen for a 403. The reader sees
+  their projects vanish rather than being told the account was blocked, until
+  the token expires. Not measured; a client-side answer would need a code to
+  key on, which the 403 does not carry distinctly today.
+- **Three attachment defects lost their owner when TAS-131 closed `Done`.**
+  `DELETE …/attachments/{id}` answers 204 for a missing attachment and skips the
+  role check. `listAttachments` returns rows in HEAD-completion order, and one
+  missing object fails the whole list with 404. The list read mints a presigned
+  URL per row and the gateway throws it away. All three are in
+  `API-DIVERGENCE.md` with lines at `1cfe4d7`. They belong in a story near
+  TAS-214 (the issue panel as one read), and nobody has filed it.
+- **The watcher picker's empty state could say "the whole project" now.**
+  TAS-193 narrowed it to "those the client can see", because the synthesised
+  member list could not tell one member from all of them. Since TAS-224 the
+  list is the gateway's in every mode but `mock`. The narrow sentence is still true, so
+  this is a wording decision for `art-director`, not a defect (`DESIGN.md`
+  §4.21).
+- **A stale comment in `src/styles.css` (~l.3312-3316)** still describes the
+  Events "not deployed" note, which went away in TAS-194. It is unrelated to
+  TAS-224; `frontend-builder` noticed it and left it alone.
+- **A read that answers 200 with no role silently floors to VIEWER**
+  (`release-reviewer`, TAS-224). `RestTaskaApi.getMembership` maps a missing or
+  `null` `currentUserRole` to `VIEWER`, and TAS-163's banner shows only when the
+  read *fails*. So a project-service older than the gateway would make every
+  board read-only for everyone, ADMINs included, and nothing would say why. The
+  flag used to hide this. At `1cfe4d7` a 200 always carries the role, and
+  backend `deploy-stage` run 35092655215 deployed the whole stack at that commit
+  (12:00 UTC 2026-09-16), so it is not reachable today. The fix is to treat a 200
+  with no role as unknown and show the banner, as the board already does for a
+  failed read.
+- **A VIEWER is offered Watch, and the server refuses it** (`release-reviewer`,
+  TAS-224, pre-existing). issue-service sets `watch-issue-roles: ADMIN,MEMBER`
+  (`application.yml:59`) and applies it to watching yourself
+  (`IssueWatcherServiceImpl.java:175-177`). The toggle is ungated
+  (`BoardScreen.tsx` ~2107), and the mock lets a VIEWER watch, which a test pins.
+  The write is optimistic with rollback, so nothing is lost: the reader sees the
+  refusal. The contract says nothing about it. The fix is to gate the toggle on
+  `canEdit`, align the mock, and record it in `API-DIVERGENCE.md` if it stays.
+- **The assignee chips offer VIEWER members, and the server refuses them as
+  assignees** (`release-reviewer`, TAS-224). issue-service checks the assignee's
+  role against `assign-issue-roles: ADMIN,MEMBER` (`IssueServiceImpl.java:182-184`),
+  while `BoardScreen.tsx` ~1402-1426 draws a chip for every member. It became
+  reachable in TAS-224, because the chips used to list only the reader. Nothing
+  is written, since assign is not optimistic, and the refusal shows in the alert
+  line. The mock seeds no VIEWER, so no test reaches it. The fix is to draw
+  chips for ADMIN and MEMBER rows only, keeping the current assignee visible.
+- **The assignee filter row wraps with no limit** (`src/styles.css` ~4018), so on
+  a large project it pushes the board down at 390px. Pre-existing, and
+  reachable on the stand since TAS-224 named every member. `art-director`'s call.
+- **Four code comments tell the attachments-500 history slightly wrong**
+  (`api-contract-guard`, TAS-224): `TaskaApi.ts` ~864, `RestTaskaApi.ts` ~2390,
+  `MockTaskaApi.ts` ~2399, `RestTaskaApi.test.ts` ~3099. They say the 2026-09-12
+  re-pin "missed the Java half". It missed the client's reading of the YAML half
+  too: the `maximum` alone decides the `upload-url` refusal. `API-DIVERGENCE.md`
+  tells it correctly. Left for the next pass through those files, at the owner's
+  preference for speed over another builder round.

@@ -111,10 +111,10 @@ const {
         project("project-c", "CCC", "Gamma"),
       ].map((row) => ({
         ...row,
-        // `currentUserRole` on the row and nowhere else (backend PR #152):
+        // `currentUserRole` on the row and nowhere else (backend TAS-137):
         // this screen reads the role from the list and spends no request of
-        // its own on it. `roleless` is the other answer the wire has — the
-        // key simply missing, which is every row on the gateway today.
+        // its own on it. `roleless` is a row that states none — the key
+        // missing, as on every row before TAS-137 deployed.
         ...(state.roleless.has(row.id) ? {} : { currentUserRole: state.roles[row.id] ?? ("ADMIN" as const) }),
         ...(state.edits[row.id] ?? {}),
       }));
@@ -305,9 +305,9 @@ describe("project cards state what they know", () => {
   });
 
   it("still counts the issues when only the member list failed", async () => {
-    // The live shape of TAS-162: `listMembers` goes through GET /projects/{id}
-    // and 500s, while the issue list answers fine. Joining the two used to
-    // throw the good answer away with the bad one.
+    // The shape TAS-162 had on the stand: the member read, synthesised then
+    // from GET /projects/{id}, 500ed while the issue list answered fine.
+    // Joining the two used to throw the good answer away with the bad one.
     failMembersFor("project-a");
     renderProjects();
 
@@ -445,10 +445,10 @@ describe("filtering the project list", () => {
  * the server holds is empty (TAS-148).
  *
  * One source for the role and one only: `currentUserRole` on the list row
- * (backend PR #152). The `getMembership` fallback that used to stand in for a
- * row without one is gone — it fired on every card against the gateway, since
- * PR #152 is open and no row states a role there — so the roleless case below
- * is not an edge any more, it is that gateway.
+ * (backend TAS-137). The `getMembership` fallback that used to stand in for a
+ * row without one is gone — before TAS-137 deployed it fired on every card,
+ * since no row on the gateway stated a role — and the roleless case below is
+ * the shape that gateway answered with.
  */
 describe("editing a project from its card", () => {
   beforeEach(() => {

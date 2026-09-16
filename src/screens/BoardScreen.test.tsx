@@ -10,7 +10,7 @@ import { ObjectStoreError } from "../api/objectStore";
 /**
  * The board reads five things and used to show a failure in only one of them.
  * When the project read and the membership read failed — which is exactly what
- * the live gateway does today, TAS-162 — the board still drew: the name fell
+ * the live gateway did at the time, TAS-162 — the board still drew: the name fell
  * back to "Project", the key badge vanished, every write control went disabled
  * and drag stopped working, and nothing on screen said why (TAS-163). These
  * tests are about the difference between a board that cannot be written to and
@@ -58,6 +58,7 @@ const {
   holdLabelCreate,
   failMembers,
   holdMembers,
+  memberReads,
   seedWatchers,
   failWatchersRead,
   holdWatchersRead,
@@ -146,13 +147,14 @@ const {
      * `user` is optional because the server may not name the person. It is no
      * longer true that it would name *nobody*: this comment reasoned from
      * `ProjectMemberResponseDto` — which is what the two member **writes**
-     * answer with, `projectId`, `userId` and `role` — and backend PR #152's
-     * read answers with `ProjectMemberDetailsDto`, which does carry
-     * `displayName` and `email`. What survives the correction is the row this
-     * fixture is: PR #152 marks neither field required, and `RestTaskaApi`
-     * turns a row with no display name into a row with no `user` rather than
-     * one with a blank name (TAS-219). `toUserMap` drops such a row, which is
-     * the state the watchers section had two different words for.
+     * answer with, `projectId`, `userId` and `role` — and the member read
+     * (backend TAS-137, in docs/contract/openapi.yml) answers with
+     * `ProjectMemberDetailsDto`, which does carry `displayName` and `email`.
+     * What survives the correction is the row this fixture is: that schema
+     * marks neither field required, and `RestTaskaApi` turns a row with no
+     * display name into a row with no `user` rather than one with a blank name
+     * (TAS-219). `toUserMap` drops such a row, which is the state the watchers
+     * section had two different words for.
      */
     members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER"; addedAt: string; addedBy: string; user?: { displayName: string; email: string } }[];
     attachments: {
@@ -189,9 +191,11 @@ const {
     deleteFailure?: Error;
     deleteHeld: boolean;
     deleteReleases: (() => void)[];
-    /** `GET /projects/{id}/members` failing, which on the deployed gateway it does (405, TAS-137). */
+    /** `GET /projects/{id}/members` failing. */
     membersFailure?: Error;
     membersHeld: boolean;
+    /** Every member read that went out, answered or not, so a retried read can be told from a single one. */
+    membersReads: number;
     /**
      * The watchers section. `watchers` and `watchersTotal` are held apart
      * deliberately: the whole point of the count is that it is a field the
@@ -247,6 +251,7 @@ const {
     deleteHeld: false,
     deleteReleases: [],
     membersHeld: false,
+    membersReads: 0,
     watchers: [],
     watchersTotal: null,
     watchersCountAfterWrite: null,
@@ -300,6 +305,7 @@ const {
       return state.membership;
     },
     listMembers: async () => {
+      state.membersReads += 1;
       if (state.membersHeld) return new Promise(() => {});
       if (state.membersFailure) throw state.membersFailure;
       return state.members;
@@ -622,6 +628,7 @@ const {
     holdMembers: (held: boolean) => {
       state.membersHeld = held;
     },
+    memberReads: () => state.membersReads,
     /** The list read's two answers, stated apart so a test can make them disagree. */
     seedWatchers: (watchers: typeof state.watchers, totalCount: number | null, countAfterWrite: number | null = null) => {
       state.watchers = watchers;
@@ -733,6 +740,7 @@ const {
       state.deleteReleases = [];
       state.membersFailure = undefined;
       state.membersHeld = false;
+      state.membersReads = 0;
       state.watchers = [];
       state.watchersTotal = null;
       state.watchersCountAfterWrite = null;
@@ -1763,8 +1771,8 @@ describe("issue attachments", () => {
     // The byline resolves a user id through the project's member list, like
     // every other name in the panel. Without a member list there is no name to
     // print, and the row prints the size and the time rather than "Unknown" —
-    // which is the state `hybrid` mode is in for anybody but the reader
-    // themselves (DESIGN.md §6, TAS-137).
+    // which is what a failed member read, or an uploader the list does not
+    // name, looks like.
     seedMembers([
       { userId: "user-anna", role: "ADMIN", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
     ]);
@@ -1778,35 +1786,19 @@ describe("issue attachments", () => {
     expect(row).toHaveTextContent("Anna Ivanova");
   });
 
-  it("says the routes are not deployed rather than hiding itself, on the gateway's own 404", async () => {
-    // The undeployed signature: a 404 whose message is Spring's static-resource
-    // fallback. Measured against the deployed gateway on 2026-09-06.
-    failAttachmentsRead(
-      Object.assign(new Error(`No static resource api/v1/projects/${PROJECT_ID}/issues/issue-1/attachments for request '…'.`), {
-        status: 404,
-        code: "NOT_FOUND",
-      }),
-    );
-    renderBoard(ISSUE_PATH);
-
-    const panel = await section();
-    expect(await panel.findByText(/not on this gateway yet/i, undefined, AFTER_RETRY)).toBeVisible();
-    // The section stays, and the upload control is not offered for a route that
-    // does not exist.
-    expect(panel.queryByRole("button", { name: /attach a file/i })).toBeNull();
-  });
-
-  it("keeps the section and shows the failure for a 404 that is not the undeployed one", async () => {
-    // "Issue not found" is a deployed route's own 404. Reading it as "this
-    // issue is gone" and dropping the section would hide a whole feature over a
-    // failure that may be about one read.
+  it("keeps the section and shows the failure for a 404 from the list", async () => {
+    // "Issue not found" is the route's own 404. Reading it as "this issue is
+    // gone" and dropping the section would hide a whole feature over a failure
+    // that may be about one read.
     failAttachmentsRead(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND" }));
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
     expect(await panel.findByText("Issue not found", undefined, AFTER_RETRY)).toBeVisible();
-    expect(panel.queryByText(/not on this gateway yet/i)).toBeNull();
     expect(panel.getByRole("heading", { name: /attachments/i })).toBeVisible();
+    // A failed list is not a reason to take the upload away: the write is its
+    // own request, and the server answers it on its own terms.
+    expect(panel.getByRole("button", { name: /attach a file/i })).toBeVisible();
   });
 
   it("refuses a file the server's allowlist would refuse, before any request", async () => {
@@ -2311,10 +2303,9 @@ describe("issue watchers", () => {
 
   it("names the reader in their own row when the member list cannot", async () => {
     // A reader who is not a member of the project can still watch an issue in
-    // it — and against the deployed gateway, whose member read is a 405
-    // (TAS-137), the map cannot name anybody at all. The one person it may
-    // never fail on is the reader: `GET /users/me` named them before this
-    // section drew a row.
+    // it, and then the member map has no row to name them from. The one person
+    // it may never fail on is the reader: `GET /users/me` named them before
+    // this section drew a row.
     setMembership("VIEWER");
     seedMembers([member(SOFIA, "Sofia Reyes")]);
     seedWatchers([watcher(ANNA), watcher(SOFIA)], 2);
@@ -2338,9 +2329,9 @@ describe("issue watchers", () => {
 
   it("claims nothing about the member list while the read is still in flight", async () => {
     // Neither an answer nor a failure. `members` is `[]` in this state exactly
-    // as it is after a 405, and a section reading only the failure flag would
-    // tell the reader this project has no members for as long as the request
-    // takes.
+    // as it is after a failed read, and a section reading only the failure flag
+    // would tell the reader this project has no members for as long as the
+    // request takes.
     holdMembers(true);
     seedWatchers([watcher(SOFIA)], 1);
     renderBoard(ISSUE_PATH);
@@ -2354,21 +2345,55 @@ describe("issue watchers", () => {
   });
 
   it("does not present a failed member read as a project with nobody to add", async () => {
-    // What the deployed gateway answers today: `GET /projects/{id}/members` is
-    // not mapped (TAS-137). An empty picker under "Add a watcher" would read as
-    // "there is nobody left", which is a claim about the project that a failed
-    // read cannot support (§5.6).
-    failMembers(Object.assign(new Error("Method Not Allowed"), { status: 405 }));
+    // A member read that failed. An empty picker under "Add a watcher" would
+    // read as "there is nobody left", which is a claim about the project that a
+    // failed read cannot support (§5.6).
+    failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
     seedWatchers([watcher(SOFIA)], 1);
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
     expect(await panel.findByText(/members could not be read/i, undefined, AFTER_RETRY)).toBeVisible();
+    // Asked twice: a 500 is a genuine failure and gets its one retry before the
+    // section says anything. The 404 case below is measured against this —
+    // without it, a member query that lost its retry option would still pass
+    // there, since this harness defaults to no retries at all.
+    expect(memberReads()).toBe(2);
     expect(panel.queryByLabelText("Add a watcher")).toBeNull();
     // The rest of the section still works: the row is there, unnamed, and an
     // admin can still remove it — a remove names a `userId`, which the row
     // already carries.
     expect(panel.getByRole("button", { name: `Remove watcher ${SOFIA}` })).toBeEnabled();
+  });
+
+  it("stays on the board, and asks once, when the member read is refused with a 404", async () => {
+    // The shape the stand's member read takes when one avatar object behind it
+    // is unreadable: the whole read fails with NOT_FOUND (or PERMISSION_DENIED)
+    // — the pair a missing or forbidden project answers with too, and the pair
+    // `isMissingOrForbidden` recognises (see `TaskaApi.listMembers`). The
+    // message is this fixture's own; nothing on screen prints it.
+    failMembers(Object.assign(new Error("Not found"), { status: 404, code: "NOT_FOUND" }));
+    seedWatchers([watcher(SOFIA)], 1);
+    const queryClient = renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText(/members could not be read/i, undefined, AFTER_RETRY)).toBeVisible();
+
+    // The board stays. §4.18's screen keys on the *project* read alone, and
+    // that one answered — a 404 about the members is not a 404 about the page.
+    expect(screen.queryByRole("heading", { name: /page not found/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
+
+    // And the read went out once. `retryUnlessMissing` takes the 404 as an
+    // answer: the query settled into its error on the first failure — a retry
+    // would have counted two failures before `error` was reached — and nothing
+    // is waiting to ask again.
+    expect(memberReads()).toBe(1);
+    expect(queryClient.getQueryState(["members", PROJECT_ID])).toMatchObject({
+      status: "error",
+      fetchStatus: "idle",
+      fetchFailureCount: 1,
+    });
   });
 
   it("draws a watcher the member list cannot name without dropping the row", async () => {
@@ -2441,13 +2466,13 @@ describe("issue watchers", () => {
     // **The one sentence of the three a browser can reach**: it is set without
     // `watcherFailureText`, so no server message can win over it.
     //
-    // The fixture is a member read that failed, whichever way — what the stand
-    // does is fail it from underneath. `hybrid` synthesises a *named* reader
-    // into the member list rather than calling the 405 route, so the map loses
-    // the reader only when the `GET /projects/{id}` that synthesis is built on
-    // fails, and `VITE_TASKA_ASSUME_PROJECT_ADMIN` answers `getMembership`
-    // without asking the gateway anything, so the ✕ stays on screen through it.
-    failMembers(Object.assign(new Error("Method Not Allowed"), { status: 405 }));
+    // The fixture is a member read that failed while the role read answered
+    // ADMIN. Those are two separate gateway reads on the stand since TAS-224,
+    // so one can fail while the other answers — a single unreadable avatar
+    // object is enough to fail the member read there, with a 404, 403 or 503
+    // (see `TaskaApi.listMembers`). The map loses the reader, and the ✕ stays
+    // on screen through it.
+    failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
     seedWatchers([watcher(ANNA)], 1, 1);
     setUnwatchAnswer(false);
     renderBoard(ISSUE_PATH);
@@ -2465,7 +2490,7 @@ describe("issue watchers", () => {
     // The contradiction this pass came back for: the row read "You", its ✕ said
     // "Remove yourself from watchers", and the sentence under both said
     // "Unknown is still watching this issue." about that same person.
-    failMembers(Object.assign(new Error("Method Not Allowed"), { status: 405 }));
+    failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
     seedWatchers([watcher(ANNA)], 1);
     failWatcherWrite(silentRefusal());
     renderBoard(ISSUE_PATH);

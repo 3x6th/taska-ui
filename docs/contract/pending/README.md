@@ -109,8 +109,6 @@ was written against it.
 
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
-| `pr-147-TAS-131.yml` | [#147](https://github.com/VladislavYurin/taska-backend/pull/147) | TAS-131 | TAS-190 |
-| `pr-152-TAS-137.yml` | [#152](https://github.com/VladislavYurin/taska-backend/pull/152) | TAS-137 | TAS-219 |
 | `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
 
 `pr-118-TAS-125.yml` was here for TAS-125 / TAS-191 and was deleted on 2026-09-09
@@ -139,3 +137,19 @@ each leave out one operation on a path their PR extends: `POST` on
 `/projects/{projectId}/members` and `GET` on `/projects/{projectId}`. Both are
 already in the snapshot unchanged, so a reader who has the snapshot loses
 nothing.
+
+`pr-147-TAS-131.yml` (TAS-131 / TAS-190) and `pr-152-TAS-137.yml` (TAS-137 /
+TAS-219) were deleted together on 2026-09-16, in TAS-224, when the snapshot was
+refreshed to develop `1cfe4d79f074`. PR #147 merged on 2026-09-14 as a squash of
+the head the extract pinned, `deeedbf3fff8`; PR #152 merged on 2026-09-16 as a
+merge commit whose PR side is the pinned `7fa04ba94096`. Neither head moved after
+it was pinned, and the check went one step further than the byte comparison
+above: both YAML files were parsed and compared as data. Every path and schema
+that differs between the old snapshot (`f16e77292cac`) and the new one is equal
+to its counterpart at one of those two heads, and nothing else differs. That is
+five attachment paths and six schemas from #147, and from #152 the members `GET`,
+`ProjectResponseDto`, `AvatarDto`, `ProjectMemberDetailsDto` and
+`ListProjectMemberDetailsDto`. Both were also measured deployed the same day
+without a token: `GET …/members` and `GET …/attachments` answered 401, with
+`GET /users/me` answering 401 as the control. Before the deploy they answered 405
+and the static-resource 404.

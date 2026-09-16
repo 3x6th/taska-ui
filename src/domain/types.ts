@@ -76,9 +76,15 @@ export interface User {
    * in from a profile response and a reader must not infer that the gateway
    * sends one.
    *
-   * Two things fill it, and they cost very different amounts. A *member row*
-   * carries the avatar inline (`ProjectMemberDetailsDto.avatar.downloadUrl`,
-   * backend PR #152), so a board full of faces is one read. The *current user*
+   * Two things are meant to fill it, and they cost very different amounts. A
+   * *member row* declares the avatar inline
+   * (`ProjectMemberDetailsDto.avatar.downloadUrl`, backend TAS-137), so a board
+   * full of faces is one read. **The deployed member read never fills it yet**:
+   * auth-service's `UserRepository.findUsersWithAvatars` selects no avatar id,
+   * and `ProfileMapper` attaches an avatar only when that id is present (read at
+   * `develop` `1cfe4d79f074`), so every row arrives without one and the board
+   * draws initials. The field is read anyway — it is the contract's, and it
+   * starts working once auth-service selects the id. The *current user*
    * is the one case that costs a request of its own,
    * `GET /users/{userId}/avatar`, which `UserProfileMenu` spends on a mount: a
    * successful answer is reused for ten minutes, nothing is re-read on a window
@@ -120,7 +126,8 @@ export interface UserAvatar {
    * schema declares no `required` block and that mapper writes `null` for an
    * all-zero timestamp — so an answer without it is a shape to survive, not one
    * this side may rule out. Not to be confused with the sibling `AvatarDto` on a
-   * member row (PR #152), which declares the field and never populates it.
+   * member row (backend TAS-137), which declares the field and never populates
+   * it.
    */
   createdAt: string | null;
   /**
@@ -177,7 +184,8 @@ export interface Project {
   archivedAt: string | null;
   /**
    * The reader's own role in this project — `currentUserRole` on
-   * `ProjectResponseDto`, added by backend PR #152 (TAS-137).
+   * `ProjectResponseDto`, added by backend PR #152 (TAS-137), merged and
+   * deployed.
    *
    * Optional **and** nullable, and both for real reasons on the wire rather
    * than a style choice — corrected here from an earlier version of this
@@ -185,21 +193,29 @@ export interface Project {
    * Nullable because the api-gateway configures no Jackson inclusion override
    * anywhere — no `spring.jackson` block in its `application.yml`, no
    * `ObjectMapper` or codec customizer bean — so Jackson's default `ALWAYS`
-   * inclusion applies, and a reader for whom `hasCurrentUserRole()` is false
-   * still gets the key, as an explicit `"currentUserRole": null` — exactly
-   * like `archivedAt` above. Optional because a gateway that predates PR #152
-   * does not carry the key at all. The client reads both the same way,
-   * because the gateway has not committed to sending one rather than the
-   * other.
+   * inclusion applies, and a response built without a role still carries the
+   * key, as an explicit `"currentUserRole": null` — exactly like `archivedAt`
+   * above. **Only one response is built that way: `POST /projects`**, whose
+   * answer goes through the mapper overload that sets no role. A read never
+   * carries the `null`: `GET /projects/{id}` refuses a non-member with 403 —
+   * a `GLOBAL_ADMIN` included — so every 200 has a membership row whose role is
+   * NOT NULL, and `GET /projects` inner-joins the reader's own membership, so
+   * every item carries one (read at `develop` `1cfe4d79f074`). Optional because
+   * a gateway that predates PR #152 does not carry the key at all — the stand's
+   * own answer until it deployed. The client reads both the same way, because
+   * the contract commits to neither.
    *
-   * Typed as the closed set because it is one. `ProjectMapper.toRestProjectRole`
-   * emits exactly ADMIN, MEMBER or VIEWER and throws 500 on anything else, so
-   * an unrecognised project role fails the read instead of arriving here.
+   * Typed as the closed set because it is one. The gateway's
+   * `ProjectMapper.toRestProjectRole` maps exactly ADMIN, MEMBER and VIEWER and
+   * returns `null` for anything else (read at `develop` `1cfe4d79f074`), and the
+   * column's CHECK constraint keeps anything else out in the first place — so
+   * an unrecognised role could only ever arrive as `null`, never as a string.
    * `ProjectMember.role` below is the other case and is *not* a closed set.
    *
-   * **Undeployed on 2026-09-12**: PR #152 was still open, so every
-   * `GET /projects/{id}` on the stand answers without this field and readers of
-   * it take their floor.
+   * **Absent on the stand until TAS-137 deployed** (measured deployed on
+   * 2026-09-16), so until then every `GET /projects/{id}` there answered without
+   * this field and its readers took their floor. Since the deploy every read
+   * states a role name.
    */
   currentUserRole?: ProjectRole | null;
   /**
@@ -241,9 +257,10 @@ export interface ProjectMembership {
 
 /**
  * One row of `GET /projects/{projectId}/members` — `ProjectMemberDetailsDto`
- * in backend PR #152 (TAS-137), which is where `displayName` and `email` come
- * from. That PR was open and undeployed on 2026-09-12, so on the stand these
- * rows are synthesised by `HybridTaskaApi` rather than read from anywhere.
+ * (backend TAS-137, in `docs/contract/openapi.yml`), which is where
+ * `displayName` and `email` come from. Read from the gateway in `rest` and,
+ * since TAS-224, in `hybrid` too; until then `HybridTaskaApi` synthesised a
+ * single row on the stand — the reader — rather than reading one.
  */
 export interface ProjectMember {
   userId: string;
@@ -258,7 +275,7 @@ export interface ProjectMember {
    * "UNSPECIFIED" is not actually on the wire today. What this narrowing
    * guards against is a role the enum grows later, returned verbatim (say
    * "OWNER") before this build has a name for it. `Project.currentUserRole`
-   * above cannot carry even that: a different mapper, and one that throws 500
+   * above cannot carry even that: a different mapper, which returns `null`
    * rather than ever emit a role it does not recognise.
    *
    * Nothing draws this field today. Whatever eventually does reads `null` as
@@ -268,9 +285,9 @@ export interface ProjectMember {
   /**
    * Both optional because `ProjectMemberDetailsDto` carries neither: the row is
    * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else.
-   * The only values that exist are `HybridTaskaApi`'s, synthesised from the
-   * project's own `createdAt`/`createdBy` while the member route is undeployed,
-   * and nothing outside that synthesis reads them.
+   * Only the mock fills them, as seed data — `HybridTaskaApi` also invented
+   * them from the project's own `createdAt`/`createdBy` until TAS-224 — and
+   * nothing outside the tests reads them.
    */
   addedAt?: string;
   addedBy?: string;
@@ -280,11 +297,13 @@ export interface ProjectMember {
    * (`toUserMap` in BoardScreen filters on exactly this), so a `user` carrying
    * a blank `displayName` would be worse than no `user` at all.
    *
-   * `avatarUrl` rides along because `ProjectMemberDetailsDto` carries the
-   * avatar **inline**, with its own `downloadUrl` (backend PR #152). That is
+   * `avatarUrl` rides along because `ProjectMemberDetailsDto` declares the
+   * avatar **inline**, with its own `downloadUrl` (backend TAS-137). That is
    * what makes a board of faces one read rather than one request per person,
    * and it is why nothing in this product ever calls
-   * `GET /users/{userId}/avatar` in a loop.
+   * `GET /users/{userId}/avatar` in a loop. The deployed read fills it for
+   * nobody yet (see `User.avatarUrl`), so every named row reads `null` and
+   * draws initials until auth-service is fixed.
    */
   user?: Pick<User, "displayName" | "email" | "color" | "avatarUrl">;
 }
@@ -661,8 +680,8 @@ export interface IssueHistoryEvent {
 }
 
 /**
- * One file attached to an issue — `IssueAttachmentDto` in backend PR #147
- * (`docs/contract/pending/pr-147-TAS-131.yml`), field for field.
+ * One file attached to an issue — `IssueAttachmentDto` (backend PR #147, in
+ * `docs/contract/openapi.yml` since it merged), field for field.
  *
  * `sizeBytes` is `format: int64` on the wire and a `number` here, and that is
  * safe rather than convenient: the server refuses anything above
@@ -798,9 +817,9 @@ export interface IssueLink {
  * **It names nobody.** The only thing here that identifies a person is
  * `userId`, exactly as with `Issue.assigneeId` and `IssueAttachment.uploadedBy`,
  * and it is resolved the same way: through the `userById` map the board builds
- * from `GET /projects/{id}/members`. That read is a 405 on the deployed gateway
- * (TAS-137), so a watcher degrades to "Unknown" in `rest` mode precisely as the
- * reporter line already does — one mechanism, one failure, no second invention.
+ * from `GET /projects/{id}/members`. When that read fails, or names nobody for
+ * the id, a watcher degrades to "Unknown" precisely as the reporter line does —
+ * one mechanism, one failure, no second invention.
  *
  * `createdBy` is not `userId`: a project ADMIN may subscribe somebody else
  * through `POST .../watchers`, and then the two differ.
