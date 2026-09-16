@@ -761,26 +761,24 @@ export class RestTaskaApi implements TaskaApi {
   async getMembership(projectId: string): Promise<ProjectMembership> {
     const project = await this.getProject(projectId);
     return {
-      // VIEWER is a floor, not a reading of the server — and since backend
-      // TAS-137 deployed, a defensive one that no 200 from this route reaches.
-      // Before the deploy the gateway's `ProjectResponseDto` had no
-      // `currentUserRole` field at all, and every reader landed here. Now every
-      // 200 states a role: the route refuses a non-member with 403, and a
-      // member's row holds a NOT NULL role a CHECK constraint confines to the
-      // three (read at `develop` `1cfe4d79f074`). The one `null` the gateway
-      // writes is on the `POST /projects` response, which never comes here.
-      // `toProjectRole` still treats a `null`, an absent key and a value it
-      // does not recognise the same way, and this floors all three to VIEWER.
-      // Flooring hides write affordances the server might in fact allow;
-      // defaulting the other way would offer buttons the server then refuses.
-      // The server stays authoritative either way (AGENTS.md, role gating).
+      // What the server stated, and nothing in its place. `toProjectRole` reads
+      // an absent key, an explicit `null` and a value this build does not
+      // recognise as one `null`, and that `null` is the answer: the server named
+      // no role this build can act on. It is not a VIEWER — until TAS-226 this
+      // floored it to one, which was a permission nobody had stated, drawn as a
+      // board that went read-only without a word — and it is not thrown either,
+      // because the read answered. The board shows it as it shows a failed read:
+      // writes off, and a banner that says why.
       //
-      // The board's "your role could not be loaded" banner (TAS-163) is for
-      // the other case — the project read itself failing, where the client
-      // genuinely knows nothing — and since TAS-224 that case reaches the
-      // deployed stand too, where `hybrid` used to answer the role without
-      // asking.
-      role: toProjectRole(project.currentUserRole) ?? "VIEWER",
+      // No 200 from this route carries it since backend TAS-137 deployed: the
+      // route refuses a non-member with 403, and a member's row holds a NOT NULL
+      // role a CHECK constraint confines to the three (read at `develop`
+      // `1cfe4d79f074`). The one `null` the gateway writes is on the
+      // `POST /projects` response, which never comes here. Before the deploy
+      // `ProjectResponseDto` had no `currentUserRole` at all, so a gateway that
+      // predates it is how this answer is reached. The server stays
+      // authoritative either way (AGENTS.md, role gating).
+      role: toProjectRole(project.currentUserRole),
       // Both true on a 200, and neither is an assumption: `GET /projects/{id}`
       // is membership-checked, so a project the reader is not on answers 403
       // and one that does not exist answers 404 (TAS-154). Either way this

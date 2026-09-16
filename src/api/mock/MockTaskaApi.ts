@@ -1071,21 +1071,31 @@ export class MockTaskaStore {
       ]),
     ];
 
-    // ADMIN for the first member of each project and MEMBER for the rest, which
-    // means **no seeded member is a VIEWER anywhere**. `getMembership` answers
-    // `VIEWER` for a non-member instead (`member?.role ?? "VIEWER"`), so every
-    // VIEWER path in this store is exercised by a non-member standing in for
-    // one. Against the gateway those are two different answers — a non-member
-    // is refused by `ProjectRoleChecker` on `!isMember` before any role is
-    // looked at — and the mock is the looser of the two on the read routes.
-    // Recorded in docs/ai/API-DIVERGENCE.md; adding the membership check here
-    // would cost the read-only seed the attachments section demonstrates.
+    // ADMIN for the first member of each project, MEMBER for the rest — and one
+    // exception: **Tom is a VIEWER of Taska Platform**, the only seeded VIEWER
+    // who is a member (TAS-226). He is there so an ADMIN meets a VIEWER on
+    // Anna's own project, where the assignee chips leave him out: issue-service
+    // checks `assign-issue-roles` against the assignee too. And he is chosen
+    // because he already holds TAS-104 and TAS-110, which is what a demotion
+    // after the assignment looks like — the one chip the panel keeps on screen
+    // as the assignment and will not send again. A changed role rather than an
+    // added member, so every member list, avatar stack and filter bar the suite
+    // measures keeps its size.
+    //
+    // Every other VIEWER path in this store is still exercised by a non-member
+    // standing in for one: `getMembership` answers `VIEWER` for a non-member
+    // (`member?.role ?? "VIEWER"`), and Anna is not on MOB. Against the gateway
+    // those are two different answers — a non-member is refused by
+    // `ProjectRoleChecker` on `!isMember` before any role is looked at — and the
+    // mock is the looser of the two on the read routes. Recorded in
+    // docs/ai/API-DIVERGENCE.md; adding the membership check here would cost the
+    // read-only seed the attachments section demonstrates.
     this.membersByProject = Object.fromEntries(
       this.projects.map((project) => [
         project.id,
         (project.memberIds ?? []).map((userId, index) => ({
           userId,
-          role: index === 0 ? "ADMIN" : "MEMBER",
+          role: index === 0 ? "ADMIN" : project.id === TASKA_PROJECT_ID && userId === TOM_ID ? "VIEWER" : "MEMBER",
           addedAt: ts(8 + index, 20 + index),
           addedBy: ANNA_ID,
           user: this.userSummary(userId),
@@ -1463,8 +1473,13 @@ export class MockTaskaStore {
     //   list under an unpressed toggle, which is the state that catches a UI
     //   deriving "am I watching" from whether the list is empty.
     // - **MOB-5** — Priya is watching an issue in a project Anna cannot write
-    //   to. The read-only view: no add picker, no per-row remove, and the
-    //   toggle still live, because the contract puts no role on `…/watchers/me`.
+    //   to. The read-only view: no add picker, no per-row remove, and a toggle
+    //   that shows Anna's own state and cannot change it, because
+    //   issue-service's `watch-issue-roles` leaves a VIEWER out (TAS-226).
+    // - **TAS-110**, signed in as `tom@example.com` — the seed's VIEWER member,
+    //   on the list because Anna put him there: subscribing somebody else checks
+    //   only the ADMIN's role. So the toggle reads "Watching" and cannot take
+    //   him off, which is the one VIEWER state MOB-5 cannot show (TAS-226).
     //
     // **Priya on TAS-103 is the deliberate one.** She is a member of WEB and
     // MOB and not of TAS, so `GET /projects/{TAS}/members` does not name her
@@ -1483,6 +1498,8 @@ export class MockTaskaStore {
       ["TAS-103", MARK_ID, MARK_ID],
       ["TAS-103", PRIYA_ID, ANNA_ID],
       ["MOB-5", PRIYA_ID, PRIYA_ID],
+      // Appended, so no row above changes its timestamp.
+      ["TAS-110", TOM_ID, ANNA_ID],
     ];
     watcherSeed.forEach(([issueKey, userId, createdBy], index) => {
       const target = this.issues.find((item) => item.issueKey === issueKey);
@@ -2053,10 +2070,22 @@ export class MockTaskaStore {
     return this.issueView(issue);
   }
 
+  /**
+   * The assignee's role is checked: issue-service holds the assignee to
+   * `assign-issue-roles` (ADMIN, MEMBER) as well as the caller (read at
+   * `develop` `1cfe4d7`, TAS-226), which the contract does not state. So a
+   * VIEWER is refused as an assignee, and so is somebody who is not on the
+   * project at all — this store used to accept any user it knew of. Unassigning
+   * (`null`) names nobody and skips the check, as the server's does.
+   *
+   * The caller's own role is still not checked here, like every other issue
+   * write in this store; only the assignee half was in TAS-226's scope.
+   */
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Issue {
     const issue = this.findIssue(projectId, issueId);
     if (assigneeId) {
       this.getUser(assigneeId);
+      this.requireAssignableRole(projectId, assigneeId);
     }
     issue.assigneeId = assigneeId;
     issue.updatedAt = now();
@@ -2068,6 +2097,24 @@ export class MockTaskaStore {
       );
     }
     return this.issueView(issue);
+  }
+
+  /**
+   * The assignee half of `assign-issue-roles`. A non-member holds no role in
+   * the project, so none of theirs is in that set, and they are refused just as
+   * a VIEWER is.
+   *
+   * **The sentence is this store's**, one for both cases. The gateway's
+   * refusals are worded by `ProjectRoleChecker` — `"Access denied"` for a
+   * non-member, `"Not allowed role"` for a member with the wrong role (see
+   * `requireUploadRole`) — and nothing was read to confirm which of them an
+   * assignee draws. Named so nobody takes this one for the server's words.
+   */
+  private requireAssignableRole(projectId: string, assigneeId: string): void {
+    const role = this.membersByProject[projectId]?.find((member) => member.userId === assigneeId)?.role;
+    if (role !== "ADMIN" && role !== "MEMBER") {
+      throw new MockApiError("PERMISSION_DENIED", "Only an admin or a member of this project can be assigned an issue");
+    }
   }
 
   transitionIssue(projectId: string, issueId: string, transitionId: string): Issue {
@@ -2248,14 +2295,25 @@ export class MockTaskaStore {
   }
 
   /**
-   * `PUT …/watchers/me`. No role check for the same reason as the read: the
-   * contract states none, and watching is per-reader.
+   * `PUT …/watchers/me`, for an ADMIN or a MEMBER only. The contract states no
+   * role for the pair, and issue-service has one: `watch-issue-roles` is
+   * `ADMIN,MEMBER`, checked against the reader's own role whenever they watch
+   * or unwatch themselves (read at `develop` `1cfe4d7`, TAS-226). This store
+   * used to let any reader do both, which is the claim the board's toggle was
+   * built on.
    */
   watchIssue(projectId: string, issueId: string): WatchIssueResult {
+    this.requireWatchRole(projectId);
     return this.subscribe(projectId, issueId, this.currentUserId, this.currentUserId);
   }
 
+  /**
+   * `DELETE …/watchers/me`, under the same rule as the watch — so a VIEWER is
+   * refused even with nothing to remove, and `removed: false` is only ever an
+   * ADMIN's or a MEMBER's answer here.
+   */
   unwatchIssue(projectId: string, issueId: string): UnwatchIssueResult {
+    this.requireWatchRole(projectId);
     return this.unsubscribe(projectId, issueId, this.currentUserId);
   }
 
@@ -2332,6 +2390,26 @@ export class MockTaskaStore {
         "PERMISSION_DENIED",
         "Only a project admin can change who else watches this issue",
       );
+    }
+  }
+
+  /**
+   * `watch-issue-roles: ADMIN,MEMBER`, the gate on the reader's own
+   * `…/watchers/me` pair (TAS-226). The role is the reader's own, and
+   * `getMembership` answers VIEWER for a non-member, so the stand-in on MOB is
+   * refused here the way a real VIEWER is.
+   *
+   * **The sentence is this store's, like its neighbour's above**, and nothing
+   * was read for it. Against the gateway the refusal comes from
+   * `ProjectRoleChecker`, in one of its two sentences — `"Access denied"` for a
+   * non-member, `"Not allowed role"` for a member holding the wrong role (see
+   * `requireUploadRole`). Nor is the order the server's: it is checked first,
+   * before the issue is looked up, as `addIssueWatcher` does.
+   */
+  private requireWatchRole(projectId: string): void {
+    const { role } = this.getMembership(projectId);
+    if (role !== "ADMIN" && role !== "MEMBER") {
+      throw new MockApiError("PERMISSION_DENIED", "You do not have permission to watch or unwatch this issue");
     }
   }
 

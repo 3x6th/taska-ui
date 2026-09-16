@@ -19,8 +19,14 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // Taska Platform: TAS-101 has her plus two others watching, TAS-102 has nobody,
 // and TAS-103 has two people who are not her — one of whom (Priya) is not a
 // member of the project at all, so the member read cannot name her and her row
-// draws as "Unknown". Mark is a MEMBER, which is how the ungated toggle is told
-// apart from the two controls that are gated.
+// draws as "Unknown". Mark is a MEMBER, which is how the toggle — live for an
+// ADMIN or a MEMBER, by issue-service's `watch-issue-roles` — is told apart
+// from the two controls only an ADMIN gets. Anna is not a member of Mobile, so
+// the mock answers VIEWER for it, and that is where the toggle is seen shut;
+// Tom, the seed's one VIEWER member, is watching TAS-110 and sees it shut and
+// pressed.
+
+const MOB_PROJECT_ID = "f315c5cf-3333-47d1-8d22-79f07c2ec99b";
 
 async function signIn(page: Page, email = "anna@example.com") {
   await page.goto("/login");
@@ -195,6 +201,8 @@ test("offers an admin a picker of members who are not watching yet", async ({ pa
 
   const picker = watchers.getByLabel("Add a watcher");
   // Mark is already watching, so he is not on offer; Anna, Sofia and Tom are.
+  // Tom is a VIEWER and on offer all the same: subscribing somebody else checks
+  // the ADMIN's role and never the subscriber's.
   await expect(picker.locator("option")).toHaveText([
     "Select a member",
     "Anna Ivanova",
@@ -220,8 +228,8 @@ test("leaves a MEMBER the toggle and neither admin control", async ({ page }) =>
   await signIn(page, "mark@example.com");
   const watchers = await openIssuePanel(page, "TAS-101");
 
-  // The one control in the panel that is not behind write access: the contract
-  // puts no role on `…/watchers/me`.
+  // `watch-issue-roles` is ADMIN and MEMBER, so the toggle is his; the contract
+  // states no role for `…/watchers/me`, and issue-service has that one.
   const toggle = watchers.getByRole("button", { name: "Watching", exact: true });
   await expect(toggle).toBeEnabled();
   await expect(watchers.getByLabel("Add a watcher")).toHaveCount(0);
@@ -230,6 +238,49 @@ test("leaves a MEMBER the toggle and neither admin control", async ({ page }) =>
   await toggle.click();
   await expect(watchers.getByRole("button", { name: "Watch", exact: true })).toHaveAttribute("aria-pressed", "false");
   await expect(watchers.locator(".count-pill")).toHaveText("2");
+});
+
+test("shows a VIEWER their subscription and gives them no live control to change it", async ({ page }) => {
+  // Anna is not a member of the Mobile project, so the mock answers VIEWER for
+  // it — the non-member stand-in every VIEWER case in this suite uses. The
+  // board is reachable by URL on purpose: hiding a control is a courtesy, and
+  // the server refuses a VIEWER both halves of the pair (TAS-226).
+  await signIn(page);
+  await page.goto(`/projects/${MOB_PROJECT_ID}/board`);
+  await page.locator(".issue-card", { hasText: "MOB-5" }).click();
+  await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();
+  const watchers = page.locator(".issue-watchers");
+
+  // The state stays legible — Priya is watching, Anna is not — and the control
+  // that would change it is a real `disabled`, §4.21's exception for a control
+  // that is not coming back.
+  await expect(watchers.locator(".count-pill")).toHaveText("1");
+  const toggle = watchers.getByRole("button", { name: "Watch", exact: true });
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(watchers.locator(".watcher-toggle-hint")).toHaveText(
+    "As a viewer, you cannot add yourself to this issue's watcher list.",
+  );
+
+  await expect(watchers.getByLabel("Add a watcher")).toHaveCount(0);
+  await expect(watchers.getByRole("button", { name: /^Remove / })).toHaveCount(0);
+});
+
+test("tells a VIEWER already on the list that they cannot take themselves off", async ({ page }) => {
+  // Tom is the seed's VIEWER member of Taska Platform, and Anna subscribed him
+  // to TAS-110 — which checks her role and not his. So this is a real VIEWER
+  // rather than the non-member stand-in above, and the pressed state of a
+  // toggle that cannot be pressed.
+  await signIn(page, "tom@example.com");
+  const watchers = await openIssuePanel(page, "TAS-110");
+
+  const toggle = watchers.getByRole("button", { name: "Watching", exact: true });
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(watchers.locator(".watcher-toggle-hint")).toHaveText(
+    "You are on this issue's watcher list. As a viewer, you cannot remove yourself.",
+  );
+  await expect(watchers.getByText("(you)")).toBeVisible();
 });
 
 test("drives the whole toggle from the keyboard", async ({ page }) => {
@@ -381,8 +432,9 @@ test("hands focus on without a ring when the row was removed by pointer", async 
 });
 
 // The detail line cannot be reached in mock mode at all: only the REST client
-// reads `X-Request-Id` off a response, and the one refusal `MockTaskaStore` can
-// produce on these routes sits behind controls the same role check removes. So
+// reads `X-Request-Id` off a response, and every refusal `MockTaskaStore` can
+// produce on these routes sits behind a control the same role check removes or,
+// for the toggle, disables. So
 // the *recipe* is measured — drawn onto the live document and taken off again,
 // the way `admin-console.spec.ts` reads a colour it cannot otherwise reach.
 // What is pinned is §7's ruling on which grey it takes: `--fg-2`, not the
