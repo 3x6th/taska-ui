@@ -764,7 +764,7 @@ Everything below is the entry as it stood, in the past tense.
   spent and no 401 path is entered.
 - **The edit control is not on the projects screen against the gateway**, and
   that is deliberate rather than an oversight. It is gated on
-  `currentUserRole`, which arrives with backend PR #152 and is absent today, so
+  `currentUserRole`, which arrives with backend PR #152 and was absent when this was written, so
   in `rest` and in `hybrid` the card shows no pencil while the board header
   still does — the board already holds a membership read and spends nothing.
   The alternative was a membership read per card, and its cost depends on the
@@ -3435,8 +3435,10 @@ loopback (issue-service `application.yml:116`, `.env.docker.example:41`).
 - **The 500 never reached a gateway, and this record kept it four days too
   long.** It was a reading of PR #147's older head `f53dca38`. The head
   `deeedbf`, committed 2026-09-09, already carried both the `RestErrorMapper`
-  row and `maximum: 2097152`. The re-pin on 2026-09-12 (`3e40127`) took the
-  YAML half and missed the Java half, so the client went on faking a 500 until
+  row and `maximum: 2097152`. The re-pin on 2026-09-12 (`3e40127`) updated the
+  extract, which gained the `maximum`, but not the client's reading of it: the
+  client still said the DTO had no `maximum`, and nobody read the Java. So the
+  client went on faking a 500 until
   `api-contract-guard` read the merged Java on TAS-224. No gateway served these
   routes before the merge, so nobody ever met the 500.
 - **The record below is kept as it stood before the merge.**

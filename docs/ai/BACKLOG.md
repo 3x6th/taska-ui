@@ -1661,7 +1661,8 @@ were not.
 Two states in this change could not be exercised at runtime at all, and that is
 worth keeping: **the mock has no failing path for `searchIssues`**, so the error
 branch of both new reads is reviewed from source; and `VIEWER` is unreachable
-while `VITE_TASKA_ASSUME_PROJECT_ADMIN` is set. Neither is a defect. Both are
+while `VITE_TASKA_ASSUME_PROJECT_ADMIN` is set (it was, then; the flag went in
+TAS-224). Neither is a defect. Both are
 places where "verified" would be the wrong word.
 
 ### Left over from the TAS-179 contract pass (`api-contract-guard`, 2026-08-23)
@@ -2320,3 +2321,39 @@ is what recurs.
 - **A stale comment in `src/styles.css` (~l.3312-3316)** still describes the
   Events "not deployed" note, which went away in TAS-194. It is unrelated to
   TAS-224; `frontend-builder` noticed it and left it alone.
+- **A read that answers 200 with no role silently floors to VIEWER**
+  (`release-reviewer`, TAS-224). `RestTaskaApi.getMembership` maps a missing or
+  `null` `currentUserRole` to `VIEWER`, and TAS-163's banner shows only when the
+  read *fails*. So a project-service older than the gateway would make every
+  board read-only for everyone, ADMINs included, and nothing would say why. The
+  flag used to hide this. At `1cfe4d7` a 200 always carries the role, and
+  backend `deploy-stage` run 35092655215 deployed the whole stack at that commit
+  (12:00 UTC 2026-09-16), so it is not reachable today. The fix is to treat a 200
+  with no role as unknown and show the banner, as the board already does for a
+  failed read.
+- **A VIEWER is offered Watch, and the server refuses it** (`release-reviewer`,
+  TAS-224, pre-existing). issue-service sets `watch-issue-roles: ADMIN,MEMBER`
+  (`application.yml:59`) and applies it to watching yourself
+  (`IssueWatcherServiceImpl.java:175-177`). The toggle is ungated
+  (`BoardScreen.tsx` ~2107), and the mock lets a VIEWER watch, which a test pins.
+  The write is optimistic with rollback, so nothing is lost: the reader sees the
+  refusal. The contract says nothing about it. The fix is to gate the toggle on
+  `canEdit`, align the mock, and record it in `API-DIVERGENCE.md` if it stays.
+- **The assignee chips offer VIEWER members, and the server refuses them as
+  assignees** (`release-reviewer`, TAS-224). issue-service checks the assignee's
+  role against `assign-issue-roles: ADMIN,MEMBER` (`IssueServiceImpl.java:182-184`),
+  while `BoardScreen.tsx` ~1402-1426 draws a chip for every member. It became
+  reachable in TAS-224, because the chips used to list only the reader. Nothing
+  is written, since assign is not optimistic, and the refusal shows in the alert
+  line. The mock seeds no VIEWER, so no test reaches it. The fix is to draw
+  chips for ADMIN and MEMBER rows only, keeping the current assignee visible.
+- **The assignee filter row wraps with no limit** (`src/styles.css` ~4018), so on
+  a large project it pushes the board down at 390px. Pre-existing, and
+  reachable on the stand since TAS-224 named every member. `art-director`'s call.
+- **Four code comments tell the attachments-500 history slightly wrong**
+  (`api-contract-guard`, TAS-224): `TaskaApi.ts` ~864, `RestTaskaApi.ts` ~2390,
+  `MockTaskaApi.ts` ~2399, `RestTaskaApi.test.ts` ~3099. They say the 2026-09-12
+  re-pin "missed the Java half". It missed the client's reading of the YAML half
+  too: the `maximum` alone decides the `upload-url` refusal. `API-DIVERGENCE.md`
+  tells it correctly. Left for the next pass through those files, at the owner's
+  preference for speed over another builder round.
