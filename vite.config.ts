@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { loadEnv } from "vite";
 import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
@@ -39,6 +40,17 @@ export default defineConfig(({ mode }) => {
     ],
     server: {
       port: 5173,
+      // A checkout under .claude/worktrees is another session's copy of this
+      // repository, not a source of this one. Watched, its first `npm ci` or
+      // edit reloads this dev server mid-run: five e2e specs failed that way
+      // on 2026-09-16 while a TAS-158 worktree was being set up. Vite appends
+      // this to its own ignores (.git, node_modules, test-results, cacheDir).
+      //
+      // Anchored to this file's directory, because chokidar matches the full
+      // path: an unanchored `**/.claude/worktrees/**` also matches every file
+      // of a dev server that itself runs inside a worktree, which then serves
+      // stale code after every edit (release-reviewer, TAS-158).
+      watch: { ignored: [`${fileURLToPath(new URL(".claude/worktrees/", import.meta.url))}**`] },
       // Gateway CORS only allows its own frontend origin, so local dev
       // reaches it through a same-origin proxy. The target comes from
       // VITE_TASKA_API_PROXY_TARGET (see .env.example); no proxy otherwise.

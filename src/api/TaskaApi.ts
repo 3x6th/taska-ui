@@ -29,6 +29,8 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
+  ProjectMemberWriteResult,
+  ProjectRole,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -648,6 +650,90 @@ export interface TaskaApi {
    * answer rather than a defensive one.
    */
   listMembers(projectId: string): Promise<ProjectMember[]>;
+
+  /**
+   * The three member writes (TAS-158): add somebody by user id, change a
+   * member's role, remove a member. In `docs/contract/openapi.yml` as
+   * `addProjectMember`, `changeProjectMemberRole` and `removeProjectMember`;
+   * `HybridTaskaApi` passes all three straight to the gateway.
+   *
+   * Deployed: probed without a token on 2026-09-16 at 21:37 UTC, `POST …/members`,
+   * `PATCH …/members/{userId}` and `DELETE …/members/{userId}` each answer 401
+   * and a `PUT` answers 405, where `GET /users/me` answered 401 and an unmapped
+   * path the static-resource 404 as the controls. So on that stand a 404 from any
+   * of the three is the resource's own answer rather than a missing route.
+   *
+   * **ADMIN of that project, and nobody else** — a `GLOBAL_ADMIN` included, who
+   * gets no exemption. Hiding the controls below ADMIN is presentation; the
+   * server decides, and a 403 arriving here is shown rather than swallowed.
+   *
+   * What the yml does not say, read out of `ProjectMemberValidatorImpl`,
+   * `GrpcProjectService` and the gateway's `GatewayValidationExceptionHandler`
+   * and `RestErrorMapper` at backend `develop` `1cfe4d79f074` — read, not
+   * measured on the stand:
+   *
+   * - **The order of the refusals is the server's, and it is not the same for
+   *   add as for the other two.** Shape comes first on all three. A missing or
+   *   unrecognised `role` is `400 INVALID_ARGUMENT` "Invalid request parameters"
+   *   from the gateway's own request validation
+   *   (`GatewayValidationExceptionHandler`): the generated `RoleEnum.fromValue`
+   *   refuses an unknown value while the body is decoded, and `@NotNull`
+   *   refuses a missing one, so `ProjectMapper.toGrpcProjectRole`'s own 400 is
+   *   not reached from these routes. It comes after the token check and before
+   *   project-service is asked; an id `UUID.fromString` rejects is
+   *   `400 INVALID_ARGUMENT` from
+   *   project-service's transport ("body.addedMemberId must be a valid UUID",
+   *   `changedMemberId` and `deletedMemberId` on the other two), before any row
+   *   is read. Then one locked read of the project's member rows
+   *   (`getRequiredMembersInProject`, every ADMIN plus the actor and the target,
+   *   `FOR UPDATE`) decides the rest. No rows at all — a
+   *   project that does not exist — is `404 NOT_FOUND`. For **add**: an actor
+   *   who is not ADMIN is `403 PERMISSION_DENIED`, then a target already on
+   *   the project is `409 ALREADY_EXISTS`. For **change** and **remove**: a
+   *   target who is not a member is `404 NOT_FOUND` — checked *before* the
+   *   actor's role, so a non-admin touching a non-member gets 404, not 403 —
+   *   then a non-ADMIN actor is 403, then the last-admin rule below.
+   * - **The last ADMIN cannot be demoted or removed**: when the target is an
+   *   ADMIN and the project has one ADMIN or fewer, both writes are
+   *   `FAILED_PRECONDITION` — **400**, not 409 — saying "Can't modify last
+   *   admin: …". That includes a `PATCH` to `ADMIN` itself. `isConflict`
+   *   (src/api/errors.ts) reads it through the `code`, which is the only half
+   *   that carries it.
+   * - **An ADMIN may change or remove their own row** whenever another ADMIN
+   *   exists, and loses the access with it. The caller refetches the reader's
+   *   role afterwards rather than assuming the old one survived.
+   * - **Add does not check that the user exists** (TAS-227). Any well-formed id
+   *   is a 201, and `GET …/members` then returns that row with no name and no
+   *   email — auth-service drops an id it has no user for from its lookup, and
+   *   does not filter by status, so an INVITED or BLOCKED user comes back named.
+   *   A member row without a name therefore means no account came back for its
+   *   id. `MockTaskaApi` accepts an unknown id the same way; a mock that refused
+   *   one would be a false statement about this route.
+   *
+   * An id that is not in the canonical 8-4-4-4-12 form is refused before the
+   * request by every implementation (`isUserId`, src/api/members.ts), which is
+   * stricter than the server's own parse and says why there.
+   *
+   * Both answers are `ProjectMemberWriteResult` — `projectId`, `userId` and
+   * `role`, and nothing about the person. The member list is what names them.
+   */
+  addProjectMember(projectId: string, userId: string, role: ProjectRole): Promise<ProjectMemberWriteResult>;
+  /**
+   * `PATCH /projects/{projectId}/members/{userId}` with `{ role }`, 200. The
+   * refusals and their order are listed on `addProjectMember` above.
+   */
+  changeProjectMemberRole(projectId: string, userId: string, role: ProjectRole): Promise<ProjectMemberWriteResult>;
+  /**
+   * `DELETE /projects/{projectId}/members/{userId}`, 204 with no body. The
+   * refusals and their order are listed on `addProjectMember` above.
+   *
+   * Nothing else goes with the row. project-service deletes the membership and
+   * writes a `MemberRemoved` outbox event, and the only consumer of that event
+   * at `1cfe4d79f074` is notification-service, which tells the person — so an
+   * issue assigned to them stays assigned to them, and the board then draws
+   * that assignee as somebody the member list cannot name.
+   */
+  removeProjectMember(projectId: string, userId: string): Promise<void>;
 
   getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow>;
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>>;

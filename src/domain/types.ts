@@ -297,14 +297,20 @@ export interface ProjectMember {
    * and a `null` is not — "the server did not state a role we can act on" is
    * never read as a role of its own, and an assignability nobody stated is not
    * the client's to offer.
+   *
+   * The members panel (TAS-158) reads it too, with the same `null` semantics:
+   * such a row says in words that its role is unknown, is offered no role
+   * select — which would have to guess the current value — and does not count
+   * as an admin.
    */
   role: ProjectRole | null;
   /**
    * Both optional because `ProjectMemberDetailsDto` carries neither: the row is
    * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else.
-   * Only the mock fills them, as seed data — `HybridTaskaApi` also invented
-   * them from the project's own `createdAt`/`createdBy` until TAS-224 — and
-   * nothing outside the tests reads them.
+   * Only the mock fills them, as seed data and on the rows its own adds create
+   * — `HybridTaskaApi` also invented them from the project's own
+   * `createdAt`/`createdBy` until TAS-224 — and nothing outside the tests reads
+   * them.
    */
   addedAt?: string;
   addedBy?: string;
@@ -323,6 +329,29 @@ export interface ProjectMember {
    * draws initials until auth-service is fixed.
    */
   user?: Pick<User, "displayName" | "email" | "color" | "avatarUrl">;
+}
+
+/**
+ * What `POST /projects/{projectId}/members` and
+ * `PATCH /projects/{projectId}/members/{userId}` answer with —
+ * `ProjectMemberResponseDto` (docs/contract/openapi.yml): the membership as the
+ * server now holds it, and **nothing about the person**. No `displayName`, no
+ * `email`, no avatar, so a caller that wants to draw the new row reads the member
+ * list again rather than building a person out of this.
+ *
+ * `role` is `ProjectRole | null` for `Project.currentUserRole`'s reason rather
+ * than `ProjectMember.role`'s: both writes map it through the gateway's
+ * `ProjectMapper.toRestProjectRole`, which returns `null` rather than emit a role
+ * it does not recognise (read at backend `develop` `1cfe4d79f074`).
+ *
+ * The three fields declare no `required` block, so an absent one is legal on the
+ * wire; the rest mapper fills `projectId` and `userId` from the request it made,
+ * which names both, rather than from nothing.
+ */
+export interface ProjectMemberWriteResult {
+  projectId: string;
+  userId: string;
+  role: ProjectRole | null;
 }
 
 export interface WorkflowStatus {

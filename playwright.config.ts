@@ -3,7 +3,12 @@ import { defineConfig } from "@playwright/test";
 // A dedicated port so the suite can never attach to a developer's own dev
 // server, which usually runs in hybrid mode against the live gateway. The
 // e2e server is always mock-backed and always freshly started.
-const PORT = 5183;
+//
+// `TASKA_E2E_PORT` moves it, for a second worktree running the gate while
+// another checkout runs its own: with `strictPort` and no server reuse, two
+// suites on one port do not share a server, the second one simply fails to
+// start. Moving the port keeps both properties.
+const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
 
 export default defineConfig({
   testDir: "./e2e",

@@ -2410,12 +2410,15 @@ is what recurs.
   writes, and since TAS-226 the assignee half of `assign-issue-roles`. The UI
   gates the unchecked writes on `canEdit`, so no mock-backed screen reaches the
   gap.
-- **A git worktree inside the repository can reload the e2e dev server mid-run**
+- ~~**A git worktree inside the repository can reload the e2e dev server mid-run**
   (`builder`, TAS-226). At 23:43 on 2026-09-16 another session checked out
   `.claude/worktrees/tas-158-members/` and five desktop specs failed seconds
   later with pages navigating mid-wait. They passed alone and on two later full
   runs. Candidate fix: `server.watch.ignored` for `.claude/worktrees/**` in the
-  Vite config.
+  Vite config.~~ **Fixed in TAS-158**, which was that worktree:
+  `server.watch.ignored` now carries `**/.claude/worktrees/**`, appended to Vite's
+  own ignores. It protects a checkout's dev server only once that checkout has
+  the change.
 - **The watchers section's 403 fallback sentence names the wrong rule for the
   `…/me` pair** (`api-contract-guard`, TAS-226). `watcherFailureText`
   (`BoardScreen.tsx` ~2602-2604) says only a project admin may change who else
@@ -2433,3 +2436,95 @@ is what recurs.
     `GET /meta`: a cross-service rpc.
 
   Worth filing when TAS-214 or TAS-217 is next discussed, not before.
+
+### Left by TAS-158 (project members dialog, 2026-09-17)
+
+- **Nobody can see their own user ID anywhere in the product** (`builder`,
+  TAS-158). Adding a member takes an exact ID until TAS-204 brings search, and
+  today only a `GLOBAL_ADMIN` can find an ID (Administration → Data →
+  auth → users). A project ADMIN who is not a global admin has to be handed the
+  ID by somebody. Cheap fix: "User ID" with a copy button in the profile menu
+  (§4.16). It is outside TAS-158's scope, and it matters for exactly as long as
+  the ID field does.
+- **Removing a member leaves their assignments and watcher subscriptions**
+  (`builder`, `api-contract-guard`, TAS-158). project-service writes
+  `MemberRemoved`, and only notification-service consumes it. The board then
+  draws that assignee as somebody the member list cannot name. This is a
+  product question for the backend: should removal unassign, or should the
+  board say "no longer on this project"? It is not filed.
+- **Member writes do not name the person, so every add re-reads the list**
+  (`api-contract-guard`, TAS-158). The ask is priced, not filed:
+  - proto: `AddProjectMemberResponse` and `ChangeProjectMemberRoleResponse` gain
+    the fields of the proto message `ProjectMemberDetailsResponse`;
+  - service: the lookup TAS-227 adds, for add only. A role change needs its own
+    `getUserDetailsByIds` call, modelled on the member read
+    (`ProjectMemberServiceImpl` ~174-207);
+  - gateway mapper: `toRestAdd…` and `toRestChange…`;
+  - contract: `ProjectMemberResponseDto`.
+
+  It depends on [TAS-227](https://jira.ozero.dev/browse/TAS-227) and sits next
+  to [TAS-212](https://jira.ozero.dev/browse/TAS-212). It must not copy
+  TAS-225's avatar lookup, where one unreadable avatar fails the whole answer.
+  Worth filing when TAS-212 is next discussed.
+- **An admin who cannot sign in still counts as cover** (`api-contract-guard`,
+  TAS-158). A BLOCKED admin, or one INVITED who never activated, comes back
+  named, so the dialog lets the only admin who can sign in step down beside one.
+  Member rows carry no `status`, so the client cannot tell. A real fix touches:
+  - auth-service: `findUsersWithAvatars`, `UserDetails` and `ProfileMapper`;
+  - project-service: `buildProjectMemberDetailsDto` and
+    `ProjectMemberDetailsResponse`;
+  - the gateway's `ProjectMapper`;
+  - the contract: `ProjectMemberDetailsDto.status`.
+
+  It is recorded in `API-DIVERGENCE.md` beside the no-account rule.
+- **Two admins in separate sessions can step down at the same moment**
+  (`release-reviewer`, TAS-158). If a no-account admin row is the only other
+  ADMIN, the project is left with no admin who can sign in. No client can
+  prevent it; TAS-227 plus a cleanup of existing rows removes the precondition.
+- **The role select applies on change** (`builder`, TAS-158). On Windows, arrow
+  keys on a closed `<select>` send one PATCH per press. Presses during a write
+  are ignored, so it cannot race itself, but each step is a real write. Not
+  seen on macOS, where arrows open the list.
+- **A pending add row can vanish a beat early** (`builder`, TAS-158). A role
+  change cancels an in-flight member refetch, and an add waiting on that refetch
+  loses its pending row before the real row arrives.
+- **The member read's retry rule exists twice** (`builder`, TAS-158). The dialog
+  holds a copy of the board's rule, because a screen file cannot export it, and
+  the two must stay identical.
+- **One extra member GET after removing yourself** (`release-reviewer`,
+  TAS-158). React Router 7 navigates at low priority, so the dialog can re-render
+  first and re-create an empty members query. On the gateway it answers 403, and
+  no data survives.
+- **Layering and test placement** (`builder`, TAS-158):
+  - `ProjectMembersModal` imports `shortKey` from `screens/admin/columns.ts`, so
+    a component depends on a screen module.
+  - The member write tests live in `src/api/members.test.ts` rather than the
+    Mock and Rest test files, to stay clear of TAS-226, which was open in
+    another session. Fold them in when either file is next touched.
+- **A notice that scrolls into view can take the focus ring off screen**
+  (`release-reviewer`, TAS-158). After a refused removal near the bottom of a
+  long list, focus has already moved to a neighbour's remove button, and the
+  scroll to the notice then moves `.modal-body` away from it: 340px at 390×844
+  with 14 rows. The live region still announces, and the next Tab brings focus
+  back into view, so it is not a WCAG failure. The fix is to scroll the notice
+  only when focus is not already visible, or to bring focus to the notice.
+  That is `art-director`'s call.
+- **An ambiguously failed demotion counts as cover again for one round trip**
+  (`release-reviewer`, TAS-158). Say the server applies a demotion but the
+  client sees a 5xx or a network error. `onError` rolls the row back to ADMIN,
+  and `onSettled` clears the in-flight entry before the re-read lands. Until it
+  lands, the only real admin could step down beside a no-account admin. That
+  takes two presses inside one round trip, right after an error notice.
+  Accepted without a fix. The smallest fix is to clear the entry after
+  `await refresh(...)`, which keeps the select busy one round trip longer.
+- **A notice scrolled into view lands against the list's top edge**
+  (`art-director`, TAS-158). It stops 0.2px under the top of `.modal-body`'s
+  scroll area, and at 390 it sits −0.3px, which clips its rounded corners. The
+  fix is `.members-panel .member-note { scroll-margin-top: 16px; }`, where 16 is
+  `.modal-body`'s padding and on the §2.4 scale. Once it ships, §4.22 gains
+  "и `scroll-margin-top:16`".
+- **A contrast comment in `styles.css` carries pass-1 numbers**
+  (`art-director`, TAS-158). The comment on `.member-confirm` (~6325) says
+  "1.20 / 1.22". The border paints over the strip's own fill, so the measured
+  numbers are 1.37 light / 1.15 dark against the modal and 1.20 / 1.19 against
+  the fill. Fix it with the next edit to that block.

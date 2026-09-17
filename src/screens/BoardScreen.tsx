@@ -11,7 +11,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Users, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput, UpdateIssueInput } from "../api/TaskaApi";
@@ -33,6 +33,7 @@ import { EditProjectModal } from "../components/EditProjectModal";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
+import { ProjectMembersModal } from "../components/ProjectMembersModal";
 import { RequestId } from "../components/RequestId";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
@@ -131,6 +132,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>("ALL");
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("ALL");
   const [managingLabels, setManagingLabels] = useState(false);
+  const [managingMembers, setManagingMembers] = useState(false);
   const [editingProject, setEditingProject] = useState(false);
   // What `NotificationsBell` hands to `useTriggerAnchor`: the bell's own box
   // never changes size, only its position, and this is the box whose resizing
@@ -584,6 +586,19 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             </button>
           ))}
         </div>
+        {/* Right after the people it lists in full (TAS-158), for every reader:
+            who is on a project is not an admin's secret, and only the controls
+            inside are gated. An icon button like "Manage labels" beside it, and
+            named in `aria-label` as well as `title` (§7). */}
+        <button
+          aria-label="Members"
+          className="icon-button"
+          onClick={() => setManagingMembers(true)}
+          title="Members"
+          type="button"
+        >
+          <Users size={15} />
+        </button>
         <span className="divider" />
         {/* A failed label read is said here rather than in the notice stack
             above: the stack is capped at four (§5.6) and this costs the board
@@ -823,6 +838,20 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // gateway for the issues of a deleted label and get an empty board
           // back — an answer indistinguishable from "nothing carries it".
           onLabelDeleted={(labelId) => setLabelFilter((current) => (current === labelId ? "ALL" : current))}
+        />
+      ) : null}
+
+      {managingMembers ? (
+        <ProjectMembersModal
+          currentUserId={meQuery.data?.id}
+          onClose={() => setManagingMembers(false)}
+          projectColor={project?.color}
+          projectId={projectId}
+          projectKey={project?.projectKey ?? ""}
+          // The same `role` every permission above reads, with a failed read
+          // folded into `null`: the dialog tells a role nobody stated from a
+          // role the server named, as the board's two banners do.
+          readerRole={roleUnknown ? null : role}
         />
       ) : null}
 
