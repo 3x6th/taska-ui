@@ -150,7 +150,8 @@ export const formatLockTime = (until: Date) =>
  * At the sheet's 12px/600 with its −0.065px tracking, `Account is locked until
  * Sep 23, 00:05 GMT+3` needs 238.4px on one line. The line box it has to fit in
  * is `0.9 × viewport − 74` until the card reaches its 392px cap: 214px at a 320
- * viewport, 235.6px at 344, 318px from 420 up. So the token did not cost a
+ * viewport, 235.6px at 344, 304px at 420, and 318px from 436 up, once 90% of
+ * the viewport passes that cap (317.5px at 435). So the token did not cost a
  * third line only at the 320 floor — it cost one at **every** width at or below
  * 347, in both themes. Without it the sentence needs 196.2px and stays on one
  * line down to a 301px viewport, well under the narrowest this product is
