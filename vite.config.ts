@@ -29,7 +29,21 @@ export default defineConfig(({ mode }) => {
       // because Vitest also scans .claude/worktrees, which holds scratch
       // checkouts of this same repository (see eslint.config.js globalIgnores,
       // which ignores them for the same reason).
-      exclude: [...configDefaults.exclude, "**/e2e/**", "**/.claude/worktrees/**"],
+      //
+      // docs/ai/evidence and docs/ai/reviews are the same class of thing and
+      // were the same bug: a review that keeps a full source copy of the tree
+      // it reviewed leaves .ts files behind, .gitignore excuses them from git
+      // but not from Vitest, and the suite silently runs the copies too. On
+      // this checkout that was 6068 tests where the repository has 948 — the
+      // surplus being other stories' snapshots, asserting what was true when
+      // they were taken.
+      exclude: [
+        ...configDefaults.exclude,
+        "**/e2e/**",
+        "**/.claude/worktrees/**",
+        "**/docs/ai/evidence/**",
+        "**/docs/ai/reviews/**",
+      ],
     },
     plugins: [
       react(),
