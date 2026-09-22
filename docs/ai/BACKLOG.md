@@ -2579,3 +2579,28 @@ is what recurs.
   shipped bundle to answer. Ours to fix, cheaply: surface the build SHA in the
   app so a tester can quote it. Not folded into TAS-231, whose diff is about
   two date boxes.
+
+### Left open by TAS-231 (from `frontend-builder` and `art-director`, 2026-09-22)
+
+- **Two failed writes, and the panel shows the older one** (`frontend-builder`,
+  TAS-231). `panelNotice` coalesces with `updateIssue.error ?? assignIssue.error
+  ?? transitionIssue.error ?? deleteIssue.error`, which keeps the first of a
+  fixed order rather than the newest — so with an update refusal standing, a
+  later transition refusal goes unsaid. A write error also survives a later
+  *successful* unrelated write. This is the same class as TAS-231's own blocker
+  ("a refused write goes unsaid"), one step further in: TAS-231 fixed the
+  collision between the local date refusal and the write errors, and this is
+  the collision *among* the write errors, which predates it. Deliberately not
+  widened into: fixing it means changing how the panel feeds that slot, and
+  doing that inside a story about two date boxes would put every refusal
+  message on the line for a change that started with `badInput`. Needs a story
+  when its turn comes — the fix is a single newest-wins notice with its own
+  sequence, not four mutation error fields read in order.
+- **A sub-pixel assertion in `topbar-popovers.spec.ts` flakes under parallel
+  load** (`frontend-builder`, TAS-231). "a full page of results is never
+  clipped by the list's own cap" failed once at `clippedBy
+  0.00000762939453125px`, then passed alone and in two full runs after. That is
+  float noise, not a layout fault, and the spec is unrelated to TAS-231's diff.
+  The fix is an epsilon on that comparison rather than a retry: a test that
+  fails at the eighth decimal is measuring the floating-point unit, not the
+  cap.
