@@ -2604,3 +2604,12 @@ is what recurs.
   The fix is an epsilon on that comparison rather than a retry: a test that
   fails at the eighth decimal is measuring the floating-point unit, not the
   cap.
+- **`App.test.tsx`'s session-expiry case flakes** (`release-reviewer`, TAS-231).
+  `src/screens/App.test.tsx:132` — `queryClient.getQueryCache().getAll()` is
+  expected to be empty after a session expires, and failed once in three runs,
+  green in the other two and in both of the builder's later runs. Untouched by
+  TAS-231 and not plausibly caused by it. Recorded because of what it means
+  rather than what it is: `npm run check` is the gate this repository verifies
+  against, and a gate that is green on most runs is not a green gate. Worth
+  finding the actual race — most likely an unawaited invalidation racing the
+  clear — rather than a retry, which would hide it.
