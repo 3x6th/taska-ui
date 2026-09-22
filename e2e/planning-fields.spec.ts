@@ -512,6 +512,15 @@ test("the press that fixes the date creates the issue, rather than being swallow
   // blur land inside the press.
   await start.fill("2026-09-18");
   await expect(start).toBeFocused();
+  // And the sentence is already gone before the press, because the keystroke
+  // that made the date legible took it down — `fill` ends in an `input` event,
+  // which is one of the two things `relaxDates` listens for. This is the
+  // assertion that says the imperative does not outlive the reader obeying it:
+  // without it the line would still be standing here, in `--danger`, over a
+  // date that is now perfectly fine, and the press below would be what cleared
+  // it (art-director, TAS-231).
+  await expect(modal.locator(".form-error")).toHaveCount(0);
+  await expect(start).not.toHaveAttribute("aria-invalid");
   await pressWithoutFollowing(page, create);
 
   // And the issue exists after that one press — the button measures Δy 0.0px
@@ -559,6 +568,116 @@ test("the create form's refusal is announced once, not on every exit from a date
 
   await expect(notice).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
   await expect(notice).toHaveAttribute("data-seen", "first");
+});
+
+test("the create form's refusal comes down the moment the reader empties the box", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "New", exact: true }).click();
+
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Summary").fill("Plan with the date given up on");
+  const start = modal.getByLabel("Start date");
+  const notice = modal.locator(".form-error");
+
+  await halfTypeDate(page, start);
+  await expect(notice).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(start).toHaveAttribute("aria-invalid", "true");
+
+  // The sentence offers two ways out and this is the second of them: clear the
+  // box. It is also the one no `input` event can see — a date control fires
+  // neither `input` nor `change` while it holds an entry the browser cannot
+  // read, so every keystroke on this route is a `keyup` and nothing else.
+  // Walk to the last segment first, because a click lands on whichever segment
+  // is under it, then clear all three from the right.
+  await start.click();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  for (let segment = 0; segment < 3; segment += 1) {
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("ArrowLeft");
+  }
+
+  // Nothing is left to refuse, so nothing is refused — with the reader still
+  // standing in the box and no press having been made. Before this, the line
+  // and the mark both survived: `badInput false`, `value ""`, both dates empty,
+  // the form pristine, and a red imperative to finish a date that was no longer
+  // there (art-director, TAS-231).
+  await expect(notice).toHaveCount(0);
+  await expect(start).not.toHaveAttribute("aria-invalid");
+  await expect(start).toHaveJSProperty("value", "");
+  await expect(start).toBeFocused();
+});
+
+test("the create form's mark follows the fault, rather than staying on the date that was fixed", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "New", exact: true }).click();
+
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Summary").fill("Plan with each date half typed in turn");
+  const start = modal.getByLabel("Start date");
+  const due = modal.getByLabel("Due date");
+  const notice = modal.locator(".form-error");
+
+  await halfTypeDate(page, start);
+  await expect(start).toHaveAttribute("aria-invalid", "true");
+
+  // The other box becomes the one at fault, and the reader fixes the first
+  // without leaving it. The sentence stays up, because the form still holds a
+  // date the browser cannot read — but it deliberately names no field, and the
+  // mark that names one on its behalf has to let go of the box that is now
+  // fine. Measured before this: start read `2026-09-18`, `badInput false`,
+  // `aria-invalid "true"`, described by the sentence, while due — `badInput
+  // true` — carried no mark at all, so the one red thing on the form pointed at
+  // the one date that was right (art-director, TAS-231).
+  await due.click();
+  await page.keyboard.type("12");
+  await start.fill("2026-09-18");
+
+  await expect(notice).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(start).not.toHaveAttribute("aria-invalid");
+  await expect(start).not.toHaveAttribute("aria-describedby");
+
+  // And leaving the box is what puts the mark where it now belongs.
+  await modal.getByLabel("Description").focus();
+  await expect(due).toHaveAttribute("aria-invalid", "true");
+  await expect(start).not.toHaveAttribute("aria-invalid");
+});
+
+test("the create form answers the second press as loudly as the first", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "New", exact: true }).click();
+
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Summary").fill("Plan pressed twice");
+  const start = modal.getByLabel("Start date");
+  const notice = modal.locator(".form-error");
+
+  // Half typed and submitted from inside the box: Enter there is an implicit
+  // submit, so no blur runs ahead of it and what answers is the submit path
+  // alone. Inlined rather than `halfTypeDate`, which ends by leaving the box.
+  await start.fill("");
+  await start.click();
+  await page.keyboard.type("12");
+  await page.keyboard.press("Enter");
+
+  await expect(notice).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(start).toBeFocused();
+  // Marked through the DOM, so it survives a re-render and cannot survive a
+  // remount — the same instrument the "announced once" case above uses, asking
+  // the opposite question of it.
+  await notice.evaluate((node) => {
+    node.setAttribute("data-seen", "first");
+  });
+
+  // The same press again, on the same fault. Focus is already in the box, so
+  // the focus move that carries the first refusal does nothing at all here —
+  // measured before the fix, on all three viewports: the second Enter inserted
+  // no node and moved nothing, and a reader who cannot see the line got no
+  // answer to a button they had just pressed (release-reviewer, TAS-231).
+  await page.keyboard.press("Enter");
+  await expect(notice).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(notice).not.toHaveAttribute("data-seen");
+  await expect(page.locator(".issue-planning")).toHaveCount(0);
 });
 
 test("creates an issue with both dates, and they are still there when the panel is reopened", async ({ page }) => {

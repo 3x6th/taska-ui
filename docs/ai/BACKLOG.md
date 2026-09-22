@@ -2613,3 +2613,25 @@ is what recurs.
   against, and a gate that is green on most runs is not a green gate. Worth
   finding the actual race — most likely an unawaited invalidation racing the
   clear — rather than a retry, which would hide it.
+- **Cancel's first press is still swallowed on the create form**
+  (`art-director`, TAS-231). Half-type a date, then press "Cancel" with the
+  pointer straight from the box: measured `down|645.9`, `up|692.3` at 1440 —
+  the blur that `mousedown` fires puts the refusal line up, the row drops
+  46.4px between the press and the release, no `click` reaches the button, the
+  modal stays open, and what the reader gets for abandoning the form is a red
+  sentence about a date they were abandoning. This one is lost on the line's
+  *raise*, not on its withdraw, so neither TAS-231's blur asymmetry nor its
+  `relaxDates` reaches it — unchanged from before the story. The cure is
+  structural rather than another rule about when the slot may change: stop
+  `.modal-actions` participating in the body's flow, the way `.modal-footer`
+  already does in `styles.css`, so a slot that mutates cannot move the buttons
+  at all.
+- **The issue panel has a latent instance of the same class**
+  (`release-reviewer`, TAS-231). The panel still clears its date notice on the
+  way through a date commit (`BoardScreen.tsx:1517`), and measured, the
+  `.description-field textarea` below that slot moves up 33.39px between
+  `mousedown` and `mouseup`. No press is lost there today only because the
+  textarea is taller than the shift; a 34px control in that position would
+  swallow one exactly as the create form's action row did. Untouched by
+  TAS-231, which fixed the surface where the loss was reachable and left the
+  panel's slot alone.
