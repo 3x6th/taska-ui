@@ -3142,8 +3142,17 @@ and on TAS-108.
   field to read the deadline out of, and no field to add one to without the
   backend growing the mechanism first.
 - **Compensating UI behaviour:** the login screen parses the sentence
-  (`src/lib/accountLock.ts`) and renders the deadline as `HH:mm` on the
-  reader's own clock, over two lines, with the full local date-time in `title`.
+  (`src/lib/accountLock.ts`) and renders the deadline over two lines, with the
+  full local date-time and its zone in `title` on both branches. The visible
+  text is `HH:mm` when the deadline falls on the reader's local today and
+  `MMM d, HH:mm` when it does not — a fifteen-minute lock can cross local
+  midnight, and `title` is unreachable on touch, so `00:05` with nothing saying
+  *tomorrow* would be the same misreading in a prettier font. The clock is the
+  reader's zone; the calendar and the words are `en-US`, pinned, because
+  `Intl`'s zone default is what this story needed and its *locale* default
+  additionally hands over the calendar — `fa-IR` printed the Solar Hijri
+  `1 Mehr` inside an English sentence in an `<html lang="en">` document
+  (`art-director`, 2026-09-22).
   Two rules keep the compensation from becoming a second contract:
   - **the branch is never chosen by the prose.** `isAccountLocked`
     (`src/api/errors.ts`) reads `code === "PERMISSION_DENIED"` with a 403 or,
