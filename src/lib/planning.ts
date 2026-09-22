@@ -110,8 +110,9 @@ const PLANNING_DATE_FIELD_NAMES: Record<PlanningDateField, string> = {
  * `planningFields.ts` instruct, and stays a report: "move the due date first"
  * is advice because something is left to do, and here nothing is — the entry is
  * already gone, so the only open question is what happened to the issue.
- * Measured at 358px (13px/600) by art-director: one line inside the panel's
- * 425px content box at the design width of 480.
+ * Measured at 358px (12px/600) by art-director: one line inside the notice's
+ * own 415px content box (405 with the panel scrollbar) at the design width of
+ * 480.
  */
 export function planningDateIncompleteEditMessage(field: PlanningDateField): string {
   const name = PLANNING_DATE_FIELD_NAMES[field];
@@ -137,7 +138,7 @@ export function planningDateIncompleteEditMessage(field: PlanningDateField): str
  * It names no field, where the panel's sentence does, because this surface
  * points instead: submit moves focus to the offending box, which carries
  * `aria-invalid` and this line as its description, so "that date" has a
- * referent the panel cannot give it. Measured at 396px (13px/600) in the 426px
+ * referent the panel cannot give it. Measured at 396px (12px/600) in the 426px
  * content box at the design width of 480; the wording it replaces measured
  * 422px — four pixels from wrapping — and "...without that date" measures
  * 437px and wraps.

@@ -29,6 +29,26 @@ async function halfTypeDate(page: Page, box: Locator) {
   await box.blur();
 }
 
+/**
+ * Press a control the way a hand does: aim once, then press and release without
+ * looking again.
+ *
+ * `locator.click()` cannot see the defect this exists for. Playwright re-reads
+ * the element's box immediately before pressing and follows whatever moved, so a
+ * row that shifts between `mousedown` and `mouseup` is invisible to it — and the
+ * shift is caused by the `blur` that `mousedown` itself fires, one event earlier.
+ * One position, taken before the press, is what puts both events where the
+ * reader's pointer actually was.
+ */
+async function pressWithoutFollowing(page: Page, target: Locator) {
+  await target.scrollIntoViewIfNeeded();
+  const box = await target.boundingBox();
+  if (!box) throw new Error("the control has no box to press");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.up();
+}
+
 // The five planning fields on the issue panel and in the create modal
 // (TAS-189). Mock-backed like every spec here — playwright.config.ts starts the
 // server with VITE_TASKA_API_MODE=mock, so any seeded user signs in with any
@@ -458,6 +478,87 @@ test("the create form refuses a half-typed date in its own words, and points at 
   const planning = page.locator(".issue-planning");
   await expect(planning.getByLabel("Start date")).toHaveValue("2026-09-18");
   await expect(planning.getByLabel("Due date")).toHaveValue("2026-09-19");
+});
+
+test("the press that fixes the date creates the issue, rather than being swallowed", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "New", exact: true }).click();
+
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Summary").fill("Plan with a corrected date");
+  const start = modal.getByLabel("Start date");
+  const create = modal.getByRole("button", { name: "Create issue" });
+
+  // Half typed, then pressed with the pointer straight from the box. Every
+  // other case in this file either presses Enter or clicks after focus has
+  // already left the date, and that is the whole reason this one exists: the
+  // blur arrives on `mousedown`, one event ahead of the `click` it belongs to,
+  // and whatever it does to the notice slot moves the action row directly
+  // beneath it before `mouseup` lands.
+  await start.click();
+  await page.keyboard.type("12");
+  await pressWithoutFollowing(page, create);
+
+  // This press is allowed to be lost, and is: putting the line up pushes the
+  // button down by 46.4px at 1440 and 63.8px at 390, against a height of 34px,
+  // so `mouseup` lands above it. What the reader gets either way is the
+  // sentence that accounts for the press, and no issue made behind their back —
+  // which is the state this story set out to deliver.
+  await expect(modal.locator(".form-error")).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(page.locator(".issue-planning")).toHaveCount(0);
+
+  // Now the reader does exactly what the sentence asks. The fix and the press
+  // are one gesture, with nothing in between to shed the focus that makes the
+  // blur land inside the press.
+  await start.fill("2026-09-18");
+  await expect(start).toBeFocused();
+  await pressWithoutFollowing(page, create);
+
+  // And the issue exists after that one press — the button measures Δy 0.0px
+  // between `mousedown` and `mouseup` on all three viewports now. While blur
+  // was still allowed to clear the line, that same `mousedown` withdrew it, the
+  // row jumped up out from under the pointer by the same 46.4 / 63.8px, no
+  // `click` ever reached the button, and the reader was left with nothing
+  // created and nothing said — the dead button this story removes, handed back
+  // on the recovery path.
+  const planning = page.locator(".issue-planning");
+  await expect(planning.getByLabel("Start date")).toHaveValue("2026-09-18");
+  await expect(modal).toHaveCount(0);
+});
+
+test("the create form's refusal is announced once, not on every exit from a date box", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "New", exact: true }).click();
+
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Summary").fill("Plan with one date half typed");
+  const start = modal.getByLabel("Start date");
+  const due = modal.getByLabel("Due date");
+  const notice = modal.locator(".form-error");
+
+  await start.click();
+  await page.keyboard.type("12");
+  await due.focus();
+  await expect(notice).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  // Marked on the node itself, through the DOM: React manages no `data-seen`,
+  // so it survives a re-render and cannot survive a remount.
+  await notice.evaluate((node) => {
+    node.setAttribute("data-seen", "first");
+  });
+
+  // Out of the box that is fine, back into the one that is not, and out again.
+  // Both boxes are re-judged on every exit, so each of these used to mint a
+  // fresh refusal count and replace the node — art-director's MutationObserver
+  // counted three insertions for one fault that never changed, which is one
+  // sentence read out three times to a screen reader, twice of them on leaving
+  // a box that is perfectly fine.
+  await start.focus();
+  await due.focus();
+  await start.focus();
+  await due.focus();
+
+  await expect(notice).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(notice).toHaveAttribute("data-seen", "first");
 });
 
 test("creates an issue with both dates, and they are still there when the panel is reopened", async ({ page }) => {

@@ -1454,8 +1454,11 @@ function IssuePanel({
    * clears — announced a second time by `role="alert"`, with no attempt behind
    * it. An error line that reappears without an action is a ghost and not a
    * record, so the older refusal is dropped rather than queued (TAS-231,
-   * art-director). With `clearDateNotice` on both sides of every write, the two
-   * sources of `panelNotice` can never both be holding something.
+   * art-director). With `clearDateNotice` on both sides of every write, neither
+   * source is ever *left* holding something the other has replaced — with the
+   * one-tick exception `panelNotice` sets out below, where a render can still
+   * read the error this function has already dropped, and where asking the date
+   * line first is what keeps that tick off the screen.
    *
    * Only a *failed* write is reset. One still in flight keeps its state, so
    * nothing here re-enables a control that is waiting on the server, and its
@@ -4415,21 +4418,60 @@ function CreateIssueModal({
    */
   const refuseDate = (field: PlanningDateField) => {
     if (createIssue.isError) createIssue.reset();
-    // A fresh `seq` on every refusal so that the same sentence twice over is
-    // still a change to the live region — see the panel's state comment.
-    setDateNotice((current) => ({ field, seq: (current?.seq ?? 0) + 1 }));
+    // A fresh `seq` remounts the line so that the same sentence twice over is
+    // still a change to the live region — see the panel's state comment — and
+    // it is spent only on a refusal that is *news*. `checkDates` re-judges both
+    // boxes whenever either is left, so tabbing start → due → start with one of
+    // them half typed used to bump the count on every exit, including the exits
+    // from the box that is fine: art-director's MutationObserver counted three
+    // inserted nodes for one unchanged fault, which is one sentence read out
+    // three times. The panel never had this, because there the refusal only
+    // fires on the box at fault (TAS-231).
+    //
+    // Returning `current` untouched is a React bail-out, so an unchanged
+    // refusal also moves nothing — and this slot sits above the action row,
+    // where movement is a thing the reader's pointer can feel (`checkDates`).
+    // A submit that refuses the same box again is still heard: it moves focus
+    // into that box, whose `aria-describedby` is this very line.
+    setDateNotice((current) => (current?.field === field ? current : { field, seq: (current?.seq ?? 0) + 1 }));
   };
 
   /**
+   * Leaving a date box can put the line up. It can never take it down, and that
+   * asymmetry is the whole of this function.
+   *
+   * Blur arrives on **mousedown**, one event ahead of the `click` it belongs to.
+   * This slot sits directly above `.modal-actions`, so a blur that empties it
+   * lifts both buttons out from under the pointer between the press and the
+   * release — 46.4px at 1440 and 63.8px at 390, against a 34px button — and the
+   * `click` never happens. The press that is lost that way is exactly the
+   * corrective one: the reader finishes the date this line asked them to finish,
+   * presses "Create issue", and nothing is created and nothing is said. That is
+   * the dead button this story exists to remove, handed back one interaction
+   * later on the recovery path, and "Cancel" went the same way
+   * (release-reviewer, TAS-231).
+   *
+   * So the line is dropped only where no press is waiting on it: when a create
+   * starts and when one fails (`onMutate`, `onError` — the second because a
+   * refused create has to be able to take the slot back), and when submit has
+   * re-judged both boxes and found nothing left to refuse.
+   *
+   * What this does **not** buy, because the measurement cuts both ways: the
+   * line's *appearance* moves that row too, so the first press after a
+   * half-typed date is still swallowed. The difference is what the reader is
+   * left with. There they get the sentence that accounts for the press, which
+   * is the point of the story; here they would get silence, which is the bug.
+   * The cost is a sentence that is stale between the moment the date is fixed
+   * and the press that clears it — a line about to stop being true, rather than
+   * a button that does nothing.
+   *
    * Both boxes are re-judged whenever either is left, rather than only the one
    * being left: a reader who fixes the start date while the due date is still
-   * half typed has not fixed the form, and clearing the line there would say
-   * they had.
+   * half typed has not fixed the form.
    */
   const checkDates = () => {
     const incomplete = incompleteDateEntry();
     if (incomplete) refuseDate(incomplete.field);
-    else clearDateNotice();
   };
 
   const badge = keyBadgeStyle(projectKey, projectColor);
@@ -4464,9 +4506,21 @@ function CreateIssueModal({
         // The form answers for its own dates — see `dateNotice` above for what
         // the browser did with them instead, and why that read as a dead
         // button. This is the whole of what `noValidate` turns off here: no
-        // field on this form carries `required`, a `pattern`, a `min` or a
-        // `max`, and the only other control with a native constraint anywhere
-        // in the app is the login form's `type="email"`, which is not this one.
+        // field on this form carries `required`, a `pattern`, a `min`, a `max`
+        // or a `type` the browser validates the text of, so the one constraint
+        // it was enforcing is the two date boxes' `badInput` — the fault this
+        // component now answers for itself. The only native constraint left
+        // anywhere in the app is the login form's `type="email"`, which is not
+        // this one.
+        //
+        // What it buys is narrower than it looks, and was measured rather than
+        // reasoned: release-reviewer took the attribute off and all 48 cases in
+        // e2e/planning-fields.spec.ts stayed green, because the blur path puts
+        // the sentence up either way. What it removes is the *second* account
+        // of one fault — a tooltip the browser draws itself, in the browser's
+        // language, beside a box the reader may have scrolled past — and the
+        // silent refusal to fire `submit` that made this button read as dead
+        // before the line existed.
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
