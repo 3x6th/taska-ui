@@ -7,8 +7,21 @@ import tseslint from "typescript-eslint";
 
 export default defineConfig([
   // .claude/worktrees holds scratch checkouts of this same repository; linting
-  // them reports every finding twice.
-  globalIgnores(["dist", "coverage", ".agents", ".claude/skills", ".claude/worktrees"]),
+  // them reports every finding twice. docs/ai/evidence and docs/ai/reviews hold
+  // the same thing for a different reason — a review that keeps a source copy
+  // of the tree it reviewed — and cost more than a double report: lint fails on
+  // another story's snapshot, so `npm run check` cannot run at all in a
+  // checkout that has ever hosted a review. All three are git-ignored, which is
+  // the repository already saying they are not its source.
+  globalIgnores([
+    "dist",
+    "coverage",
+    ".agents",
+    ".claude/skills",
+    ".claude/worktrees",
+    "docs/ai/evidence",
+    "docs/ai/reviews",
+  ]),
   {
     files: ["**/*.{ts,tsx}"],
     extends: [

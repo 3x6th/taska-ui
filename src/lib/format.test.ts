@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   avatarColor,
   avatarColorChoices,
+  commentWasEdited,
   computedProjectColor,
   formatFileSize,
   issueLinkTypeLabel,
@@ -375,6 +376,57 @@ describe("projectKeyFromIssueKey", () => {
   });
 });
 
+
+/**
+ * TAS-233: every comment came out of the gateway wearing `edited`, because the
+ * badge read "`updatedAt` is set" and the server sets that field on insert.
+ * The first case below is the bug — a fresh comment as the wire really states
+ * it — and it is the one that fails against the old predicate.
+ */
+describe("commentWasEdited", () => {
+  const createdAt = "2026-09-18T14:42:35Z";
+
+  it("does not call a fresh comment edited, where the two stamps are the insert's own", () => {
+    // Exactly what the stand answered for the comment in the report, down to
+    // the instant: Spring Data's auditing callback fills `@CreatedDate` and
+    // `@LastModifiedDate` in the same insert.
+    expect(commentWasEdited({ createdAt, updatedAt: createdAt })).toBe(false);
+  });
+
+  it("calls a comment edited once the update has moved the stamp", () => {
+    expect(commentWasEdited({ createdAt, updatedAt: "2026-09-18T14:43:00Z" })).toBe(true);
+    // A millisecond is an edit too. The server's `updated_at = NOW()` is
+    // microsecond-resolution, so nothing here may round a real edit away.
+    expect(commentWasEdited({ createdAt, updatedAt: "2026-09-18T14:42:35.001Z" })).toBe(true);
+  });
+
+  it("does not call a comment edited when the server stated no update at all", () => {
+    // `CommentResponseDto.updatedAt` is `nullable: true`. Today's gateway never
+    // sends it, and the domain type carries the case regardless.
+    expect(commentWasEdited({ createdAt, updatedAt: null })).toBe(false);
+  });
+
+  it("reads the two stamps as instants rather than as text", () => {
+    // Three pairs that settle why this is not a string comparison. The first
+    // two are one moment spelled two ways and are not edits — but as text the
+    // first reads later than its creation ("17" against "14") and would be
+    // called one, while the second only comes out right by luck. The third is
+    // a real edit that as text reads *earlier* than its creation, so text
+    // would hide it. Both failure directions, on values a gateway may send.
+    expect(commentWasEdited({ createdAt, updatedAt: "2026-09-18T17:42:35+03:00" })).toBe(false);
+    expect(commentWasEdited({ createdAt: "2026-09-18T17:42:35+03:00", updatedAt: createdAt })).toBe(false);
+    expect(commentWasEdited({ createdAt: "2026-09-18T17:42:35+03:00", updatedAt: "2026-09-18T15:00:00Z" })).toBe(true);
+  });
+
+  it("claims no edit it cannot date", () => {
+    // Neither value is one the domain type permits; both are shapes a gateway
+    // can put on the wire. `NaN` comparisons are false, so the badge stays off
+    // rather than appearing on a date nobody can read.
+    expect(commentWasEdited({ createdAt, updatedAt: "not a date" })).toBe(false);
+    expect(commentWasEdited({ createdAt: "not a date", updatedAt: "2026-09-18T14:43:00Z" })).toBe(false);
+    expect(commentWasEdited({ createdAt, updatedAt: "" })).toBe(false);
+  });
+});
 
 /**
  * The attachment rows and the sentence the picker prints before a file is

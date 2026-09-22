@@ -866,9 +866,97 @@ Everything below is the entry as it stood, in the past tense.
   passes the gateway's order through unsorted. If the gateway emits
   oldest-first, the thread renders inverted between modes with nothing
   failing. Unverifiable end-to-end while TAS-139 is open.
+- **Half of it is no longer unknown**, which TAS-233's backend read settled in
+  passing: `IssueCommentRepository.findActiveByIssueIdOrderByCreatedAtDesc` is
+  `ORDER BY created_at DESC` and `CommentServiceImpl.listComments` paginates
+  over that order (issue-service at develop `1cfe4d79f074`). So the mock's
+  newest-first matches the server, and what stays open is the *contract's*
+  silence rather than anyone's ignorance of the behaviour. The compensation
+  stands as written: a source read binds no one, and the gateway is free to
+  change the order without breaking a contract that never stated it.
 - **Removal:** [TAS-206](https://jira.ozero.dev/browse/TAS-206), re-filed
   2026-09-11 from TAS-141, specifies the
   order in the contract; `RestTaskaApi` should sort explicitly meanwhile.
+
+### `CommentResponseDto.updatedAt` is nullable and is set on every insert, so it cannot mean "was edited"
+
+- **Endpoints:** every route answering `CommentResponseDto` —
+  `GET`, `POST` and `PUT /api/v1/projects/{projectId}/issues/{issueId}/comments`.
+- **Contract:** `updatedAt` is `format: date-time`, `nullable: true`, described
+  as "Дата и время последнего обновления". It states nothing about what a
+  comment nobody has edited carries, and the nullability invites the reading
+  that such a comment carries `null`.
+- **The server never sends that `null`.** Read at develop `1cfe4d7` — the commit
+  the stand was running when this was reported:
+  - `issue-service/.../domain/IssueComment.java:62-71` audits `createdAt` with
+    `@CreatedDate` and `updatedAt` with `@LastModifiedDate`, and
+    `config/R2dbcAuditingConfig.java:7` enables auditing, so the **insert**
+    writes both stamps in one save. `version` (`IssueComment.java:79-83`,
+    "Инкрементируется при каждом изменении") is `1` after it.
+  - An edit goes through `IssueCommentRepository.updateWithVersionCheckAndAuthor`
+    (`issue-service/.../repository/IssueCommentRepository.java:79-92`):
+    `SET body = :body, version = version + 1, updated_at = NOW()`. So an edited
+    row carries `updated_at > created_at` **and** `version >= 2`; a fresh one
+    carries neither.
+
+    The inequality is two clocks wide, and that is worth knowing before anyone
+    quotes it as a server guarantee. `created_at` is the application's own
+    `Instant` through Spring auditing; `updated_at` on an edit is Postgres
+    `NOW()`, which is *transaction start* and so is taken before the issue lock
+    and the role check. `updated_at > created_at` therefore holds only up to
+    app-to-database clock skew plus that lead. The failure it permits is
+    one-directional — a badge that fails to appear, never one that appears
+    falsely — and it needs skew wider than the gap between posting a comment
+    and editing it, which is why the badge is still drawn from the stamps.
+    `version` is immune to the skew but is **not** an edit counter: the soft
+    delete at `IssueCommentRepository.java:34` also does `version = version + 1`
+    and leaves `updated_at` alone. Neither field is clean, and the stamps are
+    the pair whose dirt cannot produce a wrong badge.
+  - `issue-service/.../mapper/CommentMapper.java:27-28` puts both stamps on the
+    proto and `api-gateway/.../mapper/CommentRestMapper.java:43-44` maps them
+    through. Its `toOffsetDateTime` (`:124-130`) answers `null` only for an
+    unset or epoch timestamp, so the date the client reads is the server's own
+    and is never invented.
+- **Observed on the stand 2026-09-18** (TAS-233, `GIT_COMMIT=1cfe4d79f074`, run
+  `E2E-20260918-CODEX02`): a comment posted seconds earlier had
+  `created_at = updated_at = 2026-09-18T14:42:35Z`, `version = 1`, no
+  `deleted_at`, and the Activity feed carried one `commented` event and no edit.
+
+  **That observation is of the database row, not of the gateway's JSON**, and
+  the reporter read it as one. Nobody in this repository has captured the
+  comment JSON off the wire: everything above about what the client receives is
+  read from backend source at `1cfe4d79f074` and carried by the mapper chain in
+  the bullet before this one. One authenticated `POST` then `GET` against the
+  stand turns that reading into a measurement, and until someone spends it this
+  entry is a code read wearing an observation's clothes at exactly one joint.
+- **The UI instead:** `commentWasEdited` in `src/lib/format.ts` draws the
+  `edited` badge from `updatedAt` being strictly **later** than `createdAt`,
+  compared as parsed instants — never from `updatedAt` being present, which is
+  what TAS-233 was. `version` is deliberately not in the predicate: one field
+  decides the badge and the tests hold `version` as an independent witness, for
+  the same reason the planning inputs state no bounds of their own. `null` keeps
+  its natural reading, "never updated", so the client stays right against a
+  gateway that ever sends one.
+- **The mock is why this was invisible here for so long.**
+  `MockTaskaApi`'s comment factory set `updatedAt: null` on insert — a claim
+  about the gateway the gateway does not make — so no unit test and no
+  end-to-end run in this repository could produce the shape the server sends,
+  and only the stand ever showed the defect. Since TAS-233 the factory stamps
+  `updatedAt = createdAt` with `version: 1`, and `e2e/comments.spec.ts` fails
+  against the old predicate (measured both ways: all nine cases pass with the
+  old predicate **and** the old mock, and all nine fail with the old predicate
+  against the parity mock).
+- **Not a contract violation**, which is why this entry is here rather than
+  above: `nullable: true` permits a value on every response, so the server keeps
+  its agreement. What is absent is the *meaning* — nothing states that an
+  untouched comment carries the insert's stamp, and a reader of the schema alone
+  will keep concluding the opposite.
+- **Removal:** nothing comes out of the client for this. The entry closes when
+  the contract says what the two stamps mean on an untouched comment, which
+  belongs with [TAS-206](https://jira.ozero.dev/browse/TAS-206)'s comment-section
+  contract work rather than in a story of its own. Asking the backend to stop
+  stamping `updatedAt` on insert would be the wrong ask: it is a standard audit
+  column and `version` says the same thing a second way.
 
 ### `requestId` lives only in a response header
 
