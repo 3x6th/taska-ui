@@ -3151,8 +3151,22 @@ and on TAS-108.
     `login` is PUBLIC, so the gateway's admin-role 403 is unreachable, and
     every other refusal `AuthServiceImpl.login` raises is `FAILED_PRECONDITION`
     (blank input) or `UNAUTHENTICATED` (unknown email, no credential row,
-    `BLOCKED`, `INVITED`, wrong password). A reworded sentence therefore costs
-    the pretty time and never the right refusal.
+    `BLOCKED`, `INVITED`, wrong password). The *branch* therefore survives any
+    rewording: it is chosen on the code, and only the number is read out of the
+    prose.
+
+    What that sentence used to claim — that a rewording "costs the pretty time
+    and never the right refusal" — was measured and is wrong in both halves
+    (`release-reviewer`, 2026-09-22). Fed `Аккаунт заблокирован до <ISO>`, the
+    screen rendered its own English and the deadline: the server's words are
+    dropped entirely, not shown, because **any** future instant in the message
+    is taken as the deadline. Today that is harmless, since the only instant
+    there is the deadline. It stops being harmless the day the backend reworders
+    to carry a *different* future instant — a retry window, a policy expiry —
+    and the screen prints a confident wrong time with nothing to trace it by.
+    The past-instant guard already covers the likelier "locked since …" shape;
+    nothing covers this one, and no client change can, which is the entry's
+    whole point.
   - **the parse is keyed on the instant's own shape**, not on the words around
     it, and the fractional part is optional and of free length because
     `Instant.toString()` emits 0, 3, 6 or 9 digits. When it yields nothing —
