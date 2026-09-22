@@ -2621,11 +2621,25 @@ is what recurs.
   modal stays open, and what the reader gets for abandoning the form is a red
   sentence about a date they were abandoning. This one is lost on the line's
   *raise*, not on its withdraw, so neither TAS-231's blur asymmetry nor its
-  `relaxDates` reaches it — unchanged from before the story. The cure is
-  structural rather than another rule about when the slot may change: stop
-  `.modal-actions` participating in the body's flow, the way `.modal-footer`
-  already does in `styles.css`, so a slot that mutates cannot move the buttons
-  at all.
+  `relaxDates` reaches it.
+
+  **It is introduced by this story's line, not inherited**, and the first
+  draft of this entry said the opposite. At `115aaea` the create form carried
+  no `noValidate`, no `dateNotice` and no date line at all, and Cancel is
+  `type="button"`, so nothing validated and nothing moved. Recorded plainly
+  because the wrong version would have sent the next triager looking for legacy
+  debt that does not exist.
+
+  The cure is structural rather than another rule about when the slot may
+  change: stop `.modal-actions` participating in the body's flow the way
+  `.modal-footer` does. Two corrections to what that means, so the implementer
+  does not take it as a drop-in. It is not a CSS difference — `.modal-actions`
+  and `.modal-footer` share one identical rule (`styles.css:5712-5718`); the
+  difference is DOM position, `Modal.tsx:33` making the footer a sibling of the
+  scrolling `.modal-body` rather than a descendant. And the immunity is
+  conditional: `.modal` is `max-height: 100%` with `.modal-body`
+  `overflow-y: auto`, so a footer stops moving only once the body is at max
+  height — below that the modal grows and the footer travels with it.
 - **The issue panel has a latent instance of the same class**
   (`release-reviewer`, TAS-231). The panel still clears its date notice on the
   way through a date commit (`BoardScreen.tsx:1517`), and measured, the
