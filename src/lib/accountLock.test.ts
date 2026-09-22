@@ -4,6 +4,7 @@ import {
   LOCK_INSTANT_PATTERN,
   accountLockedMessage,
   accountLockedUntil,
+  formatLockDeadline,
   formatLockMoment,
   formatLockTime,
 } from "./accountLock";
@@ -111,13 +112,29 @@ describe("accountLockedUntil", () => {
   });
 });
 
-// These build their Dates from local components — `new Date(y, m, d, h, min)`
-// is local time and Intl formats in local time — so they assert the same
-// string in every zone the suite might run in, without moving TZ. What they do
-// assume is a locale with Latin digits and a colon, which is what a failure
-// here would name rather than hide.
+// Everything below builds its Dates from local components — `new Date(y, m, d,
+// h, min)` is local time and Intl formats in local time — so the assertions
+// read the same in every zone the suite might run in, without moving TZ. What
+// they do assume is a locale with Latin digits and a colon, which is what a
+// failure here would name rather than hide.
+//
+// **What a test in this process cannot assert is the zone**, and TAS-237's
+// review proved it by mutation: with `formatLockTime` hard-coded to +3, all
+// eighteen cases this file then held stayed green on a `TZ=Europe/Moscow`
+// machine — including the one named "takes the offset from the platform rather
+// than from a constant", which was the case written to catch exactly that. Only
+// `TZ=UTC` failed, and only three cases did. That is not a weak assertion, it
+// is arithmetic: a test running in zone Z cannot tell "formats in Z" from
+// "formats in the reader's zone", because in Z the two produce the same string.
+// The offset case has therefore been deleted rather than left to be trusted —
+// the claim is made where the zone is a parameter, in `e2e/login-lock.spec.ts`,
+// which renders one lock under `timezoneId: "Europe/Moscow"` and again under
+// `"America/New_York"` and asserts the two differ. What is left here is the
+// half that does hold everywhere: the shape of the string.
 describe("formatLockTime", () => {
-  it("renders the reader's own clock, zero-padded and 24-hour", () => {
+  // Zero-padded, colon-separated, no meridiem. A `hour12: true` or a missing
+  // `2-digit` fails this in every zone, which is the part worth keeping.
+  it("renders the clock zero-padded and 24-hour", () => {
     expect(formatLockTime(new Date(2026, 8, 22, 14, 55))).toBe("14:55");
     expect(formatLockTime(new Date(2026, 8, 22, 9, 5))).toBe("09:05");
   });
@@ -127,27 +144,91 @@ describe("formatLockTime", () => {
   it("renders the hour after midnight as 00, not 24", () => {
     expect(formatLockTime(new Date(2026, 8, 23, 0, 10))).toBe("00:10");
   });
-
-  // The reporter reads UTC+3 and the story's example adds three hours. Adding
-  // three hours in code would be right for them and wrong for everyone else,
-  // so the offset comes from the platform: a UTC instant and the local clock
-  // agree only where the two agree.
-  it("takes the offset from the platform rather than from a constant", () => {
-    const instant = new Date(Date.UTC(2026, 8, 22, 11, 55));
-    const local = `${String(instant.getHours()).padStart(2, "0")}:${String(instant.getMinutes()).padStart(2, "0")}`;
-
-    expect(formatLockTime(instant)).toBe(local);
-  });
 });
 
 describe("formatLockMoment", () => {
-  // The `title`, and the case it exists for: a lock started at 23:55 ends on
-  // the next day, where "00:10" alone reads as a time that has already gone.
+  // Everything the short form drops, and the case it is dropped for: a lock
+  // started at 23:55 ends on the next day, where "00:10" alone reads as a time
+  // that has already gone.
   it("carries the date and the zone the short form drops", () => {
-    const moment = formatLockMoment(new Date(2026, 8, 23, 0, 10));
+    const until = new Date(2026, 8, 23, 0, 10);
+    const moment = formatLockMoment(until);
 
     expect(moment).toContain("Sep 23");
     expect(moment).toContain("00:10");
-    expect(moment).toMatch(/GMT|UTC/);
+    // Derived, not spelled. This assertion used to read `/GMT|UTC/`, which is
+    // the same defect as the deleted case wearing the other face: en-US names
+    // Moscow "GMT+3" and New York "EDT", so it passed where it was written and
+    // failed on a correct implementation in New York. What is portable is that
+    // the string carries whatever *this* platform calls its own zone.
+    expect(platformZone(until)).not.toBe("");
+    expect(moment).toContain(platformZone(until));
+  });
+});
+
+/** Whatever the runner's own zone is called here, e.g. `GMT+3`, `EDT`, `UTC`. */
+function platformZone(at: Date) {
+  return new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+    .formatToParts(at)
+    .filter((part) => part.type === "timeZoneName")
+    .map((part) => part.value)
+    .join("");
+}
+
+// The `title` was the whole answer to a lock that crosses midnight until
+// TAS-237's review read it on a phone, where there is no hover, a `<time>`
+// takes no focus, and the attribute is therefore reachable by no route at all.
+// These pin which form the reader gets and what is left for `title`.
+//
+// What none of them can catch, said here rather than left to be found again: a
+// comparison made on the UTC day instead of the local one. Both instants in
+// each case are built from local components, so whether their UTC days differ
+// is a fact about the runner's zone — under `TZ=UTC` a UTC comparison answers
+// identically and every case below stays green. The pair that separates the
+// two — 23:50 and 00:05 in Moscow, one single UTC day — is pinned in
+// `e2e/login-lock.spec.ts`, with the browser's clock and zone both fixed. Same
+// lesson as the deleted offset case, one function along.
+describe("formatLockDeadline", () => {
+  it("shows the clock alone while the lock ends on the reader's own day", () => {
+    const now = new Date(2026, 8, 22, 14, 40);
+    const until = new Date(2026, 8, 22, 14, 55);
+
+    // The title is compared against the formatter rather than against a
+    // spelled-out "Sep 22, 14:55 GMT+3", which would be an assertion about the
+    // runner's zone again. `formatLockMoment` has its own case above.
+    expect(formatLockDeadline(until, now)).toStrictEqual({ text: "14:55", title: formatLockMoment(until) });
+  });
+
+  // The case the review found: a fifteen-minute lock started at 23:50 ends
+  // tomorrow, and `00:05` alone reads as a moment that has already passed.
+  it("moves the date into the text once the lock runs past the reader's midnight", () => {
+    const now = new Date(2026, 8, 22, 23, 50);
+    const until = new Date(2026, 8, 23, 0, 5);
+    const { text } = formatLockDeadline(until, now);
+
+    expect(text).toContain("Sep 23");
+    expect(text).toContain("00:05");
+  });
+
+  // And `title` goes away with it: repeating the element's own text is a
+  // tooltip that says what is on screen and a description a reader may hear
+  // twice.
+  it("leaves no title once the text carries the whole moment", () => {
+    const now = new Date(2026, 8, 22, 23, 50);
+    const until = new Date(2026, 8, 23, 0, 5);
+
+    expect(formatLockDeadline(until, now)).toStrictEqual({ text: formatLockMoment(until) });
+  });
+
+  // The branch is on the calendar day and not on how far off the deadline is,
+  // so four minutes across midnight take the date and thirteen hours inside one
+  // day do not.
+  it("decides on the calendar day rather than on the distance to the deadline", () => {
+    const beforeMidnight = new Date(2026, 8, 22, 23, 58);
+    const justAfter = new Date(2026, 8, 23, 0, 2);
+    const muchLaterSameDay = new Date(2026, 8, 22, 23, 59);
+
+    expect(formatLockDeadline(justAfter, beforeMidnight).text).toContain("Sep 23");
+    expect(formatLockDeadline(muchLaterSameDay, new Date(2026, 8, 22, 11, 0)).text).toBe("23:59");
   });
 });

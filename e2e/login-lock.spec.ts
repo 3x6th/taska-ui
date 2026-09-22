@@ -11,7 +11,26 @@ const LOCKED_ACCOUNT = "omar@example.com";
 /** The ISO instant pattern, as `src/lib/accountLock.ts` pins it. */
 const ISO_INSTANT = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/;
 
-async function attemptLockedSignIn(page: Page) {
+/**
+ * The browser's clock while a lock is attempted, because the mock's deadline
+ * is fifteen minutes out from whatever `Date.now()` says and the screen now
+ * reads the *day* of it (`formatLockDeadline`). On the real clock that makes
+ * the rendered shape a function of the time of day the suite happens to run
+ * at: between 23:45 and midnight the deadline crosses into tomorrow and the
+ * sentence gains a date. Pinned, both shapes are reachable on purpose and
+ * neither is reachable by accident.
+ *
+ * 09:30Z is 12:30 in Moscow and 05:30 in New York — a long way from midnight
+ * in both zones the suite names, so the ordinary same-day shape is what the
+ * ordinary tests get, on any machine and at any hour.
+ */
+const ORDINARY_HOUR = "2026-09-22T09:30:00Z";
+
+async function attemptLockedSignIn(page: Page, now = ORDINARY_HOUR) {
+  // Before the first navigation: `setFixedTime` freezes `Date.now` and `new
+  // Date()` for every document that follows, and leaves timers running, which
+  // the mock's own latency needs.
+  await page.clock.setFixedTime(new Date(now));
   await page.goto("/login");
   await page.getByLabel("Email").fill(LOCKED_ACCOUNT);
   await page.getByLabel("Password").fill("mock-accepts-anything");
@@ -60,13 +79,17 @@ test.describe("in UTC+3, the zone TAS-237 was reported from", () => {
 
     // 15m is AUTH_SECURITY_LOCK_DURATION; the bound only has to be loose
     // enough to survive the round trip and tight enough to catch a deadline
-    // read out of the wrong field.
-    const waitMs = Date.parse(instant!) - Date.now();
+    // read out of the wrong field. Measured against the pinned clock rather
+    // than this process's own: the page's `Date.now` is the fixed one, and
+    // Node's is not.
+    const waitMs = Date.parse(instant!) - Date.parse(ORDINARY_HOUR);
     expect(waitMs).toBeGreaterThan(0);
     expect(waitMs).toBeLessThanOrEqual(15 * 60 * 1000);
 
-    // The full local date-time is in `title`, where the short form's one
-    // ambiguity — a lock that ends after midnight — is answered.
+    // This deadline lands on the reader's own day, so the short form is
+    // unambiguous and the full local date-time stays in `title` — which the
+    // reader with a mouse can reach and, as the case below records, the reader
+    // on a phone cannot.
     await expect(deadline).toHaveAttribute("title", /\w{3} \d{1,2}, \d{2}:\d{2}/);
 
     // The refusal is still a refusal: no session, no navigation.
@@ -106,6 +129,42 @@ test.describe("in UTC-4, where a hard-coded +3 would be wrong", () => {
     await expect(deadline).toHaveText(clockIn(instant!, "America/New_York"));
     await expect(deadline).not.toHaveText(clockIn(instant!, "Europe/Moscow"));
     await expect(lines.nth(1)).toHaveText("Try again later.");
+  });
+});
+
+// A lock that ends after the reader's own midnight, which is the one case the
+// short clock cannot carry alone — and, until TAS-237's review, the one the
+// `title` was supposed to answer. On a phone it answers nothing: there is no
+// hover, a `<time>` takes no focus, and no keyboard route reaches a `title`
+// either, so `Account is locked until 00:05` was all a phone reader got.
+//
+// This lives here rather than in a unit test for the same reason the zone
+// claim does (see the note over `formatLockTime`'s cases in
+// `src/lib/accountLock.test.ts`): the pair below separates a local-day
+// comparison from a UTC one only in a zone somebody controls, and
+// `timezoneId` plus a pinned clock is the only place in this repository where
+// both are parameters.
+test.describe("when the lock runs past the reader's midnight", () => {
+  test.use({ timezoneId: "Europe/Moscow", locale: "en-US" });
+
+  // 23:50 in Moscow, so the deadline is 00:05 on the 23rd for this reader —
+  // and 20:50Z against 21:05Z, which is one and the same UTC day. A screen
+  // comparing `toISOString()` days would call this today and print the bare
+  // clock, so the assertion below is what says the comparison is local.
+  const BEFORE_LOCAL_MIDNIGHT = "2026-09-22T20:50:00Z";
+
+  test("the date is in the sentence itself, not only in the title", async ({ page }) => {
+    const lines = await attemptLockedSignIn(page, BEFORE_LOCAL_MIDNIGHT);
+
+    await expect(lines.first()).toHaveText(/^Account is locked until Sep 23, 00:05\b/);
+    await expect(lines.nth(1)).toHaveText("Try again later.");
+
+    // The machine-readable instant is untouched by any of this.
+    await expect(page.locator(".auth-lock time")).toHaveAttribute("datetime", ISO_INSTANT);
+
+    // And nothing is left for `title` to add: an attribute repeating its own
+    // element's text is a tooltip that says what is already on screen.
+    await expect(page.locator(".auth-lock time")).not.toHaveAttribute("title", /./);
   });
 });
 

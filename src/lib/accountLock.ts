@@ -120,14 +120,16 @@ export const formatLockTime = (until: Date) =>
 
 /**
  * `Sep 23, 00:30 GMT+3` — the same instant with everything the short form
- * drops, for the `title`.
+ * drops.
  *
  * A fifteen-minute lock started at 23:55 ends tomorrow, and `00:10` on its own
  * is then ambiguous in the one direction that matters (the reader assumes
  * today and thinks the wait is over). The date answers that, and the zone name
- * answers the question the story was filed about — whose clock this is. Full
- * detail in `title`, the short form in the text: the pattern DESIGN.md
- * already sets for the outbox age column (§5.8).
+ * answers the question the story was filed about — whose clock this is.
+ *
+ * Where it is spent is `formatLockDeadline`'s decision, not this function's:
+ * in the `title` while the short form is unambiguous, and in the sentence
+ * itself once it is not.
  */
 export const formatLockMoment = (until: Date) =>
   new Intl.DateTimeFormat(undefined, {
@@ -138,3 +140,44 @@ export const formatLockMoment = (until: Date) =>
     hourCycle: "h23",
     timeZoneName: "short",
   }).format(until);
+
+/**
+ * What the reader sees, and what is left for `title` to add: `14:55` on their
+ * own day, `Sep 23, 00:10 GMT+3` once the lock runs past their midnight.
+ *
+ * **The title was the whole answer to the late lock, and on a phone it is no
+ * answer at all.** There is no hover on touch, a `<time>` takes no focus, and
+ * nothing else reaches a `title` from the keyboard — so a fifteen-minute lock
+ * started at 23:55 showed a phone reader `Account is locked until 00:10` with
+ * nothing anywhere saying "tomorrow", which is the exact misreading the
+ * attribute was put there to prevent. The date therefore moves into the
+ * sentence for the case that needs it, and the attribute keeps only what the
+ * sentence does not already carry — on the crossing case, nothing. Text and
+ * title come back together because they are one decision: a `title` repeating
+ * its own element is a tooltip that says what is already on screen and a
+ * description a screen reader may read out twice.
+ *
+ * **The comparison is on the reader's calendar day, and not on UTC.**
+ * `getFullYear`/`getMonth`/`getDate` are local by definition, which is the
+ * whole point: the pair this exists for — 23:50 and 00:05 in Moscow — is one
+ * and the same UTC day, so a `toISOString().slice(0, 10)` comparison would
+ * call it today and print the bare clock again. `e2e/login-lock.spec.ts` pins
+ * that pair with the browser clock and zone both fixed; a unit test cannot,
+ * for the reason written over `formatLockTime`'s tests in
+ * `accountLock.test.ts`.
+ *
+ * `now` is a parameter for the same reason it is one on `accountLockedUntil`:
+ * so the branch can be chosen in a test without moving the clock. Read at
+ * render, like the deadline itself — a lock open across midnight gains its
+ * date on the next paint rather than being decided once at mount.
+ */
+export function formatLockDeadline(until: Date, now = new Date()): { text: string; title?: string } {
+  const onReadersDay =
+    until.getFullYear() === now.getFullYear() &&
+    until.getMonth() === now.getMonth() &&
+    until.getDate() === now.getDate();
+
+  return onReadersDay
+    ? { text: formatLockTime(until), title: formatLockMoment(until) }
+    : { text: formatLockMoment(until) };
+}

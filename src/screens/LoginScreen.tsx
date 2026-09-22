@@ -8,7 +8,7 @@ import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
 import { RequestId } from "../components/RequestId";
 import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { accountLockedUntil, formatLockMoment, formatLockTime } from "../lib/accountLock";
+import { accountLockedUntil, formatLockDeadline } from "../lib/accountLock";
 import type { ScreenProps } from "./App";
 
 type AuthMode = "signin" | "invite";
@@ -146,7 +146,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                 </button>
               </>
             )}
-            {submit.isError ? <LoginFailure error={submit.error} /> : null}
+            {submit.isError ? <LoginFailure error={submit.error} mode={mode} /> : null}
           </form>
         </section>
         <div className="auth-footnote">Taska — issue tracking, minus the clutter.</div>
@@ -175,14 +175,31 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
  * parser that quietly stopped matching indistinguishable from one that works.
  * Unreadable and traceable beats prettier and wrong.
  */
-function LoginFailure({ error }: { error: unknown }) {
+function LoginFailure({ error, mode }: { error: unknown; mode: AuthMode }) {
   const { message, requestId } = apiErrorFacts(error);
+  // `mode === "signin"` because this slot answers for more than sign-in, and
+  // the argument behind `isAccountLocked` covers one route only. It is sound
+  // on `POST /auth/login` by exhausting that method's other refusals
+  // (src/api/errors.ts); the invite tab submits `POST /auth/invitations/accept`,
+  // which the argument says nothing about, so the conjunct takes the branch
+  // away from the tab it was never made for.
+  //
+  // What the conjunct does not reach is the `getCurrentUser()` that follows a
+  // successful login in the same mutation: `validateAccessToken` runs
+  // `validateUserStatus` for every authenticated call, and that raises
+  // `PERMISSION_DENIED "User is blocked"` (AuthServiceImpl.java:205-213, read
+  // at backend head `63f7ea5`). It reaches here, and what keeps it right is
+  // the parser rather than the predicate — there is no future instant in that
+  // sentence, so `accountLockedUntil` answers `null` and the server's own
+  // wording is printed verbatim. Correct, and correct for a reason one layer
+  // below the one this branch claims.
+  //
   // Read at render rather than held in state, so a lock that expires while the
   // form is still open falls back to the raw sentence on the next paint
   // instead of going on promising a moment that has gone. No timer wakes it —
   // the reader retrying is what re-renders this, and that is the moment it
   // matters.
-  const lockedUntil = isAccountLocked(error) ? accountLockedUntil(message) : null;
+  const lockedUntil = mode === "signin" && isAccountLocked(error) ? accountLockedUntil(message) : null;
 
   return (
     <div className="form-error">
@@ -192,15 +209,7 @@ function LoginFailure({ error }: { error: unknown }) {
         // issue composer and the project dialog and sets no alignment for
         // anyone.
         <span className="auth-lock">
-          <span>
-            Account is locked until{" "}
-            {/* Machine-readable instant in `dateTime`, the reader's own clock
-                in the text, and everything the short form drops — the date a
-                late lock crosses into, and whose clock this is — in `title`. */}
-            <time dateTime={lockedUntil.toISOString()} title={formatLockMoment(lockedUntil)}>
-              {formatLockTime(lockedUntil)}
-            </time>
-          </span>
+          <LockDeadline until={lockedUntil} />
           <span>Try again later.</span>
         </span>
       ) : (
@@ -212,6 +221,28 @@ function LoginFailure({ error }: { error: unknown }) {
           sentence since §5.6 asked for it. Mock mode never carries one. */}
       {requestId ? <RequestId value={requestId} /> : null}
     </div>
+  );
+}
+
+/**
+ * The first of the two lines: the machine-readable instant in `dateTime`, and
+ * the deadline in whichever form the reader needs today —
+ * `formatLockDeadline`, which decides that and decides what `title` has left
+ * to add (`src/lib/accountLock.ts`).
+ *
+ * Its own function only so the formatted pair can be a `const`; the markup is
+ * the same `<span>` `.auth-lock > span` has always selected.
+ */
+function LockDeadline({ until }: { until: Date }) {
+  const { text, title } = formatLockDeadline(until);
+
+  return (
+    <span>
+      Account is locked until{" "}
+      <time dateTime={until.toISOString()} title={title}>
+        {text}
+      </time>
+    </span>
   );
 }
 
