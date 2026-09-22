@@ -16,6 +16,7 @@ import {
 } from "../avatars";
 import { ObjectStoreError } from "../objectStore";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
+import { accountLockedUntil } from "../../lib/accountLock";
 import { commentWasEdited } from "../../lib/format";
 
 /**
@@ -52,6 +53,42 @@ describe("MockTaskaApi", () => {
     it("does not open a session for a rejected sign-in", async () => {
       await expect(api.login({ email: "nobody@example.com", password: "x" })).rejects.toThrow();
       expect(api.hasSession()).toBe(false);
+    });
+
+    // Omar is seeded LOCKED because nothing in this product can create that
+    // state — it takes repeated failed sign-ins against the real auth-service.
+    // The shape matters as much as the refusal: the gateway answers a lockout
+    // with PERMISSION_DENIED (403 over REST) carrying the deadline in the
+    // message, and every other sign-in failure with UNAUTHENTICATED. A mock
+    // that answered "Invalid credentials" here would leave the login screen's
+    // lock branch unreachable in the only environment the e2e suite has.
+    it("refuses a locked account the way the gateway does, with a readable deadline in the message", async () => {
+      const before = Date.now();
+      const refusal = await api
+        .login({ email: "omar@example.com", password: "anything" })
+        .then(() => null)
+        .catch((error: Error) => error);
+
+      expect(refusal).toMatchObject({ code: "PERMISSION_DENIED" });
+      expect(api.hasSession()).toBe(false);
+
+      // AUTH_SECURITY_LOCK_DURATION is 15m. Bounded rather than pinned to the
+      // millisecond, because the clock moves between the refusal and this
+      // line — which is also why the deadline is read back through the same
+      // parser the login screen uses rather than compared as a string.
+      const until = accountLockedUntil(refusal?.message ?? null);
+      expect(until).not.toBeNull();
+      expect(until!.getTime()).toBeGreaterThanOrEqual(before + 15 * 60 * 1000);
+      expect(until!.getTime()).toBeLessThanOrEqual(Date.now() + 15 * 60 * 1000);
+    });
+
+    // The other two non-ACTIVE statuses stay where they were: AuthServiceImpl
+    // raises UNAUTHENTICATED for BLOCKED and INVITED, so only LOCKED takes the
+    // branch above.
+    it("still refuses a blocked account as a bad credential, not as a lockout", async () => {
+      await expect(api.login({ email: "nina@example.com", password: "anything" })).rejects.toMatchObject({
+        code: "UNAUTHENTICATED",
+      });
     });
 
     it("does not open a session for an accepted invitation", async () => {

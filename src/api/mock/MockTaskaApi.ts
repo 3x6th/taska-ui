@@ -105,6 +105,7 @@ import type {
   WatchIssueResult,
   Workflow,
 } from "../../domain/types";
+import { accountLockedMessage } from "../../lib/accountLock";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
 import { classifyColumnType } from "../../lib/adminColumnTypes";
 
@@ -348,6 +349,15 @@ class MockApiError extends Error {
 const now = () => new Date().toISOString();
 
 const clone = <T>(value: T): T => structuredClone(value);
+
+/**
+ * `AUTH_SECURITY_LOCK_DURATION`, 15m in
+ * `auth-service/src/main/resources/application.yml`. Copied rather than
+ * guessed, because the number is the whole content of the sentence `login`
+ * refuses a locked account with, and a mock that invents a different wait is a
+ * mock that teaches the wrong thing about the server.
+ */
+const CREDENTIAL_LOCK_DURATION_MS = 15 * 60 * 1000;
 
 const wait = async <T>(value: T, ms = 140): Promise<T> =>
   new Promise((resolve) => {
@@ -1629,6 +1639,22 @@ export class MockTaskaStore {
 
   login(input: LoginInput): AuthTokens {
     const user = this.users.find((item) => item.email === input.email);
+    // A credential lockout is the one refusal this route does not answer with
+    // "Invalid credentials". The gateway raises `PERMISSION_DENIED` — 403 over
+    // REST — and puts the deadline in the message and nowhere else
+    // (src/lib/accountLock.ts, docs/ai/API-DIVERGENCE.md); every other refusal
+    // `AuthServiceImpl.login` can reach is `UNAUTHENTICATED` or, for blank
+    // input, `FAILED_PRECONDITION`. So `BLOCKED` and `INVITED` keep the branch
+    // below, and only `LOCKED` takes this one.
+    //
+    // Reproduced here because nothing else can reproduce it: reaching `LOCKED`
+    // takes repeated failed sign-ins against the real auth-service, so without
+    // this the login screen's lock branch would ship with a green
+    // `npm run check` and nothing having run it. Omar is the seeded row.
+    if (user?.status === "LOCKED") {
+      const until = new Date(Date.now() + CREDENTIAL_LOCK_DURATION_MS);
+      throw new MockApiError("PERMISSION_DENIED", accountLockedMessage(until));
+    }
     if (!user || user.status !== "ACTIVE") {
       throw new MockApiError("UNAUTHENTICATED", "Invalid credentials");
     }

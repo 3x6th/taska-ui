@@ -174,3 +174,34 @@ export function isConflict(error: unknown): boolean {
   const { code, status } = apiErrorFacts(error);
   return status === 409 || code === "FAILED_PRECONDITION" || code === "ABORTED";
 }
+
+/**
+ * Whether `POST /auth/login` refused because the account is locked out by its
+ * own failed sign-ins — the refusal TAS-237 is about, and the one whose message
+ * `src/lib/accountLock.ts` reads a deadline out of.
+ *
+ * **On this route the signature means nothing else**, which is what makes a
+ * two-field check enough for a branch that changes what the reader is told.
+ * `login` is a PUBLIC route, so the gateway's admin-role 403 — the other
+ * producer of `PERMISSION_DENIED` in this system — is unreachable here; and
+ * every other refusal `AuthServiceImpl.login` can raise is `FAILED_PRECONDITION`
+ * (blank email or password) or `UNAUTHENTICATED` (unknown email, no credential
+ * row, `BLOCKED`, `INVITED`, wrong password). Read at backend head `63f7ea5` on
+ * 2026-09-22, by exhausting the alternatives rather than by matching the words:
+ * the sentence is prose the backend has reworded once already (PR #162), and a
+ * branch keyed on prose is a branch that silently stops running.
+ *
+ * Deliberately **not** `isMissingOrForbidden`. That one answers DESIGN.md
+ * §4.18's question — "missing or not yours", which the UI must not tell apart —
+ * and widening it to carry this would make one predicate mean two things and
+ * put every `NOT_FOUND` in the world through a lock parser.
+ *
+ * `status === null` is accepted beside `403` for the reason `isConflict`
+ * already records: `MockApiError` never went over a wire and carries only a
+ * code, and mock mode has to be able to reproduce this refusal or the branch
+ * ships unexercised.
+ */
+export function isAccountLocked(error: unknown): boolean {
+  const { code, status } = apiErrorFacts(error);
+  return code === "PERMISSION_DENIED" && (status === 403 || status === null);
+}

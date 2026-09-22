@@ -2649,3 +2649,35 @@ is what recurs.
   swallow one exactly as the create form's action row did. Untouched by
   TAS-231, which fixed the surface where the loss was reachable and left the
   panel's slot alone.
+
+### Left open by TAS-237 (from `frontend-builder`, 2026-09-22)
+
+- **No sign-in refusal is announced at all** (`frontend-builder`, TAS-237).
+  The login form's `.form-error` carries no `role="alert"` and sits in no live
+  region, so a reader who cannot see it is told nothing when a sign-in is
+  refused — the new locked-account message included, but equally the plain
+  wrong-password one that predates it. Pre-existing and outside TAS-237's
+  boundary, which is why it was not widened into: the story is about what the
+  message *says*, and this is about whether it is heard. The panel and the
+  create modal both got their live region in TAS-231, so the pattern and the
+  precedent already exist; this is the one refusal surface left without it.
+- **The login refusal sits in a tone this stylesheet has already judged too
+  weak to be read accurately** (`art-director`, TAS-237). Measured by
+  compositing the painted pixels: `--danger` on its 12% tint is 3.17:1 light,
+  4.43:1 dark, against §7's 4.5:1 for a string that must be read rather than
+  felt. `styles.css` records that exact number six rows above `.auth-lock`, in
+  the comment that pulls `.form-error .request-id-line` onto `--fg-2` (6.25:1 /
+  5.95:1) for this very reason — so the precedent and the recipe are already in
+  the same block. TAS-237 is what made the argument apply to the sentence as
+  well as to the id: the deadline is now a value the reader must transcribe to
+  their own clock. `art-director` explicitly declined to change `.form-error`'s
+  recipe inside a bug fix, and was right — ten other messages share it. This
+  belongs with [TAS-192](https://jira.ozero.dev/browse/TAS-192), which already
+  owns the 3.17:1 across the forms.
+- **The sign-in refusal is the last thing in the card, below the hint**
+  (`art-director`, TAS-237). `.auth-hint` ("Forgot password? Contact your
+  project admin.") renders between the submit button and `.form-error`
+  (`LoginScreen.tsx:119` against `:148`). Pre-existing placement, untouched —
+  but TAS-237 made this the first message on that screen carrying a value the
+  reader has to act on, and at 320 with a soft keyboard up it is the first
+  thing off-screen. A JSX reorder, no CSS.
