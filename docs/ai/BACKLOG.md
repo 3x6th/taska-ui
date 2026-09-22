@@ -2579,3 +2579,73 @@ is what recurs.
   shipped bundle to answer. Ours to fix, cheaply: surface the build SHA in the
   app so a tester can quote it. Not folded into TAS-231, whose diff is about
   two date boxes.
+
+### Left open by TAS-231 (from `frontend-builder` and `art-director`, 2026-09-22)
+
+- **Two failed writes, and the panel shows the older one** (`frontend-builder`,
+  TAS-231). `panelNotice` coalesces with `updateIssue.error ?? assignIssue.error
+  ?? transitionIssue.error ?? deleteIssue.error`, which keeps the first of a
+  fixed order rather than the newest — so with an update refusal standing, a
+  later transition refusal goes unsaid. A write error also survives a later
+  *successful* unrelated write. This is the same class as TAS-231's own blocker
+  ("a refused write goes unsaid"), one step further in: TAS-231 fixed the
+  collision between the local date refusal and the write errors, and this is
+  the collision *among* the write errors, which predates it. Deliberately not
+  widened into: fixing it means changing how the panel feeds that slot, and
+  doing that inside a story about two date boxes would put every refusal
+  message on the line for a change that started with `badInput`. Needs a story
+  when its turn comes — the fix is a single newest-wins notice with its own
+  sequence, not four mutation error fields read in order.
+- **A sub-pixel assertion in `topbar-popovers.spec.ts` flakes under parallel
+  load** (`frontend-builder`, TAS-231). "a full page of results is never
+  clipped by the list's own cap" failed once at `clippedBy
+  0.00000762939453125px`, then passed alone and in two full runs after. That is
+  float noise, not a layout fault, and the spec is unrelated to TAS-231's diff.
+  The fix is an epsilon on that comparison rather than a retry: a test that
+  fails at the eighth decimal is measuring the floating-point unit, not the
+  cap.
+- **`App.test.tsx`'s session-expiry case flakes** (`release-reviewer`, TAS-231).
+  `src/screens/App.test.tsx:132` — `queryClient.getQueryCache().getAll()` is
+  expected to be empty after a session expires, and failed once in three runs,
+  green in the other two and in both of the builder's later runs. Untouched by
+  TAS-231 and not plausibly caused by it. Recorded because of what it means
+  rather than what it is: `npm run check` is the gate this repository verifies
+  against, and a gate that is green on most runs is not a green gate. Worth
+  finding the actual race — most likely an unawaited invalidation racing the
+  clear — rather than a retry, which would hide it.
+- **Cancel's first press is still swallowed on the create form**
+  (`art-director`, TAS-231). Half-type a date, then press "Cancel" with the
+  pointer straight from the box: measured `down|645.9`, `up|692.3` at 1440 —
+  the blur that `mousedown` fires puts the refusal line up, the row drops
+  46.4px between the press and the release, no `click` reaches the button, the
+  modal stays open, and what the reader gets for abandoning the form is a red
+  sentence about a date they were abandoning. This one is lost on the line's
+  *raise*, not on its withdraw, so neither TAS-231's blur asymmetry nor its
+  `relaxDates` reaches it.
+
+  **It is introduced by this story's line, not inherited**, and the first
+  draft of this entry said the opposite. At `115aaea` the create form carried
+  no `noValidate`, no `dateNotice` and no date line at all, and Cancel is
+  `type="button"`, so nothing validated and nothing moved. Recorded plainly
+  because the wrong version would have sent the next triager looking for legacy
+  debt that does not exist.
+
+  The cure is structural rather than another rule about when the slot may
+  change: stop `.modal-actions` participating in the body's flow the way
+  `.modal-footer` does. Two corrections to what that means, so the implementer
+  does not take it as a drop-in. It is not a CSS difference — `.modal-actions`
+  and `.modal-footer` share one identical rule (`styles.css:5712-5718`); the
+  difference is DOM position, `Modal.tsx:33` making the footer a sibling of the
+  scrolling `.modal-body` rather than a descendant. And the immunity is
+  conditional: `.modal` is `max-height: 100%` with `.modal-body`
+  `overflow-y: auto`, so a footer stops moving only once the body is at max
+  height — below that the modal grows and the footer travels with it.
+- **The issue panel has a latent instance of the same class**
+  (`release-reviewer`, TAS-231). The panel still clears its date notice on the
+  way through a date commit (`BoardScreen.tsx:1517`), and measured, the
+  `.description-field textarea` below that slot moves up 33.39px between
+  `mousedown` and `mouseup`. No press is lost there today only because the
+  textarea is taller than the shift; a 34px control in that position would
+  swallow one exactly as the create form's action row did. Untouched by
+  TAS-231, which fixed the surface where the loss was reachable and left the
+  panel's slot alone.
