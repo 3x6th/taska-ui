@@ -3114,6 +3114,69 @@ Compensating UI behaviour: none; the modal says "conflict" from the code.
 Removed by: the backend fixing either the mapping or the test. Raised on the PR
 and on TAS-108.
 
+### The lock deadline on `POST /auth/login` exists only inside an English sentence
+
+- **Endpoint:** `POST /api/v1/auth/login`, the refusal for an account locked by
+  its own failed sign-ins.
+- **Observed** at backend head `63f7ea5`, 2026-09-22, by `api-contract-guard`:
+
+  ```
+  HTTP/1.1 403 Forbidden
+  x-request-id: <uuid>
+  {"code":"PERMISSION_DENIED","message":"Account is locked until 2026-09-22T11:55:50.398486Z. Try again later."}
+  ```
+
+  The sentence is built by string concatenation in `AuthServiceImpl.java:235-238`.
+  The deadline is in it and in nothing else.
+- **The contract is not wrong here, it is silent — and so is the whole error
+  envelope.** `RestErrorResponse` (`docs/contract/openapi.yml:3230`) is
+  `{code, message}` with `details` nowhere in it, in the vendored snapshot and
+  in the deployed gateway's own `/v3/api-docs` alike. That is not an oversight
+  in one DTO: there is no structured path for a gRPC error to travel down at
+  all. `GrpcExceptionMapper.java:40` raises every domain refusal as
+  `Status.withDescription(String)`, and `git grep` for
+  `withDetails|ErrorInfo|com.google.rpc|Metadata.Key` across every
+  `*/src/main/*` in the backend monorepo returns nothing — no service in the
+  system has ever attached a typed detail to an error. `GatewayErrorHandler.java:36-61`
+  then copies the code and the description into the REST body. So there is no
+  field to read the deadline out of, and no field to add one to without the
+  backend growing the mechanism first.
+- **Compensating UI behaviour:** the login screen parses the sentence
+  (`src/lib/accountLock.ts`) and renders the deadline as `HH:mm` on the
+  reader's own clock, over two lines, with the full local date-time in `title`.
+  Two rules keep the compensation from becoming a second contract:
+  - **the branch is never chosen by the prose.** `isAccountLocked`
+    (`src/api/errors.ts`) reads `code === "PERMISSION_DENIED"` with a 403 or,
+    for the mock, no status at all. It is sound on this route and on no other:
+    `login` is PUBLIC, so the gateway's admin-role 403 is unreachable, and
+    every other refusal `AuthServiceImpl.login` raises is `FAILED_PRECONDITION`
+    (blank input) or `UNAUTHENTICATED` (unknown email, no credential row,
+    `BLOCKED`, `INVITED`, wrong password). A reworded sentence therefore costs
+    the pretty time and never the right refusal.
+  - **the parse is keyed on the instant's own shape**, not on the words around
+    it, and the fractional part is optional and of free length because
+    `Instant.toString()` emits 0, 3, 6 or 9 digits. When it yields nothing —
+    or yields a moment already past, which is worse than ugly — the screen
+    prints the server's sentence verbatim. Unreadable and accurate beats
+    readable and invented, and it keeps a parser that has quietly stopped
+    matching distinguishable from one that works.
+- **The mock carries the same shape** (`MockTaskaApi.login`, the seeded
+  `LOCKED` account): `PERMISSION_DENIED` with the same sentence and a deadline
+  fifteen minutes out, matching `AUTH_SECURITY_LOCK_DURATION` in
+  `auth-service/src/main/resources/application.yml`. Before TAS-237 it answered
+  `UNAUTHENTICATED "Invalid credentials"` for every non-`ACTIVE` account, which
+  is a wrong claim about the server rather than a documented gap — and it would
+  have left this branch unreachable in the only environment the e2e suite has.
+- **Removed by:** the backend putting the deadline in a machine-readable field
+  — a `lockedUntil` on the error body, or the `google.rpc.ErrorInfo` details
+  the envelope has no mechanism for today. That ask is the orchestrator's to
+  file against epic [TAS-210](https://jira.ozero.dev/browse/TAS-210) alongside
+  TAS-237; its key belongs on this line once it exists. Nothing on the client
+  removes it, and the deployment of a fix will not remove it either — the
+  parser keeps working and keeps being read as the truth about the wire, which
+  is the failure mode `UNDEPLOYED_ROUTE_MESSAGE`'s note records three times
+  over.
+
 ### `mock` refused an over-long reason and `rest` sent it — closed by TAS-188
 
 Not a gateway divergence but an implementation one, and it belongs here because

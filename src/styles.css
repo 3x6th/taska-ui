@@ -888,6 +888,30 @@ h1 {
 
 .form-error .copied-note { color: var(--fg-2); }
 
+/* The locked-account refusal, and only it (TAS-237): "Account is locked until
+   14:55" over "Try again later.", the second centred against the first.
+
+   Scoped to `.auth-lock` rather than added to `.form-error`, which the issue
+   composer and the project dialog share — those carry one left-aligned
+   sentence and centring them all would be a redesign smuggled in on a bug fix.
+   Centring both lines about one axis is what puts the second line in the
+   middle of the first, and it is the voice this card already speaks in:
+   `.auth-hint` a few rows up is centred for the same reason.
+
+   A block `span` rather than two `div`s so the fallback branch, which is one
+   inline sentence, keeps the same box. The `time` inside gets no rule at all —
+   the deadline is the sentence, not an emphasis inside it (§1), and nothing
+   here is compared down a column, so tabular figures would be borrowed
+   machinery with no job. */
+.auth-lock {
+  display: block;
+  text-align: center;
+}
+
+.auth-lock > span {
+  display: block;
+}
+
 .primary-button,
 .secondary-button,
 .clear-button,

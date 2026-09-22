@@ -2,10 +2,13 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
+import { apiErrorFacts, isAccountLocked } from "../api/errors";
 import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
+import { RequestId } from "../components/RequestId";
 import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { accountLockedUntil, formatLockMoment, formatLockTime } from "../lib/accountLock";
 import type { ScreenProps } from "./App";
 
 type AuthMode = "signin" | "invite";
@@ -143,7 +146,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                 </button>
               </>
             )}
-            {submit.isError ? <div className="form-error">{submit.error.message}</div> : null}
+            {submit.isError ? <LoginFailure error={submit.error} /> : null}
           </form>
         </section>
         <div className="auth-footnote">Taska — issue tracking, minus the clutter.</div>
@@ -152,6 +155,63 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
         <ThemeToggle theme={theme} onToggle={toggleTheme} />
       </div>
     </main>
+  );
+}
+
+/**
+ * What a refused sign-in says.
+ *
+ * Two branches and one rule between them: the branch is chosen by the response
+ * code (`isAccountLocked`, src/api/errors.ts) and never by the wording, so the
+ * prose is only ever used to pull the number out of — never to decide what the
+ * reader is told.
+ *
+ * **The fallback is the server's own sentence, verbatim.** When the deadline
+ * cannot be read — a reworded message, or one naming a moment that has already
+ * passed — this prints `Account is locked until 2026-09-22T11:55:50.398486Z.
+ * Try again later.` exactly as it arrived. That is the ugliness TAS-237 was
+ * filed about, and it is still the right answer: a hand-written "your account
+ * is locked" would throw away information the server did send, and would make a
+ * parser that quietly stopped matching indistinguishable from one that works.
+ * Unreadable and traceable beats prettier and wrong.
+ */
+function LoginFailure({ error }: { error: unknown }) {
+  const { message, requestId } = apiErrorFacts(error);
+  // Read at render rather than held in state, so a lock that expires while the
+  // form is still open falls back to the raw sentence on the next paint
+  // instead of going on promising a moment that has gone. No timer wakes it —
+  // the reader retrying is what re-renders this, and that is the moment it
+  // matters.
+  const lockedUntil = isAccountLocked(error) ? accountLockedUntil(message) : null;
+
+  return (
+    <div className="form-error">
+      {lockedUntil ? (
+        // Two lines, the second centred under the first, per the story. The
+        // centring is `.auth-lock`'s own — `.form-error` is shared with the
+        // issue composer and the project dialog and sets no alignment for
+        // anyone.
+        <span className="auth-lock">
+          <span>
+            Account is locked until{" "}
+            {/* Machine-readable instant in `dateTime`, the reader's own clock
+                in the text, and everything the short form drops — the date a
+                late lock crosses into, and whose clock this is — in `title`. */}
+            <time dateTime={lockedUntil.toISOString()} title={formatLockMoment(lockedUntil)}>
+              {formatLockTime(lockedUntil)}
+            </time>
+          </span>
+          <span>Try again later.</span>
+        </span>
+      ) : (
+        <span>{message ?? "Sign-in failed."}</span>
+      )}
+      {/* Owed on both branches and missing from this screen until TAS-237: a
+          refusal here is as likely to need looking up in the gateway log as one
+          from any dialog, and `EditProjectModal` has paired the id with the
+          sentence since §5.6 asked for it. Mock mode never carries one. */}
+      {requestId ? <RequestId value={requestId} /> : null}
+    </div>
   );
 }
 

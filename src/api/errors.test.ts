@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isMissingOrForbidden, isUndeployedRoute } from "./errors";
+import { isAccountLocked, isMissingOrForbidden, isUndeployedRoute } from "./errors";
+import { ACCOUNT_LOCKED_MESSAGE } from "../lib/accountLock";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "./TaskaApi";
 import { ApiError } from "./rest/RestTaskaApi";
 
@@ -111,5 +112,49 @@ describe("isUndeployedRoute", () => {
     expect(
       isUndeployedRoute(new ApiError("Method Not Allowed", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE),
     ).toBe(false);
+  });
+});
+
+describe("isAccountLocked", () => {
+  it("accepts the gateway's locked-account refusal", () => {
+    expect(isAccountLocked(new ApiError(ACCOUNT_LOCKED_MESSAGE, "PERMISSION_DENIED", 403))).toBe(true);
+  });
+
+  // The accommodation `isConflict` already documents, and the reason it is not
+  // optional here: MockApiError carries no HTTP status, so without this arm
+  // mock mode could not reproduce the refusal and the login screen's lock
+  // branch would ship with nothing having run it.
+  it("accepts the mock's status-less version of it", () => {
+    expect(isAccountLocked(new MockLikeError("PERMISSION_DENIED", ACCOUNT_LOCKED_MESSAGE))).toBe(true);
+  });
+
+  // The two refusals this route actually mixes with. Every other failure
+  // `AuthServiceImpl.login` can raise is one of these, which is what makes the
+  // code alone enough to decide the branch on a PUBLIC route.
+  it("refuses the other ways a sign-in fails", () => {
+    expect(isAccountLocked(new ApiError("Invalid credentials", "UNAUTHENTICATED", 401))).toBe(false);
+    expect(isAccountLocked(new ApiError("Email must not be blank", "FAILED_PRECONDITION", 400))).toBe(false);
+    expect(isAccountLocked(new MockLikeError("UNAUTHENTICATED", "Invalid credentials"))).toBe(false);
+  });
+
+  // The wording is never consulted: a sentence the backend has reworded once
+  // already cannot be what decides whether the account is locked.
+  it("ignores the message entirely", () => {
+    expect(isAccountLocked(new ApiError("Заблокировано", "PERMISSION_DENIED", 403))).toBe(true);
+    expect(isAccountLocked(new ApiError(ACCOUNT_LOCKED_MESSAGE, "UNAUTHENTICATED", 401))).toBe(false);
+  });
+
+  // A 403 whose body named some other code, or none that parsed. Both hands
+  // are needed: this is the half `isMissingOrForbidden` would have got wrong,
+  // since it accepts a bare 403.
+  it("refuses a 403 that does not name PERMISSION_DENIED", () => {
+    expect(isAccountLocked(new ApiError("Forbidden", "UNKNOWN", 403))).toBe(false);
+    expect(isMissingOrForbidden(new ApiError("Forbidden", "UNKNOWN", 403))).toBe(true);
+  });
+
+  it("refuses values that are not errors", () => {
+    expect(isAccountLocked("PERMISSION_DENIED")).toBe(false);
+    expect(isAccountLocked({ code: "PERMISSION_DENIED" })).toBe(false);
+    expect(isAccountLocked(null)).toBe(false);
   });
 });
