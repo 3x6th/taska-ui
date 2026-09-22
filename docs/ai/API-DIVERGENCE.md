@@ -3167,11 +3167,23 @@ and on TAS-108.
   `UNAUTHENTICATED "Invalid credentials"` for every non-`ACTIVE` account, which
   is a wrong claim about the server rather than a documented gap — and it would
   have left this branch unreachable in the only environment the e2e suite has.
-- **Removed by:** the backend putting the deadline in a machine-readable field
-  — a `lockedUntil` on the error body, or the `google.rpc.ErrorInfo` details
-  the envelope has no mechanism for today. That ask is the orchestrator's to
-  file against epic [TAS-210](https://jira.ozero.dev/browse/TAS-210) alongside
-  TAS-237; its key belongs on this line once it exists. Nothing on the client
+- **Removed by:** [TAS-239](https://jira.ozero.dev/browse/TAS-239), filed
+  2026-09-22 from `api-contract-guard`'s reading of this wire — the backend
+  putting the deadline in a machine-readable field. Not filed under epic
+  TAS-210: that epic is about collapsing per-screen reads, and this is the
+  error envelope, which every service shares. The ask carries three priced
+  shapes, and the one that decides the cost is that **no `.proto` changes** —
+  gRPC trailers are not declared in proto, while `google.rpc.ErrorInfo` would
+  drag in `StatusProto` and its descriptors.
+
+  The guard established the fact that makes this an envelope story rather than
+  a login story: a search across every production source in the backend
+  monorepo for `withDetails`, `ErrorInfo`, `com.google.rpc` and `Metadata.Key`
+  returns **nothing**. Every error in the system is a
+  `Status.withDescription(String)`, so `FAILED_PRECONDITION` and `ABORTED` lose
+  their structure exactly the same way. [TAS-238](https://jira.ozero.dev/browse/TAS-238)
+  is the cheaper sibling and does not remove this entry: it fixes *which*
+  attempt announces the lock, not how the deadline is carried. Nothing on the client
   removes it, and the deployment of a fix will not remove it either — the
   parser keeps working and keeps being read as the truth about the wire, which
   is the failure mode `UNDEPLOYED_ROUTE_MESSAGE`'s note records three times

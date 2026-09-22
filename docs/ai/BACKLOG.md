@@ -2649,3 +2649,15 @@ is what recurs.
   swallow one exactly as the create form's action row did. Untouched by
   TAS-231, which fixed the surface where the loss was reachable and left the
   panel's slot alone.
+
+### Left open by TAS-237 (from `frontend-builder`, 2026-09-22)
+
+- **No sign-in refusal is announced at all** (`frontend-builder`, TAS-237).
+  The login form's `.form-error` carries no `role="alert"` and sits in no live
+  region, so a reader who cannot see it is told nothing when a sign-in is
+  refused — the new locked-account message included, but equally the plain
+  wrong-password one that predates it. Pre-existing and outside TAS-237's
+  boundary, which is why it was not widened into: the story is about what the
+  message *says*, and this is about whether it is heard. The panel and the
+  create modal both got their live region in TAS-231, so the pattern and the
+  precedent already exist; this is the one refusal surface left without it.
