@@ -34,7 +34,7 @@ export default defineConfig(({ mode }) => {
       // were the same bug: a review that keeps a full source copy of the tree
       // it reviewed leaves .ts files behind, .gitignore excuses them from git
       // but not from Vitest, and the suite silently runs the copies too. On
-      // this checkout that was 6068 tests where the repository has 948 — the
+      // this checkout that was 6068 tests where the repository has 1031 — the
       // surplus being other stories' snapshots, asserting what was true when
       // they were taken.
       exclude: [

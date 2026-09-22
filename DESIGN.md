@@ -681,7 +681,9 @@ height 32, width 220, radius 9, `border:1px var(--border-strong)`, фон `--sur
   Под ним справа одна primary-кнопка «Comment», `disabled` при пустом теле.
 - **Строка комментария:** аватар 24 слева, справа колонка. Шапка: имя 12.5/650 `--fg` +
   время `MMM d, HH:mm` 11px `--fg-3` + пометка «edited» 11px `--fg-3` (без курсива),
-  если `updatedAt` не пуст. Тело 12.5px `--fg`, `white-space:pre-wrap`,
+  если `updatedAt` **строго позже** `createdAt`. Не «если `updatedAt` не пуст»: сервер
+  штампует `updatedAt` уже на вставке, так что непустым он приходит всегда — см.
+  `docs/ai/API-DIVERGENCE.md`. Тело 12.5px `--fg`, `white-space:pre-wrap`,
   `overflow-wrap:anywhere`.
 - **Действия** («Edit», «Delete») — `.link-button` 11.5px `--fg-3`, только автору.
 - **Редактирование** — тот же `textarea` на месте тела; «Save» / «Cancel»;
@@ -2063,8 +2065,11 @@ type IssueEventType =
   | 'COMMENT_CREATED' | 'COMMENT_UPDATED' | 'COMMENT_DELETED';
 ```
 Комментарий (`IssueComment`): `id`, `issueId`, `projectId`, `authorUserId`, `body`,
-`createdAt`, `updatedAt` (`null`, пока не редактировали — по нему и рисуется пометка
-«edited»), `version`.
+`createdAt`, `updatedAt` (контракт объявляет его `nullable`, но гейтвей так не отвечает:
+issue-service аудирует поле через `@LastModifiedDate` и проставляет его на вставке
+вместе с `createdAt`, поэтому у нетронутого комментария метки равны, а не пусты),
+`version` (`1` на вставке, `+1` на каждую правку). Пометка «edited» рисуется
+сравнением меток, не наличием `updatedAt` — см. `docs/ai/API-DIVERGENCE.md`.
 Отображаемые названия статусов: `TODO → "To Do"`, `IN_PROGRESS → "In Progress"`, `DONE → "Done"`.
 Названия типов: `Task` / `Bug` / `Story`. Приоритеты: `Low` / `Medium` / `High`
 (в узких сегментах — `Med`).

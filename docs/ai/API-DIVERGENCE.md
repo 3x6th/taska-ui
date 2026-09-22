@@ -890,7 +890,7 @@ Everything below is the entry as it stood, in the past tense.
     `SET body = :body, version = version + 1, updated_at = NOW()`. So an edited
     row carries `updated_at > created_at` **and** `version >= 2`; a fresh one
     carries neither.
-  - `issue-service/.../mapper/CommentMapper.java:28-29` puts both fields on the
+  - `issue-service/.../mapper/CommentMapper.java:27-28` puts both stamps on the
     proto and `api-gateway/.../mapper/CommentRestMapper.java:43-44` maps them
     through. Its `toOffsetDateTime` (`:124-130`) answers `null` only for an
     unset or epoch timestamp, so the date the client reads is the server's own
