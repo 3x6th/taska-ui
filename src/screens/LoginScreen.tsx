@@ -225,10 +225,10 @@ function LoginFailure({ error, mode }: { error: unknown; mode: AuthMode }) {
 }
 
 /**
- * The first of the two lines: the machine-readable instant in `dateTime`, and
- * the deadline in whichever form the reader needs today —
- * `formatLockDeadline`, which decides that and decides what `title` has left
- * to add (`src/lib/accountLock.ts`).
+ * The first of the two lines: the machine-readable instant in `dateTime`, the
+ * deadline in whichever form the reader needs today, and the same moment
+ * fully qualified in `title` — `formatLockDeadline` decides all three
+ * (`src/lib/accountLock.ts`).
  *
  * Its own function only so the formatted pair can be a `const`; the markup is
  * the same `<span>` `.auth-lock > span` has always selected.

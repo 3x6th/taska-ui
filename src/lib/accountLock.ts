@@ -97,42 +97,87 @@ export function accountLockedUntil(message: string | null, now = Date.now()): Da
 }
 
 /**
- * `14:55` — the deadline on the reader's own clock.
+ * `14:55` — the deadline on the reader's own clock, in the product's own
+ * words.
+ *
+ * **The zone is the reader's; the words are not.** Two settings, and only one
+ * of them is what TAS-237 was filed about. `Intl` formats in the runtime's zone
+ * unless a `timeZone` option names one, and none is named here or below — so
+ * the reporter's 11:55:50Z reads `14:55` in Moscow and `05:55` in New York with
+ * nothing in this file knowing about either. **Adding a `timeZone` here is what
+ * would reintroduce the bug**; passing a locale never had anything to do with
+ * it.
+ *
+ * What a locale decides is the calendar, the script and the word order, and
+ * `undefined` hands all three to whatever the reader's browser is set to. That
+ * was measured on this page, same instant, in the crossing form: `fa-IR` prints
+ * `۱ مهر، ۰۰:۰۵` — a Solar Hijri date inside a sentence that begins "Account is
+ * locked until", in a document whose `<html lang>` is `en` — and `zh-CN` prints
+ * `9月23日 GMT+3 00:05`, putting the zone in front of the clock. `ru-RU`,
+ * `he-IL`, `ar-EG` and `bn-BD` each differ again, in separators, in bidi marks,
+ * in digits. So the locale is pinned to `en-US`, which is what `format.ts` pins
+ * at both of its call sites and what DESIGN.md §6 «Формат данных» fixes the
+ * shapes for: every other date in this product is Gregorian and English, and a
+ * deadline that was not would be two calendars for two adjacent facts.
  *
  * `hourCycle: "h23"` rather than `hour12: false`, which is the option that
- * actually guarantees `00:30` at midnight instead of `24:30`, and it holds
- * whatever the locale would have chosen. The locale itself is the reader's
- * (`undefined`) rather than `format.ts`'s pinned `en-US`, and the difference is
- * deliberate: those render server timestamps in the product's own English
- * voice, while this is a deadline the reader has to act on and the entire
- * complaint behind TAS-237 is that it arrived in somebody else's frame of
- * reference. The zone follows from the same argument, and nothing here adds a
- * fixed offset — `+3` is the reporter's own zone, not a rule.
+ * actually guarantees `00:30` at midnight instead of `24:30` whatever the
+ * locale would have chosen. Kept now that the locale is pinned, because it
+ * states the intent directly rather than relying on `en-US` continuing to
+ * resolve `hour12: false` the way today's V8 does.
  *
  * `HH:mm`, not `HH:mm:ss`. The story says both: its prose asks for seconds
- * while its worked example and both quoted lines say `14:55`, and DESIGN.md §6
- * «Формат данных» already sets `MMM d, HH:mm` 24h as this product's time.
- * Seconds on a fifteen-minute lockout are noise with a false precision: the
- * server rounds nothing and the reader is not going to count them.
+ * while its worked example and both quoted lines say `14:55`, and §6 already
+ * sets `MMM d, HH:mm` 24h as this product's time. Seconds on a fifteen-minute
+ * lockout are noise with a false precision: the server rounds nothing and the
+ * reader is not going to count them.
  */
 export const formatLockTime = (until: Date) =>
-  new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(until);
+  new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(until);
 
 /**
- * `Sep 23, 00:30 GMT+3` — the same instant with everything the short form
- * drops.
+ * `Sep 23, 00:07` — the clock with the day in front of it, for the lock that
+ * ends after the reader's midnight.
  *
- * A fifteen-minute lock started at 23:55 ends tomorrow, and `00:10` on its own
- * is then ambiguous in the one direction that matters (the reader assumes
- * today and thinks the wait is over). The date answers that, and the zone name
- * answers the question the story was filed about — whose clock this is.
+ * DESIGN.md §6's `MMM d, HH:mm`, which is what `format.ts`'s `formatDateTime`
+ * prints for every server timestamp in the product. Spelled again rather than
+ * borrowed: that one takes an ISO string and reaches 24-hour through
+ * `hour12: false`, and midnight is the one case this form exists for — see
+ * `formatLockTime` on why `h23` is the option that guarantees it.
  *
- * Where it is spent is `formatLockDeadline`'s decision, not this function's:
- * in the `title` while the short form is unambiguous, and in the sentence
- * itself once it is not.
+ * **No zone token, and that is a measurement rather than a preference**
+ * (`art-director`, TAS-237; re-measured in the page while making this change).
+ * At the sheet's 12px/600 with its −0.065px tracking, `Account is locked until
+ * Sep 23, 00:05 GMT+3` needs 238.4px on one line. The line box it has to fit in
+ * is `0.9 × viewport − 74` until the card reaches its 392px cap: 214px at a 320
+ * viewport, 235.6px at 344, 318px from 420 up. So the token did not cost a
+ * third line only at the 320 floor — it cost one at **every** width at or below
+ * 347, in both themes. Without it the sentence needs 196.2px and stays on one
+ * line down to a 301px viewport, well under the narrowest this product is
+ * measured at. Nothing is lost by dropping it: the zone is in `title` here
+ * exactly as it is on the other branch (`formatLockDeadline`).
+ */
+export const formatLockDateTime = (until: Date) =>
+  new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(until);
+
+/**
+ * `Sep 23, 00:30 GMT+3` — the instant fully qualified: everything the two
+ * visible forms drop, and the zone neither of them names.
+ *
+ * Its one use is `title`, on both branches, which is `formatLockDeadline`'s
+ * decision rather than this function's. The visible sentence carries a clock,
+ * or a clock with a day; the question the story was filed about — *whose*
+ * clock — is answered here for the reader who can reach the attribute, and by
+ * the browser's own zone for everyone else.
  */
 export const formatLockMoment = (until: Date) =>
-  new Intl.DateTimeFormat(undefined, {
+  new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -142,8 +187,9 @@ export const formatLockMoment = (until: Date) =>
   }).format(until);
 
 /**
- * What the reader sees, and what is left for `title` to add: `14:55` on their
- * own day, `Sep 23, 00:10 GMT+3` once the lock runs past their midnight.
+ * What the reader sees, and what `title` carries either way: `14:55` on their
+ * own day, `Sep 23, 00:10` once the lock runs past their midnight, and
+ * `Sep 23, 00:10 GMT+3` in the attribute in both cases.
  *
  * **The title was the whole answer to the late lock, and on a phone it is no
  * answer at all.** There is no hover on touch, a `<time>` takes no focus, and
@@ -151,11 +197,18 @@ export const formatLockMoment = (until: Date) =>
  * started at 23:55 showed a phone reader `Account is locked until 00:10` with
  * nothing anywhere saying "tomorrow", which is the exact misreading the
  * attribute was put there to prevent. The date therefore moves into the
- * sentence for the case that needs it, and the attribute keeps only what the
- * sentence does not already carry — on the crossing case, nothing. Text and
- * title come back together because they are one decision: a `title` repeating
- * its own element is a tooltip that says what is already on screen and a
- * description a screen reader may read out twice.
+ * sentence for the case that needs it.
+ *
+ * **One `title` rule rather than two**, and the reason is the zone token, not
+ * a change of mind. While the crossing sentence read `Sep 23, 00:07 GMT+3`,
+ * the attribute would have repeated its own element — a tooltip saying what is
+ * already on screen, and a description a screen reader may read out twice.
+ * That token then had to come out for width (`formatLockDateTime`), which left
+ * the zone stated nowhere on this branch while the other branch stated it in
+ * `title`: the same fact reachable on the ordinary case and not on the one
+ * that is harder to read. So `title` is now the fully qualified moment
+ * always, and it never repeats the text, because the text never carries a
+ * zone.
  *
  * **The comparison is on the reader's calendar day, and not on UTC.**
  * `getFullYear`/`getMonth`/`getDate` are local by definition, which is the
@@ -171,13 +224,14 @@ export const formatLockMoment = (until: Date) =>
  * render, like the deadline itself — a lock open across midnight gains its
  * date on the next paint rather than being decided once at mount.
  */
-export function formatLockDeadline(until: Date, now = new Date()): { text: string; title?: string } {
+export function formatLockDeadline(until: Date, now = new Date()): { text: string; title: string } {
   const onReadersDay =
     until.getFullYear() === now.getFullYear() &&
     until.getMonth() === now.getMonth() &&
     until.getDate() === now.getDate();
 
-  return onReadersDay
-    ? { text: formatLockTime(until), title: formatLockMoment(until) }
-    : { text: formatLockMoment(until) };
+  return {
+    text: onReadersDay ? formatLockTime(until) : formatLockDateTime(until),
+    title: formatLockMoment(until),
+  };
 }

@@ -26,6 +26,15 @@ const ISO_INSTANT = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/;
  */
 const ORDINARY_HOUR = "2026-09-22T09:30:00Z";
 
+/**
+ * 23:50 in Moscow, so the deadline is 00:05 on the 23rd for a reader there —
+ * and 20:50Z against 21:05Z, which is one and the same UTC day. A screen
+ * comparing `toISOString()` days would call that today and print the bare
+ * clock, so the two describes below that pin this hour are what say the
+ * comparison is made on the local day.
+ */
+const BEFORE_LOCAL_MIDNIGHT = "2026-09-22T20:50:00Z";
+
 async function attemptLockedSignIn(page: Page, now = ORDINARY_HOUR) {
   // Before the first navigation: `setFixedTime` freezes `Date.now` and `new
   // Date()` for every document that follows, and leaves timers running, which
@@ -147,24 +156,58 @@ test.describe("in UTC-4, where a hard-coded +3 would be wrong", () => {
 test.describe("when the lock runs past the reader's midnight", () => {
   test.use({ timezoneId: "Europe/Moscow", locale: "en-US" });
 
-  // 23:50 in Moscow, so the deadline is 00:05 on the 23rd for this reader —
-  // and 20:50Z against 21:05Z, which is one and the same UTC day. A screen
-  // comparing `toISOString()` days would call this today and print the bare
-  // clock, so the assertion below is what says the comparison is local.
-  const BEFORE_LOCAL_MIDNIGHT = "2026-09-22T20:50:00Z";
-
   test("the date is in the sentence itself, not only in the title", async ({ page }) => {
     const lines = await attemptLockedSignIn(page, BEFORE_LOCAL_MIDNIGHT);
 
-    await expect(lines.first()).toHaveText(/^Account is locked until Sep 23, 00:05\b/);
+    // Anchored at both ends, because the zone token is the thing that must not
+    // be here: at 12px/600 `… Sep 23, 00:05 GMT+3` needs 238.4px and the line
+    // box is `0.9 × viewport − 74`, so it took a third line at every viewport
+    // at or below 347. None of this suite's three projects is that narrow —
+    // the phone one is 390 — so the wrap was measured in the browser and what
+    // is pinned here is the string that avoids it.
+    await expect(lines.first()).toHaveText("Account is locked until Sep 23, 00:05");
     await expect(lines.nth(1)).toHaveText("Try again later.");
 
     // The machine-readable instant is untouched by any of this.
     await expect(page.locator(".auth-lock time")).toHaveAttribute("datetime", ISO_INSTANT);
 
-    // And nothing is left for `title` to add: an attribute repeating its own
-    // element's text is a tooltip that says what is already on screen.
-    await expect(page.locator(".auth-lock time")).not.toHaveAttribute("title", /./);
+    // And the zone is where it went: `title`, on this branch exactly as on the
+    // ordinary one. It repeats nothing — the visible sentence never carries a
+    // zone token — and it is the only place this reader is told whose midnight
+    // "Sep 23" is.
+    await expect(page.locator(".auth-lock time")).toHaveAttribute("title", "Sep 23, 00:05 GMT+3");
+  });
+});
+
+// The locale, which is a different setting from the zone and was being handed
+// to the browser along with it until TAS-237's review measured what that
+// costs. `Intl` takes the runtime's zone whether or not a locale is passed, so
+// pinning `en-US` gives up nothing the story asked for — while leaving it
+// unpinned gave up the calendar: this exact sentence rendered
+// `۱ مهر، ۰۰:۰۵` here, a Solar Hijri date inside an English sentence in a
+// document whose `<html lang>` is `en`.
+//
+// Here rather than in a unit test for the reason the zone claim is here: this
+// repository's Vitest runner reports `en-US`, so in that process a pinned
+// locale and an unpinned one produce the same string, and a case asserting the
+// pin could not fail. `locale` is a parameter only in Playwright.
+test.describe("in a browser set to a non-Gregorian locale", () => {
+  test.use({ timezoneId: "Europe/Moscow", locale: "fa-IR" });
+
+  test("the sentence keeps the product's calendar and the reader keeps their zone", async ({ page }) => {
+    const lines = await attemptLockedSignIn(page, BEFORE_LOCAL_MIDNIGHT);
+
+    // Gregorian, Latin digits, English month — the same bytes the `en-US`
+    // browser one block up gets.
+    await expect(lines.first()).toHaveText("Account is locked until Sep 23, 00:05");
+    await expect(lines.nth(1)).toHaveText("Try again later.");
+
+    // And the zone is still Moscow's, which is the half that must *not* be
+    // pinned: 20:50Z reads as the 23rd here and would read as the 22nd in New
+    // York. A `timeZone` option anywhere in `src/lib/accountLock.ts` fails this
+    // line in one direction, and a locale-dependent formatter fails the two
+    // above in the other.
+    await expect(page.locator(".auth-lock time")).toHaveAttribute("title", "Sep 23, 00:05 GMT+3");
   });
 });
 

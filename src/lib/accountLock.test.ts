@@ -4,6 +4,7 @@ import {
   LOCK_INSTANT_PATTERN,
   accountLockedMessage,
   accountLockedUntil,
+  formatLockDateTime,
   formatLockDeadline,
   formatLockMoment,
   formatLockTime,
@@ -114,9 +115,10 @@ describe("accountLockedUntil", () => {
 
 // Everything below builds its Dates from local components — `new Date(y, m, d,
 // h, min)` is local time and Intl formats in local time — so the assertions
-// read the same in every zone the suite might run in, without moving TZ. What
-// they do assume is a locale with Latin digits and a colon, which is what a
-// failure here would name rather than hide.
+// read the same in every zone the suite might run in, without moving TZ. The
+// strings themselves are locale-independent since the formatters pin `en-US`;
+// before that pin these same lines were a claim about the machine's locale,
+// and they passed here only because this runner's default locale is `en-US`.
 //
 // **What a test in this process cannot assert is the zone**, and TAS-237's
 // review proved it by mutation: with `formatLockTime` hard-coded to +3, all
@@ -131,6 +133,15 @@ describe("accountLockedUntil", () => {
 // which renders one lock under `timezoneId: "Europe/Moscow"` and again under
 // `"America/New_York"` and asserts the two differ. What is left here is the
 // half that does hold everywhere: the shape of the string.
+//
+// **The locale is the same shape of claim and has the same home.** This runner
+// reports `en-US`, so `Intl.DateTimeFormat(undefined, …)` and
+// `Intl.DateTimeFormat("en-US", …)` agree on every case below — which is
+// exactly how `undefined` survived here while printing `۱ مهر، ۰۰:۰۵` in a
+// Persian browser. A case asserting "the locale is pinned" would therefore be
+// the vacuous kind this file has already deleted once, so the claim is made
+// where the locale is a parameter too: `e2e/login-lock.spec.ts` renders the
+// crossing lock under `locale: "fa-IR"` and asserts the Gregorian sentence.
 describe("formatLockTime", () => {
   // Zero-padded, colon-separated, no meridiem. A `hour12: true` or a missing
   // `2-digit` fails this in every zone, which is the part worth keeping.
@@ -146,11 +157,29 @@ describe("formatLockTime", () => {
   });
 });
 
+describe("formatLockDateTime", () => {
+  // The visible form for a lock that ends tomorrow: the day the short clock
+  // cannot carry, and nothing else. A lock started at 23:55 ends on the next
+  // day, where "00:10" alone reads as a time that has already gone.
+  it("puts the reader's day in front of the clock", () => {
+    expect(formatLockDateTime(new Date(2026, 8, 23, 0, 10))).toBe("Sep 23, 00:10");
+  });
+
+  // The measured half: with `GMT+3` in it the sentence took a third line at
+  // every viewport at or below 347px, so the token lives in `title` instead
+  // (`formatLockMoment`). Asserted as "no zone token this platform would print"
+  // rather than as "no GMT", because a runner in New York would print `EDT`.
+  it("carries no zone token, which is what keeps the sentence two lines", () => {
+    const until = new Date(2026, 8, 23, 0, 10);
+
+    expect(formatLockDateTime(until)).not.toContain(platformZone(until));
+  });
+});
+
 describe("formatLockMoment", () => {
-  // Everything the short form drops, and the case it is dropped for: a lock
-  // started at 23:55 ends on the next day, where "00:10" alone reads as a time
-  // that has already gone.
-  it("carries the date and the zone the short form drops", () => {
+  // Everything both visible forms drop, and the case it is dropped for: the
+  // reader who wants to know whose clock this is.
+  it("carries the date and the zone the visible forms drop", () => {
     const until = new Date(2026, 8, 23, 0, 10);
     const moment = formatLockMoment(until);
 
@@ -166,9 +195,16 @@ describe("formatLockMoment", () => {
   });
 });
 
-/** Whatever the runner's own zone is called here, e.g. `GMT+3`, `EDT`, `UTC`. */
+/**
+ * What `en-US` calls the runner's own zone at that instant — `GMT+3`, `EDT`,
+ * `UTC`. The locale is spelled and the zone is not, which is the same split the
+ * formatter under test makes: derive the zone from the platform, because that
+ * is the part no test may fix, and derive its *spelling* from the product's
+ * locale, because an `undefined` here would ask a Persian runner for
+ * `(‎+۳ گرینویچ)` and fail a correct implementation.
+ */
 function platformZone(at: Date) {
-  return new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+  return new Intl.DateTimeFormat("en-US", { timeZoneName: "short" })
     .formatToParts(at)
     .filter((part) => part.type === "timeZoneName")
     .map((part) => part.value)
@@ -178,7 +214,8 @@ function platformZone(at: Date) {
 // The `title` was the whole answer to a lock that crosses midnight until
 // TAS-237's review read it on a phone, where there is no hover, a `<time>`
 // takes no focus, and the attribute is therefore reachable by no route at all.
-// These pin which form the reader gets and what is left for `title`.
+// These pin which form the reader gets, and that `title` adds the zone to
+// either one of them.
 //
 // What none of them can catch, said here rather than left to be found again: a
 // comparison made on the UTC day instead of the local one. Both instants in
@@ -206,18 +243,25 @@ describe("formatLockDeadline", () => {
     const until = new Date(2026, 8, 23, 0, 5);
     const { text } = formatLockDeadline(until, now);
 
-    expect(text).toContain("Sep 23");
-    expect(text).toContain("00:05");
+    expect(text).toBe("Sep 23, 00:05");
   });
 
-  // And `title` goes away with it: repeating the element's own text is a
-  // tooltip that says what is on screen and a description a reader may hear
-  // twice.
-  it("leaves no title once the text carries the whole moment", () => {
+  // And the zone stays in `title` on this branch as much as on the other one.
+  // It used to be dropped here, back when the visible text spelled the zone
+  // out and an attribute repeating it would have been a tooltip saying what is
+  // already on screen. The token came out of the text for width, and the rule
+  // came back to one.
+  it("keeps the fully qualified moment in title on the crossing branch too", () => {
     const now = new Date(2026, 8, 22, 23, 50);
     const until = new Date(2026, 8, 23, 0, 5);
+    const { text, title } = formatLockDeadline(until, now);
 
-    expect(formatLockDeadline(until, now)).toStrictEqual({ text: formatLockMoment(until) });
+    expect(title).toBe(formatLockMoment(until));
+    // The two are not the same string, which is the condition that made the
+    // old "no title here" rule right and this one wrong.
+    expect(title).not.toBe(text);
+    expect(title).toContain(platformZone(until));
+    expect(text).not.toContain(platformZone(until));
   });
 
   // The branch is on the calendar day and not on how far off the deadline is,
