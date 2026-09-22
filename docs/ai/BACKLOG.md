@@ -2528,3 +2528,54 @@ is what recurs.
   "1.20 / 1.22". The border paints over the strip's own fill, so the measured
   numbers are 1.37 light / 1.15 dark against the modal and 1.20 / 1.19 against
   the fill. Fix it with the next edit to that block.
+
+### Left open by TAS-233 and TAS-231 (from `api-contract-guard` and `release-reviewer`, 2026-09-22)
+
+- **`RestTaskaApi.test.ts` has no comment case at all**
+  (`api-contract-guard`, TAS-233). The mock side of the `updatedAt` invariant
+  now has three tests; the rest side has none, so `toComment`'s `?? null` is
+  the only thing between a gateway that omits `updatedAt` and the screen, and
+  nothing fails if someone folds it into a plain spread. The asymmetry now
+  looks deliberate, which is worse than when it was merely absent. The fix is
+  one test driving `listComments` over the two shapes the gateway can send —
+  `updatedAt` equal to `createdAt`, and `updatedAt` absent — asserting
+  `commentWasEdited` is false for both and true for a later stamp. Not filed as
+  a story: it is client-side parity coverage, not a defect anyone can see.
+- **`version` is a lock counter, not an edit counter, and nothing says so
+  outside this line** (`api-contract-guard`, TAS-233). The soft delete at
+  `issue-service/.../IssueCommentRepository.java:34` does
+  `SET deleted_at = NOW(), version = version + 1` and leaves `updated_at`
+  alone, so `version` counts deletes as well as edits. Harmless today — nothing
+  in the client reads `version` for meaning, and TAS-233 deliberately kept it
+  out of the badge's predicate — and recorded here so that the next story
+  reaching for it as "how many times was this edited" finds the trap instead of
+  the assumption. Not in `API-DIVERGENCE.md` on purpose: it compensates for
+  nothing, so it is not a divergence.
+- **Vitest's test discovery is a growing list of exclusions rather than a
+  positive scope** (`release-reviewer`, TAS-233). `vite.config.ts` now excludes
+  three scratch directories, each added after it broke a run. A positive
+  `include: ["src/**/*.test.{ts,tsx}"]` would have made all three unnecessary
+  and would survive the fourth. Verified complete as it stands — the three
+  globs are exactly where stray specs live, 26 + 120 + 0 files, and `.agents/`,
+  `test-results/` and `dist/` hold none — so this is not urgent. Declined
+  inside TAS-233 on purpose: rewriting what the suite considers a test, inside
+  a bug fix about a badge, puts the whole suite's membership on the line for a
+  story that has nothing to do with it.
+- **The gateway logs no request body, so "did the field reach the gateway?" is
+  unanswerable from logs** (`api-contract-guard`, TAS-231). `GrpcIssueServiceClient.java:162`
+  logs only `"[{}] Calling createIssue"`, while `GrpcIssueService.java:140-143`
+  logs all five planning fields — so the only log naming them sits *downstream*
+  of the gateway hop, and TAS-231 turned on precisely which side of that hop a
+  value was lost. It cost that investigation a browser session and a backend
+  source read to answer what one log line would have. Backend ask, priced:
+  service (gateway), one debug line naming which fields were present on the
+  bound DTO, keyed by the same `requestId`. No proto, no mapper, no contract.
+  Worth a story if a second investigation pays the same cost.
+- **The app does not show its own build SHA anywhere** (`api-contract-guard`,
+  TAS-231). Stage's `deploy-stage.yml` sets `GIT_COMMIT` from the *backend*
+  repository, so a UI bug filed from the stand cites a SHA that says nothing
+  about the UI — which is why "was the stand running a build that had this
+  code?" took a Pages deployment history and a string search through the
+  shipped bundle to answer. Ours to fix, cheaply: surface the build SHA in the
+  app so a tester can quote it. Not folded into TAS-231, whose diff is about
+  two date boxes.
