@@ -79,7 +79,6 @@ import {
 } from "../lib/format";
 import {
   PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE,
-  PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE,
   PLANNING_EMPTY_PLACEHOLDER,
   PLANNING_ESTIMATE_HINT,
   formatDuration,
@@ -87,11 +86,13 @@ import {
   isIncompleteDateEntry,
   parseDuration,
   parseStoryPoints,
+  planningDateIncompleteEditMessage,
   planningDrafts,
   planningInput,
   reseedPlanningDrafts,
   rollbackPlanningDrafts,
   samePlanningDrafts,
+  type PlanningDateField,
   type PlanningDrafts,
 } from "../lib/planning";
 import { shortKey } from "./admin/columns";
@@ -1213,8 +1214,35 @@ function IssuePanel({
    * nothing about it. The revert itself is right and stays (a `""` from a
    * half-typed box would be read as *clear the date* and erase a stored day);
    * the silence is the defect.
+   *
+   * The *field* is held rather than the sentence, because the sentence names
+   * the box it is about (`planningDateIncompleteEditMessage`) and there are two
+   * of them.
+   *
+   * `seq` counts the refusals. Refuse the same box twice — half-type the start
+   * date, leave it, half-type it again — and the sentence is identical, so
+   * React updates nothing, the live region below emits no mutation, and the
+   * second refusal is announced to nobody: exactly as silent as the bug this
+   * fixes (art-director measured the zero mutations on the first version of
+   * this, where the two sentences were identical for *either* box). The count
+   * is the node's `key`, which turns a repeat into a remount.
    */
-  const [dateNotice, setDateNotice] = useState<string | null>(null);
+  const [dateNotice, setDateNotice] = useState<{ field: PlanningDateField; seq: number } | null>(null);
+  /**
+   * Every write drops the date line, both when it starts and if it fails.
+   *
+   * When it starts, because this panel shows one line and a refusal about an
+   * entry that never became a request must not be left standing as the caption
+   * on the answer to something else — including a write of another field, and
+   * including one that succeeds.
+   *
+   * If it fails, because a write that was already in flight when the reader
+   * half-typed a date is answered *after* the date line went up, and this slot
+   * is the only account a refused write gets: DESIGN.md §5.6 specifies a toast
+   * and records that there is none. A write whose refusal loses the slot is
+   * silent, which is the defect this story exists to remove.
+   */
+  const clearDateNotice = () => setDateNotice(null);
   // One prefix for the Planning block's five label/field pairs and the two
   // hints. Explicit `for`/`id` rather than a wrapping `<label>`: the hint has
   // to sit under the box without joining the label's accessible name, and a
@@ -1271,12 +1299,11 @@ function IssuePanel({
     // *clear it* and `undefined` means *leave it alone* — and a local shape
     // would have to restate that distinction to be able to send it.
     mutationFn: (patch: UpdateIssueInput) => taskaApi.updateIssue(projectId, issueId, patch),
-    // Any write supersedes the date sentence, including a write of another
-    // field: the slot below holds one line, and a refusal about an entry that
-    // was discarded a minute ago must not be the caption on the answer to
-    // something else. The date paths clear it themselves as well — this is for
-    // the reader who leaves the half-typed box alone and edits the estimate.
-    onMutate: () => setDateNotice(null),
+    // See `clearDateNotice`: every one of this panel's four writes clears the
+    // date line when it starts, this one included, and this is the case that
+    // needs it — the reader who leaves the half-typed box alone and edits the
+    // estimate beside it.
+    onMutate: clearDateNotice,
     onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
     // Rollback (§5.5). The summary and the description recover on their own —
     // the value the reader typed is still the best thing to show while they fix
@@ -1292,19 +1319,33 @@ function IssuePanel({
     // variables are the record of which one that was. Reverting all five would
     // undo drafts the server never saw, including whichever box the reader
     // moved on to while the refusal was in flight.
-    onError: (_error, sent) =>
-      setPlanning((current) => rollbackPlanningDrafts(current, sent, planningDrafts(issueQuery.data?.issue))),
+    onError: (_error, sent) => {
+      // And this refusal takes the slot even if a date line went up while the
+      // request was in flight — see `clearDateNotice`.
+      clearDateNotice();
+      setPlanning((current) => rollbackPlanningDrafts(current, sent, planningDrafts(issueQuery.data?.issue)));
+    },
   });
   const assignIssue = useMutation({
     mutationFn: (assigneeId: string | null) => taskaApi.assignIssue(projectId, issueId, assigneeId),
+    // The other three writes answer to the same rule as the update above, and
+    // until this round none of them did: a date line from a minute ago sat over
+    // a successful assignment, and over a *refused* one it was the only thing on
+    // screen, so the refusal never appeared anywhere (TAS-231, art-director).
+    onMutate: clearDateNotice,
+    onError: clearDateNotice,
     onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
   });
   const transitionIssue = useMutation({
     mutationFn: (transitionId: string) => taskaApi.transitionIssue(projectId, issueId, transitionId),
+    onMutate: clearDateNotice,
+    onError: clearDateNotice,
     onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
   });
   const deleteIssue = useMutation({
     mutationFn: () => taskaApi.deleteIssue(projectId, issueId),
+    onMutate: clearDateNotice,
+    onError: clearDateNotice,
     // Not `invalidateBoard`: this path deliberately does not touch
     // `["issue", projectId, issueId]`, because this panel is still mounted for
     // one more tick and refetching the issue that was just deleted would put a
@@ -1360,7 +1401,7 @@ function IssuePanel({
     }
     // Escape abandons the draft, so it abandons the sentence about it too.
     if (event.key === "Escape") {
-      setDateNotice(null);
+      clearDateNotice();
       revertPlanning(field);
     }
   };
@@ -1405,6 +1446,33 @@ function IssuePanel({
   };
 
   /**
+   * Put the date refusal in the slot, and drop whatever a write had left there.
+   *
+   * The `reset()` calls are the other half of `clearDateNotice`. A mutation
+   * holds its error until the next attempt, so a refusal the reader has already
+   * read would otherwise wait behind this line and come back the moment it
+   * clears — announced a second time by `role="alert"`, with no attempt behind
+   * it. An error line that reappears without an action is a ghost and not a
+   * record, so the older refusal is dropped rather than queued (TAS-231,
+   * art-director). With `clearDateNotice` on both sides of every write, the two
+   * sources of `panelNotice` can never both be holding something.
+   *
+   * Only a *failed* write is reset. One still in flight keeps its state, so
+   * nothing here re-enables a control that is waiting on the server, and its
+   * own refusal still reaches the slot — through `onError`, which clears this
+   * line in turn.
+   */
+  const refuseDate = (field: PlanningDateField) => {
+    if (updateIssue.isError) updateIssue.reset();
+    if (assignIssue.isError) assignIssue.reset();
+    if (transitionIssue.isError) transitionIssue.reset();
+    if (deleteIssue.isError) deleteIssue.reset();
+    // A fresh `seq` on every refusal, including a repeat of the same sentence:
+    // see the state's own comment for why identical text has to remount.
+    setDateNotice((current) => ({ field, seq: (current?.seq ?? 0) + 1 }));
+  };
+
+  /**
    * A date needs no parsing: `<input type="date">` holds exactly `YYYY-MM-DD`,
    * which is `DateOnly` (an empty box is `""`). It is passed through as the
    * string it is — a `Date` here would hand a moment in time to a field that
@@ -1437,13 +1505,13 @@ function IssuePanel({
       // every other refusal of a planning field already lands — including the
       // stored-date ones this is most likely to be confused with, and a reader
       // who learns to look in one place should not have to learn a second.
-      setDateNotice(PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE);
+      refuseDate(field);
       return;
     }
     // Whatever happens below — a write, or a draft merely normalised because it
     // already matched the stored day — this box now holds a date the browser
     // could read, so the sentence about it is spent.
-    setDateNotice(null);
+    clearDateNotice();
     const draft = planning[field].trim();
     const next = draft === "" ? null : draft;
     if (next === issue[field]) {
@@ -1454,14 +1522,25 @@ function IssuePanel({
   };
 
   /**
-   * One slot and one sentence. The local refusal comes first because it is the
-   * newer fact and because it is about an entry that never became a request:
-   * the last request's failure, if there was one, is already accounted for on
-   * screen by the value that came back. `onMutate` above clears it again, so
-   * the order cannot leave a stale line over a fresh failure.
+   * One slot and one sentence, held by whichever refusal is newest.
+   *
+   * This reads as a priority and is nearly not one: the two sources cannot both
+   * be left holding something. Every write clears the date line when it starts
+   * and if it fails (`clearDateNotice`), and a date refusal resets a failed
+   * write as it takes the slot (`refuseDate`).
+   *
+   * The order still earns its keep for one tick. The query client notifies its
+   * observers on a macrotask, so the render that puts this line up can still
+   * read the error `refuseDate` dropped a moment earlier — and the date line
+   * being asked first is what keeps that tick off the screen.
+   *
+   * What the chain below does *not* order is two writes that have both failed
+   * since the last attempt — it keeps the first of a fixed order rather than
+   * the newer refusal. That is this panel's pre-existing rule for the write
+   * side and is left exactly as it was.
    */
   const writeError = updateIssue.error ?? assignIssue.error ?? transitionIssue.error ?? deleteIssue.error;
-  const panelNotice = dateNotice ?? writeError?.message ?? null;
+  const panelNotice = dateNotice ? planningDateIncompleteEditMessage(dateNotice.field) : (writeError?.message ?? null);
 
   return (
     <div className="panel-layer">
@@ -1717,9 +1796,16 @@ function IssuePanel({
               reader watches the box revert with nothing said. Same treatment as
               the admin write dialogs. Since TAS-231 it carries the half-typed
               date refusal too, which is the same shape of event without a
-              request behind it: a box reverts, and this is what says why. */}
+              request behind it: a box reverts, and this is what says why.
+
+              The `key` is that refusal's sequence number, so a repeat of the
+              same sentence remounts this node instead of re-rendering identical
+              text — a live region that emits no mutation announces nothing, and
+              the second refusal would be as silent as the first bug. A write's
+              refusal needs no counter: its mutation drops the error as the next
+              attempt starts, so the node goes away and comes back on its own. */}
           {panelNotice ? (
-            <div className="form-error" role="alert">
+            <div className="form-error" key={dateNotice ? dateNotice.seq : "write"} role="alert">
               {panelNotice}
             </div>
           ) : null}
@@ -4270,9 +4356,17 @@ function CreateIssueModal({
    * is what hands the decision back to this component; nothing else on it had a
    * constraint for the browser to enforce, so nothing else changes hands.
    */
-  const [dateNotice, setDateNotice] = useState<string | null>(null);
+  const [dateNotice, setDateNotice] = useState<{ field: PlanningDateField; seq: number } | null>(null);
+  /** The panel's `clearDateNotice`, for the same two reasons — see it. */
+  const clearDateNotice = () => setDateNotice(null);
   /** The estimate fields' `for`/`id`/`aria-describedby` prefix — see the panel's. */
   const planningId = useId();
+  /**
+   * The message slot's own id, because on this surface the offending box points
+   * at the sentence: `aria-describedby` is what carries "that date" to a reader
+   * who cannot see which box the focus landed in.
+   */
+  const noticeId = useId();
   /**
    * The two date controls themselves. Refs and not drafts, because the state
    * being judged is the control's and not the draft's: a half-typed box holds
@@ -4281,37 +4375,76 @@ function CreateIssueModal({
    */
   const startDateRef = useRef<HTMLInputElement>(null);
   const dueDateRef = useRef<HTMLInputElement>(null);
-  /** The first box the browser cannot read a day out of, so the reader can be sent to it. */
-  const incompleteDateBox = () =>
-    [startDateRef.current, dueDateRef.current].find((box) => box !== null && isIncompleteDateEntry(box)) ?? null;
   /**
-   * Both boxes are re-judged whenever either is left, rather than only the one
-   * being left: a reader who fixes the start date while the due date is still
-   * half typed has not fixed the form, and clearing the line there would say
-   * they had.
+   * The first box the browser cannot read a day out of — named as well as
+   * handed over. The element is where focus goes; the field name is what marks
+   * that one box `aria-invalid` and describes it by the sentence, which the
+   * panel cannot do because there the entry is already gone and the box holds a
+   * stored value that is perfectly valid.
    */
-  const checkDates = () => setDateNotice(incompleteDateBox() ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE : null);
+  const incompleteDateEntry = (): { field: PlanningDateField; box: HTMLInputElement } | null => {
+    const start = startDateRef.current;
+    if (start && isIncompleteDateEntry(start)) return { field: "startDate", box: start };
+    const due = dueDateRef.current;
+    if (due && isIncompleteDateEntry(due)) return { field: "dueDate", box: due };
+    return null;
+  };
   const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
     setPlanning((current) => ({ ...current, [field]: value }));
 
   const createIssue = useMutation({
     mutationFn: () =>
       taskaApi.createIssue(projectId, { issueType, priority, summary, description, ...planningInput(planning) }),
+    // The panel's rule, on this form's one write: the slot holds a single line,
+    // so a date refusal must not caption the answer to a create, and a create
+    // that is refused must not be silent behind one (TAS-231, art-director).
+    onMutate: clearDateNotice,
+    onError: clearDateNotice,
     onSuccess: async (issue) => {
       await invalidateBoard(queryClient, projectId, issue.id);
       onCreated(issue);
     },
   });
 
+  /**
+   * Take the slot, and drop a refused create as it goes — the panel's
+   * `refuseDate`, for the same reason. Without the reset, the server's refusal
+   * of an earlier attempt would be waiting behind this line and would come back
+   * the moment the dates are legible again: an error re-announced with no
+   * attempt behind it, which is a ghost rather than a record.
+   */
+  const refuseDate = (field: PlanningDateField) => {
+    if (createIssue.isError) createIssue.reset();
+    // A fresh `seq` on every refusal so that the same sentence twice over is
+    // still a change to the live region — see the panel's state comment.
+    setDateNotice((current) => ({ field, seq: (current?.seq ?? 0) + 1 }));
+  };
+
+  /**
+   * Both boxes are re-judged whenever either is left, rather than only the one
+   * being left: a reader who fixes the start date while the due date is still
+   * half typed has not fixed the form, and clearing the line there would say
+   * they had.
+   */
+  const checkDates = () => {
+    const incomplete = incompleteDateEntry();
+    if (incomplete) refuseDate(incomplete.field);
+    else clearDateNotice();
+  };
+
   const badge = keyBadgeStyle(projectKey, projectColor);
   /**
-   * One slot, the local refusal first, on the panel's terms: this one is about
-   * an entry that never became a request, so it is both the newer fact and the
-   * only account of why the button did nothing. A failure from an earlier
-   * attempt comes back the moment the dates are legible again, because nothing
-   * here forgets it.
+   * One slot and one sentence, held by whichever refusal is newest — the
+   * panel's rule, the same mechanism, and the same one-tick reason for asking
+   * the date line first. The line is dropped when a create starts and if it
+   * fails, and a refused create is dropped when the line takes the slot, so
+   * neither is ever left standing over the other.
    */
-  const formNotice = dateNotice ?? (createIssue.isError ? createIssue.error.message : null);
+  const formNotice = dateNotice
+    ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
+    : createIssue.isError
+      ? createIssue.error.message
+      : null;
 
   return (
     <Modal
@@ -4340,18 +4473,19 @@ function CreateIssueModal({
           // Before the summary check, because this is the refusal the reader
           // cannot otherwise account for: an empty summary disables the button
           // they just pressed, and a half-typed date does not.
-          const incomplete = incompleteDateBox();
+          const incomplete = incompleteDateEntry();
           if (incomplete) {
-            setDateNotice(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
-            // Said *and* pointed at. The sentence names one box and the form
+            refuseDate(incomplete.field);
+            // Said *and* pointed at. The sentence says "that date" and the form
             // has two, and a reader on the keyboard — who reached the button
             // without passing the date again — would otherwise have to hunt for
-            // which. Focus is the only part of this that survives without
-            // sight.
-            incomplete.focus();
+            // which. Focus is the part of this that survives without sight; the
+            // `aria-invalid` and `aria-describedby` the refusal puts on that
+            // same box are what make the sentence findable once focus is there.
+            incomplete.box.focus();
             return;
           }
-          setDateNotice(null);
+          clearDateNotice();
           if (summary.trim()) createIssue.mutate();
         }}
       >
@@ -4448,6 +4582,14 @@ function CreateIssueModal({
                     mask, and `data-empty` is what lets it be set in `--fg-3`
                     instead of reading as a date somebody picked. */}
                 <input
+                  // Marked and described only while this is the box the line is
+                  // about, which is a thing this surface can say and the panel
+                  // cannot: here the entry is still standing in the control, so
+                  // `aria-invalid` is true of it. On the panel the same box has
+                  // already been put back to a stored value that is perfectly
+                  // valid, and marking it would be a false statement.
+                  aria-describedby={dateNotice?.field === "startDate" ? noticeId : undefined}
+                  aria-invalid={dateNotice?.field === "startDate" ? true : undefined}
                   data-empty={planning.startDate === ""}
                   // On blur as well as on submit, so the reader hears about it
                   // at the moment the panel would have told them — when they
@@ -4465,6 +4607,8 @@ function CreateIssueModal({
               <label className="field">
                 <span>Due date</span>
                 <input
+                  aria-describedby={dateNotice?.field === "dueDate" ? noticeId : undefined}
+                  aria-invalid={dateNotice?.field === "dueDate" ? true : undefined}
                   data-empty={planning.dueDate === ""}
                   onBlur={checkDates}
                   onChange={(event) => draftOf("dueDate")(event.target.value)}
@@ -4476,8 +4620,14 @@ function CreateIssueModal({
             </div>
           </div>
         </fieldset>
+        {/* The `key` is the date refusal's sequence number, so the same
+            sentence twice over remounts this node rather than re-rendering
+            identical text: a live region that emits no mutation announces
+            nothing, and the second refusal would be as silent as the bug this
+            story removes. The `id` is what the offending date box describes
+            itself by. */}
         {formNotice ? (
-          <div className="form-error" role="alert">
+          <div className="form-error" id={noticeId} key={dateNotice ? dateNotice.seq : "write"} role="alert">
             {formNotice}
           </div>
         ) : null}

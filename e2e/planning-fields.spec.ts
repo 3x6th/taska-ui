@@ -2,9 +2,32 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { START_DATE_AFTER_STORED_DUE_MESSAGE } from "../src/api/planningFields";
 import {
   PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE,
-  PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE,
   PLANNING_ESTIMATE_HINT,
+  planningDateIncompleteEditMessage,
 } from "../src/lib/planning";
+
+/**
+ * The mock store's own refusal of a transition that does not leave the issue's
+ * current status (src/api/mock/MockTaskaApi.ts). Written out rather than
+ * imported because it is a string literal in the store and not an exported
+ * constant — and what the cases below pin is that this sentence *reaches the
+ * reader*, so the sentence has to be stated somewhere they can compare.
+ */
+const TRANSITION_UNAVAILABLE_MESSAGE = "Transition is not available for the current issue status";
+
+/**
+ * Half-type a date: empty the box, then type a month and nothing else, so the
+ * control holds an entry the browser cannot read as a day (`validity.badInput`)
+ * while its `value` is still `""`. Emptying first matters — typing into a box
+ * that already holds a stored day only replaces one segment and leaves a whole
+ * date behind.
+ */
+async function halfTypeDate(page: Page, box: Locator) {
+  await box.fill("");
+  await box.click();
+  await page.keyboard.type("12");
+  await box.blur();
+}
 
 // The five planning fields on the issue panel and in the create modal
 // (TAS-189). Mock-backed like every spec here — playwright.config.ts starts the
@@ -233,17 +256,25 @@ test("a half-typed date says so, and leaves the stored one alone", async ({ page
   // unless `validity.badInput` is consulted, which is what `isIncompleteDateEntry`
   // does and what the revert below rests on.
   const start = planning.getByLabel("Start date");
-  await start.fill("");
-  await start.click();
-  await page.keyboard.type("12");
-  await start.blur();
+  await halfTypeDate(page, start);
 
   // The stored day is back in the box **and the panel says why** (TAS-231).
   // Until then this assertion read `toHaveCount(0)`: the revert was the entire
   // response, so the reader watched their entry disappear with nothing said
   // anywhere on screen, which is the half of the bug report about editing.
-  await expect(panel.locator(".form-error")).toHaveText(PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE);
+  //
+  // The sentence names the box, which is the part the panel cannot say any
+  // other way: two date fields sit side by side and the entry has already been
+  // taken out of the one at fault, so a line about "that date" would leave the
+  // reader to guess which (art-director, TAS-231).
+  await expect(panel.locator(".form-error")).toHaveText(planningDateIncompleteEditMessage("startDate"));
+  await expect(panel.locator(".form-error")).toContainText("start date");
   await expect(start).toHaveValue("2026-06-15");
+  // And the box carries no `aria-invalid`, where the create form's does: the
+  // entry has already been taken out of it and what stands there now is the
+  // stored day, which is perfectly valid. Marking it would be a false
+  // statement about the control the reader is looking at.
+  await expect(start).not.toHaveAttribute("aria-invalid");
   // One line and not two. The panel keeps a single slot for this and the local
   // refusal takes it, so this pins the slot rather than the absence of a
   // request — the absence of a request is what the reopen below is for.
@@ -256,6 +287,109 @@ test("a half-typed date says so, and leaves the stored one alone", async ({ page
   await closePanel(page);
   const reopened = await openIssuePanel(page, "TAS-101");
   await expect(reopened.getByLabel("Start date")).toHaveValue("2026-06-15");
+});
+
+test("the same refusal twice over is a new line both times", async ({ page }) => {
+  await openBoard(page);
+  const panel = page.locator(".issue-panel");
+  const planning = await openIssuePanel(page, "TAS-101");
+  const start = planning.getByLabel("Start date");
+  const notice = panel.locator(".form-error");
+
+  await halfTypeDate(page, start);
+  await expect(notice).toHaveText(planningDateIncompleteEditMessage("startDate"));
+  // Marked on the node itself, through the DOM: React manages no `data-seen`,
+  // so it survives a re-render and cannot survive a remount.
+  await notice.evaluate((node) => {
+    node.setAttribute("data-seen", "first");
+  });
+
+  await halfTypeDate(page, start);
+
+  // The same box refused the same way, so the sentence is identical — and
+  // identical text is a re-render of nothing: the live region emits no
+  // mutation and announces nothing, which leaves the second refusal exactly as
+  // silent as the bug this story removes. art-director measured those zero
+  // mutations with a MutationObserver, on start-then-due, which said the same
+  // thing before the sentence began naming the field. The node carries the
+  // refusal's own counter as its `key`, so it is replaced rather than updated.
+  await expect(notice).toHaveText(planningDateIncompleteEditMessage("startDate"));
+  await expect(notice).not.toHaveAttribute("data-seen");
+});
+
+test("a write that succeeds clears the date line rather than captioning itself with it", async ({ page }) => {
+  await openBoard(page);
+  const panel = page.locator(".issue-panel");
+  const planning = await openIssuePanel(page, "TAS-101");
+
+  await halfTypeDate(page, planning.getByLabel("Start date"));
+  await expect(panel.locator(".form-error")).toHaveText(planningDateIncompleteEditMessage("startDate"));
+
+  // An unrelated write, and a successful one. Until this round only
+  // `updateIssue` cleared the line, so the transition below left it standing
+  // byte for byte: a sentence about a date entry from a minute ago, sitting
+  // under an issue that had just moved to Done (art-director, TAS-231).
+  await panel.getByRole("button", { name: "Complete" }).click();
+
+  await expect(panel.locator(".status-pill")).toHaveText("Done");
+  await expect(panel.locator(".form-error")).toHaveCount(0);
+});
+
+test("a refused write takes the slot from the date line instead of going unsaid", async ({ page }) => {
+  await openBoard(page);
+  const panel = page.locator(".issue-panel");
+  const planning = await openIssuePanel(page, "TAS-101");
+
+  await halfTypeDate(page, planning.getByLabel("Start date"));
+  await expect(panel.locator(".form-error")).toHaveText(planningDateIncompleteEditMessage("startDate"));
+
+  // Two clicks in one task, which is what it takes to get a refused transition
+  // out of this panel: the first moves TAS-101 out of In Progress, the second
+  // sends the same transition id from a status it does not leave, and the mock
+  // refuses it. They both land because the button only disables itself on the
+  // re-render, and the query client notifies its observers on a macrotask.
+  await panel.getByRole("button", { name: "Complete" }).evaluate((button) => {
+    const target = button as HTMLButtonElement;
+    target.click();
+    target.click();
+  });
+
+  // This slot is the *only* account a refused write gets — DESIGN.md §5.6
+  // specifies a toast and records that there is none — so a date sentence
+  // holding it is not a cosmetic mismatch: before this round the refusal
+  // appeared nowhere on screen at all, which is the story's own defect moved
+  // one surface over.
+  await expect(panel.locator(".form-error")).toHaveText(TRANSITION_UNAVAILABLE_MESSAGE);
+  await expect(panel.locator(".form-error")).toHaveCount(1);
+});
+
+test("a refusal the date line replaced does not come back when the date line clears", async ({ page }) => {
+  await openBoard(page);
+  const panel = page.locator(".issue-panel");
+  const planning = await openIssuePanel(page, "TAS-101");
+
+  // A refused write first: past the stored due date of 2026-06-26, which
+  // `planningFieldRefusal` answers before the request is spent.
+  const start = planning.getByLabel("Start date");
+  await start.fill("2026-07-01");
+  await start.blur();
+  await expect(panel.locator(".form-error")).toHaveText(START_DATE_AFTER_STORED_DUE_MESSAGE);
+
+  // Then a date refusal, which takes the slot — and drops the one it replaced
+  // rather than queueing it.
+  const due = planning.getByLabel("Due date");
+  await halfTypeDate(page, due);
+  await expect(panel.locator(".form-error")).toHaveText(planningDateIncompleteEditMessage("dueDate"));
+
+  // Now the reader simply finishes the date. The day typed is the one the issue
+  // already has, so nothing is sent: no attempt stands behind the slot, and the
+  // slot has to be empty. Without the reset above, the refusal from the first
+  // step would surface again here and `role="alert"` would announce it a second
+  // time — an error line with no action behind it, which is a ghost and not a
+  // record (art-director, TAS-231).
+  await due.fill("2026-06-26");
+  await due.blur();
+  await expect(panel.locator(".form-error")).toHaveCount(0);
 });
 
 test("edits a date on blur and keeps it", async ({ page }) => {
@@ -303,10 +437,16 @@ test("the create form refuses a half-typed date in its own words, and points at 
 
   await expect(modal.locator(".form-error")).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
   // Nothing was created and the form is still standing, with focus on the box
-  // the sentence is about — the only part of "which of the two dates" that
-  // survives without sight.
+  // the sentence is about — the part of "which of the two dates" that survives
+  // without sight. The box says the same thing in its own right: marked
+  // invalid, and described by the line, so a reader who lands on it hears the
+  // sentence rather than having to find it. The other date carries neither
+  // (TAS-231, art-director).
   await expect(modal).toBeVisible();
   await expect(start).toBeFocused();
+  await expect(start).toHaveAttribute("aria-invalid", "true");
+  await expect(start).toHaveAccessibleDescription(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(modal.getByLabel("Due date")).not.toHaveAttribute("aria-invalid");
   await expect(page.locator(".issue-planning")).toHaveCount(0);
 
   // And the refusal is spent once the box holds a day: the same keystroke now

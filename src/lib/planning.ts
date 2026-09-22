@@ -78,9 +78,18 @@ export function isIncompleteDateEntry(input: HTMLInputElement): boolean {
   return input.validity.badInput;
 }
 
+/** Which of the two calendar days a sentence, a refusal or a box is about. */
+export type PlanningDateField = "startDate" | "dueDate";
+
+/** The two as the reader reads them, so a sentence can name the box it is about. */
+const PLANNING_DATE_FIELD_NAMES: Record<PlanningDateField, string> = {
+  startDate: "start date",
+  dueDate: "due date",
+};
+
 /**
- * What the issue panel says about it. Both sentences open on the same four
- * words because it is the same fault; they part after the dash because the
+ * What the issue panel says about it. Both sentences open on the same shape
+ * because it is the same fault; they part after the dash because the
  * consequence is not the same, and the consequence is the half the reader
  * cannot see for themselves.
  *
@@ -89,8 +98,25 @@ export function isIncompleteDateEntry(input: HTMLInputElement): boolean {
  * vanish. The sentence has to answer that: what you typed was not a whole day,
  * and nothing about the issue moved. True of an issue that has no date either,
  * where "unchanged" is still nothing.
+ *
+ * **It names the field**, and on this surface it has to: the panel shows two
+ * date boxes side by side, the entry has already been taken out of the one at
+ * fault, and nothing else on screen says which of the two the line is about
+ * (TAS-231, art-director). The create form answers that question by moving
+ * focus and marking the box instead, which is not open to a panel whose refusal
+ * happens as the reader leaves the control.
+ *
+ * The clause after the dash reports where the stored-date refusals in
+ * `planningFields.ts` instruct, and stays a report: "move the due date first"
+ * is advice because something is left to do, and here nothing is — the entry is
+ * already gone, so the only open question is what happened to the issue.
+ * Measured at 358px (13px/600) by art-director: one line inside the panel's
+ * 425px content box at the design width of 480.
  */
-export const PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE = "That date is incomplete — this issue's date is unchanged";
+export function planningDateIncompleteEditMessage(field: PlanningDateField): string {
+  const name = PLANNING_DATE_FIELD_NAMES[field];
+  return `That ${name} is incomplete — this issue's ${name} is unchanged`;
+}
 
 /**
  * What the create form says. There is no stored date to be reassured about and
@@ -100,9 +126,24 @@ export const PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE = "That date is incomplete �
  * the box is a legal way to create the issue rather than a concession, and a
  * reader who cannot tell will clear *both* dates to get past it, which is one
  * of the ways an issue ends up with no plan by accident (TAS-231).
+ *
+ * **"without it", not "without a date"**, and the difference is the reason the
+ * sentence is worth the words. There are two date boxes and the other one may
+ * already hold a day — this form's own e2e case sets the due date first — so an
+ * issue created after clearing this box still has a date. The wider claim was
+ * false exactly where it was being read, and it invited the clear-both it was
+ * written to prevent (art-director, TAS-231).
+ *
+ * It names no field, where the panel's sentence does, because this surface
+ * points instead: submit moves focus to the offending box, which carries
+ * `aria-invalid` and this line as its description, so "that date" has a
+ * referent the panel cannot give it. Measured at 396px (13px/600) in the 426px
+ * content box at the design width of 480; the wording it replaces measured
+ * 422px — four pixels from wrapping — and "...without that date" measures
+ * 437px and wraps.
  */
 export const PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE =
-  "That date is incomplete — finish it, or clear it to create the issue without a date";
+  "That date is incomplete — finish it, or clear it to create the issue without it";
 
 /**
  * The five as the inputs hold them: display strings, `""` for "not set".
