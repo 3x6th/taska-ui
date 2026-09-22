@@ -63,6 +63,7 @@ import type {
   WorkflowTransition,
 } from "../domain/types";
 import {
+  commentWasEdited,
   formatDateTime,
   formatDay,
   formatFileSize,
@@ -3759,7 +3760,10 @@ function CommentItem({
         <p className="comment-head">
           <strong>{author?.displayName ?? "Unknown"}</strong>
           <time>{formatDateTime(comment.createdAt)}</time>
-          {comment.updatedAt ? <em>edited</em> : null}
+          {/* Not `comment.updatedAt &&`: the server stamps that field on insert
+              too, so the presence of a value says only that the row exists
+              (TAS-233). `commentWasEdited` is the one rule for this badge. */}
+          {commentWasEdited(comment) ? <em>edited</em> : null}
         </p>
 
         {editing ? (

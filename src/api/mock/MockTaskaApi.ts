@@ -4424,7 +4424,20 @@ export class MockTaskaStore {
       authorUserId,
       body,
       createdAt,
-      updatedAt: null,
+      // Equal to `createdAt`, never `null`, because that is what the server's
+      // insert leaves behind: issue-service's `IssueComment` audits `createdAt`
+      // with `@CreatedDate` and `updatedAt` with `@LastModifiedDate`, and
+      // Spring Data writes both in the one save (`domain/IssueComment.java`,
+      // develop `1cfe4d7`). The `null` that used to sit here was a claim about
+      // the gateway the gateway does not make, and it is what hid TAS-233: no
+      // test against this mock could reproduce a fresh comment wearing the
+      // `edited` badge, because only the stand ever built one.
+      updatedAt: createdAt,
+      // The insert's version, and the independent witness that this row has not
+      // been edited: `updateComment` moves it in step with `updatedAt`, as the
+      // server's `SET body = :body, version = version + 1, updated_at = NOW()`
+      // does (`repository/IssueCommentRepository.java`). Nothing in the UI
+      // reads it for that purpose — one field decides the badge.
       version: 1,
     };
     this.commentsByIssue[issue.id] = [...(this.commentsByIssue[issue.id] ?? []), comment];

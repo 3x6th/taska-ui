@@ -16,6 +16,7 @@ import {
 } from "../avatars";
 import { ObjectStoreError } from "../objectStore";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
+import { commentWasEdited } from "../../lib/format";
 
 /**
  * The mock is the reference implementation of the TaskaApi contract: it is what
@@ -476,6 +477,44 @@ describe("MockTaskaApi", () => {
       expect(first.items).toHaveLength(2);
       expect(first.totalCount).toBeGreaterThanOrEqual(3);
       expect(rest.items[0].id).not.toBe(first.items[0].id);
+    });
+
+    it("leaves a new comment with the stamps the server's insert leaves, and moves both on an edit", async () => {
+      const { items } = await api.listIssues(project.id);
+      const issue = items[0];
+
+      // The insert, as issue-service performs it: `@CreatedDate` and
+      // `@LastModifiedDate` written in one save, so the two stamps are equal
+      // and `version` is 1. This mock answered `updatedAt: null` until TAS-233,
+      // which is a shape the gateway never sends and which made the badge's
+      // defect unreachable from any test in this repository.
+      const created = await api.addComment(project.id, issue.id, "first");
+      expect(created.updatedAt).toBe(created.createdAt);
+      expect(created.version).toBe(1);
+      expect(commentWasEdited(created)).toBe(false);
+
+      const edited = await api.updateComment(project.id, issue.id, created.id, "second");
+      expect(edited.createdAt).toBe(created.createdAt);
+      expect(Date.parse(edited.updatedAt ?? "")).toBeGreaterThan(Date.parse(edited.createdAt));
+      // The independent witness. `version = version + 1` and `updated_at =
+      // NOW()` are one statement on the server, so a mock that moved only the
+      // stamp would still pass the line above and would be modelling something
+      // else. The badge itself reads neither of these — it reads the stamps.
+      expect(edited.version).toBe(2);
+      expect(commentWasEdited(edited)).toBe(true);
+    });
+
+    it("seeds comments nobody has edited", async () => {
+      // The seed is what the UI and the end-to-end suite are developed against,
+      // so a seeded thread has to read like an untouched one.
+      const { items } = await api.listIssues(project.id);
+      const seeded = (await Promise.all(items.map((issue) => api.listComments(project.id, issue.id)))).flatMap(
+        (page) => page.items,
+      );
+
+      expect(seeded.length).toBeGreaterThan(0);
+      expect(seeded.filter(commentWasEdited)).toEqual([]);
+      expect(seeded.every((comment) => comment.version === 1)).toBe(true);
     });
 
     it("refuses to edit or delete a comment the current user does not own", async () => {

@@ -1,4 +1,4 @@
-import type { IssueLinkType, IssuePriority, IssueStatus, IssueType } from "../domain/types";
+import type { IssueComment, IssueLinkType, IssuePriority, IssueStatus, IssueType } from "../domain/types";
 
 export const statusLabels: Record<IssueStatus, string> = {
   TODO: "To Do",
@@ -102,6 +102,41 @@ export const formatDateTime = (iso: string) =>
     minute: "2-digit",
     hour12: false,
   }).format(new Date(iso));
+
+/**
+ * Whether a comment carries an edit, as opposed to merely carrying an
+ * `updatedAt`. The `edited` badge beside a comment's timestamp is drawn from
+ * this and from nothing else.
+ *
+ * It has to be a comparison, because `updatedAt` is set on **insert**:
+ * issue-service's `IssueComment` audits `createdAt` with `@CreatedDate` and
+ * `updatedAt` with `@LastModifiedDate`, and Spring Data writes both in the one
+ * save, so a comment nobody has touched arrives with the two equal to the
+ * instant (`develop` `1cfe4d7`, the stand's own commit — TAS-233). Reading
+ * "`updatedAt` is set" as "was edited" therefore marked every comment `edited`
+ * the second it was posted, which is the defect this exists to end.
+ *
+ * Compared as instants, never as text: `2026-09-18T14:42:35Z` and
+ * `2026-09-18T17:42:35+03:00` are the same moment spelled two ways, and nothing
+ * in the contract fixes which spelling the gateway sends.
+ *
+ * `version` is deliberately not consulted, though the server's update bumps it
+ * in the same statement. One field decides the badge and the tests hold the
+ * other as an independent witness: two rulebooks for one field is how they come
+ * to disagree (the same reason the planning inputs state no bounds of their
+ * own).
+ *
+ * `null` means "never updated" and is a real answer — `CommentResponseDto.updatedAt`
+ * is `nullable: true`, even though today's gateway never sends one
+ * (docs/ai/API-DIVERGENCE.md). A date neither side can parse answers `false`
+ * for a related reason: the badge states a fact about the comment, so an edit
+ * that cannot be dated is not one it may claim.
+ */
+export const commentWasEdited = ({ createdAt, updatedAt }: Pick<IssueComment, "createdAt" | "updatedAt">) => {
+  if (!updatedAt) return false;
+  // `NaN` on either side makes this `false`, which is the "cannot prove it" answer.
+  return Date.parse(updatedAt) > Date.parse(createdAt);
+};
 
 /**
  * A file size a person can read, for the attachment rows and for the limit the
