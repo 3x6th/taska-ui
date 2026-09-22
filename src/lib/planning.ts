@@ -4,13 +4,19 @@ import type { PlanningFields, PlanningFieldsInput } from "../api/planningFields"
  * How the five planning fields read and how they are typed back — the display
  * half of `src/api/planningFields.ts`, and deliberately nothing more.
  *
- * **This module states no rules.** Every refusal lives in
- * `planningFieldRefusal`, which every implementation of `TaskaApi` applies
+ * **This module states no rule about a value.** Every refusal about one lives
+ * in `planningFieldRefusal`, which every implementation of `TaskaApi` applies
  * before the wire, and the whole point of parsing here is to hand that function
  * a number it can judge. So a draft the reader has garbled comes out as `NaN`
  * rather than as a local error message: `NaN` is refused one layer down with
  * that layer's own sentence, and the alternative — a second copy of the bounds
  * in a component — is two rulebooks that drift.
+ *
+ * It states exactly one rule about a *control*, and that distinction is what
+ * keeps the paragraph above true: `isIncompleteDateEntry` judges a date box the
+ * reader has half typed, which is a state no `PlanningFieldsInput` can carry
+ * (see its own comment for why). There is nothing downstream for it to drift
+ * from, because there is nothing downstream that can see it.
  *
  * Two conversions and one asymmetry:
  *
@@ -44,6 +50,59 @@ export const PLANNING_EMPTY_PLACEHOLDER = "—";
  * more than they show (a bare number is minutes) rather than less.
  */
 export const PLANNING_ESTIMATE_HINT = "e.g. 8h, 1h 30m, 45m";
+
+/**
+ * Whether a date box holds an entry the browser cannot read as a calendar day:
+ * `12/--/----` yes, an empty box no.
+ *
+ * **This is the one rule this module states, and the value layer could not
+ * state it.** `<input type="date">` reports `value === ""` both for an empty box
+ * and for a half-typed one, and `""` is a legal input on this wire: it is how
+ * *clear the date* is spelled — omitted by `planningInput` on a create, sent as
+ * `null` by the panel on an edit. So by the time an entry has become a
+ * `PlanningFieldsInput` the difference between "no date" and "a date the reader
+ * had not finished" is already gone, and `planningFieldRefusal` has nothing
+ * left to judge. `validity.badInput` is the only thing that keeps the two
+ * apart: the browser sets it exactly when the control holds an entry it cannot
+ * turn into a date.
+ *
+ * Shared by both surfaces deliberately (TAS-231). Before it, each answered a
+ * half-typed date its own way and neither said anything: the panel discarded
+ * the entry and put the stored day back with no sentence anywhere, and the
+ * create form let native validation block its own submit, which draws a tooltip
+ * in the *browser's* language and leaves "Create issue" looking broken. One
+ * predicate and one diagnosis, because two rulebooks for one field is how they
+ * come to disagree.
+ */
+export function isIncompleteDateEntry(input: HTMLInputElement): boolean {
+  return input.validity.badInput;
+}
+
+/**
+ * What the issue panel says about it. Both sentences open on the same four
+ * words because it is the same fault; they part after the dash because the
+ * consequence is not the same, and the consequence is the half the reader
+ * cannot see for themselves.
+ *
+ * Here the stored day comes straight back into the box — `commitDate` writes it
+ * to the control as well as to the draft — so the reader watches their entry
+ * vanish. The sentence has to answer that: what you typed was not a whole day,
+ * and nothing about the issue moved. True of an issue that has no date either,
+ * where "unchanged" is still nothing.
+ */
+export const PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE = "That date is incomplete — this issue's date is unchanged";
+
+/**
+ * What the create form says. There is no stored date to be reassured about and
+ * nothing has been written, so the sentence answers the only question the
+ * reader actually has — why the button did nothing — and names both ways out.
+ * The second one is worth naming: every planning field is optional, so clearing
+ * the box is a legal way to create the issue rather than a concession, and a
+ * reader who cannot tell will clear *both* dates to get past it, which is one
+ * of the ways an issue ends up with no plan by accident (TAS-231).
+ */
+export const PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE =
+  "That date is incomplete — finish it, or clear it to create the issue without a date";
 
 /**
  * The five as the inputs hold them: display strings, `""` for "not set".

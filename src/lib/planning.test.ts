@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatDuration,
   formatStoryPoints,
+  isIncompleteDateEntry,
   parseDuration,
   parseStoryPoints,
   planningDrafts,
@@ -360,5 +361,42 @@ describe("rollbackPlanningDrafts", () => {
     const drafts: PlanningDrafts = { ...stored, storyPoints: "7" };
 
     expect(rollbackPlanningDrafts(drafts, {}, stored)).toEqual(drafts);
+  });
+});
+
+describe("isIncompleteDateEntry", () => {
+  const dateBox = () => {
+    const input = document.createElement("input");
+    input.type = "date";
+    return input;
+  };
+
+  it("does not call an empty box incomplete", () => {
+    // The distinction the whole rule rests on. `""` from a box the reader
+    // emptied is a legal request — *clear the date* — so a predicate that
+    // answered from `value` would make a stored date impossible to remove,
+    // which is a worse defect than the silence it was written to fix.
+    expect(isIncompleteDateEntry(dateBox())).toBe(false);
+  });
+
+  it("does not call a whole day incomplete", () => {
+    const input = dateBox();
+    input.value = "2026-09-18";
+
+    expect(isIncompleteDateEntry(input)).toBe(false);
+  });
+
+  it("asks the control rather than reading the value", () => {
+    // A half-typed day cannot be built in jsdom: the segments a browser holds
+    // are not in the DOM, and `value` stays `""` for that entry exactly as it
+    // does for an empty box — which is the whole reason `badInput` is the test.
+    // So what is pinned here is that the answer comes from the control's own
+    // verdict over an empty `value`; the real entry is typed in Chromium, in
+    // e2e/planning-fields.spec.ts.
+    const input = dateBox();
+    Object.defineProperty(input, "validity", { value: { badInput: true } as unknown as ValidityState });
+
+    expect(input.value).toBe("");
+    expect(isIncompleteDateEntry(input)).toBe(true);
   });
 });

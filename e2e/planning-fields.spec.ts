@@ -1,6 +1,10 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { START_DATE_AFTER_STORED_DUE_MESSAGE } from "../src/api/planningFields";
-import { PLANNING_ESTIMATE_HINT } from "../src/lib/planning";
+import {
+  PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE,
+  PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE,
+  PLANNING_ESTIMATE_HINT,
+} from "../src/lib/planning";
 
 // The five planning fields on the issue panel and in the create modal
 // (TAS-189). Mock-backed like every spec here — playwright.config.ts starts the
@@ -218,28 +222,125 @@ test("says what an estimate box accepts on screen, not in a tooltip", async ({ p
   await expect(planning.getByText(PLANNING_ESTIMATE_HINT)).toHaveCount(2);
 });
 
-test("a half-typed date leaves the stored one alone", async ({ page }) => {
+test("a half-typed date says so, and leaves the stored one alone", async ({ page }) => {
   await openBoard(page);
+  const panel = page.locator(".issue-panel");
   const planning = await openIssuePanel(page, "TAS-101");
 
   // `<input type="date">` reads `""` both when it is empty and when only some
   // of its segments are filled, and `""` means *clear it*. So a reader who
   // starts typing a date and tabs away would erase the day the issue has —
-  // unless `validity.badInput` is consulted, which is the fix this pins.
+  // unless `validity.badInput` is consulted, which is what `isIncompleteDateEntry`
+  // does and what the revert below rests on.
   const start = planning.getByLabel("Start date");
   await start.fill("");
   await start.click();
   await page.keyboard.type("12");
   await start.blur();
 
-  // The stored day is back in the box, and nothing was said about it, because
-  // nothing was sent.
+  // The stored day is back in the box **and the panel says why** (TAS-231).
+  // Until then this assertion read `toHaveCount(0)`: the revert was the entire
+  // response, so the reader watched their entry disappear with nothing said
+  // anywhere on screen, which is the half of the bug report about editing.
+  await expect(panel.locator(".form-error")).toHaveText(PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE);
   await expect(start).toHaveValue("2026-06-15");
-  await expect(page.locator(".issue-panel .form-error")).toHaveCount(0);
+  // One line and not two. The panel keeps a single slot for this and the local
+  // refusal takes it, so this pins the slot rather than the absence of a
+  // request — the absence of a request is what the reopen below is for.
+  await expect(panel.locator(".form-error")).toHaveCount(1);
 
   // Reopened, because the assertion that matters is about the store rather than
-  // about the draft the input was holding.
+  // about the draft the input was holding — and it is also what proves nothing
+  // was sent. A commit of the `""` this box reported would have cleared the
+  // stored day, and it is still there.
   await closePanel(page);
   const reopened = await openIssuePanel(page, "TAS-101");
   await expect(reopened.getByLabel("Start date")).toHaveValue("2026-06-15");
+});
+
+test("edits a date on blur and keeps it", async ({ page }) => {
+  await openBoard(page);
+  const planning = await openIssuePanel(page, "TAS-101");
+
+  // Inside the stored due date of 2026-06-26, so the server's own cross-check
+  // has nothing to say and what is under test is the write itself: the story
+  // this fixes reported that editing a date sent no `updateIssue` at all.
+  const start = planning.getByLabel("Start date");
+  await start.fill("2026-06-20");
+  await start.blur();
+
+  await expect(page.locator(".issue-panel .form-error")).toHaveCount(0);
+  await closePanel(page);
+  const reopened = await openIssuePanel(page, "TAS-101");
+  await expect(reopened.getByLabel("Start date")).toHaveValue("2026-06-20");
+  // The other date came back untouched, which on a wire that replaces is the
+  // API layer's doing rather than a given (see `resolvePlanningFields`).
+  await expect(reopened.getByLabel("Due date")).toHaveValue("2026-06-26");
+});
+
+test("the create form refuses a half-typed date in its own words, and points at the box", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "New", exact: true }).click();
+
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Summary").fill("Plan with a half-typed date");
+  // One whole date and one the reader did not finish. Before TAS-231 this form
+  // left the refusal to native validation, which does not fire `submit` at all:
+  // no request, no line on screen, and a tooltip in the *browser's* language
+  // beside a box the reader is no longer standing in. "Create issue" read as
+  // broken, and the way out a reader finds alone is to empty the dates — which
+  // is one of the routes to the "both dates empty" in the report itself.
+  await modal.getByLabel("Due date").fill("2026-09-19");
+  const start = modal.getByLabel("Start date");
+  await start.click();
+  await page.keyboard.type("12");
+
+  // Reached and pressed from the keyboard, the path that loses the native
+  // tooltip's context entirely.
+  const create = modal.getByRole("button", { name: "Create issue" });
+  await create.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(modal.locator(".form-error")).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  // Nothing was created and the form is still standing, with focus on the box
+  // the sentence is about — the only part of "which of the two dates" that
+  // survives without sight.
+  await expect(modal).toBeVisible();
+  await expect(start).toBeFocused();
+  await expect(page.locator(".issue-planning")).toHaveCount(0);
+
+  // And the refusal is spent once the box holds a day: the same keystroke now
+  // goes through, and both dates are on the issue it makes.
+  await start.fill("2026-09-18");
+  await create.focus();
+  await page.keyboard.press("Enter");
+
+  const planning = page.locator(".issue-planning");
+  await expect(planning.getByLabel("Start date")).toHaveValue("2026-09-18");
+  await expect(planning.getByLabel("Due date")).toHaveValue("2026-09-19");
+});
+
+test("creates an issue with both dates, and they are still there when the panel is reopened", async ({ page }) => {
+  await openBoard(page);
+  await page.getByRole("button", { name: "New", exact: true }).click();
+
+  const modal = page.getByRole("dialog");
+  await modal.getByLabel("Summary").fill("Plan both ends of the work");
+  await modal.getByLabel("Start date").fill("2026-09-18");
+  await modal.getByLabel("Due date").fill("2026-09-19");
+  await modal.getByRole("button", { name: "Create issue" }).click();
+
+  const planning = page.locator(".issue-planning");
+  await expect(planning.getByLabel("Start date")).toHaveValue("2026-09-18");
+  await expect(planning.getByLabel("Due date")).toHaveValue("2026-09-19");
+
+  // Read back off the store rather than out of the drafts the create left
+  // behind: the issue is found again from the board by the key the panel shows.
+  // (A browser reload cannot stand in for this here — the mock's issues live in
+  // memory for the life of the page, so a reload would take the issue with it.)
+  const issueKey = await page.locator(".issue-panel .issue-key").innerText();
+  await closePanel(page);
+  const reopened = await openIssuePanel(page, issueKey);
+  await expect(reopened.getByLabel("Start date")).toHaveValue("2026-09-18");
+  await expect(reopened.getByLabel("Due date")).toHaveValue("2026-09-19");
 });

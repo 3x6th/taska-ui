@@ -160,6 +160,19 @@ import { isDateOnly } from "../domain/types";
  *   So an unguarded `Number("")` from a form would not fail — it would silently
  *   erase the value it was trying to set.
  *
+ * **Ten is the count of what this module refuses, not of what the client
+ * refuses, and the eleventh could not have been written here** (TAS-231). A
+ * date box the reader is only part-way through typing is refused before it ever
+ * becomes a `PlanningFieldsInput` — `isIncompleteDateEntry` in
+ * src/lib/planning.ts, with the two sentences the surfaces say. It has to be
+ * refused up there because `<input type="date">` reports `value === ""` for a
+ * half-typed day exactly as it does for an empty box, and `""` arrives here as
+ * `null`, which is a legal request meaning *clear the date*. By the time the
+ * input reaches this function the difference is gone, so no rule this module
+ * could state would be true of it. Counting it among the ten would also make it
+ * sound like a rule about the server, and it is the opposite of one: the server
+ * would accept that request and erase a date the reader never meant to touch.
+ *
  * Only fields the caller actually supplied are checked. A value resolved from
  * the server passes through untouched, deliberately: validating the resolved
  * pair would mean an issue whose stored dates are already inconsistent could not

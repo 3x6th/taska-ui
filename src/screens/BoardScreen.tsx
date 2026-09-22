@@ -78,10 +78,13 @@ import {
   typeMeta,
 } from "../lib/format";
 import {
+  PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE,
+  PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE,
   PLANNING_EMPTY_PLACEHOLDER,
   PLANNING_ESTIMATE_HINT,
   formatDuration,
   formatStoryPoints,
+  isIncompleteDateEntry,
   parseDuration,
   parseStoryPoints,
   planningDrafts,
@@ -1199,6 +1202,19 @@ function IssuePanel({
   const history = issueQuery.data?.history ?? [];
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
+  /**
+   * The panel's own refusal of a date box the reader has half typed — the one
+   * thing this panel says that no request produced, which is why it is state
+   * here and not a mutation's error.
+   *
+   * It exists because the refusal is otherwise *silent*: `commitDate` puts the
+   * stored day back into the box and sends nothing, and until TAS-231 that was
+   * the entire response — the reader watched their entry disappear and was told
+   * nothing about it. The revert itself is right and stays (a `""` from a
+   * half-typed box would be read as *clear the date* and erase a stored day);
+   * the silence is the defect.
+   */
+  const [dateNotice, setDateNotice] = useState<string | null>(null);
   // One prefix for the Planning block's five label/field pairs and the two
   // hints. Explicit `for`/`id` rather than a wrapping `<label>`: the hint has
   // to sit under the box without joining the label's accessible name, and a
@@ -1255,6 +1271,12 @@ function IssuePanel({
     // *clear it* and `undefined` means *leave it alone* — and a local shape
     // would have to restate that distinction to be able to send it.
     mutationFn: (patch: UpdateIssueInput) => taskaApi.updateIssue(projectId, issueId, patch),
+    // Any write supersedes the date sentence, including a write of another
+    // field: the slot below holds one line, and a refusal about an entry that
+    // was discarded a minute ago must not be the caption on the answer to
+    // something else. The date paths clear it themselves as well — this is for
+    // the reader who leaves the half-typed box alone and edits the estimate.
+    onMutate: () => setDateNotice(null),
     onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
     // Rollback (§5.5). The summary and the description recover on their own —
     // the value the reader typed is still the best thing to show while they fix
@@ -1336,7 +1358,11 @@ function IssuePanel({
       event.currentTarget.blur();
       return;
     }
-    if (event.key === "Escape") revertPlanning(field);
+    // Escape abandons the draft, so it abandons the sentence about it too.
+    if (event.key === "Escape") {
+      setDateNotice(null);
+      revertPlanning(field);
+    }
   };
 
   const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
@@ -1392,9 +1418,11 @@ function IssuePanel({
     // date* — so tabbing out of a date the reader was halfway through typing
     // would erase the day the issue actually has. `validity.badInput` is the
     // only thing that tells the two apart: the browser sets it exactly when the
-    // control holds an entry it cannot turn into a date. Nothing is sent and
-    // the stored value comes back into the box, which is the whole message.
-    if (event.currentTarget.validity.badInput) {
+    // control holds an entry it cannot turn into a date. Nothing is sent, the
+    // stored value comes back into the box — and, since TAS-231, the panel says
+    // so: the revert on its own was a value disappearing with no account of it
+    // anywhere on screen, which is the half of this the tester reported.
+    if (isIncompleteDateEntry(event.currentTarget)) {
       // Written to the control as well as to the draft. React cannot clear a
       // partial entry on its own: the `value` prop it holds is `""` before and
       // after — the segments the reader typed never reached it — so a stored
@@ -1404,8 +1432,18 @@ function IssuePanel({
       // so the two do not drift.
       event.currentTarget.value = serverPlanning[field];
       revertPlanning(field);
+      // The sentence the revert used to leave unsaid. Said through the panel's
+      // own error slot rather than beside the box, because that slot is where
+      // every other refusal of a planning field already lands — including the
+      // stored-date ones this is most likely to be confused with, and a reader
+      // who learns to look in one place should not have to learn a second.
+      setDateNotice(PLANNING_DATE_INCOMPLETE_EDIT_MESSAGE);
       return;
     }
+    // Whatever happens below — a write, or a draft merely normalised because it
+    // already matched the stored day — this box now holds a date the browser
+    // could read, so the sentence about it is spent.
+    setDateNotice(null);
     const draft = planning[field].trim();
     const next = draft === "" ? null : draft;
     if (next === issue[field]) {
@@ -1414,6 +1452,16 @@ function IssuePanel({
     }
     updateIssue.mutate(field === "startDate" ? { startDate: next } : { dueDate: next });
   };
+
+  /**
+   * One slot and one sentence. The local refusal comes first because it is the
+   * newer fact and because it is about an entry that never became a request:
+   * the last request's failure, if there was one, is already accounted for on
+   * screen by the value that came back. `onMutate` above clears it again, so
+   * the order cannot leave a stale line over a fresh failure.
+   */
+  const writeError = updateIssue.error ?? assignIssue.error ?? transitionIssue.error ?? deleteIssue.error;
+  const panelNotice = dateNotice ?? writeError?.message ?? null;
 
   return (
     <div className="panel-layer">
@@ -1667,10 +1715,12 @@ function IssuePanel({
               refused write, and a planning field puts its stored value back at
               the same moment (§5.5) — so without a live region a screen-reader
               reader watches the box revert with nothing said. Same treatment as
-              the admin write dialogs. */}
-          {updateIssue.isError || assignIssue.isError || transitionIssue.isError || deleteIssue.isError ? (
+              the admin write dialogs. Since TAS-231 it carries the half-typed
+              date refusal too, which is the same shape of event without a
+              request behind it: a box reverts, and this is what says why. */}
+          {panelNotice ? (
             <div className="form-error" role="alert">
-              {(updateIssue.error ?? assignIssue.error ?? transitionIssue.error ?? deleteIssue.error)?.message}
+              {panelNotice}
             </div>
           ) : null}
 
@@ -4206,8 +4256,41 @@ function CreateIssueModal({
   // reduced to a request body by `planningInput`, which omits what was left
   // empty and passes on what was typed, including what it could not read.
   const [planning, setPlanning] = useState<PlanningDrafts>(() => planningDrafts(null));
+  /**
+   * The form's refusal of a date box the reader has half typed — the same fault
+   * the panel answers for, answered here in this surface's own words.
+   *
+   * Held as state rather than left to the browser because native validation is
+   * what this form used to do, and what it does is refuse to fire `submit` at
+   * all: no handler runs, nothing is created, and the only account of it is a
+   * tooltip drawn in the *browser's* language beside a box the reader may have
+   * scrolled past. "Create issue" simply appears dead, and the way out a reader
+   * finds by themselves is to empty both dates — which is one of the ways an
+   * issue gets created with no plan (TAS-231). `noValidate` on the form below
+   * is what hands the decision back to this component; nothing else on it had a
+   * constraint for the browser to enforce, so nothing else changes hands.
+   */
+  const [dateNotice, setDateNotice] = useState<string | null>(null);
   /** The estimate fields' `for`/`id`/`aria-describedby` prefix — see the panel's. */
   const planningId = useId();
+  /**
+   * The two date controls themselves. Refs and not drafts, because the state
+   * being judged is the control's and not the draft's: a half-typed box holds
+   * `""` exactly as an empty one does, so nothing in `planning` can tell them
+   * apart (`isIncompleteDateEntry`).
+   */
+  const startDateRef = useRef<HTMLInputElement>(null);
+  const dueDateRef = useRef<HTMLInputElement>(null);
+  /** The first box the browser cannot read a day out of, so the reader can be sent to it. */
+  const incompleteDateBox = () =>
+    [startDateRef.current, dueDateRef.current].find((box) => box !== null && isIncompleteDateEntry(box)) ?? null;
+  /**
+   * Both boxes are re-judged whenever either is left, rather than only the one
+   * being left: a reader who fixes the start date while the due date is still
+   * half typed has not fixed the form, and clearing the line there would say
+   * they had.
+   */
+  const checkDates = () => setDateNotice(incompleteDateBox() ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE : null);
   const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
     setPlanning((current) => ({ ...current, [field]: value }));
 
@@ -4221,6 +4304,14 @@ function CreateIssueModal({
   });
 
   const badge = keyBadgeStyle(projectKey, projectColor);
+  /**
+   * One slot, the local refusal first, on the panel's terms: this one is about
+   * an entry that never became a request, so it is both the newer fact and the
+   * only account of why the button did nothing. A failure from an earlier
+   * attempt comes back the moment the dates are legible again, because nothing
+   * here forgets it.
+   */
+  const formNotice = dateNotice ?? (createIssue.isError ? createIssue.error.message : null);
 
   return (
     <Modal
@@ -4237,8 +4328,30 @@ function CreateIssueModal({
     >
       <form
         className="form-stack"
+        // The form answers for its own dates — see `dateNotice` above for what
+        // the browser did with them instead, and why that read as a dead
+        // button. This is the whole of what `noValidate` turns off here: no
+        // field on this form carries `required`, a `pattern`, a `min` or a
+        // `max`, and the only other control with a native constraint anywhere
+        // in the app is the login form's `type="email"`, which is not this one.
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
+          // Before the summary check, because this is the refusal the reader
+          // cannot otherwise account for: an empty summary disables the button
+          // they just pressed, and a half-typed date does not.
+          const incomplete = incompleteDateBox();
+          if (incomplete) {
+            setDateNotice(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+            // Said *and* pointed at. The sentence names one box and the form
+            // has two, and a reader on the keyboard — who reached the button
+            // without passing the date again — would otherwise have to hunt for
+            // which. Focus is the only part of this that survives without
+            // sight.
+            incomplete.focus();
+            return;
+          }
+          setDateNotice(null);
           if (summary.trim()) createIssue.mutate();
         }}
       >
@@ -4336,7 +4449,15 @@ function CreateIssueModal({
                     instead of reading as a date somebody picked. */}
                 <input
                   data-empty={planning.startDate === ""}
+                  // On blur as well as on submit, so the reader hears about it
+                  // at the moment the panel would have told them — when they
+                  // leave the box — rather than only once they have pressed a
+                  // button that then refuses. `onChange` cannot stand in for
+                  // it: a date box fires no `input` event while its value is
+                  // still unreadable, which is exactly the state being judged.
+                  onBlur={checkDates}
                   onChange={(event) => draftOf("startDate")(event.target.value)}
+                  ref={startDateRef}
                   type="date"
                   value={planning.startDate}
                 />
@@ -4345,7 +4466,9 @@ function CreateIssueModal({
                 <span>Due date</span>
                 <input
                   data-empty={planning.dueDate === ""}
+                  onBlur={checkDates}
                   onChange={(event) => draftOf("dueDate")(event.target.value)}
+                  ref={dueDateRef}
                   type="date"
                   value={planning.dueDate}
                 />
@@ -4353,9 +4476,9 @@ function CreateIssueModal({
             </div>
           </div>
         </fieldset>
-        {createIssue.isError ? (
+        {formNotice ? (
           <div className="form-error" role="alert">
-            {createIssue.error.message}
+            {formNotice}
           </div>
         ) : null}
         <div className="modal-actions">
