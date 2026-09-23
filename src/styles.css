@@ -5664,6 +5664,132 @@ button.attachment-open:hover:not(:disabled) {
   color: var(--fg-3);
 }
 
+/* The issue panel while its issue is on the way (TAS-242): §5.6's skeleton,
+   shaped like the panel, in place of the "Loading issue" line.
+
+   Only geometry and colour are set here. Every bar is a `.value-skeleton`, so
+   the pulse — `tk-skeleton-pulse`, .35→1, never below .35 — and its entry in
+   the reduced-motion block at the end of this file come with the class rather
+   than being declared a second time: this adds no animation. The containers
+   are the panel's own (`.issue-panel-head`, `.transition-row`, `.meta-grid`,
+   `.planning-row`, `.description-field`), so each bar lands where the value
+   it stands in for will, and moves with it if that layout ever changes.
+
+   `--surface-2` rather than the `--surface-3` of an inline `.value-skeleton`:
+   §5.6 names it for skeletons, and it is what the description box below
+   already is at rest. Sizes are the loaded panel's, measured against it in
+   Chromium at 1440 and 390: 69 for the title block is the summary box's 62,
+   less its -5 top margin, plus its 6 bottom margin and the 6.3 the line box
+   adds under an inline `textarea`; 28 is the status pill and the chip rows;
+   17 a label's line (16.7), 38 a planning box, 15.5 an estimate's hint, 124
+   the five-row description. */
+.is-skeleton .value-skeleton {
+  display: block;
+  flex: none;
+  height: 9px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.is-skeleton .panel-skeleton-chip {
+  width: 14px;
+  height: 14px;
+}
+
+.is-skeleton .panel-skeleton-key {
+  width: 48px;
+  height: 8px;
+}
+
+.is-skeleton .panel-skeleton-type {
+  width: 30px;
+  height: 8px;
+}
+
+.panel-skeleton-title {
+  display: flex;
+  min-height: 69px;
+  flex-direction: column;
+  gap: 9px;
+  padding-top: 5px;
+}
+
+.is-skeleton .panel-skeleton-line {
+  width: 86%;
+  height: 16px;
+  border-radius: 6px;
+}
+
+.is-skeleton .panel-skeleton-line.is-short {
+  width: 54%;
+}
+
+.is-skeleton .panel-skeleton-pill {
+  width: 74px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+/* The loaded grid's shortest row is the reporter's 22 (its avatar); text bars
+   alone would collapse the rows to 9. */
+.is-skeleton .meta-grid {
+  grid-auto-rows: minmax(22px, auto);
+}
+
+/* A 9 bar with 4 either side fills the 17 line of the label it stands for. */
+.is-skeleton .panel-skeleton-label {
+  width: 52px;
+  margin: 4px 0;
+}
+
+/* `flow-root` so the heading bar's 4 does not collapse into the section's own
+   24 above it and leave the fields 4 higher than the loaded ones. */
+.is-skeleton .issue-planning {
+  display: flow-root;
+}
+
+.is-skeleton .panel-skeleton-label.is-heading {
+  width: 64px;
+  margin: 4px 0 16px;
+}
+
+.is-skeleton .panel-skeleton-hint {
+  width: 70%;
+  height: 8px;
+  margin: 4px 0 3.5px;
+}
+
+.is-skeleton .panel-skeleton-control {
+  width: 176px;
+  max-width: 100%;
+  height: 28px;
+  border-radius: 8px;
+}
+
+.is-skeleton .panel-skeleton-control.is-short {
+  width: 140px;
+}
+
+.is-skeleton .panel-skeleton-value {
+  width: 112px;
+  max-width: 100%;
+}
+
+.is-skeleton .panel-skeleton-value.is-short {
+  width: 84px;
+}
+
+.is-skeleton .panel-skeleton-value.is-field {
+  width: 56%;
+  margin: 14px 0 15px;
+}
+
+.is-skeleton .panel-skeleton-box {
+  width: 100%;
+  height: 124px;
+  border-radius: 9px;
+}
+
 .modal-layer {
   position: fixed;
   display: flex;
