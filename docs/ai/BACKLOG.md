@@ -2708,3 +2708,15 @@ is what recurs.
   31 px strip of backdrop. Smallest first step: render the real Close button
   in the skeleton and error headers (it does not need the issue) and focus it
   on mount; then the `Esc` handler and the trap.
+- **The comments read still retries once on a 403/404, and the contract gives
+  it and the links read only `default`** (2026-09-23, `api-contract-guard` on
+  TAS-242, non-blocking). `issueCommentsOptions` carries no `retry`, so it
+  takes the client's `retry: 1` where the four sibling reads use
+  `retryUnlessMissing`; TAS-242 kept it that way on purpose ("retry carried
+  exactly as each section had it"). Client fix: `retry: retryUnlessMissing` on
+  the comments factory. Contract side: `GET …/comments` (openapi.yml:1256) and
+  `GET /issues/{i}/links` (:613) declare only `default`, while watchers and
+  labels list 403/404 — a candidate for TAS-206, which already edits the
+  comments operation; unpriced. Also: the comment above the links predicate
+  in `BoardScreen.tsx` justifies it with the empty-list NOT_FOUND that TAS-154
+  removed; reword it when that divergence entry closes.
