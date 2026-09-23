@@ -10,7 +10,17 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions,
+  queryOptions,
+  useInfiniteQuery,
+  useMutation,
+  usePrefetchInfiniteQuery,
+  usePrefetchQuery,
+  useQuery,
+  useQueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Users, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -127,6 +137,73 @@ const SEARCH_DEBOUNCE_MS = 200;
 // loaded page are worth listing before the number itself is the answer. The
 // counter states the whole total either way.
 const boardSearchPageSize = 50;
+
+/*
+ * The issue panel's five section reads, each written down once (TAS-242).
+ *
+ * The sections mount under the panel's `if (!issue)` guard, so while each one
+ * issued its own read, that read began only after the issue had answered — a
+ * second round for requests that need nothing but the two ids already in the
+ * URL. The panel now starts all five beside the issue read, and each section
+ * then observes the entry the panel started. That only holds while both sides
+ * ask with the same key, the same `queryFn` and the same `retry`, so neither
+ * side spells them out: both take them from here. The one thing a section adds
+ * is `retryOnMount`, which belongs to its observer rather than to the read —
+ * see `prefetched` in `IssuePanel`.
+ *
+ * `retry` is carried exactly as each section had it. The comments read never
+ * named one and still does not, so it keeps the client's default on both sides:
+ * `fetchQuery` substitutes `retry: false` only when the *merged* options have
+ * no `retry` at all, and the app's client sets one (src/main.tsx).
+ */
+function issueWatchersOptions(projectId: string, issueId: string) {
+  return queryOptions({
+    queryKey: ["issue-watchers", projectId, issueId],
+    queryFn: () => taskaApi.listIssueWatchers(projectId, issueId),
+    retry: retryUnlessMissing,
+  });
+}
+
+function issueLabelsOptions(projectId: string, issueId: string) {
+  return queryOptions({
+    queryKey: ["issue-labels", projectId, issueId],
+    queryFn: () => taskaApi.listIssueLabels(projectId, issueId),
+    retry: retryUnlessMissing,
+  });
+}
+
+function issueLinksOptions(projectId: string, issueId: string) {
+  return queryOptions({
+    queryKey: ["issue-links", projectId, issueId],
+    queryFn: () => taskaApi.listIssueLinks(projectId, issueId),
+    // Same predicate as every other board query. It matters more here than it
+    // looks: this gateway has already been seen answering an empty collection
+    // with NOT_FOUND (`GET /projects`, docs/ai/API-DIVERGENCE.md), and if the
+    // link routes share the habit, an issue with no links would spend a retry
+    // delay before showing a red error where a quiet line belongs.
+    retry: retryUnlessMissing,
+  });
+}
+
+function issueAttachmentsOptions(projectId: string, issueId: string) {
+  return queryOptions({
+    queryKey: ["issue-attachments", projectId, issueId],
+    queryFn: () => taskaApi.listAttachments(projectId, issueId),
+    retry: retryUnlessMissing,
+  });
+}
+
+function issueCommentsOptions(projectId: string, issueId: string) {
+  return infiniteQueryOptions({
+    queryKey: ["comments", projectId, issueId],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => taskaApi.listComments(projectId, issueId, { page: pageParam, pageSize: commentsPageSize }),
+    getNextPageParam: (lastPage, pages) => {
+      const loaded = pages.reduce((total, page) => total + page.items.length, 0);
+      return lastPage.items.length > 0 && loaded < (lastPage.totalCount ?? loaded) ? pages.length : undefined;
+    },
+  });
+}
 
 export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const { projectId = "", issueId } = useParams();
@@ -1135,6 +1212,82 @@ function ColumnSkeleton({ status }: { status: WorkflowStatus }) {
   );
 }
 
+/**
+ * The panel while its issue is on the way (TAS-242), in place of the line
+ * "Loading issue" it used to show. §5.6: shaped like what it stands in for.
+ * The head, the title, the status pill, the meta grid, the planning rows and
+ * the description sit where the panel will put them, because the
+ * containers are the panel's own classes, and only the values are bars.
+ *
+ * Every bar is a `.value-skeleton`, so the pulse is the one the board's
+ * pending counts already use, and so is its entry in the reduced-motion block
+ * — no second literal animation. Hidden from assistive technology: the panel
+ * says "Loading issue" in words beside it, and a stack of empty shapes has
+ * nothing to add to that.
+ */
+function IssuePanelSkeleton() {
+  const field = (
+    <div className="planning-field">
+      <span className="value-skeleton panel-skeleton-label" />
+      <span className="value-skeleton panel-skeleton-value is-field" />
+    </div>
+  );
+  // The two estimates carry their syntax hint under the box.
+  const estimate = (
+    <div className="planning-field">
+      <span className="value-skeleton panel-skeleton-label" />
+      <span className="value-skeleton panel-skeleton-value is-field" />
+      <span className="value-skeleton panel-skeleton-hint" />
+    </div>
+  );
+  return (
+    <>
+      <div aria-hidden="true" className="issue-panel-head is-skeleton">
+        <span className="value-skeleton panel-skeleton-chip" />
+        <span className="value-skeleton panel-skeleton-key" />
+        <span className="value-skeleton panel-skeleton-type" />
+      </div>
+      <div aria-hidden="true" className="issue-panel-body is-skeleton">
+        <div className="panel-skeleton-title">
+          <span className="value-skeleton panel-skeleton-line" />
+          <span className="value-skeleton panel-skeleton-line is-short" />
+        </div>
+        <div className="transition-row">
+          <span className="value-skeleton panel-skeleton-pill" />
+        </div>
+        <div className="meta-grid">
+          <span className="value-skeleton panel-skeleton-label" />
+          <span className="value-skeleton panel-skeleton-control" />
+          <span className="value-skeleton panel-skeleton-label" />
+          <span className="value-skeleton panel-skeleton-control is-short" />
+          <span className="value-skeleton panel-skeleton-label" />
+          <span className="value-skeleton panel-skeleton-value" />
+          <span className="value-skeleton panel-skeleton-label" />
+          <span className="value-skeleton panel-skeleton-value is-short" />
+        </div>
+        <div className="issue-planning">
+          <span className="value-skeleton panel-skeleton-label is-heading" />
+          <div className="planning-grid">
+            <div className="planning-row is-three">
+              {field}
+              {estimate}
+              {estimate}
+            </div>
+            <div className="planning-row">
+              {field}
+              {field}
+            </div>
+          </div>
+        </div>
+        <div className="description-field">
+          <span className="value-skeleton panel-skeleton-label" />
+          <span className="value-skeleton panel-skeleton-box" />
+        </div>
+      </div>
+    </>
+  );
+}
+
 function IssuePanel({
   projectId,
   issueId,
@@ -1199,6 +1352,47 @@ function IssuePanel({
     queryKey: ["issue", projectId, issueId],
     queryFn: () => taskaApi.getIssue(projectId, issueId),
   });
+  /**
+   * Which of the five reads below this panel is about to start, fixed at its
+   * first render, before they run. `usePrefetchQuery` asks only for an entry
+   * the cache does not hold yet, and a section whose read the panel started
+   * must not ask again when it mounts — including when that read *failed*.
+   * react-query re-asks an errored read for every observer that mounts on it
+   * (`retryOnMount`), so without this a section read that failed outright
+   * before the issue answered would go out twice — measured on this story's
+   * first draft: two watcher reads where every other section sent one.
+   *
+   * An entry that was already cached is left to its section exactly as before
+   * this story, which is how a reopened panel still asks again for a read that
+   * failed the last time.
+   *
+   * Fixed once per panel, which is once per issue only because the board
+   * remounts the panel on every `issueId` (`key={issueId}` where it is drawn).
+   */
+  const [prefetched] = useState(() => {
+    const uncached = (queryKey: QueryKey) => queryClient.getQueryState(queryKey) === undefined;
+    return {
+      watchers: uncached(issueWatchersOptions(projectId, issueId).queryKey),
+      labels: uncached(issueLabelsOptions(projectId, issueId).queryKey),
+      links: uncached(issueLinksOptions(projectId, issueId).queryKey),
+      attachments: uncached(issueAttachmentsOptions(projectId, issueId).queryKey),
+      comments: uncached(issueCommentsOptions(projectId, issueId).queryKey),
+    };
+  });
+  // The five sections' reads, started here beside the issue read rather than
+  // when the sections mount under the `if (!issue)` guard below: they need only
+  // the two ids, and waiting for the issue cost the panel a second round
+  // (TAS-242). Each call does nothing once its entry exists, so a section that
+  // mounts later finds its answer — or its request still in flight — and asks
+  // nothing of its own. Only the cache is filled: nothing in this component
+  // reads these entries, so a section's failure stays in that section and never
+  // reaches the issue read, the other four, or the panel's error line below.
+  usePrefetchQuery(issueWatchersOptions(projectId, issueId));
+  usePrefetchQuery(issueLabelsOptions(projectId, issueId));
+  usePrefetchQuery(issueLinksOptions(projectId, issueId));
+  usePrefetchQuery(issueAttachmentsOptions(projectId, issueId));
+  usePrefetchInfiniteQuery(issueCommentsOptions(projectId, issueId));
+  const loadingLabelId = useId();
   const issue = issueQuery.data?.issue;
   const history = issueQuery.data?.history ?? [];
   const [summary, setSummary] = useState("");
@@ -1366,13 +1560,33 @@ function IssuePanel({
   });
 
   if (!issue) {
+    const loading = !issueQuery.isError;
     return (
       <div className="panel-layer">
         <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" type="button" />
-        <aside className="issue-panel">
-          <div className={`panel-loading ${issueQuery.isError ? "form-error" : ""}`}>
-            {issueQuery.isError ? issueQuery.error.message : "Loading issue"}
-          </div>
+        {/* One `aside` for loading, failure and the loaded panel below, at the
+            same place in the tree, so React keeps the element and `tk-slide`
+            runs once rather than again when the issue lands.
+
+            While loading, the words are for a screen reader only and the eye
+            gets the skeleton (§5.6) — the same split, and the same reason, as
+            the admin area's pending screen: `aria-busy` alone announces
+            nothing. */}
+        <aside
+          aria-busy={loading || undefined}
+          aria-labelledby={loading ? loadingLabelId : undefined}
+          className="issue-panel"
+        >
+          {loading ? (
+            <>
+              <p className="visually-hidden" id={loadingLabelId} role="status">
+                Loading issue
+              </p>
+              <IssuePanelSkeleton />
+            </>
+          ) : (
+            <div className="panel-loading form-error">{issueQuery.error.message}</div>
+          )}
         </aside>
       </div>
     );
@@ -1845,11 +2059,12 @@ function IssuePanel({
             isProjectAdmin={isProjectAdmin}
             canWatch={canWatch}
             isProjectViewer={isProjectViewer}
+            prefetched={prefetched.watchers}
           />
 
-          <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
+          <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} prefetched={prefetched.labels} />
 
-          <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
+          <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} prefetched={prefetched.links} />
 
           <IssueAttachmentsSection
             projectId={projectId}
@@ -1858,6 +2073,7 @@ function IssuePanel({
             isProjectAdmin={isProjectAdmin}
             currentUserId={currentUserId}
             userById={userById}
+            prefetched={prefetched.attachments}
           />
 
           <CommentsSection
@@ -1866,6 +2082,7 @@ function IssuePanel({
             canComment={canEdit}
             currentUserId={currentUserId}
             userById={userById}
+            prefetched={prefetched.comments}
           />
 
           <section className="activity">
@@ -1971,9 +2188,16 @@ function IssueWatchersSection({
   isProjectAdmin,
   canWatch,
   isProjectViewer,
+  prefetched,
 }: {
   projectId: string;
   issueId: string;
+  /**
+   * The panel started this section's read before the section mounted, so
+   * whatever that read answered — a failure too — is not asked again on mount.
+   * See `prefetched` in `IssuePanel`; the four sections below take the same flag.
+   */
+  prefetched: boolean;
   /** `undefined` until `GET /users/me` answers. Until then nothing may claim who is watching. */
   currentUserId?: string;
   members: ProjectMember[];
@@ -2031,12 +2255,10 @@ function IssueWatchersSection({
    */
   const focusAfterRemoval = useRef<string | null>(null);
 
-  const watchersKey = useMemo(() => ["issue-watchers", projectId, issueId], [projectId, issueId]);
-  const watchersQuery = useQuery({
-    queryKey: watchersKey,
-    queryFn: () => taskaApi.listIssueWatchers(projectId, issueId),
-    retry: retryUnlessMissing,
-  });
+  // The panel has usually started this read already (`issueWatchersOptions`).
+  const watchersRead = issueWatchersOptions(projectId, issueId);
+  const watchersKey = watchersRead.queryKey;
+  const watchersQuery = useQuery({ ...watchersRead, retryOnMount: !prefetched });
 
   const answer = watchersQuery.data;
   const watchers = useMemo(() => answer?.watchers ?? [], [answer]);
@@ -2792,20 +3014,21 @@ function IssueLabelsSection({
   projectId,
   issueId,
   canEdit,
+  prefetched,
 }: {
   projectId: string;
   issueId: string;
   canEdit: boolean;
+  /** See the watchers section's prop of the same name. */
+  prefetched: boolean;
 }) {
   const queryClient = useQueryClient();
   const [picked, setPicked] = useState("");
 
-  const labelsKey = ["issue-labels", projectId, issueId];
-  const labelsQuery = useQuery({
-    queryKey: labelsKey,
-    queryFn: () => taskaApi.listIssueLabels(projectId, issueId),
-    retry: retryUnlessMissing,
-  });
+  // The panel has usually started this read already (`issueLabelsOptions`).
+  const labelsRead = issueLabelsOptions(projectId, issueId);
+  const labelsKey = labelsRead.queryKey;
+  const labelsQuery = useQuery({ ...labelsRead, retryOnMount: !prefetched });
   // Same key the board and the manage modal use, so all three share one read.
   const projectLabelsQuery = useQuery({
     queryKey: ["project-labels", projectId],
@@ -2984,10 +3207,13 @@ function IssueLinksSection({
   projectId,
   issueId,
   canEdit,
+  prefetched,
 }: {
   projectId: string;
   issueId: string;
   canEdit: boolean;
+  /** See the watchers section's prop of the same name. */
+  prefetched: boolean;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -3013,17 +3239,11 @@ function IssueLinksSection({
   });
   const issues = useMemo(() => projectIssuesQuery.data?.items ?? [], [projectIssuesQuery.data]);
 
-  const linksKey = ["issue-links", projectId, issueId];
-  const linksQuery = useQuery({
-    queryKey: linksKey,
-    queryFn: () => taskaApi.listIssueLinks(projectId, issueId),
-    // Same predicate as every other board query. It matters more here than it
-    // looks: this gateway has already been seen answering an empty collection
-    // with NOT_FOUND (`GET /projects`, docs/ai/API-DIVERGENCE.md), and if the
-    // link routes share the habit, an issue with no links would spend a retry
-    // delay before showing a red error where a quiet line belongs.
-    retry: retryUnlessMissing,
-  });
+  // The panel has usually started this read already (`issueLinksOptions`,
+  // which also says why it retries the way it does).
+  const linksRead = issueLinksOptions(projectId, issueId);
+  const linksKey = linksRead.queryKey;
+  const linksQuery = useQuery({ ...linksRead, retryOnMount: !prefetched });
   const links = useMemo(() => linksQuery.data ?? [], [linksQuery.data]);
 
   // Both ends of a link change when one is written, and the user can walk
@@ -3300,6 +3520,7 @@ function IssueAttachmentsSection({
   isProjectAdmin,
   currentUserId,
   userById,
+  prefetched,
 }: {
   projectId: string;
   issueId: string;
@@ -3307,6 +3528,8 @@ function IssueAttachmentsSection({
   isProjectAdmin: boolean;
   currentUserId?: string;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  /** See the watchers section's prop of the same name. */
+  prefetched: boolean;
 }) {
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -3320,12 +3543,10 @@ function IssueAttachmentsSection({
    */
   const [blockedDownload, setBlockedDownload] = useState<{ id: string; url: string } | null>(null);
 
-  const attachmentsKey = useMemo(() => ["issue-attachments", projectId, issueId], [projectId, issueId]);
-  const attachmentsQuery = useQuery({
-    queryKey: attachmentsKey,
-    queryFn: () => taskaApi.listAttachments(projectId, issueId),
-    retry: retryUnlessMissing,
-  });
+  // The panel has usually started this read already (`issueAttachmentsOptions`).
+  const attachmentsRead = issueAttachmentsOptions(projectId, issueId);
+  const attachmentsKey = attachmentsRead.queryKey;
+  const attachmentsQuery = useQuery({ ...attachmentsRead, retryOnMount: !prefetched });
   const attachments = useMemo(() => attachmentsQuery.data ?? [], [attachmentsQuery.data]);
 
   /**
@@ -3748,31 +3969,28 @@ function CommentsSection({
   canComment,
   currentUserId,
   userById,
+  prefetched,
 }: {
   projectId: string;
   issueId: string;
   canComment: boolean;
   currentUserId?: string;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  /** See the watchers section's prop of the same name. */
+  prefetched: boolean;
 }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const commentsQuery = useInfiniteQuery({
-    queryKey: ["comments", projectId, issueId],
-    initialPageParam: 0,
-    queryFn: ({ pageParam }) => taskaApi.listComments(projectId, issueId, { page: pageParam, pageSize: commentsPageSize }),
-    getNextPageParam: (lastPage, pages) => {
-      const loaded = pages.reduce((total, page) => total + page.items.length, 0);
-      return lastPage.items.length > 0 && loaded < (lastPage.totalCount ?? loaded) ? pages.length : undefined;
-    },
-  });
+  // The panel has usually started this read already (`issueCommentsOptions`).
+  const commentsRead = issueCommentsOptions(projectId, issueId);
+  const commentsQuery = useInfiniteQuery({ ...commentsRead, retryOnMount: !prefetched });
 
   // Comment mutations also append to the issue history, so the activity feed has to refetch.
   const refresh = () =>
     Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["comments", projectId, issueId] }),
+      queryClient.invalidateQueries({ queryKey: commentsRead.queryKey }),
       queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }),
     ]);
 

@@ -2681,3 +2681,42 @@ is what recurs.
   but TAS-237 made this the first message on that screen carrying a value the
   reader has to act on, and at 320 with a soft keyboard up it is the first
   thing off-screen. A JSX reorder, no CSS.
+- **`RestTaskaApi.listProjects` still turns every 404 into "no projects"**
+  (2026-09-23, TAS-210 loading analysis). The empty-list `NOT_FOUND` it was
+  written for is gone on `develop` since TAS-154 (see `API-DIVERGENCE.md`,
+  read, not probed), so the catch now only hides real 404s. The one that
+  matters next is the "No static resource" 404 of an undeployed route: any
+  switch onto a new read under TAS-202 would render as an empty projects
+  screen instead of an error. Delete the catch, or narrow it to the error code,
+  before that switch.
+- **Mock mode: reloading on an issue deep link leaves the panel loading
+  forever** (2026-09-23, found by `art-director` during TAS-242, reproduced
+  by the orchestrator on `main` 3db144f and on the branch — identical, so not
+  introduced there). The mock seed regenerates issue ids on every page load
+  (TAS-102 was `2e4450e9…` in one load and `21417ba1…` in the next; the
+  project id is stable), so the URL names an issue that no longer exists.
+  `MockTaskaStore.findIssue` throws `NOT_FOUND`, yet the panel never leaves
+  its loading state — no error line after 6 s. Cause not traced. Worth
+  tracing because the same path may hang on the gateway for a deleted issue
+  opened from a stale link or notification.
+- **The issue panel has no `Esc`, no focus trap, and no Close while loading
+  or failed** (2026-09-23, `art-director` on TAS-242, non-blocking,
+  pre-existing on `main`). DESIGN.md §4.10 says close by scrim, Close or `Esc`,
+  focus into the panel and back to the opener on close. A grep of `src` finds
+  no close handler on `Esc` in any panel state; during loading a real `Esc`
+  left the panel open with focus on `body`, and at 390 the only exit is a
+  31 px strip of backdrop. Smallest first step: render the real Close button
+  in the skeleton and error headers (it does not need the issue) and focus it
+  on mount; then the `Esc` handler and the trap.
+- **The comments read still retries once on a 403/404, and the contract gives
+  it and the links read only `default`** (2026-09-23, `api-contract-guard` on
+  TAS-242, non-blocking). `issueCommentsOptions` carries no `retry`, so it
+  takes the client's `retry: 1` where the four sibling reads use
+  `retryUnlessMissing`; TAS-242 kept it that way on purpose ("retry carried
+  exactly as each section had it"). Client fix: `retry: retryUnlessMissing` on
+  the comments factory. Contract side: `GET …/comments` (openapi.yml:1256) and
+  `GET /issues/{i}/links` (:613) declare only `default`, while watchers and
+  labels list 403/404 — a candidate for TAS-206, which already edits the
+  comments operation; unpriced. Also: the comment above the links predicate
+  in `BoardScreen.tsx` justifies it with the empty-list NOT_FOUND that TAS-154
+  removed; reword it when that divergence entry closes.

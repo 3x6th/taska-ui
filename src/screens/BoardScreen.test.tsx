@@ -64,12 +64,20 @@ const {
   seedWatchers,
   failWatchersRead,
   holdWatchersRead,
+  failLabelsRead,
+  failLinksRead,
+  failCommentsRead,
   failWatcherWrite,
   holdWatcherWrites,
   releaseWatcherWrites,
   watcherCalls,
   setUnwatchAnswer,
   watchedUserIds,
+  holdIssue,
+  releaseIssue,
+  heldIssueCount,
+  failIssue,
+  sectionReads,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -229,6 +237,25 @@ const {
     watcherWritesHeld: boolean;
     watcherWriteReleases: (() => void)[];
     watcherCalls: { watch: number; unwatch: number; add: string[]; remove: string[] };
+    /**
+     * The panel's own issue read (`getIssue`), held open or failing. TAS-242 is
+     * entirely about the window before it answers, and against a fake that
+     * answers on the next tick that window is not something a test can stand in.
+     */
+    issueHeld: boolean;
+    issueReleases: (() => void)[];
+    issueFailure?: Error;
+    /**
+     * The three sections with no state of their own to fail through
+     * (`attachmentsFailure` already exists above for the attachments section's
+     * write tests, and the watchers section has `watchersFailure`). These back
+     * only "keeps a section read that failed first…" below.
+     */
+    labelsFailure?: Error;
+    linksFailure?: Error;
+    commentsFailure?: Error;
+    /** Every read the panel's five sections sent, answered or not, so one request can be told from two. */
+    sectionReads: { watchers: number; labels: number; links: number; attachments: number; comments: number };
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -268,6 +295,9 @@ const {
     watcherWritesHeld: false,
     watcherWriteReleases: [],
     watcherCalls: { watch: 0, unwatch: 0, add: [], remove: [] },
+    issueHeld: false,
+    issueReleases: [],
+    sectionReads: { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0 },
   };
 
   /** The held half of an issue update — same shape as the watcher writes below. */
@@ -424,39 +454,51 @@ const {
     },
     // The panel's own reads. Empty answers throughout: this is scaffolding for
     // the label picker inside it, not a second set of claims about the panel.
-    getIssue: async (projectId: string, issueId: string) => ({
-      issue: {
-        id: issueId,
-        projectId,
-        issueNumber: 102,
-        issueKey: "TAS-102",
-        issueType: "TASK" as const,
-        summary: "Wire the board to the gateway",
-        description: "",
-        status: "TODO" as const,
-        priority: "MEDIUM" as const,
-        assigneeId: state.assigneeId,
-        reporterId: "user-anna",
-        createdAt: now,
-        updatedAt: now,
-        version: 1,
-        deletedAt: null,
-        labels: [],
-        // Four of the five set and the fifth `null`, which is what the panel's
-        // Planning block is read on: `480` has to come back as a duration,
-        // a date has to come back as the day it is, and the empty one has to
-        // come back empty rather than as a nought.
-        storyPoints: 3,
-        startDate: "2026-06-15",
-        dueDate: "2026-06-26",
-        originalEstimateMinutes: 480,
-        remainingEstimateMinutes: null,
-        ...(state.edits[issueId] ?? {}),
-      },
-      history: [],
-    }),
-    listIssueLabels: async () => [],
-    listIssueLinks: async () => [],
+    getIssue: async (projectId: string, issueId: string) => {
+      if (state.issueHeld) await new Promise<void>((resolve) => state.issueReleases.push(resolve));
+      if (state.issueFailure) throw state.issueFailure;
+      return {
+        issue: {
+          id: issueId,
+          projectId,
+          issueNumber: 102,
+          issueKey: "TAS-102",
+          issueType: "TASK" as const,
+          summary: "Wire the board to the gateway",
+          description: "",
+          status: "TODO" as const,
+          priority: "MEDIUM" as const,
+          assigneeId: state.assigneeId,
+          reporterId: "user-anna",
+          createdAt: now,
+          updatedAt: now,
+          version: 1,
+          deletedAt: null,
+          labels: [],
+          // Four of the five set and the fifth `null`, which is what the panel's
+          // Planning block is read on: `480` has to come back as a duration,
+          // a date has to come back as the day it is, and the empty one has to
+          // come back empty rather than as a nought.
+          storyPoints: 3,
+          startDate: "2026-06-15",
+          dueDate: "2026-06-26",
+          originalEstimateMinutes: 480,
+          remainingEstimateMinutes: null,
+          ...(state.edits[issueId] ?? {}),
+        },
+        history: [],
+      };
+    },
+    listIssueLabels: async () => {
+      state.sectionReads.labels += 1;
+      if (state.labelsFailure) throw state.labelsFailure;
+      return [];
+    },
+    listIssueLinks: async () => {
+      state.sectionReads.links += 1;
+      if (state.linksFailure) throw state.linksFailure;
+      return [];
+    },
     // Counted, and answered the way a server that took it would: the chips are
     // gated on who the server accepts, so what matters is what was *sent*.
     assignIssue: async (_projectId: string, _issueId: string, assigneeId: string | null) => {
@@ -470,6 +512,7 @@ const {
      * sends and what the section is required not to conflate.
      */
     listIssueWatchers: async () => {
+      state.sectionReads.watchers += 1;
       // A re-read that never lands, so a test can read what a write left in
       // the cache rather than the refetch that would replace it.
       if (state.watchersHeld) return new Promise(() => {});
@@ -523,6 +566,7 @@ const {
     // The attachments section's five reachable calls. `putAttachmentBytes`
     // takes a Blob and answers nothing, exactly as the real middle leg does.
     listAttachments: async () => {
+      state.sectionReads.attachments += 1;
       // A re-read that never lands. `onSettled` invalidates this list after
       // every delete, so a refetch would put a rolled-back row on screen by
       // itself — and a test that let it would pass with the rollback deleted.
@@ -570,7 +614,11 @@ const {
       if (state.deleteFailure) throw state.deleteFailure;
       state.deleted_attachments.push(attachmentId);
     },
-    listComments: async () => ({ items: [], page: 0, pageSize: 50, totalCount: 0 }),
+    listComments: async () => {
+      state.sectionReads.comments += 1;
+      if (state.commentsFailure) throw state.commentsFailure;
+      return { items: [], page: 0, pageSize: 50, totalCount: 0 };
+    },
   };
 
   return {
@@ -654,11 +702,22 @@ const {
       state.watchersTotal = totalCount;
       state.watchersCountAfterWrite = countAfterWrite;
     },
-    failWatchersRead: (error: Error) => {
+    /** `undefined` lets the read succeed again, for a test that reopens the panel. */
+    failWatchersRead: (error: Error | undefined) => {
       state.watchersFailure = error;
     },
     holdWatchersRead: (held: boolean) => {
       state.watchersHeld = held;
+    },
+    /** The other two sections with no read state of their own — see the type above. */
+    failLabelsRead: (error: Error | undefined) => {
+      state.labelsFailure = error;
+    },
+    failLinksRead: (error: Error | undefined) => {
+      state.linksFailure = error;
+    },
+    failCommentsRead: (error: Error | undefined) => {
+      state.commentsFailure = error;
     },
     failWatcherWrite: (error: Error) => {
       state.watcherWriteFailure = error;
@@ -720,6 +779,21 @@ const {
     },
     heldIssueByIdCount: () => state.issueByIdReleases.length,
     answeredIssueByIds: () => state.issueByIdAnswered,
+    /** The panel's issue read held open from here on. */
+    holdIssue: (held: boolean) => {
+      state.issueHeld = held;
+    },
+    /** Lets every held issue read continue; each then answers, or throws `failIssue`'s error. */
+    releaseIssue: () => {
+      const waiting = state.issueReleases;
+      state.issueReleases = [];
+      waiting.forEach((resolve) => resolve());
+    },
+    heldIssueCount: () => state.issueReleases.length,
+    failIssue: (error: Error) => {
+      state.issueFailure = error;
+    },
+    sectionReads: () => ({ ...state.sectionReads }),
     reset: () => {
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
@@ -772,6 +846,13 @@ const {
       state.watcherWritesHeld = false;
       state.watcherWriteReleases = [];
       state.watcherCalls = { watch: 0, unwatch: 0, add: [], remove: [] };
+      state.issueHeld = false;
+      state.issueReleases = [];
+      state.issueFailure = undefined;
+      state.labelsFailure = undefined;
+      state.linksFailure = undefined;
+      state.commentsFailure = undefined;
+      state.sectionReads = { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0 };
     },
   };
 });
@@ -2888,5 +2969,199 @@ describe("issue watchers", () => {
     // characters one at a time to hear it (§5.8's own abbreviation).
     expect(await panel.findByRole("button", { name: "Remove watcher fdf35fa6" })).toBeVisible();
     expect(panel.queryByRole("button", { name: `Remove watcher ${unnamed}` })).toBeNull();
+  });
+});
+
+/**
+ * TAS-242. The five sections mount under the panel's `if (!issue)` guard, and
+ * while each issued its own read, that read waited for the issue: two rounds
+ * for six requests that all need only the ids in the URL. The panel now starts
+ * the five beside the issue read, and these tests hold the issue open to stand
+ * in the window where that difference lives.
+ */
+describe("the issue panel before its issue has answered", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const once = { watchers: 1, labels: 1, links: 1, attachments: 1, comments: 1 };
+  const sectionLoadingLine = /^Loading (watchers|labels|links|attachments|comments)$/;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("has already asked for all five sections, and each section then asks nothing of its own", async () => {
+    holdIssue(true);
+    renderBoard(ISSUE_PATH);
+
+    // The issue has been asked and has not answered — and every section read
+    // is already out. Before TAS-242 this read all zeroes.
+    await waitFor(() => expect(heldIssueCount()).toBe(1));
+    expect(sectionReads()).toEqual(once);
+
+    releaseIssue();
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    // The sections are mounted now, and found their answers already in hand.
+    expect(await within(panel).findByText("No comments yet")).toBeVisible();
+    expect(within(panel).getByText("No one is watching this issue yet")).toBeVisible();
+    expect(within(panel).queryByText(sectionLoadingLine)).toBeNull();
+    expect(sectionReads()).toEqual(once);
+  });
+
+  it("joins a section read still in flight rather than sending a second", async () => {
+    // The other order: the issue lands first, while a section's read is still
+    // out, so the section mounts onto a request rather than onto an answer.
+    holdWatchersRead(true);
+    holdIssue(true);
+    renderBoard(ISSUE_PATH);
+    await waitFor(() => expect(heldIssueCount()).toBe(1));
+
+    releaseIssue();
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(panel).findByText("No comments yet")).toBeVisible();
+    // The line §4.21 gives a read in flight, not a second request behind it.
+    expect(within(panel).getByText("Loading watchers")).toBeVisible();
+    expect(sectionReads()).toEqual(once);
+  });
+
+  it("draws the panel's skeleton in place of a line of text, and says it is loading in words", async () => {
+    holdIssue(true);
+    renderBoard(ISSUE_PATH);
+
+    const pending = await screen.findByRole("complementary", { name: "Loading issue" });
+    expect(pending).toHaveAttribute("aria-busy", "true");
+    // The words are for a screen reader; the eye gets the skeleton.
+    const status = within(pending).getByRole("status");
+    expect(status).toHaveTextContent("Loading issue");
+    expect(status).toHaveClass("visually-hidden");
+    // The old line — plain text as the panel's only content — is gone.
+    expect(document.querySelector(".panel-loading")).toBeNull();
+    // Shaped like the panel: a head and a body, hidden from assistive
+    // technology, drawn from the pending-value bars §5.6's pulse lives on.
+    const shapes = pending.querySelectorAll(".is-skeleton");
+    expect(shapes).toHaveLength(2);
+    shapes.forEach((shape) => expect(shape).toHaveAttribute("aria-hidden", "true"));
+    expect(pending.querySelector(".issue-panel-head.is-skeleton .value-skeleton")).not.toBeNull();
+    expect(pending.querySelector(".issue-panel-body.is-skeleton .meta-grid .value-skeleton")).not.toBeNull();
+
+    releaseIssue();
+    const loaded = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    // The same element, not a new one: the panel slides in once (§4.10), not
+    // again when its issue lands.
+    expect(loaded).toBe(pending);
+    expect(loaded).not.toHaveAttribute("aria-busy");
+    expect(loaded.querySelector(".is-skeleton")).toBeNull();
+  });
+
+  it("still states a failed issue read as it did, with no skeleton left standing", async () => {
+    failIssue(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND" }));
+    renderBoard(ISSUE_PATH);
+
+    const message = await screen.findByText("Issue not found");
+    expect(message).toHaveClass("panel-loading", "form-error");
+    const panel = message.closest("aside");
+    expect(panel).not.toHaveAttribute("aria-busy");
+    expect(panel?.querySelector(".is-skeleton")).toBeNull();
+    expect(screen.queryByRole("status", { name: "Loading issue" })).toBeNull();
+  });
+
+  /**
+   * One case per section (TAS-242 follow-up): a mutation that dropped
+   * `retryOnMount: !prefetched` from a single section — comments, the panel's
+   * only `useInfiniteQuery` — left every one of this describe block's other
+   * tests green, because only the watchers case exercised a section read
+   * failing before the issue does. Each row's `otherEmptyTexts` is the other
+   * four sections' own empty state, so a case fails both when its own section
+   * stops keeping the failure in its section *and* when a neighbour's answer
+   * gets swallowed by it.
+   */
+  const failedFirstCases: {
+    name: "watchers" | "labels" | "links" | "attachments" | "comments";
+    queryKey: readonly unknown[];
+    fail: (error: Error) => void;
+    errorText: string;
+    otherEmptyTexts: string[];
+  }[] = [
+    {
+      name: "watchers",
+      queryKey: ["issue-watchers", PROJECT_ID, "issue-1"],
+      fail: failWatchersRead,
+      errorText: "Watchers are unavailable",
+      otherEmptyTexts: ["No comments yet", "No labels yet", "No links yet", "No attachments yet"],
+    },
+    {
+      name: "labels",
+      queryKey: ["issue-labels", PROJECT_ID, "issue-1"],
+      fail: failLabelsRead,
+      errorText: "Labels are unavailable",
+      otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No links yet", "No attachments yet"],
+    },
+    {
+      name: "links",
+      queryKey: ["issue-links", PROJECT_ID, "issue-1"],
+      fail: failLinksRead,
+      errorText: "Links are unavailable",
+      otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No labels yet", "No attachments yet"],
+    },
+    {
+      name: "attachments",
+      queryKey: ["issue-attachments", PROJECT_ID, "issue-1"],
+      fail: failAttachmentsRead,
+      errorText: "Attachments are unavailable",
+      otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No labels yet", "No links yet"],
+    },
+    {
+      name: "comments",
+      // The infinite query's own key (`issueCommentsOptions`) — "comments",
+      // not "issue-comments" — is the one place this section does not follow
+      // the other four's naming.
+      queryKey: ["comments", PROJECT_ID, "issue-1"],
+      fail: failCommentsRead,
+      errorText: "Comments are unavailable",
+      otherEmptyTexts: ["No one is watching this issue yet", "No labels yet", "No links yet", "No attachments yet"],
+    },
+  ];
+
+  it.each(failedFirstCases)(
+    "keeps a section read that failed first inside its $name section, and does not send it twice",
+    async ({ queryKey, fail, errorText, otherEmptyTexts }) => {
+      holdIssue(true);
+      fail(Object.assign(new Error(errorText), { status: 404, code: "NOT_FOUND" }));
+      const queryClient = renderBoard(ISSUE_PATH);
+
+      // The section's answer is in — a failure — while the panel is still waiting
+      // on the issue. The panel keeps waiting: it is not the panel's failure.
+      await waitFor(() => expect(queryClient.getQueryState(queryKey)?.status).toBe("error"));
+      expect(screen.getByRole("complementary", { name: "Loading issue" })).toHaveAttribute("aria-busy", "true");
+      expect(document.querySelector(".panel-loading")).toBeNull();
+
+      releaseIssue();
+      const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+      expect(await within(panel).findByText(errorText)).toBeVisible();
+      // The other four drew their own answers, and the panel has no error line.
+      otherEmptyTexts.forEach((text) => expect(within(panel).getByText(text)).toBeVisible());
+      expect(panel.querySelector(".panel-loading")).toBeNull();
+      // react-query re-asks an errored read for every observer that mounts on
+      // it; the panel's own ask was the one this section was owed.
+      expect(sectionReads()).toEqual(once);
+    },
+  );
+
+  it("asks again for a read that failed last time when the panel is reopened", async () => {
+    failWatchersRead(Object.assign(new Error("Watchers are unavailable"), { status: 404, code: "NOT_FOUND" }));
+    renderBoard(ISSUE_PATH);
+    const first = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(first).findByText("Watchers are unavailable")).toBeVisible();
+
+    fireEvent.click(within(first).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "TAS-102 issue" })).toBeNull());
+
+    // The server recovers; reopening is how a reader asks again, and the
+    // cached failure must not stand in for the answer.
+    failWatchersRead(undefined);
+    fireEvent.click(await screen.findByRole("button", { name: /TAS-102/ }));
+    const second = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(second).findByText("No one is watching this issue yet")).toBeVisible();
+    expect(within(second).queryByText("Watchers are unavailable")).toBeNull();
+    expect(sectionReads().watchers).toBe(2);
   });
 });

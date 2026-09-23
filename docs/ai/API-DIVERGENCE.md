@@ -214,6 +214,15 @@ is cheaper than splitting an entry and the reader has to be told which.
   TAS-141 which closed without it; [TAS-211](https://jira.ozero.dev/browse/TAS-211)
   restates it for the enriched list. Until then
   the catch should at least be narrowed to the specific error `code`.
+- **Read again 2026-09-23, not probed:** on `develop` `caf81ee` the path no
+  longer produces `NOT_FOUND`. TAS-154 (`0cde8b0`) removed the `switchIfEmpty`,
+  and `ProjectServiceImpl.listMyProjects` now streams the repository result
+  straight through. A probe needs an account that owns no projects, so this is
+  a reading, not a measurement. If it holds, the catch no longer compensates for
+  anything and only hides real 404s — including the "No static resource" 404 of
+  a route that is not deployed yet, which is exactly what a switch to a new read
+  under TAS-202 would meet first. TAS-211 no longer restates the clause: the
+  2026-09-23 rewrite keeps `GET /projects` as it is.
 
 ### Closed by TAS-147: `globalRole` is on the wire, with both values seen
 
