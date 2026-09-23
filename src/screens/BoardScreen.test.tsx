@@ -64,6 +64,9 @@ const {
   seedWatchers,
   failWatchersRead,
   holdWatchersRead,
+  failLabelsRead,
+  failLinksRead,
+  failCommentsRead,
   failWatcherWrite,
   holdWatcherWrites,
   releaseWatcherWrites,
@@ -242,6 +245,15 @@ const {
     issueHeld: boolean;
     issueReleases: (() => void)[];
     issueFailure?: Error;
+    /**
+     * The three sections with no state of their own to fail through
+     * (`attachmentsFailure` already exists above for the attachments section's
+     * write tests, and the watchers section has `watchersFailure`). These back
+     * only "keeps a section read that failed first…" below.
+     */
+    labelsFailure?: Error;
+    linksFailure?: Error;
+    commentsFailure?: Error;
     /** Every read the panel's five sections sent, answered or not, so one request can be told from two. */
     sectionReads: { watchers: number; labels: number; links: number; attachments: number; comments: number };
   } = {
@@ -479,10 +491,12 @@ const {
     },
     listIssueLabels: async () => {
       state.sectionReads.labels += 1;
+      if (state.labelsFailure) throw state.labelsFailure;
       return [];
     },
     listIssueLinks: async () => {
       state.sectionReads.links += 1;
+      if (state.linksFailure) throw state.linksFailure;
       return [];
     },
     // Counted, and answered the way a server that took it would: the chips are
@@ -602,6 +616,7 @@ const {
     },
     listComments: async () => {
       state.sectionReads.comments += 1;
+      if (state.commentsFailure) throw state.commentsFailure;
       return { items: [], page: 0, pageSize: 50, totalCount: 0 };
     },
   };
@@ -693,6 +708,16 @@ const {
     },
     holdWatchersRead: (held: boolean) => {
       state.watchersHeld = held;
+    },
+    /** The other two sections with no read state of their own — see the type above. */
+    failLabelsRead: (error: Error | undefined) => {
+      state.labelsFailure = error;
+    },
+    failLinksRead: (error: Error | undefined) => {
+      state.linksFailure = error;
+    },
+    failCommentsRead: (error: Error | undefined) => {
+      state.commentsFailure = error;
     },
     failWatcherWrite: (error: Error) => {
       state.watcherWriteFailure = error;
@@ -824,6 +849,9 @@ const {
       state.issueHeld = false;
       state.issueReleases = [];
       state.issueFailure = undefined;
+      state.labelsFailure = undefined;
+      state.linksFailure = undefined;
+      state.commentsFailure = undefined;
       state.sectionReads = { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0 };
     },
   };
@@ -3036,30 +3064,87 @@ describe("the issue panel before its issue has answered", () => {
     expect(screen.queryByRole("status", { name: "Loading issue" })).toBeNull();
   });
 
-  it("keeps a section read that failed first inside its section, and does not send it twice", async () => {
-    holdIssue(true);
-    failWatchersRead(Object.assign(new Error("Watchers are unavailable"), { status: 404, code: "NOT_FOUND" }));
-    const queryClient = renderBoard(ISSUE_PATH);
+  /**
+   * One case per section (TAS-242 follow-up): a mutation that dropped
+   * `retryOnMount: !prefetched` from a single section — comments, the panel's
+   * only `useInfiniteQuery` — left every one of this describe block's other
+   * tests green, because only the watchers case exercised a section read
+   * failing before the issue does. Each row's `otherEmptyTexts` is the other
+   * four sections' own empty state, so a case fails both when its own section
+   * stops keeping the failure in its section *and* when a neighbour's answer
+   * gets swallowed by it.
+   */
+  const failedFirstCases: {
+    name: "watchers" | "labels" | "links" | "attachments" | "comments";
+    queryKey: readonly unknown[];
+    fail: (error: Error) => void;
+    errorText: string;
+    otherEmptyTexts: string[];
+  }[] = [
+    {
+      name: "watchers",
+      queryKey: ["issue-watchers", PROJECT_ID, "issue-1"],
+      fail: failWatchersRead,
+      errorText: "Watchers are unavailable",
+      otherEmptyTexts: ["No comments yet", "No labels yet", "No links yet", "No attachments yet"],
+    },
+    {
+      name: "labels",
+      queryKey: ["issue-labels", PROJECT_ID, "issue-1"],
+      fail: failLabelsRead,
+      errorText: "Labels are unavailable",
+      otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No links yet", "No attachments yet"],
+    },
+    {
+      name: "links",
+      queryKey: ["issue-links", PROJECT_ID, "issue-1"],
+      fail: failLinksRead,
+      errorText: "Links are unavailable",
+      otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No labels yet", "No attachments yet"],
+    },
+    {
+      name: "attachments",
+      queryKey: ["issue-attachments", PROJECT_ID, "issue-1"],
+      fail: failAttachmentsRead,
+      errorText: "Attachments are unavailable",
+      otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No labels yet", "No links yet"],
+    },
+    {
+      name: "comments",
+      // The infinite query's own key (`issueCommentsOptions`) — "comments",
+      // not "issue-comments" — is the one place this section does not follow
+      // the other four's naming.
+      queryKey: ["comments", PROJECT_ID, "issue-1"],
+      fail: failCommentsRead,
+      errorText: "Comments are unavailable",
+      otherEmptyTexts: ["No one is watching this issue yet", "No labels yet", "No links yet", "No attachments yet"],
+    },
+  ];
 
-    // The section's answer is in — a failure — while the panel is still waiting
-    // on the issue. The panel keeps waiting: it is not the panel's failure.
-    await waitFor(() => expect(queryClient.getQueryState(["issue-watchers", PROJECT_ID, "issue-1"])?.status).toBe("error"));
-    expect(screen.getByRole("complementary", { name: "Loading issue" })).toHaveAttribute("aria-busy", "true");
-    expect(document.querySelector(".panel-loading")).toBeNull();
+  it.each(failedFirstCases)(
+    "keeps a section read that failed first inside its $name section, and does not send it twice",
+    async ({ queryKey, fail, errorText, otherEmptyTexts }) => {
+      holdIssue(true);
+      fail(Object.assign(new Error(errorText), { status: 404, code: "NOT_FOUND" }));
+      const queryClient = renderBoard(ISSUE_PATH);
 
-    releaseIssue();
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
-    expect(await within(panel).findByText("Watchers are unavailable")).toBeVisible();
-    // The other four drew their own answers, and the panel has no error line.
-    expect(within(panel).getByText("No comments yet")).toBeVisible();
-    expect(within(panel).getByText("No labels yet")).toBeVisible();
-    expect(within(panel).getByText("No links yet")).toBeVisible();
-    expect(within(panel).getByText("No attachments yet")).toBeVisible();
-    expect(panel.querySelector(".panel-loading")).toBeNull();
-    // react-query re-asks an errored read for every observer that mounts on
-    // it; the panel's own ask was the one this section was owed.
-    expect(sectionReads()).toEqual(once);
-  });
+      // The section's answer is in — a failure — while the panel is still waiting
+      // on the issue. The panel keeps waiting: it is not the panel's failure.
+      await waitFor(() => expect(queryClient.getQueryState(queryKey)?.status).toBe("error"));
+      expect(screen.getByRole("complementary", { name: "Loading issue" })).toHaveAttribute("aria-busy", "true");
+      expect(document.querySelector(".panel-loading")).toBeNull();
+
+      releaseIssue();
+      const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+      expect(await within(panel).findByText(errorText)).toBeVisible();
+      // The other four drew their own answers, and the panel has no error line.
+      otherEmptyTexts.forEach((text) => expect(within(panel).getByText(text)).toBeVisible());
+      expect(panel.querySelector(".panel-loading")).toBeNull();
+      // react-query re-asks an errored read for every observer that mounts on
+      // it; the panel's own ask was the one this section was owed.
+      expect(sectionReads()).toEqual(once);
+    },
+  );
 
   it("asks again for a read that failed last time when the panel is reopened", async () => {
     failWatchersRead(Object.assign(new Error("Watchers are unavailable"), { status: 404, code: "NOT_FOUND" }));

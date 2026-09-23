@@ -5731,9 +5731,14 @@ button.attachment-open:hover:not(:disabled) {
 }
 
 /* The loaded grid's shortest row is the reporter's 22 (its avatar); text bars
-   alone would collapse the rows to 9. */
+   alone would collapse the rows to 9. `minmax(0, 1fr)` on the value column
+   keeps it from growing past the panel to fit `.panel-skeleton-control`'s
+   176px — without it the column's intrinsic minimum wins over the bar's own
+   `max-width: 100%`, and the 320 panel overflows by 5px (298 vs 293
+   clientWidth) even though the loaded grid never does. */
 .is-skeleton .meta-grid {
   grid-auto-rows: minmax(22px, auto);
+  grid-template-columns: 88px minmax(0, 1fr);
 }
 
 /* A 9 bar with 4 either side fills the 17 line of the label it stands for. */
