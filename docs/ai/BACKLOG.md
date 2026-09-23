@@ -2699,3 +2699,12 @@ is what recurs.
   its loading state — no error line after 6 s. Cause not traced. Worth
   tracing because the same path may hang on the gateway for a deleted issue
   opened from a stale link or notification.
+- **The issue panel has no `Esc`, no focus trap, and no Close while loading
+  or failed** (2026-09-23, `art-director` on TAS-242, non-blocking,
+  pre-existing on `main`). DESIGN.md §4.10 says close by scrim, Close or `Esc`,
+  focus into the panel and back to the opener on close. A grep of `src` finds
+  no close handler on `Esc` in any panel state; during loading a real `Esc`
+  left the panel open with focus on `body`, and at 390 the only exit is a
+  31 px strip of backdrop. Smallest first step: render the real Close button
+  in the skeleton and error headers (it does not need the issue) and focus it
+  on mount; then the `Esc` handler and the trap.
