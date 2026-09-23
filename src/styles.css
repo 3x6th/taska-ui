@@ -5683,7 +5683,7 @@ button.attachment-open:hover:not(:disabled) {
    diverge from. This rule previously read `--surface-2`, which on the
    panel's `--surface` is a *recessed* fill, not a skeleton one: in dark that
    is 1.04:1 against the panel's #141418 (1.02:1 at the pulse's .35 low),
-   under §7's floor. Sizes are the loaded panel's, measured against it in
+   a step down, so no signal at all (§5.6). Sizes are the loaded panel's, measured against it in
    Chromium at 1440 and 390: 69 for the title block is the summary box's 62,
    less its -5 top margin, plus its 6 bottom margin and the 6.3 the line box
    adds under an inline `textarea`; 28 is the status pill and the chip rows;
