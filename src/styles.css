@@ -5675,9 +5675,15 @@ button.attachment-open:hover:not(:disabled) {
    `.planning-row`, `.description-field`), so each bar lands where the value
    it stands in for will, and moves with it if that layout ever changes.
 
-   `--surface-2` rather than the `--surface-3` of an inline `.value-skeleton`:
-   §5.6 names it for skeletons, and it is what the description box below
-   already is at rest. Sizes are the loaded panel's, measured against it in
+   No fill override here: the base `.value-skeleton` rule's `--surface-3`
+   applies, and stays right for this panel. §2.1's role table is explicit —
+   `--surface-3` is "hover on recessed planes; skeleton fill on `--surface`
+   (§5.6)" — and the panel's own plane is `--surface`, so its skeleton fill is
+   `--surface-3`, the same as the inline `.value-skeleton` this rule used to
+   diverge from. This rule previously read `--surface-2`, which on the
+   panel's `--surface` is a *recessed* fill, not a skeleton one: in dark that
+   is 1.04:1 against the panel's #141418 (1.02:1 at the pulse's .35 low),
+   under §7's floor. Sizes are the loaded panel's, measured against it in
    Chromium at 1440 and 390: 69 for the title block is the summary box's 62,
    less its -5 top margin, plus its 6 bottom margin and the 6.3 the line box
    adds under an inline `textarea`; 28 is the status pill and the chip rows;
@@ -5688,7 +5694,6 @@ button.attachment-open:hover:not(:disabled) {
   flex: none;
   height: 9px;
   border-radius: 4px;
-  background: var(--surface-2);
 }
 
 .is-skeleton .panel-skeleton-chip {
