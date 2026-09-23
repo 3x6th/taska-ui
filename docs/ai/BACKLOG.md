@@ -2681,3 +2681,11 @@ is what recurs.
   but TAS-237 made this the first message on that screen carrying a value the
   reader has to act on, and at 320 with a soft keyboard up it is the first
   thing off-screen. A JSX reorder, no CSS.
+- **`RestTaskaApi.listProjects` still turns every 404 into "no projects"**
+  (2026-09-23, TAS-210 loading analysis). The empty-list `NOT_FOUND` it was
+  written for is gone on `develop` since TAS-154 (see `API-DIVERGENCE.md`,
+  read, not probed), so the catch now only hides real 404s. The one that
+  matters next is the "No static resource" 404 of an undeployed route: any
+  switch onto a new read under TAS-202 would render as an empty projects
+  screen instead of an error. Delete the catch, or narrow it to the error code,
+  before that switch.
