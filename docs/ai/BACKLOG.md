@@ -2689,3 +2689,13 @@ is what recurs.
   switch onto a new read under TAS-202 would render as an empty projects
   screen instead of an error. Delete the catch, or narrow it to the error code,
   before that switch.
+- **Mock mode: reloading on an issue deep link leaves the panel loading
+  forever** (2026-09-23, found by `art-director` during TAS-242, reproduced
+  by the orchestrator on `main` 3db144f and on the branch — identical, so not
+  introduced there). The mock seed regenerates issue ids on every page load
+  (TAS-102 was `2e4450e9…` in one load and `21417ba1…` in the next; the
+  project id is stable), so the URL names an issue that no longer exists.
+  `MockTaskaStore.findIssue` throws `NOT_FOUND`, yet the panel never leaves
+  its loading state — no error line after 6 s. Cause not traced. Worth
+  tracing because the same path may hang on the gateway for a deleted issue
+  opened from a stale link or notification.
