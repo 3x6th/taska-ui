@@ -61,7 +61,7 @@ const { fakeApi, expireSession, signIn } = vi.hoisted(() => {
       transitions: [],
     }),
     listIssues: async () => ({ items: [], page: 0, pageSize: 100, totalCount: 0 }),
-    listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
+    listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
     listProjects: async () => [],
   };
 

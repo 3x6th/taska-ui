@@ -3890,23 +3890,16 @@ h1 {
   outline-offset: -2px;
 }
 
-/* A notification the gateway gave nothing to open — no link, no id in the body
-   (TAS-183). Pressing it still marks it read, so it stays a button and keeps
-   its hover and §4.1's focus ring — the ring is `.notification-item:focus-visible`
+/* A notification with nothing to open — not about an issue, about one that was
+   deleted, or older than the ids the gateway now sends (TAS-243; the rule is
+   `notificationRoute`). Pressing it still marks it read, so it stays a button
+   and keeps its hover and §4.1's focus ring — the ring is `.notification-item:focus-visible`
    up the file, added in TAS-185 because until then this sentence was describing
    the browser's default outline rather than anything this file had written.
    What goes is the pointer cursor, which is the part that promised a
    destination. */
 .notification-item.is-inert {
   cursor: default;
-}
-
-/* The one read between the press and the route. No spinner — this repository
-   keeps those for the case where there is genuinely nothing to show, and the
-   row is right there — so the cue is the row holding the state hover already
-   uses. Nothing moves, so `prefers-reduced-motion` has no opinion to have. */
-.notification-item[aria-busy="true"] {
-  background: var(--surface-2);
 }
 
 /* The panel's rows run edge to edge, and a banner that did the same would sit

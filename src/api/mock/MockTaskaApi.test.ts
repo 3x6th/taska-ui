@@ -1561,50 +1561,119 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * `getIssueById` is the one issue read a project id does not already narrow
-   * (TAS-183), so it is the one that has to ask about membership itself. Before
-   * TAS-183 nothing called it; now a notification does, in one click, which is
-   * what turns a permissive read into a reachable one.
+   * The inbox in the shape the gateway sends since TAS-243: the issue a
+   * notification is about is stated by id, and the unread total is the
+   * server's own count rather than a count of the page.
    */
-  describe("reading an issue by id alone", () => {
-    it("answers for an issue in a project the current user is a member of", async () => {
-      const [issue] = (await api.listIssues(project.id, {})).items;
-      const byId = await api.getIssueById(issue.id);
-
-      expect(byId.issue.id).toBe(issue.id);
-      // The whole point of the method: the project comes back with the answer,
-      // because the caller had no way to name it.
-      expect(byId.issue.projectId).toBe(project.id);
-    });
-
-    it("refuses an issue in a project the current user is not a member of", async () => {
-      // MOB is seeded with Mark, Tom and Priya and deliberately without Anna,
-      // who is the default user here and the e2e login.
-      await api.login({ email: "mark@example.com", password: "mock-accepts-anything" });
-      const mob = (await api.listProjects()).find((item) => item.projectKey === "MOB");
-      expect(mob, "the seed no longer has a project Anna is not in").toBeDefined();
-      const [mobIssue] = (await api.listIssues(mob!.id, {})).items;
-      expect(mobIssue).toBeDefined();
-
-      await api.login({ email: "anna@example.com", password: "mock-accepts-anything" });
-      await expect(api.listProjects()).resolves.not.toContainEqual(expect.objectContaining({ projectKey: "MOB" }));
-
-      // NOT_FOUND rather than PERMISSION_DENIED: DESIGN.md §4.18 does not let
-      // the refusal itself confirm that someone else's project exists.
-      await expect(api.getIssueById(mobIssue.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    });
-  });
-
   describe("notifications", () => {
-    it("marks every notification read and reports how many changed", async () => {
+    it("counts every unread notification, whatever the page was narrowed to", async () => {
+      const everything = await api.listNotifications({ pageSize: 100 });
+      const unread = everything.items.filter((item) => !item.readAt).length;
+      expect(unread, "the seed stopped holding more than one unread notification").toBeGreaterThan(1);
+      expect(everything.unreadCount).toBe(unread);
+
+      // A page of one, a page past the end, and the unread filter: the count
+      // is the inbox's, never the page's.
+      await expect(api.listNotifications({ pageSize: 1 })).resolves.toMatchObject({ unreadCount: unread });
+      await expect(api.listNotifications({ offset: 100 })).resolves.toMatchObject({ items: [], unreadCount: unread });
+      await expect(api.listNotifications({ unreadOnly: true, pageSize: 1 })).resolves.toMatchObject({
+        unreadCount: unread,
+      });
+    });
+
+    it("moves the count when one is marked read, and only the first time", async () => {
+      const { items, unreadCount } = await api.listNotifications();
+      const unread = items.find((item) => !item.readAt);
+      expect(unread).toBeDefined();
+
+      await api.markNotificationRead(unread!.id);
+      await expect(api.listNotifications()).resolves.toMatchObject({ unreadCount: unreadCount - 1 });
+      await api.markNotificationRead(unread!.id);
+      await expect(api.listNotifications()).resolves.toMatchObject({ unreadCount: unreadCount - 1 });
+    });
+
+    it("marks every notification read, reports how many changed, and reports none the second time", async () => {
       const before = await api.listNotifications({ unreadOnly: true });
       expect(before.items.length).toBeGreaterThan(0);
 
       const { updatedCount } = await api.markAllNotificationsRead();
       const after = await api.listNotifications({ unreadOnly: true });
 
-      expect(updatedCount).toBe(before.items.length);
+      expect(updatedCount).toBe(before.unreadCount);
       expect(after.items).toHaveLength(0);
+      expect(after.unreadCount).toBe(0);
+      // The gateway's route is idempotent and says so in its count.
+      await expect(api.markAllNotificationsRead()).resolves.toEqual({ updatedCount: 0 });
+    });
+
+    it("seeds every shape the gateway sends, and names real issues where it names one", async () => {
+      const { items } = await api.listNotifications({ pageSize: 100 });
+      const issues = (await api.listIssues(project.id, { pageSize: 100 })).items;
+      const byType = (type: string) => items.filter((item) => item.notificationType === type);
+
+      // Ids of an issue Anna can open: the three fields agree with a real row.
+      for (const type of ["ISSUE_ASSIGNED", "ISSUE_COMMENT_CREATED"]) {
+        const [row] = byType(type);
+        expect(row, `the seed has no ${type}`).toBeDefined();
+        const issue = issues.find((item) => item.id === row.issueId);
+        expect(issue, `${type} names an issue the seed does not hold`).toBeDefined();
+        expect(row).toMatchObject({ issueKey: issue!.issueKey, projectId: issue!.projectId });
+      }
+
+      // Not about an issue: all three null, together.
+      expect(byType("MEMBER_ADDED")[0]).toMatchObject({ issueId: null, issueKey: null, projectId: null });
+
+      // An issue notification older than the columns: all three null as well.
+      const legacy = items.find((item) => item.notificationType.startsWith("ISSUE_") && item.issueId === null);
+      expect(legacy, "the seed has no issue notification from before the ids").toBeDefined();
+      expect(legacy).toMatchObject({ issueKey: null, projectId: null });
+
+      // A deleted issue: both ids, and no issue behind them.
+      const [deleted] = byType("ISSUE_DELETED");
+      expect(deleted.issueId).not.toBeNull();
+      expect(deleted.projectId).toBe(project.id);
+      expect(issues.some((item) => item.id === deleted.issueId)).toBe(false);
+    });
+
+    it("states the issue on every notification the product makes", async () => {
+      const created = await api.createIssue(project.id, {
+        issueType: "TASK",
+        summary: "Rotate the signing key",
+        description: "",
+        priority: "LOW",
+      });
+      const [createdRow] = (await api.listNotifications()).items;
+      expect(createdRow).toMatchObject({
+        notificationType: "ISSUE_CREATED",
+        issueId: created.id,
+        issueKey: created.issueKey,
+        projectId: project.id,
+      });
+
+      const mark = (await api.listMembers(project.id)).find((item) => item.user?.displayName === "Mark Lee");
+      await api.assignIssue(project.id, created.id, mark!.userId);
+      const [assignedRow] = (await api.listNotifications()).items;
+      expect(assignedRow).toMatchObject({ notificationType: "ISSUE_ASSIGNED", issueId: created.id, projectId: project.id });
+
+      const workflow = await api.getWorkflow(project.id);
+      const todo = workflow.statuses.find((status) => status.statusKey === "TODO");
+      const transition = workflow.transitions.find((item) => item.fromStatusId === todo?.id);
+      await api.transitionIssue(project.id, created.id, transition!.id);
+      const [movedRow] = (await api.listNotifications()).items;
+      expect(movedRow).toMatchObject({
+        notificationType: "ISSUE_TRANSITIONED",
+        issueId: created.id,
+        issueKey: created.issueKey,
+        projectId: project.id,
+      });
+    });
+
+    it("carries neither of the two fields the schema dropped", async () => {
+      const { items } = await api.listNotifications();
+      for (const item of items) {
+        expect(item).not.toHaveProperty("link");
+        expect(item).not.toHaveProperty("userId");
+      }
     });
   });
   describe("read-only admin", () => {
@@ -2800,8 +2869,8 @@ describe("MockTaskaApi", () => {
       // `PERMISSION_DENIED "Access denied"` before it maps a role or consults
       // `allowedRoles`, so the gateway answers 403 to these two reads whatever
       // that config contains. The mock membership-checks neither read, the
-      // same convention `getIssueById` already follows for project-scoped
-      // reads — recorded in docs/ai/API-DIVERGENCE.md, and left as it is
+      // same convention every project-scoped read in the store follows —
+      // recorded in docs/ai/API-DIVERGENCE.md, and left as it is
       // because adding the check would cost the read-only seed this section
       // demonstrates.
       const attachments = await api.listAttachments(mobile.id, issue.id);

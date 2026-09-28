@@ -41,6 +41,7 @@ import type {
   IssueWithHistory,
   Label,
   Notification,
+  NotificationPage,
   OutboxRetryResult,
   Page,
   ProblematicOutboxSummary,
@@ -161,10 +162,6 @@ export class HybridTaskaApi implements TaskaApi {
 
   getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {
     return this.live.getIssue(projectId, issueId);
-  }
-
-  getIssueById(issueId: string): Promise<IssueWithHistory> {
-    return this.live.getIssueById(issueId);
   }
 
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
@@ -319,7 +316,7 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.deleteComment(projectId, issueId, commentId);
   }
 
-  listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>> {
+  listNotifications(params?: ListNotificationsParams): Promise<NotificationPage> {
     return this.live.listNotifications(params);
   }
 

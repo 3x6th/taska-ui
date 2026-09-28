@@ -346,9 +346,9 @@ const hash32 = (value: string) => {
  * `src/` catches a throw during render, so on React 19 that would unmount the
  * whole tree: a white screen in place of the plain accent circle this feature
  * replaced. Hashed as the empty string instead, the same way the API layer
- * already lands `notification.userId ?? ""` and `label.createdBy ?? ""`. Every
- * seedless caller then shares one colour, which is a degradation a reader can
- * see past rather than one that takes the page with it.
+ * already lands `label.createdBy ?? ""`. Every seedless caller then shares one
+ * colour, which is a degradation a reader can see past rather than one that
+ * takes the page with it.
  */
 const fromPalette = (palette: string[], seed: string | undefined | null) => palette[hash32(seed ?? "") % palette.length];
 

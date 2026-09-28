@@ -22,6 +22,7 @@ import type {
   IssueWithHistory,
   Label,
   Notification,
+  NotificationPage,
   OutboxRetryResult,
   Page,
   ProblematicOutboxSummary,
@@ -776,37 +777,17 @@ export interface TaskaApi {
    * e2e suite.
    */
   searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>>;
-  getIssue(projectId: string, issueId: string): Promise<IssueWithHistory>;
   /**
-   * The same read for a caller that has an issue id and *not* its project.
-   *
    * The route is issue-scoped on the wire (`GET /issues/{issueId}`), so
-   * `RestTaskaApi.getIssue` already ignored its `projectId` argument and this
-   * costs it nothing — but the mock does not ignore it, it resolves an issue
-   * within a project, so a component calling `getIssue` with a project it had
-   * to guess would work against the gateway and fail against the mock. Stating
-   * the narrower read as its own method is what keeps the three
-   * implementations interchangeable instead of accidentally equivalent.
-   *
-   * Added for the notifications popover, whose notification names an issue and
-   * never its project (TAS-183, compensating TAS-184).
-   *
-   * Callers that hold both ids keep using `getIssue`, but not because its
-   * `projectId` is an access check — it is not. `MockTaskaStore.findIssue`
-   * matches `projectId && id && deletedAt === null`, which asks whether *this
-   * issue belongs to the project you named*, and answers NOT_FOUND when it does
-   * not; membership never enters it. `RestTaskaApi` asks nothing at all,
-   * because the argument never reaches the wire.
-   *
-   * So on a mismatched `(projectId, issueId)` pair the two implementations
-   * disagree outright: the mock throws NOT_FOUND, the gateway answers 200 with
-   * the issue. That disagreement is the whole reason a project-less caller
-   * needs its own method rather than a guessed project — routing one through
-   * `getIssue` would work against the gateway and fail against the mock, which
-   * is the interchangeability rule broken on the one input that distinguishes
-   * them.
+   * `projectId` never reaches the gateway — but it is not decoration. The mock
+   * resolves an issue *within* a project (`MockTaskaStore.findIssue` matches
+   * `projectId && id && deletedAt === null`), so on a mismatched pair the two
+   * disagree outright: the mock answers NOT_FOUND, the gateway answers 200 with
+   * the issue. Neither is an access check. Callers pass a pair they read
+   * together — a board and its card, a notification's own `projectId` and
+   * `issueId` — never a project guessed from the screen around them.
    */
-  getIssueById(issueId: string): Promise<IssueWithHistory>;
+  getIssue(projectId: string, issueId: string): Promise<IssueWithHistory>;
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue>;
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue>;
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue>;
@@ -1179,8 +1160,13 @@ export interface TaskaApi {
   updateComment(projectId: string, issueId: string, commentId: string, body: string): Promise<IssueComment>;
   deleteComment(projectId: string, issueId: string, commentId: string): Promise<void>;
 
-  listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>>;
+  /** `unreadCount` is the reader's total, whatever `params` narrowed the page to. */
+  listNotifications(params?: ListNotificationsParams): Promise<NotificationPage>;
   markNotificationRead(notificationId: string): Promise<Notification>;
+  /**
+   * One request (`POST /notifications/read-all`). `updatedCount` is how many
+   * this call changed, so a repeat answers 0 — the route is idempotent.
+   */
   markAllNotificationsRead(): Promise<{ updatedCount: number }>;
 
   /**
