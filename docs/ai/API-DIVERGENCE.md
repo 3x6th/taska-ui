@@ -180,8 +180,9 @@ is cheaper than splitting an entry and the reader has to be told which.
   hydration existed, one commented issue anywhere in a project made the whole
   board fail to load, and the projects screen lost every card's issue count and
   member row with it. TAS-195 removed that multiplier — the board no longer
-  reads the detail route — so the blast radius is now the issue panel and the notifications bell's single
-  lookup, rather than a board.
+  reads the detail route — so the blast radius is now the issue panel, rather
+  than a board. (The notifications bell's single lookup was the other reader
+  until TAS-243 removed it: a notification now carries its own `projectId`.)
   And the fault itself no longer reproduces: **measured 2026-09-08**, three
   issues carrying 1, 1 and 4 comments each answered `200` from
   `GET /issues/{issueId}`, one of them carrying a label as well.
@@ -653,7 +654,17 @@ Everything below is the entry as it stood, in the past tense.
   the lower half of the card, exactly as the withdrawn TAS-124/125 promise
   above says. Nothing in TAS-195 touches it.
 
-### No `read-all` for notifications
+### Closed by TAS-243: `read-all` for notifications is on the contract and deployed
+
+- **Closed 2026-09-28.** Backend TAS-216 (PR #165, merged 2026-09-27) added
+  `POST /api/v1/notifications/read-all` → `{ updatedCount }`, idempotent, and a
+  required `unreadCount` on the list. The route answers `401` without a token
+  while a sibling path that does not exist answers `404 "No static resource"`,
+  so it is deployed; `unreadCount` was read off the live gateway the same day
+  (TAS-243's evidence). `RestTaskaApi.markAllNotificationsRead` is now that one
+  `POST`, and the loop below is deleted. The call itself was not made against
+  the stand: the only session available was the owner's own inbox.
+- **The record below is kept as it stood.**
 
 - **Missing:** `PATCH /api/v1/notifications/read-all` (the contract has only
   per-notification `…/{notificationId}/read`).
@@ -2256,7 +2267,7 @@ Everything below is the entry as it stood, in the past tense.
     needs, so one labelled issue failed the project's entire issue read —
     measured then as list `200`, row hydration `500`, whole call rejected.
     TAS-195 removed the hydration, so a detail-route fault now costs the issue
-    panel and the notification bell's one lookup, not a board.
+    panel, not a board (the notification bell's one lookup went in TAS-243).
   - ~~**Compensation: none, and the UI ships the writes anyway**~~ — the
     owner's call, made knowing the above, so the backend team could work the
     bug against a real reproduction. **The hazard that came with it is
@@ -2494,6 +2505,29 @@ found"`.
   empty result rather than a `400`, under
   [TAS-218](https://jira.ozero.dev/browse/TAS-218). The length constant stays
   for good; the enum guard comes out with TAS-218.
+- **Superseded by backend TAS-168 (`caf81ee`, PR #153, merged 2026-09-22),
+  which went the other way: an unrecognised `priority` or `issueType` is now a
+  `400`, not an ignored filter and not the empty result TAS-218 asked for.**
+  First measured 2026-09-23 and recorded only on TAS-218's row in
+  `JIRA-WORKFLOW.md` and in the ticket; written into this entry on 2026-09-28,
+  when the snapshot caught up with the merge. The contract
+  replaced the inline enums with `$ref`s to `IssuePriorityDto` and
+  `IssueTypeDto`, the controller now binds those types, and
+  `IssueMapper.safeParsePriority` / `safeParseIssueType` — the lenient parsers
+  that uppercased and dropped — were deleted. Measured the same day without a
+  token (TAS-243): `?query=abc&priority=bogus` → `400 INVALID_ARGUMENT "Invalid
+  request parameters"` **before authentication**, and so is `priority=high` —
+  lowercase used to be uppercased and accepted, and is now refused.
+  `priority=HIGH&issueType=BUG` reaches `401`. So the half of this entry that
+  was a defect is gone, and the enum guard changes meaning rather than coming
+  out: it no longer protects the reader from a silently widened result, it
+  keeps the client from sending a request the edge refuses. It stays. TAS-218's
+  empty-result clause is now moot; its `projectId`/`statusKey` clause is not.
+  The same refresh typed the admin read's `order` (`SortOrderDto`) and the
+  outbox retry's `service` path segment (`OutboxServiceTypeDto`):
+  `/readonly/auth/users?order=bogus` answers `400` pre-auth, `order=DESC`
+  reaches `401`. The client sends only values the contract names on all three,
+  so nothing here changed on the wire.
 
 ### The search DTO carries no `status` and no `projectId`
 
@@ -2544,7 +2578,45 @@ found"`.
   compensation above costs nothing. Recorded so the next agent does not
   discover the missing `projectId` from a broken link.
 
-### `NotificationResponseDto.link` is a gateway API path, and on a real inbox it is empty on every row
+### Closed by TAS-243: `NotificationResponseDto.link` was a gateway API path and empty on most rows; the notification now states its issue
+
+- **Closed 2026-09-28, all-or-nothing as the removal line below asked.**
+  Backend TAS-184 (PR #164, merged and deployed 2026-09-28) dropped `link` and
+  added nullable `issueId`, `issueKey` and `projectId`. `notificationTarget()`
+  is replaced by `notificationRoute()`, which builds
+  `/projects/{projectId}/issues/{issueId}` from those two ids and from nothing
+  else: no link parsing, no uuid from the body, no issue read, and
+  `getIssueById` — which existed only for this — is gone from `TaskaApi`. The
+  mock seed stopped mirroring the old wire in the same commit, as the
+  mock-seed bullet below requires.
+- **A live sub-fact: every notification stored before the deploy lost its
+  target, and on the owner's inbox that is every notification.** Migration
+  `0006-add-issue-fields-to-notifications.sql` adds the three columns and drops
+  `link` with no backfill. Measured 2026-09-28 as `admin` (TAS-243 evidence,
+  request `7f44b4ba-0b0b-40da-8af6-2d9be214abce`): 100 of 100 rows carry all
+  three as `null`, the newest from 2026-09-18, across nine types; no `link` key
+  and no `userId` key on any row; `unreadCount: 0` at top level. Their bodies
+  still name issues by raw uuid, which is exactly what the old fallback read.
+  **Decided in TAS-243 not to keep that fallback for them**: it would have kept
+  the whole compensation — the extra read, its two error states, the
+  wrong-issue residual below — load-bearing for rows that only age, on a stand
+  with no external users and, on the measured inbox, no unread notification.
+  Those rows now mark read and say "Nothing to open". The owner was told and
+  can reverse it.
+- **Not yet seen on the wire: a non-null `issueId`/`projectId`.** No
+  notification had been created on the measured inbox since the deploy. The
+  shape is read from the contract, the gateway's `NotificationMapper` and
+  notification-service's own mapper, which set all three on every issue kind.
+- **`ISSUE_DELETED` carries both ids of an issue that no longer exists**, so it
+  is the one kind `notificationRoute` refuses by name. An older notification
+  about an issue deleted later still routes, and lands on the panel's own
+  not-found — the notification cannot know.
+- **Project kinds carry no `projectId`.** `MEMBER_ADDED`, `MEMBER_UPDATED`,
+  `MEMBER_REMOVED` and `PROJECT_CREATED` name the project only inside the body
+  (`event.aggregateId()` concatenated into Russian prose), so they open
+  nothing. Not a backend ask yet: nobody has asked for those rows to open a
+  board.
+- **The record below is kept as it stood.**
 
 - **Endpoint:** `GET /api/v1/notifications`.
 - **Probed 2026-08-24** on the deployed gateway with a `GLOBAL_ADMIN` token
@@ -2621,10 +2693,14 @@ found"`.
   `projectId && issueId`, so a mismatched pair throws `NOT_FOUND`; the REST
   route is issue-scoped and never sends the project, so the same pair answers
   `200`. The one input on which the two implementations disagree.
-- **This is why `getIssueById` exists as its own method** rather than being
+- ~~**This is why `getIssueById` exists as its own method** rather than being
   folded into `getIssue`: a caller that has only an issue id — a notification —
   must not go through the signature whose extra argument the two
-  implementations treat differently.
+  implementations treat differently.~~ **`getIssueById` was removed in
+  TAS-243**: a notification now carries its own `projectId`, so no caller holds
+  an issue id without its project. The disagreement itself is unchanged and
+  lives on in `getIssue` — `TaskaApi.getIssue`'s comment states it — and it
+  stays unreachable only while every caller passes a pair it read together.
 - **Not an access check, in either implementation.** The mock's predicate is an
   *issue-belongs-to-named-project* consistency check with no membership in it.
   Access is the server's, as always.
@@ -2635,7 +2711,12 @@ found"`.
   TAS-183 is the first feature that can reach a cross-project issue read from
   a click rather than a hand-typed URL — so the mock now applies the membership
   predicate the gateway is *assumed* to apply, and that assumption is stated
-  here rather than buried.
+  here rather than buried. (That predicate lived on the mock's `getIssueById`
+  and went with it in TAS-243. A notification click now opens the board route
+  directly; the gateway membership-checks that route's project read — `403`,
+  measured 2026-08-18 — and the mock's `getProject` does not, so a mock
+  notification naming another project's issue would open that board. The seed
+  names only issues in the signed-in user's own projects.)
 - **Removal:** none filed. It is a mock-fidelity note, not a backend ask.
 
 ---
@@ -3765,6 +3846,19 @@ At develop `1cfe4d7` nothing in the backend repository configures the bucket's
 CORS yet (`docker-compose.yml:193-198`). The public URL *is* configured, but as
 loopback (issue-service `application.yml:116`, `.env.docker.example:41`).
 
+**The store underneath changed on 2026-09-27 and the two facts above did
+not.** Backend hot-fix `ce99f04` (PR #167) replaced MinIO with RustFS
+(`rustfs/rustfs:1.0.0-rc.6`) and renamed the variables from `MINIO_*` to
+`STORAGE_*`. Read at develop `5a8d805a3ac3` for TAS-243: `rustfs-init` runs
+`rc alias set` and two `rc mb` and nothing else, so there is still no CORS rule
+anywhere in the repository, and `STORAGE_PUBLIC_URL` in `.env.docker.example`
+is still `http://127.0.0.1:9000`. Nothing in this client names either store, so
+the swap needs no code change here — but if the deployment had configured
+bucket CORS by hand on MinIO, that setting does not move to a new store by
+itself, so the upload leg is now unmeasured on a store nobody has ever measured
+it on. The measurement this
+entry asks for is still the removal.
+
 ### Closed by backend PR #147's head move: the over-size attachment 500 was a reading of an older head
 
 - **Closed 2026-09-16**, recorded in TAS-224. PR #147 shipped both conditions in
@@ -3885,8 +3979,10 @@ does *less* than the server rather than more.
 `PERMISSION_DENIED "Access denied"` **before** it maps a role or consults
 `allowedRoles` at all — so `listAttachments` and `getAttachmentDownloadUrl`
 answer **403** to a non-member no matter that `view-attachment-roles` contains
-`VIEWER`. The mock membership-checks neither, following the same convention
-`getIssueById` already documents for project-scoped reads. And no seeded member
+`VIEWER`. The mock membership-checks neither, following the convention its
+other project-scoped reads keep: `getIssue` checks that the issue belongs to the
+named project and nothing about the caller (`TaskaApi.getIssue`'s own comment).
+And no seeded member
 holds `VIEWER` at all — the seed assigns `ADMIN` to the first member and
 `MEMBER` to the rest — so the upload gate is exercised against a *non-member
 standing in for* a VIEWER rather than against the role it names.
