@@ -2652,6 +2652,11 @@ is what recurs.
   projects: 2 of 15 failed on the TAS-243 tree and 3 of 15 on a `git archive`
   of untouched `HEAD`, so it predates that story. It turned one full `npm run
   check` red there; the rerun was green.
+- **The popover's `scroll-padding-bottom` covers Tab, not a mouse scroll**
+  (`art-director`, TAS-243). A focused row that is then wheeled or dragged flush
+  to the panel's rounded bottom edge still loses its ring's corners. It takes
+  deliberate mixed input and clears itself on the next Tab; the keyboard path,
+  which is the one that matters, is fixed.
 - **The notifications popover shows an empty list, and no error, when the
   inbox read fails** (`frontend-builder`, TAS-243). Pre-existing: the bell reads
   `notificationsQuery.data?.items ?? []` and never looks at `isError`, so a
