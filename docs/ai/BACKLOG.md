@@ -25,6 +25,16 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
+- **Worklogs and time tracking exist in issue-service and nowhere a browser can
+  reach** (found 2026-09-28 on TAS-243's sweep of backend `1cfe4d7..5a8d805`).
+  Backend TAS-117 (`ff91a10`, PR #158) added worklogs as gRPC only; the gateway
+  route is [TAS-118](https://jira.ozero.dev/browse/TAS-118), `To Do`, and the
+  contract has no worklog path. Probed without a token: `GET
+  /api/v1/issues/not-a-uuid/worklogs` → `404 "No static resource"`, not the
+  `400` a mapped route gives. Nothing to connect yet; a mock-first UI is a new
+  feature rather than a switch-over, so it waits for its own story. The same
+  merge adds `WORKLOG_ADDED/UPDATED/DELETED` events, which notification-service
+  does not turn into notifications yet.
 - **`refused` and `rejected` open as near-synonyms in the admin write dialog**
   (`art-director`, 2026-09-08, TAS-196 verdict). "The server refused this."
   against "The gateway would not accept this request." — both resolve on their
@@ -76,9 +86,10 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   без текста — обязателен `aria-label`». The rest:
   `BoardScreen.tsx:435` "Back to projects", `:542` "Manage labels", `:799`
   "Create issue", `:1121` "Delete", `:1124` "Close", and
-  `NotificationsBell.tsx:109` "Notifications" — which §7 additionally wants
+  ~~`NotificationsBell.tsx:109` "Notifications" — which §7 additionally wants
   carrying the unread count in its label, already an open item in that section's
-  recorded gaps. Fix them as a set: an entry naming only `:1124` would authorise
+  recorded gaps.~~ The bell is done: TAS-243 gave it an `aria-label` carrying
+  the server's unread count ("Notifications, 3 unread"). Five remain. Fix them as a set: an entry naming only `:1124` would authorise
   a change that leaves the button three pixels away from it still broken.
   `ThemeToggle.tsx:8` already ships the `aria-label` + matching `title` pair, so
   this is an in-repo precedent rather than a reading of the spec.
@@ -598,9 +609,11 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 - **`getWorkflow` silently defaults `issueType` to `TASK`**; `listNotifications`
   returns a `Page` without `totalCount`. Minor contract-silence items.
 - **Union members the contract does not back** (found by `api-contract-guard`,
-  2026-08-05). `NotificationType` in `src/domain/types.ts` declares
+  2026-08-05). ~~`NotificationType` in `src/domain/types.ts` declares
   `MEMBER_ROLE_CHANGED`, which `NotificationTypeDto` does not have; nothing
-  constructs it, so nothing renders it today. More broadly `IssuePriority`,
+  constructs it, so nothing renders it today.~~ Gone in TAS-243: the list is now
+  what notification-service emits, and `Notification.notificationType` accepts
+  any string. More broadly `IssuePriority`,
   `IssueStatus` and `UserStatus` are unions the contract types as bare
   `string`. `UserStatus` is the one with teeth: the gateway emits
   `"UNSPECIFIED"` as its zero value, and `RestTaskaApi` asserts the union
@@ -1511,9 +1524,9 @@ the next session in this image exactly as it bit this one.
   rather than degree: on a board an empty inbox was something you reached after
   opening a project, and on `/projects` it is what a new account meets on its
   first screen. (`art-director`)
-- **The bell is 32×32 at every width** against §7's 44 touch floor, and its
-  accessible name still carries no unread count. Both pre-existing and both now
-  on three screens rather than one. The touch half folds into the pseudo-element
+- **The bell is 32×32 at every width** against §7's 44 touch floor, ~~and its
+  accessible name still carries no unread count~~ (the name half closed in
+  TAS-243). Pre-existing, and now on three screens rather than one. The touch half folds into the pseudo-element
   remedy §7 already commits to for the primary button and the search field —
   worth doing as one pass over all of them rather than four entries.
 - **At 320 and 340 the search placeholder is still clipped** (needs 75.05, gets
@@ -1534,13 +1547,14 @@ the next session in this image exactly as it bit this one.
   exactly one thing, and it is that the primary one is the one you cannot see
   focus on. TAS-183 did not make it worse — identical ring at 34 — it removed
   the last excuse for the pair looking different. (`art-director`)
-- **`markRead.mutate` fires before the notification's target resolves**, so a
+- ~~**`markRead.mutate` fires before the notification's target resolves**, so a
   notification whose issue read then fails is marked read and drops out of the
   unread filter: the one thing the reader could not act on becomes the one they
   cannot find again. Left as is on purpose — deferring mark-read until after the
   navigation would make every successful click feel slower to protect a rare
   failure — but the trade is real and worth revisiting if the read gets slower.
-  (`api-contract-guard`)
+  (`api-contract-guard`)~~ Moot since TAS-243: there is no read between the
+  press and the route any more.
 - **A notification row's timestamp measures 2.76:1 on hover, in light only.**
   At rest it is 3.14 light / 3.05 dark and clears §7's 3:1 meta floor; on
   `--surface-2` the light value drops under it, and hover is exactly the state a
@@ -1633,6 +1647,17 @@ Two things fell out that are worth more than the fix:
   is a pre-existing defect of the desktop anchor rather than one that story
   created. Measured while sweeping the same question the story fixed below the
   breakpoint; recorded rather than widened into the diff.
+- **On a phone the popover's list stops halfway down the page and cuts its last
+  row against the card beneath** (`art-director`, TAS-243, 390×844 both
+  themes). Not paint-through: the panel is opaque. §4.12's 340px list cap cuts
+  a row mid-glyph, the card below starts one pixel under the panel's edge, and
+  both planes are `--surface` with only an 8%-white border between them in
+  dark. Predates TAS-243 — it shows on the mock now because the seed grew from
+  three rows to five; with the gateway's twenty it always has. Proposed fix,
+  which needs §4.12 amended first: inside the existing ≤820 block, which
+  already clamps the panel to `100vh - var(--trigger-bottom) - 18px`, let the
+  list fill it (`max-height: none; flex: 1 1 auto; min-height: 0`), so it ends
+  18px above the viewport edge.
 
 ### Left over from the TAS-179 design pass (`art-director`, 2026-08-23)
 
@@ -1752,7 +1777,9 @@ them blocks the story.
   a single `workflow` field, so closing it is a store-shape change rather than a
   comment — and no seeded project has per-type workflows, so nothing is wrong
   today.
-- **A notification whose body happens to contain a uuid is routed as an issue**
+- ~~**A notification whose body happens to contain a uuid is routed as an issue**~~
+  **Moot since TAS-243**, which stopped reading the body for ids altogether; the
+  record below is kept as it stood.
   (found 2026-09-09, reading the notification path against backend PR #151).
   `notificationTarget` falls back to the first uuid anywhere in
   `notification.body` and opens it as an issue id. Backend PR #151 adds
@@ -1901,6 +1928,18 @@ search endpoint is claimed; the other is not:
   [TAS-217](https://jira.ozero.dev/browse/TAS-217) (`GET /meta`), the mapper
   defence is [TAS-173](https://jira.ozero.dev/browse/TAS-173), the `$ref` in
   the contract is [TAS-206](https://jira.ozero.dev/browse/TAS-206).
+  **The UI half is done in TAS-243**: `Notification.notificationType` accepts
+  any string, `NotificationType` is kept only as the list of names
+  notification-service can emit (its 22-value enum plus the gateway's
+  `UNKNOWN`, read at backend `5a8d805a3ac3`; `ISSUE_COMMENT_UPDATED` and
+  `_DELETED` have no case in `NotificationFactory.create` and are never
+  produced), and `MEMBER_ROLE_CHANGED` is gone. The contract half is
+  unchanged: `NotificationTypeDto` still lists eleven and is `$ref`'d by
+  nothing, while the stand already sends `LABEL_*` and `ISSUE_LINK_*`
+  (measured 2026-09-28). The gateway mapper names thirteen kinds and sends the
+  other nine through its `default` branch with a WARN per row
+  (`api-contract-guard`, TAS-243) — the mapper cases and the `$ref` were added
+  to TAS-206 as a comment.
 
 The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
 schema change. None was on the four open PRs this refresh was done for — they
@@ -2279,8 +2318,12 @@ is what recurs.
   else"**, but the gateway checks the token first, while the mock checks the size
   before `currentUser()`. The UI cannot reach the difference
   (`api-contract-guard`, 2026-09-14).
-- **Escape inside the profile menu sends focus to `<body>`** (`art-director`,
-  2026-09-14). The next Tab lands on "Filter projects". This predates TAS-220 —
+- **Escape inside the profile menu — and the notifications popover — sends
+  focus to `<body>`** (`art-director`, 2026-09-14; the popover measured by
+  `art-director` on TAS-243 at 1440 and 390, both themes, where the next Tab
+  starts again at the logo). Both dismiss through
+  `src/hooks/useDismissOnOutside.ts:51`, so the fix belongs in the hook and
+  covers both. The next Tab lands on "Filter projects". This predates TAS-220 —
   the handler is identical on `main` — but both photo writes now hand focus back
   to the upload button, so Escape is the usual way out. The same component
   already returns focus to the trigger when Administration is chosen. The fix is
@@ -2604,6 +2647,27 @@ is what recurs.
   The fix is an epsilon on that comparison rather than a retry: a test that
   fails at the eighth decimal is measuring the floating-point unit, not the
   cap.
+- **`e2e/labels.spec.ts:242` fails in roughly one run in five on desktop and
+  laptop** (`frontend-builder`, TAS-243). `--repeat-each 5` on the three
+  projects: 2 of 15 failed on the TAS-243 tree and 3 of 15 on a `git archive`
+  of untouched `HEAD`, so it predates that story. It turned one full `npm run
+  check` red there; the rerun was green.
+- **The popover's `scroll-padding-bottom` covers Tab, not a mouse scroll**
+  (`art-director`, TAS-243). A focused row that is then wheeled or dragged flush
+  to the panel's rounded bottom edge still loses its ring's corners. It takes
+  deliberate mixed input and clears itself on the next Tab; the keyboard path,
+  which is the one that matters, is fixed.
+- **The notifications popover shows an empty list, and no error, when the
+  inbox read fails** (`frontend-builder`, TAS-243). Pre-existing: the bell reads
+  `notificationsQuery.data?.items ?? []` and never looks at `isError`, so a
+  `5xx` and an empty inbox look identical. TAS-243 added notices for the two
+  writes and left the read as it was.
+- **The mock's notifications are not the gateway's recipients**
+  (`frontend-builder`, TAS-243). Every notification the mock raises goes to the
+  acting user rather than to the assignee or watchers, the inbox is shared by
+  whoever signs in, and `deleteIssue` raises no `ISSUE_DELETED`. The `/admin`
+  e2e case leans on the shared inbox. Seed text on TAS-109 still says `PATCH
+  /notifications/read-all`; the route is `POST`.
 - **`App.test.tsx`'s session-expiry case flakes** (`release-reviewer`, TAS-231).
   `src/screens/App.test.tsx:132` — `queryClient.getQueryCache().getAll()` is
   expected to be empty after a session expires, and failed once in three runs,

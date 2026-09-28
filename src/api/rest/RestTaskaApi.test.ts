@@ -2828,7 +2828,7 @@ describe("RestTaskaApi issue planning fields", () => {
     // actually `undefined`, which type-checks and renders "undefined".
     stubFetch(() => storedIssue());
 
-    const { issue } = await new RestTaskaApi().getIssueById("issue-1");
+    const { issue } = await new RestTaskaApi().getIssue("project-1", "issue-1");
 
     expect(issue).toMatchObject({
       storyPoints: null,
@@ -3550,5 +3550,161 @@ describe("RestTaskaApi avatars", () => {
     // deployed on 2026-09-14; `UserProfileMenu` still reads the signature.
     expect(error).toMatchObject({ status: 404, message: expect.stringContaining(UNDEPLOYED_ROUTE_MESSAGE) });
     expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+  });
+});
+
+/**
+ * The inbox as the contract has it since backend `5a8d805a3ac3` (TAS-243): the
+ * issue a notification is about is stated by id, the unread total is the
+ * server's, and marking everything read is one request.
+ */
+describe("RestTaskaApi notifications", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  // The parameters exist so `mock.calls` is typed: the path and the init are
+  // what these cases assert on.
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: { method?: string; body?: string }) =>
+      answer(status, body),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  const notification = (extra: Record<string, unknown> = {}) => ({
+    id: "5f0c7a52-1b3e-4a8d-9c61-2e7f4b9d0a13",
+    notificationType: "ISSUE_ASSIGNED",
+    title: "Задача назначена",
+    body: "Вам назначена задача TAS-107",
+    createdAt: "2026-09-27T10:15:00Z",
+    readAt: null,
+    sourceEventId: "a3d1e8f0-6c2b-4f97-8e45-1b0c9d7a2f36",
+    ...extra,
+  });
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("marks everything read in one request and reports the server's count", async () => {
+    // The page-and-PATCH loop this replaces sent one read and N writes; the
+    // route exists now, so anything but exactly one call is the loop surviving.
+    const fetchStub = stubFetch({ updatedCount: 7 });
+
+    await expect(new RestTaskaApi().markAllNotificationsRead()).resolves.toEqual({ updatedCount: 7 });
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/notifications/read-all");
+    expect(fetchStub.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    // No body: the contract declares none.
+    expect(fetchStub.mock.calls[0][1]?.body).toBeUndefined();
+  });
+
+  it("reports a repeat as the zero the server answers, not as a failure", async () => {
+    stubFetch({ updatedCount: 0 });
+
+    await expect(new RestTaskaApi().markAllNotificationsRead()).resolves.toEqual({ updatedCount: 0 });
+  });
+
+  it("takes the unread total from the server, not from the page", async () => {
+    // One row on the page, twelve unread in the inbox, and the row itself read:
+    // any count derived from `items` would say 0 or 1.
+    stubFetch({ items: [notification({ readAt: "2026-09-27T10:20:00Z" })], unreadCount: 12 });
+
+    const page = await new RestTaskaApi().listNotifications({ unreadOnly: false, pageSize: 1, offset: 0 });
+
+    expect(page.unreadCount).toBe(12);
+    expect(page.items).toHaveLength(1);
+  });
+
+  it("maps the issue a notification is about when the gateway states it", async () => {
+    stubFetch({
+      items: [
+        notification({
+          issueId: "be54f4ca-3b2f-4d81-9f0a-1c7c0a5e11d2",
+          issueKey: "TAS-107",
+          projectId: "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e",
+        }),
+      ],
+      unreadCount: 1,
+    });
+
+    const [item] = (await new RestTaskaApi().listNotifications()).items;
+
+    expect(item).toEqual({
+      id: "5f0c7a52-1b3e-4a8d-9c61-2e7f4b9d0a13",
+      notificationType: "ISSUE_ASSIGNED",
+      title: "Задача назначена",
+      body: "Вам назначена задача TAS-107",
+      issueId: "be54f4ca-3b2f-4d81-9f0a-1c7c0a5e11d2",
+      issueKey: "TAS-107",
+      projectId: "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e",
+      createdAt: "2026-09-27T10:15:00Z",
+      readAt: null,
+      sourceEventId: "a3d1e8f0-6c2b-4f97-8e45-1b0c9d7a2f36",
+    });
+  });
+
+  it("lands the three as null whether the gateway sends null or leaves them out", async () => {
+    stubFetch({
+      items: [
+        // Not about an issue: the gateway writes the three as null.
+        notification({ id: "n-null", notificationType: "MEMBER_ADDED", issueId: null, issueKey: null, projectId: null }),
+        // Absent keys, and an absent `readAt` with them: nullable and not
+        // required, so an omitting gateway is within the contract.
+        notification({ id: "n-absent", readAt: undefined }),
+      ],
+      unreadCount: 2,
+    });
+
+    const [explicit, absent] = (await new RestTaskaApi().listNotifications()).items;
+
+    for (const item of [explicit, absent]) {
+      expect(item).toMatchObject({ issueId: null, issueKey: null, projectId: null, readAt: null });
+      // `toMatchObject` passes on `undefined` for a missing key too, so the
+      // absence is checked on its own.
+      expect(Object.values(item)).not.toContain(undefined);
+    }
+  });
+
+  it("does not carry `link` or `userId` through from a gateway that still sends them", async () => {
+    stubFetch({
+      items: [notification({ link: "/issues/be54f4ca-3b2f-4d81-9f0a-1c7c0a5e11d2", userId: "user-9" })],
+      unreadCount: 1,
+    });
+
+    const [item] = (await new RestTaskaApi().listNotifications()).items;
+
+    expect(item).not.toHaveProperty("link");
+    expect(item).not.toHaveProperty("userId");
+  });
+
+  it("passes a kind this build has no name for through unchanged", async () => {
+    stubFetch({ items: [notification({ notificationType: "ISSUE_WORKLOG_ADDED" })], unreadCount: 1 });
+
+    const [item] = (await new RestTaskaApi().listNotifications()).items;
+
+    expect(item.notificationType).toBe("ISSUE_WORKLOG_ADDED");
+  });
+
+  it("maps a single mark the same way", async () => {
+    const fetchStub = stubFetch(notification({ readAt: "2026-09-27T10:20:00Z" }));
+
+    const item = await new RestTaskaApi().markNotificationRead("5f0c7a52-1b3e-4a8d-9c61-2e7f4b9d0a13");
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/notifications/5f0c7a52-1b3e-4a8d-9c61-2e7f4b9d0a13/read");
+    expect(fetchStub.mock.calls[0][1]).toMatchObject({ method: "PATCH" });
+    expect(item).toMatchObject({ readAt: "2026-09-27T10:20:00Z", issueId: null, issueKey: null, projectId: null });
   });
 });

@@ -1,16 +1,19 @@
 import { expect, test, type Page } from "@playwright/test";
 
-// Clicking a notification rendered the not-found screen for every notification
-// the deployed gateway actually sends (TAS-183). The mock used to seed frontend
-// routes, so the whole defect lived in the gap between what the mock sent and
-// what the gateway sends; the seed now carries the gateway's own shapes, which
-// is what makes this spec able to fail.
+// A notification states the issue it is about (TAS-243): `issueId` and
+// `projectId` are on the wire, the route is built from them, and nothing is
+// read between the press and the destination. The seed carries one row per
+// shape the gateway sends — two that open an issue, and four that open
+// nothing for the four reasons a row can: not about an issue, about a
+// deleted one, older than the ids, and — until TAS-245 — an attachment
+// notification, which carries issueId alone because issue-service's
+// PayloadSerializer never backfills issueKey or projectId for it.
 //
-// The three cases are unit-tested (src/domain/notifications.test.ts,
-// src/screens/BoardScreen.test.tsx). This is the one thing neither can see: a
-// real router deciding whether the destination is a screen or a 404 — and,
-// since TAS-185 put the same bell in the shared bar, deciding it from a screen
-// that has no project of its own.
+// Which rows get a route is unit-tested (src/domain/notifications.test.ts), and
+// so are the optimistic writes (src/screens/BoardScreen.test.tsx). This is what
+// neither can see: a real router deciding whether the destination is a screen
+// or a 404 — from the board, and from the two screens that have no project of
+// their own since TAS-185 put the same bell in the shared bar.
 
 async function signIn(page: Page, email = "anna@example.com") {
   await page.goto("/login");
@@ -20,10 +23,12 @@ async function signIn(page: Page, email = "anna@example.com") {
   await expect(page).toHaveURL(/\/projects$/);
 }
 
-// `exact` matters: the seeded board has an issue card whose summary mentions
-// notifications, and the default substring match picks it up as well.
+// Anchored at both ends: the seeded board has an issue card whose summary
+// begins "Notifications inbox", and the name now carries the unread count.
+const BELL = { name: /^Notifications(, \d+ unread)?$/ };
+
 async function openBell(page: Page) {
-  await page.getByRole("button", { name: "Notifications", exact: true }).click();
+  await page.getByRole("button", BELL).click();
   await expect(page.locator(".notifications-popover")).toBeVisible();
 }
 
@@ -38,64 +43,105 @@ async function openNotifications(page: Page) {
   await openBell(page);
 }
 
-test("a notification opens the issue it is about, not the not found screen", async ({ page }) => {
+// A pathname, for the one check that reads `location` itself; `toHaveURL`
+// matches the whole URL, origin included, so it takes the unanchored form.
+const ISSUE_PATH = /^\/projects\/[^/]+\/issues\/[^/]+$/;
+const ISSUE_URL = /\/projects\/[^/]+\/issues\/[^/]+$/;
+
+test("a notification opens the issue it names, in the same click", async ({ page }) => {
   await openNotifications(page);
 
-  // The seed's first row: the gateway's own `/issues/{uuid}` path, which is not
-  // a route this app has and used to be navigated to verbatim.
-  await page.locator(".notification-item").first().click();
+  await page.locator(".notification-item", { hasText: "TAS-107 was assigned to you" }).click();
 
-  await expect(page).toHaveURL(/\/projects\/[^/]+\/issues\/[^/]+$/);
+  // Read the moment the click returns rather than waited for: the route is
+  // built from the notification, so it is already there. The read that used to
+  // resolve the project took the mock's 140ms, and would fail this.
+  expect(await page.evaluate(() => window.location.pathname)).toMatch(ISSUE_PATH);
   await expect(page.getByText("TAS-107", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: /not found/i })).toHaveCount(0);
+  // The click closed the panel, and the row it pressed was still marked read.
+  await expect(page.getByRole("button", BELL)).toHaveAccessibleName("Notifications, 2 unread");
 });
 
-test("a notification whose id is only in its body opens the same way", async ({ page }) => {
+test("rows with nothing to open say so, mark read, and leave the reader where they were", async ({ page }) => {
   await openNotifications(page);
 
-  await page.locator(".notification-item").nth(1).click();
+  // Four reasons, one row each: not about an issue, a deleted issue, an issue
+  // notification from before the gateway stated the issue, and — until
+  // TAS-245 — an attachment notification that carries issueId alone.
+  const inert = page.locator(".notification-item.is-inert");
+  await expect(inert).toHaveCount(4);
+  for (const text of ["Sofia added you to Taska Platform", "TAS-100 was deleted", "moved to DONE", "An attachment was added to"]) {
+    // `cursor: default` is the whole of what the class does, and there is no
+    // cursor at 390 or on the keyboard path, so the row has to say it in words.
+    await expect(inert.filter({ hasText: text })).toContainText("Nothing to open");
+  }
+  // A row that does open something must not say it.
+  await expect(page.locator(".notification-item", { hasText: "Nothing to open" })).toHaveCount(4);
 
-  await expect(page).toHaveURL(/\/projects\/[^/]+\/issues\/[^/]+$/);
-  await expect(page.getByText("TAS-101", { exact: true })).toBeVisible();
-});
-
-test("a notification with nothing behind it marks read and leaves the reader where they were", async ({ page }) => {
-  await openNotifications(page);
-
+  // The pre-migration row, which still has the issue's uuid in its prose: the
+  // one a body-mining resolver would have opened.
   const board = page.url();
-  const row = page.locator(".notification-item").nth(2);
-  await expect(row).toHaveClass(/is-inert/);
-  // `cursor: default` is the whole of what the class does, and there is no
-  // cursor at 390 or on the keyboard path, so the row has to say it in words.
-  await expect(row).toContainText("Nothing to open");
-  await expect(page.locator(".notification-item", { hasText: "Nothing to open" })).toHaveCount(1);
-  await row.click();
+  const legacy = inert.filter({ hasText: "moved to DONE" });
+  await expect(legacy.locator(".read-dot.is-unread")).toHaveCount(1);
+  await legacy.click();
 
   // Still on the board, and the panel is still open — a row that goes nowhere
   // is not a row that closes the panel behind a reader who wanted to read on.
   await expect(page.locator(".notifications-popover")).toBeVisible();
   expect(page.url()).toBe(board);
+  // And it did mark itself read.
+  await expect(legacy.locator(".read-dot.is-unread")).toHaveCount(0);
+  await expect(page.getByRole("button", BELL)).toHaveAccessibleName("Notifications, 2 unread");
 });
 
-// The same three rows from the two screens that have no `projectId` at all
-// (TAS-185). The inbox is the user's — `GET /api/v1/notifications` takes no
-// project — so the bell hangs in the shared bar as well, and the destination
-// has to be built without anything the screen around it knows. It is:
-// `notificationTarget` returns either an absolute `/projects/…` route or an
-// issue id, and the issue id is resolved by reading the issue's own
-// `projectId`. This is the pin on that, from a router rather than from a unit
-// test, because "there is no project in scope" is exactly the kind of thing a
-// component test supplies by accident.
+// DESIGN.md §7: the count belongs in the trigger's accessible name, and unread
+// is never said by colour alone.
+test("the bell's name carries the unread count, and mark all read clears it", async ({ page }) => {
+  await signIn(page);
+  const bell = page.getByRole("button", BELL);
+  await expect(bell).toHaveAccessibleName("Notifications, 3 unread");
+  await expect(page.locator(".notification-dot")).toBeVisible();
+
+  await openBell(page);
+  // Each unread row says so in its name, first, and a read row does not.
+  const assigned = page.locator(".notification-item", { hasText: "TAS-107 was assigned to you" });
+  await expect(assigned).toHaveAccessibleName(/^Unread: Issue assigned /);
+  const added = page.locator(".notification-item", { hasText: "Sofia added you" });
+  await expect(added).toHaveAccessibleName(/^Added to a project /);
+
+  await page.getByRole("button", { name: "Mark all read" }).click();
+
+  await expect(page.locator(".notification-dot")).toHaveCount(0);
+  await expect(bell).toHaveAccessibleName("Notifications");
+  await expect(page.locator(".read-dot.is-unread")).toHaveCount(0);
+  await expect(assigned).toHaveAccessibleName(/^Issue assigned /);
+
+  // The server's answer, not only the optimistic one: closed and reopened,
+  // the panel re-reads the inbox and it is still all read.
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".notifications-popover")).toHaveCount(0);
+  await openBell(page);
+  await expect(page.locator(".notification-item").first()).toBeVisible();
+  await expect(page.locator(".read-dot.is-unread")).toHaveCount(0);
+  await expect(bell).toHaveAccessibleName("Notifications");
+});
+
+// The inbox is the user's — `GET /api/v1/notifications` takes no project — so
+// the bell hangs in the shared bar as well (TAS-185), and the destination has
+// to be built without anything the screen around it knows. It is: the route
+// comes from the notification's own `projectId` and `issueId`. This is the pin
+// on that from a router rather than from a unit test, because "there is no
+// project in scope" is exactly the kind of thing a component test supplies by
+// accident.
 test("a notification opens its issue from /projects, where no project is open", async ({ page }) => {
   await signIn(page);
   await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
 
   await openBell(page);
-  // The seed's first row: an id in the gateway's own `/issues/{uuid}` path and
-  // nothing else, so the project can only come from reading the issue.
-  await page.locator(".notification-item").first().click();
+  await page.locator(".notification-item", { hasText: "TAS-107 was assigned to you" }).click();
 
-  await expect(page).toHaveURL(/\/projects\/[^/]+\/issues\/[^/]+$/);
+  await expect(page).toHaveURL(ISSUE_URL);
   // The slide-over rather than the key on its own: arriving here from
   // `/projects` mounts the board under the panel, so the key is on the card
   // behind it as well and `getByText` matches both.
@@ -112,23 +158,20 @@ test("a notification opens its issue from /admin, which is not even a project sc
   await expect(page.getByRole("heading", { level: 1, name: "Data" })).toBeVisible();
 
   await openBell(page);
-  await page.locator(".notification-item").nth(1).click();
+  // The comment row this time, so a kind that is about the issue without being
+  // the issue itself opens the same way.
+  await page.locator(".notification-item", { hasText: "Mark commented on TAS-101" }).click();
 
-  // The body-UUID row this time, so both resolutions are covered away from the
-  // board: link-shaped on /projects above, prose-shaped here.
-  await expect(page).toHaveURL(/\/projects\/[^/]+\/issues\/[^/]+$/);
+  await expect(page).toHaveURL(ISSUE_URL);
   await expect(page.getByLabel("TAS-101 issue")).toBeVisible();
 });
 
-// The third branch, and the one the extraction could plausibly have broken
-// without any of the above noticing: `kind: "route"` navigates to the link
-// verbatim instead of reading anything. It is safe only because the link is an
-// absolute `/projects/…` path — a relative one would resolve against whatever
-// screen the bell was opened from, which used to be a board and now can be
-// `/projects`. The seed carries the gateway's own shapes and none of them is
-// this one, so the notification is made the way the product makes it: creating
-// an issue seeds an ISSUE_CREATED notification carrying a real route.
-test("a notification that already carries a route opens from /projects too", async ({ page }) => {
+// A notification the product makes, rather than one the seed wrote: creating
+// an issue raises an ISSUE_CREATED carrying the new issue's ids, and the route
+// built from them has to survive being followed from a screen that has no
+// project. It is absolute — `/projects/…` — or it would resolve against
+// whatever screen the bell was opened from.
+test("a notification the product just made opens from /projects too", async ({ page }) => {
   await signIn(page);
   await page.locator(".project-card", { hasText: "Taska Platform" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
@@ -139,11 +182,10 @@ test("a notification that already carries a route opens from /projects too", asy
   await dialog.getByRole("button", { name: "Create issue" }).click();
   await expect(page).toHaveURL(/\/issues\//);
 
-  // Out of the project entirely, which is the whole point: the route in the
-  // link has to survive being followed from a screen that has no project. In
-  // the app rather than through `page.goto`: the mock's store is a module in
-  // this page, so a reload would re-seed it and take the notification that was
-  // just made with it.
+  // Out of the project entirely, which is the whole point. In the app rather
+  // than through `page.goto`: the mock's store is a module in this page, so a
+  // reload would re-seed it and take the notification that was just made with
+  // it.
   // Exact, or the panel's backdrop ("Close issue") matches too.
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Back to projects" }).click();
@@ -154,7 +196,7 @@ test("a notification that already carries a route opens from /projects too", asy
   await expect(row).toContainText("Issue created");
   await row.click();
 
-  await expect(page).toHaveURL(/\/projects\/[^/]+\/issues\/[^/]+$/);
+  await expect(page).toHaveURL(ISSUE_URL);
   await expect(page.locator(".issue-panel")).toContainText("Rotate the gateway signing key");
   await expect(page.getByRole("heading", { name: /not found/i })).toHaveCount(0);
 });
@@ -183,7 +225,7 @@ test("everything the keyboard reaches in the panel carries a ring the panel does
 
   // From the keyboard throughout: `:focus-visible` is the only thing under test
   // and a click is exactly the interaction that does not match it.
-  await page.getByRole("button", { name: "Notifications", exact: true }).focus();
+  await page.getByRole("button", BELL).focus();
   await page.keyboard.press("Enter");
   await expect(page.locator(".notifications-popover")).toBeVisible();
 

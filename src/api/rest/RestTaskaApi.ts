@@ -80,6 +80,7 @@ import type {
   IssueWithHistory,
   Label,
   Notification,
+  NotificationPage,
   OutboxRetryResult,
   Page,
   ProblematicOutboxCounts,
@@ -591,13 +592,40 @@ interface RestCommentsListResponse {
   totalCount: number;
 }
 
-type RestNotification = Omit<Notification, "userId" | "link"> & {
-  userId?: string;
-  link?: string | null;
+/**
+ * `NotificationResponseDto` as the contract has it since backend `5a8d805a3ac3`
+ * (TAS-243). Six fields are required; the rest are nullable and read that way.
+ *
+ * `issueId`, `issueKey` and `projectId` are `null` together on a notification
+ * that is not about an issue (`MEMBER_*`, `PROJECT_CREATED`, `USER_*`) and on
+ * an issue notification stored before the migration that added them, which did
+ * not backfill. A third case sends `issueId` alone: `ISSUE_ATTACHMENT_ADDED`
+ * and `ISSUE_ATTACHMENT_DELETED` leave `issueKey` and `projectId` null because
+ * issue-service's `PayloadSerializer` writes `issueId` and never calls
+ * `putIssueFields` for the other two (TAS-245). All three are typed optional as
+ * well as nullable so that an absent key lands in the domain as `null` rather
+ * than as `undefined`; `readAt` is not in the schema's `required` list either,
+ * and is read the same way.
+ *
+ * The schema has no `link` and no `userId`, and nothing here reads either: the
+ * notification is the reader's by construction, and the issue it is about is
+ * stated by id rather than by a path to be parsed.
+ */
+type RestNotification = Omit<Notification, "issueId" | "issueKey" | "projectId" | "readAt"> & {
+  issueId?: string | null;
+  issueKey?: string | null;
+  projectId?: string | null;
+  readAt?: string | null;
 };
 
+/** `unreadCount` is required: the reader's total across every notification, whatever the query narrowed `items` to. */
 interface RestNotificationListResponse {
   items: RestNotification[];
+  unreadCount: number;
+}
+
+interface RestReadAllNotificationsResponse {
+  updatedCount: number;
 }
 
 export class ApiError extends Error {
@@ -1019,15 +1047,11 @@ export class RestTaskaApi implements TaskaApi {
 
   /**
    * The project is not on the wire for this read — the route is
-   * `/issues/{issueId}` — so this is `getIssueById` with an argument the
-   * gateway never sees. It stays in the signature because the mock does need
-   * it; see `TaskaApi.getIssueById`.
+   * `/issues/{issueId}` — so the argument is one the gateway never sees. It
+   * stays in the signature because the mock does need it; see
+   * `TaskaApi.getIssue`.
    */
-  getIssue(_projectId: string, issueId: string): Promise<IssueWithHistory> {
-    return this.getIssueById(issueId);
-  }
-
-  async getIssueById(issueId: string): Promise<IssueWithHistory> {
+  async getIssue(_projectId: string, issueId: string): Promise<IssueWithHistory> {
     const response = await this.request<RestIssueWithHistory>(`/issues/${this.segment(issueId)}`);
     return this.toIssueWithHistory(response);
   }
@@ -1517,7 +1541,7 @@ export class RestTaskaApi implements TaskaApi {
     });
   }
 
-  async listNotifications(params: ListNotificationsParams = {}): Promise<Page<Notification>> {
+  async listNotifications(params: ListNotificationsParams = {}): Promise<NotificationPage> {
     const search = new URLSearchParams();
     if (params.unreadOnly !== undefined) search.set("unreadOnly", String(params.unreadOnly));
     if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
@@ -1528,6 +1552,7 @@ export class RestTaskaApi implements TaskaApi {
       items: response.items.map((notification) => this.toNotification(notification)),
       pageSize: params.pageSize ?? 20,
       offset: params.offset ?? 0,
+      unreadCount: response.unreadCount,
     };
   }
 
@@ -1542,19 +1567,10 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   async markAllNotificationsRead(): Promise<{ updatedCount: number }> {
-    let updatedCount = 0;
-
-    while (true) {
-      const page = await this.listNotifications({ unreadOnly: true, pageSize: 100, offset: 0 });
-      if (page.items.length === 0) break;
-
-      await mapWithConcurrency(page.items, 6, (notification) => this.markNotificationRead(notification.id));
-      updatedCount += page.items.length;
-
-      if (page.items.length < 100) break;
-    }
-
-    return { updatedCount };
+    const response = await this.request<RestReadAllNotificationsResponse>("/notifications/read-all", {
+      method: "POST",
+    });
+    return { updatedCount: response.updatedCount };
   }
 
   async getAdminCatalog(): Promise<AdminCatalog> {
@@ -2152,11 +2168,23 @@ export class RestTaskaApi implements TaskaApi {
     };
   }
 
+  /**
+   * Field by field rather than a spread, so a key the schema no longer has —
+   * `link` and `userId` on an older gateway — cannot ride through into the
+   * domain object and be read by someone who takes it for current.
+   */
   private toNotification(notification: RestNotification): Notification {
     return {
-      ...notification,
-      userId: notification.userId ?? "",
-      link: notification.link ?? "",
+      id: notification.id,
+      notificationType: notification.notificationType,
+      title: notification.title,
+      body: notification.body,
+      issueId: notification.issueId ?? null,
+      issueKey: notification.issueKey ?? null,
+      projectId: notification.projectId ?? null,
+      createdAt: notification.createdAt,
+      readAt: notification.readAt ?? null,
+      sourceEventId: notification.sourceEventId,
     };
   }
 
@@ -2642,23 +2670,4 @@ function requireOutboxRetryReason(raw: string): string {
     throw new ApiError(OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE, "INVALID_ARGUMENT", 400);
   }
   return reason;
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  mapper: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      results[index] = await mapper(items[index], index);
-    }
-  });
-
-  await Promise.all(workers);
-  return results;
 }

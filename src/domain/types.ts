@@ -38,19 +38,51 @@ export type ProjectRole = "ADMIN" | "MEMBER" | "VIEWER";
 export type IssueType = "TASK" | "BUG" | "STORY";
 export type IssuePriority = "LOW" | "MEDIUM" | "HIGH";
 export type IssueStatus = "TODO" | "IN_PROGRESS" | "DONE";
+/**
+ * The notification kinds the gateway can emit, read from notification-service
+ * and the gateway's mapper at backend `5a8d805a3ac3` (TAS-243) rather than
+ * from the contract. The contract types
+ * `NotificationResponseDto.notificationType` as a bare string; its
+ * `NotificationTypeDto` lists eleven of these and is referenced by nothing, so
+ * it describes neither the field nor the wire. `UNKNOWN` is the gateway's own
+ * fallback for a kind it does not recognise.
+ *
+ * Two of these are named without being live: `ISSUE_COMMENT_UPDATED` and
+ * `ISSUE_COMMENT_DELETED` have no case in notification-service's
+ * `NotificationFactory` and are never produced today. They stay in the union
+ * anyway — the wire types the field as a bare string, and the day
+ * `NotificationFactory` grows a case for either, the type should already have
+ * a name ready rather than be the thing that lags it.
+ *
+ * This is a list of names to build and compare against — the mock seeds from
+ * it, and a comparison written against it cannot misspell one. It is **not**
+ * the type of `Notification.notificationType`, which accepts any string: the
+ * next kind notification-service learns will arrive before this list does.
+ */
 export type NotificationType =
   | "ISSUE_ASSIGNED"
   | "ISSUE_TRANSITIONED"
   | "ISSUE_CREATED"
   | "ISSUE_UPDATED"
   | "ISSUE_DELETED"
+  | "ISSUE_LINK_CREATED"
+  | "ISSUE_LINK_DELETED"
+  | "ISSUE_COMMENT_CREATED"
+  | "ISSUE_COMMENT_UPDATED"
+  | "ISSUE_COMMENT_DELETED"
+  | "ISSUE_ATTACHMENT_ADDED"
+  | "ISSUE_ATTACHMENT_DELETED"
+  | "LABEL_ADDED"
+  | "LABEL_REMOVED"
   | "USER_INVITED"
   | "USER_ACTIVATED"
+  | "USER_BLOCKED"
+  | "USER_UNBLOCKED"
   | "PROJECT_CREATED"
   | "MEMBER_ADDED"
   | "MEMBER_UPDATED"
   | "MEMBER_REMOVED"
-  | "MEMBER_ROLE_CHANGED";
+  | "UNKNOWN";
 
 export interface User {
   id: string;
@@ -945,15 +977,43 @@ export interface IssueComment {
 
 export interface Notification {
   id: string;
-  userId: string;
-  notificationType: NotificationType;
+  /**
+   * Any string the wire carries. A named kind keeps its autocompletion; an
+   * unlisted one is representable instead of being a value the type claims
+   * cannot exist (see `NotificationType`).
+   */
+  notificationType: NotificationType | (string & {});
   title: string;
   body: string;
-  link: string;
+  /**
+   * The issue the notification is about, and the project that issue is in.
+   * All three are `null` on a notification that is not about an issue —
+   * `MEMBER_*`, `PROJECT_CREATED`, `USER_*` — and on every notification written
+   * before the gateway started storing them: the migration that added the
+   * columns did not backfill them, so an issue notification that old carries
+   * none of the three.
+   *
+   * A third case sends `issueId` alone: `ISSUE_ATTACHMENT_ADDED` and
+   * `ISSUE_ATTACHMENT_DELETED` leave `issueKey` and `projectId` null because
+   * issue-service's `PayloadSerializer` writes `issueId` and never calls
+   * `putIssueFields` for the other two (TAS-245). `notificationRoute`
+   * (src/domain/notifications.ts) needs both `issueId` and `projectId`, so
+   * this one stays unopenable until the backend fix lands.
+   */
+  issueId: string | null;
+  issueKey: string | null;
+  projectId: string | null;
   createdAt: string;
   readAt: string | null;
   sourceEventId: string;
 }
+
+/**
+ * One page of the inbox, plus the reader's unread total across *all* of their
+ * notifications — the server counts it independently of `pageSize`, `offset`
+ * and `unreadOnly`, so it is never a count of `items`.
+ */
+export type NotificationPage = Page<Notification> & { unreadCount: number };
 
 export interface Page<T> {
   items: T[];

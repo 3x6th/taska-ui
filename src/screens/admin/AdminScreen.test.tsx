@@ -239,7 +239,7 @@ const {
       return state.user;
     },
     listProjects: async () => [],
-    listNotifications: async () => ({ items: [], pageSize: 20, offset: 0 }),
+    listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
     getAdminCatalog: async () => {
       if (state.catalogFailure) throw state.catalogFailure;
       return state.catalogOverride ?? catalog;

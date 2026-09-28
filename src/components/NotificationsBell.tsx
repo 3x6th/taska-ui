@@ -3,17 +3,19 @@ import { Bell } from "lucide-react";
 import { useCallback, useRef, useState, type RefObject } from "react";
 import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isMissingOrForbidden } from "../api/errors";
-import { notificationTarget } from "../domain/notifications";
+import { notificationRoute } from "../domain/notifications";
+import type { Notification, NotificationPage } from "../domain/types";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { useTriggerAnchor } from "../hooks/useTriggerAnchor";
 import { relativeTime } from "../lib/format";
 import { ApiNotice } from "./ApiNotice";
 
+const NOTIFICATIONS_KEY = ["notifications"];
+
 /**
  * The notifications bell and everything nailed to it: the unread dot, the
- * popover, its dismissal, its viewport clamps, and the read that turns a
- * notification into a route.
+ * popover, its dismissal, its viewport clamps, and the two writes that mark
+ * notifications read.
  *
  * **Why it is a component rather than markup in a bar.** The inbox is the
  * *user's*: `GET /api/v1/notifications` — "inbox уведомлений текущего
@@ -31,20 +33,19 @@ import { ApiNotice } from "./ApiNotice";
  * at a time — which is also what lets `.notification-wrap` stay a single global
  * selector in the specs.
  *
- * **And it is not copied.** Six behaviours were argued for one at a time in
- * TAS-179, TAS-181 and TAS-183 — dismissal on `Escape` and outside pointerdown,
- * the anchor that narrows rather than moves, the two viewport clamps, the
- * three-way target resolution, the guarded per-call `mutate` callback, the
- * inert row. A second copy in the shared bar would be six chances to lose one
+ * **And it is not copied.** Dismissal on `Escape` and outside pointerdown, the
+ * anchor that narrows rather than moves, the two viewport clamps, the inert
+ * row, and the optimistic read marks were each argued for on their own. A
+ * second copy in the shared bar would be that many chances to lose one
  * silently, and this repository has twice had to consolidate a copy after a
  * reviewer found it rather than before.
  *
- * The navigation is why the move is cheap: `notificationTarget` never produces
- * a project-relative destination. `kind: "route"` is only returned for a link
- * already under `/projects/`, which is an absolute route; `kind: "issue"` reads
- * the issue to learn its own `projectId`. So no caller has to have a
- * `projectId` in scope, and `/projects` and `/admin` — which have none — open a
- * notification exactly as the board does.
+ * The navigation is why sharing it is cheap: a notification states its own
+ * `projectId` and `issueId` (TAS-243), and `notificationRoute` builds the
+ * absolute `/projects/…/issues/…` route from those two alone. No caller has to
+ * have a project in scope, and no read stands between the press and the route,
+ * so `/projects` and `/admin` — which have no project — open a notification
+ * exactly as the board does.
  */
 export function NotificationsBell({
   bar,
@@ -70,7 +71,6 @@ export function NotificationsBell({
   bar: RefObject<HTMLElement | null>;
 }) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   // Wraps the bell as well as the panel, which is what keeps the dismissal
   // below from fighting the bell's own toggle: a press on the trigger of an
@@ -79,7 +79,7 @@ export function NotificationsBell({
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const notificationsQuery = useQuery({
-    queryKey: ["notifications"],
+    queryKey: NOTIFICATIONS_KEY,
     queryFn: () => taskaApi.listNotifications(),
   });
 
@@ -95,29 +95,31 @@ export function NotificationsBell({
   // (TAS-181).
   useTriggerAnchor(open, wrapRef, bar);
 
-  const markAllRead = useMutation({
-    mutationFn: () => taskaApi.markAllNotificationsRead(),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["notifications"] }),
-  });
-
-  const unreadCount = notificationsQuery.data?.items.filter((item) => !item.readAt).length ?? 0;
+  // The server's count, not a count of the rows: `unreadCount` covers the
+  // whole inbox, and the page holds the first twenty. An unread notification
+  // on page two used to leave the dot dark.
+  const unreadCount = notificationsQuery.data?.unreadCount ?? 0;
 
   return (
     <div className="notification-wrap" ref={wrapRef}>
       <button
         aria-expanded={open}
+        // DESIGN.md §7: the count belongs in the trigger's accessible name.
+        // The dot says it to a sighted reader and to nobody else. `title` stays
+        // for the pointer, and becomes the description now that the label is
+        // the name.
+        aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"}
         className="icon-button"
         onClick={() => setOpen((value) => !value)}
         title="Notifications"
         type="button"
       >
         <Bell size={16} />
-        {unreadCount ? <span className="notification-dot" /> : null}
+        {unreadCount > 0 ? <span className="notification-dot" /> : null}
       </button>
       {open ? (
         <NotificationsPopover
           notifications={notificationsQuery.data?.items ?? []}
-          onMarkAll={() => markAllRead.mutate()}
           onNavigate={(route) => {
             setOpen(false);
             navigate(route);
@@ -128,166 +130,137 @@ export function NotificationsBell({
   );
 }
 
-/**
- * DESIGN.md §4.18: "the page is missing" and "the page is not yours" are one
- * sentence on purpose, because telling them apart is what reveals that someone
- * else's project exists. The gateway does distinguish them — 404 NOT_FOUND
- * against 403 PERMISSION_DENIED, with different wording in each — so the sentence
- * above is only half the job: `ApiNotice` prints the server's own words under
- * it, and those words are the leak.
- *
- * This drops the message and keeps the request id, which identifies the failure
- * in the gateway log without saying which failure it was. §4.18 is written about
- * the board's project load rather than about this panel, but the body-UUID
- * branch can hand this read an id the reader was never told about
- * (`src/domain/notifications.ts`), so the panel is squarely in what the rule is
- * for. Every other failure — 5xx, transport — keeps the gateway's words, which
- * are the useful half there.
- */
-function refusalWithoutWording(error: unknown): unknown {
-  // `apiErrorFacts` maps an empty message to null, so `ApiNotice` renders the
-  // fixed sentence, the request id when there is one, and nothing else.
-  return Object.assign(new Error(""), { requestId: apiErrorFacts(error).requestId });
+/** The inbox with every row in `ids` — or every row, for `null` — marked read at `readAt`. */
+function withRead(page: NotificationPage, ids: Set<string> | null, readAt: string): NotificationPage {
+  return {
+    ...page,
+    items: page.items.map((item) => (!item.readAt && (!ids || ids.has(item.id)) ? { ...item, readAt } : item)),
+  };
 }
 
 /**
- * A row here used to hand `notification.link` straight to `navigate()`, which
- * is right only while the link is one of this app's routes. The gateway sends
- * its own API path or an empty string, so every real notification landed the
- * reader on the not-found screen (TAS-183, compensating TAS-184).
+ * The popover's rows and the two writes behind them.
  *
- * `notificationTarget` says which of the three cases a row is. Two of them are
- * synchronous; the third has an issue id and no project, so it costs one read
- * before there is a route to go to — and that read is why this component now
- * has a pending row and a failure of its own.
+ * **Both writes are optimistic** (AGENTS.md): the dot, the row and the bell's
+ * count change on the press, and the server is asked afterwards. Both settle by
+ * re-reading the inbox, which is what brings the server's own `unreadCount`
+ * back in either case.
+ *
+ * They roll back differently, because they overlap differently. Several rows
+ * can be pressed while an earlier mark is still in flight, so a failed
+ * mark-one restores *its own row* and nothing else — restoring the snapshot it
+ * took would also undo every row pressed after it. Mark-all replaces the whole
+ * list, so the whole list is what it restores.
+ *
+ * The callbacks are options-level on purpose, where the library runs them
+ * whether or not this panel is still mounted: pressing a row that opens an
+ * issue closes the panel in the same click, and the optimistic write and its
+ * rollback still have to land in the cache the bell reads.
  */
 function NotificationsPopover({
   notifications,
-  onMarkAll,
   onNavigate,
 }: {
-  notifications: Array<{ id: string; title: string; body: string; createdAt: string; readAt: string | null; link: string }>;
-  onMarkAll: () => void;
+  notifications: Notification[];
   onNavigate: (route: string) => void;
 }) {
   const queryClient = useQueryClient();
+
   const markRead = useMutation({
     mutationFn: (notificationId: string) => taskaApi.markNotificationRead(notificationId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+    onMutate: async (notificationId) => {
+      await queryClient.cancelQueries({ queryKey: NOTIFICATIONS_KEY });
+      const page = queryClient.getQueryData<NotificationPage>(NOTIFICATIONS_KEY);
+      // Only a row that was unread moves the count. Pressing a read row asks
+      // the server again, which is harmless, and changes nothing here.
+      const wasUnread = page?.items.some((item) => item.id === notificationId && !item.readAt) ?? false;
+      if (page && wasUnread) {
+        queryClient.setQueryData<NotificationPage>(NOTIFICATIONS_KEY, {
+          ...withRead(page, new Set([notificationId]), new Date().toISOString()),
+          unreadCount: Math.max(0, page.unreadCount - 1),
+        });
+      }
+      return { wasUnread };
+    },
+    onError: (_error, notificationId, context) => {
+      if (!context?.wasUnread) return;
+      queryClient.setQueryData<NotificationPage>(NOTIFICATIONS_KEY, (current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.map((item) => (item.id === notificationId ? { ...item, readAt: null } : item)),
+              unreadCount: current.unreadCount + 1,
+            }
+          : current,
+      );
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_KEY }),
   });
 
-  // The row the reader is currently waiting on. Two defects live here, and both
-  // are about a read landing after the moment that asked for it:
-  //
-  // 1. A click, then Escape or a press outside. TanStack Query calls an
-  //    *options-level* `onSuccess` from `Mutation.execute()` with no observer
-  //    guard — the `hasListeners()` check covers only the per-call form — so a
-  //    navigation wired there fires after this panel has unmounted, and the
-  //    reader is moved by a click they cancelled.
-  // 2. Click row A, then row B before A answers. Both reads are in flight and
-  //    the destination became whichever *resolved* last, which against a real
-  //    gateway is a coin flip. It should be whichever was *clicked* last.
-  //
-  // **Passing the callbacks to `mutate` rather than to `useMutation` is what
-  // fixes both**, and this ref fixes neither on its own. Per-call callbacks sit
-  // behind `hasListeners()`, which closes 1; and `MutationObserver.mutate()`
-  // runs `this.#currentMutation?.removeObserver(this)` before building the new
-  // mutation, so a superseded read can no longer reach `#notify()` and 2 closes
-  // with it. Deleting the ref and keeping the per-call form leaves every test
-  // here green — that was measured, not assumed.
-  //
-  // The ref stays as a backstop for the half of that which is a library
-  // internal rather than a documented guarantee: `removeObserver` on the
-  // previous mutation is an implementation detail that a version bump may
-  // revise, while `hasListeners()` is the documented behaviour. So if you are
-  // here to simplify, the ref is the removable half — **removing the per-call
-  // form and trusting the ref is the mistake this paragraph exists to prevent**,
-  // because the ref says nothing about whether this component is still mounted.
-  //
-  // A ref rather than state: nothing renders from it, and a re-render on click
-  // would only re-run the guard it exists to hold still.
-  const awaited = useRef<string | null>(null);
-
-  // `getIssueById` rather than `getIssue`: the notification names an issue and
-  // never its project, and the issue may not even be in the board this popover
-  // is open on — from `/projects` and `/admin` there is no board and no
-  // `projectId` at all. The response's own `projectId` is what builds the
-  // route, which is why this panel needs nothing from the screen around it.
-  const openIssue = useMutation({
-    mutationFn: async ({ issueId }: { notificationId: string; issueId: string }) => {
-      const { issue } = await taskaApi.getIssueById(issueId);
-      return `/projects/${issue.projectId}/issues/${issue.id}`;
+  const markAllRead = useMutation({
+    mutationFn: () => taskaApi.markAllNotificationsRead(),
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: NOTIFICATIONS_KEY });
+      const previous = queryClient.getQueryData<NotificationPage>(NOTIFICATIONS_KEY);
+      if (previous) {
+        queryClient.setQueryData<NotificationPage>(NOTIFICATIONS_KEY, {
+          ...withRead(previous, null, new Date().toISOString()),
+          unreadCount: 0,
+        });
+      }
+      return { previous };
     },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(NOTIFICATIONS_KEY, context.previous);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_KEY }),
   });
 
   return (
     <section className="notifications-popover">
       <header>
         <strong>Notifications</strong>
-        <button onClick={onMarkAll} type="button">
+        <button onClick={() => markAllRead.mutate()} type="button">
           Mark all read
         </button>
       </header>
-      {/* The read that resolves the project can fail, and a click that quietly
-          does nothing is the defect this story fixed, not a smaller version of
-          it. The panel stays open to say so. */}
-      {openIssue.isError ? (
-        isMissingOrForbidden(openIssue.error) ? (
-          <ApiNotice error={refusalWithoutWording(openIssue.error)}>
-            This issue doesn&rsquo;t exist, or you don&rsquo;t have access to it.
-          </ApiNotice>
-        ) : (
-          <ApiNotice error={openIssue.error}>This issue could not be opened.</ApiNotice>
-        )
+      {/* A rollback on its own is a silent one: every dot the press turned off
+          comes back on and nothing says why. The panel is still open — the
+          press was made in it — so it says so here. Gone on the next attempt
+          and when the panel closes. */}
+      {markAllRead.isError ? (
+        <ApiNotice error={markAllRead.error}>Notifications could not be marked read.</ApiNotice>
+      ) : null}
+      {/* The same for a single row, which only reaches the reader when the row
+          opened nothing: a row that navigates has closed the panel, and the
+          dot coming back is all that failure can show. */}
+      {markRead.isError ? (
+        <ApiNotice error={markRead.error}>This notification could not be marked read.</ApiNotice>
       ) : null}
       <div className="notification-list">
         {notifications.map((notification) => {
-          const target = notificationTarget(notification);
-          // No spinner: the row is still on screen and still readable, so the
-          // pending cue is the row holding itself lit. `aria-busy` is the half
-          // a screen reader gets.
-          //
-          // The observer's own `variables` rather than `awaited`, and they are
-          // the same id: both are set by the same click. It means a superseded
-          // row stops showing busy while its read is still in flight, which
-          // reads odd until you remember the guard above — that read can no
-          // longer navigate, so a row still claiming to be working on it would
-          // be the lie. A read that never answers holds `aria-busy` until it
-          // does; no timeout, because inventing a failure the server never
-          // reported is worse than a row that stays lit.
-          const resolving = openIssue.isPending && openIssue.variables.notificationId === notification.id;
+          const route = notificationRoute(notification);
           return (
             <button
-              aria-busy={resolving}
               // A row with nothing behind it still marks itself read, so it stays
               // a button — it just stops claiming it opens something, which is
               // what the pointer cursor was saying.
-              className={`notification-item${target.kind === "none" ? " is-inert" : ""}`}
+              className={`notification-item${route ? "" : " is-inert"}`}
               key={notification.id}
               onClick={() => {
                 markRead.mutate(notification.id);
-                if (target.kind === "route") {
-                  onNavigate(target.route);
-                  return;
-                }
-                if (target.kind === "issue") {
-                  awaited.current = notification.id;
-                  openIssue.mutate(
-                    { notificationId: notification.id, issueId: target.issueId },
-                    {
-                      // Per-call, so the library drops it when this popover is
-                      // gone; guarded, so a superseded read does not steer.
-                      onSuccess: (route, variables) => {
-                        if (awaited.current === variables.notificationId) onNavigate(route);
-                      },
-                    },
-                  );
-                }
+                if (route) onNavigate(route);
               }}
               type="button"
             >
               <span className={`read-dot ${notification.readAt ? "" : "is-unread"}`} />
               <span>
+                {/* DESIGN.md §7: colour is never the only carrier. The dot is
+                    all a sighted reader needs; this is the same fact in the
+                    row's accessible name, first, where a screen reader meets
+                    it before the title. A read row says nothing — read is the
+                    default a reader assumes. */}
+                {notification.readAt ? null : <span className="visually-hidden">Unread: </span>}
                 <strong>{notification.title}</strong>
                 <em>{notification.body}</em>
                 {/* The cursor was the only thing saying this row goes
@@ -300,7 +273,7 @@ function NotificationsPopover({
                     already uses ("3 projects · Anna Ivanova"). */}
                 <small>
                   {relativeTime(notification.createdAt)}
-                  {target.kind === "none" ? " · Nothing to open" : null}
+                  {route ? null : " · Nothing to open"}
                 </small>
               </span>
             </button>

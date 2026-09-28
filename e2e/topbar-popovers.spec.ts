@@ -124,9 +124,10 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
 
           const where = `notifications panel, ${theme} ${route} ${width}px`;
           // Scoped to the bar, and the assertion is that it is *there*: this is
-          // the story. `exact`, because a seeded issue card is titled
-          // "Notifications inbox: mark all as read".
-          const bell = page.locator(".topbar").getByRole("button", { name: "Notifications", exact: true });
+          // the story. Anchored at both ends, because a seeded issue card is
+          // titled "Notifications inbox: mark all as read" and the bell's own
+          // name carries the unread count (TAS-243).
+          const bell = page.locator(".topbar").getByRole("button", { name: /^Notifications(, \d+ unread)?$/ });
           await expect(bell, `${where}: the shared bar has no bell`).toBeVisible();
           await bell.click();
           // Past the 160ms entrance: `tk-pop` starts 7px low and mid-animation

@@ -86,6 +86,8 @@ import type {
   IssueWithHistory,
   Label,
   Notification,
+  NotificationPage,
+  NotificationType,
   OutboxRetryResult,
   Page,
   ProblematicOutboxCounts,
@@ -135,6 +137,8 @@ const NINA_ID = "c47a9b21-6d5e-4f0b-8c72-9e13a4f8d602";
 const OMAR_ID = "d58f0e73-4b2c-4c9d-8e15-3f6a70b2c9d4";
 
 const TASKA_PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
+/** TAS-100, which the seed never holds: the one notification about a deleted issue names it. */
+const DELETED_ISSUE_ID = "0c8e5f9a-7d31-4b6e-a2c4-5e9f1b3d7a60";
 const WEB_PROJECT_ID = "58e93598-ea1a-460d-9d72-f1f201c310e2";
 const MOB_PROJECT_ID = "f315c5cf-3333-47d1-8d22-79f07c2ec99b";
 const OPS_PROJECT_ID = "64d70a2b-72b0-4866-bdbf-4f71a416f9e4";
@@ -1617,23 +1621,51 @@ export class MockTaskaStore {
       );
     });
 
-    // The three shapes the deployed gateway actually sends, measured with a
-    // GLOBAL_ADMIN token (TAS-183). This seed used to carry frontend routes,
-    // which is why clicking a notification worked here and landed on not-found
-    // against the gateway — the one divergence a mock must not hide. It goes
-    // back to routes when TAS-184 lands.
+    // One row per shape the gateway sends since TAS-243, newest first. The
+    // two that open something name real TAS issues — Anna's project, and
+    // Mark's too — so the route they build lands on a panel rather than on a
+    // not-found. The four that open nothing are the four reasons a row can:
+    // not about an issue, about an issue that is gone, older than the
+    // columns, and — until TAS-245 — an attachment notification, which
+    // issue-service's PayloadSerializer writes with issueId alone and never
+    // backfills with issueKey or projectId.
+    const tas104 = this.issues.find((item) => item.issueKey === "TAS-104");
     this.notifications = [
-      // `link` is the gateway's own API path, not a route this app has. The
-      // body deliberately carries no id, so this row can only be resolved by
-      // reading the link.
-      this.notification("ISSUE_ASSIGNED", "Issue assigned", "TAS-107 was assigned to you", `/issues/${tas107?.id ?? ""}`, ts(25, 10), null),
-      // No link at all, and the id sits in the prose exactly as the gateway
-      // writes it ("Вам назначена задача be54f4ca-…"). Ugly in the panel, and
-      // that ugliness is the gateway's, not this seed's.
-      this.notification("ISSUE_TRANSITIONED", "Status changed", `TAS-101 moved to In Progress ${tas101?.id ?? ""}`, "", ts(25, 7), null),
-      // Nothing to open: no link, no id, and no issue behind it. The row marks
-      // itself read and goes nowhere.
-      this.notification("MEMBER_ADDED", "Added to a project", "Sofia added you to Taska Platform", "", ts(24, 50), ts(25, 8)),
+      this.notification("ISSUE_ASSIGNED", "Issue assigned", "TAS-107 was assigned to you", tas107 ?? null, ts(25, 10), null),
+      this.notification("ISSUE_COMMENT_CREATED", "New comment", "Mark commented on TAS-101", tas101 ?? null, ts(25, 7), null),
+      // Both ids of an issue that no longer exists, so there is no seeded row
+      // to take them from: TAS-100 is below the seed's first number, and the
+      // id is fixed rather than generated so nothing can ever resolve it.
+      this.notification(
+        "ISSUE_DELETED",
+        "Issue deleted",
+        "TAS-100 was deleted",
+        { id: DELETED_ISSUE_ID, issueKey: "TAS-100", projectId: TASKA_PROJECT_ID },
+        ts(25, 3),
+        ts(25, 9),
+      ),
+      // Written before the gateway stored the three columns: the migration did
+      // not backfill them, so all three are null, and the prose names the
+      // issue the way the gateway wrote bodies then — by raw uuid. Ugly in the
+      // panel, and that ugliness is the gateway's history, not this seed's.
+      this.notification("ISSUE_TRANSITIONED", "Status changed", `Issue ${tas104?.id ?? ""} moved to DONE`, null, ts(24, 58), null),
+      // Not about an issue at all: the project is only in the prose.
+      this.notification("MEMBER_ADDED", "Added to a project", "Sofia added you to Taska Platform", null, ts(24, 50), ts(25, 8)),
+      // The bug rather than a design: TAS-101 is real and current, but
+      // issue-service's PayloadSerializer sets issueId for
+      // ISSUE_ATTACHMENT_ADDED and never calls putIssueFields to add issueKey
+      // or projectId (TAS-245), so this row is inert exactly like the two
+      // above it despite naming a live issue. The body names it the way the
+      // gateway's own body does when issueKey is null — by raw uuid. Read, so
+      // it does not move the unread total the other rows already add up to.
+      this.notification(
+        "ISSUE_ATTACHMENT_ADDED",
+        "Attachment added",
+        `An attachment was added to ${tas101?.id ?? ""}`,
+        tas101 ? { id: tas101.id } : null,
+        ts(24, 45),
+        ts(24, 47),
+      ),
     ];
   }
 
@@ -1852,8 +1884,8 @@ export class MockTaskaStore {
    *
    * **Known mock divergence: no entry in docs/ai/API-DIVERGENCE.md names
    * `getProject` by route, but the convention behind it is recorded — under the
-   * attachments section, the same one `getIssueById`'s own membership check
-   * documents:** `getProject` answers this shape even for a
+   * attachments section: this store's project-scoped reads do not check
+   * membership.** `getProject` answers this shape even for a
    * non-member — the project row, with no `currentUserRole` — where the real
    * gateway would refuse the read with 403 before this field ever enters it.
    * `listProjects` does not share that gap: it already filters to
@@ -2124,36 +2156,6 @@ export class MockTaskaStore {
     return this.withHistory(this.findIssue(projectId, issueId));
   }
 
-  /**
-   * The project-less read. The gateway's route is issue-scoped, so this is what
-   * `RestTaskaApi` has always done; the mock had no way to answer it because
-   * `findIssue` matches on both ids. See `TaskaApi.getIssueById`.
-   *
-   * Membership is checked here and nowhere else in this file's issue reads,
-   * because this is the only one a project id does not already narrow. Without
-   * it the seed hands out a working answer for an issue the current user
-   * cannot see — MOB has Mark, Tom and Priya and not Anna, who is the default
-   * user and the e2e login — and a notification naming a MOB issue would walk
-   * her onto a board the gateway would refuse. Before TAS-183 reaching that
-   * state took a hand-typed URL.
-   *
-   * **The gateway's scoping on `GET /issues/{issueId}` is inferred from its
-   * siblings, not measured.** `GET /projects/{id}` and `…/issues` answer 403
-   * to a non-member (measured 2026-08-18, docs/ai/API-DIVERGENCE.md); the
-   * contract declares only `200` and `default` for this route and nobody has
-   * probed it with a non-member token. NOT_FOUND rather than PERMISSION_DENIED
-   * is DESIGN.md §4.18's rule — the two must not be distinguishable, or the
-   * refusal itself says someone else's project exists.
-   */
-  getIssueById(issueId: string): IssueWithHistory {
-    const issue = this.issues.find((item) => item.id === issueId && item.deletedAt === null);
-    const project = issue && this.projects.find((item) => item.id === issue.projectId);
-    if (!issue || !project?.memberIds?.includes(this.currentUserId)) {
-      throw new MockApiError("NOT_FOUND", "Issue not found");
-    }
-    return this.withHistory(issue);
-  }
-
   private withHistory(issue: Issue): IssueWithHistory {
     return {
       issue: this.issueView(issue),
@@ -2192,7 +2194,7 @@ export class MockTaskaStore {
     this.historyByIssue[issue.id] = [];
     this.pushHistory(issue.id, "CREATED", this.currentUserId, {});
     this.notifications.unshift(
-      this.notification("ISSUE_CREATED", "Issue created", `${issue.issueKey} was created`, `/projects/${projectId}/issues/${issue.id}`, now(), null),
+      this.notification("ISSUE_CREATED", "Issue created", `${issue.issueKey} was created`, issue, now(), null),
     );
     return this.issueView(issue);
   }
@@ -2265,7 +2267,7 @@ export class MockTaskaStore {
     this.pushHistory(issue.id, "ASSIGNED", this.currentUserId, { to: assigneeId });
     if (assigneeId) {
       this.notifications.unshift(
-        this.notification("ISSUE_ASSIGNED", "Issue assigned", `${issue.issueKey} was assigned to you`, `/projects/${projectId}/issues/${issue.id}`, now(), null),
+        this.notification("ISSUE_ASSIGNED", "Issue assigned", `${issue.issueKey} was assigned to you`, issue, now(), null),
       );
     }
     return this.issueView(issue);
@@ -2305,7 +2307,7 @@ export class MockTaskaStore {
     issue.version += 1;
     this.pushHistory(issue.id, "TRANSITIONED", this.currentUserId, { from, to: toStatus });
     this.notifications.unshift(
-      this.notification("ISSUE_TRANSITIONED", "Status changed", `${issue.issueKey} moved to ${toStatus}`, `/projects/${projectId}/issues/${issue.id}`, now(), null),
+      this.notification("ISSUE_TRANSITIONED", "Status changed", `${issue.issueKey} moved to ${toStatus}`, issue, now(), null),
     );
     return this.issueView(issue);
   }
@@ -3133,7 +3135,17 @@ export class MockTaskaStore {
     this.pushHistory(comment.issueId, "COMMENT_DELETED", this.currentUserId, { commentId: comment.id });
   }
 
-  listNotifications(params: ListNotificationsParams = {}): Page<Notification> {
+  /**
+   * `unreadCount` is counted over the whole inbox, before `unreadOnly`,
+   * `offset` and `pageSize` narrow the page — which is what the gateway
+   * states, and what a count of `items` would get wrong on any inbox longer
+   * than one page.
+   *
+   * The inbox is not per user here: whoever is signed in reads the one seeded
+   * list, which is what lets a GLOBAL_ADMIN reach it on `/admin` without a seed
+   * of his own.
+   */
+  listNotifications(params: ListNotificationsParams = {}): NotificationPage {
     const offset = params.offset ?? 0;
     const pageSize = params.pageSize ?? 20;
     const notifications = [...this.notifications]
@@ -3144,6 +3156,7 @@ export class MockTaskaStore {
       items: notifications.slice(offset, offset + pageSize),
       pageSize,
       offset,
+      unreadCount: this.notifications.filter((notification) => !notification.readAt).length,
     };
   }
 
@@ -3156,6 +3169,7 @@ export class MockTaskaStore {
     return notification;
   }
 
+  /** How many this call changed, so a repeat answers 0 — the gateway's route is idempotent in the same words. */
   markAllNotificationsRead(): { updatedCount: number } {
     let updatedCount = 0;
     this.notifications.forEach((notification) => {
@@ -4182,21 +4196,34 @@ export class MockTaskaStore {
     };
   }
 
+  /**
+   * `about` is the issue the notification names, or `null` for one that names
+   * none — which leaves all three of `issueId`, `issueKey` and `projectId`
+   * `null`. Between those two full shapes there is a partial one this seed
+   * needs on its own: `{ id }` alone, which sets `issueId` and leaves
+   * `issueKey` and `projectId` null even though the issue is real. That is not
+   * invented — it is the shape `ISSUE_ATTACHMENT_ADDED` and
+   * `ISSUE_ATTACHMENT_DELETED` arrive in today, because issue-service's
+   * `PayloadSerializer` writes `issueId` for them and never calls
+   * `putIssueFields` for the other two (TAS-245). Typed to the kinds this
+   * build knows: the mock has no reason to invent a fourth shape.
+   */
   private notification(
-    notificationType: Notification["notificationType"],
+    notificationType: NotificationType,
     title: string,
     body: string,
-    link: string,
+    about: { id: string; issueKey?: string | null; projectId?: string | null } | null,
     createdAt: string,
     readAt: string | null,
   ): Notification {
     return {
       id: makeId("notification"),
-      userId: this.currentUserId,
       notificationType,
       title,
       body,
-      link,
+      issueId: about?.id ?? null,
+      issueKey: about?.issueKey ?? null,
+      projectId: about?.projectId ?? null,
       createdAt,
       readAt,
       sourceEventId: makeId("event"),
@@ -4609,10 +4636,6 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.getIssue(projectId, issueId));
   }
 
-  async getIssueById(issueId: string): Promise<IssueWithHistory> {
-    return wait(this.store.getIssueById(issueId));
-  }
-
   async createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
     return wait(this.store.createIssue(projectId, input));
   }
@@ -4796,7 +4819,7 @@ export class MockTaskaApi implements TaskaApi {
     await wait(null);
   }
 
-  async listNotifications(params?: ListNotificationsParams): Promise<Page<Notification>> {
+  async listNotifications(params?: ListNotificationsParams): Promise<NotificationPage> {
     return wait(this.store.listNotifications(params));
   }
 

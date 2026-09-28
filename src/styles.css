@@ -3843,15 +3843,39 @@ h1 {
 }
 
 .notifications-popover header button {
+  position: relative;
   color: var(--accent);
   cursor: pointer;
   font-size: 11.5px;
   font-weight: 550;
 }
 
+/* §7: a control under 28px gets its hit target enlarged rather than carried
+   as a recorded gap — the same recipe `.label-chip-remove::after` and
+   `.color-swatch::after` already use. Measured at 80.5×18.7 (`art-director`,
+   TAS-243); -5px top/bottom and -6px left/right gives 92.5×28.7 and fits
+   inside the header's own padding (12px vertical, 14px on the right) without
+   moving the header's geometry or the ring `:focus-visible` draws from the
+   button's own box. Paints nothing — no background, no border, no content —
+   so it is a bigger target and not a bigger button. */
+.notifications-popover header button::after {
+  content: "";
+  position: absolute;
+  inset: -5px -6px;
+}
+
 .notification-list {
   max-height: 340px;
   overflow: auto;
+  /* At six seed rows, Tab scrolls a non-last row ("Added to a project") flush
+     against the panel's rounded bottom edge: only `:last-child` gets the
+     inner-radius treatment above, so a scrolled-to row short of that lands its
+     focus ring's bottom corners 4.79px outside the panel's clip
+     (TAS-243-R2-B1). Same fix as `.global-search-list`'s `scroll-padding-top`
+     above, which solved the mirror image of this on the search panel's top
+     corners (§4.20): leave a margin the size of the arc so `scrollIntoView`
+     never parks a row on top of it. */
+  scroll-padding-bottom: var(--pop-radius);
 }
 
 .notification-item {
@@ -3890,23 +3914,16 @@ h1 {
   outline-offset: -2px;
 }
 
-/* A notification the gateway gave nothing to open — no link, no id in the body
-   (TAS-183). Pressing it still marks it read, so it stays a button and keeps
-   its hover and §4.1's focus ring — the ring is `.notification-item:focus-visible`
+/* A notification with nothing to open — not about an issue, about one that was
+   deleted, or older than the ids the gateway now sends (TAS-243; the rule is
+   `notificationRoute`). Pressing it still marks it read, so it stays a button
+   and keeps its hover and §4.1's focus ring — the ring is `.notification-item:focus-visible`
    up the file, added in TAS-185 because until then this sentence was describing
    the browser's default outline rather than anything this file had written.
    What goes is the pointer cursor, which is the part that promised a
    destination. */
 .notification-item.is-inert {
   cursor: default;
-}
-
-/* The one read between the press and the route. No spinner — this repository
-   keeps those for the case where there is genuinely nothing to show, and the
-   row is right there — so the cue is the row holding the state hover already
-   uses. Nothing moves, so `prefers-reduced-motion` has no opinion to have. */
-.notification-item[aria-busy="true"] {
-  background: var(--surface-2);
 }
 
 /* The panel's rows run edge to edge, and a banner that did the same would sit
