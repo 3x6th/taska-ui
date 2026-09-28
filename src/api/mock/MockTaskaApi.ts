@@ -1624,9 +1624,11 @@ export class MockTaskaStore {
     // One row per shape the gateway sends since TAS-243, newest first. The
     // two that open something name real TAS issues — Anna's project, and
     // Mark's too — so the route they build lands on a panel rather than on a
-    // not-found. The three that open nothing are the three reasons a row can:
-    // not about an issue, about an issue that is gone, and older than the
-    // columns.
+    // not-found. The four that open nothing are the four reasons a row can:
+    // not about an issue, about an issue that is gone, older than the
+    // columns, and — until TAS-245 — an attachment notification, which
+    // issue-service's PayloadSerializer writes with issueId alone and never
+    // backfills with issueKey or projectId.
     const tas104 = this.issues.find((item) => item.issueKey === "TAS-104");
     this.notifications = [
       this.notification("ISSUE_ASSIGNED", "Issue assigned", "TAS-107 was assigned to you", tas107 ?? null, ts(25, 10), null),
@@ -1649,6 +1651,21 @@ export class MockTaskaStore {
       this.notification("ISSUE_TRANSITIONED", "Status changed", `Issue ${tas104?.id ?? ""} moved to DONE`, null, ts(24, 58), null),
       // Not about an issue at all: the project is only in the prose.
       this.notification("MEMBER_ADDED", "Added to a project", "Sofia added you to Taska Platform", null, ts(24, 50), ts(25, 8)),
+      // The bug rather than a design: TAS-101 is real and current, but
+      // issue-service's PayloadSerializer sets issueId for
+      // ISSUE_ATTACHMENT_ADDED and never calls putIssueFields to add issueKey
+      // or projectId (TAS-245), so this row is inert exactly like the two
+      // above it despite naming a live issue. The body names it the way the
+      // gateway's own body does when issueKey is null — by raw uuid. Read, so
+      // it does not move the unread total the other rows already add up to.
+      this.notification(
+        "ISSUE_ATTACHMENT_ADDED",
+        "Attachment added",
+        `An attachment was added to ${tas101?.id ?? ""}`,
+        tas101 ? { id: tas101.id } : null,
+        ts(24, 45),
+        ts(24, 47),
+      ),
     ];
   }
 
@@ -4181,15 +4198,21 @@ export class MockTaskaStore {
 
   /**
    * `about` is the issue the notification names, or `null` for one that names
-   * none — which sets all three of `issueId`, `issueKey` and `projectId`
-   * together, the way the gateway sends them. Typed to the kinds this build
-   * knows: the mock has no reason to invent one.
+   * none — which leaves all three of `issueId`, `issueKey` and `projectId`
+   * `null`. Between those two full shapes there is a partial one this seed
+   * needs on its own: `{ id }` alone, which sets `issueId` and leaves
+   * `issueKey` and `projectId` null even though the issue is real. That is not
+   * invented — it is the shape `ISSUE_ATTACHMENT_ADDED` and
+   * `ISSUE_ATTACHMENT_DELETED` arrive in today, because issue-service's
+   * `PayloadSerializer` writes `issueId` for them and never calls
+   * `putIssueFields` for the other two (TAS-245). Typed to the kinds this
+   * build knows: the mock has no reason to invent a fourth shape.
    */
   private notification(
     notificationType: NotificationType,
     title: string,
     body: string,
-    about: Pick<Issue, "id" | "issueKey" | "projectId"> | null,
+    about: { id: string; issueKey?: string | null; projectId?: string | null } | null,
     createdAt: string,
     readAt: string | null,
   ): Notification {

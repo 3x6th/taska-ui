@@ -39,13 +39,20 @@ export type IssueType = "TASK" | "BUG" | "STORY";
 export type IssuePriority = "LOW" | "MEDIUM" | "HIGH";
 export type IssueStatus = "TODO" | "IN_PROGRESS" | "DONE";
 /**
- * The notification kinds the gateway is known to emit, read from
- * notification-service and the gateway's mapper at backend `5a8d805a3ac3`
- * (TAS-243) rather than from the contract. The contract types
+ * The notification kinds the gateway can emit, read from notification-service
+ * and the gateway's mapper at backend `5a8d805a3ac3` (TAS-243) rather than
+ * from the contract. The contract types
  * `NotificationResponseDto.notificationType` as a bare string; its
  * `NotificationTypeDto` lists eleven of these and is referenced by nothing, so
  * it describes neither the field nor the wire. `UNKNOWN` is the gateway's own
  * fallback for a kind it does not recognise.
+ *
+ * Two of these are named without being live: `ISSUE_COMMENT_UPDATED` and
+ * `ISSUE_COMMENT_DELETED` have no case in notification-service's
+ * `NotificationFactory` and are never produced today. They stay in the union
+ * anyway — the wire types the field as a bare string, and the day
+ * `NotificationFactory` grows a case for either, the type should already have
+ * a name ready rather than be the thing that lags it.
  *
  * This is a list of names to build and compare against — the mock seeds from
  * it, and a comparison written against it cannot misspell one. It is **not**
@@ -985,6 +992,13 @@ export interface Notification {
    * before the gateway started storing them: the migration that added the
    * columns did not backfill them, so an issue notification that old carries
    * none of the three.
+   *
+   * A third case sends `issueId` alone: `ISSUE_ATTACHMENT_ADDED` and
+   * `ISSUE_ATTACHMENT_DELETED` leave `issueKey` and `projectId` null because
+   * issue-service's `PayloadSerializer` writes `issueId` and never calls
+   * `putIssueFields` for the other two (TAS-245). `notificationRoute`
+   * (src/domain/notifications.ts) needs both `issueId` and `projectId`, so
+   * this one stays unopenable until the backend fix lands.
    */
   issueId: string | null;
   issueKey: string | null;

@@ -1633,6 +1633,16 @@ describe("MockTaskaApi", () => {
       expect(deleted.issueId).not.toBeNull();
       expect(deleted.projectId).toBe(project.id);
       expect(issues.some((item) => item.id === deleted.issueId)).toBe(false);
+
+      // The partial shape TAS-245 tracks: a real issue's id with issueKey and
+      // projectId still null, because issue-service never backfills them for
+      // ISSUE_ATTACHMENT_ADDED. Read, so it does not add to the unread count
+      // the other rows already account for.
+      const [attachment] = byType("ISSUE_ATTACHMENT_ADDED");
+      const tas101 = issues.find((item) => item.issueKey === "TAS-101");
+      expect(tas101, "the seed has no TAS-101 to pin the attachment row to").toBeDefined();
+      expect(attachment).toMatchObject({ issueId: tas101!.id, issueKey: null, projectId: null });
+      expect(attachment.readAt).not.toBeNull();
     });
 
     it("states the issue on every notification the product makes", async () => {

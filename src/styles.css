@@ -3843,15 +3843,39 @@ h1 {
 }
 
 .notifications-popover header button {
+  position: relative;
   color: var(--accent);
   cursor: pointer;
   font-size: 11.5px;
   font-weight: 550;
 }
 
+/* §7: a control under 28px gets its hit target enlarged rather than carried
+   as a recorded gap — the same recipe `.label-chip-remove::after` and
+   `.color-swatch::after` already use. Measured at 80.5×18.7 (`art-director`,
+   TAS-243); -5px top/bottom and -6px left/right gives 92.5×28.7 and fits
+   inside the header's own padding (12px vertical, 14px on the right) without
+   moving the header's geometry or the ring `:focus-visible` draws from the
+   button's own box. Paints nothing — no background, no border, no content —
+   so it is a bigger target and not a bigger button. */
+.notifications-popover header button::after {
+  content: "";
+  position: absolute;
+  inset: -5px -6px;
+}
+
 .notification-list {
   max-height: 340px;
   overflow: auto;
+  /* At six seed rows, Tab scrolls a non-last row ("Added to a project") flush
+     against the panel's rounded bottom edge: only `:last-child` gets the
+     inner-radius treatment above, so a scrolled-to row short of that lands its
+     focus ring's bottom corners 4.79px outside the panel's clip
+     (TAS-243-R2-B1). Same fix as `.global-search-list`'s `scroll-padding-top`
+     above, which solved the mirror image of this on the search panel's top
+     corners (§4.20): leave a margin the size of the arc so `scrollIntoView`
+     never parks a row on top of it. */
+  scroll-padding-bottom: var(--pop-radius);
 }
 
 .notification-item {

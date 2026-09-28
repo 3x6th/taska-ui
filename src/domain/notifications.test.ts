@@ -49,10 +49,14 @@ describe("where a notification goes when it is pressed", () => {
     expect(notificationRoute(about("ISSUE_DELETED", ISSUE_ID, PROJECT_ID))).toBeNull();
   });
 
-  it("opens nothing when only one of the two ids is there", () => {
-    // The route needs both. Guessing the project from the open board is the
-    // thing a notification opened from `/projects` cannot do.
-    expect(notificationRoute(about("ISSUE_ASSIGNED", ISSUE_ID, null))).toBeNull();
+  it("opens nothing for an attachment notification, which carries issueId alone until TAS-245", () => {
+    // Not a hypothetical: issue-service's PayloadSerializer writes issueId for
+    // ISSUE_ATTACHMENT_ADDED and ISSUE_ATTACHMENT_DELETED and never calls
+    // putIssueFields to add issueKey or projectId, so this is the shape these
+    // two kinds arrive in today. The route needs both ids, and guessing the
+    // project from the open board is the thing a notification opened from
+    // `/projects` cannot do.
+    expect(notificationRoute(about("ISSUE_ATTACHMENT_ADDED", ISSUE_ID, null))).toBeNull();
     expect(notificationRoute(about("ISSUE_ASSIGNED", null, PROJECT_ID))).toBeNull();
     // An empty string is not an id either.
     expect(notificationRoute(about("ISSUE_ASSIGNED", "", PROJECT_ID))).toBeNull();

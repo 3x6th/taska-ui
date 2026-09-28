@@ -3,9 +3,11 @@ import { expect, test, type Page } from "@playwright/test";
 // A notification states the issue it is about (TAS-243): `issueId` and
 // `projectId` are on the wire, the route is built from them, and nothing is
 // read between the press and the destination. The seed carries one row per
-// shape the gateway sends — two that open an issue, and three that open
-// nothing for the three reasons a row can: not about an issue, about a
-// deleted one, and older than the ids.
+// shape the gateway sends — two that open an issue, and four that open
+// nothing for the four reasons a row can: not about an issue, about a
+// deleted one, older than the ids, and — until TAS-245 — an attachment
+// notification, which carries issueId alone because issue-service's
+// PayloadSerializer never backfills issueKey or projectId for it.
 //
 // Which rows get a route is unit-tested (src/domain/notifications.test.ts), and
 // so are the optimistic writes (src/screens/BoardScreen.test.tsx). This is what
@@ -64,17 +66,18 @@ test("a notification opens the issue it names, in the same click", async ({ page
 test("rows with nothing to open say so, mark read, and leave the reader where they were", async ({ page }) => {
   await openNotifications(page);
 
-  // Three reasons, one row each: not about an issue, a deleted issue, and an
-  // issue notification from before the gateway stated the issue.
+  // Four reasons, one row each: not about an issue, a deleted issue, an issue
+  // notification from before the gateway stated the issue, and — until
+  // TAS-245 — an attachment notification that carries issueId alone.
   const inert = page.locator(".notification-item.is-inert");
-  await expect(inert).toHaveCount(3);
-  for (const text of ["Sofia added you to Taska Platform", "TAS-100 was deleted", "moved to DONE"]) {
+  await expect(inert).toHaveCount(4);
+  for (const text of ["Sofia added you to Taska Platform", "TAS-100 was deleted", "moved to DONE", "An attachment was added to"]) {
     // `cursor: default` is the whole of what the class does, and there is no
     // cursor at 390 or on the keyboard path, so the row has to say it in words.
     await expect(inert.filter({ hasText: text })).toContainText("Nothing to open");
   }
   // A row that does open something must not say it.
-  await expect(page.locator(".notification-item", { hasText: "Nothing to open" })).toHaveCount(3);
+  await expect(page.locator(".notification-item", { hasText: "Nothing to open" })).toHaveCount(4);
 
   // The pre-migration row, which still has the issue's uuid in its prose: the
   // one a body-mining resolver would have opened.

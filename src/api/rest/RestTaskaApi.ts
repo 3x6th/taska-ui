@@ -596,12 +596,16 @@ interface RestCommentsListResponse {
  * `NotificationResponseDto` as the contract has it since backend `5a8d805a3ac3`
  * (TAS-243). Six fields are required; the rest are nullable and read that way.
  *
- * `issueId`, `issueKey` and `projectId` are `null` on every notification that
- * is not about an issue (`MEMBER_*`, `PROJECT_CREATED`, `USER_*`), and on every
- * issue notification stored before the migration that added them, which did
- * not backfill. They are typed optional as well as nullable so that an absent
- * key lands in the domain as `null` rather than as `undefined`; `readAt` is not
- * in the schema's `required` list either, and is read the same way.
+ * `issueId`, `issueKey` and `projectId` are `null` together on a notification
+ * that is not about an issue (`MEMBER_*`, `PROJECT_CREATED`, `USER_*`) and on
+ * an issue notification stored before the migration that added them, which did
+ * not backfill. A third case sends `issueId` alone: `ISSUE_ATTACHMENT_ADDED`
+ * and `ISSUE_ATTACHMENT_DELETED` leave `issueKey` and `projectId` null because
+ * issue-service's `PayloadSerializer` writes `issueId` and never calls
+ * `putIssueFields` for the other two (TAS-245). All three are typed optional as
+ * well as nullable so that an absent key lands in the domain as `null` rather
+ * than as `undefined`; `readAt` is not in the schema's `required` list either,
+ * and is read the same way.
  *
  * The schema has no `link` and no `userId`, and nothing here reads either: the
  * notification is the reader's by construction, and the issue it is about is
