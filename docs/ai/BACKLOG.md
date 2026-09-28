@@ -1647,6 +1647,17 @@ Two things fell out that are worth more than the fix:
   is a pre-existing defect of the desktop anchor rather than one that story
   created. Measured while sweeping the same question the story fixed below the
   breakpoint; recorded rather than widened into the diff.
+- **On a phone the popover's list stops halfway down the page and cuts its last
+  row against the card beneath** (`art-director`, TAS-243, 390×844 both
+  themes). Not paint-through: the panel is opaque. §4.12's 340px list cap cuts
+  a row mid-glyph, the card below starts one pixel under the panel's edge, and
+  both planes are `--surface` with only an 8%-white border between them in
+  dark. Predates TAS-243 — it shows on the mock now because the seed grew from
+  three rows to five; with the gateway's twenty it always has. Proposed fix,
+  which needs §4.12 amended first: inside the existing ≤820 block, which
+  already clamps the panel to `100vh - var(--trigger-bottom) - 18px`, let the
+  list fill it (`max-height: none; flex: 1 1 auto; min-height: 0`), so it ends
+  18px above the viewport edge.
 
 ### Left over from the TAS-179 design pass (`art-director`, 2026-08-23)
 
@@ -1919,11 +1930,16 @@ search endpoint is claimed; the other is not:
   the contract is [TAS-206](https://jira.ozero.dev/browse/TAS-206).
   **The UI half is done in TAS-243**: `Notification.notificationType` accepts
   any string, `NotificationType` is kept only as the list of names
-  notification-service emits (22 plus the gateway's `UNKNOWN`, read at backend
-  `5a8d805a3ac3`), and `MEMBER_ROLE_CHANGED` is gone. The contract half is
+  notification-service can emit (its 22-value enum plus the gateway's
+  `UNKNOWN`, read at backend `5a8d805a3ac3`; `ISSUE_COMMENT_UPDATED` and
+  `_DELETED` have no case in `NotificationFactory.create` and are never
+  produced), and `MEMBER_ROLE_CHANGED` is gone. The contract half is
   unchanged: `NotificationTypeDto` still lists eleven and is `$ref`'d by
   nothing, while the stand already sends `LABEL_*` and `ISSUE_LINK_*`
-  (measured 2026-09-28).
+  (measured 2026-09-28). The gateway mapper names thirteen kinds and sends the
+  other nine through its `default` branch with a WARN per row
+  (`api-contract-guard`, TAS-243) — the mapper cases and the `$ref` were added
+  to TAS-206 as a comment.
 
 The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
 schema change. None was on the four open PRs this refresh was done for — they
@@ -2302,8 +2318,12 @@ is what recurs.
   else"**, but the gateway checks the token first, while the mock checks the size
   before `currentUser()`. The UI cannot reach the difference
   (`api-contract-guard`, 2026-09-14).
-- **Escape inside the profile menu sends focus to `<body>`** (`art-director`,
-  2026-09-14). The next Tab lands on "Filter projects". This predates TAS-220 —
+- **Escape inside the profile menu — and the notifications popover — sends
+  focus to `<body>`** (`art-director`, 2026-09-14; the popover measured by
+  `art-director` on TAS-243 at 1440 and 390, both themes, where the next Tab
+  starts again at the logo). Both dismiss through
+  `src/hooks/useDismissOnOutside.ts:51`, so the fix belongs in the hook and
+  covers both. The next Tab lands on "Filter projects". This predates TAS-220 —
   the handler is identical on `main` — but both photo writes now hand focus back
   to the upload button, so Escape is the usual way out. The same component
   already returns focus to the trigger when Administration is chosen. The fix is

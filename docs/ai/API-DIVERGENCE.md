@@ -2599,14 +2599,35 @@ found"`.
   still name issues by raw uuid, which is exactly what the old fallback read.
   **Decided in TAS-243 not to keep that fallback for them**: it would have kept
   the whole compensation — the extra read, its two error states, the
-  wrong-issue residual below — load-bearing for rows that only age, on a stand
-  with no external users and, on the measured inbox, no unread notification.
-  Those rows now mark read and say "Nothing to open". The owner was told and
-  can reverse it.
+  wrong-issue residual below — load-bearing, on a stand with no external users
+  and, on the measured inbox, no unread notification. Those rows now mark read
+  and say "Nothing to open". The owner was told and can reverse it. The first
+  version of this bullet justified the decision by these being "rows that only
+  age"; the next bullet is why that is not the whole of it.
+- **A live kind is id-less too: `ISSUE_ATTACHMENT_ADDED` and
+  `ISSUE_ATTACHMENT_DELETED` arrive with `issueId` and without `issueKey` or
+  `projectId`.** Found by `api-contract-guard` on TAS-243 and verified
+  independently, read at backend `5a8d805a3ac3`: issue-service's
+  `PayloadSerializer.createAttachmentUploadedPayload` and
+  `createAttachmentDeletedPayload` write `issueId` and never call
+  `putIssueFields`, which every other issue payload calls. TAS-184's `2bd9cad`
+  added `putIssueFields` after TAS-132's `58d2fd7` had added the attachment
+  payloads, and missed them. notification-service stores what it is given, and
+  its `displayKey` falls back to the raw uuid, so the body reads «К задаче
+  <uuid> добавлено вложение …». `notificationRoute` needs both ids, so **every
+  new attachment notification opens nothing** until the backend fixes the
+  payload — these rows do not age out. The client is left as it is on
+  purpose: the only client-side route to a project is an issue read per click,
+  which is the compensation this story removed. Filed as
+  [TAS-245](https://jira.ozero.dev/browse/TAS-245), the missed part of TAS-184
+  (already `Done`), under epic TAS-210. Removal: that fix; nothing on this side
+  changes.
 - **Not yet seen on the wire: a non-null `issueId`/`projectId`.** No
   notification had been created on the measured inbox since the deploy. The
   shape is read from the contract, the gateway's `NotificationMapper` and
-  notification-service's own mapper, which set all three on every issue kind.
+  notification-service's own mapper. Of the kinds that name an issue, every one
+  except the two attachment kinds above carries all three; comment kinds get
+  them from `CommentServiceImpl`'s own payload.
 - **`ISSUE_DELETED` carries both ids of an issue that no longer exists**, so it
   is the one kind `notificationRoute` refuses by name. An older notification
   about an issue deleted later still routes, and lands on the panel's own
