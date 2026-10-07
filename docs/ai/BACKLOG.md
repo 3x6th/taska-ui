@@ -2862,6 +2862,19 @@ Frontend, recorded rather than taken:
 - **"Try again" vs "Go to projects" emphasis on the by-key failure screen**
   (`art-director` N3, taste): the action that serves the reader is the
   secondary one. If swapped, §4.18's wording changes with it.
+- **A failed panel read leaves no way out of the panel** (`art-director` r2 N1
+  on TAS-246, pre-existing): the `ApiNotice` sits alone with no header, Close or
+  "Try again"; Esc does nothing (§7 already records it), and on 390 the only
+  exit is the 32px scrim strip. Fix: render the header's Close `.icon-button`
+  above the notice and the §4.18 action row with a secondary "Try again" calling
+  `issueQuery.refetch()`.
+- **The panel's write slot carries the conflict sentence in `.form-error`**
+  (`art-director` r2 N2): 3.17:1 light, the TAS-192 gap. Move the slot to the
+  `.api-notice` recipe together with TAS-192, not alone.
+- **No in-flight state on an assignee chip or priority segment** (`art-director`
+  r2 N3): the row looks dead for one round trip until the `PATCH` answers. Draw
+  `updateIssue.variables.assigneeId` / `.priority` as active while pending; the
+  answer or a 409 replaces it.
 - **A blank `displayName` on a member-map row still prints blank**
   (`art-director` ruling 1 on TAS-246): `src/lib/people.ts:44`,
   `BoardScreen.tsx:5090`. The chain treats a blank server summary as unnamed
@@ -2871,8 +2884,9 @@ Frontend, recorded rather than taken:
   the top of this file). When something does, it has to merge the version from
   its answer or re-read the issue, or the panel's next `PATCH` will conflict
   with the reader's own earlier write.
-- **`DESIGN.md` §5.5 says inline edits save as "`PATCH` с debounce 600ms", and
-  the panel saves on blur.** Since TAS-246 the `PATCH` half is true; the
+- ~~**`DESIGN.md` §5.5 says inline edits save as "`PATCH` с debounce 600ms", and
+  the panel saves on blur.**~~ Closed in TAS-246: `art-director` ruled "on blur"
+  and §5.5 was rewritten for `PATCH` with `If-Match`. Since TAS-246 the `PATCH` half is true; the
   debounce half never was. The panel saves a text field on blur and a picker on
   pick. Either §5.5 changes to say so or the panel grows a debounce, and
   `DESIGN.md` outranks the code, so that is `art-director`'s ruling to make.

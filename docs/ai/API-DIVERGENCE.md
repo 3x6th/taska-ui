@@ -815,13 +815,12 @@ Everything below is the entry as it stood, in the past tense.
   off and the watcher list unchanged. Against the gateway the refetch after the
   write shows you watching. Found by the TAS-246 critique on 2026-10-07. It had
   been recorded nowhere until this entry.
-- **Compensation:** none. This is a parity gap in the mock, not a
-  compensation. Under `AGENTS.md`'s interchangeability rule it is a wrong claim
-  about the server, so the mock is what changes. On a change to a non-null
-  assignee, the mock should insert the watcher row if it is absent, with
-  `createdBy` set to the actor and no history entry; create should do the same
-  for the reporter.
-- **Removal:** the mock change above, and the contract stating the
+- **Mock half closed in TAS-246 (`ae12659`).** Under `AGENTS.md`'s
+  interchangeability rule this was a wrong claim about the server, so the mock
+  changed: on a change to a non-null assignee it inserts the watcher row if
+  absent, with `createdBy` set to the actor and no history entry, and create
+  does the same for the reporter (`autoWatch` in `MockTaskaApi.ts`).
+- **What is still owed here:** the contract stating the
   subscription on the three routes. The contract half is a candidate
   extension of [TAS-228](https://jira.ozero.dev/browse/TAS-228), documentation
   only and not filed (`BACKLOG.md`, "Left by TAS-246"). The environment
@@ -2604,9 +2603,12 @@ empty.**
     unobserved.
   - **The watcher count is not computed on the client.** The details DTO states
     no count, so both REST and mock return `totalCount: null` for watchers from
-    this read (pass 2) rather than the list's length. The panel draws no count
-    pill until a watcher write states `watchersCount`. Counting the list would
-    print "0" beside a part that failed, a number the server never stated.
+    this read (pass 2) rather than the list's length, and the panel draws no
+    count pill at all — not from the read and not from a write's
+    `watchersCount` either, because a pill that appears after a press and is
+    gone on the next open is worse than none (DESIGN.md §4.21). Counting the list
+    would print "0" beside a part that failed, a number the server never stated.
+    The pill returns with ask A3.
   - **The watch toggle starts from the server's `isWatching`.** That flag comes
     from the core row (`findIssueCoreDetails`, an `EXISTS`), which does not fail
     with the watchers part. When `isWatching` is `true` and the reader is not in
@@ -4072,9 +4074,11 @@ measurement until a token is used; for create the question is still open.
 **For the estimates, `PUT` and create only, since TAS-246.** `PATCH`'s estimates
 are checked in the gateway with their own wording, "`<field>` must not be
 negative" (see the entry above), which is correct. The client no longer sends
-`PUT`. `PATCH`'s story points pass the gateway unchecked, and which check
-issue-service applies to a negative one on that path was not read, so for story
-points this entry may still hold on every route.
+`PUT`. `PATCH`'s story points pass the gateway unchecked; issue-service then
+refuses a negative one through `NullableFieldParsers.parseNullableNonNegativeBigDecimal`
+with INVALID_ARGUMENT "body.storyPoints must be positive or zero" (read at
+`60d62ee`, not probed) — the same "positive" wording for a check that accepts
+`0`, so for story points this entry still holds on every route.
 
 `GrpcRequestValidators.requireOptionalPositiveZeroOrInvalidArgument` tests
 `value < 0` and refuses with `<field> must be positive`. So `0` is accepted —
