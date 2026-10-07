@@ -2847,6 +2847,25 @@ is what recurs.
 
 Frontend, recorded rather than taken:
 
+- **Opening a search hit blanks the app for one round trip** (`art-director`
+  N1 on TAS-246, measured on mock: `/projects` → `/browse/TAS-104` → no topbar
+  and an `aria-busy` plane from ~4 to ~156 ms; ≥ 1 s on a 5xx). A regression
+  against the old direct route. Fix: `GlobalSearch` resolves the key itself
+  with `queryClient.fetchQuery(["issue-by-key", key])` (the key
+  `IssueKeyScreen` uses), keeps the row `aria-busy`, navigates straight to the
+  issue, and on failure to `/browse/{key}`, which reads the cached error.
+- **The §4.18 screen hides its only control on a landscape phone**
+  (`art-director` N2 on TAS-246, pre-existing): at 667×375 "Go to projects"
+  ends at y=414.7 under `body{overflow:hidden}`. `/browse` links now reach this
+  screen more often. Candidate: mascot `max-height: 40vh` under
+  `(max-height: 480px)`.
+- **"Try again" vs "Go to projects" emphasis on the by-key failure screen**
+  (`art-director` N3, taste): the action that serves the reader is the
+  secondary one. If swapped, §4.18's wording changes with it.
+- **A blank `displayName` on a member-map row still prints blank**
+  (`art-director` ruling 1 on TAS-246): `src/lib/people.ts:44`,
+  `BoardScreen.tsx:5090`. The chain treats a blank server summary as unnamed
+  but not a blank member row — asymmetric.
 - **Worklog writes bump `issue.version`** (TAS-246 brief, read at develop
   `60d62ee`). Nothing in the UI writes a worklog yet (see the worklog line at
   the top of this file). When something does, it has to merge the version from
