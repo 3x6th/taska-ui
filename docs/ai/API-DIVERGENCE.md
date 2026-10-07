@@ -677,18 +677,36 @@ Everything below is the entry as it stood, in the past tense.
   2026-09-11 from TAS-141 which closed without it. Until then
   the loop should be capped (TAS-202's interim half).
 
-### An assignee cannot be cleared — by contract
+### Closed by TAS-246: an assignee could not be cleared — by contract
 
-- **Endpoint:** `PUT /api/v1/issues/{issueId}/assignee`
-- **Contract:** `AssignIssueRequestDto.assigneeId` is a required,
-  non-nullable string. Unassignment does not exist in the API.
-- **Compensation:** `RestTaskaApi.assignIssue(null)` throws a client-fabricated
-  `UNSUPPORTED_OPERATION` error, and the board renders the "None" chip
-  permanently `disabled` — an issue assigned by mistake can never be
-  unassigned. The mock unassigns happily, so the modes visibly disagree.
-- **Removal:** [TAS-215](https://jira.ozero.dev/browse/TAS-215), re-filed
-  2026-09-11 from TAS-141 (nullable
-  `assigneeId` or an explicit unassign route).
+- **Closed 2026-10-07.** Backend [TAS-215](https://jira.ozero.dev/browse/TAS-215)
+  (PR #166, `f6525ce`, deployed 2026-10-02) added `PATCH /api/v1/issues/{issueId}`,
+  whose `PatchIssueRequestDto.assigneeId` is nullable: an explicit `null` clears
+  it. On 2026-10-07 the route answered `401` without a token, and the CORS
+  preflight from `https://taska.ozero.dev` for `PATCH` with `authorization,
+  content-type, if-match` answered `200` and allowed `if-match`.
+  [TAS-246](https://jira.ozero.dev/browse/TAS-246) moved every issue write onto
+  that route. `assignIssue` was deleted from `TaskaApi` and from all three
+  implementations, and with it the `UNSUPPORTED_OPERATION` branch. Assigning and
+  unassigning are both `updateIssue({assigneeId})` now. The "None" chip is
+  enabled when the reader may edit and the issue has an assignee, and it sends
+  `{assigneeId: null}`.
+- **Known from code only** (read at develop `60d62ee`). No `PATCH` has been sent
+  to the stand with a token yet, so the clearing itself has not been observed.
+- **The record as it stood:** the endpoint was
+  `PUT /api/v1/issues/{issueId}/assignee`, and `AssignIssueRequestDto.assigneeId`
+  was a required, non-nullable string, so unassignment did not exist in the
+  API. `RestTaskaApi.assignIssue(null)` threw a client-fabricated
+  `UNSUPPORTED_OPERATION` error, and the board rendered the "None" chip
+  permanently `disabled`, so an issue assigned by mistake could never be
+  unassigned. The mock unassigned happily, so the modes visibly disagreed.
+  Re-filed 2026-09-11 from TAS-141 as TAS-215 (a nullable `assigneeId` or an
+  explicit unassign route).
+- **What is still owed here.** One `PATCH` clearing an assignee on a throwaway
+  issue, with a token, to turn the code read into an observation. That needs the
+  owner's go-ahead to use their session. Removing the deprecated
+  `PUT …/assignee` is a backend step that is not filed (`BACKLOG.md`, "Left by
+  TAS-246").
 
 ### Five watcher and assignee writes are role-gated by issue-service; on two the contract and the server disagree about the self case, and on three the contract names no role
 
@@ -697,7 +715,10 @@ Everything below is the entry as it stood, in the past tense.
   - `POST /api/v1/projects/{projectId}/issues/{issueId}/watchers` (the
     subscriber's `userId` in the body) and `DELETE …/watchers/{userId}` (in the
     path);
-  - `PUT /api/v1/issues/{issueId}/assignee`.
+  - the assignee write — `PATCH /api/v1/issues/{issueId}` carrying
+    `assigneeId`, since [TAS-246](https://jira.ozero.dev/browse/TAS-246).
+    Until then it was `PUT /api/v1/issues/{issueId}/assignee`, which is now
+    `deprecated: true` in the contract and no longer called by the client.
 - **Contract:** `POST …/watchers` and `DELETE …/watchers/{userId}` both say
   "Доступно только пользователю с ролью ADMIN в проекте", with no exception for
   callers naming themselves (`docs/contract/openapi.yml` ~1766-1768 and
@@ -707,7 +728,8 @@ Everything below is the entry as it stood, in the past tense.
   case may be intended there, and it bears on the choice TAS-228 asks for. The
   `…/watchers/me` pair states no role and lists a `403` without saying who gets
   it. The assignee route states no role for the person assigning
-  or for the person assigned.
+  or for the person assigned, and neither does `PATCH /issues/{issueId}`,
+  which states no role at all.
 - **Runtime** (defaults read in the Java at backend `develop` `1cfe4d7`; not
   probed with a token): issue-service's `application.yml` (lines 45, 59, 61)
   sets `issue.allowed-roles.assign-issue-roles` to `ADMIN,MEMBER`,
@@ -725,11 +747,21 @@ Everything below is the entry as it stood, in the past tense.
   - **a MEMBER may add or remove themselves through the two routes the contract
     calls ADMIN-only.**
 
-  The assign path in `IssueServiceImpl` (178-184) checks `assign-issue-roles`
-  for the actor, and for the assignee too unless the actor assigns themselves.
-  A `null` assignee never reaches it: the contract makes `assigneeId` required,
-  the gRPC layer rejects anything that is not a UUID, and the client refuses
-  `null` first (see "An assignee cannot be cleared — by contract" above).
+  The old assign path in `IssueServiceImpl` (178-184) checks
+  `assign-issue-roles` for the actor, and for the assignee too unless the actor
+  assigns themselves; a `null` assignee never reached it, because
+  `AssignIssueRequestDto.assigneeId` is required.
+  **Since TAS-246 the client assigns through `PATCH`**, and
+  `IssuePatchServiceImpl` (read at develop `60d62ee`, not probed) checks in a
+  different shape. `update-issue-roles` (`ADMIN,MEMBER` by default) applies to
+  the actor on every `PATCH`, whatever it changes. `checkPatchAssigneeRoles`
+  then runs only when the assignee actually changes: it returns early when the
+  patched `assigneeId` equals the stored one (`Objects.equals`). When it does
+  run, `assign-issue-roles` applies to the actor, and to the new assignee
+  unless that is `null` (an unassign) or the actor. So unassigning checks the
+  actor alone, and re-sending the current assignee checks nothing beyond
+  `update-issue-roles`. A watcher subscription follows every assignee change;
+  see the next entry.
   Refusals are `403` in `ProjectRoleChecker`'s words: "Access denied" for a
   non-member and "Not allowed role" for a member.
 - **Compensation** ([TAS-226](https://jira.ozero.dev/browse/TAS-226)): the UI
@@ -737,7 +769,9 @@ Everything below is the entry as it stood, in the past tense.
   - The watch toggle is disabled outside ADMIN and MEMBER, and still shows the
     reader's state.
   - The assignee chips offer only ADMIN and MEMBER rows, and keep a demoted
-    current assignee as a disabled active chip.
+    current assignee as a disabled active chip. Since TAS-246 the "None" chip
+    is live for anyone who may edit, matching the server's unassign, which
+    checks only the actor.
   - `MockTaskaStore` refuses the same cases, in its own words. On the self case
     of the two ADMIN routes it follows the contract: `requireWatcherAdmin`
     refuses a MEMBER. The UI never makes that call, because both controls
@@ -755,7 +789,43 @@ Everything below is the entry as it stood, in the past tense.
   backend to settle the self case of the two ADMIN routes, either by describing
   what the code does or by making `checkMutationRole` decide by route. Until
   it is answered the mock keeps following the contract on that case, and does
-  not move to the server's behaviour.
+  not move to the server's behaviour. TAS-228 names `PUT …/assignee`, which the
+  client no longer calls. The same ask for `PATCH /issues/{issueId}`
+  (`update-issue-roles`, plus `assign-issue-roles` for the actor and the new
+  assignee) is a candidate extension of it, not yet written onto the ticket
+  (`BACKLOG.md`, "Left by TAS-246").
+
+### Assigning an issue subscribes the assignee, and creating one subscribes the reporter; the contract does not say so, and the mock did neither
+
+- **Endpoints:** `PATCH /api/v1/issues/{issueId}` with `assigneeId`, the
+  deprecated `PUT …/assignee`, and `POST /api/v1/projects/{projectId}/issues`.
+- **Contract:** silent. None of the three says a watcher row is written.
+- **Runtime** (read at develop `60d62ee`, not probed): every assignee change
+  calls `issueAutoWatchService.watchAssigneeOnAssign`. The `PATCH` path does it
+  at `IssuePatchExecutor.java:149` and the old `PUT` path at
+  `IssueServiceImpl.java:217`. Create subscribes the reporter
+  (`IssueServiceImpl.java:149`). Both are on by default through environment
+  variables in issue-service's `application.yml`: `issue.auto-watch.on-create-reporter`
+  (`ISSUE_AUTO_WATCH_ON_CREATE_REPORTER:true`) and `on-assign-assignee`
+  (`ISSUE_AUTO_WATCH_ON_ASSIGN_ASSIGNEE:true`). The insert is idempotent
+  (`ON CONFLICT DO NOTHING`, `IssueWatcherRepository.java:58`) and writes no
+  history row.
+- **The mock, at `f35a490`:** `MockTaskaStore.assignIssue` and `createIssue`
+  add no watcher. So in mock mode and in e2e, assigning yourself leaves Watch
+  off and the watcher list unchanged. Against the gateway the refetch after the
+  write shows you watching. Found by the TAS-246 critique on 2026-10-07. It had
+  been recorded nowhere until this entry.
+- **Mock half closed in TAS-246 (`ae12659`).** Under `AGENTS.md`'s
+  interchangeability rule this was a wrong claim about the server, so the mock
+  changed: on a change to a non-null assignee it inserts the watcher row if
+  absent, with `createdBy` set to the actor and no history entry, and create
+  does the same for the reporter (`autoWatch` in `MockTaskaApi.ts`).
+- **What is still owed here:** the contract stating the
+  subscription on the three routes. The contract half is a candidate
+  extension of [TAS-228](https://jira.ozero.dev/browse/TAS-228), documentation
+  only and not filed (`BACKLOG.md`, "Left by TAS-246"). The environment
+  variables can switch the subscription off on a stand without a contract
+  change, which is one more reason the contract should say it exists.
 
 ### `GET /projects/{id}/members` states no order, and the two implementations differ
 
@@ -1114,7 +1184,25 @@ Everything below is the entry as it stood, in the past tense.
   has never been exercised, and its CORS and public URL are configured nowhere
   in the backend repository (see `docs/ai/BACKLOG.md`).
 
-### The avatar schema declares 5 MB and the service enforces 2 MB
+### Closed by TAS-246: the avatar schema declared 5 MB and the service enforced 2 MB
+
+- **Closed 2026-10-07.** Backend [TAS-222](https://jira.ozero.dev/browse/TAS-222)
+  (`be6ea7f`, deployed 2026-09-30) put the enforced number in the schema:
+  `sizeBytes` is `minimum: 1, maximum: 2097152`, "макс. 2 MB", in the snapshot
+  at develop `60d62ee`. The schema and auth-service now agree. The gateway's
+  generated `@Max(2097152)` refuses anything over 2 MB with **400**
+  `INVALID_ARGUMENT` "Invalid request parameters" before the avatar call
+  reaches auth-service. The token check has still called auth-service by then.
+  The schema puts no enum on `contentType`, so the size is judged first: a
+  3 MB GIF draws the same 400 as a 3 MB PNG. `OUT_OF_RANGE` is now reachable
+  only at the confirm, when the re-measured object is over the ceiling.
+  [TAS-246](https://jira.ozero.dev/browse/TAS-246) deleted
+  `AVATAR_DECLARED_MAX_SIZE_BYTES` and the leg-1 `OUT_OF_RANGE` branch. The rest
+  client and the mock now refuse an over-2 MB file first, as `INVALID_ARGUMENT`
+  "Invalid request parameters" with no request sent, and only then judge the
+  type and the empty file. The confirm's `OUT_OF_RANGE` stays. Read off the
+  schema and the gateway's `useValidation=true` generator, not probed.
+- **The record below is kept as it stood.**
 
 - **Endpoint:** `POST /api/v1/users/me/avatar/upload-url`, in the snapshot since
   `develop` `368ae77355bd`. Backend PR #150 merged on 2026-09-14 with this
@@ -1157,21 +1245,28 @@ Everything below is the entry as it stood, in the past tense.
   first raised on TAS-129 on 2026-09-12 while PR #150 was open; the comment went
   unanswered and TAS-129 closed as Done, which is why the removal needed a
   ticket of its own.
+- **What is still owed here.** Nothing in code. The size refusal has not been
+  observed on the stand, and no real upload from `taska.ozero.dev` has been
+  made yet (see the deploy entry above).
 
-### The avatar limits are pinned from auth-service's YAML, not from the contract
+### The avatar type allowlist and link lifetime are pinned from auth-service's YAML, not from the contract
 
-- **Contract:** `contentType` is an open string, and the ceiling is the 5 MB
-  above.
+- **Trimmed 2026-10-07 (TAS-246).** This entry used to cover the size ceiling
+  too. Since TAS-222 that number is in the contract (`maximum: 2097152`, see
+  the closed entry above), so `AVATAR_MAX_SIZE_BYTES` now follows the schema
+  rather than YAML. The content types and the TTL are still pinned from YAML.
+- **Contract:** `contentType` is an open string with no enum, and nothing states
+  the link's lifetime.
 - **Runtime, read at `368ae77`:** `auth-service/src/main/resources/application.yml`
-  carries the 2097152 ceiling and a three-entry allowlist — `image/jpeg`,
-  `image/png`, `image/webp`, matched by exact string — as literals. The bucket
-  (`MINIO_BUCKET_AVATARS`, default `taska-avatars`) and the presigned TTL
-  (`MINIO_PRESIGNED_URL_TTL`, default 15 minutes) are environment defaults the
-  stand can override.
-- **Compensation:** the ceiling, the allowlist and the TTL are constants in
-  `src/api/avatars.ts`, and the menu states the ceiling and the types before a
-  file is chosen. The allowlist is closed where the backend can grow it without
-  touching the contract.
+  carries a three-entry allowlist — `image/jpeg`, `image/png`, `image/webp`,
+  matched by exact string — as literals, beside the 2097152 ceiling the schema
+  now repeats. The bucket (`MINIO_BUCKET_AVATARS`, default `taska-avatars`) and
+  the presigned TTL (`MINIO_PRESIGNED_URL_TTL`, default 15 minutes) are
+  environment defaults the stand can override.
+- **Compensation:** the allowlist and the TTL are constants in
+  `src/api/avatars.ts`, beside the ceiling, and the menu states the ceiling and
+  the types before a file is chosen. The allowlist is closed where the backend
+  can grow it without touching the contract.
 - **Removed by:** the contract or a dictionary read stating the limits. None is
   filed; the natural home is the dictionaries read under
   [TAS-217](https://jira.ozero.dev/browse/TAS-217), which does not list upload
@@ -1221,13 +1316,18 @@ Everything below is the entry as it stood, in the past tense.
 - **Removed by:** [TAS-221](https://jira.ozero.dev/browse/TAS-221), filed
   2026-09-14 with priority High and to be fixed before PR #150 deploys.
 
-### `upload-url` declares 200 and answers 201
+### Closed by TAS-222: `upload-url` declared 200 and answered 201
 
-- **Endpoint:** `POST /api/v1/users/me/avatar/upload-url`.
-- **Contract:** `200`. **Runtime, read at `368ae77`:** the controller answers
-  `ResponseEntity.status(HttpStatus.CREATED)`, so 201.
-- **Compensation:** none needed — the rest client reads any 2xx as success.
-- **Removed by:** a clause in [TAS-222](https://jira.ozero.dev/browse/TAS-222).
+- **Closed 2026-10-07**, by the backend alone.
+  [TAS-222](https://jira.ozero.dev/browse/TAS-222) (`be6ea7f`, deployed
+  2026-09-30) changed the controller to `ResponseEntity::ok`, so the route
+  answers the `200` it declares. Read in the Java, not probed. No client change
+  was needed or made, because the rest client reads any 2xx as success.
+- **The record as it stood:** the endpoint was
+  `POST /api/v1/users/me/avatar/upload-url`. The contract said `200`, and the
+  controller, read at `368ae77`, answered
+  `ResponseEntity.status(HttpStatus.CREATED)`, so 201. There was no
+  compensation, because none was needed. The removal was a clause in TAS-222.
 
 ### Member rows never carry an avatar, and one unreadable avatar fails the whole member read
 
@@ -2167,6 +2267,44 @@ Everything below is the entry as it stood, in the past tense.
   response has been observed and the contract names the value set of
   `viewLinkType` (or states that it is the request enum after all).
 
+### `viewLinkType` arrives with the protobuf prefix
+
+**Measured 2026-10-07 20:03 UTC:** the details read on API-2 answered `viewLinkType: "ISSUE_LINK_VIEW_TYPE_RELATES_TO"`.
+
+- **Endpoints:** every link the gateway answers with: `GET` and `POST
+  /api/v1/issues/{issueId}/links`, and since backend TAS-214 the links embedded
+  in `GET /api/v1/issues/{issueId}`.
+- **Contract:** `viewLinkType` is a bare `string` with no enum (see the entry
+  above).
+- **Runtime** (read at develop `60d62ee`, not observed with a token): the
+  gateway writes `protoDto.getViewLinkType().name()` (`IssueMapper.java:242`),
+  which is the protobuf constant, not the bare value. Its own
+  `IssueMapperTest.java:542` asserts `"ISSUE_LINK_VIEW_TYPE_BLOCKS"`. The proto
+  enum `IssueLinkViewType` (`issue-service.proto:55-62`) has `UNSPECIFIED = 0`,
+  `RELATES_TO`, `BLOCKS`, `IS_BLOCKED_BY`, `DUPLICATES` and `IS_DUPLICATED_BY`,
+  each prefixed. That settles the value set the entry above calls unverified:
+  the server does invert the view, under the names the mock already uses.
+- **What it did to the UI:** `RestTaskaApi.toIssueLink` passed the string
+  through unchanged, and `issueLinkTypeLabel` humanises an unknown value
+  verbatim. So against the gateway a link read "Issue link view type blocks"
+  instead of "Blocks". This is live on `main` too, wherever the links section
+  reaches the gateway.
+- **Compensation ([TAS-246](https://jira.ozero.dev/browse/TAS-246)):**
+  `toIssueLink` strips a leading `ISSUE_LINK_VIEW_TYPE_` and otherwise keeps the
+  value as an open string, so `ISSUE_LINK_VIEW_TYPE_IS_BLOCKED_BY` reads "Is
+  blocked by". The mock is unchanged; it never sent the prefix.
+- **Two values survive a plain strip** (TAS-246 critique, 2026-10-07).
+  `ISSUE_LINK_VIEW_TYPE_UNSPECIFIED` becomes `UNSPECIFIED`. A number the gateway
+  does not know makes protobuf's `.name()` answer `UNRECOGNIZED`, which has no
+  prefix. Through `issueLinkTypeLabel` they would read "Unspecified" and
+  "Unrecognized". Mapping both to `""` in `toIssueLink` makes them read
+  "Linked", which is what an unstated relation reads today.
+- **Removal:** the gateway mapping the enum with a switch, as
+  `toRestIssueEventType` already does for history events, and omitting the
+  field for `UNSPECIFIED` and an unrecognised number; then the contract
+  declaring the enum (TAS-206 / TAS-217). Not filed; a candidate ask in
+  `BACKLOG.md`, "Left by TAS-246".
+
 ---
 
 ### Closed by observation: the label routes answer exactly as the contract says — and writing one used to break the issue read, fixed and measured 2026-09-08
@@ -2320,7 +2458,20 @@ Everything below is the entry as it stood, in the past tense.
   this was written, could not be seen
   until the issue read stops answering `500`.
 
-### Closed by measurement (TAS-195 pass): `IssueResponseDto.labels` comes back populated
+### Closed by measurement (TAS-195 pass): `IssueResponseDto.labels` comes back populated on the detail read
+
+**This closure covers the detail read as it was on 2026-09-08, and no other
+route** (narrowed 2026-10-07, TAS-246). Since backend TAS-214 (develop
+`60d62ee`), `GET /issues/{issueId}` answers `IssueDetailsResponseDto`, a
+different schema, whose `labels` has its own failure mode: see "GET
+/issues/{issueId}: a failed part arrives as [] and an unnamed person as a blank
+or absent displayName" below. Of the routes that still answer
+`IssueResponseDto`, the list was measured carrying labels (TAS-195).
+`PATCH /issues/{issueId}` answers it with `labels: []` on both 200 and 409, and
+so does `GET /issues/by-key/{issueKey}`; both were read at `60d62ee` (see
+"`PATCH /issues/{issueId}` answers `labels: []` on 200 and on 409" below). A
+reader who takes this heading to mean "every `IssueResponseDto` carries its
+labels" would be wrong about both.
 
 **Measured 2026-09-08** with a `GLOBAL_ADMIN` token, on three projects: for each
 one, a list row carrying labels was read back through
@@ -2402,6 +2553,151 @@ The entry as it stood:
   from outside only the gateway's `200` with `labels: []` is observable, and
   either half could be the one that stops carrying it. Whoever takes TAS-178
   reads it from the backend side first.
+
+### GET /issues/{issueId}: a failed part arrives as [] and an unnamed person as a blank or absent displayName
+
+**Measured 2026-10-07 20:03 UTC** (owner's session, GET only, 25 issues across 12 projects; first request id `4ce3d29e-776e-46d8-9d33-32d8da87ab5d`): every `GET /issues/{id}` answered 200 with `{issue, history}`; `reporter` and `assignee` are `{id, displayName, avatarUrl}` objects; `version` is a number and equals the list read's; `links[].target` is present; a watcher whose user has no profile (the Swagger example id `3fa85f64-…`) arrives with `displayName: null` — explicitly null, not absent and not `""`; no blank `displayName` was seen on reporter or assignee (auth-service was up); comments carry `author` with a non-empty name. A key in place of the UUID answers 400 INVALID_ARGUMENT "body.issueId must be a valid UUID"; a missing UUID answers 404 NOT_FOUND "Issue not found: …". No issue on the stand had attachments, so `uploadedByUser` and the `[]`-for-a-failed-part claim stay code-read.
+
+- **Endpoints:** `GET /api/v1/issues/{issueId}`, which answers
+  `IssueDetailsWithHistoryResponseDto` (backend
+  [TAS-214](https://jira.ozero.dev/browse/TAS-214), develop `60d62ee`, deployed
+  2026-10-07). Since [TAS-246](https://jira.ozero.dev/browse/TAS-246) it is the
+  issue panel's one read. Also `GET …/comments` for the comment `author`, and
+  `GET /api/v1/issues/by-key/{issueKey}`, the lookup `/browse/{issueKey}` makes
+  before it.
+- **Everything here is read from code at `60d62ee`, plus the backend's own unit
+  tests** (`api-contract-guard` and `release-reviewer`, TAS-246 pass 1). No
+  authenticated body of either read has been observed on the stand. Without a
+  token, `GET /issues/by-key/TAS-1` answers `401` and a control path the static
+  `404`, so the routes are deployed. The shapes below are not measured.
+
+**1. A part that failed to load arrives as `[]`, the same as a part that is
+empty.**
+- **Contract:** `labels`, `watchers`, `links` and `attachments` are optional
+  arrays, not nullable. Nothing says what a part that could not be loaded looks
+  like.
+- **Runtime:** issue-service loads the four parts side by side. A part whose
+  source fails is left unset rather than failing the read
+  (`IssueDetailsServiceImpl.fetchWithFallback`; `IssueDetailsMapper.java:100-112`
+  sets a part only when it is `available()`). The gateway copies a part only
+  when the proto has it (`IssueMapper.java:672-683`, `if hasX()`). The proto
+  carries presence for all four: they are `optional` fields 17, 23, 25 and 26 of
+  `IssueDetailsResponse`. But the generated REST DTO (openapi-generator 7.23.0)
+  initialises every list as `new ArrayList<>()`, so an unset part goes out as
+  `[]`. The backend's test asserts exactly that:
+  `IssueMapperTest.shouldMapIssueWithoutOptionalFields`
+  (`IssueMapperTest.java:1236`) builds a proto with no watchers and no
+  attachments and asserts both lists are empty (`:1277-1278`).
+- **What the reader sees:** the panel's "could not be loaded" lines are
+  unreachable against the gateway; only the mock and the test fixtures reach
+  them. A part that failed draws "No labels yet", "No one is watching this issue
+  yet", "No links yet" or "No attachments yet". One concrete trigger is a
+  single attachment whose object is missing from storage: the read presigns
+  every attachment (`S3StorageClient.createPresignedDownloadUrl` does a
+  `headObject` first), one failure fails the whole attachments source, and the
+  panel says "No attachments yet" for an issue that has some. Otherwise the
+  likelihood is low. No routine role check fails these sources:
+  `view-attachment-roles` and `list-watchers-roles` include VIEWER, and labels
+  and links check no role.
+- **Compensation (TAS-246):**
+  - The mapper keeps the null path anyway: an absent or `null` part becomes
+    `null` and draws "could not be loaded", and `[]` stays `[]`. It is dead code
+    against today's gateway and correct the day the gateway sends `null`.
+    `src/domain/types.ts` (`IssueDetails`) states this as read rather than
+    unobserved.
+  - **The watcher count is not computed on the client.** The details DTO states
+    no count, so both REST and mock return `totalCount: null` for watchers from
+    this read (pass 2) rather than the list's length, and the panel draws no
+    count pill at all — not from the read and not from a write's
+    `watchersCount` either, because a pill that appears after a press and is
+    gone on the next open is worse than none (DESIGN.md §4.21). Counting the list
+    would print "0" beside a part that failed, a number the server never stated.
+    The pill returns with ask A3.
+  - **The watch toggle starts from the server's `isWatching`.** That flag comes
+    from the core row (`findIssueCoreDetails`, an `EXISTS`), which does not fail
+    with the watchers part. When `isWatching` is `true` and the reader is not in
+    the list, the panel treats the watchers part as unavailable rather than
+    offering "Watch" to somebody already watching (pass 2).
+  - **A failed attachment confirm re-reads through `listAttachments`**, not the
+    details read. That route throws when it fails, so a failed part cannot turn
+    "may or may not have been attached" into "was not attached" and invite a
+    duplicate upload (pass 2).
+- **Removed by:** ask A1 of `docs/ai/reviews/TAS-246-contract-r1.md`. The
+  gateway marks the four arrays `nullable: true` and sets one to `null` when
+  the proto lacks it. A generator-wide `containerDefaultToNull` would turn every
+  empty list in every DTO into `null`, so it should not be used. The count is
+  ask A3: `watchersCount` on the details DTO. The nested
+  `ListIssueWatchersResponse.total_count` is already filled and dropped by the
+  gateway, and counting next to `comment_count` in the core query would also
+  survive a failed watchers source. The missing-object case is ask A4. All
+  three are candidate asks, not filed (`BACKLOG.md`, "Left by TAS-246"); the
+  orchestrator means to put them on TAS-214 as a comment.
+
+**2. "Not named" has three spellings.**
+- **Contract:** `UserSummaryDto` requires `id` and `displayName`.
+  `IssueWatcherResponseDto.displayName` is an optional string.
+- **Runtime:** when auth-service has no profile for a person, or is down, the
+  read still answers `200`, and says so three different ways:
+  - **Summaries** (`assignee`, `reporter`, an attachment's `uploadedByUser`)
+    carry `displayName: ""`. `IssueMapperUtils.resolveUser` (`:20-31`) builds
+    the summary with an id and no name, proto3 reads the unset string as `""`,
+    and the gateway's `UserProfileMapper.toUserSummaryDto` copies it.
+  - **Watcher rows** carry no `displayName` at all.
+    `IssueWatcherMapper.toWatcherProto` sets it only when a profile was found,
+    and the gateway checks `hasDisplayName()`.
+  - **A comment's `author`** is left out. Authors exist only on the comments
+    list (`CommentServiceImpl.enrichWithAuthors`); the add and edit answers
+    carry none.
+- **Compensation (TAS-246):** `toUserSummary` and the watcher mapper turn a
+  blank or absent name into `null`, which means "not named". `personFor`
+  (`src/lib/people.ts`) draws the server's name first, then the project's
+  member list, then nobody, and the caller prints nobody as "Unknown". So a
+  person auth-service could not name still reads correctly when they are a
+  member of the project.
+- **Removed by:** ask A2. `UserSummaryResponse.display_name` becomes
+  `optional string` in the proto, `resolveUser` sets it only for a profile it
+  found, the gateway copies it with `setIfPresent`, and the contract makes
+  `displayName` nullable and not required. Then absent or `null` is the one
+  spelling. The same commit's `IssueWatcherResponse.display_name` is the
+  precedent. Candidate ask, not filed.
+
+**3. `reporter`, `priority` and `updatedAt` are required by the contract and
+nullable only inside the gateway mapper.**
+- The mapper sets `reporter` only when the proto has one (`IssueMapper.java:670`),
+  maps a priority it does not know to `null` (`toIssuePriorityDto`), and maps a
+  zero timestamp to `null` (`toOffsetDateTime`). `description` is also set only
+  when present, and the contract makes it nullable.
+- **None of the three can be null on the expected path.** issue-service always
+  sets the reporter (`IssueDetailsMapper.java:60`,
+  `resolveUser(core.getReporterId())`), and the schema makes all three
+  `NOT NULL` (`0000-init.sql`: `reporter_id uuid NOT NULL`, `priority text NOT
+  NULL CHECK (… IN (LOW, MEDIUM, HIGH))`, `updated_at NOT NULL DEFAULT now()`).
+  Only the mapper permits `null`, and nothing upstream of it produces one.
+- **Compensation:** the REST types read them as optional. That is defensive,
+  and there is nothing to remove. `Issue.priority` stays typed non-null; an
+  unknown priority is [TAS-173](https://jira.ozero.dev/browse/TAS-173)'s
+  ground.
+
+**4. The by-key lookup's answers are not in the contract.**
+- **Contract:** `GET /issues/by-key/{issueKey}` lists `200` and `default` only.
+- **Runtime:** the key is matched case-insensitively
+  (`IssueRepository.findActiveByKeyIgnoreCase`, `UPPER(issue_key) =
+  UPPER(:issueKey)`), and a soft-deleted issue is not found
+  (`deleted_at IS NULL`). A key nobody has answers `404 NOT_FOUND` "Issue not
+  found: {key}". A reader who is not a member of the issue's project gets
+  `403 PERMISSION_DENIED` "Access denied" (`IssueAccessGuard.verifyReadAccess`,
+  then `ProjectRoleChecker.validateAccess`). An issue whose project is missing
+  answers `404` "Project not found". The answer carries `labels: []` whatever
+  the issue has (see the `PATCH` entry below).
+- **Compensation (TAS-246):** `/browse/{issueKey}` draws §4.18's not-found
+  screen for both 404 and 403. `DESIGN.md` §4.18 forbids telling them apart,
+  and the difference is kept only in the element's `data-reason`. The key goes
+  into the path untouched, not upper-cased, because the server folds case.
+  Nothing reads `labels` from this answer.
+- **Removed by:** the contract stating the errors and the case rule. It would
+  fit [TAS-206](https://jira.ozero.dev/browse/TAS-206), the `openapi.yml`
+  hygiene ticket, and is not written onto it. Nothing in the client changes
+  when it lands.
 
 ### `GET /issues/search` rejects the query length its own contract permits, and ignores filter values it does not understand
 
@@ -2531,6 +2827,8 @@ found"`.
 
 ### The search DTO carries no `status` and no `projectId`
 
+**Measured 2026-10-07 20:03 UTC (by-key):** `GET /issues/by-key/API-2` answered 200 with the issue's id and `labels: []`; `api-2` answered the same issue; `API-999999`, `ZZQ-999999` and `not-a-key` each answered 404 NOT_FOUND "Issue not found: {key}". The 403 path was not measured (the probe ran as a GLOBAL_ADMIN).
+
 - **Endpoint:** `GET /api/v1/issues/search`.
 - **Observed 2026-08-23:** every hit is an `IssueShortResponseDto` —
   `{id, issueKey, issueType, priority, summary, assigneeId}` — the same short
@@ -2549,19 +2847,22 @@ found"`.
   the hit has none — so the board renders server hits as their own group and
   never merges them into the columns. And a hit found outside the open project
   cannot be linked, because a link needs a `projectId` the response omits.
-- **Compensation:** the `projectId` is resolved from the `issueKey` prefix
-  against the projects list the client already holds (`CRM-1` → `CRM`, split
-  on the *last* hyphen because project keys contain them: `kappa-test-1` →
-  `kappa-test`). Zero extra requests. A prefix matching no known project
-  yields a hit rendered without a link rather than a guessed route.
-  - **The lookup folds case, and that is a second compensation rather than a
-    detail of the first.** Project keys are contract-open strings and the
-    deployed gateway holds lower-case ones (`kappa-test`), so a key matched
-    exactly would fail to resolve on real data. The cost is that two keys
-    differing only in case would collapse into one and route a hit to the
-    wrong project; unreachable in the mock seed, and never asked of the
-    gateway. Recorded by `api-contract-guard`, 2026-08-23; the collision
-    hazard itself is in `docs/ai/BACKLOG.md`.
+- **Compensation (since TAS-246):** a hit opens through its key —
+  `/browse/{issueKey}`, which asks `GET /issues/by-key/{issueKey}` (backend
+  TAS-214, develop `60d62ee`) for the issue and its project when the hit is
+  chosen, and then routes by id. One request per opened hit, none per hit
+  listed. Until TAS-246 the `projectId` was resolved from the `issueKey` prefix
+  against the projects list the client held (split on the last hyphen, case
+  folded); that guess, its case-folding collision hazard and the "hit without a
+  link" state it produced are gone with it. A key in a project the reader
+  cannot see now answers 403 and draws §4.18's not-found screen instead of an
+  unlinkable row. **The by-key route is deployed.** Backend develop `60d62ee`
+  merged at 13:07 UTC on 2026-10-07 and its stage deploy succeeded.
+  `GET /issues/by-key/API-1` without a token answered the static-resource 404
+  before it and `401` after it. A `200` with a token has not been observed. What
+  the route answers, and what the contract leaves out, is in "GET
+  /issues/{issueId}: a failed part arrives as [] and an unnamed person as a
+  blank or absent displayName" above.
   - **Ordering was never measured.** `page` and `pageSize` behave, but nothing
     here establishes that the gateway's order is stable across pages — the
     mock imposes `createdAt` ascending and the contract promises nothing. Both
@@ -2722,22 +3023,28 @@ found"`.
   an issue id without its project. The disagreement itself is unchanged and
   lives on in `getIssue` — `TaskaApi.getIssue`'s comment states it — and it
   stays unreachable only while every caller passes a pair it read together.
-- **Not an access check, in either implementation.** The mock's predicate is an
+- **The mock's predicate is not an access check.** It is an
   *issue-belongs-to-named-project* consistency check with no membership in it.
-  Access is the server's, as always.
-- **The gateway's scoping on this route is inferred, not measured.** Its
-  siblings `GET /projects/{id}` and `…/issues` answer `403` to a non-member
-  (observed 2026-08-18, above), and the contract declares only `200` and
-  `default` here. Nobody has probed this route with a non-member token, and
-  TAS-183 is the first feature that can reach a cross-project issue read from
-  a click rather than a hand-typed URL — so the mock now applies the membership
-  predicate the gateway is *assumed* to apply, and that assumption is stated
-  here rather than buried. (That predicate lived on the mock's `getIssueById`
-  and went with it in TAS-243. A notification click now opens the board route
-  directly; the gateway membership-checks that route's project read — `403`,
-  measured 2026-08-18 — and the mock's `getProject` does not, so a mock
-  notification naming another project's issue would open that board. The seed
-  names only issues in the signed-in user's own projects.)
+- **The gateway's read is an access check, read at develop `60d62ee`**
+  (TAS-214; `api-contract-guard`, TAS-246 pass 1; not probed with a non-member
+  token). `GET /issues/{issueId}` goes through `IssueAccessGuard`. A missing or
+  soft-deleted issue answers `404 NOT_FOUND`, a reader who is not a member of
+  its project `403 PERMISSION_DENIED`, and an issue whose project is missing
+  `404` "Project not found". The contract still declares only `200` and
+  `default`. So the mock's `getIssue` is looser than the gateway for a
+  non-member. Its `getIssueByKey` is deliberately stricter and refuses one, as
+  the gateway does (`MockTaskaStore.getIssueByKey`).
+- **Until TAS-214 this was inferred, not measured.** The siblings
+  `GET /projects/{id}` and `…/issues` answered `403` to a non-member (observed
+  2026-08-18, above), nobody had probed this route with a non-member token, and
+  TAS-183 was the first feature that could reach a cross-project issue read
+  from a click. So the mock applied the membership predicate the gateway was
+  *assumed* to apply, on its `getIssueById`. That method went in TAS-243. A
+  notification click now opens the board route directly. The gateway
+  membership-checks that route's project read (`403`, measured 2026-08-18) and
+  the mock's `getProject` does not, so a mock notification naming another
+  project's issue would open that board. The seed names only issues in the
+  signed-in user's own projects.
 - **Removal:** none filed. It is a mock-fidelity note, not a backend ask.
 
 ---
@@ -3150,7 +3457,8 @@ wire. The value is reachable only by failing sign-in `maxFailedAttempts` times
 against a real account, so nothing in this repository has rendered a real one —
 the four-state coverage is the mock's seed. The entry below, about
 `GET /users/me` answering `UNSPECIFIED` for a locked account, is the live half
-of the same subject and PR #146 did **not** close it.
+of the same subject and PR #146 did **not** close it. TAS-197 did, on
+2026-10-07; that entry is closed in place too.
 
 ### Closed by backend PR #149: the admin writes answered with the protobuf constant, and nothing here was reading for it
 
@@ -3184,7 +3492,21 @@ of the same subject and PR #146 did **not** close it.
   describes is closed, so the measurement that would have settled it is no longer
   available. Closed by backend PR #149; no frontend change.
 
-### `GET /users/me` answers `UNSPECIFIED` for a locked account, not `LOCKED`
+### Closed by TAS-197: `GET /users/me` answered `UNSPECIFIED` for a locked account, not `LOCKED`
+
+**Closed 2026-10-07, by the backend.** [TAS-197](https://jira.ozero.dev/browse/TAS-197)
+(`04546f1`, merged through `c7ff2a3`) added `LOCKED` to `GatewayUserStatus`,
+and `AuthMapper.toGatewayUserStatus` maps `USER_STATUS_LOCKED` to it. Its own
+stage deploy failed in Dokploy on 2026-10-07 at 08:28 UTC. It reached the stand
+with the `60d62ee` deploy the same afternoon, and `/v3/api-docs` listed `LOCKED`
+on 2026-10-07. Nobody has read `/users/me` with a locked account's token, so
+the value has not been seen on the wire. A locked account using a token minted
+before the lock now reads `LOCKED`. That token still works:
+[TAS-198](https://jira.ozero.dev/browse/TAS-198) is In Progress (PR #174 open).
+[TAS-246](https://jira.ozero.dev/browse/TAS-246) changed only comments here. The
+profile menu's pill still has no `LOCKED` arm (`BACKLOG.md`).
+
+The entry as it stood:
 
 A second-order effect of the entry above, and one the frontend cannot fix. The
 gateway's own `GatewayUserStatus` enum — the one behind `GET /users/me` — has
@@ -3204,6 +3526,20 @@ widening the union does **not** cover this case — the value that arrives is
 `UNSPECIFIED`, which is not a `UserStatus` at all. Removed by: the gateway
 teaching `GatewayUserStatus` about `LOCKED`, filed 2026-09-08 as
 [TAS-197](https://jira.ozero.dev/browse/TAS-197).
+
+**What is still owed here.** The verbatim fallback in `UserProfileMenu` stays,
+for different reasons than before. `UNSPECIFIED` is still a member of
+`GatewayUserStatus`, and the contract types `status` as a bare `string`
+([TAS-173](https://jira.ozero.dev/browse/TAS-173)). And the mapping changed
+shape. The old `default -> UNSPECIFIED` is gone: `toGatewayUserStatus` (and
+`toGlobalRole` beside it) now throws `DomainException` on a value it does not
+know. `DomainException` is a plain `RuntimeException`, and `GatewayErrorHandler`
+has branches only for `StatusRuntimeException` and `ResponseStatusException`,
+so it lands in the catch-all: **500** `INTERNAL` "Internal server error" on
+every authenticated request, for as long as auth-service sends that value. Read
+at `60d62ee`, not probed. The server half of TAS-173 is a candidate ask
+(`BACKLOG.md`, "Left by TAS-246"): map an unknown value to `UNSPECIFIED` and
+log a warning.
 
 ### `reset-lockout` refuses with 400, and the backend's own test says 409
 
@@ -3341,7 +3677,47 @@ rule the client is duplicating; it is one the client is relying on. Closed by
 giving the REST guard the same cap as the mock's, which costs nothing in
 practice because the field carries `maxLength={550}`.
 
-### `PUT /issues/{issueId}` is a full replace, and the contract does not say so
+### Closed by TAS-246: `PUT /issues/{issueId}` is a full replace, and the client no longer calls it
+
+**Closed 2026-10-07.** Backend [TAS-215](https://jira.ozero.dev/browse/TAS-215)
+(PR #166, `f6525ce`, deployed 2026-10-02) added `PATCH /api/v1/issues/{issueId}`.
+It is a real partial update: an absent key leaves the stored value, an explicit
+`null` clears it, and `summary` and `priority` cannot be cleared. It takes the
+expected version in `If-Match`. [TAS-246](https://jira.ozero.dev/browse/TAS-246)
+moved every issue write onto it:
+
+- `updateIssue(projectId, issueId, input, expectedVersion)` sends one `PATCH`
+  carrying only the keys the caller set, with `If-Match: "<version>"`. The
+  gateway's `parseIfMatchVersion` strips one pair of quotes, so `3` and `"3"`
+  both work; the client sends the quoted form. The re-read before the write is
+  gone, and so is the second refusal pass over resolved values. A write is one
+  round trip.
+- The server checks in this order (`IssuePatchServiceImpl`): 404, then 403
+  (`update-issue-roles`), then the version. On a mismatch it answers 409 with
+  the current issue and writes nothing. Then it checks the merged start/due
+  pair, then the assignee roles, then takes a `FOR UPDATE` lock and checks the
+  version again. A no-op answers 200 without bumping the version.
+- A 409 whose body is an issue becomes `IssueVersionConflictError`, carrying the
+  server's current issue. The panel shows that issue, says which change was not
+  saved, keeps the reader's summary or description text in the box, and never
+  retries on its own. A 409 without an issue body stays a plain `ApiError`.
+- `PUT /issues/{issueId}` and `PUT …/assignee` are `deprecated: true` in the
+  contract and stay on the server until the backend removes them.
+- **CORS.** On 2026-10-07 the preflight from `https://taska.ozero.dev` for
+  `PATCH` with `authorization, content-type, if-match` answered `200` and
+  allowed `if-match`. A deploy that sets `GATEWAY_CORS_ALLOWED_HEADERS` from the
+  commented line in `.env.docker.example`, which lacks `if-match`, would break
+  every `PATCH` from the browser (`BACKLOG.md`, "Left by TAS-246").
+- **Known from code only.** No `PATCH` has been sent to the stand with a token.
+  The 200 and 409 shapes, the quoted `If-Match` and the null-clear are read at
+  develop `60d62ee`. The gateway cannot answer 412 itself, because spring-webflux
+  7.0.5's `checkNotModified` runs only for GET and HEAD. A reverse proxy is the
+  only remaining source of a 412, and that is unverified.
+- Both answers carry `labels: []`, which the client never merges (the next
+  entry).
+
+The record below is kept as it stood, with its **Removed by** paragraph
+corrected for `PATCH`.
 
 The contract marks only `[summary, description, priority]` required on
 `UpdateIssueRequestDto` and says nothing about what an absent planning field
@@ -3396,20 +3772,25 @@ the first planning write onwards a summary-only edit carries the stored values
 too. The REST test still pins the three-key body for a read that carries none,
 and that is what it proves — do not read it as "the body never grows".
 
-**Removed by:** nothing on the client, unless the backend distinguishes "not
-sent" from "sent null". Asked on TAS-116, and the merged code answers no
-(`api-contract-guard`, read at `develop @ 21a0d9d177a1`, 2026-09-11):
-`IssueMapper`'s request-side `setIfPresent` is `if (value != null)` over plain
-`Double`/`Integer`/`LocalDate` DTO fields with no `JsonNullable`, so an absent
-key and a JSON `null` arrive as the same Java `null`, both leave the proto
-optional unset, and both are written as `null` by the unconditional setters.
-A client that always sends the
-resolved value stays correct either way, which is why the question did not gate
-the work. Note the re-read makes update a two-round-trip read-modify-write with
-no optimistic concurrency available — `IssueResponseDto` carries `version` but
-the update route accepts no `If-Match` and no expected version, so a concurrent
-edit between the read and the write is silently clobbered. That was already true
-for the three required fields; this widens it from three to eight.
+**Removed by TAS-246, through `PATCH` rather than through `PUT`.** On `PUT` the
+backend never came to distinguish "not sent" from "sent null". That was asked
+on TAS-116, and the merged code answered no (`api-contract-guard`, read at
+`develop @ 21a0d9d177a1`, 2026-09-11): `IssueMapper`'s request-side
+`setIfPresent` is `if (value != null)` over plain `Double`/`Integer`/`LocalDate`
+DTO fields with no `JsonNullable`, so an absent key and a JSON `null` arrive as
+the same Java `null`, both leave the proto optional unset, and both are written
+as `null` by the unconditional setters. That is still true of `PUT`. `PATCH`
+answers yes: its body is read key by key into `NullableString`,
+`NullableDouble` and `NullableInt32` wrappers, so absent means "leave it" and
+`null` means "clear it", as the contract text says. A client that always sent
+the resolved value stayed correct on `PUT` either way, which is why the question
+did not gate the work. The re-read made every update a two-round-trip
+read-modify-write with no optimistic concurrency available: `IssueResponseDto`
+carried `version`, but `PUT` accepted no `If-Match` and no expected version, so
+a concurrent edit between the read and the write was silently clobbered, across
+eight fields after TAS-189. `PATCH` takes the version in `If-Match` and answers
+`409` with the current issue on a mismatch, so a stale write is refused rather
+than applied.
 
 Filed 2026-09-11 as [TAS-215](https://jira.ozero.dev/browse/TAS-215):
 `PATCH /issues/{issueId}` taking an expected `version`, answering `409` on a
@@ -3423,7 +3804,53 @@ needs `optional` on `summary`, `description` and `priority` in
 `UpdateIssueRequestBody`, which proto3 does not give them today; the planning
 fields already have it.
 
-### `BigDecimal.equals` is scale-sensitive, so re-sending a story-point value looks like a change
+**What is still owed here.** One stale-version `PATCH` and one null-clear
+`PATCH` on a throwaway issue, with a token, to turn the code reads above into
+observations. That needs the owner's go-ahead to use their session. On the
+backend, removing the deprecated `PUT /issues/{issueId}` and `PUT …/assignee`
+from the gateway, the proto and the service once TAS-246 is deployed; that is
+not filed (`BACKLOG.md`, "Left by TAS-246").
+
+### `PATCH /issues/{issueId}` answers `labels: []` on 200 and on 409
+
+- **Endpoint:** `PATCH /api/v1/issues/{issueId}` (TAS-215), and
+  `GET /api/v1/issues/by-key/{issueKey}` (TAS-214), which answers the same DTO
+  the same way.
+- **Contract:** both answers are `IssueResponseDto`, whose `labels` is the
+  issue's labels. The 409 is described as "the current state of the issue".
+- **Runtime** (read at develop `60d62ee`, not observed with a token):
+  issue-service's `toPatchIssueResponseProto` builds the issue with
+  `toIssueProto(issue)`, the overload that adds no labels, so `labels` is `[]`
+  on 200 and on 409 whatever the issue carries. By-key goes through the same
+  overload.
+- **Compensation (TAS-246):** a write answers `IssueWriteAnswer =
+  Omit<Issue, "labels">`; the REST and mock implementations drop the field. The
+  panel merges a write answer field by field (`mergeWriteAnswer`), never
+  `labels`, so a successful write or a conflict cannot blank the label chips.
+  The labels come from the details read alone. Nothing reads `labels` from
+  by-key either.
+- **Removal:** issue-service answering with the overload that does carry
+  labels, `toIssueProto(Issue, List<ProjectLabels>)` (`IssueMapper.java:195`).
+  That is a change inside issue-service alone, not a cross-service one.
+  Answering `PATCH` with the details shape would be better still. By-key wants
+  the same fix, or the details shape too, so that `/browse/{issueKey}` costs one
+  read. Not filed; candidate asks in `BACKLOG.md`, "Left by TAS-246". When it
+  lands, `IssueWriteAnswer` can widen back to `Issue`.
+
+### Closed by TAS-215: `BigDecimal.equals` was scale-sensitive, so re-sending a story-point value looked like a change
+
+**Closed by the backend.** [TAS-215](https://jira.ozero.dev/browse/TAS-215)
+(`f6525ce`, deployed 2026-10-02) added `StoryPointsNormalizer.normalize`, which
+sets an incoming value to the column's scale of 2 with `HALF_UP`, the rounding
+the database applies on write. It runs on create, `PUT` and `PATCH`, so `3.0`
+from a request now compares equal to the stored `3.00`. Read at develop
+`60d62ee`, not probed. The client side has gone further too: since
+[TAS-246](https://jira.ozero.dev/browse/TAS-246) a write sends only the key that
+changed, so an unchanged story-point value is not re-sent at all. History rows
+written while this was live may still carry `3.00 → 3.0` entries; nobody has
+looked.
+
+The entry as it stood:
 
 A consequence of the preservation above, and one the client cannot fix.
 
@@ -3449,7 +3876,31 @@ wrong sentence is shown. It becomes visible when the UI half lands and the feed
 starts naming fields. **Removed by:** the backend comparing with `compareTo` or
 normalising with `stripTrailingZeros`. Raised on TAS-116.
 
-### The date cross-check compares against stored values, and refuses the ordinary case
+### Closed by TAS-246 on the `PATCH` path: the date cross-check compared against stored values, and refused the ordinary case
+
+**Closed 2026-10-07 for every write the client makes.** `PATCH /issues/{issueId}`
+(TAS-215, read at develop `60d62ee`, not probed) checks the **merged** pair: it
+applies the patch over the stored issue first, then refuses only when the
+resulting start is after the resulting due
+(`IssuePatchServiceImpl.validateStartNotAfterDue`). That check runs after the
+version check, so a stale version answers 409 before any date is judged. Moving
+a whole window later in one request — `{startDate: 2026-07-01, dueDate:
+2026-07-20}` over a stored `(06-15, 06-26)` — is accepted. `{startDate:
+2026-07-01}` alone over a stored due of `06-26` is refused with "Start date:
+2026-07-01 must not be after Due date: 2026-06-26". On this path each date sits
+under its own label, so the swap below is a `PUT` defect only.
+[TAS-246](https://jira.ozero.dev/browse/TAS-246) deleted the client's
+stored-date refusals (`START_DATE_AFTER_STORED_DUE_MESSAGE`,
+`DUE_DATE_BEFORE_STORED_START_MESSAGE`) along with the re-read they needed. The
+client still refuses whatever it can judge from the input alone, and the mock
+checks the merged pair after its version check, in the server's own sentence
+(`datesOutOfOrderServerMessage`).
+
+Everything below is still true of `PUT`, which the client no longer calls. The
+panel still saves one field per blur, so moving a whole window later still
+takes two writes, due date first.
+
+The entry as it stood:
 
 Not in the contract at all. `IssueServiceImpl.updateIssue` compares the
 *incoming* `startDate` against the **stored** `dueDate`, and the incoming
@@ -3581,7 +4032,20 @@ guards are the client's own rules and move if the column does.
 **Removed by:** the two PRs agreeing and the contract stating the bounds; the
 status itself by one probe, once the fields are reachable.
 
-### A fractional estimate is refused by the client and nobody knows what the server does
+### A fractional estimate is refused by the client; on `PATCH` the code says the gateway refuses it too
+
+**Rewritten 2026-10-07 (TAS-246), for `PATCH`, which is now the only update the
+client sends.** The gateway reads each estimate in a `PATCH` body as a
+`BigDecimal` and converts it with `intValueExact()` (`IssueMapper.toNullableMinutes`,
+read at develop `60d62ee`, not probed). A fraction, or a value `int32` cannot
+hold, is refused with **400** `BAD_REQUEST` "`<field>` must be an integer number
+of minutes". A negative value is refused with **400** `BAD_REQUEST` "`<field>`
+must not be negative". `null` clears the field. So on the path the client uses,
+nothing is truncated: the server refuses, in a sentence the client does not
+show. The client refusals below stay, because they cost no request and give the
+reader the client's own wording. What `PUT` and create do with a fraction is
+still unknown, as the paragraphs below say; create still sends estimates that
+way.
 
 The two estimates are `format: int32` in the contract (on `develop` since
 backend PR #148 merged, 2026-09-11), `int32` in the proto and `integer` in the
@@ -3608,9 +4072,19 @@ REST path meets as a binding failure — a refusal the mock could not reproduce,
 which is the interchangeability rule broken in the one bound nobody had checked.
 
 **Removed by:** the contract stating the bounds, or one measurement once the
-fields are reachable.
+fields are reachable. For `PATCH` the code read above stands in for the
+measurement until a token is used; for create the question is still open.
 
-### `minimum: 0` is enforced as `>= 0` under a message that says "positive"
+### `minimum: 0` is enforced as `>= 0` under a message that says "positive" — no longer for `PATCH` estimates
+
+**For the estimates, `PUT` and create only, since TAS-246.** `PATCH`'s estimates
+are checked in the gateway with their own wording, "`<field>` must not be
+negative" (see the entry above), which is correct. The client no longer sends
+`PUT`. `PATCH`'s story points pass the gateway unchecked; issue-service then
+refuses a negative one through `NullableFieldParsers.parseNullableNonNegativeBigDecimal`
+with INVALID_ARGUMENT "body.storyPoints must be positive or zero" (read at
+`60d62ee`, not probed) — the same "positive" wording for a check that accepts
+`0`, so for story points this entry still holds on every route.
 
 `GrpcRequestValidators.requireOptionalPositiveZeroOrInvalidArgument` tests
 `value < 0` and refuses with `<field> must be positive`. So `0` is accepted —
@@ -4033,6 +4507,21 @@ attachment it returns. `IssueAttachmentMapper.toIssueAttachmentDto` reads eight
 of the ten proto fields and discards `url` and `object_key`. So the list read
 costs one `headObject` plus one presign per row for a value no client ever sees,
 and the separate `download-url` call is required anyway.
+
+**Since backend TAS-214 (develop `60d62ee`) the same presigning runs on every
+`GET /issues/{issueId}`**, because the details read embeds the attachments, and
+the gateway still drops `url` (`AttachmentResponse` field 10). Since TAS-246
+that read is the issue panel's only read, so every panel open and every refetch
+after a write pays one `headObject` and one presign per attachment. The cost
+the list route used to pay only when the attachments section mounted is now
+paid on every open. One object missing from storage also fails the whole
+attachments part, which the reader then sees as "No attachments yet" (see "GET
+/issues/{issueId}: a failed part arrives as [] and an unnamed person as a blank
+or absent displayName"). Read at `60d62ee`, not measured. The candidate ask is
+A4 of `docs/ai/reviews/TAS-246-contract-r1.md`: map `url` to a `downloadUrl` so
+the client can skip `download-url`, or stop presigning on list paths, and in
+either case stop one missing object failing the part (`BACKLOG.md`, "Left by
+TAS-246").
 
 **The UI instead:** call `download-url` when the reader asks for the file, which
 is what the contract describes. **Removed by:** the backend either surfacing the

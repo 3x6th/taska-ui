@@ -163,6 +163,13 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `.sort(byCreatedAt)` gives an ascending order the gateway does not guarantee,
   the same shape already recorded for attachment lists after TAS-190. Nothing in
   the UI depends on the order, so this is a note rather than work.
+  **Out of date since TAS-246** (`api-contract-guard`, TAS-246 pass 1). Both
+  server routes now order watchers `created_at DESC` (read at develop
+  `60d62ee`), so the mock's ascending sort now disagrees with an order the
+  server does impose, though the contract still promises none. On the details
+  read the client
+  now answers `totalCount: null` in both modes (pass 2), so the count half no
+  longer applies there.
 - **The watcher writes are asymmetric: `removed` exists, `added` does not**
   (`frontend-builder`, 2026-09-08, TAS-193). `UnwatchIssueResponseDto` carries
   `removed: boolean`, so an unwatch that found nothing can be reported honestly.
@@ -413,6 +420,8 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   The default is right for a duller reason the release reviewer supplied:
   `PUT /issues/{issueId}` is a full replace and `UpdateIssueRequestDto` requires
   `description`, so an undefined one would go out as a missing required key.
+  Since TAS-246 the client writes through `PATCH` and that reason is gone. The
+  default stays because `""` is how the UI spells an empty description.
 - **Two ways to prove a rest-mode claim without a credential**
   (`release-reviewer`, 2026-09-08, TAS-195 verdict). TAS-195 could not produce
   the evidence that would have settled it best — a network trace showing one
@@ -620,6 +629,10 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   rather than narrowing it, so that value would render an empty status pill
   with a class no stylesheet has a rule for. Fix at the mapper, the way
   TAS-151 did for `globalRole`.
+  **Deferred again in TAS-246 (2026-10-07):** narrow `/users/me`'s `status` in
+  `toUser` to the four values or `null`. TAS-197 made `LOCKED` reachable on that
+  route, and `UNSPECIFIED` is still possible, so the union assertion is still
+  the live case. Comments only in that pass.
 - **BoardScreen.tsx split** (~1200 lines) — recorded as debt in `DESIGN.md` §8;
   do it with the next large board change.
 - **A horizontally scrolling table is not keyboard-scrollable in Safari and
@@ -1159,6 +1172,11 @@ the next session in this image exactly as it bit this one.
   justified by a value that never arrives. It also sits on hardcoded hex
   (`#22c55e`, `#f59e0b`), which no agent here may extend, so the arm and the
   tokenisation are one job. Wants the gateway fixed first, then both together.
+  **No longer blocked (2026-10-07):** TAS-197 is deployed, so `/users/me` can
+  report `LOCKED` (`API-DIVERGENCE.md`, closed in place). Still owed, together:
+  a `.user-status.is-locked` rule, the hardcoded hexes replaced with tokens, and
+  an `art-director` verdict. Not done in TAS-246, which changed only the
+  comments.
 - **The admin user dialog never scrolls, so at a short viewport its buttons are
   unreachable by pointer** (`art-director`, TAS-188). Measured: at 500px tall,
   the reset dialog carrying a failure sentence is 579px starting at 11vh, so
@@ -1216,10 +1234,13 @@ the next session in this image exactly as it bit this one.
   line below, hidden by the same `as unknown as TaskaApi` cast. Fix both with
   the UI half.~~ Done in TAS-189's UI half (2026-09-11): both fixtures and a
   third one in `BoardScreen.test.tsx` carry the five fields now.
-- **`RestTaskaApi.updateIssue` does not bump `version` while the mock does**
+- ~~**`RestTaskaApi.updateIssue` does not bump `version` while the mock does**
   (`api-contract-guard`, TAS-189): the update response DTO carries no `version`,
   so REST cannot. Pre-existing parity drift, now over eight fields instead of
-  three.
+  three.~~ **Closed by [TAS-246](https://jira.ozero.dev/browse/TAS-246)
+  (2026-10-07).** Both implementations write through `PATCH` with `If-Match`
+  and return the server's answer, version included. The panel merges that
+  version into its cache, and nothing on the client invents one.
 - **A `NaN` estimate is refused as "not a whole number of minutes"** rather than
   as "not a number" (`api-contract-guard`, TAS-189): `storyPoints` gets an
   explicit finite check and the estimates get one only as a side effect of
@@ -1242,7 +1263,11 @@ the next session in this image exactly as it bit this one.
   under Jackson 3, and which message a REST caller sees for a malformed date.
   All three were unreachable while the fields were unserved, all three are
   written up as unobserved, and all three are one request each against a
-  throwaway issue now. Nothing else tracks them.
+  throwaway issue now. Nothing else tracks them. **For `PATCH`, the second is
+  answered from code** (TAS-246, read at develop `60d62ee`): the gateway refuses
+  a fractional estimate with 400 "… must be an integer number of minutes"
+  (`API-DIVERGENCE.md`). It is still open for create. The first is candidate
+  ask C3 under "Left by TAS-246".
 - **`docs/contract/pending/pr-147-TAS-131.yml` is pinned at `f53dca384486`
   while backend PR #147's head is `deeedbf3fff8`** (`api-contract-guard`,
   2026-09-11, from `npm run contract:pins` during TAS-189). Backend drift, not
@@ -1344,16 +1369,22 @@ the next session in this image exactly as it bit this one.
   images and PDFs render inline. `window.open` returning `null` is caught and the
   row then offers the link directly, but that fallback has been exercised only
   against a stub, never against a real popup blocker.
-- **A no-op update bumps `version` and `updatedAt` in the mock and not on the
+- ~~**A no-op update bumps `version` and `updatedAt` in the mock and not on the
   server** (`frontend-builder`, TAS-189). `IssueServiceImpl.updateIssue` returns
   early without saving when the computed payload is empty; the mock always
   writes. Pre-existing and identical for summary-only edits before this story,
   so not introduced here — but it is a real mock/server divergence and the
   interchangeability rule says it should either be closed or written up. This is
-  the writing-up.
+  the writing-up.~~ **Closed by [TAS-246](https://jira.ozero.dev/browse/TAS-246)
+  (2026-10-07).** The mock's `PATCH` returns the issue unchanged on a no-op, with
+  no version bump, no `updatedAt` change and no history, which is what the
+  server's `PATCH` does.
 - **A planning edit writes the mock's generic history event, not the server's
   per-field payload** (`frontend-builder`, TAS-189). Wants doing with the UI
-  half, where the activity feed will actually show one.
+  half, where the activity feed will actually show one. **Still true after
+  TAS-246's `PATCH`**, and with one more mismatch beside it: the mock writes
+  `PRIORITY` for a priority change where the server writes `UPDATED` (the
+  `IssueEventType` line above). Kept deliberately in TAS-246.
 - **`JSON.stringify({x: NaN})` emits `null`, and `null` means "clear the field"**
   (`frontend-builder`, TAS-189). `Number("")` from an emptied numeric input
   would therefore erase a value rather than fail. Guarded with `Number.isFinite`
@@ -1373,7 +1404,7 @@ the next session in this image exactly as it bit this one.
   (`api-contract-guard`, TAS-188), so the 500 the status round trip currently
   produces is an undeclared status on that route. Minor beside the 500 itself,
   which is on TAS-107 and TAS-108.
-- **The gateway disagrees with itself about the user status vocabulary**
+- ~~**The gateway disagrees with itself about the user status vocabulary**
   (found on the TAS-188 contract read, 2026-09-05). At backend PR #146's head
   `UserStatusDto` has four values including `LOCKED`, while the same service's
   `GatewayUserStatus` — the enum behind `GET /users/me` — has only three plus
@@ -1388,7 +1419,11 @@ the next session in this image exactly as it bit this one.
   re-read off the deployed gateway rather than off the PR head: its
   `UserStatusResponseDto` carries all four values and its `GatewayUserContext.status`
   still carries three plus `UNSPECIFIED`, so the merge made the disagreement
-  permanent instead of resolving it.
+  permanent instead of resolving it.~~ **Closed by
+  [TAS-197](https://jira.ozero.dev/browse/TAS-197)** (`04546f1` through
+  `c7ff2a3`, on the stand with the `60d62ee` deploy of 2026-10-07; Done in
+  Jira). `GatewayUserStatus` has `LOCKED` now. What it left behind, an unknown
+  status answering 500, is a candidate ask under "Left by TAS-246".
 - **Two status pills now exist for one enum.** The profile menu's
   `.user-status` (§4.16) colours `ACTIVE` green and `INVITED` amber from four
   literal hexes that are in no §2 palette; the admin Users pill keeps colour
@@ -1728,19 +1763,27 @@ them blocks the story.
   Deliberate and documented in the component — those panels are not a listbox —
   but a strict ARIA 1.2 reading wants either a popup role on the panel or the
   expanded state to follow the panel rather than the list.
-- **An unlinkable hit can be arrowed onto and does nothing when opened.** A hit
+- ~~**An unlinkable hit can be arrowed onto and does nothing when opened.** A hit
   whose `issueKey` prefix matches no known project is `aria-disabled`, which is
   right, but Enter on it is silent — no message, no reason. Rare by
-  construction; loud enough to be confusing when it happens.
+  construction; loud enough to be confusing when it happens.~~ **Gone with
+  [TAS-246](https://jira.ozero.dev/browse/TAS-246) (2026-10-07).** No hit is
+  unlinkable now: every hit opens `/browse/{issueKey}`, which the server
+  resolves through by-key, and a key the reader cannot open draws §4.18.
 - **Two search fields with different scopes now share `/projects`** — "Search
   issues" in the bar searches every project's issues, "Filter projects" in the
   heading narrows the cards. Both are correct and they are not the same
   question. Whether that reads as two fields or as one confusing one is
   `art-director`'s call, not a defect.
-- **Case-colliding project keys would collapse in `projectIdByKey`** and route a
+- ~~**Case-colliding project keys would collapse in `projectIdByKey`** and route a
   hit to the wrong project. Unreachable in the mock seed; the gateway has never
   been asked whether it treats `TAS` and `tas` as one key. Worth a probe before
-  it is worth a fix.
+  it is worth a fix.~~ **Gone with [TAS-246](https://jira.ozero.dev/browse/TAS-246)
+  (2026-10-07).** The client no longer derives a project from a key prefix;
+  by-key resolves the issue on the server. by-key matches the issue key
+  case-insensitively (read at develop `60d62ee`), so if two project keys ever
+  differ only in case, that is the server's collision to settle, not a client
+  guess.
 - **Graduated to [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09** —
   four lines under the block that story rewrites.
   **`summaryByProject`'s memo never memoises.** It depends on the `useQueries`
@@ -2036,7 +2079,11 @@ is what recurs.
   404-on-empty-projects bug. **Closed in Jira 2026-09-04 with three clauses
   open; re-filed 2026-09-11:** read-all is TAS-216, the nullable assignee is
   TAS-215, comment ordering is TAS-206, the empty list is TAS-207 (and TAS-211
-  restates it for the enriched list). Nothing points at this key any more. (The board-capable list DTO was dropped from it
+  restates it for the enriched list). Nothing points at this key any more.
+  **The nullable assignee is done:** TAS-215 deployed 2026-10-02, and the
+  frontend unassigns through `PATCH` since
+  [TAS-246](https://jira.ozero.dev/browse/TAS-246). Read-all was done earlier
+  (TAS-216, TAS-243). (The board-capable list DTO was dropped from it
   as a duplicate of TAS-124/125 — which turned out not to cover it either;
   see the struck line below.)
 - ~~[TAS-124](https://jira.ozero.dev/browse/TAS-124) /
@@ -2317,7 +2364,10 @@ is what recurs.
 - **`MockTaskaApi.ts` around 2640 says the over-5 MB check comes "before anything
   else"**, but the gateway checks the token first, while the mock checks the size
   before `currentUser()`. The UI cannot reach the difference
-  (`api-contract-guard`, 2026-09-14).
+  (`api-contract-guard`, 2026-09-14). **Since TAS-246 it is the over-2 MB check**
+  (TAS-222 put 2097152 in the schema), and the mock's `createAvatarUploadUrl`
+  now judges size before type. The nuance is unchanged: the gateway checks the
+  token first and the mock does not.
 - **Escape inside the profile menu — and the notifications popover — sends
   focus to `<body>`** (`art-director`, 2026-09-14; the popover measured by
   `art-director` on TAS-243 at 1440 and 390, both themes, where the next Tab
@@ -2363,6 +2413,11 @@ is what recurs.
   URL per row and the gateway throws it away. All three are in
   `API-DIVERGENCE.md` with lines at `1cfe4d7`. They belong in a story near
   TAS-214 (the issue panel as one read), and nobody has filed it.
+  **Worse since TAS-214 (develop `60d62ee`):** the presign now also runs on
+  every `GET /issues/{issueId}`, which embeds the attachments, and `url` is
+  still dropped. Since TAS-246 that read is the panel's only one, so every open
+  pays a `headObject` and a presign per attachment, and one missing object
+  turns the whole part into "No attachments yet". This is ask A4 below.
 - **The watcher picker's empty state could say "the whole project" now.**
   TAS-193 narrowed it to "those the client can see", because the synthesised
   member list could not tell one member from all of them. Since TAS-224 the
@@ -2470,15 +2525,18 @@ is what recurs.
   `message` (`GatewayErrorHandler.java:36`), and so does the mock.
 - **The client hard-codes three of issue-service's role lists** (`api-contract-guard`,
   TAS-226), and they can differ per deployment. An ask was priced and is not
-  filed. [TAS-214](https://jira.ozero.dev/browse/TAS-214) already asks for
-  `watchers` and `isWatching` on the issue read. What would remain:
-  - `watchersCount` and `watchedByMe`: proto fields 22 and 23 are already filled
-    by `GrpcIssueService.getIssue`, and the gateway mapper drops them.
+  filed. [TAS-214](https://jira.ozero.dev/browse/TAS-214) shipped `watchers` and
+  `isWatching` on the issue read (develop `60d62ee`, deployed 2026-10-07), so
+  `watchedByMe` is answered. What remains:
+  - The watcher count. The details read states none, and the client no longer
+    counts the list (pass 2 of TAS-246). That is ask A3 below, which replaces
+    the `watchersCount` half of this line.
   - `canWatch` on the issue read: proto, service and mapper.
   - The role policy in [TAS-217](https://jira.ozero.dev/browse/TAS-217)'s
     `GET /meta`: a cross-service rpc.
 
-  Worth filing when TAS-214 or TAS-217 is next discussed, not before.
+  Worth filing when TAS-214's follow-ups or TAS-217 are next discussed, not
+  before.
 
 ### Left by TAS-158 (project members dialog, 2026-09-17)
 
@@ -2784,3 +2842,164 @@ is what recurs.
   comments operation; unpriced. Also: the comment above the links predicate
   in `BoardScreen.tsx` justifies it with the empty-list NOT_FOUND that TAS-154
   removed; reword it when that divergence entry closes.
+
+### Left by TAS-246 (the issue panel in one read, and issue writes through `PATCH`, 2026-10-07)
+
+Frontend, recorded rather than taken:
+
+- **Opening a search hit blanks the app for one round trip** (`art-director`
+  N1 on TAS-246, measured on mock: `/projects` → `/browse/TAS-104` → no topbar
+  and an `aria-busy` plane from ~4 to ~156 ms; ≥ 1 s on a 5xx). A regression
+  against the old direct route. Fix: `GlobalSearch` resolves the key itself
+  with `queryClient.fetchQuery(["issue-by-key", key])` (the key
+  `IssueKeyScreen` uses), keeps the row `aria-busy`, navigates straight to the
+  issue, and on failure to `/browse/{key}`, which reads the cached error.
+- **The §4.18 screen hides its only control on a landscape phone**
+  (`art-director` N2 on TAS-246, pre-existing): at 667×375 "Go to projects"
+  ends at y=414.7 under `body{overflow:hidden}`. `/browse` links now reach this
+  screen more often. Candidate: mascot `max-height: 40vh` under
+  `(max-height: 480px)`.
+- **"Try again" vs "Go to projects" emphasis on the by-key failure screen**
+  (`art-director` N3, taste): the action that serves the reader is the
+  secondary one. If swapped, §4.18's wording changes with it.
+- **A failed panel read leaves no way out of the panel** (`art-director` r2 N1
+  on TAS-246, pre-existing): the `ApiNotice` sits alone with no header, Close or
+  "Try again"; Esc does nothing (§7 already records it), and on 390 the only
+  exit is the 32px scrim strip. Fix: render the header's Close `.icon-button`
+  above the notice and the §4.18 action row with a secondary "Try again" calling
+  `issueQuery.refetch()`.
+- **The panel's write slot carries the conflict sentence in `.form-error`**
+  (`art-director` r2 N2): 3.17:1 light, the TAS-192 gap. Move the slot to the
+  `.api-notice` recipe together with TAS-192, not alone.
+- **No in-flight state on an assignee chip or priority segment** (`art-director`
+  r2 N3): the row looks dead for one round trip until the `PATCH` answers. Draw
+  `updateIssue.variables.assigneeId` / `.priority` as active while pending; the
+  answer or a 409 replaces it.
+- **A refusal of another kind can let a re-read overwrite unsaved conflict text**
+  (`art-director` r3 N1 on TAS-246, measured on mock): summary conflict → a
+  date-order refusal takes the slot → the reseed guard (`unsaved =
+  conflict?.fields`, `BoardScreen.tsx:1640`) clears with it → a later re-read
+  replaces the reader's summary with a third party's. Contradicts §5.5 «он
+  остаётся в поле»; rarer than before f26e2eb. Fix: keep unsaved free-text fields
+  in their own state, cleared only when that field is re-sent or put back.
+- **The panel's re-read guard for unsaved conflict text has no test**
+  (`release-reviewer` r3 N2 on TAS-246): replacing `conflict?.fields ?? []` with
+  `[]` (`BoardScreen.tsx:1640–1645`) leaves every BoardScreen test green. Add one:
+  summary conflict, the other writer changes the summary, a re-read lands — the
+  box keeps the reader's text and the line stays. Same fix area as the line above.
+- **The conflict epoch does not survive a panel remount** (`release-reviewer` r3
+  residual risk): the epoch is per mount, the write scope per issue, so close +
+  reopen + edit within one request's latency can still send at a version a
+  conflict merged. Candidate: keep the epoch beside the scope, keyed by issue.
+- **The multi-field conflict sentence lists fields out of panel order**
+  (`art-director` r3 N2): `issueFieldNames` (`BoardScreen.tsx:5538`) puts
+  priority before assignee and dates before estimates, while its doc comment
+  claims panel order. Reorder to summary, description, assigneeId, priority,
+  storyPoints, originalEstimateMinutes, remainingEstimateMinutes, startDate,
+  dueDate.
+- **A blank `displayName` on a member-map row still prints blank**
+  (`art-director` ruling 1 on TAS-246): `src/lib/people.ts:44`,
+  `BoardScreen.tsx:5090`. The chain treats a blank server summary as unnamed
+  but not a blank member row — asymmetric.
+- **Worklog writes bump `issue.version`** (TAS-246 brief, read at develop
+  `60d62ee`). Nothing in the UI writes a worklog yet (see the worklog line at
+  the top of this file). When something does, it has to merge the version from
+  its answer or re-read the issue, or the panel's next `PATCH` will conflict
+  with the reader's own earlier write.
+- ~~**`DESIGN.md` §5.5 says inline edits save as "`PATCH` с debounce 600ms", and
+  the panel saves on blur.**~~ Closed in TAS-246: `art-director` ruled "on blur"
+  and §5.5 was rewritten for `PATCH` with `If-Match`. Since TAS-246 the `PATCH` half is true; the
+  debounce half never was. The panel saves a text field on blur and a picker on
+  pick. Either §5.5 changes to say so or the panel grows a debounce, and
+  `DESIGN.md` outranks the code, so that is `art-director`'s ruling to make.
+  Pre-existing; TAS-246 did not change when the panel saves.
+- **No mock trigger for a version conflict, so no e2e covers one.** The 409 path
+  is covered by component tests in `BoardScreen.test.tsx` only. An e2e would
+  need a trigger of the `MOCK_ATTACHMENT_TRIGGERS` kind that makes the mock's
+  next `PATCH` see a newer version. Left out of TAS-246 to fit its time box.
+
+**Candidate backend asks, not filed.** One line each. A1–A5 are from
+`docs/ai/reviews/TAS-246-contract-r1.md`, and the orchestrator means to put
+them on [TAS-214](https://jira.ozero.dev/browse/TAS-214) (In Review) as one
+comment. C1–C16 are from the TAS-246 brief's section (C). Each is read at
+develop `60d62ee` and none is measured. Each is recorded in `API-DIVERGENCE.md`
+where it has an entry.
+
+- **A1 (= C6): a details part that failed to load arrives as `[]`.** Gateway
+  mapper and contract: mark `labels`, `watchers`, `links` and `attachments`
+  `nullable: true` and set one to `null` when the proto lacks it; the proto
+  already carries presence. Do not flip `containerDefaultToNull` for the whole
+  generator. Entry: "GET /issues/{issueId}: a failed part arrives as [] and an
+  unnamed person as a blank or absent displayName".
+- **A2 (= C7, first half): "not named" has three spellings** — `""` on a
+  summary, no `displayName` on a watcher row, no `author` on a comment. Make
+  `UserSummaryResponse.display_name` `optional` in the proto, have
+  `resolveUser` set it only for a profile it found, copy it with `setIfPresent`
+  in the gateway, and make `displayName` nullable and not required in the
+  contract. C7's second half belongs on the same comment: set `author` on the
+  comment add and update answers, which carry none today. Same entry as A1.
+- **A3: `watchersCount` on `IssueDetailsResponseDto`.** Either the gateway
+  copies the nested `total_count` issue-service already fills (free), or the
+  service counts beside `comment_count` in the core query (survives a failed
+  watchers source). Replaces the `watchersCount` half of the role-lists line
+  under "Left by TAS-226". Same entry as A1.
+- **A4 (= C10): every details read presigns every attachment and drops the
+  URL.** Map `AttachmentResponse.url` to a `downloadUrl` in the gateway and
+  the contract, or stop presigning on list paths in the service. In either
+  case, one missing object must not fail the whole part. Entry: "`listAttachments`
+  mints a presigned download URL per row".
+- **A5 (= C9): by-key answers `labels: []` always.** Populate them, or answer
+  the details shape so `/browse/{issueKey}` costs one read, or at least
+  document that the field is not filled. Service only. Entry: "`PATCH
+  /issues/{issueId}` answers `labels: []` on 200 and on 409".
+- **C1: `PATCH` answers `labels: []` on 200 and 409** (a TAS-215 follow-up; the
+  service only). Use the existing `toIssueProto(Issue, List<ProjectLabels>)`
+  overload (`IssueMapper.java:195`) in `toPatchIssueResponseProto`, or answer
+  with the details shape. Same entry as A5.
+- **C2: remove the deprecated `PUT /issues/{issueId}` and `PUT …/assignee`**
+  from the gateway, the proto and the service, once TAS-246 is deployed. The
+  contract step of TAS-210's expand-contract rule.
+- **C3: `storyPoints` above 999.99 answers 500 `INTERNAL`**, because the
+  `numeric(5,2)` overflow falls through `GrpcExceptionHandler`'s database
+  branch. Refuse it as `INVALID_ARGUMENT` on create, `PUT` and `PATCH`. The
+  status itself is still the unmeasured probe in the planning-field line under
+  "Left over from TAS-186"; the client refuses the value first either way.
+- **C4: `viewLinkType` carries the protobuf prefix.** The gateway should map
+  the enum with a switch, as `toRestIssueEventType` does, and omit the field
+  for `UNSPECIFIED` and for an unrecognised number. Then the contract declares
+  the enum (TAS-206 / TAS-217). Entry: "`viewLinkType` arrives with the
+  protobuf prefix".
+- **C5: an unknown `UserStatus` or `GlobalRole` answers 500 on every
+  authenticated request.** `AuthMapper` throws `DomainException`, which
+  `GatewayErrorHandler` sends to its catch-all. Map the value to `UNSPECIFIED`
+  and log a warning. This is the server half of
+  [TAS-173](https://jira.ozero.dev/browse/TAS-173). Entry: the closed TAS-197
+  `/users/me` entry.
+- **C8: issue-service's profile call to auth-service has no deadline**, so a
+  hung auth-service answers 504 for the whole panel read and for comments. Add
+  a deadline of about one second; the read already survives a missing name.
+- **C11: the embedded links omit links to soft-deleted issues, while
+  `GET …/links` lists them, and neither is ordered.** Pick one rule for both
+  and add `ORDER BY created_at`. Low.
+- **C12: extend [TAS-228](https://jira.ozero.dev/browse/TAS-228) to `PATCH`.**
+  The contract states no role for `PATCH /issues/{issueId}`: `update-issue-roles`
+  for the actor, plus `assign-issue-roles` for the actor and the new assignee
+  when the assignee changes. Entry: "Five watcher and assignee writes are
+  role-gated by issue-service …".
+- **Extend TAS-228, documentation only: the contract does not say that `PATCH`
+  and assign subscribe the new assignee as a watcher, or that create subscribes
+  the reporter** (TAS-246 critique). openapi only; no dependency. Entry:
+  "Assigning an issue subscribes the assignee …".
+- **C13: extend [TAS-206](https://jira.ozero.dev/browse/TAS-206):
+  `ValidateAccessTokenResponseDto.status` should `$ref` an enum that includes
+  `UNSPECIFIED`.** It is a bare `string` today.
+- **C14 (optional): a `PATCH` without `If-Match` gets the generic 400 "Invalid
+  request parameters".** A 428 naming the header would be clearer. The client
+  always sends it, so this is for other callers.
+- **C15 (deploy note): `.env.docker.example` carries a commented
+  `GATEWAY_CORS_ALLOWED_HEADERS` without `if-match`.** A deploy that sets it from
+  the example breaks every `PATCH` from the browser. The preflight allowed
+  `if-match` on 2026-10-07, so the stand is not set that way today.
+- **C16 (watch, not an ask): the Liquibase changeset `taska:0008` was edited in
+  `04546f1`** (TAS-197). If issue routes answer 503 after a deploy, check this
+  first.

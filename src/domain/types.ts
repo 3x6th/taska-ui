@@ -18,10 +18,17 @@
  * only write that leaves it.
  *
  * A value outside this union can still arrive, and adding to the union is not
- * what stops it: `GET /users/me` answers the gateway's own `GatewayUserStatus`,
- * which has no `LOCKED` and reports `UNSPECIFIED` instead. So every reader
- * still prints an unrecognised status verbatim rather than trusting the type
- * (TAS-173, `userStatusLabel` in src/screens/admin/users.ts).
+ * what stops it. `GET /users/me` answers the gateway's own `GatewayUserStatus`,
+ * which since backend TAS-197 (`04546f1`, deployed) has a `LOCKED` member — so a
+ * locked account whose token was issued before the lock now reads `LOCKED`, and
+ * that token keeps working while TAS-198 (backend PR #174) is open. But
+ * `UNSPECIFIED` is still a member of that enum, and the contract types `status`
+ * as a bare `string` (TAS-173). So every reader still prints an unrecognised
+ * status verbatim rather than trusting the type (`userStatusLabel` in
+ * src/screens/admin/users.ts). A status the gateway's mapper does not know at
+ * all no longer arrives as anything: `AuthMapper.toGatewayUserStatus` throws a
+ * plain `DomainException`, which `GatewayErrorHandler` turns into a 500 on every
+ * authenticated request (read at `60d62ee`).
  */
 export type UserStatus = "INVITED" | "ACTIVE" | "BLOCKED" | "LOCKED";
 /**
@@ -204,6 +211,26 @@ export interface UserStatusChange {
   previousStatus: UserStatus;
   currentStatus: UserStatus;
   changedAt: string;
+}
+
+/**
+ * `UserSummaryDto` — who somebody is, as the server names them inline on a
+ * read that is about something else (backend TAS-214, develop `60d62ee`): the
+ * issue's assignee and reporter, an attachment's uploader, a comment's author.
+ *
+ * `displayName` is `null` when the server did not name the person, and that
+ * includes the empty string. The gateway answers `200` with
+ * `displayName: ""` when auth-service is down rather than failing the read
+ * (`IssueDetailsServiceImpl.getProfiles` falls back to an empty profile map),
+ * so `""` is not a name somebody chose — it is the same "not named" as an
+ * absent key, and every reader resolves it the way the UI already resolves a
+ * person it cannot name (`personFor` in src/lib/people.ts).
+ */
+export interface UserSummary {
+  id: string;
+  displayName: string | null;
+  /** A presigned link, or `null`. Not yet observed on the stand. */
+  avatarUrl: string | null;
 }
 
 export interface Project {
@@ -573,11 +600,11 @@ export interface Issue {
  *
  * Two consequences shape the feature rather than decorate it. A hit cannot be
  * placed in a board column, so the board renders server hits as their own group
- * (DESIGN.md §5.4 counts them, §5.2 does not hold them). And a hit needs a
- * `projectId` to be linkable, which is resolved from the `issueKey` prefix
- * against the projects list the client already holds — see
- * `projectKeyFromIssueKey`. Deliberately not hydrated through `getIssue` — the
- * owner settled the general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md,
+ * (DESIGN.md §5.4 counts them, §5.2 does not hold them). And a hit outside
+ * the board carries no `projectId` to be opened by, so it opens through its
+ * key — `/browse/{issueKey}`, resolved by the server with `getIssueByKey` when
+ * it is chosen (TAS-246), never guessed from the key's prefix. Deliberately not
+ * hydrated through `getIssue` — the owner settled the general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md,
  * TAS-178): fix the backend, do not hydrate on the frontend. `listIssues` used
  * to pay exactly that N+1 and stopped in TAS-195, when its DTO grew into a
  * whole issue; this one did not, so hydrating here would be a `getIssue` per
@@ -789,6 +816,12 @@ export interface IssueAttachment {
   sizeBytes: number;
   uploadedBy: string;
   /**
+   * The uploader, named by the server (`IssueAttachmentDto.uploadedByUser`,
+   * backend TAS-214). `null` when the response did not carry it — every gateway
+   * before `60d62ee` — and then the row is named the way it was before.
+   */
+  uploadedByUser: UserSummary | null;
+  /**
    * The object's ETag with its quotes stripped, which for a single-part PUT is
    * the MD5 of the bytes. `nullable: true` in the contract and blank-to-`null`
    * in the gateway's mapper, though the column itself is `NOT NULL` — so a
@@ -854,8 +887,68 @@ export interface AttachmentDownloadUrl {
   checksum: string | null;
 }
 
-export interface IssueWithHistory {
-  issue: Issue;
+/**
+ * The issue panel's one read — `GET /issues/{issueId}` answering
+ * `IssueDetailsResponseDto` (backend TAS-214, develop `60d62ee`). Everything a
+ * panel draws except the comments, which stay a paged read of their own.
+ *
+ * **The four parts are `null` when the server did not send them — and on this
+ * gateway a part that failed is sent anyway, as `[]`.** issue-service loads
+ * labels, watchers, links and attachments side by side and a part whose source
+ * fails is left unset rather than failing the read
+ * (`IssueDetailsServiceImpl.fetchWithFallback`); the gateway then copies only
+ * the parts that are set (`IssueMapper.toRestIssueDetailsWithHistoryResponseDto`)
+ * — into a DTO that openapi-generator 7.23 (`openApiNullable=false`) has
+ * already initialised with `new ArrayList<>()`. So an unset part reaches the
+ * wire as `[]`, indistinguishable from a part that really is empty. That is read
+ * from the backend's code and its own test — `IssueMapperTest
+ * .shouldMapIssueWithoutOptionalFields`, which asserts the empty lists for parts
+ * never set, at develop `60d62ee` — and not measured on the wire, since no
+ * authenticated details read has been observed. Recorded in
+ * docs/ai/API-DIVERGENCE.md as "GET /issues/{issueId}: a failed part arrives as
+ * [] and an unnamed person as a blank or absent displayName".
+ *
+ * `null` stays in the type for an absent key or a JSON `null`, which is what a
+ * mapper that marked the parts `nullable` would send, and the panel says "could
+ * not be loaded" for it. Against today's gateway that branch is reached in one
+ * way only: the watchers section treats `isWatching: true` beside a list
+ * without the reader in it as a part that did not load.
+ *
+ * `labels` is overridden from `Issue` for that reason: on a list row it is
+ * always an array, on this read it can be missing.
+ *
+ * Not a widening of `Issue` for the board's cards: the list route still answers
+ * `IssueResponseDto`, and none of these fields exist there.
+ */
+export interface IssueDetails extends Omit<Issue, "labels"> {
+  labels: Label[] | null;
+  /**
+   * The two people the issue names, with their names. `assigneeId` and
+   * `reporterId` stay beside them and stay the identity: a summary is `null`
+   * when the response did not carry one, and the id is still who it is.
+   */
+  assignee: UserSummary | null;
+  reporter: UserSummary | null;
+  /**
+   * The subscriptions, each now carrying the subscriber's name. Shaped as the
+   * list read's `IssueWatchers` so the panel's watcher section reads one type
+   * whichever route filled it. The details DTO states no count, so
+   * `totalCount` is always `null` on this read — not the list's length, which
+   * would be a number the server never stated, and a wrong one whenever the
+   * part failed and arrived as `[]`. The panel draws no count until this read
+   * carries one (backend ask A3).
+   */
+  watchers: IssueWatchers | null;
+  /** Whether the reader is subscribed, by the server's own reckoning. `null` when not sent. */
+  isWatching: boolean | null;
+  links: IssueLink[] | null;
+  attachments: IssueAttachment[] | null;
+  /** Live comments on the issue. `null` when not sent. */
+  commentCount: number | null;
+}
+
+export interface IssueDetailsWithHistory {
+  issue: IssueDetails;
   history: IssueHistoryEvent[];
 }
 
@@ -881,23 +974,46 @@ export interface IssueLink {
    * exactly the values that make the field worth having.
    *
    * Presentation narrows it instead (`issueLinkTypeLabel`): a known value gets
-   * a written label, anything else is humanised verbatim. Recorded in
-   * docs/ai/API-DIVERGENCE.md and unverified against the deployed gateway.
+   * a written label, anything else is humanised verbatim. The gateway sends the
+   * proto enum's own name (`ISSUE_LINK_VIEW_TYPE_BLOCKS`), so `RestTaskaApi`
+   * strips that prefix and reads `UNSPECIFIED` and `UNRECOGNIZED` as no
+   * relation (`""`) before the value gets here — docs/ai/API-DIVERGENCE.md,
+   * "`viewLinkType` arrives with the protobuf prefix".
    */
   viewLinkType: string;
   createdBy: string;
   createdAt: string;
+  /**
+   * The issue at the other end of the link, as the server resolved it
+   * (`IssueLinkResponseDto.target`, backend TAS-214) — so a row can print a
+   * key and a summary, and open an issue in another project, without the
+   * client reading that project. `null` when the response did not carry it.
+   */
+  target: LinkedIssue | null;
+}
+
+/**
+ * `TargetIssueDto`. `statusKey` is a plain string for the reason
+ * `BoardColumn.statusKey` is: a workflow may name statuses this build has never
+ * seen.
+ */
+export interface LinkedIssue {
+  id: string;
+  issueKey: string;
+  summary: string;
+  projectId: string;
+  statusKey: string;
 }
 
 /**
  * One subscription row — `IssueWatcherResponseDto`.
  *
- * **It names nobody.** The only thing here that identifies a person is
- * `userId`, exactly as with `Issue.assigneeId` and `IssueAttachment.uploadedBy`,
- * and it is resolved the same way: through the `userById` map the board builds
- * from `GET /projects/{id}/members`. When that read fails, or names nobody for
- * the id, a watcher degrades to "Unknown" precisely as the reporter line does —
- * one mechanism, one failure, no second invention.
+ * Since backend TAS-214 the row names its subscriber (`displayName`,
+ * `avatarUrl`). When it does not — an older gateway, or auth-service down and
+ * the name blank — the person is resolved the way every person on the panel is
+ * when the server did not name them: through the `userById` map the board
+ * builds from `GET /projects/{id}/members`, and then "Unknown" (`personFor`,
+ * src/lib/people.ts).
  *
  * `createdBy` is not `userId`: a project ADMIN may subscribe somebody else
  * through `POST .../watchers`, and then the two differ.
@@ -911,6 +1027,13 @@ export interface IssueWatcher {
   userId: string;
   createdAt: string;
   createdBy: string;
+  /**
+   * The subscriber's name and picture, carried on the row since backend
+   * TAS-214. `null` when the response did not carry them, and a blank name is
+   * `null` too — see `UserSummary.displayName` for why `""` is not a name.
+   */
+  displayName: string | null;
+  avatarUrl: string | null;
 }
 
 /**
@@ -969,6 +1092,8 @@ export interface IssueComment {
   issueId: string;
   projectId: string;
   authorUserId: string;
+  /** The author, named by the server since backend TAS-214; `null` when not carried. */
+  author: UserSummary | null;
   body: string;
   createdAt: string;
   updatedAt: string | null;

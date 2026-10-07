@@ -1,9 +1,10 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { START_DATE_AFTER_STORED_DUE_MESSAGE } from "../src/api/planningFields";
+import { datesOutOfOrderServerMessage } from "../src/api/issuePatch";
 import {
   PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE,
   PLANNING_ESTIMATE_HINT,
   planningDateIncompleteEditMessage,
+  planningDateOrderAdvice,
 } from "../src/lib/planning";
 
 /**
@@ -66,8 +67,10 @@ async function pressWithoutFollowing(page: Page, target: Locator) {
 // but no write carrying a planning field has been made against it and no
 // response body carrying one has been read (docs/ai/API-DIVERGENCE.md). The
 // refusals asserted here are `planningFieldRefusal`'s, applied by the mock
-// exactly as the REST implementation applies them — read these as pinning what
-// this client does.
+// exactly as the REST implementation applies them, and — for a date that
+// clashes with the other stored date — the mock's reproduction of the server's
+// merged-pair check (TAS-246), which the panel words as advice. Read these as
+// pinning what this client does.
 
 const MOBILE_PROJECT_ID = "f315c5cf-3333-47d1-8d22-79f07c2ec99b";
 
@@ -152,8 +155,8 @@ test("edits story points on blur and keeps them", async ({ page }) => {
   await closePanel(page);
   const reopened = await openIssuePanel(page, "TAS-101");
   await expect(reopened.getByLabel("Story points")).toHaveValue("5");
-  // And the other four came back untouched, which on a wire that replaces is a
-  // property of the API layer rather than a given (see `resolvePlanningFields`).
+  // And the other four came back untouched: the edit is a merge patch since
+  // TAS-246, and only the key that changed went on the wire.
   await expect(reopened.getByLabel("Start date")).toHaveValue("2026-06-15");
   await expect(reopened.getByLabel("Original estimate")).toHaveValue("8h");
 });
@@ -184,15 +187,19 @@ test("shows the refusal when a start date passes the stored due date, and puts t
   const planning = await openIssuePanel(page, "TAS-101");
 
   const start = planning.getByLabel("Start date");
-  // Past the stored due date of 2026-06-26. The server compares an incoming
-  // start date against the *stored* due date, so this cannot succeed — and
-  // `planningFieldRefusal` says so before the request is spent.
+  // Past the stored due date of 2026-06-26. The edit is a PATCH since TAS-246:
+  // the request goes out, the server lays the new start over the stored due
+  // date, and refuses the pair — "Start date: 2026-07-01 must not be after Due
+  // date: 2026-06-26", which the mock reproduces word for word.
   await start.fill("2026-07-01");
   await start.blur();
 
-  // The API layer's own sentence, imported rather than retyped: what is pinned
-  // is that the refusal reaches the reader, not a particular wording.
-  await expect(panel.locator(".form-error")).toContainText(START_DATE_AFTER_STORED_DUE_MESSAGE);
+  // The panel turns that sentence into advice: it saves one box at a time, so
+  // the reader has to move the due date first, and the server's sentence does
+  // not say so. Imported rather than retyped: what is pinned is that the
+  // refusal reaches the reader as the advice, not a particular wording.
+  await expect(panel.locator(".form-error")).toContainText(planningDateOrderAdvice("startDate"));
+  await expect(panel.locator(".form-error")).not.toContainText(datesOutOfOrderServerMessage("2026-07-01", "2026-06-26"));
   // And the box goes back to the day the issue actually starts on, rather than
   // keeping a date the server never accepted (§5.5).
   await expect(start).toHaveValue("2026-06-15");
@@ -388,12 +395,12 @@ test("a refusal the date line replaced does not come back when the date line cle
   const panel = page.locator(".issue-panel");
   const planning = await openIssuePanel(page, "TAS-101");
 
-  // A refused write first: past the stored due date of 2026-06-26, which
-  // `planningFieldRefusal` answers before the request is spent.
+  // A refused write first: past the stored due date of 2026-06-26, which the
+  // server refuses once the request reaches it and the panel words as advice.
   const start = planning.getByLabel("Start date");
   await start.fill("2026-07-01");
   await start.blur();
-  await expect(panel.locator(".form-error")).toHaveText(START_DATE_AFTER_STORED_DUE_MESSAGE);
+  await expect(panel.locator(".form-error")).toHaveText(planningDateOrderAdvice("startDate"));
 
   // Then a date refusal, which takes the slot — and drops the one it replaced
   // rather than queueing it.
@@ -427,8 +434,7 @@ test("edits a date on blur and keeps it", async ({ page }) => {
   await closePanel(page);
   const reopened = await openIssuePanel(page, "TAS-101");
   await expect(reopened.getByLabel("Start date")).toHaveValue("2026-06-20");
-  // The other date came back untouched, which on a wire that replaces is the
-  // API layer's doing rather than a given (see `resolvePlanningFields`).
+  // The other date came back untouched: the merge patch carried only this one.
   await expect(reopened.getByLabel("Due date")).toHaveValue("2026-06-26");
 });
 

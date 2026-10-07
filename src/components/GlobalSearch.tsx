@@ -9,7 +9,7 @@ import type { IssueSearchHit } from "../domain/types";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { useUnanswered } from "../hooks/useUnanswered";
-import { projectKeyFromIssueKey, typeMeta } from "../lib/format";
+import { typeMeta } from "../lib/format";
 import { ApiNotice } from "./ApiNotice";
 import { PriorityBars, TypeChip } from "./IssueBits";
 
@@ -32,10 +32,12 @@ const GLOBAL_SEARCH_PAGE_SIZE = 8;
  * this one asks `GET /issues/search` with no `projectId` and therefore answers
  * about projects the board has never read.
  *
- * A result is an `IssueSearchHit` and carries no `projectId`, so the route is
- * built by resolving the `issueKey` prefix against the projects list the client
- * already holds. A prefix that resolves to nothing is rendered without a link
- * rather than pointed at a guessed route.
+ * A result is an `IssueSearchHit` and carries no `projectId`, so a hit opens
+ * through the issue's short address, `/browse/{issueKey}`, which asks the
+ * server which issue and which project the key names (`IssueKeyScreen`,
+ * backend TAS-214). Until TAS-246 the project was guessed here from the key's
+ * prefix against the projects list, which left every hit in a project the list
+ * did not hold — or had not loaded — unopenable.
  *
  * The widget is a combobox and behaves like one (§7): focus never leaves the
  * input, ArrowUp/ArrowDown move `aria-activedescendant` through the options,
@@ -69,49 +71,17 @@ export function GlobalSearch() {
     // is why `enabled` and that guard agree on one exported constant.
     queryFn: () => taskaApi.searchIssues({ query: debounced, pageSize: GLOBAL_SEARCH_PAGE_SIZE }),
   });
-  // Warmed on focus rather than with the first hit: it is the only thing that
-  // turns a hit into a link, and asking for it at the same moment as the search
-  // would spend the first result set as unlinkable rows. Shares its key with
-  // the projects screen, so on `/projects` it costs nothing at all.
-  const projectsQuery = useQuery({
-    queryKey: ["projects"],
-    enabled: open,
-    queryFn: () => taskaApi.listProjects(),
-  });
-
   const searchUnread = useUnanswered(searchQuery);
-  // The projects read gets the same instrument as the search, because a hit
-  // that cannot be opened has two very different causes and only one of them is
-  // a fact about the project. `listProjects` failing means we do not know which
-  // project `CRM-1` belongs to; it does not mean `CRM` is not a project. Saying
-  // "Project unknown" for both is the TAS-163 mistake in miniature — an
-  // admission about a request printed as a claim about the data.
-  const projectsUnread = useUnanswered(projectsQuery);
-  /** Whether there is a list to resolve a key against at all — as opposed to one that has not answered. */
-  const projectsAnswered = projectsQuery.data !== undefined;
   const hits = useMemo(() => searchQuery.data?.items ?? [], [searchQuery.data]);
   const totalCount = searchQuery.data?.totalCount;
   /** The panel is showing rows, as opposed to showing one of the other three answers. */
   const listboxOpen = showPopup && hits.length > 0;
 
-  // Lower-cased on both sides: project keys are upper-cased when a project is
-  // created here, and the deployed gateway holds lower-case ones too
-  // (`kappa-test`), so a case-sensitive lookup would silently stop linking.
-  const projectIdByKey = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const project of projectsQuery.data ?? []) {
-      map.set(project.projectKey.toLowerCase(), project.id);
-    }
-    return map;
-  }, [projectsQuery.data]);
-
+  // Every hit with a key opens; the server resolves it when it is chosen. A
+  // hit without one has nothing to resolve, so it is drawn and not offered.
   const routes = useMemo(
-    () =>
-      hits.map((hit) => {
-        const projectId = projectIdByKey.get(projectKeyFromIssueKey(hit.issueKey).toLowerCase());
-        return projectId ? `/projects/${projectId}/issues/${hit.id}` : null;
-      }),
-    [hits, projectIdByKey],
+    () => hits.map((hit) => (hit.issueKey ? `/browse/${encodeURIComponent(hit.issueKey)}` : null)),
+    [hits],
   );
 
   // A new question deselects: an active row held over from the previous query
@@ -306,15 +276,6 @@ export function GlobalSearch() {
 
           {hits.length ? (
             <>
-              {/* Only when there are rows it explains. On `/projects` the same
-                  failure is already stated over the grid; on `/admin`, where
-                  nothing else reads the project list, this is the only place it
-                  is ever said — and that is the case that matters. */}
-              {projectsUnread.unanswered ? (
-                <ApiNotice error={projectsUnread.error} live="polite">
-                  The project list could not be read, so these results cannot be opened from here.
-                </ApiNotice>
-              ) : null}
               <ul aria-label="Issue search results" className="global-search-list" id={listId} ref={listRef} role="listbox">
                 {hits.map((hit, index) => (
                   <GlobalSearchOption
@@ -322,10 +283,7 @@ export function GlobalSearch() {
                     hit={hit}
                     id={optionId(index)}
                     key={hit.id}
-                    // Two different reasons a row is not a link, and they are
-                    // not the same sentence: a list we have and a key that is
-                    // not in it, against a list that never arrived.
-                    unlinkableNote={routes[index] !== null ? null : projectsAnswered ? "Project unknown" : "Project not loaded"}
+                    unlinkableNote={routes[index] !== null ? null : "No issue key"}
                     onChoose={() => select(index)}
                     onHover={() => setActiveIndex(index)}
                   />

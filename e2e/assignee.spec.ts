@@ -68,3 +68,64 @@ test("keeps a VIEWER who already holds an issue as its assignee, with no way to 
   // Everyone the server does take is still an offer.
   await expect(panel.locator(".assignee-chip", { hasText: "Mark" })).toBeEnabled();
 });
+
+test("unassigns an issue with None, and the card and a reopened panel agree", async ({ page }) => {
+  // TAS-246: "None" is a request now — a PATCH with `assigneeId: null` — where
+  // the old assign route required an id and the chip could only be drawn off.
+  await signIn(page);
+  const panel = await openIssuePanel(page, "TAS-102");
+
+  const none = panel.locator(".assignee-chip", { hasText: "None" });
+  await expect(panel.locator(".assignee-chip", { hasText: "Anna" })).toHaveClass(/is-active/);
+  await expect(none).toBeEnabled();
+  await none.click();
+
+  // Not optimistic: the chip moves when the server's answer lands, and is off
+  // again because pressing it would change nothing — `aria-disabled`, not
+  // `disabled`, so the press below that sends nothing is the chip's own doing.
+  await expect(none).toHaveClass(/is-active/);
+  await expect(none).toHaveAttribute("aria-disabled", "true");
+  // The property, not `toBeEnabled()`: Playwright counts `aria-disabled` as
+  // disabled, and what is pinned here is that no real `disabled` is set.
+  await expect(none).toHaveJSProperty("disabled", false);
+  // The card behind the panel lost its assignee with the board's re-read.
+  await expect(page.locator(".issue-card", { hasText: "TAS-102" }).locator(".avatar")).toHaveClass(/avatar-empty/);
+
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator(".issue-card", { hasText: "TAS-102" }).click();
+  const reopened = page.getByRole("complementary", { name: "TAS-102 issue" });
+  await expect(reopened.locator(".assignee-chip", { hasText: "None" })).toHaveClass(/is-active/);
+});
+
+test("keeps focus on None after unassigning from the keyboard, and draws the token ring", async ({ page }) => {
+  // A real `disabled` landing on the chip that has focus is what Chromium
+  // answers by moving focus to <body> (DESIGN.md §4.21) — and the answer to
+  // this very press is what makes the issue unassigned. So the chip goes
+  // `aria-disabled` instead, and focus stays where the reader left it.
+  await signIn(page);
+  const panel = await openIssuePanel(page, "TAS-102");
+  const none = panel.locator(".assignee-chip", { hasText: "None" });
+  await expect(panel.locator(".assignee-chip", { hasText: "Anna" })).toHaveClass(/is-active/);
+
+  // Reached by Tab, so `:focus-visible` holds, and the ring is the token one
+  // (§4.1, §7) rather than the browser's own.
+  await panel.locator(".assignee-chip", { hasText: "Anna" }).focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(none).toBeFocused();
+  await expect(none).toHaveCSS("outline-style", "solid");
+  await expect(none).toHaveCSS("outline-width", "2px");
+  await expect(none).toHaveCSS("outline-offset", "2px");
+
+  await page.keyboard.press("Enter");
+  await expect(none).toHaveClass(/is-active/);
+  await expect(none).toHaveAttribute("aria-disabled", "true");
+  await expect(none).toBeFocused();
+  // Not faded: it is the value the field now holds.
+  await expect(none).toHaveCSS("opacity", "1");
+
+  // And a press on it now sends nothing: the card keeps no assignee and the
+  // chip stays where it is, focused.
+  await page.keyboard.press("Enter");
+  await expect(none).toBeFocused();
+  await expect(page.locator(".issue-card", { hasText: "TAS-102" }).locator(".avatar")).toHaveClass(/avatar-empty/);
+});

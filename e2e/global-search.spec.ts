@@ -39,8 +39,9 @@ test("finds issues in every project from the top bar and opens one with the keyb
 
   await field.press("Enter");
 
-  // The route was built from the issue key's prefix resolved against the
-  // projects list — the search response carries no projectId at all.
+  // The search response carries no projectId at all, so the hit opens through
+  // its key — `/browse/{issueKey}` — and the server says which project it is
+  // in (TAS-246). The short address is replaced by the issue's own.
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+\/issues\/[^/]+$/);
   // The slide-over for that issue, which is what the route resolves to (§5.1).
   await expect(page.locator(".issue-panel")).toBeVisible();

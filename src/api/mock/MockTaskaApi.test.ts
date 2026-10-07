@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { MOCK_ATTACHMENT_TRIGGERS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
-import type { BoardParams } from "../TaskaApi";
+import type { BoardParams, UpdateIssueInput } from "../TaskaApi";
 import type { Board, Issue, Project, Workflow } from "../../domain/types";
 import {
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -8,12 +8,13 @@ import {
   attachmentTypeRefusalMessage,
 } from "../attachments";
 import {
-  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
-  AVATAR_DECLARED_MAX_SIZE_BYTES,
+  AVATAR_GATEWAY_REFUSAL_MESSAGE,
   AVATAR_MAX_SIZE_BYTES,
   avatarSizeRefusalMessage,
   avatarTypeRefusalMessage,
 } from "../avatars";
+import { IssueVersionConflictError } from "../errors";
+import { datesOutOfOrderServerMessage } from "../issuePatch";
 import { ObjectStoreError } from "../objectStore";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 import { accountLockedUntil } from "../../lib/accountLock";
@@ -36,6 +37,15 @@ describe("MockTaskaApi", () => {
     api = new MockTaskaApi();
     [project] = await api.listProjects();
   });
+
+  /**
+   * An edit at the version the issue has *now*, which is what the panel sends:
+   * it reads the version it holds just before each write (TAS-246). A chain of
+   * edits needs each one's version, or the second conflicts with the first.
+   */
+  const versionOf = async (issueId: string) => (await api.getIssue(project.id, issueId)).issue.version;
+  const edit = async (issueId: string, input: UpdateIssueInput) =>
+    api.updateIssue(project.id, issueId, input, await versionOf(issueId));
 
   describe("session", () => {
     it("holds no session until someone signs in", () => {
@@ -423,10 +433,13 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * `PUT /issues/{issueId}/assignee`. issue-service holds the assignee to
-   * `assign-issue-roles` (ADMIN, MEMBER), not only the caller (TAS-226), and the
-   * contract says neither — so these pin the assignee half. Anna, the default
-   * reader, is the ADMIN of Taska Platform.
+   * Assigning through the edit — `PATCH /issues/{issueId}` with `assigneeId`
+   * since TAS-246, where it was `PUT …/assignee`. issue-service holds the
+   * assignee to `assign-issue-roles` (ADMIN, MEMBER), not only the caller
+   * (TAS-226), and only when the assignee actually changes to somebody other
+   * than `null` or the caller (`IssuePatchServiceImpl.checkPatchAssigneeRoles`,
+   * read at `60d62ee`). The contract says none of it. Anna, the default reader,
+   * is the ADMIN of Taska Platform.
    */
   describe("assigning an issue", () => {
     const issueByKey = async (issueKey: string) => {
@@ -447,9 +460,7 @@ describe("MockTaskaApi", () => {
       const mark = await memberNamed("Mark Lee");
       expect(mark.role).toBe("MEMBER");
 
-      await expect(api.assignIssue(project.id, issue.id, mark.userId)).resolves.toMatchObject({
-        assigneeId: mark.userId,
-      });
+      await expect(edit(issue.id, { assigneeId: mark.userId })).resolves.toMatchObject({ assigneeId: mark.userId });
     });
 
     it("refuses a VIEWER as the assignee, and changes nothing", async () => {
@@ -457,9 +468,7 @@ describe("MockTaskaApi", () => {
       const tom = await memberNamed("Tom Becker");
       expect(tom.role).toBe("VIEWER");
 
-      await expect(api.assignIssue(project.id, issue.id, tom.userId)).rejects.toMatchObject({
-        code: "PERMISSION_DENIED",
-      });
+      await expect(edit(issue.id, { assigneeId: tom.userId })).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
       await expect(api.getIssue(project.id, issue.id)).resolves.toMatchObject({
         issue: { assigneeId: issue.assigneeId, version: issue.version },
       });
@@ -473,18 +482,174 @@ describe("MockTaskaApi", () => {
       const priya = await api.getCurrentUser();
       await api.login({ email: "anna@example.com", password: "anything" });
 
-      await expect(api.assignIssue(project.id, issue.id, priya.id)).rejects.toMatchObject({
-        code: "PERMISSION_DENIED",
-      });
+      await expect(edit(issue.id, { assigneeId: priya.id })).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
     });
 
-    it("still unassigns an issue a VIEWER holds, because nobody is named to check", async () => {
+    it("unassigns an issue a VIEWER holds, because nobody is named to check", async () => {
       // TAS-110 is Tom's from before he was a VIEWER — the seeded shape of a
-      // demotion after the assignment.
+      // demotion after the assignment. `null` is a legal assignee on PATCH,
+      // where the old assign route required an id.
       const issue = await issueByKey("TAS-110");
       expect(issue.assigneeId).toBe((await memberNamed("Tom Becker")).userId);
 
-      await expect(api.assignIssue(project.id, issue.id, null)).resolves.toMatchObject({ assigneeId: null });
+      await expect(edit(issue.id, { assigneeId: null })).resolves.toMatchObject({ assigneeId: null });
+      const { history } = await api.getIssue(project.id, issue.id);
+      expect(history.at(-1)).toMatchObject({ eventType: "ASSIGNED", payload: { to: null } });
+    });
+
+    it("lets the reader assign themselves, and subscribes them as the server does", async () => {
+      // TAS-102 is Anna's and nobody watches it — the seed predates the
+      // subscription — so it is handed away first, to make the assignment a
+      // change.
+      const issue = await issueByKey("TAS-102");
+      const me = await api.getCurrentUser();
+      await edit(issue.id, { assigneeId: null });
+      const before = await api.getIssue(project.id, issue.id);
+      expect(before.issue.isWatching).toBe(false);
+
+      await expect(edit(issue.id, { assigneeId: me.id })).resolves.toMatchObject({ assigneeId: me.id });
+
+      const after = await api.getIssue(project.id, issue.id);
+      expect(after.issue.isWatching).toBe(true);
+      // The subscription writes no history row of its own: only the assignment.
+      expect(after.history.slice(before.history.length).map((event) => event.eventType)).toEqual(["ASSIGNED"]);
+    });
+
+    it("subscribes a new assignee once, however often they are assigned", async () => {
+      const issue = await issueByKey("TAS-102");
+      const mark = await memberNamed("Mark Lee");
+      const markRows = async () =>
+        (await api.listIssueWatchers(project.id, issue.id)).watchers.filter((row) => row.userId === mark.userId);
+
+      await edit(issue.id, { assigneeId: mark.userId });
+      expect(await markRows()).toHaveLength(1);
+      // Made by whoever assigned, as the server records it.
+      expect((await markRows())[0].createdBy).toBe((await api.getCurrentUser()).id);
+
+      // Away and back again: a second assignment, and still one subscription —
+      // and unassigning does not unsubscribe anybody.
+      await edit(issue.id, { assigneeId: null });
+      expect(await markRows()).toHaveLength(1);
+      await edit(issue.id, { assigneeId: mark.userId });
+      expect(await markRows()).toHaveLength(1);
+    });
+
+    it("subscribes the reporter to the issue they create", async () => {
+      const created = await api.createIssue(project.id, {
+        issueType: "TASK",
+        summary: "Filed by Anna",
+        description: "",
+        priority: "LOW",
+      });
+
+      const { issue, history } = await api.getIssue(project.id, created.id);
+      expect(issue.isWatching).toBe(true);
+      expect(issue.watchers?.watchers.map((row) => row.userId)).toEqual([created.reporterId]);
+      expect(history.map((event) => event.eventType)).toEqual(["CREATED"]);
+    });
+  });
+
+  /**
+   * The edit itself, `PATCH /issues/{issueId}` with `If-Match` (TAS-246), in
+   * the order issue-service checks it at `60d62ee`: the version before anything
+   * the write would change, and a write that changes nothing changes nothing —
+   * not even the version.
+   */
+  describe("editing an issue", () => {
+    const issueByKey = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+    const snapshot = async (issueId: string) => {
+      const { issue, history } = await api.getIssue(project.id, issueId);
+      return { version: issue.version, updatedAt: issue.updatedAt, priority: issue.priority, history: history.length };
+    };
+
+    it("refuses a stale version with the issue as it stands, and writes nothing", async () => {
+      const issue = await issueByKey("TAS-101");
+      const before = await snapshot(issue.id);
+
+      const failure = await api
+        .updateIssue(project.id, issue.id, { priority: "LOW" }, before.version - 1 || before.version + 1)
+        .catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(IssueVersionConflictError);
+      const conflict = failure as IssueVersionConflictError;
+      expect(conflict.status).toBe(409);
+      expect(conflict.current).toMatchObject({ id: issue.id, version: before.version, priority: before.priority });
+      expect(conflict.current).not.toHaveProperty("labels");
+      expect(await snapshot(issue.id)).toEqual(before);
+    });
+
+    it("bumps the version by exactly one on a change, and not at all on a no-op", async () => {
+      const issue = await issueByKey("TAS-101");
+      const before = await snapshot(issue.id);
+
+      const changed = await edit(issue.id, { priority: before.priority === "LOW" ? "HIGH" : "LOW" });
+      expect(changed.version).toBe(before.version + 1);
+      expect(changed).not.toHaveProperty("labels");
+
+      const settled = await snapshot(issue.id);
+      const same = await edit(issue.id, { priority: changed.priority, summary: changed.summary });
+      expect(same.version).toBe(settled.version);
+      expect(await snapshot(issue.id)).toEqual(settled);
+    });
+
+    it("clears with null — the description to the empty string, which is how the domain spells it", async () => {
+      const issue = await issueByKey("TAS-101");
+
+      const cleared = await edit(issue.id, { description: null, storyPoints: null });
+
+      expect(cleared.description).toBe("");
+      expect(cleared.storyPoints).toBeNull();
+      expect((await api.getIssue(project.id, issue.id)).issue.description).toBe("");
+    });
+
+    it("answers a stale version as a conflict even when its dates would also be refused", async () => {
+      const issue = await issueByKey("TAS-101");
+      const version = await versionOf(issue.id);
+
+      await expect(
+        api.updateIssue(project.id, issue.id, { startDate: "2026-07-01" }, version + 3),
+      ).rejects.toBeInstanceOf(IssueVersionConflictError);
+    });
+
+    it("conflicts after a transition, which bumps the version, and not after a label, which does not", async () => {
+      const issue = await issueByKey("TAS-102");
+      const labelled = await versionOf(issue.id);
+      const [label] = await api.listProjectLabels(project.id);
+      await api.addIssueLabel(project.id, issue.id, label.id);
+      await expect(api.updateIssue(project.id, issue.id, { summary: "Still mine" }, labelled)).resolves.toMatchObject({
+        version: labelled + 1,
+      });
+
+      const moved = await versionOf(issue.id);
+      const workflow = await api.getWorkflow(project.id);
+      const from = workflow.statuses.find((status) => status.statusKey === issue.status);
+      const transition = workflow.transitions.find((item) => item.fromStatusId === from?.id)!;
+      await api.transitionIssue(project.id, issue.id, transition.id);
+      await expect(api.updateIssue(project.id, issue.id, { summary: "Too late" }, moved)).rejects.toBeInstanceOf(
+        IssueVersionConflictError,
+      );
+    });
+
+    it("refuses a version the gateway cannot use and a blank summary, before looking anything up", async () => {
+      const issue = await issueByKey("TAS-101");
+      await expect(api.updateIssue(project.id, issue.id, { priority: "LOW" }, 0)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(api.updateIssue(project.id, issue.id, { priority: "LOW" }, 1.5)).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+      });
+      await expect(api.updateIssue(project.id, issue.id, { priority: "LOW" }, Number.NaN)).rejects.toMatchObject({
+        code: "BAD_REQUEST",
+      });
+      await expect(api.updateIssue(project.id, "no-such-issue", { summary: " " }, 1)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "body.summary must not be blank",
+      });
     });
   });
 
@@ -954,20 +1119,12 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * The five planning fields (TAS-189), and mostly one defect:
-   * `PUT /issues/{issueId}` is a **full replace** on the gateway, so a field the
-   * request omits is erased rather than preserved
-   * (`IssueServiceImpl.updateIssue` on backend `develop`, read 2026-09-06). The
-   * board edits a summary, a description and a priority one at a time; now
-   * that merged PR #148 has put these fields in the contract, every one of
-   * those edits
-   * would wipe the story points and both dates unless the client re-sends what
-   * it is keeping.
-   *
-   * These cases pin that on the mock, which is the reference implementation and
-   * what the e2e suite runs against. `RestTaskaApi.test.ts` pins the same
-   * behaviour on the wire, including the body shape, and both sides share the
-   * rules in src/api/planningFields.ts so they cannot answer differently.
+   * The five planning fields (TAS-189) through the edit, which is a merge patch
+   * since TAS-246: a key left out is left alone, `null` clears, and only the
+   * stated keys move. These cases pin that on the mock, which is the reference
+   * implementation and what the e2e suite runs against; `RestTaskaApi.test.ts`
+   * pins the wire, and both sides share the input rules in
+   * src/api/planningFields.ts so they cannot answer differently.
    */
   describe("planning fields", () => {
     const issueByKey = async (key: string): Promise<Issue> => {
@@ -997,7 +1154,7 @@ describe("MockTaskaApi", () => {
     it("keeps all five when only the summary is edited — the regression this exists for", async () => {
       const before = await issueByKey("TAS-101");
 
-      const updated = await api.updateIssue(project.id, before.id, { summary: "Login form validation, revisited" });
+      const updated = await edit(before.id, { summary: "Login form validation, revisited" });
 
       expect(updated.summary).toBe("Login form validation, revisited");
       expect(updated).toMatchObject({
@@ -1022,14 +1179,14 @@ describe("MockTaskaApi", () => {
       const zero = await issueByKey("TAS-102");
       const half = await issueByKey("TAS-103");
 
-      expect((await api.updateIssue(project.id, zero.id, { priority: "HIGH" })).storyPoints).toBe(0);
-      expect((await api.updateIssue(project.id, half.id, { description: "Rewritten." })).storyPoints).toBe(1.5);
+      expect((await edit(zero.id, { priority: "HIGH" })).storyPoints).toBe(0);
+      expect((await edit(half.id, { description: "Rewritten." })).storyPoints).toBe(1.5);
     });
 
     it("clears the one field asked for by an explicit null and leaves the others standing", async () => {
       const before = await issueByKey("TAS-101");
 
-      const updated = await api.updateIssue(project.id, before.id, { storyPoints: null });
+      const updated = await edit(before.id, { storyPoints: null });
 
       expect(updated.storyPoints).toBeNull();
       expect(updated).toMatchObject({
@@ -1046,7 +1203,7 @@ describe("MockTaskaApi", () => {
       // What a component produces by spreading a form state that has not been
       // touched. `Object.assign(issue, { ...input })` used to write the
       // `undefined` straight over the stored value.
-      const updated = await api.updateIssue(project.id, before.id, { storyPoints: undefined, dueDate: undefined });
+      const updated = await edit(before.id, { storyPoints: undefined, dueDate: undefined });
 
       expect(updated.storyPoints).toBe(3);
       expect(updated.dueDate).toBe("2026-06-26");
@@ -1055,7 +1212,7 @@ describe("MockTaskaApi", () => {
     it("sets and clears each of the five in turn", async () => {
       const target = await issueByKey("TAS-104");
 
-      const set = await api.updateIssue(project.id, target.id, {
+      const set = await edit(target.id, {
         storyPoints: 0.25,
         startDate: "2026-07-01",
         dueDate: "2026-07-31",
@@ -1070,7 +1227,7 @@ describe("MockTaskaApi", () => {
         remainingEstimateMinutes: 45,
       });
 
-      const cleared = await api.updateIssue(project.id, target.id, {
+      const cleared = await edit(target.id, {
         storyPoints: null,
         startDate: null,
         dueDate: null,
@@ -1088,7 +1245,7 @@ describe("MockTaskaApi", () => {
 
     it("refuses a story-point value the column cannot hold", async () => {
       const target = await issueByKey("TAS-104");
-      const refuse = (storyPoints: number) => api.updateIssue(project.id, target.id, { storyPoints });
+      const refuse = (storyPoints: number) => edit(target.id, { storyPoints });
 
       // `>= 0` is what the server enforces even though its message says "must
       // be positive", so 0 is accepted and -0.5 is not.
@@ -1117,10 +1274,10 @@ describe("MockTaskaApi", () => {
       const target = await issueByKey("TAS-104");
 
       await expect(
-        api.updateIssue(project.id, target.id, { originalEstimateMinutes: -1 }),
+        edit(target.id, { originalEstimateMinutes: -1 }),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
       await expect(
-        api.updateIssue(project.id, target.id, { remainingEstimateMinutes: 30.5 }),
+        edit(target.id, { remainingEstimateMinutes: 30.5 }),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
 
       // The bound the field has in all three descriptions of it — `format:
@@ -1130,22 +1287,22 @@ describe("MockTaskaApi", () => {
       // Asserted with the sentence, here and on the same input in
       // `RestTaskaApi.test.ts`.
       await expect(
-        api.updateIssue(project.id, target.id, { originalEstimateMinutes: 2_147_483_648 }),
+        edit(target.id, { originalEstimateMinutes: 2_147_483_648 }),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: ESTIMATE_MAX_MESSAGE });
 
       // Both ends of what is still accepted: zero is an estimate of nothing,
       // and the ceiling itself fits.
       await expect(
-        api.updateIssue(project.id, target.id, { remainingEstimateMinutes: 0 }),
+        edit(target.id, { remainingEstimateMinutes: 0 }),
       ).resolves.toMatchObject({ remainingEstimateMinutes: 0 });
       await expect(
-        api.updateIssue(project.id, target.id, { originalEstimateMinutes: 2_147_483_647 }),
+        edit(target.id, { originalEstimateMinutes: 2_147_483_647 }),
       ).resolves.toMatchObject({ originalEstimateMinutes: 2_147_483_647 });
     });
 
     it("refuses a date that is not a real calendar day", async () => {
       const target = await issueByKey("TAS-104");
-      const refuse = (startDate: string) => api.updateIssue(project.id, target.id, { startDate });
+      const refuse = (startDate: string) => edit(target.id, { startDate });
 
       await expect(refuse("2026-13-01")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
       await expect(refuse("2026-02-30")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
@@ -1160,55 +1317,58 @@ describe("MockTaskaApi", () => {
       const target = await issueByKey("TAS-104");
 
       await expect(
-        api.updateIssue(project.id, target.id, { startDate: "2026-08-02", dueDate: "2026-08-01" }),
+        edit(target.id, { startDate: "2026-08-02", dueDate: "2026-08-01" }),
       ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
       await expect(
-        api.updateIssue(project.id, target.id, { startDate: "2026-08-01", dueDate: "2026-08-01" }),
+        edit(target.id, { startDate: "2026-08-01", dueDate: "2026-08-01" }),
       ).resolves.toMatchObject({ startDate: "2026-08-01", dueDate: "2026-08-01" });
     });
 
-    it("refuses a start date past the *stored* due date, even when the same request clears that due date", async () => {
-      // The check the contract does not state: `IssueServiceImpl` compares the
-      // incoming start date against the due date already on the record, so
-      // clearing the due date in the same breath does not help.
+    it("checks the merged pair: a start date alone past the stored due date is refused in the server's words", async () => {
+      // Since TAS-246 the edit is a PATCH, and the server lays the request's
+      // dates over the stored ones and checks the result
+      // (`IssuePatchServiceImpl.validateStartNotAfterDue`, read at `60d62ee`).
       const target = await issueByKey("TAS-101");
 
-      await expect(
-        api.updateIssue(project.id, target.id, { startDate: "2026-07-01", dueDate: null }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(edit(target.id, { startDate: "2026-07-01" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: datesOutOfOrderServerMessage("2026-07-01", "2026-06-26"),
+      });
 
       // Nothing was written before the refusal.
       const { issue } = await api.getIssue(project.id, target.id);
       expect(issue).toMatchObject({ startDate: "2026-06-15", dueDate: "2026-06-26" });
     });
 
-    it("refuses moving a whole window forward in one request, and accepts the same move in two", async () => {
+    it("accepts a start date past the stored due date when the same request clears that due date", async () => {
+      // The merged pair is (07-01, nothing), which has no order to be wrong
+      // about. Refused under the old PUT, which compared against the stored row.
       const target = await issueByKey("TAS-101");
 
-      // The new pair is internally consistent, and it is still refused: the
-      // incoming start is after the *stored* due date. This is the case a
-      // reader meets first in practice, and the UI half has to lead with the
-      // due date because of it.
-      await expect(
-        api.updateIssue(project.id, target.id, { startDate: "2026-07-01", dueDate: "2026-07-20" }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-
-      await api.updateIssue(project.id, target.id, { dueDate: "2026-07-20" });
-      await expect(
-        api.updateIssue(project.id, target.id, { startDate: "2026-07-01" }),
-      ).resolves.toMatchObject({ startDate: "2026-07-01", dueDate: "2026-07-20" });
+      await expect(edit(target.id, { startDate: "2026-07-01", dueDate: null })).resolves.toMatchObject({
+        startDate: "2026-07-01",
+        dueDate: null,
+      });
     });
 
-    it("refuses a due date earlier than the stored start date", async () => {
+    it("moves a whole window forward in one request, where the PUT refused it", async () => {
+      const target = await issueByKey("TAS-101");
+
+      await expect(edit(target.id, { startDate: "2026-07-01", dueDate: "2026-07-20" })).resolves.toMatchObject({
+        startDate: "2026-07-01",
+        dueDate: "2026-07-20",
+      });
+    });
+
+    it("refuses a due date that would land before the stored start date, in the server's words", async () => {
       const target = await issueByKey("TAS-105");
       expect(target.startDate).toBe("2026-06-20");
 
-      await expect(
-        api.updateIssue(project.id, target.id, { dueDate: "2026-06-01" }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-      await expect(
-        api.updateIssue(project.id, target.id, { dueDate: "2026-06-20" }),
-      ).resolves.toMatchObject({ dueDate: "2026-06-20" });
+      await expect(edit(target.id, { dueDate: "2026-06-01" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: datesOutOfOrderServerMessage("2026-06-20", "2026-06-01"),
+      });
+      await expect(edit(target.id, { dueDate: "2026-06-20" })).resolves.toMatchObject({ dueDate: "2026-06-20" });
     });
 
     it("accepts the five on a create and refuses the same values it refuses on an update", async () => {
@@ -1483,7 +1643,7 @@ describe("MockTaskaApi", () => {
       await api.updateProjectLabel(project.id, carried.id, { name: "renamed", color: "#123456" });
 
       const after = await api.getIssue(project.id, carrier.id);
-      expect(after.issue.labels.find((label) => label.id === carried.id)).toEqual({
+      expect(after.issue.labels?.find((label) => label.id === carried.id)).toEqual({
         id: carried.id,
         name: "renamed",
         color: "#123456",
@@ -1500,7 +1660,7 @@ describe("MockTaskaApi", () => {
       await api.addIssueLabel(project.id, bare.id, label.id);
 
       expect((await api.listIssueLabels(project.id, bare.id)).map((item) => item.id)).toEqual([label.id]);
-      expect((await api.getIssue(project.id, bare.id)).issue.labels.map((item) => item.id)).toEqual([label.id]);
+      expect((await api.getIssue(project.id, bare.id)).issue.labels?.map((item) => item.id)).toEqual([label.id]);
       await expect(api.addIssueLabel(project.id, bare.id, label.id)).rejects.toThrow();
     });
 
@@ -1661,7 +1821,7 @@ describe("MockTaskaApi", () => {
       });
 
       const mark = (await api.listMembers(project.id)).find((item) => item.user?.displayName === "Mark Lee");
-      await api.assignIssue(project.id, created.id, mark!.userId);
+      await edit(created.id, { assigneeId: mark!.userId });
       const [assignedRow] = (await api.listNotifications()).items;
       expect(assignedRow).toMatchObject({ notificationType: "ISSUE_ASSIGNED", issueId: created.id, projectId: project.id });
 
@@ -2535,7 +2695,10 @@ describe("MockTaskaApi", () => {
         "issueId",
         "sizeBytes",
         "uploadedBy",
+        "uploadedByUser",
       ]);
+      // And the list names nobody; only the issue's detail read does (TAS-214).
+      expect(attachments.every((item) => item.uploadedByUser === null)).toBe(true);
     });
 
     it("runs the three legs and lands a row the list can see", async () => {
@@ -3015,17 +3178,11 @@ describe("MockTaskaApi", () => {
 
       expect(answer.totalCount).toBe(3);
       expect(answer.watchers).toHaveLength(3);
-      // `IssueWatcherResponseDto` has six fields and none of them is a name.
-      // A mock that denormalised one would let a component be written against
-      // a field the gateway does not send.
-      expect(Object.keys(answer.watchers[0]).sort()).toEqual([
-        "createdAt",
-        "createdBy",
-        "id",
-        "issueId",
-        "projectId",
-        "userId",
-      ]);
+      // The list route names nobody: issue-service fills a watcher's name only
+      // when it assembles the issue's detail read (backend TAS-214). A mock
+      // that named them here would let a component rely on a name the gateway
+      // does not send on this route.
+      expect(answer.watchers.every((watcher) => watcher.displayName === null && watcher.avatarUrl === null)).toBe(true);
       // Anna subscribed Sofia, so at least one row's author is not its subject.
       expect(answer.watchers.some((watcher) => watcher.createdBy !== watcher.userId)).toBe(true);
     });
@@ -3205,6 +3362,113 @@ describe("MockTaskaApi", () => {
     });
   });
   /**
+   * TAS-246: the panel's one read and the key lookup, as issue-service
+   * assembles and checks them at backend develop `60d62ee`.
+   */
+  describe("issue details and the key lookup", () => {
+    const openIssue = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+
+    beforeEach(async () => {
+      await api.login({ email: "anna@example.com", password: "anything" });
+    });
+
+    it("answers the panel's whole read, the parts the list routes do not name included", async () => {
+      const issue = await openIssue("TAS-101");
+
+      const { issue: details } = await api.getIssue(project.id, issue.id);
+
+      expect(details.reporter?.displayName).toBeTruthy();
+      expect(details.labels?.map((label) => label.name).sort()).toEqual(["backend", "tech-debt"]);
+      // Three rows and no count: the details DTO states none, as the gateway's
+      // does not, and a length would be a number nobody said.
+      expect(details.watchers?.watchers).toHaveLength(3);
+      expect(details.watchers?.totalCount).toBeNull();
+      expect(details.watchers?.watchers.every((watcher) => watcher.displayName)).toBe(true);
+      // Anna watches TAS-101, and the read says so in its own field.
+      expect(details.isWatching).toBe(true);
+      expect(details.links?.length).toBeGreaterThan(0);
+      expect(details.links?.every((link) => link.target?.issueKey)).toBe(true);
+      expect(details.attachments?.every((item) => item.uploadedByUser?.id === item.uploadedBy)).toBe(true);
+      expect(details.commentCount).toBe(1);
+    });
+
+    it("names the other end of a link from either side", async () => {
+      const blocker = await openIssue("TAS-101");
+      const blocked = await openIssue("TAS-102");
+
+      const fromBlocked = (await api.getIssue(project.id, blocked.id)).issue.links ?? [];
+
+      expect(fromBlocked.find((link) => link.sourceIssueId === blocker.id)?.target).toMatchObject({
+        id: blocker.id,
+        issueKey: "TAS-101",
+        projectId: project.id,
+      });
+    });
+
+    it("lists watchers newest first, as both server routes do", async () => {
+      const issue = await openIssue("TAS-102");
+      await api.addIssueWatcher(project.id, issue.id, (await api.getCurrentUser()).id);
+      const mark = (await api.listMembers(project.id)).find((item) => item.user?.displayName === "Mark Lee")!;
+      await api.addIssueWatcher(project.id, issue.id, mark.userId);
+
+      const fromDetails = (await api.getIssue(project.id, issue.id)).issue.watchers?.watchers ?? [];
+      const fromList = (await api.listIssueWatchers(project.id, issue.id)).watchers;
+
+      expect(fromDetails.map((row) => row.userId)).toEqual([mark.userId, (await api.getCurrentUser()).id]);
+      expect(fromList.map((row) => row.userId)).toEqual(fromDetails.map((row) => row.userId));
+    });
+
+    it("leaves a link to a deleted issue off the details read and on the list route, as the server does", async () => {
+      const blocker = await openIssue("TAS-101");
+      const blocked = await openIssue("TAS-102");
+      await api.deleteIssue(project.id, blocked.id);
+
+      const onDetails = (await api.getIssue(project.id, blocker.id)).issue.links ?? [];
+      const onList = await api.listIssueLinks(project.id, blocker.id);
+
+      expect(onDetails.some((link) => link.targetIssueId === blocked.id)).toBe(false);
+      expect(onList.some((link) => link.targetIssueId === blocked.id)).toBe(true);
+    });
+
+    it("leaves a watcher nobody can name without a name, rather than dropping the row", async () => {
+      const issue = await openIssue("TAS-106");
+
+      const watchers = (await api.getIssue(project.id, issue.id)).issue.watchers?.watchers ?? [];
+
+      expect(watchers).toHaveLength(1);
+      expect(watchers[0]).toMatchObject({ displayName: null, avatarUrl: null });
+    });
+
+    it("resolves a key to its issue whatever its case", async () => {
+      const issue = await openIssue("TAS-101");
+
+      await expect(api.getIssueByKey("tas-101")).resolves.toMatchObject({ id: issue.id, projectId: project.id });
+    });
+
+    it("answers a key nobody has with NOT_FOUND", async () => {
+      await expect(api.getIssueByKey("NOPE-1")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("answers a key in a project the reader is not on with PERMISSION_DENIED", async () => {
+      // Anna is not a member of MOB, and the lookup checks what the issue read
+      // in this mock does not.
+      await expect(api.getIssueByKey("MOB-5")).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    });
+
+    it("does not find a deleted issue by its key", async () => {
+      const issue = await openIssue("TAS-105");
+      await api.deleteIssue(project.id, issue.id);
+
+      await expect(api.getIssueByKey("TAS-105")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+  });
+
+  /**
    * The avatar family — backend PR #150 (TAS-129), merged at `develop`
    * `368ae77355bd` and deployed on 2026-09-14. This mock is still the only
    * place the choreography runs in a test: nothing here calls a gateway, live
@@ -3276,41 +3540,32 @@ describe("MockTaskaApi", () => {
       await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(avatar.downloadUrl);
     });
 
-    it("refuses a file above the ceiling the server enforces, not the one it declares", async () => {
-      // 3 MB: inside `sizeBytes`'s declared `maximum: 5242880` and outside
-      // auth-service's `storage.max-file-size-bytes: 2097152`. A client that
-      // trusted the schema would spend a round trip and the bytes to be told
-      // this a layer deeper.
+    it("refuses anything over 2 MB the way the gateway does, before the avatar service or the type is asked", async () => {
+      // Since backend TAS-222 the schema's `maximum` is 2097152, the number
+      // auth-service enforces, so the generated DTO's `@Max` fails as the
+      // gateway reads the body: its fixed sentence on 400. One band, where there
+      // used to be two, and the type never comes into it.
       const threeMegabytes = 3 * 1024 * 1024;
       expect(threeMegabytes).toBeGreaterThan(AVATAR_MAX_SIZE_BYTES);
-      expect(threeMegabytes).toBeLessThanOrEqual(AVATAR_DECLARED_MAX_SIZE_BYTES);
 
       await expect(
         api.createAvatarUploadUrl({ fileName: "huge.png", contentType: "image/png", sizeBytes: threeMegabytes }),
-      ).rejects.toMatchObject({
-        // This band alone is OUT_OF_RANGE. Over the wire it answers 400 like its
-        // siblings — backend PR #147 gave `RestErrorMapper` the row it lacked,
-        // and it answered 500 before — so the code is the only difference.
-        code: "OUT_OF_RANGE",
-        message: avatarSizeRefusalMessage(threeMegabytes),
-      });
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: AVATAR_GATEWAY_REFUSAL_MESSAGE });
+      await expect(
+        api.createAvatarUploadUrl({ fileName: "huge.gif", contentType: "image/gif", sizeBytes: threeMegabytes }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: AVATAR_GATEWAY_REFUSAL_MESSAGE });
     });
 
-    it("refuses a file past the declared ceiling the way the gateway does, before the avatar service is asked", async () => {
-      // 6 MB is past the schema's own `maximum`, so the generated DTO's `@Max`
-      // fails as the gateway reads the body: its fixed sentence on 400, and the
-      // storage client's number never comes into it.
-      const sixMegabytes = 6 * 1024 * 1024;
-      expect(sixMegabytes).toBeGreaterThan(AVATAR_DECLARED_MAX_SIZE_BYTES);
+    it("still refuses an oversized object at the confirm, as OUT_OF_RANGE", async () => {
+      // The one place the service's own ceiling still answers: leg 3 re-measures
+      // what is in the bucket, whatever leg 1 was told.
+      const ticket = await api.createAvatarUploadUrl({ fileName: "liar.png", contentType: "image/png", sizeBytes: 64 });
+      const tooBig = new File([new Uint8Array(AVATAR_MAX_SIZE_BYTES + 1)], "liar.png", { type: "image/png" });
+      await api.putAvatarBytes(ticket.uploadUrl, tooBig, "image/png");
 
       await expect(
-        api.createAvatarUploadUrl({ fileName: "huger.png", contentType: "image/png", sizeBytes: sixMegabytes }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE });
-      // Even for a type the allowlist would also refuse: bean validation is the
-      // earlier of the two checks.
-      await expect(
-        api.createAvatarUploadUrl({ fileName: "huger.gif", contentType: "image/gif", sizeBytes: sixMegabytes }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE });
+        api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: "liar.png", contentType: "image/png" }),
+      ).rejects.toMatchObject({ code: "OUT_OF_RANGE", message: avatarSizeRefusalMessage(AVATAR_MAX_SIZE_BYTES + 1) });
     });
 
     it("refuses a type outside the three-entry allowlist, in the server's own words", async () => {

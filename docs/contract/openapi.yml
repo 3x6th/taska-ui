@@ -1,7 +1,7 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: 5a8d805a3ac3 (develop, 2026-09-28)
-# Fetched: 2026-09-28
+# Backend commit: 60d62ee41188 (develop, 2026-10-07)
+# Fetched: 2026-10-07
 #
 # The backend repository is the single source of truth for this contract.
 # This copy exists so read-only reviewers without network access can audit
@@ -726,12 +726,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IssueWithHistoryResponseDto'
+                $ref: '#/components/schemas/IssueDetailsWithHistoryResponseDto'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
     put:
       summary: Обновляет основные поля задачи
+      description: Устарел, используйте PATCH /api/v1/issues/{issueId}.
+      deprecated: true
       operationId: updateIssue
       tags:
         - issue
@@ -789,9 +791,104 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
 
+    patch:
+      summary: Частично обновляет задачу с оптимистичной блокировкой по версии
+      description: |
+        Поля, которые можно передать: summary, description, priority, assigneeId, storyPoints, startDate, 
+        dueDate, originalEstimateMinutes, remainingEstimateMinutes
+        Все поля PatchIssueRequestDto необязательные. Отсутствие поля в теле запроса — не изменять значение.
+        Явно переданный null — очистить значение (для полей, допускающих NULL в БД;
+        summary и priority очищены быть не могут).
+        Заголовок If-Match должен содержать текущую версию задачи (Issue.version).
+        Если версия не совпадает с версией в БД, изменения не применяются и возвращается 409
+        с актуальным состоянием задачи.
+      operationId: patchIssue
+      tags:
+        - issue
+      security:
+        - bearerAuth: []
+
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: If-Match
+          in: header
+          required: true
+          description: |
+            Версия задачи для оптимистичной блокировки (Issue.version).
+            Принимается как число (3), так и в формате ETag в кавычках ("3").
+          schema:
+            type: string
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchIssueRequestDto'
+
+      responses:
+        '200':
+          description: Задача успешно обновлена
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueResponseDto'
+        '409':
+          description: >-
+            Версия из If-Match не совпадает с текущей версией задачи в БД (конфликт
+            конкурентного изменения). Тело ответа содержит актуальное состояние задачи.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/issues/by-key/{issueKey}:
+    get:
+      summary: Возвращает задачу по ключу (без projectId)
+      operationId: getIssueByKey
+      tags:
+        - issue
+      security:
+        - bearerAuth: [ ]
+
+      parameters:
+        - name: issueKey
+          in: path
+          required: true
+          schema:
+            type: string
+            example: API-12
+
+      responses:
+        '200':
+          description: Задача найдена
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
   /api/v1/issues/{issueId}/assignee:
     put:
       summary: Назначает исполнителя задачи
+      description: Устарел, используйте PATCH /api/v1/issues/{issueId}.
+      deprecated: true
       operationId: assignIssue
       tags:
         - issue
@@ -2606,6 +2703,151 @@ components:
         payload:
           type: object
 
+    IssueDetailsWithHistoryResponseDto:
+      type: object
+      required:
+        - issue
+        - history
+      properties:
+        issue:
+          $ref: '#/components/schemas/IssueDetailsResponseDto'
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueHistoryResponseDto'
+
+    IssueDetailsResponseDto:
+      type: object
+      required: [id, projectId, issueNumber, issueKey, issueType, summary, status,
+                 priority, reporter, createdAt, updatedAt, version, isWatching, commentCount]
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        issueNumber:
+          type: integer
+          format: int64
+        issueKey:
+          type: string
+        issueType:
+          $ref: '#/components/schemas/IssueTypeDto'
+        summary:
+          type: string
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+          example: "IN_PROGRESS"
+        priority:
+          $ref: '#/components/schemas/IssuePriorityDto'
+        assignee:
+          $ref: '#/components/schemas/UserSummaryDto'
+        reporter:
+          $ref: '#/components/schemas/UserSummaryDto'
+        assigneeId:
+          type: string
+          format: uuid
+        reporterId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int32
+        storyPoints:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+        startDate:
+          type: string
+          format: date
+          nullable: true
+        dueDate:
+          type: string
+          format: date
+          nullable: true
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          nullable: true
+          minimum: 0
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          nullable: true
+          minimum: 0
+        labels:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueLabelResponseDto'
+        watchers:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueWatcherResponseDto'
+        isWatching:
+          type: boolean
+        links:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueLinkResponseDto'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueAttachmentDto'
+        commentCount:
+          type: integer
+          format: int64
+          description: Общее количество комментариев к задаче
+          minimum: 0
+
+    UserSummaryDto:
+      type: object
+      required:
+        - id
+        - displayName
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        avatarUrl:
+          type: string
+          nullable: true
+          format: uri
+
+    TargetIssueDto:
+      type: object
+      required:
+        - id
+        - issueKey
+        - summary
+        - projectId
+        - statusKey
+      properties:
+        id:
+          type: string
+          format: uuid
+        issueKey:
+          type: string
+        summary:
+          type: string
+        projectId:
+          type: string
+          format: uuid
+        statusKey:
+          type: string
+
     IssueWithHistoryResponseDto:
       type: object
       properties:
@@ -2681,6 +2923,57 @@ components:
           format: int32
           description: Оставшееся время в минутах
           minimum: 0
+
+    PatchIssueRequestDto:
+      type: object
+      description: |
+        Частичное обновление задачи (JSON Merge Patch). Все поля необязательные.
+        Отсутствие поля — не изменять. Явный null — очистить значение.
+        summary и priority очищены быть не могут.
+        В коде отображается на собственный класс ru.taska.domain.dto.PatchIssueRequestDto
+        (schemaMappings в openapi-generator), который различает отсутствующее поле и явный null.
+      properties:
+        summary:
+          type: string
+          description: Краткое описание задачи. Не может быть null.
+        description:
+          type: string
+          nullable: true
+          description: Подробное описание задачи
+        priority:
+          $ref: '#/components/schemas/IssuePriorityDto'
+        assigneeId:
+          type: string
+          nullable: true
+          description: Идентификатор исполнителя
+        storyPoints:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          description: Оценка сложности задачи в story points
+        startDate:
+          type: string
+          format: date
+          nullable: true
+          description: Дата начала работы над задачей
+        dueDate:
+          type: string
+          format: date
+          nullable: true
+          description: Крайний срок выполнения задачи
+        originalEstimateMinutes:
+          type: integer
+          format: int32
+          nullable: true
+          minimum: 0
+          description: Первоначальная оценка времени в минутах
+        remainingEstimateMinutes:
+          type: integer
+          format: int32
+          nullable: true
+          minimum: 0
+          description: Оставшееся время в минутах
 
     UpdateIssueResponseDto:
       type: object
@@ -2766,6 +3059,8 @@ components:
         createdAt:
           type: string
           format: date-time
+        target:
+          $ref: '#/components/schemas/TargetIssueDto'
 
     # ==================== LABELS SCHEMAS ====================
 
@@ -2937,6 +3232,12 @@ components:
           type: string
           format: uuid
           description: Кто создал подписку
+        displayName:
+          type: string
+        avatarUrl:
+          type: string
+          nullable: true
+          format: uri
 
     AddIssueWatcherRequestDto:
       type: object
@@ -3391,6 +3692,8 @@ components:
           type: string
           format: uuid
           description: Идентификатор автора комментария
+        author:
+          $ref: '#/components/schemas/UserSummaryDto'
         body:
           type: string
           description: Текст комментария
@@ -3529,6 +3832,8 @@ components:
         createdAt:
           type: string
           format: date-time
+        uploadedByUser:
+          $ref: '#/components/schemas/UserSummaryDto'
 
     IssueAttachmentsResponseDto:
       type: object
@@ -3707,9 +4012,9 @@ components:
         sizeBytes:
           type: integer
           format: int64
-          description: Размер файла в байтах (макс. 5 MB)
+          description: Размер файла в байтах (макс. 2 MB)
           minimum: 1
-          maximum: 5242880
+          maximum: 2097152
           example: 120000
 
     CreateAvatarUploadUrlResponseDto:

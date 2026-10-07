@@ -17,6 +17,7 @@ import type {
   RetryableOutboxService,
   SearchIssuesParams,
   TaskaApi,
+  IssueWriteAnswer,
   UpdateIssueInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
@@ -38,7 +39,7 @@ import type {
   IssueSearchHit,
   IssueType,
   IssueWatchers,
-  IssueWithHistory,
+  IssueDetailsWithHistory,
   Label,
   Notification,
   NotificationPage,
@@ -160,20 +161,25 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.searchIssues(params);
   }
 
-  getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {
+  getIssue(projectId: string, issueId: string): Promise<IssueDetailsWithHistory> {
     return this.live.getIssue(projectId, issueId);
+  }
+
+  getIssueByKey(issueKey: string): Promise<Issue> {
+    return this.live.getIssueByKey(issueKey);
   }
 
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
     return this.live.createIssue(projectId, input);
   }
 
-  updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
-    return this.live.updateIssue(projectId, issueId, input);
-  }
-
-  assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue> {
-    return this.live.assignIssue(projectId, issueId, assigneeId);
+  updateIssue(
+    projectId: string,
+    issueId: string,
+    input: UpdateIssueInput,
+    expectedVersion: number,
+  ): Promise<IssueWriteAnswer> {
+    return this.live.updateIssue(projectId, issueId, input, expectedVersion);
   }
 
   transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue> {

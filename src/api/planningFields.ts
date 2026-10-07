@@ -9,176 +9,109 @@ import { isDateOnly } from "../domain/types";
  * implementation, which is what `requireSearchQuery` and
  * `requireAdminWriteReason` are: those are three lines each, and the interesting
  * half of them is a constant already shared through `TaskaApi.ts`. This is not.
- * It is ten refusals, a resolution rule and a body-shaping rule, and mock and
+ * It is eight refusals, a resolution rule and a body-shaping rule, and mock and
  * rest have to agree on every one of them or they stop being interchangeable on
- * exactly the input this story is about (AGENTS.md, *Frontend constraints*). The
- * one thing the two cannot share is the error class — `MockApiError` carries a
- * code, `ApiError` carries a code and an HTTP status — so this module decides
- * *what* is refused and each implementation throws its own error with it.
+ * exactly the input this module is about (AGENTS.md, *Frontend constraints*).
+ * The one thing the two cannot share is the error class — `MockApiError`
+ * carries a code, `ApiError` carries a code and an HTTP status — so this module
+ * decides *what* is refused and each implementation throws its own error with
+ * it.
  *
- * ## What the server does, read from its code rather than off the contract
+ * ## Two writes, two shapes
  *
- * `IssueServiceImpl.updateIssue` on backend `develop` (TAS-115, already merged;
- * read at `ref=develop` on 2026-09-06) writes all five fields unconditionally:
+ * **An edit is `PATCH /issues/{issueId}`** since TAS-246 (backend TAS-215,
+ * develop `60d62ee`): a merge patch, where an absent key is left alone and a
+ * `null` clears the field. Nothing has to be re-sent, so nothing is read first,
+ * and `issuePatchBody` in src/api/issuePatch.ts shapes that body. The client
+ * used to edit through `PUT`, a full replace that erased whatever the request
+ * omitted, and paid for it with a read before every write; that route is
+ * deprecated and no longer called.
  *
- * ```java
- * updatingIssue.setStoryPoints(storyPoints);
- * updatingIssue.setStartDate(startDate);
- * …
- * ```
- *
- * The proto fields are `optional`, the gateway sets each one through
- * `setIfPresent` (`IssueMapper`, merged PR #148), and
- * `GrpcIssueService.updateIssue` resolves every unset optional with
- * `.orElse(null)`. So **`PUT /issues/{id}` is a full replace: a field the
- * request omits is erased, not preserved.** The backend's own *unit* test names
- * it — «Частичное обновление — непереданные planning fields затираются», the
- * class `PlanningFieldsServiceTest` in `issue-service`. Read at `ref=develop`
- * on 2026-09-06, when its file was still the one-`n`
- * `IssuePlaningFieldsTest.java`; PR #148, which has since merged, renames the
- * file to the two-`n` spelling. It is Mockito over a stubbed repository, not a
- * database test.
- *
- * That is why `resolvePlanningFields` exists and why deleting the re-read that
- * feeds it silently destroys user data. See `UpdateIssueInput` in
- * src/api/TaskaApi.ts for the caller-facing half of the same sentence.
+ * **A create is `POST /projects/{projectId}/issues`**, where there is nothing
+ * to leave alone, so `null` and `undefined` mean the same thing and
+ * `resolvePlanningFields` + `planningFieldsBody` shape the body.
  *
  * ## The refusals
  *
- * All ten are `INVALID_ARGUMENT` / `400`, and all ten are applied on this side
- * of the wire so a request that cannot succeed is never spent. Eight of them
- * need nothing but the caller's input, which is why `RestTaskaApi.updateIssue`
- * runs this function twice: once with `stored = null` *before* the read that an
- * update has to make, so a value that could never be stored costs no request at
- * all, and once after it, where the two stored-date checks below become
- * answerable. Passing `null` skips exactly that block and nothing else.
+ * All eight are `INVALID_ARGUMENT` / `400`, decided by the caller's own input
+ * alone, and applied on this side of the wire so a request that cannot succeed
+ * is never spent.
  *
- * Five of the ten reproduce a rule the server states — the negative bounds, the
- * date format, the two dates against each other, and the stored-date
- * cross-check. The other five exist
+ * Three of them reproduce a rule the server states. The other five exist
  * because the server's answer to the input is *worse* than a refusal: it stores
  * something else, or it raises, or it fails to bind the body at all and answers
  * with a message about JSON.
  *
- * - **negative story points or a negative estimate** —
+ * - **negative story points or a negative estimate** — on a create,
  *   `GrpcRequestValidators.requireOptionalPositiveZeroOrInvalidArgument`, which
- *   refuses `value < 0`. Note the mismatch: its message says "must be positive"
- *   while it enforces `>= 0`, so **`0` is accepted** and is a count, not an
- *   absence. The server's wording is deliberately *not* reproduced here for that
- *   reason — it describes a rule the server does not have.
+ *   refuses `value < 0` with a message saying "must be positive" while it
+ *   enforces `>= 0`; on a PATCH, the gateway's own `toNullableMinutes`
+ *   (`IssueMapper`, read at `60d62ee`) answers **400 `BAD_REQUEST`**
+ *   "originalEstimateMinutes must not be negative" for an estimate, and
+ *   issue-service's nullable parser "must be positive or zero" for story
+ *   points. **`0` is accepted** everywhere and is a count, not an absence. The
+ *   server's wording is not reproduced, because there are three of it.
  * - **a malformed or impossible date** — the generated DTO's field is a
  *   `LocalDate` (`format: date` in the contract), so the gateway binds the
- *   string before gRPC sees it, and the validator that would otherwise answer —
- *   `requireStartDateBeforeDueDate`, whose own message is "Invalid date format,
- *   expected ISO yyyy-MM-dd" — is only ever handed a string that already
- *   parsed. What a REST caller sees instead has **not** been observed. The
- *   wording below is this client's own either way.
- * - **an estimate that is not a whole number** — same class as the date: the
- *   DTO's field is an `Integer` (`openapi-generator-maven-plugin` in
- *   `api-gateway/pom.xml` generates it from the contract's `format: int32`), so
- *   this is decided by the gateway's body binding and not by any rule the
- *   services state. What that binding does with `30.5` has **not** been
- *   observed. It now *can* be: PR #148 merged on 2026-09-11 and the deployed
- *   gateway declares the five (docs/ai/API-DIVERGENCE.md). One probe against a
- *   throwaway issue would settle it, and no
- *   fractional estimate has been sent yet. It does not need to be
- *   observed either, because both of the two possible answers make refusing
- *   locally right — either the mapper coerces the value and stores `30`, which
- *   is a number the reader did not type arriving back with no error anywhere,
- *   or it refuses the body, which is a `400` carrying a deserialisation message
- *   written for a Java developer. Which of the two it is, this module
- *   deliberately does not claim: the gateway is on **Jackson 3**
- *   (`tools.jackson.databind` in `IssueMapper`, under Spring Boot 4.0.3) and
- *   sets no `spring.jackson` block in its `application.yml`, so the answer is
- *   whatever that stack defaults to — and a remembered Jackson 2 default is not
- *   evidence about it.
- * - **an estimate that will not fit an `int32`** — the same binding, one bound
- *   further out, and the only refusal here that a form can reach by accident.
- *   `2147483647` is the ceiling in all three places the field is described:
- *   `format: int32` in the contract (docs/contract/openapi.yml, backend
- *   develop `21a0d9d177a1`), `optional int32
- *   original_estimate_minutes` in `issue-service.proto`, and `integer` in the
- *   column (`0007-issue-planing-fields.sql`). A JSON number above it cannot be
- *   held by the DTO's `Integer` — that is the Java type, not a mapper setting —
- *   so `requireOptionalPositiveZeroOrInvalidArgument` never sees the number the
- *   reader typed. What the gateway does *instead* is the same unobserved
- *   question as the fractional case above, on the same Jackson 3 stack, and this
- *   bullet declines to answer it for the same reason: either the body fails to
- *   bind and the reader gets a `400` written about JSON rather than about
- *   estimates, or the value is narrowed to some other `int` and stored — a
- *   number nobody typed, arriving back with no error anywhere. Refusing here in
- *   the estimate's own words is right under both, so the answer is not needed.
- *
- *   There is deliberately no matching floor. `int32`'s is `-2147483648`, and
- *   every value below it is negative, so `< 0` already refuses the lot with a
- *   sentence that is true of them and more use than "will not fit". The
- *   asymmetry is the point rather than an omission.
+ *   string before gRPC sees it. What a REST caller sees for a string that does
+ *   not bind has **not** been observed. The wording below is this client's own
+ *   either way.
+ * - **an estimate that is not a whole number, or will not fit an `int32`** —
+ *   on a PATCH the gateway reads the number as a `BigDecimal` and refuses both
+ *   with **400 `BAD_REQUEST`** "originalEstimateMinutes must be an integer
+ *   number of minutes" (`IssueMapper.toNullableMinutes`, `intValueExact`, read
+ *   at `60d62ee`) — a code read, not a measurement. On a create the DTO's field
+ *   is an `Integer`, so the answer is whatever the gateway's Jackson 3 body
+ *   binding does with `30.5` or `2147483648`, which has not been observed;
+ *   refusing locally is right under every possible answer, so it does not need
+ *   to be. `2147483647` is the ceiling in the contract (`format: int32`), the
+ *   proto and the column. There is deliberately no matching floor: every value
+ *   below `int32`'s is negative, and `< 0` already refuses it for the truer
+ *   reason.
  * - **`startDate` after `dueDate` in the same request** —
- *   `GrpcRequestValidators.requireStartDateBeforeDueDate`, and the database's
- *   own `issues_dates_chk` behind it.
- * - **the stored-date cross-check**, which the contract does not state at all
- *   and which is the reason the mock has to be handed the issue as it stands.
- *   `IssueServiceImpl` compares the *incoming* `startDate` against the
- *   **stored** `dueDate`, and the incoming `dueDate` against the **stored**
- *   `startDate`. Two consequences that are not obvious and are both reproduced
- *   below: moving `startDate` past the stored `dueDate` is refused *even when
- *   the same request clears `dueDate`*, and moving a whole start/due window
- *   later in one request is refused even though the new pair is internally
- *   consistent. Its server-side message has its two labels swapped — it prints
- *   the incoming start date under "Due date" — which is raised on TAS-116, so
- *   it is never shown verbatim.
+ *   `requireStartDateBeforeDueDate` on a create, `validateStartNotAfterDue` on
+ *   a PATCH, and the database's own `issues_dates_chk` behind both.
  * - **story points outside 0…999.99, or beyond two decimals**, which no layer of
  *   the server states. The column is `numeric(5,2)`
  *   (`0007-issue-planing-fields.sql`): above 999.99 Postgres raises a numeric
  *   field overflow, so the write fails on a value the client could see was too
  *   large — which is the whole reason to refuse it here, whatever status the
- *   failure comes back as. **What that status is has not been measured.** The
- *   five have been in the contract since PR #148 merged on 2026-09-11, and the
- *   deployed gateway declares them, but no write carrying one has been made
- *   against it — so the number below is a *code read*, offered as one.
- *
- *   The read says `500`, and the step that decides it is easy to miss, so it is
- *   written down rather than left to be re-derived. `GrpcExceptionHandler` does
- *   open with `e instanceof R2dbcException || e instanceof TransactionException`
- *   mapped to `UNAVAILABLE`, which `RestErrorMapper` turns into `503` — but no
- *   `R2dbcException` reaches it. `issue-service` saves through Spring Data
- *   R2DBC, whose `R2dbcEntityTemplate` runs every statement through
- *   `DatabaseClient`, and `DefaultDatabaseClient` ends its execute path with
- *   `.onErrorMap(R2dbcException.class, ex -> ConnectionFactoryUtils.convertR2dbcException(…))`,
- *   which hands on a `DataAccessException` — neither disjunct. So the handler's
- *   catch-all fires instead, `INTERNAL` comes out, and `RestErrorMapper`'s
- *   `default` gives `500`. (Read at spring-r2dbc 7.0.5 and spring-data-r2dbc
- *   4.0.3, the versions Spring Boot 4.0.3 resolves for this backend.)
- *
- *   Beyond two decimals Postgres **rounds** instead of raising, so `1.235` is
- *   accepted and stored as `1.23` — a value that is not the one the reader
- *   typed, arriving back on the next read with no error anywhere. Both are
- *   refused here, and the second is refused for the rounding rather than for a
- *   failure.
+ *   failure comes back as. That status is a *code read*: `500 INTERNAL`.
+ *   `GrpcExceptionHandler` maps `R2dbcException` and `TransactionException` to
+ *   `UNAVAILABLE`, but Spring Data R2DBC's `DatabaseClient` converts the
+ *   driver's exception into a `DataAccessException` first, so neither matches
+ *   and the catch-all answers `INTERNAL`. (Read at spring-r2dbc 7.0.5 and
+ *   spring-data-r2dbc 4.0.3.) Beyond two decimals Postgres **rounds** instead
+ *   of raising, so `1.235` would be stored as `1.23` with no error anywhere.
  * - **story points that are not a finite number.** `JSON.stringify` writes `NaN`
- *   and `Infinity` as `null`, and `null` on this wire means *clear the field*.
+ *   and `Infinity` as `null`, and `null` on a PATCH means *clear the field*.
  *   So an unguarded `Number("")` from a form would not fail — it would silently
  *   erase the value it was trying to set.
  *
- * **Ten is the count of what this module refuses, not of what the client
- * refuses, and the eleventh could not have been written here** (TAS-231). A
+ * **What is no longer refused here: a date against the *stored* one.** The PUT
+ * compared the incoming start date with the stored due date and vice versa, and
+ * this module reproduced that before the request. On a PATCH the server lays
+ * the request's dates over the stored ones and checks the merged pair *after*
+ * the version check (`IssuePatchServiceImpl`), so a stale write is a conflict
+ * before it is a date refusal, and refusing it here would answer a question the
+ * server answers differently. Both implementations now leave it to the server,
+ * whose sentence is `datesOutOfOrderServerMessage` in src/api/issuePatch.ts; the
+ * issue panel turns it into advice the reader can act on (docs/ai/API-DIVERGENCE.md,
+ * "Closed by TAS-246 on the `PATCH` path: the date cross-check compared against
+ * stored values, and refused the ordinary case").
+ *
+ * **Eight is the count of what this module refuses, not of what the client
+ * refuses, and the ninth could not have been written here** (TAS-231). A
  * date box the reader is only part-way through typing is refused before it ever
  * becomes a `PlanningFieldsInput` — `isIncompleteDateEntry` in
  * src/lib/planning.ts, with the two sentences the surfaces say. It has to be
  * refused up there because `<input type="date">` reports `value === ""` for a
  * half-typed day exactly as it does for an empty box, and `""` arrives here as
- * `null`, which is a legal request meaning *clear the date*. By the time the
- * input reaches this function the difference is gone, so no rule this module
- * could state would be true of it. Counting it among the ten would also make it
- * sound like a rule about the server, and it is the opposite of one: the server
- * would accept that request and erase a date the reader never meant to touch.
+ * `null`, which is a legal request meaning *clear the date*.
  *
- * Only fields the caller actually supplied are checked. A value resolved from
- * the server passes through untouched, deliberately: validating the resolved
- * pair would mean an issue whose stored dates are already inconsistent could not
- * have its *summary* edited without this client refusing it, with this client's
- * message, about values the reader never typed. The server is free to refuse
- * that, and `apiErrorFacts` surfaces the answer.
+ * Only fields the caller actually supplied are checked. A stored value is never
+ * re-validated: an issue whose stored dates are already inconsistent can still
+ * have its summary edited, and the server is the one entitled to refuse that.
  */
 
 /** The largest value `numeric(5,2)` holds. Above it the database raises, not the validator. */
@@ -215,19 +148,6 @@ export const DATE_FORMAT_MESSAGE = "A date must be a real calendar day, written 
 export const DATE_ORDER_MESSAGE = "The start date cannot be later than the due date";
 
 /**
- * The stored-date cross-check, in words a reader can act on. The server's own
- * sentence for this prints the incoming start date under the label "Due date"
- * and says nothing about what to do next, so these are ours. The advice they
- * give is a read of `IssueServiceImpl`, which compares each request against the
- * record as the previous one left it; no such pair has been run against a
- * deployed gateway, and against the mock it would only re-run this module.
- */
-export const START_DATE_AFTER_STORED_DUE_MESSAGE =
-  "The start date cannot be later than this issue's current due date — move the due date first";
-export const DUE_DATE_BEFORE_STORED_START_MESSAGE =
-  "The due date cannot be earlier than this issue's current start date — move the start date first";
-
-/**
  * The five as a *request* carries them: `undefined` is "leave it alone",
  * `null` is "clear it", a value is "set it".
  *
@@ -253,9 +173,6 @@ export interface PlanningFields {
   remainingEstimateMinutes: number | null;
 }
 
-/** The two dates of the issue *as stored*, which is what the server cross-checks against. */
-export type StoredPlanningDates = Pick<PlanningFields, "startDate" | "dueDate">;
-
 /**
  * A refusal as a fact rather than as an exception, so one rule can be thrown as
  * `MockApiError` on one side and as `ApiError` on the other without either side
@@ -269,10 +186,7 @@ export interface PlanningFieldRefusal {
 const refuse = (message: string): PlanningFieldRefusal => ({ code: "INVALID_ARGUMENT", message });
 
 /** `null` when there is nothing to refuse, in the order the server applies its own checks. */
-export function planningFieldRefusal(
-  input: PlanningFieldsInput,
-  stored: StoredPlanningDates | null,
-): PlanningFieldRefusal | null {
+export function planningFieldRefusal(input: PlanningFieldsInput): PlanningFieldRefusal | null {
   const storyPoints = input.storyPoints;
   if (storyPoints !== undefined && storyPoints !== null) {
     if (!Number.isFinite(storyPoints)) return refuse(STORY_POINTS_NUMBER_MESSAGE);
@@ -299,11 +213,10 @@ export function planningFieldRefusal(
 
   for (const estimate of [input.originalEstimateMinutes, input.remainingEstimateMinutes]) {
     if (estimate === undefined || estimate === null) continue;
-    // Two server layers, in the order the server runs them. The gateway has to
-    // put the JSON number into the DTO's `Integer` before anything reaches
-    // gRPC, so neither a fraction nor a value above the ceiling is ever seen by
-    // `requireOptionalPositiveZeroOrInvalidArgument` — which is why the negative
-    // check, that validator's own, is tried last of the three here.
+    // In the order the gateway runs them on a PATCH (`toNullableMinutes`):
+    // whole first — `intValueExact` refuses a fraction and a value past int32
+    // alike — and the sign after. On a create the DTO's `Integer` has to hold
+    // the number before gRPC sees it, which gives the same order.
     // `Number.isInteger` alone would let 2_147_483_648 through: it is whole and
     // it is not negative, and the mock would then store and display a value
     // REST could never send.
@@ -312,18 +225,6 @@ export function planningFieldRefusal(
     // No `< -2_147_483_648` to match: everything below the int32 floor is
     // negative, and the line below already refuses it for the truer reason.
     if (estimate < 0) return refuse(ESTIMATE_NEGATIVE_MESSAGE);
-  }
-
-  // Last, because it is last on the server too: the gRPC validators run first
-  // and `IssueServiceImpl` reads the stored row afterwards. `stored` is `null`
-  // on a create, where there is no previous record to be compared with.
-  if (stored !== null) {
-    if (stored.dueDate !== null && startDate != null && startDate > stored.dueDate) {
-      return refuse(START_DATE_AFTER_STORED_DUE_MESSAGE);
-    }
-    if (stored.startDate !== null && dueDate != null && dueDate < stored.startDate) {
-      return refuse(DUE_DATE_BEFORE_STORED_START_MESSAGE);
-    }
   }
 
   return null;
@@ -341,15 +242,18 @@ export function emptyPlanningFields(): PlanningFields {
 }
 
 /**
- * What the request must actually carry: the caller's value where it stated one,
- * the issue's current value where it did not.
+ * The caller's value where it stated one, `current`'s where it did not —
+ * `undefined` resolves to `current`, `null` stays `null`.
  *
- * **This is the compensation for the full replace, and it is not redundant.**
- * A future reader who deletes it — or who deletes the `getIssue` that produces
- * `current` — turns every partial edit in the app into a write that erases the
- * four or five fields it did not mention. `undefined` is resolved to `current`;
- * `null` stays `null` and is then omitted from the body by
- * `planningFieldsBody`, which is how this wire spells "clear it".
+ * Two callers, and neither is the REST edit any more. A create resolves against
+ * `emptyPlanningFields()`, which makes both spellings of nothing the same
+ * `null`. The mock's PATCH resolves against the stored issue, which is the merge
+ * a merge patch *is* — the same laying-over the server does before it checks
+ * the dates (`IssuePatchServiceImpl`, `patch.applyTo(issue)`).
+ *
+ * It used to be the compensation for the edit's full-replace `PUT`, resolving
+ * every field the caller had not mentioned from a read made just before the
+ * write. PATCH removed the need, and the read with it.
  */
 export function resolvePlanningFields(input: PlanningFieldsInput, current: PlanningFields): PlanningFields {
   return {
@@ -364,24 +268,11 @@ export function resolvePlanningFields(input: PlanningFieldsInput, current: Plann
 }
 
 /**
- * The resolved five as JSON body keys — **every `null` omitted**, because
- * omission is the only way this contract spells "not set". A `null` on the wire
- * would arrive as a Java `null`, be skipped by `setIfPresent`, and clear the
- * field, so the two spellings happen to agree today; the key is omitted anyway,
- * so nothing depends on that coincidence surviving a mapper change.
- *
- * A consequence worth stating, because it is what made this change safe to ship
- * ahead of the gateway: against a gateway whose reads carry no planning fields,
- * every one of these resolves to `null`, so the body is exactly
- * `{summary, description, priority}` and not one request byte changes. The
- * deployed gateway declares the five as of 2026-09-11, so its reads may well
- * carry them now and the property would stop being visible from the wire —
- * which is why it is pinned in a test rather than left to be noticed.
- * The second half of that is pinned rather than read: "sends the same three keys
- * it always did against a gateway that has no planning fields", in
- * src/api/rest/RestTaskaApi.test.ts, drives a detail read carrying none of the
- * five and asserts the body with `toEqual` — so a fourth key on the wire fails
- * the suite.
+ * The resolved five as a **create**'s JSON body keys — every `null` omitted,
+ * because on a create omission and `null` mean the same "not set", and omission
+ * is the spelling that does not depend on how the gateway's mapper reads a
+ * `null`. Never used for an edit: a PATCH needs `null` on the wire to clear a
+ * field, and `issuePatchBody` in src/api/issuePatch.ts keeps it.
  */
 export function planningFieldsBody(fields: PlanningFields): Record<string, number | DateOnly> {
   const body: Record<string, number | DateOnly> = {};

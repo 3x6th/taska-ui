@@ -666,9 +666,60 @@ textarea:disabled {
   filter: brightness(0.96);
 }
 
-.notfound-action:focus-visible {
+/* "Try again" beside it on the by-key failure screen takes the same ring:
+   without it Chromium draws its default, derived from the system accent
+   (art-director, TAS-246). */
+.notfound-action:focus-visible,
+.issue-key-actions .secondary-button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* The by-key route's one outcome that is not §4.18's (TAS-246): a lookup that
+   failed for a reason that says nothing about the issue. Same column as the
+   not-found screen, no mascot — the mascot means "not here", and this is "not
+   known yet". */
+.issue-key-failure {
+  width: 100%;
+  max-width: 420px;
+}
+
+.issue-key-failure .api-notice {
+  width: 100%;
+  text-align: left;
+}
+
+.issue-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.issue-key-actions .notfound-action {
+  margin-top: 0;
+}
+
+/* "Try again" while its retry is out: `aria-disabled`, so focus stays on it
+   (§4.21), and the in-flight treatment `.watch-toggle` has — the cursor, no
+   fade, because the label is not what changes and a fade flashed for every
+   press is a flicker. */
+.issue-key-retry[aria-disabled="true"] {
+  cursor: progress;
+}
+
+/* The heading takes focus only as a fallback, when focus is found on <body>
+   after a retry fails again — so the ring is the only thing showing where it
+   went. `.admin-section-title`'s treatment. */
+.issue-key-failure .notfound-title:focus {
+  outline: 0;
+}
+
+.issue-key-failure .notfound-title:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
 }
 
 .segmented {
@@ -4731,6 +4782,22 @@ h1 {
   background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
 
+/* The token ring (§4.1, §7). Without it a chip drew the browser's own,
+   a system blue beside the accent border of the active chip. */
+.assignee-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* "None" on an unassigned issue (TAS-246): the field's current value, so a
+   press sends nothing — `aria-disabled` rather than `disabled`, so focus
+   stays on it when a keyboard unassign lands (§4.21), and deliberately
+   without `button:disabled`'s fade, which would draw the value the issue
+   now holds as the faintest chip in the row. Only the cursor says no. */
+.assignee-chip[aria-disabled="true"] {
+  cursor: default;
+}
+
 /* The `color` is the point, not the size: this is the chip's name, and §1's
    hard rule is that a text node never takes its colour by accident. It landed
    on --fg through inheritance from `body`, which is the value it keeps — said
@@ -5019,6 +5086,15 @@ h1 {
   margin: 0 0 12px;
   color: var(--fg-3);
   font-size: 12.5px;
+}
+
+/* A part of the issue read that did not load (TAS-246), in the slot its empty
+   line would take, one recipe for all four sections. `--fg-2` rather than the
+   empty line's `--fg-3`: this one tells the reader to do something — reopen the
+   issue — and §7 keeps the meta exemption for text that is genuinely
+   secondary. */
+.issue-links-empty.is-unavailable {
+  color: var(--fg-2);
 }
 
 .issue-link-list {

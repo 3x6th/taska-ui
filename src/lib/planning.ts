@@ -106,10 +106,10 @@ const PLANNING_DATE_FIELD_NAMES: Record<PlanningDateField, string> = {
  * focus and marking the box instead, which is not open to a panel whose refusal
  * happens as the reader leaves the control.
  *
- * The clause after the dash reports where the stored-date refusals in
- * `planningFields.ts` instruct, and stays a report: "move the due date first"
- * is advice because something is left to do, and here nothing is — the entry is
- * already gone, so the only open question is what happened to the issue.
+ * The clause after the dash reports where `planningDateOrderAdvice` below
+ * instructs, and stays a report: "move the due date first" is advice because
+ * something is left to do, and here nothing is — the entry is already gone, so
+ * the only open question is what happened to the issue.
  * Measured at 358px (12px/600) by art-director: one line inside the notice's
  * own 415px content box (405 with the panel scrollbar) at the design width of
  * 480.
@@ -117,6 +117,30 @@ const PLANNING_DATE_FIELD_NAMES: Record<PlanningDateField, string> = {
 export function planningDateIncompleteEditMessage(field: PlanningDateField): string {
   const name = PLANNING_DATE_FIELD_NAMES[field];
   return `That ${name} is incomplete — this issue's ${name} is unchanged`;
+}
+
+/**
+ * What the issue panel says when the server refuses a date because, laid over
+ * the other stored date, it would put the start after the due date
+ * (`isDatesOutOfOrderRefusal` in src/api/issuePatch.ts).
+ *
+ * **Panel copy, not the server's words.** The server's sentence is "Start date:
+ * 2026-07-01 must not be after Due date: 2026-06-26", which is true and says
+ * nothing about what to do — and there is something to do. The panel saves one
+ * field per blur, so moving a whole window later has to be two writes in the
+ * right order: the due date first, then the start date (and the other way round
+ * for a window moving earlier). These sentences say which, chosen by the field
+ * the refused write sent, which is the box the reader just left.
+ *
+ * They used to be `planningFieldRefusal`'s, thrown before the request against
+ * the stored dates; on PATCH the server checks the merged pair after the
+ * version check (TAS-246), so the refusal now comes back from the server and
+ * only its wording is decided here.
+ */
+export function planningDateOrderAdvice(field: PlanningDateField): string {
+  return field === "startDate"
+    ? "The start date cannot be later than this issue's current due date — move the due date first"
+    : "The due date cannot be earlier than this issue's current start date — move the start date first";
 }
 
 /**

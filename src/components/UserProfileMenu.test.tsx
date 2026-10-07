@@ -303,12 +303,11 @@ describe("UserProfileMenu", () => {
   });
 
   it("prints a status it has never heard of instead of an empty badge", () => {
-    // `GET /users/me` answers the gateway's own `GatewayUserStatus`, which has
-    // no `LOCKED`. Backend PR #146 deployed the state without adding it there,
-    // so an account locked by failed sign-ins whose pre-lock token still works
-    // reads back as `UNSPECIFIED` today — a value the domain union does not
-    // carry and adding `LOCKED` to it does not cover. A bare lookup put
-    // `undefined` in the badge, which renders as nothing at all.
+    // `GET /users/me` answers the gateway's own `GatewayUserStatus`. It has
+    // carried `LOCKED` since backend TAS-197, but `UNSPECIFIED` is still one of
+    // its members and the contract types `status` as a bare string (TAS-173) —
+    // a value the domain union does not carry. A bare lookup put `undefined` in
+    // the badge, which renders as nothing at all.
     renderMenu({
       user: { ...anna, status: "UNSPECIFIED" as User["status"] },
       loading: false,
@@ -539,9 +538,9 @@ describe("UserProfileMenu", () => {
       fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
       await waitFor(() => expect(state.reads).toEqual([anna.id]));
 
-      // 2 MB — the number auth-service enforces, not the 5 MB its own schema
-      // declares. Offering the declared one would offer a file the product
-      // refuses a layer deeper, after the bytes had already gone.
+      // 2 MB — the number the schema declares and auth-service enforces, which
+      // agree since backend TAS-222. The schema used to say 5 MB, and offering
+      // that would have offered a file the product refused a layer deeper.
       expect(screen.getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
       expect(document.querySelector(".avatar-input")).toHaveAttribute("accept", "image/jpeg,image/png,image/webp");
     });

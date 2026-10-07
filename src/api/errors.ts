@@ -1,9 +1,48 @@
-// Deliberate duck typing: the two error classes this has to read are not
-// related. MockApiError (mock/MockTaskaApi.ts) carries only `code`; ApiError
+import type { IssueWriteAnswer } from "./TaskaApi";
+
+// Deliberate duck typing: the error classes this has to read are not related.
+// MockApiError (mock/MockTaskaApi.ts) carries only `code`; ApiError
 // (rest/RestTaskaApi.ts) carries `code`, the HTTP `status` and the gateway's
-// `requestId`. Introducing one shared error type is its own piece of work and
-// stays in the backlog — these helpers only read what both shapes may carry, in
-// one place, so a screen never has to know which implementation answered it.
+// `requestId`. These helpers only read what every shape may carry, in one
+// place, so a screen never has to know which implementation answered it.
+//
+// `IssueVersionConflictError` below is the first error class both
+// implementations throw (TAS-246, for `PATCH /issues/{issueId}`). It is shared
+// because the failure carries a payload — the issue as the server now has it —
+// that a screen has to read, and a payload is not something duck typing should
+// be trusted to find. The rest stay per implementation; folding them together
+// is still its own piece of work.
+
+/**
+ * `PATCH /issues/{issueId}` refused the write because the issue had moved on:
+ * the `If-Match` version was not the one the server holds. The gateway answers
+ * **409** with the issue as it now stands in the body (`IssueResponseDto`) and
+ * no `code` — the body *is* the issue, not a `{code, message}` — so this class
+ * carries none either. Thrown by both `RestTaskaApi` and `MockTaskaStore`, with
+ * `status` fixed at 409 in both, so `isConflict` and `apiErrorFacts` read a
+ * mock conflict exactly as they read a gateway one.
+ *
+ * `current` is that body as `IssueWriteAnswer`: the issue without `labels`,
+ * because the PATCH answer's labels are always `[]` whatever the issue carries
+ * (issue-service `toPatchIssueResponseProto` uses the label-less
+ * `toIssueProto(issue)`, read at backend `60d62ee`).
+ */
+export class IssueVersionConflictError extends Error {
+  readonly status = 409 as const;
+
+  constructor(
+    readonly current: IssueWriteAnswer,
+    readonly expectedVersion: number,
+    readonly requestId?: string,
+  ) {
+    super(`Version conflict: sent ${expectedVersion}, the issue is at ${current.version}`);
+    this.name = "IssueVersionConflictError";
+  }
+}
+
+/** Whether a write was refused for a stale version, with the server's current issue to read. */
+export const isIssueVersionConflict = (error: unknown): error is IssueVersionConflictError =>
+  error instanceof IssueVersionConflictError;
 
 /**
  * Everything a failure can tell the person looking at it. Every field is
@@ -12,15 +51,22 @@
  * more importantly, so mock mode and rest mode reach the same sentences. A
  * screen that reads only `status` says nothing useful in mock mode; one that
  * reads only `code` says nothing useful against the gateway.
+ *
+ * `IssueVersionConflictError` is the exception to three of the lines below.
+ * Its `message` is the client's own ("Version conflict: sent 4, the issue is
+ * at 7"): the gateway's 409 body is the issue, with no wording and no code at
+ * all. Its `status` is 409 in mock mode too, and its `code` is `null` in both.
+ * A screen states a conflict in a sentence of its own (`issueConflictText` in
+ * BoardScreen) and never presents `message` as the server's words.
  */
 export interface ApiErrorFacts {
-  /** The server's own wording, when it sent any. */
+  /** The server's own wording, when it sent any. Not for `IssueVersionConflictError`, whose message the client wrote. */
   message: string | null;
   /** `X-Request-Id` — what identifies this failure in the gateway log. REST only. */
   requestId: string | null;
-  /** HTTP status. REST only: the mock never went over a wire. */
+  /** HTTP status. REST only, since the mock never went over a wire — except `IssueVersionConflictError`, 409 in both. */
   status: number | null;
-  /** Domain code. Both implementations carry one. */
+  /** Domain code. Both implementations carry one — except `IssueVersionConflictError`, which carries none. */
   code: string | null;
 }
 
@@ -168,7 +214,10 @@ export function isUndeployedRoute(error: unknown, undeployedMessage: string): bo
  * The mock never went over a wire and carries only a code, and it emits the
  * same codes the gateway does, so one predicate serves both implementations
  * (docs/ai/API-DIVERGENCE.md). The status arm stays for the case none of these
- * covers: a gateway that answers 409 with a code this build has not seen.
+ * covers: a gateway that answers 409 with a code this build has not seen — and
+ * it is the arm the issue write's version conflict takes, a 409 whose body is
+ * the issue and carries no code at all (`IssueVersionConflictError`, which
+ * fixes `status` at 409 in mock mode too so the two read alike).
  */
 export function isConflict(error: unknown): boolean {
   const { code, status } = apiErrorFacts(error);
