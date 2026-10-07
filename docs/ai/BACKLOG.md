@@ -2882,6 +2882,15 @@ Frontend, recorded rather than taken:
   replaces the reader's summary with a third party's. Contradicts §5.5 «он
   остаётся в поле»; rarer than before f26e2eb. Fix: keep unsaved free-text fields
   in their own state, cleared only when that field is re-sent or put back.
+- **The panel's re-read guard for unsaved conflict text has no test**
+  (`release-reviewer` r3 N2 on TAS-246): replacing `conflict?.fields ?? []` with
+  `[]` (`BoardScreen.tsx:1640–1645`) leaves every BoardScreen test green. Add one:
+  summary conflict, the other writer changes the summary, a re-read lands — the
+  box keeps the reader's text and the line stays. Same fix area as the line above.
+- **The conflict epoch does not survive a panel remount** (`release-reviewer` r3
+  residual risk): the epoch is per mount, the write scope per issue, so close +
+  reopen + edit within one request's latency can still send at a version a
+  conflict merged. Candidate: keep the epoch beside the scope, keyed by issue.
 - **The multi-field conflict sentence lists fields out of panel order**
   (`art-director` r3 N2): `issueFieldNames` (`BoardScreen.tsx:5538`) puts
   priority before assignee and dates before estimates, while its doc comment
