@@ -4782,6 +4782,22 @@ h1 {
   background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
 
+/* The token ring (§4.1, §7). Without it a chip drew the browser's own,
+   a system blue beside the accent border of the active chip. */
+.assignee-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* "None" on an unassigned issue (TAS-246): the field's current value, so a
+   press sends nothing — `aria-disabled` rather than `disabled`, so focus
+   stays on it when a keyboard unassign lands (§4.21), and deliberately
+   without `button:disabled`'s fade, which would draw the value the issue
+   now holds as the faintest chip in the row. Only the cursor says no. */
+.assignee-chip[aria-disabled="true"] {
+  cursor: default;
+}
+
 /* The `color` is the point, not the size: this is the chip's name, and §1's
    hard rule is that a text node never takes its colour by accident. It landed
    on --fg through inheritance from `body`, which is the value it keeps — said

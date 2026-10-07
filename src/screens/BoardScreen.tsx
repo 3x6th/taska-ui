@@ -34,7 +34,7 @@ import {
 } from "../api/attachments";
 import { objectStoreUploadFailure } from "../api/objectStore";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isIssueVersionConflict, isMissingOrForbidden, type IssueVersionConflictError } from "../api/errors";
+import { apiErrorFacts, isIssueVersionConflict, isMissingOrForbidden, IssueVersionConflictError } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
@@ -1572,6 +1572,36 @@ function IssuePanel({
   // wrapped label would read as "Original estimate e.g. 8h, 1h 30m, 45m".
   const planningId = useId();
 
+  /**
+   * A write refused because the issue had moved on (TAS-246), held apart from
+   * the mutation's own error for two reasons. Its sentence is not the error's
+   * message, and it outlives the mutation that raised it: the panel's writes
+   * share one queue (`issueWriteScope`), and a write queued behind the refused
+   * one becomes the observer's current mutation, taking the refused one's error
+   * off `updateIssue.error` while the reader still needs to be told.
+   *
+   * `fields` is every field the line is about: what the refused write sent,
+   * plus what an earlier conflict left unsaved. A choice — a priority, an
+   * assignee, a planning value — is only news until the reader acts again, so
+   * the next write that starts drops it. Free text is the reader's work and
+   * stays in its box, so the line about it stays too, until that field is sent
+   * again or its box goes back to the stored text (`keepUnsentText`,
+   * `settleText`); a newer refusal of another kind takes the slot outright,
+   * because the slot holds one refusal (DESIGN.md §5.5).
+   *
+   * `seq` remounts the line for every conflict, as `dateNotice`'s does for a
+   * repeat.
+   */
+  const [conflict, setConflict] = useState<IssueConflict | null>(null);
+  const clearConflict = () => setConflict(null);
+  /** The box went back to the stored text, so nothing of the reader's is left unsaved in it. */
+  const settleText = (field: FreeTextField) =>
+    setConflict((previous) => {
+      if (!previous?.fields.includes(field)) return previous;
+      const fields = previous.fields.filter((held) => held !== field);
+      return fields.length ? { ...previous, fields } : null;
+    });
+
   // Reseed the drafts whenever the server copy changes. Done during render
   // rather than from an effect: the effect version cost an extra render pass
   // on every refetch. A key-based remount would reset focus mid-edit, which
@@ -1602,10 +1632,17 @@ function IssuePanel({
     // can see. `reseedPlanningDrafts` takes only the fields whose *server*
     // value moved; the summary and the description are re-read on the same
     // terms, rather than whenever anything in the condition above changed.
+    //
+    // A box whose text a conflict left unsaved is not reseeded at all: the
+    // line under "Planning" says the reader's text is still in it, and a
+    // re-read bringing yet another writer's text must not make that untrue.
     const previous = synced;
+    const unsaved = conflict?.fields ?? [];
     setSynced({ summary: serverSummary, description: serverDescription, planning: serverPlanning });
-    if (!previous || previous.summary !== serverSummary) setSummary(serverSummary);
-    if (!previous || previous.description !== serverDescription) setDescription(serverDescription);
+    if ((!previous || previous.summary !== serverSummary) && !unsaved.includes("summary")) setSummary(serverSummary);
+    if ((!previous || previous.description !== serverDescription) && !unsaved.includes("description")) {
+      setDescription(serverDescription);
+    }
     setPlanning((current) => reseedPlanningDrafts(current, previous?.planning ?? null, serverPlanning));
   }
 
@@ -1617,29 +1654,37 @@ function IssuePanel({
     issue && workflow ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
 
   /**
-   * A write refused because the issue had moved on (TAS-246), held apart from
-   * the mutation's own error for two reasons. Its sentence is not the error's
-   * message, and it outlives the mutation that raised it: the panel's writes
-   * share one queue (`issueWriteScope`), and a write queued behind the refused
-   * one becomes the observer's current mutation, taking the refused one's error
-   * off `updateIssue.error` while the reader still needs to be told.
-   *
-   * `fields` is what the refused write sent, which is what the sentence names.
-   * `seq` remounts the line for a repeat, as `dateNotice`'s does. Cleared when
-   * the next write starts, and by a date refusal taking the slot.
+   * Every write that starts drops the date line and what a conflict line says
+   * about a choice; a conflict's free text stays unless this write sends it
+   * again (`keepUnsentText`). A transition or a delete sends no field, so it
+   * passes `{}`.
    */
-  const [conflict, setConflict] = useState<{
-    fields: (keyof UpdateIssueInput)[];
-    error: IssueVersionConflictError;
-    seq: number;
-  } | null>(null);
-  const clearConflict = () => setConflict(null);
-  /** Every write that starts drops both lines a previous one may have left. */
-  const writeStarts = () => {
+  const writeStarts = (sent: UpdateIssueInput) => {
+    clearDateNotice();
+    setConflict((previous) => keepUnsentText(previous, sent));
+  };
+  /** A refusal of any other kind is the newest one, and the slot holds one (DESIGN.md §5.5). */
+  const refusalLands = () => {
     clearDateNotice();
     clearConflict();
   };
   const { queryKey: issueKey } = issueDetailsOptions(projectId, issueId);
+
+  /**
+   * How many version conflicts have landed on this panel. Every edit carries
+   * the count as it stood when the reader acted (`editIssue`), and an edit
+   * made before the latest conflict is never sent.
+   *
+   * The version an edit sends is read when its request leaves (below), and a
+   * conflict merges the server's version into the cache. So without this, an
+   * edit queued behind the refused one — or two quick picks of one field —
+   * would leave at the version the conflict brought, succeed, and lay the
+   * reader's change over the very change the conflict was about, before the
+   * reader had seen it (release-reviewer and api-contract-guard, TAS-246 pass 2).
+   * A ref and not state: `mutationFn` has to read the count as it is when the
+   * request would leave, not as it was at the last render.
+   */
+  const conflictEpoch = useRef(0);
 
   /**
    * `PATCH /issues/{issueId}` with the version the cache holds **when the
@@ -1651,21 +1696,28 @@ function IssuePanel({
    * merged the new version into the cache by then, so the second reads it here
    * and does not conflict with its own predecessor.
    *
+   * If the first was refused as a conflict instead, the second was asked for
+   * over a version of the issue the reader never saw, and is answered as a
+   * conflict of its own without being sent (`conflictEpoch`).
+   *
    * No optimistic cache write: the drafts in the boxes already show what the
    * reader typed, and the server's answer is merged the moment it lands.
    */
   const updateIssue = useMutation({
     scope: { id: issueWriteScope(issueId) },
-    mutationFn: (patch: UpdateIssueInput) => {
-      const version = queryClient.getQueryData(issueKey)?.issue.version;
-      if (version === undefined) throw new Error("This issue is not loaded, so there is no version to edit.");
-      return taskaApi.updateIssue(projectId, issueId, patch, version);
+    mutationFn: ({ patch, epoch }: IssueEdit) => {
+      const cached = queryClient.getQueryData(issueKey)?.issue;
+      if (cached === undefined) throw new Error("This issue is not loaded, so there is no version to edit.");
+      // Never sent, so no request id: `onError` keeps the one of the
+      // conflict that made this write stale.
+      if (epoch < conflictEpoch.current) throw new IssueVersionConflictError(cached, cached.version);
+      return taskaApi.updateIssue(projectId, issueId, patch, cached.version);
     },
     // See `clearDateNotice`: every one of this panel's writes clears the date
     // line when it starts, this one included, and this is the case that needs
     // it — the reader who leaves the half-typed box alone and edits the
-    // estimate beside it. A conflict line goes the same way.
-    onMutate: writeStarts,
+    // estimate beside it.
+    onMutate: ({ patch }) => writeStarts(patch),
     onSuccess: (answer) => {
       // Synchronous, and before anything is awaited: a write queued behind
       // this one reads its version from the cache the moment this returns.
@@ -1687,19 +1739,28 @@ function IssuePanel({
     // variables are the record of which one that was. Reverting all five would
     // undo drafts the server never saw, including whichever box the reader
     // moved on to while the refusal was in flight.
-    onError: (error, sent) => {
-      // And this refusal takes the slot even if a date line went up while the
-      // request was in flight — see `clearDateNotice`.
-      clearDateNotice();
+    onError: (error, { patch: sent, epoch }) => {
       if (!isIssueVersionConflict(error)) {
+        // And this refusal takes the slot even if a date line went up while
+        // the request was in flight — see `clearDateNotice` — or a conflict
+        // line was still standing for a box.
+        refusalLands();
         setPlanning((current) => rollbackPlanningDrafts(current, sent, planningDrafts(issueQuery.data?.issue)));
         return;
       }
+      clearDateNotice();
+      // Answered here without a request (`mutationFn`): the conflict that made
+      // this write stale has already merged the issue and asked for a re-read,
+      // and is already counted.
+      const unsent = epoch < conflictEpoch.current;
       // The issue moved on. Show it as it now is — the answer carries it — and
       // never send the write again by ourselves: whether the reader's change
       // still makes sense over somebody else's is theirs to decide.
       const current = error.current;
-      queryClient.setQueryData(issueKey, (data) => (data ? mergeWriteAnswer(data, current) : data));
+      if (!unsent) {
+        conflictEpoch.current += 1;
+        queryClient.setQueryData(issueKey, (data) => (data ? mergeWriteAnswer(data, current) : data));
+      }
       setPlanning((drafts) => rollbackPlanningDrafts(drafts, sent, planningDrafts(current)));
       // Free text is the exception, and the reason the sentence for it differs:
       // the reader's words are not a value the issue failed to hold, they are
@@ -1719,21 +1780,28 @@ function IssuePanel({
         if (sent.summary !== undefined) setSummary(sent.summary);
         if (typeof sent.description === "string") setDescription(sent.description);
       }
+      // Added to what the line already says rather than replacing it: text an
+      // earlier conflict left unsaved is still unsaved, and an edit refused
+      // here without a request is the same news as the one that refused it.
+      const refused = Object.keys(sent) as (keyof UpdateIssueInput)[];
       setConflict((previous) => ({
-        fields: Object.keys(sent) as (keyof UpdateIssueInput)[],
-        error,
+        fields: [...(previous?.fields ?? []).filter((field) => !refused.includes(field)), ...refused],
+        // The request that found the conflict is the one the gateway log has.
+        error: unsent && previous ? previous.error : error,
         seq: (previous?.seq ?? 0) + 1,
       }));
-      void invalidateBoard(queryClient, projectId, issueId);
+      if (!unsent) void invalidateBoard(queryClient, projectId, issueId);
     },
   });
+  /** An edit, stamped with the conflicts the reader had been shown when they made it. */
+  const editIssue = (patch: UpdateIssueInput) => updateIssue.mutate({ patch, epoch: conflictEpoch.current });
   const transitionIssue = useMutation({
     // In the same queue as the edits: a transition bumps the version, so an
     // edit queued behind it has to read the version it left.
     scope: { id: issueWriteScope(issueId) },
     mutationFn: (transitionId: string) => taskaApi.transitionIssue(projectId, issueId, transitionId),
-    onMutate: writeStarts,
-    onError: clearDateNotice,
+    onMutate: () => writeStarts({}),
+    onError: refusalLands,
     onSuccess: (answer) => {
       queryClient.setQueryData(issueKey, (data) =>
         data
@@ -1748,8 +1816,8 @@ function IssuePanel({
   });
   const deleteIssue = useMutation({
     mutationFn: () => taskaApi.deleteIssue(projectId, issueId),
-    onMutate: writeStarts,
-    onError: clearDateNotice,
+    onMutate: () => writeStarts({}),
+    onError: refusalLands,
     // Not `invalidateBoard`: this path deliberately does not touch
     // `["issue", projectId, issueId]`, because this panel is still mounted for
     // one more tick and refetching the issue that was just deleted would put a
@@ -1861,17 +1929,21 @@ function IssuePanel({
       draftOf("storyPoints")(next === null ? "" : formatStoryPoints(next));
       return;
     }
-    updateIssue.mutate({ storyPoints: next });
+    editIssue({ storyPoints: next });
   };
 
-  const commitEstimate = (field: "originalEstimateMinutes" | "remainingEstimateMinutes") => () => {
+  // This and `commitDate` take the field beside the event rather than
+  // returning a handler built during render: an edit reads `conflictEpoch`,
+  // and the React Compiler lint reads a ref behind a handler built during
+  // render as a ref read during render.
+  const commitEstimate = (field: "originalEstimateMinutes" | "remainingEstimateMinutes") => {
     if (!canEdit) return;
     const next = parseDuration(planning[field]);
     if (next === issue[field]) {
       draftOf(field)(next === null ? "" : formatDuration(next));
       return;
     }
-    updateIssue.mutate(
+    editIssue(
       field === "originalEstimateMinutes" ? { originalEstimateMinutes: next } : { remainingEstimateMinutes: next },
     );
   };
@@ -1913,7 +1985,7 @@ function IssuePanel({
    * string it is — a `Date` here would hand a moment in time to a field that
    * means a calendar day.
    */
-  const commitDate = (field: "startDate" | "dueDate") => (event: FocusEvent<HTMLInputElement>) => {
+  const commitDate = (field: "startDate" | "dueDate", event: FocusEvent<HTMLInputElement>) => {
     if (!canEdit) return;
     // A half-typed date is not a cleared one. `<input type="date">` reports
     // `value === ""` both when the reader emptied it and when only some of its
@@ -1953,7 +2025,7 @@ function IssuePanel({
       draftOf(field)(next ?? "");
       return;
     }
-    updateIssue.mutate(field === "startDate" ? { startDate: next } : { dueDate: next });
+    editIssue(field === "startDate" ? { startDate: next } : { dueDate: next });
   };
 
   /**
@@ -1978,15 +2050,21 @@ function IssuePanel({
    * but held in its own state (`conflict`), and its sentence is the panel's
    * rather than the error's message. A refused date write gets the panel's
    * advice instead of the server's sentence (`writeFailureText`).
+   *
+   * So a conflict is never read off `updateIssue.error`, whatever `conflict`
+   * holds. That error stays on the mutation until the next edit, and read here
+   * it would stand in front of a later transition's or delete's own refusal,
+   * or come back as a line the reader had already settled.
    */
-  const writeError = updateIssue.error ?? transitionIssue.error ?? deleteIssue.error;
+  const editRefusal = isIssueVersionConflict(updateIssue.error) ? null : updateIssue.error;
+  const writeError = editRefusal ?? transitionIssue.error ?? deleteIssue.error;
   const shownError: unknown = dateNotice ? null : (conflict?.error ?? writeError);
   const panelNotice = dateNotice
     ? planningDateIncompleteEditMessage(dateNotice.field)
     : conflict
       ? issueConflictText(conflict.fields)
       : writeError
-        ? writeFailureText(writeError, updateIssue.error === writeError ? updateIssue.variables : undefined)
+        ? writeFailureText(writeError, editRefusal === writeError ? updateIssue.variables?.patch : undefined)
         : null;
   // The id that finds the refusal in the gateway log, beside the sentence and
   // outside its live region — `WatcherNoteDetail`'s rule: an assertive region
@@ -2015,7 +2093,10 @@ function IssuePanel({
             className="summary-textarea"
             disabled={!canEdit}
             onBlur={() => {
-              if (summary.trim() && summary !== issue.summary) updateIssue.mutate({ summary: summary.trim() });
+              if (summary.trim() && summary !== issue.summary) editIssue({ summary: summary.trim() });
+              // Put back to the stored text: nothing of the reader's is left
+              // unsaved here, so a conflict line about it has nothing to say.
+              else if (summary === issue.summary) settleText("summary");
             }}
             onChange={(event) => setSummary(event.target.value)}
             rows={2}
@@ -2054,14 +2135,20 @@ function IssuePanel({
                   `assigneeId` is nullable, where the old assign route required
                   an id and could not clear one (docs/ai/API-DIVERGENCE.md,
                   "Closed by TAS-246: an assignee could not be cleared — by
-                  contract"). Off while the issue is already unassigned — the
-                  press would change nothing. */}
+                  contract"). On an unassigned issue it is the field's current
+                  value and a press changes nothing, so the handler sends
+                  nothing — but it is `aria-disabled`, not `disabled`, and not
+                  faded: the answer to a keyboard press on it is what makes the
+                  issue unassigned, and a real `disabled` landing on the button
+                  that has focus drops focus to `<body>` (§4.21, §5.5). A real
+                  `disabled` is only for a reader who cannot edit (§5.7). */}
               <AssigneeChip
                 active={!issue.assigneeId}
-                disabled={!canEdit || issue.assigneeId == null}
+                ariaDisabled={canEdit && issue.assigneeId == null}
+                disabled={!canEdit}
                 label="None"
                 onClick={() => {
-                  if (canEdit && issue.assigneeId != null) updateIssue.mutate({ assigneeId: null });
+                  if (canEdit && issue.assigneeId != null) editIssue({ assigneeId: null });
                 }}
                 user={null}
               />
@@ -2087,7 +2174,7 @@ function IssuePanel({
                       key={member.userId}
                       label={member.user?.displayName.split(" ")[0] ?? "User"}
                       onClick={() => {
-                        if (canEdit && assignable) updateIssue.mutate({ assigneeId: member.userId });
+                        if (canEdit && assignable) editIssue({ assigneeId: member.userId });
                       }}
                       user={
                         member.user
@@ -2112,7 +2199,7 @@ function IssuePanel({
                   className={issue.priority === priority ? "is-active" : ""}
                   disabled={!canEdit}
                   key={priority}
-                  onClick={() => updateIssue.mutate({ priority })}
+                  onClick={() => editIssue({ priority })}
                   type="button"
                 >
                   {priorityMeta[priority].label}
@@ -2186,7 +2273,7 @@ function IssuePanel({
                   <input
                     aria-describedby={`${planningId}-original-estimate-hint`}
                     id={`${planningId}-original-estimate`}
-                    onBlur={commitEstimate("originalEstimateMinutes")}
+                    onBlur={() => commitEstimate("originalEstimateMinutes")}
                     onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
                     onKeyDown={planningKeyDown("originalEstimateMinutes")}
                     placeholder={PLANNING_EMPTY_PLACEHOLDER}
@@ -2206,7 +2293,7 @@ function IssuePanel({
                   <input
                     aria-describedby={`${planningId}-remaining-estimate-hint`}
                     id={`${planningId}-remaining-estimate`}
-                    onBlur={commitEstimate("remainingEstimateMinutes")}
+                    onBlur={() => commitEstimate("remainingEstimateMinutes")}
                     onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
                     onKeyDown={planningKeyDown("remainingEstimateMinutes")}
                     placeholder={PLANNING_EMPTY_PLACEHOLDER}
@@ -2230,7 +2317,7 @@ function IssuePanel({
                     // date reads as empty next to the `—` in the boxes above.
                     data-empty={planning.startDate === ""}
                     id={`${planningId}-start-date`}
-                    onBlur={commitDate("startDate")}
+                    onBlur={(event) => commitDate("startDate", event)}
                     onChange={(event) => draftOf("startDate")(event.target.value)}
                     onKeyDown={planningKeyDown("startDate")}
                     readOnly={!canEdit}
@@ -2243,7 +2330,7 @@ function IssuePanel({
                   <input
                     data-empty={planning.dueDate === ""}
                     id={`${planningId}-due-date`}
-                    onBlur={commitDate("dueDate")}
+                    onBlur={(event) => commitDate("dueDate", event)}
                     onChange={(event) => draftOf("dueDate")(event.target.value)}
                     onKeyDown={planningKeyDown("dueDate")}
                     readOnly={!canEdit}
@@ -2287,7 +2374,8 @@ function IssuePanel({
             <textarea
               disabled={!canEdit}
               onBlur={() => {
-                if (description !== issue.description) updateIssue.mutate({ description });
+                if (description !== issue.description) editIssue({ description });
+                else settleText("description");
               }}
               onChange={(event) => setDescription(event.target.value)}
               rows={5}
@@ -4400,16 +4488,25 @@ function AssigneeChip({
   label,
   active,
   disabled,
+  ariaDisabled = false,
   onClick,
 }: {
   user: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
   label: string;
   active: boolean;
   disabled: boolean;
+  /** Pressable, focusable, and announced as unavailable; `onClick` has to refuse the press itself. */
+  ariaDisabled?: boolean;
   onClick: () => void;
 }) {
   return (
-    <button className={`assignee-chip ${active ? "is-active" : ""}`} disabled={disabled} onClick={onClick} type="button">
+    <button
+      aria-disabled={ariaDisabled || undefined}
+      className={`assignee-chip ${active ? "is-active" : ""}`}
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
       <Avatar user={user} size="sm" />
       <span>{label}</span>
     </button>
@@ -5403,6 +5500,40 @@ function mergeWorkflowStatuses(workflows?: WorkflowsByIssueType) {
  */
 const issueWriteScope = (issueId: string) => `issue-write:${issueId}`;
 
+/**
+ * One edit of the panel's issue: the field it sends, and how many version
+ * conflicts the panel had shown when the reader made it — see `conflictEpoch`.
+ */
+interface IssueEdit {
+  patch: UpdateIssueInput;
+  epoch: number;
+}
+
+/** The two fields a conflict leaves the reader's own words in, rather than the server's value. */
+type FreeTextField = "summary" | "description";
+const isFreeTextField = (field: keyof UpdateIssueInput): field is FreeTextField =>
+  field === "summary" || field === "description";
+
+/** What the panel's conflict line is about — see the `conflict` state in `IssuePanel`. */
+interface IssueConflict {
+  fields: (keyof UpdateIssueInput)[];
+  error: IssueVersionConflictError;
+  seq: number;
+}
+
+/**
+ * A conflict line as it stands once another write starts: the choices go — the
+ * panel already shows them as they now are, and the reader has acted since —
+ * and free text stays unless `sent` carries it again. The same object when
+ * nothing changes, so a write that starts re-renders nothing here.
+ */
+function keepUnsentText(conflict: IssueConflict | null, sent: UpdateIssueInput): IssueConflict | null {
+  if (!conflict) return conflict;
+  const fields = conflict.fields.filter((field) => isFreeTextField(field) && !(field in sent));
+  if (fields.length === conflict.fields.length) return conflict;
+  return fields.length ? { ...conflict, fields } : null;
+}
+
 /** What the conflict sentence calls each field a write can carry. */
 const issueFieldNames: Record<keyof UpdateIssueInput, string> = {
   summary: "summary",
@@ -5416,22 +5547,44 @@ const issueFieldNames: Record<keyof UpdateIssueInput, string> = {
   remainingEstimateMinutes: "remaining estimate",
 };
 
+/** "a", "a and b", "a, b and c". */
+function joinWithAnd(words: string[]): string {
+  return words.length < 2 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
 /**
  * What the panel says when a write is refused because the issue changed after
- * the reader opened it (TAS-246). Two sentences, because the two outcomes are
- * not the same: a choice — a priority, an assignee, a planning value — is
- * simply not made, and the panel already shows the issue as it now is; free
- * text is the reader's work, kept in its box, and saved by leaving the box
- * again. The panel writes one field at a time, so `fields` names one.
+ * the reader opened it (TAS-246). Two outcomes, worded differently because
+ * they are not the same: a choice — a priority, an assignee, a planning value
+ * — is simply not made, and the panel already shows the issue as it now is;
+ * free text is the reader's work, kept in its box, and saved by leaving the box
+ * again.
+ *
+ * The panel writes one field at a time, so `fields` is usually one. It is more
+ * when an edit was made before a conflict landed and is refused without being
+ * sent (`conflictEpoch`), or when text an earlier conflict left unsaved is
+ * still in its box — and then one sentence names them all, in the panel's
+ * order, because the slot holds one sentence.
  */
 function issueConflictText(fields: (keyof UpdateIssueInput)[]): string {
-  const field = fields[0];
   const stale = "this issue was changed elsewhere after you opened it.";
-  if (field === "summary" || field === "description") {
-    return `Your ${field} was not saved: ${stale} Your text is still in the box — leave the box to save it over the latest version.`;
-  }
-  const name = field ? issueFieldNames[field] : "issue";
-  return `Your change to the ${name} was not saved: ${stale} The panel now shows the latest version.`;
+  const named = (Object.keys(issueFieldNames) as (keyof UpdateIssueInput)[]).filter((field) => fields.includes(field));
+  const texts = named.filter(isFreeTextField);
+  const choices = named.filter((field) => !isFreeTextField(field)).map((field) => `the ${issueFieldNames[field]}`);
+  const change = `change${choices.length > 1 ? "s" : ""} to ${joinWithAnd(choices.length ? choices : ["the issue"])}`;
+  const subject = !texts.length
+    ? `Your ${change}`
+    : choices.length
+      ? `Your ${change} and your ${joinWithAnd(texts)}`
+      : `Your ${joinWithAnd(texts)}`;
+  const verb = choices.length + texts.length > 1 ? "were" : "was";
+  const kept = `still in ${texts.length > 1 ? "both boxes — leave each box" : "the box — leave the box"} to save it over the latest version.`;
+  const tail = !texts.length
+    ? "The panel now shows the latest version."
+    : choices.length
+      ? `The panel now shows the latest version, and your text is ${kept}`
+      : `Your text is ${kept}`;
+  return `${subject} ${verb} not saved: ${stale} ${tail}`;
 }
 
 /**
@@ -5440,8 +5593,14 @@ function issueConflictText(fields: (keyof UpdateIssueInput)[]): string {
  * date that, laid over the other stored date, would put the start after the
  * due date with a sentence that is true and says nothing about what to do, and
  * the panel — which saves one box at a time — knows which box to move first.
+ *
+ * A version conflict is the panel's sentence too, never the error's own
+ * message ("Version conflict: sent 4, the issue is at 7" is for a log, not a
+ * reader). The panel reads conflicts off its `conflict` state and not through
+ * here, so this is the guard for whatever reads a write's error next.
  */
 function writeFailureText(error: Error, sent: UpdateIssueInput | undefined): string {
+  if (isIssueVersionConflict(error)) return issueConflictText(sent ? (Object.keys(sent) as (keyof UpdateIssueInput)[]) : []);
   if (sent && isDatesOutOfOrderRefusal(error)) {
     if (sent.startDate !== undefined && sent.dueDate === undefined) return planningDateOrderAdvice("startDate");
     if (sent.dueDate !== undefined && sent.startDate === undefined) return planningDateOrderAdvice("dueDate");

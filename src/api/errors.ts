@@ -51,15 +51,22 @@ export const isIssueVersionConflict = (error: unknown): error is IssueVersionCon
  * more importantly, so mock mode and rest mode reach the same sentences. A
  * screen that reads only `status` says nothing useful in mock mode; one that
  * reads only `code` says nothing useful against the gateway.
+ *
+ * `IssueVersionConflictError` is the exception to three of the lines below.
+ * Its `message` is the client's own ("Version conflict: sent 4, the issue is
+ * at 7"): the gateway's 409 body is the issue, with no wording and no code at
+ * all. Its `status` is 409 in mock mode too, and its `code` is `null` in both.
+ * A screen states a conflict in a sentence of its own (`issueConflictText` in
+ * BoardScreen) and never presents `message` as the server's words.
  */
 export interface ApiErrorFacts {
-  /** The server's own wording, when it sent any. */
+  /** The server's own wording, when it sent any. Not for `IssueVersionConflictError`, whose message the client wrote. */
   message: string | null;
   /** `X-Request-Id` — what identifies this failure in the gateway log. REST only. */
   requestId: string | null;
-  /** HTTP status. REST only: the mock never went over a wire. */
+  /** HTTP status. REST only, since the mock never went over a wire — except `IssueVersionConflictError`, 409 in both. */
   status: number | null;
-  /** Domain code. Both implementations carry one. */
+  /** Domain code. Both implementations carry one — except `IssueVersionConflictError`, which carries none. */
   code: string | null;
 }
 

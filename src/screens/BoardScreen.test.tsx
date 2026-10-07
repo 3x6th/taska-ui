@@ -33,6 +33,7 @@ const {
   listedAttachments,
   deletedAttachments,
   failDelete,
+  failIssueDelete,
   holdDelete,
   releaseDelete,
   heldDeleteCount,
@@ -157,6 +158,8 @@ const {
     /** Issues created during a test, the ones deleted and the fields edited, so the list moves the way a server's would. */
     created: ReturnType<typeof makeIssue>[];
     deleted: Set<string>;
+    /** The next issue delete is refused with this, and deletes nothing. */
+    issueDeleteFailure?: Error;
     edits: Record<string, Record<string, unknown>>;
     /** An update held open, so a test can decide when its answer — and the refetch behind it — lands. */
     issueUpdatesHeld: boolean;
@@ -469,6 +472,11 @@ const {
       return created;
     },
     deleteIssue: async (_projectId: string, issueId: string) => {
+      if (state.issueDeleteFailure) {
+        const failure = state.issueDeleteFailure;
+        state.issueDeleteFailure = undefined;
+        throw failure;
+      }
       state.deleted.add(issueId);
       state.searchTotal = Math.max(0, state.searchTotal - 1);
     },
@@ -822,6 +830,9 @@ const {
     confirmCalls: () => state.confirmCalls,
     listedAttachments: () => state.attachments.filter((item) => !state.deleted_attachments.includes(item.id)),
     deletedAttachments: () => state.deleted_attachments,
+    failIssueDelete: (error: Error) => {
+      state.issueDeleteFailure = error;
+    },
     failDelete: (error: Error) => {
       state.deleteFailure = error;
     },
@@ -990,6 +1001,7 @@ const {
       state.attachmentsPartEmpty = false;
       state.created = [];
       state.deleted = new Set<string>();
+      state.issueDeleteFailure = undefined;
       state.edits = {};
       state.members = [];
       state.assigneeId = null;
@@ -2176,8 +2188,181 @@ describe("issue edits under optimistic locking", () => {
 
     await waitFor(() => expect(updateCalls()).toEqual([{ patch: { assigneeId: null }, expectedVersion: 1 }]));
     await waitFor(() => expect(none).toHaveClass("is-active"));
-    // Off again: unassigning an unassigned issue would change nothing.
+    // Off again, since unassigning an unassigned issue would change nothing —
+    // but `aria-disabled`, never `disabled`: the press that unassigned it may
+    // have come from the keyboard, and a real `disabled` landing on the
+    // focused chip drops focus to <body> (§4.21). The handler refuses instead.
+    expect(none).toHaveAttribute("aria-disabled", "true");
+    expect(none).not.toBeDisabled();
+    fireEvent.click(none);
+    expect(updateCalls()).toHaveLength(1);
+  });
+
+  it("keeps None a real disabled for a reader who cannot edit", async () => {
+    setMembership("VIEWER");
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    const none = await panel.findByRole("button", { name: /None$/ });
     expect(none).toBeDisabled();
+    expect(none).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("does not send an edit made before a conflict landed, and sends the next one at the version the conflict left", async () => {
+    // Anna has v3 open; Boris changes the description (v4). Anna leaves the
+    // summary (A, sent at 3) and, while A is out, the description (B, queued).
+    // A is refused. B was written over v3's text and, if it went out at v4,
+    // would succeed and lay Anna's words over Boris's unseen.
+    seedIssueVersion(3);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    conflictNextUpdate({ description: "Boris's words" }, "req-409");
+    holdIssueUpdates(true);
+
+    const summaryBox = document.querySelector(".summary-textarea") as HTMLTextAreaElement;
+    const descriptionBox = panel.getByRole("textbox", { name: "Description" });
+    fireEvent.change(summaryBox, { target: { value: "Anna's summary" } });
+    fireEvent.blur(summaryBox);
+    fireEvent.change(descriptionBox, { target: { value: "Anna's words" } });
+    fireEvent.blur(descriptionBox);
+    await waitFor(() => expect(heldIssueUpdateCount()).toBe(1));
+    expect(updateCalls()).toEqual([{ patch: { summary: "Anna's summary" }, expectedVersion: 3 }]);
+
+    holdIssueUpdates(false);
+    releaseIssueUpdates();
+
+    // One line for both, because neither was saved; B is answered as a
+    // conflict without a request, under the id of the request that found it.
+    const sentence = await panel.findByRole("alert");
+    await waitFor(() =>
+      expect(sentence).toHaveTextContent(
+        "Your summary and description were not saved: this issue was changed elsewhere after you opened it. Your text is still in both boxes — leave each box to save it over the latest version.",
+      ),
+    );
+    expect(panel.getByRole("button", { name: /Copy request id req-409/ })).toBeInTheDocument();
+    expect(updateCalls()).toHaveLength(1);
+    expect(summaryBox).toHaveValue("Anna's summary");
+    expect(descriptionBox).toHaveValue("Anna's words");
+
+    // An edit made now, with the conflict on screen, goes out at v4.
+    fireEvent.blur(descriptionBox);
+    await waitFor(() => expect(updateCalls()).toHaveLength(2));
+    expect(updateCalls()[1]).toEqual({ patch: { description: "Anna's words" }, expectedVersion: 4 });
+    // The description was sent again; the summary is still unsaved in its box.
+    await waitFor(() =>
+      expect(panel.getByRole("alert")).toHaveTextContent(
+        "Your summary was not saved: this issue was changed elsewhere after you opened it. Your text is still in the box — leave the box to save it over the latest version.",
+      ),
+    );
+  });
+
+  it("names a choice and a text in one line when a pick was queued behind a refused summary", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    conflictNextUpdate({ summary: "Their summary" });
+    holdIssueUpdates(true);
+
+    const summaryBox = document.querySelector(".summary-textarea") as HTMLTextAreaElement;
+    fireEvent.change(summaryBox, { target: { value: "My summary" } });
+    fireEvent.blur(summaryBox);
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    await waitFor(() => expect(heldIssueUpdateCount()).toBe(1));
+    holdIssueUpdates(false);
+    releaseIssueUpdates();
+
+    await waitFor(() =>
+      expect(panel.getByRole("alert")).toHaveTextContent(
+        "Your change to the priority and your summary were not saved: this issue was changed elsewhere after you opened it. The panel now shows the latest version, and your text is still in the box — leave the box to save it over the latest version.",
+      ),
+    );
+    expect(updateCalls()).toHaveLength(1);
+    expect(summaryBox).toHaveValue("My summary");
+  });
+
+  it("does not send a second quick pick of a field whose first pick was refused as a conflict", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    conflictNextUpdate({ priority: "HIGH" });
+    holdIssueUpdates(true);
+
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    fireEvent.click(panel.getByRole("button", { name: "High" }));
+    await waitFor(() => expect(heldIssueUpdateCount()).toBe(1));
+    holdIssueUpdates(false);
+    releaseIssueUpdates();
+
+    expect(await panel.findByRole("alert")).toHaveTextContent(
+      "Your change to the priority was not saved: this issue was changed elsewhere after you opened it. The panel now shows the latest version.",
+    );
+    // Neither pick was made: the panel shows the server's High, and the
+    // second press never left.
+    await waitFor(() => expect(panel.getByRole("button", { name: "High" })).toHaveClass("is-active"));
+    expect(updateCalls()).toEqual([{ patch: { priority: "LOW" }, expectedVersion: 1 }]);
+
+    // A pick made after the conflict was shown is an ordinary edit.
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    await waitFor(() => expect(updateCalls()).toHaveLength(2));
+    expect(updateCalls()[1]).toEqual({ patch: { priority: "LOW" }, expectedVersion: 2 });
+    await waitFor(() => expect(panel.getByRole("button", { name: "Low" })).toHaveClass("is-active"));
+    // The choice line was news until the reader acted again.
+    expect(panel.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps a summary conflict line through a write of another field, while the text is still unsaved", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    conflictNextUpdate({ summary: "Their summary" });
+
+    const summaryBox = document.querySelector(".summary-textarea") as HTMLTextAreaElement;
+    fireEvent.change(summaryBox, { target: { value: "My summary" } });
+    fireEvent.blur(summaryBox);
+    const summaryLine =
+      "Your summary was not saved: this issue was changed elsewhere after you opened it. Your text is still in the box — leave the box to save it over the latest version.";
+    expect(await panel.findByRole("alert")).toHaveTextContent(summaryLine);
+
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    await waitFor(() => expect(panel.getByRole("button", { name: "Low" })).toHaveClass("is-active"));
+    expect(updateCalls()[1]).toEqual({ patch: { priority: "LOW" }, expectedVersion: 2 });
+    // The priority was saved; the summary was not, and is still in the box.
+    expect(panel.getByRole("alert")).toHaveTextContent(summaryLine);
+    expect(summaryBox).toHaveValue("My summary");
+
+    // Sending it again is what retires the line.
+    fireEvent.blur(summaryBox);
+    await waitFor(() => expect(updateCalls()).toHaveLength(3));
+    expect(updateCalls()[2]).toEqual({ patch: { summary: "My summary" }, expectedVersion: 3 });
+    await waitFor(() => expect(panel.queryByRole("alert")).toBeNull());
+  });
+
+  it("drops a summary conflict line when the reader puts the stored text back", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    conflictNextUpdate({ summary: "Their summary" });
+
+    const summaryBox = document.querySelector(".summary-textarea") as HTMLTextAreaElement;
+    fireEvent.change(summaryBox, { target: { value: "My summary" } });
+    fireEvent.blur(summaryBox);
+    expect(await panel.findByRole("alert")).toHaveTextContent("Your summary was not saved");
+
+    fireEvent.change(summaryBox, { target: { value: "Their summary" } });
+    fireEvent.blur(summaryBox);
+    await waitFor(() => expect(panel.queryByRole("alert")).toBeNull());
+    expect(updateCalls()).toHaveLength(1);
+  });
+
+  it("states a later delete's own refusal after a conflict, never the conflict's internal message", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    conflictNextUpdate({ priority: "HIGH" });
+
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    expect(await panel.findByRole("alert")).toHaveTextContent("Your change to the priority was not saved");
+
+    failIssueDelete(Object.assign(new Error("You cannot delete this issue"), { code: "PERMISSION_DENIED", status: 403 }));
+    fireEvent.click(panel.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(panel.getByRole("alert")).toHaveTextContent("You cannot delete this issue"));
+    expect(panel.getByRole("alert")).not.toHaveTextContent("Version conflict");
   });
 
   it("keeps a newer cached issue over an older re-read, and takes an equal one with new labels", async () => {
