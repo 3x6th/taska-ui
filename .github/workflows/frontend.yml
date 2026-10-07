@@ -164,9 +164,11 @@ jobs:
 
   # A CI-only e2e failure is otherwise unreproducible: traces and the HTML
   # report are the only record of what the browser saw. It is merged on a green
-  # run too, because a test that passed on retry carries the only trace of its
-  # first failure — exactly the record labels.spec.ts:242 did not leave behind.
-  # Diagnostic only: the `check` gate does not wait for it.
+  # run too, because a test that passed on retry is otherwise forgotten: its
+  # first failure's screenshot and error context, and the trace of the retry
+  # (`trace: "on-first-retry"`), live only here — exactly the record
+  # labels.spec.ts:242 did not leave behind. Diagnostic only: the `check` gate
+  # does not wait for it.
   report:
     name: e2e report
     needs: e2e
