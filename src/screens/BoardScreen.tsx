@@ -16,10 +16,8 @@ import {
   useInfiniteQuery,
   useMutation,
   usePrefetchInfiniteQuery,
-  usePrefetchQuery,
   useQuery,
   useQueryClient,
-  type QueryKey,
 } from "@tanstack/react-query";
 import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Users, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
@@ -49,11 +47,13 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { personFor, type NamedBy } from "../lib/people";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   Issue,
   IssueAttachment,
   IssueComment,
+  IssueDetailsWithHistory,
   IssueHistoryEvent,
   IssueLink,
   IssueLinkType,
@@ -139,58 +139,113 @@ const SEARCH_DEBOUNCE_MS = 200;
 const boardSearchPageSize = 50;
 
 /*
- * The issue panel's five section reads, each written down once (TAS-242).
+ * The issue panel's reads (TAS-246): one for the issue and everything drawn
+ * around it, one for the comments. Backend TAS-214 put the labels, watchers,
+ * links and attachments on `GET /issues/{issueId}`, so the four section reads
+ * the panel used to start beside the issue read (TAS-242) are gone, and opening
+ * a panel is two requests whatever it holds.
  *
- * The sections mount under the panel's `if (!issue)` guard, so while each one
- * issued its own read, that read began only after the issue had answered — a
- * second round for requests that need nothing but the two ids already in the
- * URL. The panel now starts all five beside the issue read, and each section
- * then observes the entry the panel started. That only holds while both sides
- * ask with the same key, the same `queryFn` and the same `retry`, so neither
- * side spells them out: both take them from here. The one thing a section adds
- * is `retryOnMount`, which belongs to its observer rather than to the read —
- * see `prefetched` in `IssuePanel`.
- *
- * `retry` is carried exactly as each section had it. The comments read never
- * named one and still does not, so it keeps the client's default on both sides:
- * `fetchQuery` substitutes `retry: false` only when the *merged* options have
- * no `retry` at all, and the app's client sets one (src/main.tsx).
+ * The four sections still keep their own optimistic writes, and those now
+ * write into the issue's own cache entry — through `issuePartCache` — rather
+ * than into four entries of their own. One entry for one read is the whole
+ * point: a section that held a copy of its part would have to be told when the
+ * issue was re-read, and the day it was not, two answers from two moments
+ * would be on screen side by side.
  */
-function issueWatchersOptions(projectId: string, issueId: string) {
+function issueDetailsOptions(projectId: string, issueId: string) {
   return queryOptions({
-    queryKey: ["issue-watchers", projectId, issueId],
-    queryFn: () => taskaApi.listIssueWatchers(projectId, issueId),
-    retry: retryUnlessMissing,
+    queryKey: ["issue", projectId, issueId],
+    queryFn: () => taskaApi.getIssue(projectId, issueId),
   });
 }
 
-function issueLabelsOptions(projectId: string, issueId: string) {
-  return queryOptions({
-    queryKey: ["issue-labels", projectId, issueId],
-    queryFn: () => taskaApi.listIssueLabels(projectId, issueId),
-    retry: retryUnlessMissing,
+/** The four parts of the detail read a panel section draws and writes. */
+interface IssuePartValues {
+  watchers: IssueWatchers;
+  labels: Label[];
+  links: IssueLink[];
+  attachments: IssueAttachment[];
+}
+type IssuePart = keyof IssuePartValues;
+
+/**
+ * One section's view of the issue read: its part, `null` when the server did
+ * not send the part (`IssueDetails`), and `undefined` until the issue has
+ * answered. The sections mount only after it has, so the third state is the
+ * type's rather than the screen's.
+ */
+function useIssuePart<K extends IssuePart>(projectId: string, issueId: string, part: K) {
+  return useQuery({
+    ...issueDetailsOptions(projectId, issueId),
+    select: (data) => data.issue[part] as IssuePartValues[K] | null,
   });
 }
 
-function issueLinksOptions(projectId: string, issueId: string) {
-  return queryOptions({
-    queryKey: ["issue-links", projectId, issueId],
-    queryFn: () => taskaApi.listIssueLinks(projectId, issueId),
-    // Same predicate as every other board query. It matters more here than it
-    // looks: this gateway has already been seen answering an empty collection
-    // with NOT_FOUND (`GET /projects`, docs/ai/API-DIVERGENCE.md), and if the
-    // link routes share the habit, an issue with no links would spend a retry
-    // delay before showing a red error where a quiet line belongs.
-    retry: retryUnlessMissing,
+/**
+ * A section's writes against its part of the issue read — the four things an
+ * optimistic write does to a cache, said about a part instead of a key.
+ *
+ * `cancel` and `settle` are about the whole issue read, because that is the
+ * only request there is: cancelling a re-read that would land on top of an
+ * optimistic change, and re-reading once the write has answered. A settle
+ * therefore also refreshes the issue's history, which every one of these
+ * writes appends to.
+ */
+function issuePartCache<K extends IssuePart>(
+  queryClient: ReturnType<typeof useQueryClient>,
+  projectId: string,
+  issueId: string,
+  part: K,
+) {
+  const { queryKey } = issueDetailsOptions(projectId, issueId);
+  type Value = IssuePartValues[K];
+  const write = (data: IssueDetailsWithHistory, value: Value | null): IssueDetailsWithHistory => ({
+    ...data,
+    issue: { ...data.issue, [part]: value },
   });
+  return {
+    /** The part as cached: `undefined` before the issue answered, `null` when the server did not send it. */
+    get: (): Value | null | undefined => {
+      const data = queryClient.getQueryData(queryKey);
+      return data ? (data.issue[part] as Value | null) : undefined;
+    },
+    /**
+     * Change the part. The updater sees `undefined` for a part the server did
+     * not send, as it used to see an entry that had not loaded, and returning
+     * `undefined` leaves the cache alone.
+     */
+    set: (update: (current: Value | undefined) => Value | undefined) => {
+      queryClient.setQueryData(queryKey, (data) => {
+        if (!data) return data;
+        const next = update((data.issue[part] as Value | null) ?? undefined);
+        return next === undefined ? data : write(data, next);
+      });
+    },
+    /** Put back exactly what `get` returned before a write — `null` included. */
+    restore: (previous: Value | null | undefined) => {
+      if (previous === undefined) return;
+      queryClient.setQueryData(queryKey, (data) => (data ? write(data, previous) : data));
+    },
+    cancel: () => queryClient.cancelQueries({ queryKey }),
+    settle: () => queryClient.invalidateQueries({ queryKey }),
+  };
 }
 
-function issueAttachmentsOptions(projectId: string, issueId: string) {
-  return queryOptions({
-    queryKey: ["issue-attachments", projectId, issueId],
-    queryFn: () => taskaApi.listAttachments(projectId, issueId),
-    retry: retryUnlessMissing,
-  });
+/** Whether the issue read came back without one of the four parts (`IssueDetails`). */
+function hasMissingPart(data: IssueDetailsWithHistory | undefined) {
+  if (!data) return false;
+  const { labels, watchers, links, attachments } = data.issue;
+  return labels === null || watchers === null || links === null || attachments === null;
+}
+
+/**
+ * What a section says when the server sent the issue without its part. Not
+ * "none": an absent part is a source that failed on the server's side
+ * (`IssueDetails`), and "No labels yet" would be a claim about the issue the
+ * answer never made.
+ */
+function partUnavailableText(what: string) {
+  return `The ${what} could not be loaded with this issue. Reopen it to try again.`;
 }
 
 function issueCommentsOptions(projectId: string, issueId: string) {
@@ -1349,48 +1404,34 @@ function IssuePanel({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const issueQuery = useQuery({
-    queryKey: ["issue", projectId, issueId],
-    queryFn: () => taskaApi.getIssue(projectId, issueId),
+    ...issueDetailsOptions(projectId, issueId),
+    // A cached answer that came without one of its parts is a success to
+    // react-query and would be served again for the length of `staleTime`.
+    // Reopening the panel is how a reader asks again — the sections' own
+    // sentence says so — so here, and only on the panel's observer, a missing
+    // part makes the cached answer stale. The sections' observers mount after
+    // the read has answered and must not re-ask it themselves: that would be a
+    // third request on every first open of an issue with a part missing.
+    refetchOnMount: (query) => (hasMissingPart(query.state.data) ? "always" : true),
   });
   /**
-   * Which of the five reads below this panel is about to start, fixed at its
-   * first render, before they run. `usePrefetchQuery` asks only for an entry
-   * the cache does not hold yet, and a section whose read the panel started
-   * must not ask again when it mounts — including when that read *failed*.
-   * react-query re-asks an errored read for every observer that mounts on it
-   * (`retryOnMount`), so without this a section read that failed outright
-   * before the issue answered would go out twice — measured on this story's
-   * first draft: two watcher reads where every other section sent one.
-   *
-   * An entry that was already cached is left to its section exactly as before
-   * this story, which is how a reopened panel still asks again for a read that
-   * failed the last time.
+   * Whether the comments read was already in the cache when this panel first
+   * rendered — fixed once, before the prefetch below runs. A comments read the
+   * panel started itself must not be asked again by the section when it
+   * mounts, including when it *failed*: react-query re-asks an errored read for
+   * every observer that mounts on it (`retryOnMount`), so a failure that landed
+   * before the issue answered would otherwise go out twice (TAS-242).
    *
    * Fixed once per panel, which is once per issue only because the board
    * remounts the panel on every `issueId` (`key={issueId}` where it is drawn).
    */
-  const [prefetched] = useState(() => {
-    const uncached = (queryKey: QueryKey) => queryClient.getQueryState(queryKey) === undefined;
-    return {
-      watchers: uncached(issueWatchersOptions(projectId, issueId).queryKey),
-      labels: uncached(issueLabelsOptions(projectId, issueId).queryKey),
-      links: uncached(issueLinksOptions(projectId, issueId).queryKey),
-      attachments: uncached(issueAttachmentsOptions(projectId, issueId).queryKey),
-      comments: uncached(issueCommentsOptions(projectId, issueId).queryKey),
-    };
-  });
-  // The five sections' reads, started here beside the issue read rather than
-  // when the sections mount under the `if (!issue)` guard below: they need only
-  // the two ids, and waiting for the issue cost the panel a second round
-  // (TAS-242). Each call does nothing once its entry exists, so a section that
-  // mounts later finds its answer — or its request still in flight — and asks
-  // nothing of its own. Only the cache is filled: nothing in this component
-  // reads these entries, so a section's failure stays in that section and never
-  // reaches the issue read, the other four, or the panel's error line below.
-  usePrefetchQuery(issueWatchersOptions(projectId, issueId));
-  usePrefetchQuery(issueLabelsOptions(projectId, issueId));
-  usePrefetchQuery(issueLinksOptions(projectId, issueId));
-  usePrefetchQuery(issueAttachmentsOptions(projectId, issueId));
+  const [commentsPrefetched] = useState(
+    () => queryClient.getQueryState(issueCommentsOptions(projectId, issueId).queryKey) === undefined,
+  );
+  // Started beside the issue read rather than when the comments section mounts
+  // under the `if (!issue)` guard below: it needs only the two ids, and waiting
+  // for the issue would cost the panel a second round (TAS-242). The issue read
+  // and this are the panel's two requests (TAS-246).
   usePrefetchInfiniteQuery(issueCommentsOptions(projectId, issueId));
   const loadingLabelId = useId();
   const issue = issueQuery.data?.issue;
@@ -1592,7 +1633,9 @@ function IssuePanel({
     );
   }
 
-  const reporter = userById.get(issue.reporterId);
+  // Named by the issue read itself since TAS-246; the member list is the
+  // fallback for a summary the server could not fill (`personFor`).
+  const reporter = personFor(issue.reporterId, issue.reporter, userById);
 
   /**
    * Put a draft back the way the server has it. Used by Escape — abandoning an
@@ -2059,12 +2102,11 @@ function IssuePanel({
             isProjectAdmin={isProjectAdmin}
             canWatch={canWatch}
             isProjectViewer={isProjectViewer}
-            prefetched={prefetched.watchers}
           />
 
-          <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} prefetched={prefetched.labels} />
+          <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
-          <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} prefetched={prefetched.links} />
+          <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
           <IssueAttachmentsSection
             projectId={projectId}
@@ -2073,7 +2115,6 @@ function IssuePanel({
             isProjectAdmin={isProjectAdmin}
             currentUserId={currentUserId}
             userById={userById}
-            prefetched={prefetched.attachments}
           />
 
           <CommentsSection
@@ -2082,7 +2123,7 @@ function IssuePanel({
             canComment={canEdit}
             currentUserId={currentUserId}
             userById={userById}
-            prefetched={prefetched.comments}
+            prefetched={commentsPrefetched}
           />
 
           <section className="activity">
@@ -2188,16 +2229,9 @@ function IssueWatchersSection({
   isProjectAdmin,
   canWatch,
   isProjectViewer,
-  prefetched,
 }: {
   projectId: string;
   issueId: string;
-  /**
-   * The panel started this section's read before the section mounted, so
-   * whatever that read answered — a failure too — is not asked again on mount.
-   * See `prefetched` in `IssuePanel`; the four sections below take the same flag.
-   */
-  prefetched: boolean;
   /** `undefined` until `GET /users/me` answers. Until then nothing may claim who is watching. */
   currentUserId?: string;
   members: ProjectMember[];
@@ -2255,14 +2289,24 @@ function IssueWatchersSection({
    */
   const focusAfterRemoval = useRef<string | null>(null);
 
-  // The panel has usually started this read already (`issueWatchersOptions`).
-  const watchersRead = issueWatchersOptions(projectId, issueId);
-  const watchersKey = watchersRead.queryKey;
-  const watchersQuery = useQuery({ ...watchersRead, retryOnMount: !prefetched });
+  // The panel's issue read carries the watchers since TAS-246.
+  const watchersCache = issuePartCache(queryClient, projectId, issueId, "watchers");
+  const watchersQuery = useIssuePart(projectId, issueId, "watchers");
 
-  const answer = watchersQuery.data;
+  // `null` is a part the server did not send — said below, never drawn as
+  // "nobody is watching".
+  const answer = watchersQuery.data ?? undefined;
+  const unavailable = watchersQuery.data === null;
   const watchers = useMemo(() => answer?.watchers ?? [], [answer]);
   const watching = Boolean(currentUserId) && watchers.some((watcher) => watcher.userId === currentUserId);
+  /** `watcherSubject` for a person, with their row's own name when they have a row. */
+  const subjectOf = (userId: string) =>
+    watcherSubject(
+      userById,
+      userId,
+      currentUserId,
+      watchers.find((watcher) => watcher.userId === userId),
+    );
   const subscribed = useMemo(() => new Set(watchers.map((watcher) => watcher.userId)), [watchers]);
   const addable = members.filter((member) => !subscribed.has(member.userId));
 
@@ -2284,21 +2328,16 @@ function IssueWatchersSection({
    */
   const applyServerCount = (watchersCount: number | null) => {
     if (watchersCount === null) return;
-    queryClient.setQueryData<IssueWatchers>(watchersKey, (current) =>
-      current ? { ...current, totalCount: watchersCount } : current,
-    );
+    watchersCache.set((current) => (current ? { ...current, totalCount: watchersCount } : current));
   };
 
   /**
-   * One write, one stale cache. Deliberately **not** `invalidateBoard`: no
-   * watcher route changes the issue, and this build knows of no history event
-   * or notification type for a subscription — `IssueEventType` has none and
-   * neither does `NotificationType` — so refetching the issue after a toggle
-   * would be this side asserting that the server wrote something it never
-   * mentioned. If the backend turns out to journal these, the invalidation
-   * belongs here and the union belongs in `src/domain/types.ts` with it.
+   * One write, and the issue read re-asked — which since TAS-246 is where the
+   * watcher list lives. Still deliberately **not** `invalidateBoard`: no
+   * watcher route changes the issue or the board's cards, and this build knows
+   * of no history event or notification type for a subscription.
    */
-  const settle = () => queryClient.invalidateQueries({ queryKey: watchersKey });
+  const settle = () => watchersCache.settle();
 
   /** The optimistic row for a subscription the server has not confirmed yet. */
   const optimisticRow = (userId: string): IssueWatcher => ({
@@ -2308,16 +2347,21 @@ function IssueWatchersSection({
     userId,
     createdAt: "",
     createdBy: currentUserId ?? "",
+    // Not guessed from the member list: the row is named the way every
+    // unnamed row is (`personFor`), and the server's name arrives with the
+    // re-read that settles this write.
+    displayName: null,
+    avatarUrl: null,
   });
 
   const beginWrite = async () => {
     setNotice(null);
-    await queryClient.cancelQueries({ queryKey: watchersKey });
-    return queryClient.getQueryData<IssueWatchers>(watchersKey);
+    await watchersCache.cancel();
+    return watchersCache.get();
   };
 
   const addOptimistically = (userId: string) => {
-    queryClient.setQueryData<IssueWatchers>(watchersKey, (current) => {
+    watchersCache.set((current) => {
       if (!current) return current;
       // **Idempotent, and not as a precaution.** Two dispatches for one person
       // land in the same task whenever a double press outruns the mutation's own
@@ -2344,7 +2388,7 @@ function IssueWatchersSection({
    * (its sibling above still is, because it has one caller and one timing).
    */
   const removeRow = (userId: string) => {
-    queryClient.setQueryData<IssueWatchers>(watchersKey, (current) => {
+    watchersCache.set((current) => {
       if (!current) return current;
       const watchersLeft = current.watchers.filter((watcher) => watcher.userId !== userId);
       const changed = watchersLeft.length !== current.watchers.length;
@@ -2356,9 +2400,7 @@ function IssueWatchersSection({
     });
   };
 
-  const rollback = (previous: IssueWatchers | undefined) => {
-    if (previous) queryClient.setQueryData(watchersKey, previous);
-  };
+  const rollback = (previous: IssueWatchers | null | undefined) => watchersCache.restore(previous);
 
   const watchIssue = useMutation({
     mutationFn: () => taskaApi.watchIssue(projectId, issueId),
@@ -2413,7 +2455,7 @@ function IssueWatchersSection({
       // *themselves* from this picker — `addable` is every member who is not
       // watching yet, which includes them — and the failure that follows is the
       // one `watchIssue` above already has a sentence for.
-      const subject = watcherSubject(userById, userId, currentUserId);
+      const subject = subjectOf(userId);
       setNotice({
         error,
         tone: "error",
@@ -2446,7 +2488,7 @@ function IssueWatchersSection({
   const planFocusHandoff = (userId: string) => {
     const leaving = rowButtons.current.get(userId);
     if (!leaving || document.activeElement !== leaving) return;
-    const list = queryClient.getQueryData<IssueWatchers>(watchersKey)?.watchers ?? [];
+    const list = watchersCache.get()?.watchers ?? [];
     const index = list.findIndex((watcher) => watcher.userId === userId);
     if (index < 0) return;
     const neighbour = list[index + 1] ?? list[index - 1];
@@ -2483,7 +2525,7 @@ function IssueWatchersSection({
       removeRow(userId);
       applyServerCount(result.watchersCount);
       if (!result.removed) {
-        const subject = watcherSubject(userById, userId, currentUserId);
+        const subject = subjectOf(userId);
         setNotice({
           tone: "info",
           text: subject.reader
@@ -2493,7 +2535,7 @@ function IssueWatchersSection({
       }
     },
     onError: (error, userId) => {
-      const subject = watcherSubject(userById, userId, currentUserId);
+      const subject = subjectOf(userId);
       setNotice({
         error,
         tone: "error",
@@ -2538,7 +2580,7 @@ function IssueWatchersSection({
   // observer can hold data *and* a failed background refetch at once, and in
   // that state a refused write would otherwise be explained by whatever the
   // refetch said instead.
-  const readError = watchersQuery.data === undefined ? watchersQuery.error : null;
+  const readError = unavailable ? new Error(partUnavailableText("watchers")) : null;
   const toggleHintId = useId();
   // The line beside the toggle, and the only place a reader is told why it is
   // off. Whether they are on the list is true for every reader and always said.
@@ -2663,7 +2705,7 @@ function IssueWatchersSection({
                   written would put every option in this state at once. */}
               {addable.map((member) => (
                 <option key={member.userId} value={member.userId}>
-                  {watcherSubject(userById, member.userId, currentUserId).name}
+                  {subjectOf(member.userId).name}
                 </option>
               ))}
             </select>
@@ -2746,14 +2788,13 @@ function IssueWatchersSection({
         </div>
       ) : null}
 
-      {watchersQuery.isPending ? <p className="issue-links-empty">Loading watchers</p> : null}
-      {/* Only a successful read may say nobody is watching. */}
+      {/* Only a part the server sent may say nobody is watching. */}
       {answer && watchers.length === 0 ? <p className="issue-links-empty">No one is watching this issue yet</p> : null}
 
       {watchers.length ? (
         <ul className="watcher-list">
           {watchers.map((watcher) => {
-            const person = watcher.userId ? userById.get(watcher.userId) : undefined;
+            const person = personFor(watcher.userId, watcher, userById);
             const mine = Boolean(currentUserId) && watcher.userId === currentUserId;
             // The member map is the only source of names in this section, and
             // there is exactly one person it may fail on whom the UI can name
@@ -2769,7 +2810,7 @@ function IssueWatchersSection({
             // "You" also makes the "(you)" beside it a tautology, so the mark
             // goes: it exists to pick the reader out of a list of names, and
             // there is no name here to pick out of.
-            const { name, named, reader } = watcherSubject(userById, watcher.userId, currentUserId);
+            const { name, named, reader } = watcherSubject(userById, watcher.userId, currentUserId, watcher);
             const pending = watcher.id === optimisticWatcherId;
             const removing = removeWatcher.isPending && removeWatcher.variables === watcher.userId;
             const key = watcherRowKey(watcher);
@@ -2893,10 +2934,10 @@ function IssueWatchersSection({
  * thing both words are about. Every surface in this section asks here now, so
  * there is one word per state and it cannot drift again.
  *
- * Precedence is the rows', unchanged: the member map first — a reader it *can*
- * name sees their own name, exactly as the assignee row and the reporter line
- * show it — then the reader, then §4.21's word for a person nobody here can
- * name.
+ * Precedence: the name the watcher row itself carries (backend TAS-214), then
+ * the member map — a reader either *can* name sees their own name, exactly as
+ * the assignee row and the reporter line show it — then the reader, then
+ * §4.21's word for a person nobody here can name.
  *
  * `reader` travels with the name because English will not let a caller recover
  * it: "You" takes a plural verb, so a sentence built by interpolation reads
@@ -2919,11 +2960,15 @@ function watcherSubject(
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>,
   userId: string,
   currentUserId?: string,
+  row?: NamedBy,
 ): { name: string; named: boolean; reader: boolean } {
-  // Whether the map *has* them, never whether the name it holds is non-empty:
-  // an empty `displayName` is the server's answer about that person, and this
-  // section is not the place that overrides it.
-  const person = userById.get(userId);
+  // The row's own name first, since TAS-246 — the server's answer about the
+  // person, carried with the read being drawn — then the member map, through
+  // the one function every person on the panel is resolved by. For the map,
+  // whether it *has* them, never whether the name it holds is non-empty: an
+  // empty `displayName` on a member row is the server's answer about that
+  // person, and this section is not the place that overrides it.
+  const person = personFor(userId, row, userById);
   if (person) return { name: person.displayName, named: true, reader: false };
   if (currentUserId && userId === currentUserId) return { name: "You", named: false, reader: true };
   return { name: "Unknown", named: false, reader: false };
@@ -3000,35 +3045,27 @@ function watcherFailureText(error: unknown, fallback: string): string {
 }
 
 /**
- * `GET/POST/DELETE /projects/{projectId}/issues/{issueId}/labels`, read beside
- * the project's own list so the picker only offers labels this issue does not
- * already carry.
- *
- * The section owns its labels query rather than reading `issue.labels` off the
- * panel's detail response, for the same reason the links section owns its own:
- * the writes here are about *this* list, and an optimistic add against a field
- * of the issue would mean rewriting the issue to show one chip. The detail
- * read's copy is not wasted — it is what the board's cards draw.
+ * The issue's labels — read off the panel's issue read since TAS-246, written
+ * through `POST/DELETE /projects/{projectId}/issues/{issueId}/labels` — beside
+ * the project's own list, so the picker only offers labels this issue does not
+ * already carry. The optimistic chip is written into the issue read's own
+ * entry (`issuePartCache`), so the panel never holds two copies of one list.
  */
 function IssueLabelsSection({
   projectId,
   issueId,
   canEdit,
-  prefetched,
 }: {
   projectId: string;
   issueId: string;
   canEdit: boolean;
-  /** See the watchers section's prop of the same name. */
-  prefetched: boolean;
 }) {
   const queryClient = useQueryClient();
   const [picked, setPicked] = useState("");
 
-  // The panel has usually started this read already (`issueLabelsOptions`).
-  const labelsRead = issueLabelsOptions(projectId, issueId);
-  const labelsKey = labelsRead.queryKey;
-  const labelsQuery = useQuery({ ...labelsRead, retryOnMount: !prefetched });
+  const labelsCache = issuePartCache(queryClient, projectId, issueId, "labels");
+  const labelsQuery = useIssuePart(projectId, issueId, "labels");
+  const unavailable = labelsQuery.data === null;
   // Same key the board and the manage modal use, so all three share one read.
   const projectLabelsQuery = useQuery({
     queryKey: ["project-labels", projectId],
@@ -3043,34 +3080,27 @@ function IssueLabelsSection({
     (label) => !attached.has(label.id) && !isPendingLabel(label),
   );
 
-  // One write, three stale caches: this list, the panel's issue, and the board
-  // cards that draw `issue.labels` from the list read behind them.
+  // One write, two stale caches: the panel's issue, which carries this list,
+  // and the board cards that draw `issue.labels` from the list read behind them.
   const settle = () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: labelsKey }),
-      queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
-      queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }),
-    ]);
+    Promise.all([labelsCache.settle(), queryClient.invalidateQueries({ queryKey: ["issues", projectId] })]);
 
   const addLabel = useMutation({
     mutationFn: (labelId: string) => taskaApi.addIssueLabel(projectId, issueId, labelId),
     onMutate: async (labelId) => {
-      await queryClient.cancelQueries({ queryKey: labelsKey });
-      const previous = queryClient.getQueryData<Label[]>(labelsKey);
+      await labelsCache.cancel();
+      const previous = labelsCache.get();
       // No placeholder id, unlike the links section: the label came out of a
       // list this component is holding, so the optimistic chip *is* the label
       // and there is nothing for the server's answer to reconcile.
       const chosen = projectLabels.find((label) => label.id === labelId);
       if (chosen) {
-        queryClient.setQueryData<Label[]>(labelsKey, (current) => [
-          ...(current ?? []),
-          { id: chosen.id, name: chosen.name, color: chosen.color },
-        ]);
+        labelsCache.set((current) => [...(current ?? []), { id: chosen.id, name: chosen.name, color: chosen.color }]);
       }
       return { previous };
     },
     onError: (_error, labelId, context) => {
-      if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+      labelsCache.restore(context?.previous);
       // The rollback puts the label back in the picker, so put the choice back
       // with it — unless something else has been chosen since, which is the
       // one thing this must never overwrite.
@@ -3082,15 +3112,13 @@ function IssueLabelsSection({
   const removeLabel = useMutation({
     mutationFn: (labelId: string) => taskaApi.removeIssueLabel(projectId, issueId, labelId),
     onMutate: async (labelId) => {
-      await queryClient.cancelQueries({ queryKey: labelsKey });
-      const previous = queryClient.getQueryData<Label[]>(labelsKey);
-      queryClient.setQueryData<Label[]>(labelsKey, (current) =>
-        (current ?? []).filter((label) => label.id !== labelId),
-      );
+      await labelsCache.cancel();
+      const previous = labelsCache.get();
+      labelsCache.set((current) => (current ?? []).filter((label) => label.id !== labelId));
       return { previous };
     },
     onError: (_error, _labelId, context) => {
-      if (context?.previous) queryClient.setQueryData(labelsKey, context.previous);
+      labelsCache.restore(context?.previous);
     },
     onSettled: settle,
   });
@@ -3102,7 +3130,7 @@ function IssueLabelsSection({
   // mutation error is always about the action just taken; a query error is
   // about the background.
   const error =
-    (addLabel.error ?? removeLabel.error ?? labelsQuery.error ?? projectLabelsQuery.error)?.message;
+    (addLabel.error ?? removeLabel.error ?? projectLabelsQuery.error)?.message;
 
   return (
     <section className="issue-labels">
@@ -3162,8 +3190,8 @@ function IssueLabelsSection({
 
       {error ? <div className="form-error">{error}</div> : null}
 
-      {labelsQuery.isPending ? <p className="issue-links-empty">Loading labels</p> : null}
-      {labelsQuery.isSuccess && labels.length === 0 ? <p className="issue-links-empty">No labels yet</p> : null}
+      {unavailable ? <p className="issue-links-empty">{partUnavailableText("labels")}</p> : null}
+      {labelsQuery.data && labels.length === 0 ? <p className="issue-links-empty">No labels yet</p> : null}
 
       {labels.length ? (
         <div className="label-chip-row">
@@ -3185,13 +3213,19 @@ function IssueLabelsSection({
 }
 
 /**
- * `GET/POST/DELETE /issues/{issueId}/links`. Two things are worth knowing here:
+ * The issue's links — read off the panel's issue read since TAS-246, written
+ * through `POST/DELETE /issues/{issueId}/links`. Three things are worth knowing
+ * here:
  *
  * 1. Which issue a row points at is decided by comparing both ends against the
  *    issue on screen, never by trusting `targetIssueId` — the response is the
  *    link as *this* issue sees it, and the issue on the receiving side of a
  *    `BLOCKS` is the link's `targetIssueId`, not its own.
- * 2. `viewLinkType` is an open string (see `IssueLink`), so it is only ever
+ * 2. The other end is named by the server (`IssueLink.target`, backend
+ *    TAS-214): its key, its summary and its project. A row the server did not
+ *    resolve — an optimistic row, an older gateway — falls back to the project
+ *    page the picker holds, and then to the bare id.
+ * 3. `viewLinkType` is an open string (see `IssueLink`), so it is only ever
  *    passed to `issueLinkTypeLabel`, which prints an unknown relation instead
  *    of dropping the row.
  */
@@ -3207,13 +3241,10 @@ function IssueLinksSection({
   projectId,
   issueId,
   canEdit,
-  prefetched,
 }: {
   projectId: string;
   issueId: string;
   canEdit: boolean;
-  /** See the watchers section's prop of the same name. */
-  prefetched: boolean;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -3239,24 +3270,22 @@ function IssueLinksSection({
   });
   const issues = useMemo(() => projectIssuesQuery.data?.items ?? [], [projectIssuesQuery.data]);
 
-  // The panel has usually started this read already (`issueLinksOptions`,
-  // which also says why it retries the way it does).
-  const linksRead = issueLinksOptions(projectId, issueId);
-  const linksKey = linksRead.queryKey;
-  const linksQuery = useQuery({ ...linksRead, retryOnMount: !prefetched });
+  const linksCache = issuePartCache(queryClient, projectId, issueId, "links");
+  const linksQuery = useIssuePart(projectId, issueId, "links");
+  const unavailable = linksQuery.data === null;
   const links = useMemo(() => linksQuery.data ?? [], [linksQuery.data]);
 
   // Both ends of a link change when one is written, and the user can walk
-  // straight to the other end — so the whole project's links are refetched, not
-  // just this issue's.
-  const invalidateLinks = () => queryClient.invalidateQueries({ queryKey: ["issue-links", projectId] });
+  // straight to the other end — so every issue read of the project is marked
+  // stale, not just this one, and the open one is re-read.
+  const invalidateLinks = () => queryClient.invalidateQueries({ queryKey: ["issue", projectId] });
 
   const createLink = useMutation({
     mutationFn: (input: CreateIssueLinkInput) => taskaApi.createIssueLink(projectId, issueId, input),
     onMutate: async (input) => {
-      await queryClient.cancelQueries({ queryKey: linksKey });
-      const previousLinks = queryClient.getQueryData<IssueLink[]>(linksKey);
-      queryClient.setQueryData<IssueLink[]>(linksKey, (current) => [
+      await linksCache.cancel();
+      const previousLinks = linksCache.get();
+      linksCache.set((current) => [
         ...(current ?? []),
         {
           // A marker of its own rather than an empty id: an empty id is what a
@@ -3270,14 +3299,15 @@ function IssueLinksSection({
           viewLinkType: input.linkType,
           createdBy: "",
           createdAt: new Date().toISOString(),
+          // Resolved by the re-read that settles this write; until then the
+          // row names its target from the picker's page, as it always did.
+          target: null,
         },
       ]);
       return { previousLinks };
     },
     onError: (_error, input, context) => {
-      if (context?.previousLinks) {
-        queryClient.setQueryData(linksKey, context.previousLinks);
-      }
+      linksCache.restore(context?.previousLinks);
       setTargetIssueId((current) => (current === "" ? input.targetIssueId : current));
     },
     onSettled: invalidateLinks,
@@ -3286,17 +3316,13 @@ function IssueLinksSection({
   const deleteLink = useMutation({
     mutationFn: (linkId: string) => taskaApi.deleteIssueLink(projectId, issueId, linkId),
     onMutate: async (linkId) => {
-      await queryClient.cancelQueries({ queryKey: linksKey });
-      const previousLinks = queryClient.getQueryData<IssueLink[]>(linksKey);
-      queryClient.setQueryData<IssueLink[]>(linksKey, (current) =>
-        (current ?? []).filter((link) => link.id !== linkId),
-      );
+      await linksCache.cancel();
+      const previousLinks = linksCache.get();
+      linksCache.set((current) => (current ?? []).filter((link) => link.id !== linkId));
       return { previousLinks };
     },
     onError: (_error, _linkId, context) => {
-      if (context?.previousLinks) {
-        queryClient.setQueryData(linksKey, context.previousLinks);
-      }
+      linksCache.restore(context?.previousLinks);
     },
     onSettled: invalidateLinks,
   });
@@ -3319,7 +3345,7 @@ function IssueLinksSection({
   // refetch rather than by the refusal.
   const error =
     localError ??
-    (createLink.error ?? deleteLink.error ?? linksQuery.error ?? projectIssuesQuery.error)?.message;
+    (createLink.error ?? deleteLink.error ?? projectIssuesQuery.error)?.message;
 
   return (
     <section className="issue-links">
@@ -3386,27 +3412,33 @@ function IssueLinksSection({
 
       {error ? <div className="form-error">{error}</div> : null}
 
-      {linksQuery.isPending ? <p className="issue-links-empty">Loading links</p> : null}
-      {/* Only a *successful* empty answer may say this. An errored query also
-          has no data, and "nothing is linked here" is a claim a failed request
+      {unavailable ? <p className="issue-links-empty">{partUnavailableText("links")}</p> : null}
+      {/* Only a part the server sent may say this. A part it did not send has
+          no rows either, and "nothing is linked here" is a claim that answer
           never made — one a reader would act on. */}
-      {linksQuery.isSuccess && links.length === 0 ? <p className="issue-links-empty">No links yet</p> : null}
+      {linksQuery.data && links.length === 0 ? <p className="issue-links-empty">No links yet</p> : null}
 
       <ul className="issue-link-list">
         {links.map((link) => {
           const otherId = otherEndOf(link, issueId);
-          const other = issueById.get(otherId);
+          // The server's own resolution first; the project page only for a row
+          // it did not resolve.
+          const other = link.target ?? issueById.get(otherId);
+          const otherProjectId = link.target?.projectId || link.projectId || projectId;
           const pending = link.id === optimisticLinkId;
           return (
             <li className="issue-link-row" key={link.id || `${link.sourceIssueId}:${link.targetIssueId}`}>
               {otherId ? (
                 <button
                   className="issue-link-open"
-                  // The link states its own project, and these routes are
-                  // issue-scoped on the wire, so a link may point outside the
-                  // board being viewed. The mock cannot produce one, which is
-                  // exactly why this must not be assumed away.
-                  onClick={() => navigate(`/projects/${link.projectId || projectId}/issues/${otherId}`)}
+                  // The other end states its own project (`target.projectId`),
+                  // and these routes are issue-scoped on the wire, so a link
+                  // may point outside the board being viewed. The mock cannot
+                  // produce one, which is exactly why this must not be assumed
+                  // away. Before TAS-214 the row had only the link's own
+                  // `projectId`, which names the project of the issue it was
+                  // created from, not necessarily of the other end.
+                  onClick={() => navigate(`/projects/${otherProjectId}/issues/${otherId}`)}
                   type="button"
                 >
                   <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType)}</span>
@@ -3520,7 +3552,6 @@ function IssueAttachmentsSection({
   isProjectAdmin,
   currentUserId,
   userById,
-  prefetched,
 }: {
   projectId: string;
   issueId: string;
@@ -3528,8 +3559,6 @@ function IssueAttachmentsSection({
   isProjectAdmin: boolean;
   currentUserId?: string;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
-  /** See the watchers section's prop of the same name. */
-  prefetched: boolean;
 }) {
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -3543,37 +3572,30 @@ function IssueAttachmentsSection({
    */
   const [blockedDownload, setBlockedDownload] = useState<{ id: string; url: string } | null>(null);
 
-  // The panel has usually started this read already (`issueAttachmentsOptions`).
-  const attachmentsRead = issueAttachmentsOptions(projectId, issueId);
-  const attachmentsKey = attachmentsRead.queryKey;
-  const attachmentsQuery = useQuery({ ...attachmentsRead, retryOnMount: !prefetched });
+  // The panel's issue read carries the attachments since TAS-246.
+  const attachmentsCache = issuePartCache(queryClient, projectId, issueId, "attachments");
+  const attachmentsQuery = useIssuePart(projectId, issueId, "attachments");
+  const unavailable = attachmentsQuery.data === null;
   const attachments = useMemo(() => attachmentsQuery.data ?? [], [attachmentsQuery.data]);
 
   /**
-   * The list, and the panel's issue read for the sake of the activity feed: an
-   * upload and a delete each write an `ATTACHMENT_UPLOADED` /
-   * `ATTACHMENT_DELETED` history row, so leaving the issue query alone would
-   * leave the feed one event behind the list directly above it.
+   * The issue read, which is both the list and — for the activity feed — the
+   * history an upload and a delete each append an `ATTACHMENT_UPLOADED` /
+   * `ATTACHMENT_DELETED` row to. One re-read keeps the two in step.
    */
-  const settle = () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: attachmentsKey }),
-      queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }),
-    ]);
+  const settle = () => attachmentsCache.settle();
 
   const deleteAttachment = useMutation({
     mutationFn: (attachmentId: string) => taskaApi.deleteAttachment(projectId, issueId, attachmentId),
     onMutate: async (attachmentId) => {
       setNotice(null);
-      await queryClient.cancelQueries({ queryKey: attachmentsKey });
-      const previous = queryClient.getQueryData<IssueAttachment[]>(attachmentsKey);
-      queryClient.setQueryData<IssueAttachment[]>(attachmentsKey, (current) =>
-        (current ?? []).filter((item) => item.id !== attachmentId),
-      );
+      await attachmentsCache.cancel();
+      const previous = attachmentsCache.get();
+      attachmentsCache.set((current) => (current ?? []).filter((item) => item.id !== attachmentId));
       return { previous };
     },
     onError: (error, _attachmentId, context) => {
-      if (context?.previous) queryClient.setQueryData(attachmentsKey, context.previous);
+      attachmentsCache.restore(context?.previous);
       setNotice({ tone: "error", text: apiErrorFacts(error).message ?? "The attachment could not be removed." });
     },
     onSettled: settle,
@@ -3669,7 +3691,7 @@ function IssueAttachmentsSection({
     // Counted before the confirm, so the check afterwards asks "is there one
     // *more* of these" rather than "is there one at all" — attachments with the
     // same name are allowed, and the server itself creates duplicates.
-    const before = countByName(queryClient.getQueryData<IssueAttachment[]>(attachmentsKey), file.name);
+    const before = countByName(attachmentsCache.get() ?? undefined, file.name);
     try {
       // Leg 3. No retry, here or anywhere below it: a repeat is a second row.
       await taskaApi.confirmAttachmentUpload(projectId, issueId, {
@@ -3685,18 +3707,16 @@ function IssueAttachmentsSection({
       // The confirm failed — but a confirm can succeed on the server and fail
       // on the way back, so nobody is told the file was not attached until the
       // list has been re-read and looked at. Getting this wrong states a
-      // falsehood about a file that is sitting right there.
+      // falsehood about a file that is sitting right there. The re-read is the
+      // issue read, which is where the list lives since TAS-246; a part it did
+      // not bring back is as unknown as a read that failed.
       let landed: IssueAttachment[] | null;
       try {
-        landed = await queryClient.fetchQuery({
-          queryKey: attachmentsKey,
-          queryFn: () => taskaApi.listAttachments(projectId, issueId),
-          staleTime: 0,
-        });
+        landed = (await queryClient.fetchQuery({ ...issueDetailsOptions(projectId, issueId), staleTime: 0 })).issue
+          .attachments;
       } catch {
         landed = null;
       }
-      await queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] });
 
       if (landed === null) {
         // Two unknowns and no way to resolve either. Claiming failure here
@@ -3727,7 +3747,7 @@ function IssueAttachmentsSection({
    * background refetch at once, and in that state a message about the refetch
    * would explain an action the reader just took.
    */
-  const readError = attachmentsQuery.error;
+  const readError = unavailable ? new Error(partUnavailableText("attachments")) : null;
 
   return (
     <section className="issue-attachments">
@@ -3794,16 +3814,15 @@ function IssueAttachmentsSection({
           was. */}
       {readError ? <div className="attachment-note is-error">{readError.message}</div> : null}
 
-      {attachmentsQuery.isPending ? <p className="issue-links-empty">Loading attachments</p> : null}
-      {/* Only a successful empty answer may say there are none. */}
-      {attachmentsQuery.isSuccess && attachments.length === 0 && !pending ? (
+      {/* Only a part the server sent may say there are none. */}
+      {attachmentsQuery.data && attachments.length === 0 && !pending ? (
         <p className="issue-links-empty">No attachments yet</p>
       ) : null}
 
       {attachments.length || pending ? (
         <ul className="attachment-list">
           {attachments.map((attachment) => {
-            const uploader = userById.get(attachment.uploadedBy);
+            const uploader = personFor(attachment.uploadedBy, attachment.uploadedByUser, userById);
             // Two rules, not one. Your own file needs ADMIN or MEMBER; somebody
             // else's needs ADMIN. An attachment whose uploader the response left
             // blank is treated as somebody else's, which is the safer of the two
@@ -3976,7 +3995,11 @@ function CommentsSection({
   canComment: boolean;
   currentUserId?: string;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
-  /** See the watchers section's prop of the same name. */
+  /**
+   * The panel started this read before the section mounted, so whatever that
+   * read answered — a failure too — is not asked again on mount. See
+   * `commentsPrefetched` in `IssuePanel`.
+   */
   prefetched: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -4060,7 +4083,7 @@ function CommentsSection({
           // to do from an effect, without the cascading render.
           key={`${comment.id}:${editingId === comment.id}`}
           comment={comment}
-          author={userById.get(comment.authorUserId)}
+          author={personFor(comment.authorUserId, comment.author, userById)}
           canManage={canComment && comment.authorUserId === currentUserId}
           editing={editingId === comment.id}
           pending={updateComment.isPending || deleteComment.isPending}
@@ -4288,7 +4311,8 @@ function ProjectLabelsModal({
   const settle = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: labelsKey }),
-      queryClient.invalidateQueries({ queryKey: ["issue-labels", projectId] }),
+      // The open panel's chips come from its issue read since TAS-246.
+      queryClient.invalidateQueries({ queryKey: ["issue", projectId] }),
       queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
     ]);
 
@@ -5177,9 +5201,10 @@ async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, p
     issueId ? queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }) : Promise.resolve(),
     // Every link names two issues, so anything that creates or removes one
     // changes what the other end's panel should show. Deleting an issue is the
-    // case that bites: without this, its rows survive in a cached list and
-    // point at a panel that no longer opens.
-    queryClient.invalidateQueries({ queryKey: ["issue-links", projectId] }),
+    // case that bites: without this, its rows survive in a cached issue read
+    // and point at a panel that no longer opens. Since TAS-246 the links live
+    // on the issue read, so the project's issue reads are what go stale.
+    queryClient.invalidateQueries({ queryKey: ["issue", projectId] }),
     queryClient.invalidateQueries({ queryKey: ["notifications"] }),
     // The bare prefix, deliberately: it catches the board's own search — whose
     // key carries the query text and the active filters — and the top bar's

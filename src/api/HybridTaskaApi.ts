@@ -38,7 +38,7 @@ import type {
   IssueSearchHit,
   IssueType,
   IssueWatchers,
-  IssueWithHistory,
+  IssueDetailsWithHistory,
   Label,
   Notification,
   NotificationPage,
@@ -160,8 +160,12 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.searchIssues(params);
   }
 
-  getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {
+  getIssue(projectId: string, issueId: string): Promise<IssueDetailsWithHistory> {
     return this.live.getIssue(projectId, issueId);
+  }
+
+  getIssueByKey(issueKey: string): Promise<Issue> {
+    return this.live.getIssueByKey(issueKey);
   }
 
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {

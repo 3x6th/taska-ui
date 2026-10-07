@@ -19,7 +19,7 @@ import type {
   IssueStatus,
   IssueType,
   IssueWatchers,
-  IssueWithHistory,
+  IssueDetailsWithHistory,
   Label,
   Notification,
   NotificationPage,
@@ -778,16 +778,46 @@ export interface TaskaApi {
    */
   searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>>;
   /**
-   * The route is issue-scoped on the wire (`GET /issues/{issueId}`), so
-   * `projectId` never reaches the gateway — but it is not decoration. The mock
-   * resolves an issue *within* a project (`MockTaskaStore.findIssue` matches
-   * `projectId && id && deletedAt === null`), so on a mismatched pair the two
-   * disagree outright: the mock answers NOT_FOUND, the gateway answers 200 with
-   * the issue. Neither is an access check. Callers pass a pair they read
-   * together — a board and its card, a notification's own `projectId` and
-   * `issueId` — never a project guessed from the screen around them.
+   * The issue panel's one read — `GET /issues/{issueId}` answering
+   * `IssueDetailsWithHistoryResponseDto` (backend TAS-214, develop `60d62ee`):
+   * the issue with its people named, its labels, watchers, links and
+   * attachments, a comment count, and the history. Comments are not in it and
+   * stay `listComments`. See `IssueDetails` for what a missing part means.
+   *
+   * **`issueId` is a UUID and only ever a UUID.** The route does not resolve a
+   * key; `getIssueByKey` does, and a caller holding only a key asks there first.
+   *
+   * The route is issue-scoped on the wire, so `projectId` never reaches the
+   * gateway — but it is not decoration. The mock resolves an issue *within* a
+   * project (`MockTaskaStore.findIssue` matches `projectId && id && deletedAt
+   * === null`), so on a mismatched pair the two disagree outright: the mock
+   * answers NOT_FOUND, the gateway answers 200 with the issue. Callers pass a
+   * pair they read together — a board and its card, a notification's own
+   * `projectId` and `issueId`, a by-key answer — never a project guessed from
+   * the screen around them.
+   *
+   * The gateway's read is access-checked (`IssueAccessGuard`, issue-service):
+   * a missing issue is `404 NOT_FOUND`, a reader who is not a member of its
+   * project `403 PERMISSION_DENIED`.
    */
-  getIssue(projectId: string, issueId: string): Promise<IssueWithHistory>;
+  getIssue(projectId: string, issueId: string): Promise<IssueDetailsWithHistory>;
+  /**
+   * `GET /issues/by-key/{issueKey}` — which issue a key names, and so which
+   * project it lives in (backend TAS-214, develop `60d62ee`). Answers
+   * `IssueResponseDto`; the caller then opens the issue by id with `getIssue`.
+   *
+   * Read at that commit, and none of it stated in the contract, which lists
+   * only a `default` error: the key is matched **case-insensitively**
+   * (`IssueRepository.findActiveByKeyIgnoreCase`, `UPPER(issue_key) =
+   * UPPER(:issueKey)`), soft-deleted issues are not found, a key nobody has is
+   * `404 NOT_FOUND` "Issue not found: {key}", and a reader who is not a member
+   * of the issue's project is `403 PERMISSION_DENIED` "Access denied"
+   * (`IssueAccessGuard.verifyReadAccess` → `ProjectRoleChecker`).
+   *
+   * `labels` on this answer are not to be relied on — the route is a lookup,
+   * and nothing here reads them.
+   */
+  getIssueByKey(issueKey: string): Promise<Issue>;
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue>;
   updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue>;
   assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue>;
@@ -817,9 +847,10 @@ export interface TaskaApi {
   deleteProjectLabel(projectId: string, labelId: string): Promise<void>;
 
   /**
-   * The labels on one issue. `Issue.labels` carries the same set from the detail
-   * read, so this exists for the panel to refetch after a write rather than for
-   * a screen that has no issue in hand.
+   * The labels on one issue. Nothing in the UI calls it since TAS-246: the
+   * panel's detail read carries the same set (`IssueDetails.labels`) and a
+   * write is settled by re-reading that. Kept because it is a route of the
+   * contract, and the three implementations stay interchangeable on it.
    */
   listIssueLabels(projectId: string, issueId: string): Promise<Label[]>;
   /**

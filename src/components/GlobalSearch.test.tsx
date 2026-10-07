@@ -16,12 +16,12 @@ import { GlobalSearch } from "./GlobalSearch";
  * answers, and a search that failed is never drawn as a search that found
  * nothing.
  *
- * The third thing worth pinning is the compensation. A hit carries no
- * `projectId` (docs/ai/API-DIVERGENCE.md), so the route is resolved from the
- * `issueKey` prefix against the projects list — and a prefix that resolves to
- * nothing must produce a row that is not a link rather than a guessed route.
+ * The third thing worth pinning is where a hit goes. It carries no
+ * `projectId`, so it opens through its key — `/browse/{issueKey}`, which the
+ * server resolves (TAS-246) — and is never routed by guessing a project from
+ * the key's prefix, which is what this widget did until then.
  */
-const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, failProjects, reset } = vi.hoisted(() => {
+const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.hoisted(() => {
   interface Hit {
     id: string;
     issueKey: string;
@@ -45,34 +45,21 @@ const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, failProjects, r
     totalCount: number;
     failure?: Error;
     held: boolean;
-    projects: { id: string; projectKey: string }[];
-    projectsFailure?: Error;
+    /** Every project-list read, so a test can say the widget no longer needs one. */
+    projectReads: number;
   } = {
     hits: [],
     totalCount: 0,
     held: false,
-    projects: [
-      { id: "project-tas", projectKey: "TAS" },
-      // A lower-case key with a hyphen in it, which the deployed gateway has:
-      // splitting `kappa-test-1` on the first hyphen would look for a project
-      // called `kappa`.
-      { id: "project-kappa", projectKey: "kappa-test" },
-    ],
+    projectReads: 0,
   };
 
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
     listProjects: async () => {
-      if (state.projectsFailure) throw state.projectsFailure;
-      return state.projects.map((project) => ({
-        ...project,
-        name: project.projectKey,
-        createdBy: "user-anna",
-        createdAt: now,
-        updatedAt: now,
-        archivedAt: null,
-      }));
+      state.projectReads += 1;
+      return [{ id: "project-tas", projectKey: "TAS", name: "TAS", createdBy: "user-anna", createdAt: now, updatedAt: now, archivedAt: null }];
     },
     searchIssues: async () => {
       if (state.held) return new Promise(() => {});
@@ -93,22 +80,13 @@ const { fakeApi, seedHits, failSearch, holdSearch, seedProjects, failProjects, r
     holdSearch: () => {
       state.held = true;
     },
-    seedProjects: (projects: { id: string; projectKey: string }[]) => {
-      state.projects = projects;
-    },
-    failProjects: (error: Error) => {
-      state.projectsFailure = error;
-    },
+    projectReads: () => state.projectReads,
     reset: () => {
       state.hits = [];
       state.totalCount = 0;
       state.failure = undefined;
       state.held = false;
-      state.projectsFailure = undefined;
-      state.projects = [
-        { id: "project-tas", projectKey: "TAS" },
-        { id: "project-kappa", projectKey: "kappa-test" },
-      ];
+      state.projectReads = 0;
     },
   };
 });
@@ -191,9 +169,10 @@ describe("the top bar's global search", () => {
 
     fireEvent.keyDown(box, { key: "Enter" });
 
-    // The project came from the issue key's prefix — split on the *last*
-    // hyphen, or `kappa-test-1` would have looked for a project called `kappa`.
-    expect(screen.getByTestId("address")).toHaveTextContent("/projects/project-kappa/issues/kappa-test-1");
+    // Through the issue's short address, which the server resolves — a key
+    // with a hyphen in its project part included, which a prefix split had to
+    // guess at.
+    expect(screen.getByTestId("address")).toHaveTextContent("/browse/kappa-test-1");
     // The question has been answered, so the field stops holding it.
     expect(box).toHaveValue("");
   });
@@ -206,7 +185,7 @@ describe("the top bar's global search", () => {
 
     fireEvent.keyDown(box, { key: "Enter" });
 
-    expect(screen.getByTestId("address")).toHaveTextContent("/projects/project-tas/issues/tas-101");
+    expect(screen.getByTestId("address")).toHaveTextContent("/browse/TAS-101");
   });
 
   it("closes on Escape, clears on the second, and closes on a press outside", async () => {
@@ -231,56 +210,43 @@ describe("the top bar's global search", () => {
     await waitFor(() => expect(screen.queryByRole("listbox")).not.toBeInTheDocument());
   });
 
-  it("renders a hit whose project it cannot resolve without a link rather than guessing one", async () => {
-    seedProjects([{ id: "project-tas", projectKey: "TAS" }]);
+  it("opens a hit from a project this client has never read, without asking for the project list", async () => {
     seedHits([hit("ZZZ-9", "From a project this client has never read")]);
     const box = renderSearch();
 
     fireEvent.change(box, { target: { value: "board" } });
 
+    // Linkable: which project `ZZZ-9` lives in is the server's to say, when it
+    // is opened — not this list's to know in advance.
     const option = await screen.findByRole("option");
-    expect(option).toHaveAttribute("aria-disabled", "true");
-    expect(within(option).getByText("Project unknown")).toBeVisible();
+    expect(option).not.toHaveAttribute("aria-disabled");
+    expect(within(option).queryByText(/Project (unknown|not loaded)/)).not.toBeInTheDocument();
 
-    // And Enter does not invent a route for it.
     fireEvent.keyDown(box, { key: "Enter" });
-    expect(screen.getByTestId("address")).toHaveTextContent("/projects");
+    expect(screen.getByTestId("address")).toHaveTextContent("/browse/ZZZ-9");
+    expect(projectReads()).toBe(0);
   });
 
-  it("admits a project list that never answered rather than calling every project unknown", async () => {
-    failProjects(Object.assign(new Error("Internal error"), { status: 500, requestId: "5d21a7f0-1b44-4c02" }));
-    seedHits([hit("TAS-101", "Login form validation fails")]);
+  it("encodes a key for the address rather than trusting it to be a path segment", async () => {
+    seedHits([hit("A/B 1", "An odd key")]);
     const box = renderSearch();
-
     fireEvent.change(box, { target: { value: "board" } });
-
-    const option = await screen.findByRole("option");
-    // Not "Project unknown": that is a statement about TAS, and TAS is fine.
-    // The read is what failed, and the row says so.
-    expect(within(option).getByText("Project not loaded")).toBeVisible();
-    expect(within(option).queryByText("Project unknown")).not.toBeInTheDocument();
-    expect(option).toHaveAttribute("aria-disabled", "true");
-
-    // Said once above the rows, with the server's own words and its request id —
-    // on `/admin` nothing else on the screen reads the project list, so this is
-    // the only place it is ever stated.
-    expect(screen.getByText(/project list could not be read/i)).toBeVisible();
-    expect(screen.getByText("Internal error")).toBeVisible();
-    expect(screen.getByRole("button", { name: /Copy request id 5d21a7f0-1b44-4c02/ })).toBeVisible();
-
-    // And Enter still refuses to invent a route.
-    fireEvent.keyDown(box, { key: "Enter" });
-    expect(screen.getByTestId("address")).toHaveTextContent("/projects");
-  });
-
-  it("keeps quiet about the project list when it answered", async () => {
-    seedHits([hit("TAS-101", "Login form validation fails")]);
-    const box = renderSearch();
-
-    fireEvent.change(box, { target: { value: "board" } });
-
     await screen.findByRole("option");
-    expect(screen.queryByText(/project list could not be read/i)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    expect(screen.getByTestId("address")).toHaveTextContent("/browse/A%2FB%201");
+  });
+
+  it("draws a hit with no key and does not offer it", async () => {
+    seedHits([hit("", "No key at all", "no-key")]);
+    const box = renderSearch();
+    fireEvent.change(box, { target: { value: "board" } });
+
+    const option = await screen.findByRole("option");
+    expect(option).toHaveAttribute("aria-disabled", "true");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(screen.getByTestId("address")).toHaveTextContent("/projects");
   });
 
   it("says a search failed rather than showing it as no results", async () => {

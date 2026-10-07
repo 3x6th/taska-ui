@@ -83,7 +83,8 @@ import type {
   IssueType,
   IssueWatcher,
   IssueWatchers,
-  IssueWithHistory,
+  IssueDetails,
+  IssueDetailsWithHistory,
   Label,
   Notification,
   NotificationPage,
@@ -102,6 +103,7 @@ import type {
   UnwatchIssueResult,
   User,
   UserAvatar,
+  UserSummary,
   UserStatus,
   UserStatusChange,
   WatchIssueResult,
@@ -705,12 +707,28 @@ interface StoredIssueLink {
 }
 
 /**
- * A watcher row, stored exactly as `IssueWatcherResponseDto` is served — no
- * denormalised name beside it, because the server sends none. Anything this
- * store held about the person would be a field the gateway does not have, and a
- * component written against it would work here and nowhere else.
+ * A watcher row, stored without the subscriber's name. The name is not a column
+ * of the server's row either: since backend TAS-214 issue-service looks it up
+ * in auth-service when the *details* read is assembled, and the list route
+ * still answers without it. So the name is put on at read time, by the read
+ * that carries one (`watcherView`).
  */
-type StoredIssueWatcher = IssueWatcher;
+type StoredIssueWatcher = Omit<IssueWatcher, "displayName" | "avatarUrl">;
+
+/** A comment as stored. Its author's name is looked up per read, as the server does (`commentView`). */
+type StoredIssueComment = Omit<IssueComment, "author">;
+
+/**
+ * An account that used to exist and no longer does: its id is still on a
+ * watcher row of TAS-106, and nobody can name it. That is the state the
+ * gateway answers with a blank name — `IssueMapperUtils.resolveUser` builds a
+ * summary with the id and no `displayName` for any id auth-service returns no
+ * profile for, which is also every id while auth-service is down — so it is
+ * how the mock reaches the panel's fallback for a person the server did not
+ * name (TAS-246). Not a member of any project, so the member list cannot name
+ * it either.
+ */
+const FORMER_ACCOUNT_ID = "9e4c2a7d-0b1f-4c83-a6d5-7f2e8b9c1d04";
 
 /** The transactional outbox table, in every service that has one. */
 const OUTBOX_TABLE = "outbox_events";
@@ -844,7 +862,7 @@ export class MockTaskaStore {
   private membersByProject: Record<string, ProjectMember[]>;
   private issues: Issue[];
   private historyByIssue: Record<string, IssueHistoryEvent[]>;
-  private commentsByIssue: Record<string, IssueComment[]>;
+  private commentsByIssue: Record<string, StoredIssueComment[]>;
   private links: StoredIssueLink[] = [];
   /**
    * Issue subscriptions. Hard-deleted, unlike attachments and labels: the
@@ -1533,6 +1551,8 @@ export class MockTaskaStore {
       ["MOB-5", PRIYA_ID, PRIYA_ID],
       // Appended, so no row above changes its timestamp.
       ["TAS-110", TOM_ID, ANNA_ID],
+      // An account nobody can name any more — see `FORMER_ACCOUNT_ID`.
+      ["TAS-106", FORMER_ACCOUNT_ID, ANNA_ID],
     ];
     watcherSeed.forEach(([issueKey, userId, createdBy], index) => {
       const target = this.issues.find((item) => item.issueKey === issueKey);
@@ -2152,15 +2172,63 @@ export class MockTaskaStore {
     };
   }
 
-  getIssue(projectId: string, issueId: string): IssueWithHistory {
-    return this.withHistory(this.findIssue(projectId, issueId));
+  /**
+   * `IssueDetailsWithHistoryResponseDto`, assembled the way issue-service
+   * assembles it at develop `60d62ee` (`IssueDetailsServiceImpl`): the issue,
+   * its labels, watchers, links and attachments, every person on them named by
+   * the profile read, `isWatching` and a live comment count.
+   *
+   * A person nobody can name gets a summary with the id and no name, which is
+   * what `IssueMapperUtils.resolveUser` builds — never a dropped summary — and a
+   * watcher row nobody can name simply carries none, which is what
+   * `IssueWatcherMapper.toWatcherProto` does. The mock cannot fail one part of
+   * the read on its own, so every part is always present here; the `null` part
+   * is reachable only against a fake (src/screens/BoardScreen.test.tsx).
+   */
+  getIssue(projectId: string, issueId: string): IssueDetailsWithHistory {
+    const issue = this.findIssue(projectId, issueId);
+    const watchers = this.watchers
+      .filter((item) => item.issueId === issue.id)
+      .sort(byCreatedAt)
+      .map((item) => this.watcherView(item, true));
+    const details: IssueDetails = {
+      ...this.issueView(issue),
+      assignee: issue.assigneeId ? this.personSummary(issue.assigneeId) : null,
+      reporter: this.personSummary(issue.reporterId),
+      watchers: { watchers, totalCount: watchers.length },
+      isWatching: watchers.some((item) => item.userId === this.currentUserId),
+      links: this.linksOf(issue.id).map((link) => this.linkView(link, issue.id, true)),
+      attachments: this.attachmentsOf(issue.id).map((item) => this.attachmentView(item, true)),
+      commentCount: (this.commentsByIssue[issue.id] ?? []).length,
+    };
+    return { issue: details, history: this.historyByIssue[issue.id] ?? [] };
   }
 
-  private withHistory(issue: Issue): IssueWithHistory {
-    return {
-      issue: this.issueView(issue),
-      history: this.historyByIssue[issue.id] ?? [],
-    };
+  /**
+   * `GET /issues/by-key/{issueKey}`, in the order issue-service checks at
+   * develop `60d62ee`: the key is matched case-insensitively against issues
+   * that are not deleted (`findActiveByKeyIgnoreCase`), a miss is `NOT_FOUND`,
+   * and then the reader has to be a member of the issue's project —
+   * `IssueAccessGuard` asks `ProjectRoleChecker`, which refuses a non-member
+   * with `PERMISSION_DENIED` "Access denied".
+   *
+   * **Stricter than this store's other reads, and on purpose.** `getIssue`
+   * and the rest of the read routes here let a non-member through (see
+   * `membersByProject` in the constructor); this one does not, because the
+   * by-key route's whole job in the UI is to tell those two answers apart, and a
+   * mock that never produced the 403 would leave that branch unexercised.
+   * Anna is not on MOB, so `MOB-5` is the 403 and `NOPE-1` the 404.
+   */
+  getIssueByKey(issueKey: string): Issue {
+    const wanted = issueKey.toUpperCase();
+    const issue = this.issues.find((item) => item.issueKey.toUpperCase() === wanted && item.deletedAt === null);
+    if (!issue) {
+      throw new MockApiError("NOT_FOUND", `Issue not found: ${issueKey}`);
+    }
+    if (!this.membersByProject[issue.projectId]?.some((member) => member.userId === this.currentUserId)) {
+      throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    }
+    return this.issueView(issue);
   }
 
   createIssue(projectId: string, input: CreateIssueInput): Issue {
@@ -2322,10 +2390,13 @@ export class MockTaskaStore {
 
   listIssueLinks(projectId: string, issueId: string): IssueLink[] {
     const issue = this.findIssue(projectId, issueId);
+    return this.linksOf(issue.id).map((link) => this.linkView(link, issue.id));
+  }
+
+  private linksOf(issueId: string): StoredIssueLink[] {
     return this.links
-      .filter((link) => link.sourceIssueId === issue.id || link.targetIssueId === issue.id)
-      .sort(byCreatedAt)
-      .map((link) => this.linkView(link, issue.id));
+      .filter((link) => link.sourceIssueId === issueId || link.targetIssueId === issueId)
+      .sort(byCreatedAt);
   }
 
   createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): IssueLink {
@@ -2465,7 +2536,7 @@ export class MockTaskaStore {
   listIssueWatchers(projectId: string, issueId: string): IssueWatchers {
     const issue = this.findIssue(projectId, issueId);
     const watchers = this.watchers.filter((item) => item.issueId === issue.id).sort(byCreatedAt);
-    return { watchers: watchers.map((item) => ({ ...item })), totalCount: watchers.length };
+    return { watchers: watchers.map((item) => this.watcherView(item, false)), totalCount: watchers.length };
   }
 
   /**
@@ -2531,7 +2602,7 @@ export class MockTaskaStore {
       createdBy: actorId,
     };
     if (!existing) this.watchers.push(watcher);
-    return { watcher: { ...watcher }, watchersCount: this.watcherCount(issue.id) };
+    return { watcher: this.watcherView(watcher, false), watchersCount: this.watcherCount(issue.id) };
   }
 
   /** `removed: false` is a success. See `UnwatchIssueResult`. */
@@ -2589,10 +2660,11 @@ export class MockTaskaStore {
 
   listAttachments(projectId: string, issueId: string): IssueAttachment[] {
     const issue = this.findIssue(projectId, issueId);
-    return this.attachments
-      .filter((item) => item.issueId === issue.id && item.deletedAt === null)
-      .sort(byCreatedAt)
-      .map((item) => this.attachmentView(item));
+    return this.attachmentsOf(issue.id).map((item) => this.attachmentView(item));
+  }
+
+  private attachmentsOf(issueId: string): StoredAttachment[] {
+    return this.attachments.filter((item) => item.issueId === issueId && item.deletedAt === null).sort(byCreatedAt);
   }
 
   /**
@@ -3104,7 +3176,7 @@ export class MockTaskaStore {
     // The gateway returns the newest comment first, so "load more" walks backwards in time.
     const comments = [...(this.commentsByIssue[issue.id] ?? [])].sort((a, b) => byCreatedAt(b, a));
     return {
-      items: comments.slice(page * pageSize, page * pageSize + pageSize),
+      items: comments.slice(page * pageSize, page * pageSize + pageSize).map((item) => this.commentView(item, true)),
       page,
       pageSize,
       totalCount: comments.length,
@@ -3115,7 +3187,7 @@ export class MockTaskaStore {
     const issue = this.findIssue(projectId, issueId);
     const comment = this.comment(issue, this.currentUserId, this.commentBody(body), now());
     this.pushHistory(issue.id, "COMMENT_CREATED", this.currentUserId, { commentId: comment.id });
-    return comment;
+    return this.commentView(comment, false);
   }
 
   updateComment(projectId: string, issueId: string, commentId: string, body: string): IssueComment {
@@ -3124,7 +3196,7 @@ export class MockTaskaStore {
     comment.updatedAt = now();
     comment.version += 1;
     this.pushHistory(comment.issueId, "COMMENT_UPDATED", this.currentUserId, { commentId: comment.id });
-    return comment;
+    return this.commentView(comment, false);
   }
 
   deleteComment(projectId: string, issueId: string, commentId: string): void {
@@ -4417,8 +4489,11 @@ export class MockTaskaStore {
    * presigned download URL behind. A mock that exposed the key would let a
    * component be written against a field the gateway does not send.
    */
-  private attachmentView(attachment: StoredAttachment): IssueAttachment {
+  private attachmentView(attachment: StoredAttachment, named = false): IssueAttachment {
     return {
+      // Only the details read names the uploader (`AttachmentMapper` with the
+      // profile map, develop `60d62ee`); the list and the confirm do not.
+      uploadedByUser: named ? this.personSummary(attachment.uploadedBy) : null,
       id: attachment.id,
       issueId: attachment.issueId,
       fileName: attachment.fileName,
@@ -4436,8 +4511,21 @@ export class MockTaskaStore {
    * link was created with, so the caller finds "the other issue" by comparing
    * against the issue it asked about rather than by trusting either field.
    */
-  private linkView(link: StoredIssueLink, viewerIssueId: string): IssueLink {
+  private linkView(link: StoredIssueLink, viewerIssueId: string, withTarget = false): IssueLink {
+    // The other end, as issue-service's `findIssueLinksWithOtherIssues` joins
+    // it — and only on the details read, which is the only one that joins.
+    const otherId = link.sourceIssueId === viewerIssueId ? link.targetIssueId : link.sourceIssueId;
+    const other = withTarget ? this.issues.find((item) => item.id === otherId) : undefined;
     return {
+      target: other
+        ? {
+            id: other.id,
+            issueKey: other.issueKey,
+            summary: other.summary,
+            projectId: other.projectId,
+            statusKey: other.status,
+          }
+        : null,
       id: link.id,
       projectId: link.projectId,
       sourceIssueId: link.sourceIssueId,
@@ -4448,8 +4536,41 @@ export class MockTaskaStore {
     };
   }
 
+  /**
+   * Who somebody is, as issue-service hands it to the gateway: the id always,
+   * and the name and picture only when the profile read knew them. An id nobody
+   * can name keeps its summary with no name in it (`IssueMapperUtils.resolveUser`)
+   * — `null` here, the domain's spelling of the gateway's `""`.
+   */
+  private personSummary(userId: string): UserSummary {
+    const user = this.users.find((item) => item.id === userId);
+    const avatar = this.avatars.get(userId);
+    return {
+      id: userId,
+      displayName: user?.displayName || null,
+      avatarUrl: user && avatar && this.avatarObjects.has(avatar.objectKey) ? avatar.downloadUrl : null,
+    };
+  }
+
+  /** A watcher row as a read serves it; `named` for the details read, the only one that names the subscriber. */
+  private watcherView(watcher: StoredIssueWatcher, named: boolean): IssueWatcher {
+    const person = named ? this.personSummary(watcher.userId) : null;
+    return { ...watcher, displayName: person?.displayName ?? null, avatarUrl: person?.avatarUrl ?? null };
+  }
+
+  /**
+   * A comment as a read serves it. The list names its author
+   * (`CommentServiceImpl.enrichWithAuthors`, develop `60d62ee`); the add and the
+   * edit answer without one. An author nobody can name gets no summary at all
+   * there — the service pairs the comment with a `null` profile.
+   */
+  private commentView(comment: StoredIssueComment, named: boolean): IssueComment {
+    const person = named ? this.personSummary(comment.authorUserId) : null;
+    return { ...comment, author: person?.displayName ? person : null };
+  }
+
   // The gateway rejects edits and deletes from anyone but the comment author.
-  private findOwnComment(projectId: string, issueId: string, commentId: string): IssueComment {
+  private findOwnComment(projectId: string, issueId: string, commentId: string): StoredIssueComment {
     const issue = this.findIssue(projectId, issueId);
     const comment = this.commentsByIssue[issue.id]?.find((item) => item.id === commentId);
     if (!comment) {
@@ -4469,8 +4590,8 @@ export class MockTaskaStore {
     return trimmed;
   }
 
-  private comment(issue: Issue, authorUserId: string, body: string, createdAt: string): IssueComment {
-    const comment: IssueComment = {
+  private comment(issue: Issue, authorUserId: string, body: string, createdAt: string): StoredIssueComment {
+    const comment: StoredIssueComment = {
       id: makeId("comment"),
       issueId: issue.id,
       projectId: issue.projectId,
@@ -4632,8 +4753,12 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.searchIssues(params));
   }
 
-  async getIssue(projectId: string, issueId: string): Promise<IssueWithHistory> {
+  async getIssue(projectId: string, issueId: string): Promise<IssueDetailsWithHistory> {
     return wait(this.store.getIssue(projectId, issueId));
+  }
+
+  async getIssueByKey(issueKey: string): Promise<Issue> {
+    return wait(this.store.getIssueByKey(issueKey));
   }
 
   async createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {

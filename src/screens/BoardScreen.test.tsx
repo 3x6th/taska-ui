@@ -80,6 +80,9 @@ const {
   heldIssueCount,
   failIssue,
   sectionReads,
+  seedSummaries,
+  seedWatcherNames,
+  seedLinks,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -257,8 +260,23 @@ const {
     labelsFailure?: Error;
     linksFailure?: Error;
     commentsFailure?: Error;
-    /** Every read the panel's five sections sent, answered or not, so one request can be told from two. */
-    sectionReads: { watchers: number; labels: number; links: number; attachments: number; comments: number };
+    /**
+     * Every read the panel's sections sent of their own, answered or not. Since
+     * TAS-246 the four list reads are never sent by the panel — their parts
+     * ride on the issue read — so these stay at zero, and `issue` counts the
+     * one read that carries them.
+     */
+    sectionReads: { watchers: number; labels: number; links: number; attachments: number; comments: number; issue: number };
+    /**
+     * Who the issue read names, keyed by id — `UserSummary.displayName` as the
+     * server sent it, `""` included, which is how a gateway whose auth-service
+     * is down answers. Absent ids get no summary at all.
+     */
+    summaries: Record<string, string>;
+    /** Who the issue's watcher rows name, the same way. */
+    watcherNames: Record<string, string>;
+    /** The issue read's links, as the server resolved them — `target` included. */
+    links: unknown[];
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -299,7 +317,10 @@ const {
     watcherCalls: { watch: 0, unwatch: 0, add: [], remove: [] },
     issueHeld: false,
     issueReleases: [],
-    sectionReads: { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0 },
+    sectionReads: { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0, issue: 0 },
+    summaries: {},
+    watcherNames: {},
+    links: [],
   };
 
   /** The held half of an issue update — same shape as the watcher writes below. */
@@ -458,11 +479,18 @@ const {
       state.labels = [...state.labels, label];
       return label;
     },
-    // The panel's own reads. Empty answers throughout: this is scaffolding for
-    // the label picker inside it, not a second set of claims about the panel.
+    // The panel's one read since TAS-246: the issue, and the four parts the
+    // sections used to read for themselves, composed from the same state the
+    // section writes below move. A section "read failure" is now a part the
+    // server did not send (`null`), and a "held" section read is a re-read of
+    // the issue that never lands.
     getIssue: async (projectId: string, issueId: string) => {
+      state.sectionReads.issue += 1;
       if (state.issueHeld) await new Promise<void>((resolve) => state.issueReleases.push(resolve));
       if (state.issueFailure) throw state.issueFailure;
+      if (state.sectionReads.issue > 1 && (state.watchersHeld || state.attachmentsHeld)) return new Promise(() => {});
+      const summary = (id: string | null) =>
+        id && id in state.summaries ? { id, displayName: state.summaries[id] || null, avatarUrl: null } : null;
       return {
         issue: {
           id: issueId,
@@ -480,7 +508,6 @@ const {
           updatedAt: now,
           version: 1,
           deletedAt: null,
-          labels: [],
           // Four of the five set and the fifth `null`, which is what the panel's
           // Planning block is read on: `480` has to come back as a duration,
           // a date has to come back as the day it is, and the empty one has to
@@ -491,6 +518,30 @@ const {
           originalEstimateMinutes: 480,
           remainingEstimateMinutes: null,
           ...(state.edits[issueId] ?? {}),
+          labels: state.labelsFailure ? null : [],
+          assignee: summary(state.assigneeId),
+          reporter: summary("user-anna"),
+          watchers: state.watchersFailure
+            ? null
+            : {
+                watchers: state.watchers.map((watcher) => ({
+                  ...watcher,
+                  displayName: state.watcherNames[watcher.userId] || null,
+                  avatarUrl: null,
+                })),
+                totalCount: state.watchersTotal,
+              },
+          isWatching: state.watchersFailure ? null : state.watchers.some((watcher) => watcher.userId === "user-anna"),
+          links: state.linksFailure ? null : state.links,
+          attachments: state.attachmentsFailure
+            ? null
+            : state.attachments
+                .filter((item) => !state.deleted_attachments.includes(item.id))
+                .map((item) => ({
+                  ...item,
+                  uploadedByUser: summary(item.uploadedBy),
+                })),
+          commentCount: 0,
         },
         history: [],
       };
@@ -807,6 +858,16 @@ const {
       state.issueFailure = error;
     },
     sectionReads: () => ({ ...state.sectionReads }),
+    /** What the issue read names people as: `""` is the auth-service-down answer. */
+    seedSummaries: (names: Record<string, string>) => {
+      state.summaries = names;
+    },
+    seedWatcherNames: (names: Record<string, string>) => {
+      state.watcherNames = names;
+    },
+    seedLinks: (links: unknown[]) => {
+      state.links = links;
+    },
     reset: () => {
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
@@ -866,7 +927,10 @@ const {
       state.labelsFailure = undefined;
       state.linksFailure = undefined;
       state.commentsFailure = undefined;
-      state.sectionReads = { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0 };
+      state.sectionReads = { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 0, issue: 0 };
+      state.summaries = {};
+      state.watcherNames = {};
+      state.links = [];
     },
   };
 });
@@ -2062,15 +2126,17 @@ describe("issue attachments", () => {
     expect(row).toHaveTextContent("Anna Ivanova");
   });
 
-  it("keeps the section and shows the failure for a 404 from the list", async () => {
-    // "Issue not found" is the route's own 404. Reading it as "this issue is
-    // gone" and dropping the section would hide a whole feature over a failure
-    // that may be about one read.
+  it("keeps the section and says so when the issue read came back without its attachments", async () => {
+    // Since TAS-246 the list rides on the issue read, and issue-service leaves
+    // the part out when its own source fails rather than failing the read.
+    // Dropping the section over that would hide a whole feature over one part,
+    // and "No attachments yet" would be a claim the answer never made.
     failAttachmentsRead(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND" }));
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
-    expect(await panel.findByText("Issue not found", undefined, AFTER_RETRY)).toBeVisible();
+    expect(await panel.findByText(/attachments could not be loaded with this issue/i)).toBeVisible();
+    expect(panel.queryByText("No attachments yet")).toBeNull();
     expect(panel.getByRole("heading", { name: /attachments/i })).toBeVisible();
     // A failed list is not a reason to take the upload away: the write is its
     // own request, and the server answers it on its own terms.
@@ -2862,12 +2928,13 @@ describe("issue watchers", () => {
     expect(panel.getByText("You")).toBeVisible();
   });
 
-  it("shows the read failure and offers no toggle over a state nobody knows", async () => {
+  it("says the watchers did not come with the issue, and offers no toggle over a state nobody knows", async () => {
     failWatchersRead(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND" }));
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
-    expect(await panel.findByText("Issue not found", undefined, AFTER_RETRY)).toBeVisible();
+    expect(await panel.findByText(/watchers could not be loaded with this issue/i)).toBeVisible();
+    expect(panel.queryByText("No one is watching this issue yet")).toBeNull();
     // "Watch" and "Watching" are each a claim about the reader's own state, and
     // neither is supported by a read that failed.
     expect(panel.queryByRole("button", { name: /^Watch/ })).toBeNull();
@@ -3038,15 +3105,18 @@ describe("issue watchers", () => {
 });
 
 /**
- * TAS-242. The five sections mount under the panel's `if (!issue)` guard, and
- * while each issued its own read, that read waited for the issue: two rounds
- * for six requests that all need only the ids in the URL. The panel now starts
- * the five beside the issue read, and these tests hold the issue open to stand
- * in the window where that difference lives.
+ * TAS-242, and TAS-246 on top of it. The sections mount under the panel's
+ * `if (!issue)` guard, so a read a section started for itself waited for the
+ * issue: two rounds. TAS-242 started the five section reads beside the issue
+ * read; TAS-246 removed four of them, because backend TAS-214 put labels,
+ * watchers, links and attachments on the issue read itself. What is left is
+ * the shape these tests pin: **two requests, in one round** — the issue and its
+ * comments — and nothing a section asks for on its own.
  */
 describe("the issue panel before its issue has answered", () => {
   const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
-  const once = { watchers: 1, labels: 1, links: 1, attachments: 1, comments: 1 };
+  /** The panel's whole request budget: the issue read and the comments read, once each, and no section list read. */
+  const twoReads = { watchers: 0, labels: 0, links: 0, attachments: 0, comments: 1, issue: 1 };
   const sectionLoadingLine = /^Loading (watchers|labels|links|attachments|comments)$/;
 
   beforeEach(() => {
@@ -3054,38 +3124,60 @@ describe("the issue panel before its issue has answered", () => {
     window.localStorage.clear();
   });
 
-  it("has already asked for all five sections, and each section then asks nothing of its own", async () => {
+  it("opens with two requests — the issue and its comments — both out before the issue answers", async () => {
     holdIssue(true);
     renderBoard(ISSUE_PATH);
 
-    // The issue has been asked and has not answered — and every section read
-    // is already out. Before TAS-242 this read all zeroes.
+    // The issue has been asked and has not answered — and the comments read is
+    // already out beside it. No section has asked for a list of its own.
     await waitFor(() => expect(heldIssueCount()).toBe(1));
-    expect(sectionReads()).toEqual(once);
+    expect(sectionReads()).toEqual(twoReads);
 
     releaseIssue();
     const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
-    // The sections are mounted now, and found their answers already in hand.
+    // Every section drew its answer out of the one read.
     expect(await within(panel).findByText("No comments yet")).toBeVisible();
     expect(within(panel).getByText("No one is watching this issue yet")).toBeVisible();
+    expect(within(panel).getByText("No labels yet")).toBeVisible();
+    expect(within(panel).getByText("No links yet")).toBeVisible();
+    expect(within(panel).getByText("No attachments yet")).toBeVisible();
     expect(within(panel).queryByText(sectionLoadingLine)).toBeNull();
-    expect(sectionReads()).toEqual(once);
+    expect(sectionReads()).toEqual(twoReads);
   });
 
-  it("joins a section read still in flight rather than sending a second", async () => {
-    // The other order: the issue lands first, while a section's read is still
-    // out, so the section mounts onto a request rather than onto an answer.
-    holdWatchersRead(true);
-    holdIssue(true);
+  it("names the reporter from the issue read, and falls back for a name the server left blank", async () => {
+    seedSummaries({ "user-anna": "Anna from the issue read" });
     renderBoard(ISSUE_PATH);
-    await waitFor(() => expect(heldIssueCount()).toBe(1));
-
-    releaseIssue();
     const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
-    expect(await within(panel).findByText("No comments yet")).toBeVisible();
-    // The line §4.21 gives a read in flight, not a second request behind it.
-    expect(within(panel).getByText("Loading watchers")).toBeVisible();
-    expect(sectionReads()).toEqual(once);
+    // No member list was seeded, so this name can only have come from the read.
+    expect(await within(panel).findByText("Anna from the issue read")).toBeVisible();
+  });
+
+  it("draws a blank name from the server as the panel draws anybody it cannot name", async () => {
+    // `""` is what the gateway answers when auth-service is down. Not a name:
+    // the member list is asked instead, and without it the word is "Unknown".
+    seedSummaries({ "user-anna": "" });
+    renderBoard(ISSUE_PATH);
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const reporterLine = (await within(panel).findByText("Reporter")).nextElementSibling as HTMLElement;
+    expect(within(reporterLine).getByText("Unknown")).toBeVisible();
+  });
+
+  it("falls back to the member list for a blank name it can resolve there", async () => {
+    seedSummaries({ "user-anna": "" });
+    seedMembers([
+      {
+        userId: "user-anna",
+        role: "ADMIN",
+        addedAt: "2026-08-01T09:00:00Z",
+        addedBy: "user-anna",
+        user: { displayName: "Anna Ivanova", email: "anna@example.com" },
+      },
+    ]);
+    renderBoard(ISSUE_PATH);
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const reporterLine = (await within(panel).findByText("Reporter")).nextElementSibling as HTMLElement;
+    expect(await within(reporterLine).findByText("Anna Ivanova")).toBeVisible();
   });
 
   it("draws the panel's skeleton in place of a line of text, and says it is loading in words", async () => {
@@ -3130,103 +3222,181 @@ describe("the issue panel before its issue has answered", () => {
   });
 
   /**
-   * One case per section (TAS-242 follow-up): a mutation that dropped
-   * `retryOnMount: !prefetched` from a single section — comments, the panel's
-   * only `useInfiniteQuery` — left every one of this describe block's other
-   * tests green, because only the watchers case exercised a section read
-   * failing before the issue does. Each row's `otherEmptyTexts` is the other
-   * four sections' own empty state, so a case fails both when its own section
-   * stops keeping the failure in its section *and* when a neighbour's answer
-   * gets swallowed by it.
+   * One case per part the issue read can come back without. issue-service
+   * leaves a part unset when its own source fails (`fetchWithFallback`), and
+   * the section has to say so in its own place — not as the panel's failure,
+   * and not as "none". Each row's `otherEmptyTexts` is the other sections' own
+   * empty state, so a case fails both when its section stops saying it and when
+   * a neighbour's answer gets swallowed by it.
    */
-  const failedFirstCases: {
-    name: "watchers" | "labels" | "links" | "attachments" | "comments";
-    queryKey: readonly unknown[];
-    fail: (error: Error) => void;
-    errorText: string;
+  const missingPartCases: {
+    name: "watchers" | "labels" | "links" | "attachments";
+    drop: (error: Error) => void;
     otherEmptyTexts: string[];
   }[] = [
     {
       name: "watchers",
-      queryKey: ["issue-watchers", PROJECT_ID, "issue-1"],
-      fail: failWatchersRead,
-      errorText: "Watchers are unavailable",
+      drop: failWatchersRead,
       otherEmptyTexts: ["No comments yet", "No labels yet", "No links yet", "No attachments yet"],
     },
     {
       name: "labels",
-      queryKey: ["issue-labels", PROJECT_ID, "issue-1"],
-      fail: failLabelsRead,
-      errorText: "Labels are unavailable",
+      drop: failLabelsRead,
       otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No links yet", "No attachments yet"],
     },
     {
       name: "links",
-      queryKey: ["issue-links", PROJECT_ID, "issue-1"],
-      fail: failLinksRead,
-      errorText: "Links are unavailable",
+      drop: failLinksRead,
       otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No labels yet", "No attachments yet"],
     },
     {
       name: "attachments",
-      queryKey: ["issue-attachments", PROJECT_ID, "issue-1"],
-      fail: failAttachmentsRead,
-      errorText: "Attachments are unavailable",
+      drop: failAttachmentsRead,
       otherEmptyTexts: ["No one is watching this issue yet", "No comments yet", "No labels yet", "No links yet"],
-    },
-    {
-      name: "comments",
-      // The infinite query's own key (`issueCommentsOptions`) — "comments",
-      // not "issue-comments" — is the one place this section does not follow
-      // the other four's naming.
-      queryKey: ["comments", PROJECT_ID, "issue-1"],
-      fail: failCommentsRead,
-      errorText: "Comments are unavailable",
-      otherEmptyTexts: ["No one is watching this issue yet", "No labels yet", "No links yet", "No attachments yet"],
     },
   ];
 
-  it.each(failedFirstCases)(
-    "keeps a section read that failed first inside its $name section, and does not send it twice",
-    async ({ queryKey, fail, errorText, otherEmptyTexts }) => {
-      holdIssue(true);
-      fail(Object.assign(new Error(errorText), { status: 404, code: "NOT_FOUND" }));
-      const queryClient = renderBoard(ISSUE_PATH);
+  it.each(missingPartCases)(
+    "says the $name did not come with the issue, inside that section and nowhere else",
+    async ({ name, drop, otherEmptyTexts }) => {
+      drop(new Error("not sent"));
+      renderBoard(ISSUE_PATH);
 
-      // The section's answer is in — a failure — while the panel is still waiting
-      // on the issue. The panel keeps waiting: it is not the panel's failure.
-      await waitFor(() => expect(queryClient.getQueryState(queryKey)?.status).toBe("error"));
-      expect(screen.getByRole("complementary", { name: "Loading issue" })).toHaveAttribute("aria-busy", "true");
-      expect(document.querySelector(".panel-loading")).toBeNull();
-
-      releaseIssue();
       const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
-      expect(await within(panel).findByText(errorText)).toBeVisible();
-      // The other four drew their own answers, and the panel has no error line.
+      expect(
+        await within(panel).findByText(`The ${name} could not be loaded with this issue. Reopen it to try again.`),
+      ).toBeVisible();
       otherEmptyTexts.forEach((text) => expect(within(panel).getByText(text)).toBeVisible());
       expect(panel.querySelector(".panel-loading")).toBeNull();
-      // react-query re-asks an errored read for every observer that mounts on
-      // it; the panel's own ask was the one this section was owed.
-      expect(sectionReads()).toEqual(once);
+      expect(sectionReads()).toEqual(twoReads);
     },
   );
 
-  it("asks again for a read that failed last time when the panel is reopened", async () => {
-    failWatchersRead(Object.assign(new Error("Watchers are unavailable"), { status: 404, code: "NOT_FOUND" }));
+  it("keeps a comments read that failed first inside its section, and does not send it twice", async () => {
+    holdIssue(true);
+    failCommentsRead(Object.assign(new Error("Comments are unavailable"), { status: 404, code: "NOT_FOUND" }));
+    const queryClient = renderBoard(ISSUE_PATH);
+
+    // The comments' answer is in — a failure — while the panel is still waiting
+    // on the issue. The panel keeps waiting: it is not the panel's failure.
+    await waitFor(() => expect(queryClient.getQueryState(["comments", PROJECT_ID, "issue-1"])?.status).toBe("error"));
+    expect(screen.getByRole("complementary", { name: "Loading issue" })).toHaveAttribute("aria-busy", "true");
+
+    releaseIssue();
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(panel).findByText("Comments are unavailable")).toBeVisible();
+    ["No one is watching this issue yet", "No labels yet", "No links yet", "No attachments yet"].forEach((text) =>
+      expect(within(panel).getByText(text)).toBeVisible(),
+    );
+    // react-query re-asks an errored read for every observer that mounts on
+    // it; the panel's own ask was the one this section was owed.
+    expect(sectionReads()).toEqual(twoReads);
+  });
+
+  it("asks again when the panel is reopened after a part did not come", async () => {
+    failWatchersRead(new Error("not sent"));
     renderBoard(ISSUE_PATH);
     const first = await screen.findByRole("complementary", { name: "TAS-102 issue" });
-    expect(await within(first).findByText("Watchers are unavailable")).toBeVisible();
+    expect(await within(first).findByText(/watchers could not be loaded/)).toBeVisible();
 
     fireEvent.click(within(first).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "TAS-102 issue" })).toBeNull());
 
-    // The server recovers; reopening is how a reader asks again, and the
-    // cached failure must not stand in for the answer.
+    // The server recovers; reopening is how a reader asks again.
     failWatchersRead(undefined);
     fireEvent.click(await screen.findByRole("button", { name: /TAS-102/ }));
     const second = await screen.findByRole("complementary", { name: "TAS-102 issue" });
     expect(await within(second).findByText("No one is watching this issue yet")).toBeVisible();
-    expect(within(second).queryByText("Watchers are unavailable")).toBeNull();
-    expect(sectionReads().watchers).toBe(2);
+    expect(within(second).queryByText(/watchers could not be loaded/)).toBeNull();
+    expect(sectionReads().issue).toBe(2);
+    expect(sectionReads().watchers).toBe(0);
+  });
+});
+
+/**
+ * TAS-246: what the panel draws from names and targets the issue read carries
+ * itself (backend TAS-214), where it used to resolve every one of them against
+ * the member list and the project's issue page.
+ */
+describe("people and link targets from the issue read", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("names a watcher by its own row, with no member list behind it", async () => {
+    seedWatchers(
+      [{ id: "w-1", issueId: "issue-1", projectId: PROJECT_ID, userId: "user-zoe", createdAt: "2026-09-02T10:15:00Z", createdBy: "user-zoe" }],
+      1,
+    );
+    seedWatcherNames({ "user-zoe": "Zoe Park" });
+    renderBoard(ISSUE_PATH);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(panel).findByText("Zoe Park")).toBeVisible();
+  });
+
+  it("draws a watcher row the server left unnamed as Unknown, not as a blank", async () => {
+    seedWatchers(
+      [{ id: "w-1", issueId: "issue-1", projectId: PROJECT_ID, userId: "user-gone", createdAt: "2026-09-02T10:15:00Z", createdBy: "user-anna" }],
+      1,
+    );
+    seedWatcherNames({ "user-gone": "" });
+    renderBoard(ISSUE_PATH);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const list = (await within(panel).findByRole("heading", { name: /watchers/i })).closest("section") as HTMLElement;
+    expect(await within(list).findByText("Unknown")).toBeVisible();
+  });
+
+  it("names an attachment's uploader from the read", async () => {
+    seedAttachments([
+      {
+        id: "attachment-1",
+        issueId: "issue-1",
+        fileName: "trace.txt",
+        contentType: "text/plain",
+        sizeBytes: 2048,
+        uploadedBy: "user-zoe",
+        checksum: null,
+        createdAt: "2026-09-01T09:10:00Z",
+      },
+    ]);
+    seedSummaries({ "user-zoe": "Zoe Park" });
+    renderBoard(ISSUE_PATH);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(panel).findByText(/Zoe Park/)).toBeVisible();
+  });
+
+  it("draws a link's other end from the server's target and opens it in the target's own project", async () => {
+    seedLinks([
+      {
+        id: "link-1",
+        projectId: PROJECT_ID,
+        sourceIssueId: "issue-1",
+        targetIssueId: "issue-far",
+        viewLinkType: "BLOCKS",
+        createdBy: "user-anna",
+        createdAt: "2026-09-01T09:10:00Z",
+        target: { id: "issue-far", issueKey: "WEB-9", summary: "In another project", projectId: OTHER_PROJECT_ID, statusKey: "TODO" },
+      },
+    ]);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    // The row itself, not its remove control ("Remove link to WEB-9").
+    const row = (await within(panel).findAllByRole("button", { name: /WEB-9/ })).find((button) =>
+      button.classList.contains("issue-link-open"),
+    ) as HTMLElement;
+    expect(row).toHaveTextContent("In another project");
+
+    fireEvent.click(row);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${OTHER_PROJECT_ID}/issues/issue-far`),
+    );
   });
 });

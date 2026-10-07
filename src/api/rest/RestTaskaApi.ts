@@ -77,7 +77,10 @@ import type {
   IssueType,
   IssueWatcher,
   IssueWatchers,
-  IssueWithHistory,
+  IssueDetails,
+  IssueDetailsWithHistory,
+  LinkedIssue,
+  UserSummary,
   Label,
   Notification,
   NotificationPage,
@@ -318,6 +321,48 @@ interface RestIssueWithHistory {
 }
 
 /**
+ * `UserSummaryDto`. The contract requires `id` and `displayName`; both are read
+ * as optional anyway, because no body carrying one has been read on the stand
+ * yet (develop `60d62ee` was still queued for deployment when this was written)
+ * and because `displayName` is `""` on a `200` whenever auth-service is down —
+ * the gateway does not fail the read over a missing name.
+ */
+interface RestUserSummary {
+  id?: string;
+  displayName?: string | null;
+  avatarUrl?: string | null;
+}
+
+/**
+ * `IssueDetailsResponseDto` — `RestIssue` plus the parts the panel used to read
+ * separately. Every addition is optional, and every list may be `null` or
+ * absent as well as `[]`: see `IssueDetails` in src/domain/types.ts.
+ *
+ * Read off the gateway mapper at develop `60d62ee`
+ * (`IssueMapper.toRestIssueDetailsWithHistoryResponseDto`) rather than off the
+ * contract alone, because the two disagree on what is guaranteed: the contract
+ * lists `reporter` and `priority` as required, and the mapper sets `reporter`
+ * only when issue-service sent one and writes `priority` as `null` for a value
+ * it does not know. `description` is likewise set only when present. Recorded
+ * for docs/ai/API-DIVERGENCE.md.
+ */
+type RestIssueDetails = Omit<RestIssue, "labels"> & {
+  labels?: RestLabel[] | null;
+  assignee?: RestUserSummary | null;
+  reporter?: RestUserSummary | null;
+  watchers?: RestIssueWatcher[] | null;
+  isWatching?: boolean | null;
+  links?: RestIssueLink[] | null;
+  attachments?: RestIssueAttachment[] | null;
+  commentCount?: number | null;
+};
+
+interface RestIssueDetailsWithHistory {
+  issue: RestIssueDetails;
+  history?: RestIssueHistoryEvent[] | null;
+}
+
+/**
  * `IssueShortResponseDto`, which since TAS-195 is the *search* DTO and nothing
  * else — hence the name. It used to be called `RestIssueListItem` and used by
  * both response types below, until `ListIssuesResponseDto.items` became
@@ -464,6 +509,16 @@ interface RestIssueLink {
   viewLinkType?: unknown;
   createdBy?: string;
   createdAt?: string;
+  /** `TargetIssueDto`, since backend TAS-214. Its five fields are required by the contract and read as optional here. */
+  target?: RestLinkedIssue | null;
+}
+
+interface RestLinkedIssue {
+  id?: string;
+  issueKey?: string;
+  summary?: string;
+  projectId?: string;
+  statusKey?: string;
 }
 
 interface RestListIssueLinksResponse {
@@ -481,6 +536,9 @@ interface RestIssueWatcher {
   userId?: string;
   createdAt?: string;
   createdBy?: string;
+  /** Since backend TAS-214. Set by the gateway only when issue-service named the person. */
+  displayName?: string | null;
+  avatarUrl?: string | null;
 }
 
 /**
@@ -529,6 +587,8 @@ interface RestIssueAttachment {
   uploadedBy?: string;
   checksum?: string | null;
   createdAt?: string;
+  /** Since backend TAS-214. */
+  uploadedByUser?: RestUserSummary | null;
 }
 
 interface RestListAttachmentsResponse {
@@ -583,8 +643,10 @@ interface RestAvatarDownloadUrl {
   url?: string | null;
 }
 
-type RestComment = Omit<IssueComment, "updatedAt"> & {
+type RestComment = Omit<IssueComment, "updatedAt" | "author"> & {
   updatedAt?: string | null;
+  /** Since backend TAS-214. */
+  author?: RestUserSummary | null;
 };
 
 interface RestCommentsListResponse {
@@ -1051,9 +1113,19 @@ export class RestTaskaApi implements TaskaApi {
    * stays in the signature because the mock does need it; see
    * `TaskaApi.getIssue`.
    */
-  async getIssue(_projectId: string, issueId: string): Promise<IssueWithHistory> {
-    const response = await this.request<RestIssueWithHistory>(`/issues/${this.segment(issueId)}`);
-    return this.toIssueWithHistory(response);
+  async getIssue(_projectId: string, issueId: string): Promise<IssueDetailsWithHistory> {
+    const response = await this.request<RestIssueDetailsWithHistory>(`/issues/${this.segment(issueId)}`);
+    return this.toIssueDetailsWithHistory(response);
+  }
+
+  /**
+   * The key goes into the path encoded and otherwise untouched — not
+   * upper-cased, not trimmed. The server matches it case-insensitively, and a
+   * key that needs repairing is the caller's question, not this layer's.
+   */
+  async getIssueByKey(issueKey: string): Promise<Issue> {
+    const response = await this.request<RestIssue>(`/issues/by-key/${this.segment(issueKey)}`);
+    return this.toIssue(response);
   }
 
   /**
@@ -1111,7 +1183,11 @@ export class RestTaskaApi implements TaskaApi {
    */
   async updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
     refusePlanningFields(input, null);
-    const current = (await this.getIssue(projectId, issueId)).issue;
+    // The panel's detail read, folded back to the plain issue this method
+    // answers with: the parts it carries besides the issue are no part of a
+    // `PUT`'s answer, and passing them on would hand a caller a list as of
+    // before the write.
+    const current = issueOfDetails((await this.getIssue(projectId, issueId)).issue);
     refusePlanningFields(input, current);
     const planning = resolvePlanningFields(input, current);
     const updated = await this.request<RestUpdateIssueResponse>(`/issues/${this.segment(issueId)}`, {
@@ -2066,13 +2142,46 @@ export class RestTaskaApi implements TaskaApi {
     };
   }
 
-  private toIssueWithHistory(response: RestIssueWithHistory): IssueWithHistory {
-    const issue = this.toIssue(response.issue);
+  /**
+   * `IssueDetailsWithHistoryResponseDto` → `IssueDetailsWithHistory`, field by
+   * field for everything the details DTO adds, so a key the schema does not
+   * have cannot ride into the domain on a spread.
+   *
+   * A part the response did not carry — absent or `null` — becomes `null`, and
+   * `[]` stays `[]`. That is the only distinction the wire allows; see
+   * `IssueDetails` for the one it does not.
+   */
+  private toIssueDetailsWithHistory(response: RestIssueDetailsWithHistory): IssueDetailsWithHistory {
+    const wire = response.issue;
+    const { labels, assignee, reporter, watchers, isWatching, links, attachments, commentCount, ...plain } = wire;
+    const base = this.toIssue(plain);
+    const issueId = base.id;
+    const projectId = base.projectId;
+    const issue: IssueDetails = {
+      ...base,
+      labels: Array.isArray(labels) ? labels.map((label) => toLabel(label)) : null,
+      assignee: assignee ? toUserSummary(assignee, base.assigneeId) : null,
+      reporter: reporter ? toUserSummary(reporter, base.reporterId) : null,
+      watchers: Array.isArray(watchers)
+        ? {
+            watchers: watchers.map((watcher) => this.toIssueWatcher(watcher, projectId, issueId)),
+            // The details DTO states no count and its list is not paged, so the
+            // list the server sent *is* its answer to "how many".
+            totalCount: watchers.length,
+          }
+        : null,
+      isWatching: typeof isWatching === "boolean" ? isWatching : null,
+      links: Array.isArray(links) ? links.map((link) => this.toIssueLink(link)) : null,
+      attachments: Array.isArray(attachments)
+        ? attachments.map((attachment) => this.toAttachment(attachment, issueId))
+        : null,
+      commentCount: typeof commentCount === "number" ? commentCount : null,
+    };
     return {
       issue,
-      history: response.history.map((event) => ({
+      history: (response.history ?? []).map((event) => ({
         ...event,
-        issueId: issue.id,
+        issueId,
       })),
     };
   }
@@ -2092,6 +2201,7 @@ export class RestTaskaApi implements TaskaApi {
       viewLinkType: typeof link.viewLinkType === "string" ? link.viewLinkType : "",
       createdBy: link.createdBy ?? "",
       createdAt: link.createdAt ?? "",
+      target: toLinkedIssue(link.target),
     };
   }
 
@@ -2111,6 +2221,8 @@ export class RestTaskaApi implements TaskaApi {
       userId: watcher.userId ?? "",
       createdAt: watcher.createdAt ?? "",
       createdBy: watcher.createdBy ?? "",
+      displayName: watcher.displayName?.trim() ? watcher.displayName : null,
+      avatarUrl: watcher.avatarUrl || null,
     };
   }
 
@@ -2158,6 +2270,9 @@ export class RestTaskaApi implements TaskaApi {
       uploadedBy: attachment.uploadedBy ?? "",
       checksum: attachment.checksum ?? null,
       createdAt: attachment.createdAt ?? "",
+      uploadedByUser: attachment.uploadedByUser
+        ? toUserSummary(attachment.uploadedByUser, attachment.uploadedBy ?? null)
+        : null,
     };
   }
 
@@ -2165,6 +2280,7 @@ export class RestTaskaApi implements TaskaApi {
     return {
       ...comment,
       updatedAt: comment.updatedAt ?? null,
+      author: comment.author ? toUserSummary(comment.author, comment.authorUserId) : null,
     };
   }
 
@@ -2428,6 +2544,54 @@ function toLabel(label: RestLabel): Label {
     name: label.name ?? "",
     color: typeof label.color === "string" ? label.color : "",
   };
+}
+
+/**
+ * `UserSummaryDto` → `UserSummary`. `fallbackId` is the id the surrounding row
+ * already states for the same person (`assigneeId`, `uploadedBy`,
+ * `authorUserId`), used only when the summary omits its own.
+ *
+ * A blank `displayName` becomes `null`: the gateway answers `""` when
+ * auth-service is down, and that is "not named", not a name.
+ */
+function toUserSummary(summary: RestUserSummary, fallbackId: string | null): UserSummary {
+  return {
+    id: summary.id || fallbackId || "",
+    displayName: summary.displayName?.trim() ? summary.displayName : null,
+    avatarUrl: summary.avatarUrl || null,
+  };
+}
+
+/**
+ * `TargetIssueDto` → `LinkedIssue`, or `null` when the link carried none. A
+ * target without an id or a key identifies nothing a row could open or name, so
+ * it is dropped to `null` rather than drawn half-filled.
+ */
+function toLinkedIssue(target: RestLinkedIssue | null | undefined): LinkedIssue | null {
+  if (!target?.id || !target.issueKey) return null;
+  return {
+    id: target.id,
+    issueKey: target.issueKey,
+    summary: target.summary ?? "",
+    projectId: target.projectId ?? "",
+    statusKey: target.statusKey ?? "",
+  };
+}
+
+/** The plain issue inside a detail read, with the parts only that read carries taken off. */
+function issueOfDetails(details: IssueDetails): Issue {
+  const {
+    labels,
+    assignee: _assignee,
+    reporter: _reporter,
+    watchers: _watchers,
+    isWatching: _isWatching,
+    links: _links,
+    attachments: _attachments,
+    commentCount: _commentCount,
+    ...issue
+  } = details;
+  return { ...issue, labels: labels ?? [] };
 }
 
 /**

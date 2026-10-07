@@ -1483,7 +1483,7 @@ describe("MockTaskaApi", () => {
       await api.updateProjectLabel(project.id, carried.id, { name: "renamed", color: "#123456" });
 
       const after = await api.getIssue(project.id, carrier.id);
-      expect(after.issue.labels.find((label) => label.id === carried.id)).toEqual({
+      expect(after.issue.labels?.find((label) => label.id === carried.id)).toEqual({
         id: carried.id,
         name: "renamed",
         color: "#123456",
@@ -1500,7 +1500,7 @@ describe("MockTaskaApi", () => {
       await api.addIssueLabel(project.id, bare.id, label.id);
 
       expect((await api.listIssueLabels(project.id, bare.id)).map((item) => item.id)).toEqual([label.id]);
-      expect((await api.getIssue(project.id, bare.id)).issue.labels.map((item) => item.id)).toEqual([label.id]);
+      expect((await api.getIssue(project.id, bare.id)).issue.labels?.map((item) => item.id)).toEqual([label.id]);
       await expect(api.addIssueLabel(project.id, bare.id, label.id)).rejects.toThrow();
     });
 
@@ -2535,7 +2535,10 @@ describe("MockTaskaApi", () => {
         "issueId",
         "sizeBytes",
         "uploadedBy",
+        "uploadedByUser",
       ]);
+      // And the list names nobody; only the issue's detail read does (TAS-214).
+      expect(attachments.every((item) => item.uploadedByUser === null)).toBe(true);
     });
 
     it("runs the three legs and lands a row the list can see", async () => {
@@ -3015,17 +3018,11 @@ describe("MockTaskaApi", () => {
 
       expect(answer.totalCount).toBe(3);
       expect(answer.watchers).toHaveLength(3);
-      // `IssueWatcherResponseDto` has six fields and none of them is a name.
-      // A mock that denormalised one would let a component be written against
-      // a field the gateway does not send.
-      expect(Object.keys(answer.watchers[0]).sort()).toEqual([
-        "createdAt",
-        "createdBy",
-        "id",
-        "issueId",
-        "projectId",
-        "userId",
-      ]);
+      // The list route names nobody: issue-service fills a watcher's name only
+      // when it assembles the issue's detail read (backend TAS-214). A mock
+      // that named them here would let a component rely on a name the gateway
+      // does not send on this route.
+      expect(answer.watchers.every((watcher) => watcher.displayName === null && watcher.avatarUrl === null)).toBe(true);
       // Anna subscribed Sofia, so at least one row's author is not its subject.
       expect(answer.watchers.some((watcher) => watcher.createdBy !== watcher.userId)).toBe(true);
     });
@@ -3204,6 +3201,85 @@ describe("MockTaskaApi", () => {
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
   });
+  /**
+   * TAS-246: the panel's one read and the key lookup, as issue-service
+   * assembles and checks them at backend develop `60d62ee`.
+   */
+  describe("issue details and the key lookup", () => {
+    const openIssue = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+
+    beforeEach(async () => {
+      await api.login({ email: "anna@example.com", password: "anything" });
+    });
+
+    it("answers the panel's whole read, the parts the list routes do not name included", async () => {
+      const issue = await openIssue("TAS-101");
+
+      const { issue: details } = await api.getIssue(project.id, issue.id);
+
+      expect(details.reporter?.displayName).toBeTruthy();
+      expect(details.labels?.map((label) => label.name).sort()).toEqual(["backend", "tech-debt"]);
+      expect(details.watchers?.totalCount).toBe(3);
+      expect(details.watchers?.watchers.every((watcher) => watcher.displayName)).toBe(true);
+      // Anna watches TAS-101, and the read says so in its own field.
+      expect(details.isWatching).toBe(true);
+      expect(details.links?.length).toBeGreaterThan(0);
+      expect(details.links?.every((link) => link.target?.issueKey)).toBe(true);
+      expect(details.attachments?.every((item) => item.uploadedByUser?.id === item.uploadedBy)).toBe(true);
+      expect(details.commentCount).toBe(1);
+    });
+
+    it("names the other end of a link from either side", async () => {
+      const blocker = await openIssue("TAS-101");
+      const blocked = await openIssue("TAS-102");
+
+      const fromBlocked = (await api.getIssue(project.id, blocked.id)).issue.links ?? [];
+
+      expect(fromBlocked.find((link) => link.sourceIssueId === blocker.id)?.target).toMatchObject({
+        id: blocker.id,
+        issueKey: "TAS-101",
+        projectId: project.id,
+      });
+    });
+
+    it("leaves a watcher nobody can name without a name, rather than dropping the row", async () => {
+      const issue = await openIssue("TAS-106");
+
+      const watchers = (await api.getIssue(project.id, issue.id)).issue.watchers?.watchers ?? [];
+
+      expect(watchers).toHaveLength(1);
+      expect(watchers[0]).toMatchObject({ displayName: null, avatarUrl: null });
+    });
+
+    it("resolves a key to its issue whatever its case", async () => {
+      const issue = await openIssue("TAS-101");
+
+      await expect(api.getIssueByKey("tas-101")).resolves.toMatchObject({ id: issue.id, projectId: project.id });
+    });
+
+    it("answers a key nobody has with NOT_FOUND", async () => {
+      await expect(api.getIssueByKey("NOPE-1")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+
+    it("answers a key in a project the reader is not on with PERMISSION_DENIED", async () => {
+      // Anna is not a member of MOB, and the lookup checks what the issue read
+      // in this mock does not.
+      await expect(api.getIssueByKey("MOB-5")).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    });
+
+    it("does not find a deleted issue by its key", async () => {
+      const issue = await openIssue("TAS-105");
+      await api.deleteIssue(project.id, issue.id);
+
+      await expect(api.getIssueByKey("TAS-105")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+  });
+
   /**
    * The avatar family — backend PR #150 (TAS-129), merged at `develop`
    * `368ae77355bd` and deployed on 2026-09-14. This mock is still the only

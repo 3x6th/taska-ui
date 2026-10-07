@@ -2549,19 +2549,19 @@ found"`.
   the hit has none — so the board renders server hits as their own group and
   never merges them into the columns. And a hit found outside the open project
   cannot be linked, because a link needs a `projectId` the response omits.
-- **Compensation:** the `projectId` is resolved from the `issueKey` prefix
-  against the projects list the client already holds (`CRM-1` → `CRM`, split
-  on the *last* hyphen because project keys contain them: `kappa-test-1` →
-  `kappa-test`). Zero extra requests. A prefix matching no known project
-  yields a hit rendered without a link rather than a guessed route.
-  - **The lookup folds case, and that is a second compensation rather than a
-    detail of the first.** Project keys are contract-open strings and the
-    deployed gateway holds lower-case ones (`kappa-test`), so a key matched
-    exactly would fail to resolve on real data. The cost is that two keys
-    differing only in case would collapse into one and route a hit to the
-    wrong project; unreachable in the mock seed, and never asked of the
-    gateway. Recorded by `api-contract-guard`, 2026-08-23; the collision
-    hazard itself is in `docs/ai/BACKLOG.md`.
+- **Compensation (since TAS-246):** a hit opens through its key —
+  `/browse/{issueKey}`, which asks `GET /issues/by-key/{issueKey}` (backend
+  TAS-214, develop `60d62ee`) for the issue and its project when the hit is
+  chosen, and then routes by id. One request per opened hit, none per hit
+  listed. Until TAS-246 the `projectId` was resolved from the `issueKey` prefix
+  against the projects list the client held (split on the last hyphen, case
+  folded); that guess, its case-folding collision hazard and the "hit without a
+  link" state it produced are gone with it. A key in a project the reader
+  cannot see now answers 403 and draws §4.18's not-found screen instead of an
+  unlinkable row. The by-key route is in the contract but **not yet observed
+  on the stand**: develop `60d62ee` was queued for deployment on 2026-10-07,
+  and until it lands every opened hit answers the static-resource 404 and
+  draws §4.18.
   - **Ordering was never measured.** `page` and `pageSize` behave, but nothing
     here establishes that the gateway's order is stable across pages — the
     mock imposes `createdAt` ascending and the contract promises nothing. Both

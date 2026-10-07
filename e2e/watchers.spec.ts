@@ -18,8 +18,8 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // The seed is arranged so each state is one sign-in away. Anna is an ADMIN of
 // Taska Platform: TAS-101 has her plus two others watching, TAS-102 has nobody,
 // and TAS-103 has two people who are not her — one of whom (Priya) is not a
-// member of the project at all, so the member read cannot name her and her row
-// draws as "Unknown". Mark is a MEMBER, which is how the toggle — live for an
+// member of the project at all, so the member read cannot name her; since
+// TAS-246 her row is named by the issue's own read instead. Mark is a MEMBER, which is how the toggle — live for an
 // ADMIN or a MEMBER, by issue-service's `watch-issue-roles` — is told apart
 // from the two controls only an ADMIN gets. Anna is not a member of Mobile, so
 // the mock answers VIEWER for it, and that is where the toggle is seen shut;
@@ -109,8 +109,11 @@ test("keeps a populated list under an unpressed toggle", async ({ page }) => {
   await expect(watchers.getByRole("button", { name: "Watch", exact: true })).toHaveAttribute("aria-pressed", "false");
   await expect(watchers.getByText("(you)")).toHaveCount(0);
   // Priya is not a member of this project, so `GET /projects/{id}/members`
-  // cannot name her. The row is drawn anyway.
-  await expect(watchers.getByText("Unknown")).toBeVisible();
+  // cannot name her — but since TAS-246 her row names her itself, from the
+  // issue's own read. The person nobody can name is on TAS-106
+  // (e2e/issue-by-key.spec.ts).
+  await expect(watchers.getByText("Priya Nair")).toBeVisible();
+  await expect(watchers.getByText("Unknown")).toHaveCount(0);
 });
 
 test("unwatches, and says so when there was nothing to remove", async ({ page }) => {

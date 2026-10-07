@@ -874,6 +874,8 @@ describe("RestTaskaApi issue links", () => {
         viewLinkType: "BLOCKS",
         createdBy: "user-1",
         createdAt: "2026-06-19T09:10:00Z",
+        // The list route resolves no target; only the detail read does (TAS-214).
+        target: null,
       },
     ]);
   });
@@ -2054,14 +2056,18 @@ describe("RestTaskaApi labels", () => {
     expect(fetchStub).toHaveBeenCalledTimes(1);
   });
 
-  it("gives an issue an empty label list when the gateway sends none", async () => {
-    // Every gateway older than TAS-120 answers exactly like this, and the board
-    // reads `issue.labels.length` without asking whether the field arrived.
+  it("tells a detail read that sent no labels from one that sent none", async () => {
+    // Since TAS-246 the panel's read carries its labels as a part of its own,
+    // and issue-service leaves a part unset when its source fails. Absent or
+    // `null` is "not sent", and the panel says so; `[]` is an empty list.
     stubFetch(() => ({ issue: { id: "issue-1", summary: "No labels here" }, history: [] }));
+    expect((await new RestTaskaApi().getIssue("project-1", "issue-1")).issue.labels).toBeNull();
 
-    const detail = await new RestTaskaApi().getIssue("project-1", "issue-1");
+    stubFetch(() => ({ issue: { id: "issue-1", summary: "No labels here", labels: null }, history: [] }));
+    expect((await new RestTaskaApi().getIssue("project-1", "issue-1")).issue.labels).toBeNull();
 
-    expect(detail.issue.labels).toEqual([]);
+    stubFetch(() => ({ issue: { id: "issue-1", summary: "No labels here", labels: [] }, history: [] }));
+    expect((await new RestTaskaApi().getIssue("project-1", "issue-1")).issue.labels).toEqual([]);
   });
 
   it("reads an issue's labels and keeps one whose colour never arrived", async () => {
@@ -2159,6 +2165,8 @@ describe("RestTaskaApi watchers", () => {
         userId: "user-9",
         createdAt: "2026-09-02T10:15:00Z",
         createdBy: "user-9",
+        displayName: null,
+        avatarUrl: null,
       },
     ]);
   });
@@ -2197,6 +2205,8 @@ describe("RestTaskaApi watchers", () => {
       userId: "",
       createdAt: "",
       createdBy: "",
+      displayName: null,
+      avatarUrl: null,
     });
   });
 
@@ -3040,7 +3050,7 @@ describe("RestTaskaApi attachments", () => {
     const attachments = await new RestTaskaApi().listAttachments(PROJECT, ISSUE);
 
     expect(calls(fetchStub)[0][0]).toBe(`/api/v1/projects/${PROJECT}/issues/${ISSUE}/attachments`);
-    expect(attachments[0]).toEqual(row);
+    expect(attachments[0]).toEqual({ ...row, uploadedByUser: null });
     // A row the response only half-filled is still drawable: an empty id (so the
     // controls that need one can tell), and the issue the caller asked about.
     expect(attachments[1]).toEqual({
@@ -3052,6 +3062,7 @@ describe("RestTaskaApi attachments", () => {
       uploadedBy: "",
       checksum: null,
       createdAt: "",
+      uploadedByUser: null,
     });
   });
 
@@ -3241,7 +3252,7 @@ describe("RestTaskaApi attachments", () => {
     // No `Idempotency-Key`: the route does not read one, and this is precisely
     // the call that must not be repeated.
     expect(JSON.stringify(calls(fetchStub)[0][1].headers)).not.toContain("Idempotency-Key");
-    expect(attachment).toEqual(row);
+    expect(attachment).toEqual({ ...row, uploadedByUser: null });
   });
 
   it("does not retry a failed confirm", async () => {
@@ -3706,5 +3717,244 @@ describe("RestTaskaApi notifications", () => {
     expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/notifications/5f0c7a52-1b3e-4a8d-9c61-2e7f4b9d0a13/read");
     expect(fetchStub.mock.calls[0][1]).toMatchObject({ method: "PATCH" });
     expect(item).toMatchObject({ readAt: "2026-09-27T10:20:00Z", issueId: null, issueKey: null, projectId: null });
+  });
+});
+
+/**
+ * TAS-246: the issue panel's one read, `GET /issues/{issueId}` answering
+ * `IssueDetailsWithHistoryResponseDto` (backend TAS-214, develop `60d62ee`),
+ * and the key lookup that opens an issue from its short address. Every field
+ * the details DTO adds is read as optional, because no body carrying one has
+ * been read on the stand yet.
+ */
+describe("RestTaskaApi issue details and the key lookup", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name.toLowerCase() === "x-request-id" ? "req-246" : null) },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: { method?: string }) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  const ISSUE = "a3f1c2d4-0000-4000-8000-000000000246";
+  const PROJECT = "b4e2d3c5-0000-4000-8000-000000000246";
+  const ANNA = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
+  const MARK = "e65186a2-b807-42ae-a66f-711be116a93b";
+
+  const details = (extra: Record<string, unknown> = {}) => ({
+    issue: {
+      id: ISSUE,
+      projectId: PROJECT,
+      issueNumber: 5,
+      issueKey: "API-5",
+      issueType: "TASK",
+      summary: "Panel from one read",
+      status: "TODO",
+      priority: "HIGH",
+      assigneeId: MARK,
+      reporterId: ANNA,
+      assignee: { id: MARK, displayName: "Mark Lee" },
+      reporter: { id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/anna.png" },
+      createdAt: "2026-10-07T09:00:00Z",
+      updatedAt: "2026-10-07T09:00:00Z",
+      version: 3,
+      labels: [{ id: "label-1", name: "backend", color: "#0052cc" }],
+      watchers: [
+        {
+          id: "watch-1",
+          issueId: ISSUE,
+          projectId: PROJECT,
+          userId: MARK,
+          createdAt: "2026-10-07T09:01:00Z",
+          createdBy: MARK,
+          displayName: "Mark Lee",
+        },
+      ],
+      isWatching: false,
+      links: [
+        {
+          id: "link-1",
+          projectId: PROJECT,
+          sourceIssueId: ISSUE,
+          targetIssueId: "c5f3e4d6-0000-4000-8000-000000000001",
+          viewLinkType: "BLOCKS",
+          createdBy: ANNA,
+          createdAt: "2026-10-07T09:02:00Z",
+          target: {
+            id: "c5f3e4d6-0000-4000-8000-000000000001",
+            issueKey: "WEB-9",
+            summary: "Somewhere else",
+            projectId: "d6a4f5e7-0000-4000-8000-000000000001",
+            statusKey: "IN_REVIEW",
+          },
+        },
+      ],
+      attachments: [
+        {
+          id: "att-1",
+          issueId: ISSUE,
+          fileName: "trace.txt",
+          contentType: "text/plain",
+          sizeBytes: 12,
+          uploadedBy: ANNA,
+          checksum: null,
+          createdAt: "2026-10-07T09:03:00Z",
+          uploadedByUser: { id: ANNA, displayName: "Anna Ivanova" },
+        },
+      ],
+      commentCount: 4,
+      ...extra,
+    },
+    history: [{ id: "h-1", eventType: "CREATED", actorUserId: ANNA, occurredAt: "2026-10-07T09:00:00Z", payload: {} }],
+  });
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the whole panel from one request to the issue's own path", async () => {
+    const fetchStub = stubFetch(details());
+
+    const { issue, history } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(fetchStub.mock.calls[0][0]).toBe(`/api/v1/issues/${ISSUE}`);
+    expect(issue.reporter).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/anna.png" });
+    expect(issue.assignee).toEqual({ id: MARK, displayName: "Mark Lee", avatarUrl: null });
+    expect(issue.labels).toEqual([{ id: "label-1", name: "backend", color: "#0052cc" }]);
+    // No count on this route, and the list is not paged: its length is the count.
+    expect(issue.watchers).toEqual({
+      watchers: [expect.objectContaining({ userId: MARK, displayName: "Mark Lee", avatarUrl: null })],
+      totalCount: 1,
+    });
+    expect(issue.isWatching).toBe(false);
+    expect(issue.links?.[0].target).toEqual({
+      id: "c5f3e4d6-0000-4000-8000-000000000001",
+      issueKey: "WEB-9",
+      summary: "Somewhere else",
+      projectId: "d6a4f5e7-0000-4000-8000-000000000001",
+      statusKey: "IN_REVIEW",
+    });
+    expect(issue.attachments?.[0].uploadedByUser).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null });
+    expect(issue.commentCount).toBe(4);
+    // The details DTO has no `deletedAt` and may omit `description`.
+    expect(issue.deletedAt).toBeNull();
+    expect(issue.description).toBe("");
+    expect(history).toEqual([expect.objectContaining({ id: "h-1", issueId: ISSUE })]);
+  });
+
+  it("reads a blank name as nobody named, which is what auth-service being down looks like", async () => {
+    // The gateway answers 200 with `displayName: ""` rather than failing the
+    // read (`IssueDetailsServiceImpl.getProfiles` falls back to no profiles).
+    stubFetch(
+      details({
+        reporter: { id: ANNA, displayName: "" },
+        assignee: { id: MARK, displayName: "   " },
+        watchers: [{ id: "watch-1", userId: MARK, displayName: "" }],
+        attachments: [{ id: "att-1", uploadedBy: ANNA, uploadedByUser: { id: ANNA, displayName: "" } }],
+      }),
+    );
+
+    const { issue } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
+
+    expect(issue.reporter).toEqual({ id: ANNA, displayName: null, avatarUrl: null });
+    expect(issue.assignee?.displayName).toBeNull();
+    expect(issue.watchers?.watchers[0].displayName).toBeNull();
+    expect(issue.attachments?.[0].uploadedByUser?.displayName).toBeNull();
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["null", null],
+  ])("reads a part the response left %s as not sent, and keeps an empty one empty", async (_case, missing) => {
+    const body = details({ labels: [], watchers: missing, links: missing, attachments: missing, isWatching: missing });
+    if (missing === undefined) {
+      delete (body.issue as Record<string, unknown>).watchers;
+      delete (body.issue as Record<string, unknown>).links;
+      delete (body.issue as Record<string, unknown>).attachments;
+      delete (body.issue as Record<string, unknown>).isWatching;
+    }
+    stubFetch(body);
+
+    const { issue } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
+
+    expect(issue.labels).toEqual([]);
+    expect(issue.watchers).toBeNull();
+    expect(issue.links).toBeNull();
+    expect(issue.attachments).toBeNull();
+    expect(issue.isWatching).toBeNull();
+  });
+
+  it("drops a link target that names no issue rather than drawing half of one", async () => {
+    stubFetch(details({ links: [{ id: "link-1", sourceIssueId: ISSUE, targetIssueId: "x", target: { summary: "?" } }] }));
+
+    const { issue } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
+
+    expect(issue.links?.[0].target).toBeNull();
+  });
+
+  it("names a comment's author from the comment list", async () => {
+    stubFetch({
+      items: [
+        {
+          id: "comment-1",
+          issueId: ISSUE,
+          projectId: PROJECT,
+          authorUserId: ANNA,
+          author: { id: ANNA, displayName: "Anna Ivanova" },
+          body: "hi",
+          createdAt: "2026-10-07T09:00:00Z",
+          updatedAt: "2026-10-07T09:00:00Z",
+          version: 1,
+        },
+        { id: "comment-2", issueId: ISSUE, projectId: PROJECT, authorUserId: MARK, body: "yo", createdAt: "2026-10-07T09:00:00Z", version: 1 },
+      ],
+      totalCount: 2,
+    });
+
+    const page = await new RestTaskaApi().listComments(PROJECT, ISSUE);
+
+    expect(page.items[0].author).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: null });
+    expect(page.items[1].author).toBeNull();
+  });
+
+  it("resolves a key through the by-key path, encoded and otherwise as typed", async () => {
+    const fetchStub = stubFetch({ ...details().issue, labels: [] });
+
+    const issue = await new RestTaskaApi().getIssueByKey("api-5");
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/issues/by-key/api-5");
+    expect(issue).toMatchObject({ id: ISSUE, projectId: PROJECT, issueKey: "API-5" });
+  });
+
+  it("never sends a key to the issue's own path", async () => {
+    const fetchStub = stubFetch({ ...details().issue, labels: [] });
+
+    await new RestTaskaApi().getIssueByKey("API 5/../x");
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/issues/by-key/API%205%2F..%2Fx");
+  });
+
+  it.each([
+    [404, "NOT_FOUND", "Issue not found: API-404"],
+    [403, "PERMISSION_DENIED", "Access denied"],
+  ])("rejects a %s from the lookup as the answer it is", async (status, code, message) => {
+    stubFetch({ code, message }, status);
+
+    const failure = await new RestTaskaApi().getIssueByKey("API-404").catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ status, code, message });
+    expect(isMissingOrForbidden(failure)).toBe(true);
   });
 });

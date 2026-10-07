@@ -16,6 +16,7 @@ import { AdminSectionPlaceholder } from "./admin/AdminSectionPlaceholder";
 import { AdminUsersSection } from "./admin/AdminUsersSection";
 import { adminSections } from "./admin/sections";
 import { BoardScreen } from "./BoardScreen";
+import { IssueKeyScreen } from "./IssueKeyScreen";
 import { LoginScreen } from "./LoginScreen";
 import { NotFoundScreen } from "./NotFoundScreen";
 import { ProjectsScreen } from "./ProjectsScreen";
@@ -97,6 +98,18 @@ export function App() {
         element={
           <RequireSession>
             <BoardScreen {...screenProps} />
+          </RequireSession>
+        }
+      />
+      {/* The short address of an issue, by its key (TAS-246). Behind the guard
+          like the issue route it resolves into: a signed-out visitor is sent
+          to sign in and comes back here, and the key is looked up only once
+          there is somebody to look it up for. */}
+      <Route
+        path="/browse/:issueKey"
+        element={
+          <RequireSession>
+            <IssueKeyScreen />
           </RequireSession>
         }
       />

@@ -206,6 +206,26 @@ export interface UserStatusChange {
   changedAt: string;
 }
 
+/**
+ * `UserSummaryDto` — who somebody is, as the server names them inline on a
+ * read that is about something else (backend TAS-214, develop `60d62ee`): the
+ * issue's assignee and reporter, an attachment's uploader, a comment's author.
+ *
+ * `displayName` is `null` when the server did not name the person, and that
+ * includes the empty string. The gateway answers `200` with
+ * `displayName: ""` when auth-service is down rather than failing the read
+ * (`IssueDetailsServiceImpl.getProfiles` falls back to an empty profile map),
+ * so `""` is not a name somebody chose — it is the same "not named" as an
+ * absent key, and every reader resolves it the way the UI already resolves a
+ * person it cannot name (`personFor` in src/lib/people.ts).
+ */
+export interface UserSummary {
+  id: string;
+  displayName: string | null;
+  /** A presigned link, or `null`. Not yet observed on the stand. */
+  avatarUrl: string | null;
+}
+
 export interface Project {
   id: string;
   projectKey: string;
@@ -573,11 +593,11 @@ export interface Issue {
  *
  * Two consequences shape the feature rather than decorate it. A hit cannot be
  * placed in a board column, so the board renders server hits as their own group
- * (DESIGN.md §5.4 counts them, §5.2 does not hold them). And a hit needs a
- * `projectId` to be linkable, which is resolved from the `issueKey` prefix
- * against the projects list the client already holds — see
- * `projectKeyFromIssueKey`. Deliberately not hydrated through `getIssue` — the
- * owner settled the general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md,
+ * (DESIGN.md §5.4 counts them, §5.2 does not hold them). And a hit outside
+ * the board carries no `projectId` to be opened by, so it opens through its
+ * key — `/browse/{issueKey}`, resolved by the server with `getIssueByKey` when
+ * it is chosen (TAS-246), never guessed from the key's prefix. Deliberately not
+ * hydrated through `getIssue` — the owner settled the general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md,
  * TAS-178): fix the backend, do not hydrate on the frontend. `listIssues` used
  * to pay exactly that N+1 and stopped in TAS-195, when its DTO grew into a
  * whole issue; this one did not, so hydrating here would be a `getIssue` per
@@ -789,6 +809,12 @@ export interface IssueAttachment {
   sizeBytes: number;
   uploadedBy: string;
   /**
+   * The uploader, named by the server (`IssueAttachmentDto.uploadedByUser`,
+   * backend TAS-214). `null` when the response did not carry it — every gateway
+   * before `60d62ee` — and then the row is named the way it was before.
+   */
+  uploadedByUser: UserSummary | null;
+  /**
    * The object's ETag with its quotes stripped, which for a single-part PUT is
    * the MD5 of the bytes. `nullable: true` in the contract and blank-to-`null`
    * in the gateway's mapper, though the column itself is `NOT NULL` — so a
@@ -854,8 +880,56 @@ export interface AttachmentDownloadUrl {
   checksum: string | null;
 }
 
-export interface IssueWithHistory {
-  issue: Issue;
+/**
+ * The issue panel's one read — `GET /issues/{issueId}` answering
+ * `IssueDetailsResponseDto` (backend TAS-214, develop `60d62ee`). Everything a
+ * panel draws except the comments, which stay a paged read of their own.
+ *
+ * **The four parts are `null` when the server did not send them, and an empty
+ * list is not the same answer.** issue-service loads labels, watchers, links and
+ * attachments side by side and a part whose source fails is left unset rather
+ * than failing the read (`IssueDetailsServiceImpl.fetchWithFallback`); the
+ * gateway then copies only the parts that are set (`IssueMapper`
+ * `toRestIssueDetailsWithHistoryResponseDto`). Whether an unset part reaches the
+ * wire as an absent key, a `null` or `[]` is the generated DTO's business and
+ * has not been observed: absent and `null` arrive here as `null`, and `[]` is
+ * indistinguishable from a part that really is empty — which is the server's
+ * limit, not this type's.
+ *
+ * `labels` is overridden from `Issue` for that reason: on a list row it is
+ * always an array, on this read it can be missing.
+ *
+ * Not a widening of `Issue` for the board's cards: the list route still answers
+ * `IssueResponseDto`, and none of these fields exist there.
+ */
+export interface IssueDetails extends Omit<Issue, "labels"> {
+  labels: Label[] | null;
+  /**
+   * The two people the issue names, with their names. `assigneeId` and
+   * `reporterId` stay beside them and stay the identity: a summary is `null`
+   * when the response did not carry one, and the id is still who it is.
+   */
+  assignee: UserSummary | null;
+  reporter: UserSummary | null;
+  /**
+   * The subscriptions, each now carrying the subscriber's name. Shaped as the
+   * list read's `IssueWatchers` so the panel's watcher section reads one type
+   * whichever route filled it. The details DTO states no count, and its list is
+   * not paged — the route takes no paging parameter and issue-service collects
+   * every row — so `totalCount` is the length of the list the server sent,
+   * which is the server's own answer to "how many" on this route.
+   */
+  watchers: IssueWatchers | null;
+  /** Whether the reader is subscribed, by the server's own reckoning. `null` when not sent. */
+  isWatching: boolean | null;
+  links: IssueLink[] | null;
+  attachments: IssueAttachment[] | null;
+  /** Live comments on the issue. `null` when not sent. */
+  commentCount: number | null;
+}
+
+export interface IssueDetailsWithHistory {
+  issue: IssueDetails;
   history: IssueHistoryEvent[];
 }
 
@@ -887,17 +961,37 @@ export interface IssueLink {
   viewLinkType: string;
   createdBy: string;
   createdAt: string;
+  /**
+   * The issue at the other end of the link, as the server resolved it
+   * (`IssueLinkResponseDto.target`, backend TAS-214) — so a row can print a
+   * key and a summary, and open an issue in another project, without the
+   * client reading that project. `null` when the response did not carry it.
+   */
+  target: LinkedIssue | null;
+}
+
+/**
+ * `TargetIssueDto`. `statusKey` is a plain string for the reason
+ * `BoardColumn.statusKey` is: a workflow may name statuses this build has never
+ * seen.
+ */
+export interface LinkedIssue {
+  id: string;
+  issueKey: string;
+  summary: string;
+  projectId: string;
+  statusKey: string;
 }
 
 /**
  * One subscription row — `IssueWatcherResponseDto`.
  *
- * **It names nobody.** The only thing here that identifies a person is
- * `userId`, exactly as with `Issue.assigneeId` and `IssueAttachment.uploadedBy`,
- * and it is resolved the same way: through the `userById` map the board builds
- * from `GET /projects/{id}/members`. When that read fails, or names nobody for
- * the id, a watcher degrades to "Unknown" precisely as the reporter line does —
- * one mechanism, one failure, no second invention.
+ * Since backend TAS-214 the row names its subscriber (`displayName`,
+ * `avatarUrl`). When it does not — an older gateway, or auth-service down and
+ * the name blank — the person is resolved the way every person on the panel is
+ * when the server did not name them: through the `userById` map the board
+ * builds from `GET /projects/{id}/members`, and then "Unknown" (`personFor`,
+ * src/lib/people.ts).
  *
  * `createdBy` is not `userId`: a project ADMIN may subscribe somebody else
  * through `POST .../watchers`, and then the two differ.
@@ -911,6 +1005,13 @@ export interface IssueWatcher {
   userId: string;
   createdAt: string;
   createdBy: string;
+  /**
+   * The subscriber's name and picture, carried on the row since backend
+   * TAS-214. `null` when the response did not carry them, and a blank name is
+   * `null` too — see `UserSummary.displayName` for why `""` is not a name.
+   */
+  displayName: string | null;
+  avatarUrl: string | null;
 }
 
 /**
@@ -969,6 +1070,8 @@ export interface IssueComment {
   issueId: string;
   projectId: string;
   authorUserId: string;
+  /** The author, named by the server since backend TAS-214; `null` when not carried. */
+  author: UserSummary | null;
   body: string;
   createdAt: string;
   updatedAt: string | null;

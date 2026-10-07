@@ -35,6 +35,19 @@ describe("HybridTaskaApi", () => {
     expect(getWorkflow).toHaveBeenCalledWith(project.id, undefined);
   });
 
+  it("delegates the panel's detail read and the key lookup to live", async () => {
+    const live = liveApi();
+    const getIssue = vi.spyOn(live, "getIssue");
+    const getIssueByKey = vi.spyOn(live, "getIssueByKey");
+
+    const hybrid = new HybridTaskaApi(live);
+    const issue = await hybrid.getIssueByKey("TAS-101");
+    await hybrid.getIssue(issue.projectId, issue.id);
+
+    expect(getIssueByKey).toHaveBeenCalledWith("TAS-101");
+    expect(getIssue).toHaveBeenCalledWith(issue.projectId, issue.id);
+  });
+
   /**
    * The two reads TAS-224 turned into delegations. Until then this class
    * answered both itself, out of `GET /projects/{id}` and `GET /users/me`, and
@@ -451,11 +464,9 @@ describe("HybridTaskaApi", () => {
 
     const before = await hybrid.listIssueWatchers(project.id, issue.id);
     expect(list).toHaveBeenCalledWith(project.id, issue.id);
-    // A watcher row carries an id and no name, here as everywhere, and nothing
-    // on the way through adds one. The panel names a watcher through the member
-    // read, exactly as it names the assignee, the reporter and an attachment's
-    // uploader — one mechanism for all four.
-    expect(before.watchers.every((watcher) => !("displayName" in watcher))).toBe(true);
+    // The list route names nobody — only the issue's detail read does, since
+    // backend TAS-214 — and nothing on the way through adds a name.
+    expect(before.watchers.every((watcher) => watcher.displayName === null)).toBe(true);
 
     await hybrid.unwatchIssue(project.id, issue.id);
     expect(unwatch).toHaveBeenCalledWith(project.id, issue.id);

@@ -671,6 +671,32 @@ textarea:disabled {
   outline-offset: 2px;
 }
 
+/* The by-key route's one outcome that is not §4.18's (TAS-246): a lookup that
+   failed for a reason that says nothing about the issue. Same column as the
+   not-found screen, no mascot — the mascot means "not here", and this is "not
+   known yet". */
+.issue-key-failure {
+  width: 100%;
+  max-width: 420px;
+}
+
+.issue-key-failure .api-notice {
+  width: 100%;
+  text-align: left;
+}
+
+.issue-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.issue-key-actions .notfound-action {
+  margin-top: 0;
+}
+
 .segmented {
   display: flex;
   gap: 3px;
