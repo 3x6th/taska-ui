@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
@@ -142,5 +142,69 @@ describe("the short address of an issue", () => {
 
     await waitFor(() => expect(screen.getByTestId("landed")).toHaveTextContent("/projects/project-api/issues/issue-5"));
     expect(lookups()).toHaveLength(3);
+  });
+
+  /**
+   * art-director, TAS-246: "Try again" used to put the screen back to the
+   * plane — react-query resets a no-data query to `pending` on a refetch — so
+   * the button unmounted under the reader's focus and a second failure came
+   * back unfocused and unannounced. Pinned: the screen stays mounted, focus
+   * stays on the button, the button is `aria-disabled` and inert while its
+   * request is out, a repeat is said once in the persistent status region, the
+   * request id moves in place, and a press does not also wait for the hidden
+   * retry the first lookup got.
+   */
+  it("keeps the failure screen and the reader's focus through a retry that fails again, and says so", async () => {
+    failWith(Object.assign(refusal(503, "UNAVAILABLE", "issue-service is unavailable"), { requestId: "req-1" }));
+    renderAt("/browse/API-5");
+
+    const heading = await screen.findByRole("heading", { name: "API-5 could not be opened" }, { timeout: 3000 });
+    const main = screen.getByRole("main");
+    const status = document.querySelector(".issue-key-status");
+    expect(status).toHaveAttribute("role", "status");
+    expect(status).toHaveTextContent("");
+    expect(lookups()).toHaveLength(2);
+
+    let failAgain: () => void = () => {};
+    const lookup = vi.spyOn(fakeApi, "getIssueByKey").mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failAgain = () => reject(Object.assign(refusal(503, "UNAVAILABLE", "still unavailable"), { requestId: "req-2" }));
+        }),
+    );
+    const button = screen.getByRole("button", { name: "Try again" });
+    button.focus();
+    fireEvent.click(button);
+
+    await waitFor(() => expect(button).toHaveAttribute("aria-disabled", "true"));
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveFocus();
+    expect(button).toHaveTextContent("Try again");
+    expect(screen.getByRole("main")).toBe(main);
+    expect(screen.getByRole("heading", { name: "API-5 could not be opened" })).toBe(heading);
+    // Inert while out: a second press sends nothing.
+    fireEvent.click(button);
+    expect(lookup).toHaveBeenCalledTimes(1);
+
+    await act(async () => failAgain());
+
+    await waitFor(() => expect(status).toHaveTextContent("API-5 still could not be opened."));
+    expect(button).not.toHaveAttribute("aria-disabled");
+    expect(button).toHaveFocus();
+    expect(screen.getByRole("main")).toBe(main);
+    expect(screen.getByRole("heading", { name: "API-5 could not be opened" })).toBe(heading);
+    // The server's words and the request id move in place, outside the region.
+    const copy = screen.getByRole("button", { name: /Copy request id req-2/ });
+    expect(screen.getByText("still unavailable")).toBeVisible();
+    expect(status?.contains(copy)).toBe(false);
+    // No hidden retry behind the press: the first lookup's two, and this one.
+    expect(lookups()).toHaveLength(2);
+    expect(lookup).toHaveBeenCalledTimes(1);
+
+    // The next press empties the region before it is filled again.
+    answerWith({ id: "issue-5", projectId: "project-api" });
+    fireEvent.click(button);
+    expect(status).toHaveTextContent("");
+    await waitFor(() => expect(screen.getByTestId("landed")).toHaveTextContent("/projects/project-api/issues/issue-5"));
   });
 });

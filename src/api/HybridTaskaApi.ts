@@ -17,6 +17,7 @@ import type {
   RetryableOutboxService,
   SearchIssuesParams,
   TaskaApi,
+  IssueWriteAnswer,
   UpdateIssueInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
@@ -172,12 +173,13 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.createIssue(projectId, input);
   }
 
-  updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
-    return this.live.updateIssue(projectId, issueId, input);
-  }
-
-  assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue> {
-    return this.live.assignIssue(projectId, issueId, assigneeId);
+  updateIssue(
+    projectId: string,
+    issueId: string,
+    input: UpdateIssueInput,
+    expectedVersion: number,
+  ): Promise<IssueWriteAnswer> {
+    return this.live.updateIssue(projectId, issueId, input, expectedVersion);
   }
 
   transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue> {

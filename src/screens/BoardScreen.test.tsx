@@ -49,6 +49,12 @@ const {
   holdIssueUpdates,
   heldIssueUpdateCount,
   releaseIssueUpdates,
+  updateCalls,
+  conflictNextUpdate,
+  failNextUpdate,
+  seedIssueLabels,
+  seedIssueVersion,
+  emptyPartsOnRead,
   setMembership,
   seedAssignee,
   assignCalls,
@@ -151,10 +157,30 @@ const {
     /** Issues created during a test, the ones deleted and the fields edited, so the list moves the way a server's would. */
     created: ReturnType<typeof makeIssue>[];
     deleted: Set<string>;
-    edits: Record<string, { summary?: string; description?: string; storyPoints?: number | null; originalEstimateMinutes?: number | null }>;
+    edits: Record<string, Record<string, unknown>>;
     /** An update held open, so a test can decide when its answer — and the refetch behind it — lands. */
     issueUpdatesHeld: boolean;
     issueUpdateReleases: (() => void)[];
+    /**
+     * The panel issue's version, which every edit that changes something bumps
+     * — the number the panel has to send back as `If-Match` (TAS-246) — and
+     * every edit the panel sent, with the version it sent it at.
+     */
+    version: number;
+    updateCalls: { patch: Record<string, unknown>; expectedVersion: number }[];
+    /** The next edit answers 409: the issue moved on elsewhere, with `current` laid over it. */
+    conflictNext: { current: Record<string, unknown>; requestId?: string } | null;
+    /** The next edit is refused with this error, and changes nothing. */
+    updateFailure?: Error;
+    /** The labels the issue read carries. */
+    issueLabels: { id: string; name: string; color: string }[];
+    /**
+     * A part that failed on the server and arrived as `[]` anyway — what the
+     * gateway does (`IssueDetails`), as against `…Failure` above, which is the
+     * `null` a nullable mapper would send.
+     */
+    watchersPartEmpty: boolean;
+    attachmentsPartEmpty: boolean;
     /** The panel's attachments section: what it lists, and how each leg answers. */
     /**
      * `GET /projects/{id}/members`. Empty for every other case here — the
@@ -174,9 +200,8 @@ const {
      * section had two different words for.
      */
     members: { userId: string; role: "ADMIN" | "MEMBER" | "VIEWER" | null; addedAt: string; addedBy: string; user?: { displayName: string; email: string } }[];
-    /** Who the panel's issue is assigned to, and every assignment the panel sent. */
+    /** Who the panel's issue is assigned to. */
     assigneeId: string | null;
-    assignCalls: (string | null)[];
     attachments: {
       id: string;
       issueId: string;
@@ -291,12 +316,17 @@ const {
     notificationWriteReleases: [],
     issueUpdatesHeld: false,
     issueUpdateReleases: [],
+    version: 1,
+    updateCalls: [],
+    conflictNext: null,
+    issueLabels: [],
+    watchersPartEmpty: false,
+    attachmentsPartEmpty: false,
     created: [],
     deleted: new Set<string>(),
     edits: {},
     members: [],
     assigneeId: null,
-    assignCalls: [],
     attachments: [],
     confirmLandsAnyway: false,
     confirmCalls: 0,
@@ -334,6 +364,41 @@ const {
     if (!state.watcherWritesHeld) return;
     await new Promise<void>((resolve) => state.watcherWriteReleases.push(resolve));
   };
+
+  /**
+   * The panel's issue as the server holds it, without the parts only the
+   * details read carries — the one shape both the read and the edit answer
+   * with, so an edit's answer never disagrees with the read about a field it
+   * did not touch.
+   */
+  const panelIssue = (projectId: string, issueId: string) => ({
+    id: issueId,
+    projectId,
+    issueNumber: 102,
+    issueKey: "TAS-102",
+    issueType: "TASK" as const,
+    summary: "Wire the board to the gateway",
+    description: "",
+    status: "TODO" as const,
+    priority: "MEDIUM" as const,
+    reporterId: "user-anna",
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+    // Four of the five set and the fifth `null`, which is what the panel's
+    // Planning block is read on: `480` has to come back as a duration,
+    // a date has to come back as the day it is, and the empty one has to
+    // come back empty rather than as a nought.
+    storyPoints: 3,
+    startDate: "2026-06-15",
+    dueDate: "2026-06-26",
+    originalEstimateMinutes: 480,
+    remainingEstimateMinutes: null,
+    ...(state.edits[issueId] ?? {}),
+    assigneeId: state.assigneeId,
+    version: state.version,
+    labels: state.issueLabels,
+  });
 
   const api = {
     hasSession: () => true,
@@ -413,17 +478,43 @@ const {
     // — nothing about the edit itself knows the search exists. Written here so
     // that stops being luck. Every case below edits an issue *out* of its
     // match, so the hit goes with it.
-    updateIssue: async (
-      _projectId: string,
-      issueId: string,
-      patch: { summary?: string; description?: string; storyPoints?: number | null; originalEstimateMinutes?: number | null },
-    ) => {
+    //
+    // A PATCH since TAS-246: it takes the version the panel is editing, answers
+    // a stale one with a conflict carrying the issue as it stands, bumps the
+    // version on every change, and answers with the issue as the read draws it
+    // — without labels, which the gateway's write answer never fills.
+    updateIssue: async (projectId: string, issueId: string, patch: Record<string, unknown>, expectedVersion: number) => {
+      state.updateCalls.push({ patch: { ...patch }, expectedVersion });
       await issueUpdateWindow();
-      state.edits[issueId] = { ...state.edits[issueId], ...patch };
+      const { IssueVersionConflictError } = await import("../api/errors");
+      const answer = () => {
+        const { labels: _labels, ...issue } = panelIssue(projectId, issueId);
+        return issue;
+      };
+      if (state.updateFailure) {
+        const failure = state.updateFailure;
+        state.updateFailure = undefined;
+        throw failure;
+      }
+      if (state.conflictNext) {
+        const { current, requestId } = state.conflictNext;
+        state.conflictNext = null;
+        state.version += 1;
+        state.edits[issueId] = { ...state.edits[issueId], ...current };
+        throw new IssueVersionConflictError(answer(), expectedVersion, requestId);
+      }
+      if (expectedVersion !== state.version) throw new IssueVersionConflictError(answer(), expectedVersion);
+      const { assigneeId, ...fields } = patch;
+      if ("assigneeId" in patch) state.assigneeId = (assigneeId as string | null) ?? null;
+      state.edits[issueId] = {
+        ...state.edits[issueId],
+        ...fields,
+        ...("description" in fields ? { description: fields.description ?? "" } : {}),
+      };
+      state.version += 1;
       state.searchHits = state.searchHits.filter((hit) => hit.id !== issueId);
       state.searchTotal = Math.max(0, state.searchTotal - 1);
-      const seeded = makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", "Point the columns at the deployed gateway.");
-      return { ...seeded, id: issueId, ...state.edits[issueId] };
+      return answer();
     },
     // The search route answers with the short DTO — six fields, no status and
     // no projectId — so the fixture cannot accidentally hand the board an issue
@@ -493,49 +584,34 @@ const {
         id && id in state.summaries ? { id, displayName: state.summaries[id] || null, avatarUrl: null } : null;
       return {
         issue: {
-          id: issueId,
-          projectId,
-          issueNumber: 102,
-          issueKey: "TAS-102",
-          issueType: "TASK" as const,
-          summary: "Wire the board to the gateway",
-          description: "",
-          status: "TODO" as const,
-          priority: "MEDIUM" as const,
-          assigneeId: state.assigneeId,
-          reporterId: "user-anna",
-          createdAt: now,
-          updatedAt: now,
-          version: 1,
-          deletedAt: null,
-          // Four of the five set and the fifth `null`, which is what the panel's
-          // Planning block is read on: `480` has to come back as a duration,
-          // a date has to come back as the day it is, and the empty one has to
-          // come back empty rather than as a nought.
-          storyPoints: 3,
-          startDate: "2026-06-15",
-          dueDate: "2026-06-26",
-          originalEstimateMinutes: 480,
-          remainingEstimateMinutes: null,
-          ...(state.edits[issueId] ?? {}),
-          labels: state.labelsFailure ? null : [],
+          ...panelIssue(projectId, issueId),
+          labels: state.labelsFailure ? null : state.issueLabels,
           assignee: summary(state.assigneeId),
           reporter: summary("user-anna"),
+          // No count: the details DTO states none, so neither implementation
+          // does (TAS-246). Only a watcher write says how many.
           watchers: state.watchersFailure
             ? null
             : {
-                watchers: state.watchers.map((watcher) => ({
-                  ...watcher,
-                  displayName: state.watcherNames[watcher.userId] || null,
-                  avatarUrl: null,
-                })),
-                totalCount: state.watchersTotal,
+                watchers: state.watchersPartEmpty
+                  ? []
+                  : state.watchers.map((watcher) => ({
+                      ...watcher,
+                      displayName: state.watcherNames[watcher.userId] || null,
+                      avatarUrl: null,
+                    })),
+                totalCount: null,
               },
+          // From the issue's core query on the server, which does not fail
+          // with the watcher part — so it stays true when the part arrived as
+          // `[]`.
           isWatching: state.watchersFailure ? null : state.watchers.some((watcher) => watcher.userId === "user-anna"),
           links: state.linksFailure ? null : state.links,
           attachments: state.attachmentsFailure
             ? null
-            : state.attachments
+            : state.attachmentsPartEmpty
+              ? []
+              : state.attachments
                 .filter((item) => !state.deleted_attachments.includes(item.id))
                 .map((item) => ({
                   ...item,
@@ -555,13 +631,6 @@ const {
       state.sectionReads.links += 1;
       if (state.linksFailure) throw state.linksFailure;
       return [];
-    },
-    // Counted, and answered the way a server that took it would: the chips are
-    // gated on who the server accepts, so what matters is what was *sent*.
-    assignIssue: async (_projectId: string, _issueId: string, assigneeId: string | null) => {
-      state.assignCalls.push(assigneeId);
-      state.assigneeId = assigneeId;
-      return { ...makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", ""), assigneeId };
     },
     /**
      * The watchers section's five calls. The list answers with the array *and*
@@ -686,7 +755,29 @@ const {
     seedAssignee: (assigneeId: string | null) => {
       state.assigneeId = assigneeId;
     },
-    assignCalls: () => [...state.assignCalls],
+    /** Every assignment the panel sent — an edit carrying `assigneeId`, since TAS-246. */
+    assignCalls: () =>
+      state.updateCalls.filter((call) => "assigneeId" in call.patch).map((call) => call.patch.assigneeId as string | null),
+    updateCalls: () => state.updateCalls.map((call) => ({ ...call, patch: { ...call.patch } })),
+    /** The next edit answers 409 with the issue moved on elsewhere, `current` laid over it. */
+    conflictNextUpdate: (current: Record<string, unknown>, requestId?: string) => {
+      state.conflictNext = { current, requestId };
+    },
+    failNextUpdate: (error: Error) => {
+      state.updateFailure = error;
+    },
+    seedIssueLabels: (labels: { id: string; name: string; color: string }[]) => {
+      state.issueLabels = labels;
+    },
+    /** The issue read sends these parts as `[]` whatever is stored, the way the gateway sends a part that failed. */
+    emptyPartsOnRead: (parts: { watchers?: boolean; attachments?: boolean }) => {
+      state.watchersPartEmpty = parts.watchers ?? false;
+      state.attachmentsPartEmpty = parts.attachments ?? false;
+    },
+    /** What the server's issue is at — what the next read answers, and what an edit must send. */
+    seedIssueVersion: (version: number) => {
+      state.version = version;
+    },
     failMembership: (error: Error) => {
       state.membershipFailure = error;
     },
@@ -890,12 +981,18 @@ const {
       state.notificationWriteReleases = [];
       state.issueUpdatesHeld = false;
       state.issueUpdateReleases = [];
+      state.version = 1;
+      state.updateCalls = [];
+      state.conflictNext = null;
+      state.updateFailure = undefined;
+      state.issueLabels = [];
+      state.watchersPartEmpty = false;
+      state.attachmentsPartEmpty = false;
       state.created = [];
       state.deleted = new Set<string>();
       state.edits = {};
       state.members = [];
       state.assigneeId = null;
-      state.assignCalls = [];
       state.attachments = [];
       state.attachmentsFailure = undefined;
       state.attachmentsHeld = false;
@@ -1983,6 +2080,173 @@ describe("the assignee chips on an issue panel", () => {
 });
 
 /**
+ * The panel's edits under optimistic locking (TAS-246): `PATCH` with the
+ * version the panel holds, one write at a time, and a version conflict shown as
+ * the issue that won rather than retried behind the reader's back.
+ */
+describe("issue edits under optimistic locking", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const ISSUE_KEY = ["issue", PROJECT_ID, "issue-1"];
+
+  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("runs two quick edits one after the other, the second at the version the first left", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    holdIssueUpdates(true);
+
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    fireEvent.click(panel.getByRole("button", { name: "High" }));
+
+    // The second is queued behind the first rather than sent beside it.
+    await waitFor(() => expect(heldIssueUpdateCount()).toBe(1));
+    expect(updateCalls()).toHaveLength(1);
+    releaseIssueUpdates();
+
+    await waitFor(() => expect(heldIssueUpdateCount()).toBe(1));
+    releaseIssueUpdates();
+    await waitFor(() => expect(updateCalls()).toHaveLength(2));
+    expect(updateCalls().map((call) => call.expectedVersion)).toEqual([1, 2]);
+    expect(updateCalls().map((call) => call.patch)).toEqual([{ priority: "LOW" }, { priority: "HIGH" }]);
+    await waitFor(() => expect(panel.getByRole("button", { name: "High" })).toHaveClass("is-active"));
+  });
+
+  it("shows the issue that won a priority conflict, says so, and does not try again", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    conflictNextUpdate({ priority: "HIGH" }, "req-409");
+    const readsBefore = sectionReads().issue;
+
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+
+    const sentence = await panel.findByRole("alert");
+    expect(sentence).toHaveTextContent(
+      "Your change to the priority was not saved: this issue was changed elsewhere after you opened it. The panel now shows the latest version.",
+    );
+    // The server's answer is on screen at once, from the conflict's own body.
+    expect(panel.getByRole("button", { name: "High" })).toHaveClass("is-active");
+    // The id that finds this in the gateway log, outside the live region.
+    const copy = panel.getByRole("button", { name: /Copy request id req-409/ });
+    expect(sentence.contains(copy)).toBe(false);
+    // Re-read, and never re-sent.
+    await waitFor(() => expect(sectionReads().issue).toBeGreaterThan(readsBefore));
+    expect(updateCalls()).toHaveLength(1);
+  });
+
+  it("keeps the reader's description through a conflict and sends it again, at the new version, on the next blur", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    conflictNextUpdate({ description: "Their words" });
+
+    const box = panel.getByRole("textbox", { name: "Description" });
+    fireEvent.change(box, { target: { value: "My words" } });
+    fireEvent.blur(box);
+
+    expect(await panel.findByRole("alert")).toHaveTextContent(
+      "Your description was not saved: this issue was changed elsewhere after you opened it. Your text is still in the box — leave the box to save it over the latest version.",
+    );
+    // The re-read lands, and the reader's text is still what the box holds.
+    await waitFor(() => expect(sectionReads().issue).toBeGreaterThan(1));
+    expect(box).toHaveValue("My words");
+
+    fireEvent.blur(box);
+    await waitFor(() => expect(updateCalls()).toHaveLength(2));
+    expect(updateCalls()[1]).toEqual({ patch: { description: "My words" }, expectedVersion: 2 });
+    // The next write started, so the conflict line went with it.
+    await waitFor(() => expect(panel.queryByRole("alert")).toBeNull());
+  });
+
+  it("unassigns with None, which is a request now", async () => {
+    seedMembers([
+      { userId: "user-anna", role: "ADMIN", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Anna Ivanova", email: "anna@example.com" } },
+    ]);
+    seedAssignee("user-anna");
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    const none = await panel.findByRole("button", { name: /None$/ });
+    await waitFor(() => expect(panel.getByRole("button", { name: /^Anna Ivanova/ })).toHaveClass("is-active"));
+    expect(none).toBeEnabled();
+    fireEvent.click(none);
+
+    await waitFor(() => expect(updateCalls()).toEqual([{ patch: { assigneeId: null }, expectedVersion: 1 }]));
+    await waitFor(() => expect(none).toHaveClass("is-active"));
+    // Off again: unassigning an unassigned issue would change nothing.
+    expect(none).toBeDisabled();
+  });
+
+  it("keeps a newer cached issue over an older re-read, and takes an equal one with new labels", async () => {
+    const queryClient = renderBoard(ISSUE_PATH);
+    await openPanel();
+    type Details = { issue: { version: number; priority: string; labels: unknown[] | null } };
+
+    // A write answered version 5 while a re-read that set out before it still
+    // carries version 1 — the server here is still at 1.
+    queryClient.setQueryData<Details>(ISSUE_KEY, (data) =>
+      data ? { ...data, issue: { ...data.issue, version: 5, priority: "HIGH" } } : data,
+    );
+    await queryClient.refetchQueries({ queryKey: ISSUE_KEY });
+    expect(queryClient.getQueryData<Details>(ISSUE_KEY)?.issue).toMatchObject({ version: 5, priority: "HIGH" });
+
+    // The same version is accepted: label and watcher writes bump nothing, and
+    // their re-reads are how they land.
+    seedIssueVersion(5);
+    seedIssueLabels([{ id: "label-1", name: "backend", color: "#0052cc" }]);
+    await queryClient.refetchQueries({ queryKey: ISSUE_KEY });
+    expect(queryClient.getQueryData<Details>(ISSUE_KEY)?.issue).toMatchObject({
+      version: 5,
+      labels: [{ id: "label-1", name: "backend", color: "#0052cc" }],
+    });
+  });
+
+  it("never lets a write's answer take the labels off the panel", async () => {
+    seedIssueLabels([{ id: "label-1", name: "backend", color: "#0052cc" }]);
+    const queryClient = renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    expect(await panel.findByText("backend")).toBeVisible();
+
+    // The re-read after the write is held, so what is on screen is the write's
+    // answer merged into the cache — and that answer carries no labels.
+    holdIssue(true);
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    await waitFor(() => expect(panel.getByRole("button", { name: "Low" })).toHaveClass("is-active"));
+
+    expect(panel.getByText("backend")).toBeVisible();
+    expect(queryClient.getQueryData<{ issue: { version: number } }>(ISSUE_KEY)?.issue.version).toBe(2);
+    releaseIssue();
+  });
+
+  it("rolls back only the field a refused edit sent, and words the date-order refusal as advice", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    failNextUpdate(
+      Object.assign(new Error("Start date: 2026-07-01 must not be after Due date: 2026-06-26"), {
+        code: "INVALID_ARGUMENT",
+        status: 400,
+      }),
+    );
+
+    const start = panel.getByLabelText("Start date");
+    const points = panel.getByLabelText("Story points");
+    fireEvent.change(start, { target: { value: "2026-07-01" } });
+    fireEvent.blur(start);
+    // A draft in another box, typed while the refused write is out.
+    fireEvent.change(points, { target: { value: "8" } });
+
+    expect(await panel.findByRole("alert")).toHaveTextContent(
+      "The start date cannot be later than this issue's current due date — move the due date first",
+    );
+    await waitFor(() => expect(start).toHaveValue("2026-06-15"));
+    expect(points).toHaveValue("8");
+  });
+});
+
+/**
  * A create is optimistic, so a new label is drawn the instant it is asked for,
  * carrying `optimisticLabelId` until the server answers with a real one. That
  * placeholder is for the *list*: it is not an address, and every route that
@@ -2237,6 +2501,26 @@ describe("issue attachments", () => {
     expect(confirmCalls()).toBe(1);
   });
 
+  it("decides a failed confirm from the attachments' own route, so a part that failed cannot say 'not attached'", async () => {
+    // The gateway sends an attachments part that failed as `[]` — one object
+    // missing from storage is enough — so the issue read would have counted no
+    // new row and told the reader to upload the file again (release-reviewer,
+    // TAS-246). The list route fails as a request when it fails.
+    emptyPartsOnRead({ attachments: true });
+    failUpload("confirm", Object.assign(new Error("Service unavailable"), { status: 503, code: "UNAVAILABLE" }), true);
+    renderBoard(ISSUE_PATH);
+    await section();
+    chooseFile();
+
+    const panel = await section();
+    expect(await panel.findByText(/was attached after all/i)).toBeVisible();
+    expect(panel.queryByText(/was not attached/i)).toBeNull();
+    expect(sectionReads().attachments).toBe(1);
+    // And what the list route found is what the section draws.
+    expect(await panel.findByRole("button", { name: "Download notes.txt" })).toBeVisible();
+    expect(confirmCalls()).toBe(1);
+  });
+
   it("says the file was not attached only when the re-read agrees", async () => {
     failUpload("confirm", Object.assign(new Error("Service unavailable"), { status: 503, code: "UNAVAILABLE" }), false);
     renderBoard(ISSUE_PATH);
@@ -2472,15 +2756,25 @@ describe("issue watchers", () => {
     window.localStorage.clear();
   });
 
-  it("prints the count the server stated rather than the number of rows it sent", async () => {
-    // Two rows and a total of seven. Any component reading `watchers.length`
-    // puts a 2 here, and nothing else in this suite would notice.
-    seedWatchers([watcher(ANNA), watcher(SOFIA)], 7);
+  it("draws no count at all — not the rows it sent, and not a count a write states", async () => {
+    // The issue read states no count (TAS-246), and a component reading
+    // `watchers.length` would put a 2 here — or, on the gateway, a "0" over a
+    // part that failed and arrived as `[]`. A write's own count is not drawn
+    // either: the next re-read would take it away again. No pill until the
+    // read carries one (backend ask A3).
+    seedWatchers([watcher(SOFIA), watcher("user-tom")], 7, 7);
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
-    expect(await panel.findByText("7")).toBeVisible();
-    expect(panel.queryByText("2")).toBeNull();
+    await waitFor(() => expect(document.querySelectorAll(".issue-watchers .watcher-row")).toHaveLength(2));
+    expect(document.querySelector(".issue-watchers .count-pill")).toBeNull();
+
+    holdWatchersRead(true);
+    fireEvent.click(await panel.findByRole("button", { name: "Watch" }));
+    await waitFor(() => expect(watchedUserIds()).toContain(ANNA));
+    expect(document.querySelectorAll(".issue-watchers .watcher-row")).toHaveLength(3);
+    expect(document.querySelector(".issue-watchers .count-pill")).toBeNull();
+    expect(panel.queryByText("7")).toBeNull();
   });
 
   it("reads the toggle from the list and flips it on a press", async () => {
@@ -2496,20 +2790,6 @@ describe("issue watchers", () => {
     // The optimistic flip, and then the row the server confirmed.
     expect(await panel.findByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(watchedUserIds()).toContain(ANNA));
-  });
-
-  it("takes the count from the write's own answer, before any refetch lands", async () => {
-    seedWatchers([watcher(SOFIA)], 1, 9);
-    renderBoard(ISSUE_PATH);
-
-    const panel = await section();
-    fireEvent.click(await panel.findByRole("button", { name: "Watch" }));
-
-    // The list re-read is held from here on, so nothing below can have come
-    // from it: the 9 is the number `watchIssue` answered with. An optimistic
-    // guess would have read 2.
-    holdWatchersRead(true);
-    expect(await panel.findByText("9")).toBeVisible();
   });
 
   it("says an unwatch removed nothing, without calling it a failure", async () => {
@@ -2928,6 +3208,35 @@ describe("issue watchers", () => {
     expect(panel.getByText("You")).toBeVisible();
   });
 
+  it("reads a list without the reader, beside the server's own 'you are watching', as a part that did not load", async () => {
+    // What a failed watcher part looks like on this gateway: `[]`, while
+    // `isWatching` — from the issue's core query — still says true. Offering
+    // "Watch" over that would offer a subscription the reader already has.
+    seedWatchers([watcher(ANNA), watcher(SOFIA)], 2);
+    emptyPartsOnRead({ watchers: true });
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    expect(await panel.findByText(/watchers could not be loaded with this issue/i)).toBeVisible();
+    expect(panel.queryByRole("button", { name: /^Watch/ })).toBeNull();
+    expect(panel.queryByText("No one is watching this issue yet")).toBeNull();
+  });
+
+  it("does not read its own optimistic unwatch as a part that did not load", async () => {
+    // The reader leaving the list is the one way a correct list goes without
+    // them while the cached `isWatching` still says true — so the write moves
+    // the flag with the row.
+    seedWatchers([watcher(ANNA)], 1, 0);
+    holdWatcherWrites(true);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Watching" }));
+    expect(await panel.findByRole("button", { name: "Watch" })).toBeVisible();
+    expect(panel.queryByText(/could not be loaded/i)).toBeNull();
+    releaseWatcherWrites();
+  });
+
   it("says the watchers did not come with the issue, and offers no toggle over a state nobody knows", async () => {
     failWatchersRead(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND" }));
     renderBoard(ISSUE_PATH);
@@ -3039,9 +3348,8 @@ describe("issue watchers", () => {
   });
 
   it("draws no pill for a count nobody has stated, and no write invents the first one", async () => {
-    // `null` is a `200` that omitted `totalCount`, which this contract permits,
-    // and it is not `0`: one is "the server says nobody", the other is "the
-    // server did not say". The mock never sends it, so no e2e can reach this.
+    // The issue read states no count, and the optimistic add must not start
+    // one from nothing.
     seedWatchers([watcher(SOFIA)], null);
     renderBoard(ISSUE_PATH);
 
@@ -3209,12 +3517,19 @@ describe("the issue panel before its issue has answered", () => {
     expect(loaded.querySelector(".is-skeleton")).toBeNull();
   });
 
-  it("still states a failed issue read as it did, with no skeleton left standing", async () => {
-    failIssue(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND" }));
+  it("states a failed issue read with the server's words and its request id, and no skeleton left standing", async () => {
+    // The panel's one read is the whole panel since TAS-246, so its failure is
+    // stated as a screen's is: a sentence, then the server's words and the id
+    // that finds it in the gateway log, outside the live region.
+    failIssue(Object.assign(new Error("Issue not found"), { status: 404, code: "NOT_FOUND", requestId: "req-panel" }));
     renderBoard(ISSUE_PATH);
 
-    const message = await screen.findByText("Issue not found");
-    expect(message).toHaveClass("panel-loading", "form-error");
+    const sentence = await screen.findByRole("alert");
+    expect(sentence).toHaveTextContent("This issue could not be opened.");
+    const message = screen.getByText("Issue not found");
+    expect(message.closest(".api-notice-detail")).not.toBeNull();
+    const copy = screen.getByRole("button", { name: /Copy request id req-panel/ });
+    expect(sentence.contains(copy)).toBe(false);
     const panel = message.closest("aside");
     expect(panel).not.toHaveAttribute("aria-busy");
     expect(panel?.querySelector(".is-skeleton")).toBeNull();
@@ -3263,9 +3578,15 @@ describe("the issue panel before its issue has answered", () => {
       renderBoard(ISSUE_PATH);
 
       const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
-      expect(
-        await within(panel).findByText(`The ${name} could not be loaded with this issue. Reopen it to try again.`),
-      ).toBeVisible();
+      const line = await within(panel).findByText(`The ${name} could not be loaded with this issue. Reopen it to try again.`);
+      expect(line).toBeVisible();
+      // One recipe in all four sections (art-director, TAS-246): the empty
+      // line's slot, set apart by `is-unavailable`, and no live region — a
+      // state of the section, not a refusal of anything the reader did. The
+      // error boxes stay for write refusals and are not used for this.
+      expect(line).toHaveClass("issue-links-empty", "is-unavailable");
+      expect(line.closest("[aria-live], [role='alert'], [role='status']")).toBeNull();
+      expect(panel.querySelector(".watcher-note.is-error, .attachment-note.is-error")).toBeNull();
       otherEmptyTexts.forEach((text) => expect(within(panel).getByText(text)).toBeVisible());
       expect(panel.querySelector(".panel-loading")).toBeNull();
       expect(sectionReads()).toEqual(twoReads);

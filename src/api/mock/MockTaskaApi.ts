@@ -15,6 +15,7 @@ import type {
   ListNotificationsParams,
   LoginInput,
   RetryableOutboxService,
+  IssueWriteAnswer,
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
@@ -42,22 +43,22 @@ import {
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import {
   AVATAR_BUCKET,
-  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
-  AVATAR_DECLARED_MAX_SIZE_BYTES,
+  AVATAR_GATEWAY_REFUSAL_MESSAGE,
   AVATAR_MAX_SIZE_BYTES,
   AVATAR_MOCK_STORE_ORIGIN,
   AVATAR_PRESIGNED_TTL_MS,
   avatarRefusal,
-  avatarRefusalKind,
   avatarSizeRefusalMessage,
 } from "../avatars";
+import { IssueVersionConflictError } from "../errors";
+import { blankSummaryRefusal, datesOutOfOrderServerMessage, issueVersionRefusal } from "../issuePatch";
 import {
   OBJECT_STORE_REJECTED_CODE,
   OBJECT_STORE_UNREACHABLE_CODE,
   ObjectStoreError,
   requireUsableUploadUrl,
 } from "../objectStore";
-import type { PlanningFields, PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
+import type { PlanningFields, PlanningFieldsInput } from "../planningFields";
 import { emptyPlanningFields, planningFieldRefusal, resolvePlanningFields } from "../planningFields";
 import type {
   AdminCatalog,
@@ -458,13 +459,13 @@ const requireOutboxRetryReason = (raw: string): string => {
 
 /**
  * The planning-field refusals, decided in src/api/planningFields.ts so that this
- * side and `RestTaskaApi` cannot drift, and thrown here as the code the gateway
- * answers with. `stored` is the issue as it stands — `null` on a create —
- * because two of them compare the request against the stored row rather than
- * against itself.
+ * side and `RestTaskaApi` cannot drift, and thrown here with the same code and
+ * sentence. All of them are decided by the input alone; the date that clashes
+ * with a *stored* one is `updateIssue`'s to refuse, after its version check, as
+ * the server does.
  */
-const requirePlanningFields = (input: PlanningFieldsInput, stored: StoredPlanningDates | null): void => {
-  const refusal = planningFieldRefusal(input, stored);
+const requirePlanningFields = (input: PlanningFieldsInput): void => {
+  const refusal = planningFieldRefusal(input);
   if (refusal) {
     throw new MockApiError(refusal.code, refusal.message);
   }
@@ -2184,20 +2185,27 @@ export class MockTaskaStore {
    * `IssueWatcherMapper.toWatcherProto` does. The mock cannot fail one part of
    * the read on its own, so every part is always present here; the `null` part
    * is reachable only against a fake (src/screens/BoardScreen.test.tsx).
+   *
+   * Three things match the server rather than this store's other reads. The
+   * watchers come newest first (`ORDER BY created_at DESC`, as on the list
+   * route). Their `totalCount` is `null`, because the details DTO states no
+   * count and the gateway sends none. And a link whose other issue is deleted
+   * is left out — the details join filters `other.deleted_at IS NULL`
+   * (`IssueLinkRepository`, read at `60d62ee`) — while `listIssueLinks` keeps
+   * it, as the list route does.
    */
   getIssue(projectId: string, issueId: string): IssueDetailsWithHistory {
     const issue = this.findIssue(projectId, issueId);
-    const watchers = this.watchers
-      .filter((item) => item.issueId === issue.id)
-      .sort(byCreatedAt)
-      .map((item) => this.watcherView(item, true));
+    const watchers = this.watchersNewestFirst(issue.id).map((item) => this.watcherView(item, true));
     const details: IssueDetails = {
       ...this.issueView(issue),
       assignee: issue.assigneeId ? this.personSummary(issue.assigneeId) : null,
       reporter: this.personSummary(issue.reporterId),
-      watchers: { watchers, totalCount: watchers.length },
+      watchers: { watchers, totalCount: null },
       isWatching: watchers.some((item) => item.userId === this.currentUserId),
-      links: this.linksOf(issue.id).map((link) => this.linkView(link, issue.id, true)),
+      links: this.linksOf(issue.id)
+        .filter((link) => this.otherEndIsLive(link, issue.id))
+        .map((link) => this.linkView(link, issue.id, true)),
       attachments: this.attachmentsOf(issue.id).map((item) => this.attachmentView(item, true)),
       commentCount: (this.commentsByIssue[issue.id] ?? []).length,
     };
@@ -2233,9 +2241,7 @@ export class MockTaskaStore {
 
   createIssue(projectId: string, input: CreateIssueInput): Issue {
     const project = this.getProject(projectId);
-    // No stored record to compare against on a create, so the date cross-check
-    // has nothing to read and the two dates are only checked against each other.
-    requirePlanningFields(input, null);
+    requirePlanningFields(input);
     const planning = resolvePlanningFields(input, emptyPlanningFields());
     const issueNumber =
       Math.max(0, ...this.issues.filter((item) => item.projectId === projectId).map((item) => item.issueNumber)) + 1;
@@ -2261,6 +2267,9 @@ export class MockTaskaStore {
     this.issues.push(issue);
     this.historyByIssue[issue.id] = [];
     this.pushHistory(issue.id, "CREATED", this.currentUserId, {});
+    // The reporter watches what they filed, as issue-service subscribes them
+    // (`IssueAutoWatchService.watchReporterOnCreate`, on by default).
+    this.autoWatch(issue, this.currentUserId, this.currentUserId);
     this.notifications.unshift(
       this.notification("ISSUE_CREATED", "Issue created", `${issue.issueKey} was created`, issue, now(), null),
     );
@@ -2268,77 +2277,121 @@ export class MockTaskaStore {
   }
 
   /**
-   * The same read-modify-write `RestTaskaApi` does, for the same reason: the
-   * gateway's `PUT` is a full replace, so "leave it as it is" is a value the
-   * client resolves rather than a key it omits. Reproduced here so the two
-   * cannot answer a partial edit differently — which is the defect this whole
-   * story is about.
+   * `PATCH /issues/{issueId}`, in the order issue-service checks it at develop
+   * `60d62ee` (`GrpcIssueService.patchIssue`, `IssuePatchServiceImpl`,
+   * `IssuePatchExecutor`) — see `TaskaApi.updateIssue`:
    *
-   * `Object.assign(issue, { ...input })` is what this used to be, and it is
-   * wrong twice over now. It writes an explicit `undefined` over a stored value
-   * whenever a caller passes `{ storyPoints: undefined }` — which
-   * `RestTaskaApi` can never produce, because it resolves first, but which a
-   * component constructs by spreading a form state; and it cannot tell that
-   * `undefined` from the `null` that means "clear it". Both are resolved before
-   * anything is written.
+   * 1. the refusals the request carries on its face — the version, a blank
+   *    summary, the input-only planning fields — before anything is looked up;
+   * 2. the issue exists;
+   * 3. the version. A stale one is a conflict carrying the issue as it stands,
+   *    and nothing is written — not even a refusal for the dates below, which
+   *    the server never reaches;
+   * 4. the request laid over the stored issue, and the merged start/due pair
+   *    checked, refused in the server's own sentence;
+   * 5. only when the assignee actually changes, to somebody other than `null`
+   *    or the caller: that person must hold `assign-issue-roles`;
+   * 6. a patch that changes nothing answers the issue as it is — no version
+   *    bump, no `updatedAt`, no history.
+   *
+   * The caller's own role is not checked, like every other issue write in this
+   * store (`update-issue-roles`, and `assign-issue-roles` for an assignee
+   * change, are the server's).
+   *
+   * A real write bumps the version by exactly one and records history as this
+   * store always has: `PRIORITY` when the priority moved and `UPDATED` for any
+   * other field — the server writes `UPDATED` for both, a difference that stays
+   * on the backlog — and `ASSIGNED` when the assignee moved, with an
+   * `ISSUE_ASSIGNED` notification and a subscription for a new assignee who is
+   * somebody (`IssueAutoWatchService.watchAssigneeOnAssign`).
    */
-  updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Issue {
+  updateIssue(projectId: string, issueId: string, input: UpdateIssueInput, expectedVersion: number): IssueWriteAnswer {
+    const versionRefusal = issueVersionRefusal(expectedVersion);
+    if (versionRefusal) throw new MockApiError(versionRefusal.code, versionRefusal.message);
+    requirePlanningFields(input);
+    const summaryRefusal = blankSummaryRefusal(input);
+    if (summaryRefusal) throw new MockApiError(summaryRefusal.code, summaryRefusal.message);
+
     const issue = this.findIssue(projectId, issueId);
-    // Before any mutation, and against the issue as stored: two of the refusals
-    // compare the request with the record it is about, so a store that wrote
-    // first and checked afterwards would accept what the gateway refuses.
-    requirePlanningFields(input, issue);
-    const changedPriority = input.priority && input.priority !== issue.priority;
-    Object.assign(issue, {
+    if (expectedVersion !== issue.version) {
+      throw new IssueVersionConflictError(this.writeAnswer(issue), expectedVersion);
+    }
+
+    const planning = resolvePlanningFields(input, issue);
+    if (planning.startDate !== null && planning.dueDate !== null && planning.startDate > planning.dueDate) {
+      throw new MockApiError("INVALID_ARGUMENT", datesOutOfOrderServerMessage(planning.startDate, planning.dueDate));
+    }
+    const next = {
       summary: input.summary ?? issue.summary,
-      description: input.description ?? issue.description,
+      // `null` clears it, and a cleared description reads back as `""` — the
+      // one spelling of empty `Issue.description` has.
+      description: input.description === undefined ? issue.description : (input.description ?? ""),
       priority: input.priority ?? issue.priority,
-      ...resolvePlanningFields(input, issue),
-      updatedAt: now(),
-      version: issue.version + 1,
-    });
-    this.pushHistory(issue.id, changedPriority ? "PRIORITY" : "UPDATED", this.currentUserId, {
-      field: changedPriority ? "priority" : "issue",
-      to: changedPriority ? input.priority : undefined,
-    });
-    return this.issueView(issue);
+      assigneeId: input.assigneeId === undefined ? issue.assigneeId : input.assigneeId,
+      ...planning,
+    };
+
+    const assigneeChanged = next.assigneeId !== issue.assigneeId;
+    if (assigneeChanged && next.assigneeId !== null && next.assigneeId !== this.currentUserId) {
+      this.getUser(next.assigneeId);
+      this.requireAssignableRole(projectId, next.assigneeId);
+    }
+
+    const changedPriority = next.priority !== issue.priority;
+    const fieldsChanged =
+      changedPriority ||
+      next.summary !== issue.summary ||
+      next.description !== issue.description ||
+      next.storyPoints !== issue.storyPoints ||
+      next.startDate !== issue.startDate ||
+      next.dueDate !== issue.dueDate ||
+      next.originalEstimateMinutes !== issue.originalEstimateMinutes ||
+      next.remainingEstimateMinutes !== issue.remainingEstimateMinutes;
+    if (!fieldsChanged && !assigneeChanged) return this.writeAnswer(issue);
+
+    Object.assign(issue, next, { updatedAt: now(), version: issue.version + 1 });
+    if (fieldsChanged) {
+      this.pushHistory(issue.id, changedPriority ? "PRIORITY" : "UPDATED", this.currentUserId, {
+        field: changedPriority ? "priority" : "issue",
+        to: changedPriority ? next.priority : undefined,
+      });
+    }
+    if (assigneeChanged) {
+      this.pushHistory(issue.id, "ASSIGNED", this.currentUserId, { to: next.assigneeId });
+      if (next.assigneeId) {
+        this.autoWatch(issue, next.assigneeId, this.currentUserId);
+        this.notifications.unshift(
+          this.notification("ISSUE_ASSIGNED", "Issue assigned", `${issue.issueKey} was assigned to you`, issue, now(), null),
+        );
+      }
+    }
+    return this.writeAnswer(issue);
+  }
+
+  /** The issue as a write answers it: no `labels`, which the server's write answer never fills. */
+  private writeAnswer(issue: Issue): IssueWriteAnswer {
+    const { labels: _labels, ...answer } = issue;
+    return { ...answer };
   }
 
   /**
-   * The assignee's role is checked: issue-service holds the assignee to
-   * `assign-issue-roles` (ADMIN, MEMBER) as well as the caller (read at
-   * `develop` `1cfe4d7`, TAS-226), which the contract does not state. So a
-   * VIEWER is refused as an assignee, and so is somebody who is not on the
-   * project at all — this store used to accept any user it knew of.
-   *
-   * Unassigning (`null`) skips the check here, but that is this store's own
-   * shortcut, not the server's. `IssueServiceImpl.assignIssue` skips the
-   * assignee check only when the actor assigns *themselves*
-   * (`actorUserId.equals(assigneeId)`), never for an absent one — its
-   * `assigneeId` parameter is a plain `UUID`, and a `null` never reaches it:
-   * the contract makes the field required, and `RestTaskaApi.assignIssue(null)`
-   * already refuses it client-side (see "An assignee cannot be cleared — by
-   * contract" in `docs/ai/API-DIVERGENCE.md`).
-   *
-   * The caller's own role is still not checked here, like every other issue
-   * write in this store; only the assignee half was in TAS-226's scope.
+   * A subscription the server makes on the reader's behalf — the reporter on a
+   * create, a new assignee on an assignment. Idempotent, as the server's insert
+   * is (`ON CONFLICT DO NOTHING`), and it writes no history row, as the server
+   * writes none. Until TAS-246 this store did neither — docs/ai/API-DIVERGENCE.md,
+   * "Assigning an issue subscribes the assignee, and creating one subscribes the
+   * reporter; the contract does not say so, and the mock did neither".
    */
-  assignIssue(projectId: string, issueId: string, assigneeId: string | null): Issue {
-    const issue = this.findIssue(projectId, issueId);
-    if (assigneeId) {
-      this.getUser(assigneeId);
-      this.requireAssignableRole(projectId, assigneeId);
-    }
-    issue.assigneeId = assigneeId;
-    issue.updatedAt = now();
-    issue.version += 1;
-    this.pushHistory(issue.id, "ASSIGNED", this.currentUserId, { to: assigneeId });
-    if (assigneeId) {
-      this.notifications.unshift(
-        this.notification("ISSUE_ASSIGNED", "Issue assigned", `${issue.issueKey} was assigned to you`, issue, now(), null),
-      );
-    }
-    return this.issueView(issue);
+  private autoWatch(issue: Issue, userId: string, actorId: string): void {
+    if (this.watchers.some((item) => item.issueId === issue.id && item.userId === userId)) return;
+    this.watchers.push({
+      id: makeId("watcher"),
+      issueId: issue.id,
+      projectId: issue.projectId,
+      userId,
+      createdAt: now(),
+      createdBy: actorId,
+    });
   }
 
   /**
@@ -2535,8 +2588,20 @@ export class MockTaskaStore {
    */
   listIssueWatchers(projectId: string, issueId: string): IssueWatchers {
     const issue = this.findIssue(projectId, issueId);
-    const watchers = this.watchers.filter((item) => item.issueId === issue.id).sort(byCreatedAt);
+    const watchers = this.watchersNewestFirst(issue.id);
     return { watchers: watchers.map((item) => this.watcherView(item, false)), totalCount: watchers.length };
+  }
+
+  /**
+   * One issue's subscriptions in the order both server routes answer with,
+   * `ORDER BY created_at DESC` (`IssueWatcherRepository`, read at `60d62ee`).
+   * Equal timestamps keep the later subscription first.
+   */
+  private watchersNewestFirst(issueId: string): StoredIssueWatcher[] {
+    return this.watchers
+      .filter((item) => item.issueId === issueId)
+      .sort(byCreatedAt)
+      .reverse();
   }
 
   /**
@@ -2959,34 +3024,30 @@ export class MockTaskaStore {
    * only after that — inside a `Mono.defer` — `createPresignedUploadUrl`, whose
    * `S3StorageClient.validateFileParams` judges the file. So:
    *
-   * - a `sizeBytes` past the schema's declared 5 MB is the gateway's 400
-   *   `INVALID_ARGUMENT`, "Invalid request parameters", before anything else;
+   * - a `sizeBytes` over 2 MB is the gateway's 400 `INVALID_ARGUMENT`,
+   *   "Invalid request parameters", before anything else — the schema's
+   *   `maximum` is 2097152 since backend TAS-222, the same number auth-service
+   *   enforces, so nothing over it gets further;
    * - then the caller has to exist, which `currentUser()` stands in for;
-   * - then the type, and the enforced **2 MB** — `OUT_OF_RANGE`, which answers
-   *   400 over the wire since backend PR #147 gave `RestErrorMapper` a row for
-   *   it (a 500 before).
+   * - then the type, `INVALID_ARGUMENT` in `validateFileParams`'s words.
    *
    * An empty file is bean-validated at the gateway too, with the same code as
    * the type arm; this throws `validateFileParams`'s sentence for it, as
-   * `RestTaskaApi.refuseAvatar` does. See `src/api/avatars.ts` for both
-   * ceilings; `refuseAvatar` answers each of these files with the same code, so
-   * a 3 MB photo and a 6 MB one are each stopped identically in both modes.
+   * `RestTaskaApi.refuseAvatar` does, which answers each of these files with
+   * the same code. `OUT_OF_RANGE` is the confirm's alone now (leg 3).
    *
    * **There is no role to check here.** The route is scoped to `me`, so the
    * only questions the server can ask are whether the request carries a valid
    * session and whether its user exists.
    */
   createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): AvatarUploadTicket {
-    if (input.sizeBytes > AVATAR_DECLARED_MAX_SIZE_BYTES) {
-      throw new MockApiError("INVALID_ARGUMENT", AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE);
+    if (input.sizeBytes > AVATAR_MAX_SIZE_BYTES) {
+      throw new MockApiError("INVALID_ARGUMENT", AVATAR_GATEWAY_REFUSAL_MESSAGE);
     }
     const user = this.currentUser();
+    // Only the type and the empty file can be left: the size was answered above.
     const refusal = avatarRefusal(input);
-    if (refusal) {
-      // The same split `refuseAvatar` uses: only the ceiling is OUT_OF_RANGE.
-      const code = avatarRefusalKind(input) === "size" ? "OUT_OF_RANGE" : "INVALID_ARGUMENT";
-      throw new MockApiError(code, refusal);
-    }
+    if (refusal) throw new MockApiError("INVALID_ARGUMENT", refusal);
 
     const objectKey = makeId("avatar-object");
     const signedAt = new Date();
@@ -4511,6 +4572,12 @@ export class MockTaskaStore {
    * link was created with, so the caller finds "the other issue" by comparing
    * against the issue it asked about rather than by trusting either field.
    */
+  /** Whether the issue at the other end of a link still exists — the details read's join condition. */
+  private otherEndIsLive(link: StoredIssueLink, viewerIssueId: string): boolean {
+    const otherId = link.sourceIssueId === viewerIssueId ? link.targetIssueId : link.sourceIssueId;
+    return this.issues.some((item) => item.id === otherId && item.deletedAt === null);
+  }
+
   private linkView(link: StoredIssueLink, viewerIssueId: string, withTarget = false): IssueLink {
     // The other end, as issue-service's `findIssueLinksWithOtherIssues` joins
     // it — and only on the details read, which is the only one that joins.
@@ -4765,12 +4832,13 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.createIssue(projectId, input));
   }
 
-  async updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
-    return wait(this.store.updateIssue(projectId, issueId, input));
-  }
-
-  async assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue> {
-    return wait(this.store.assignIssue(projectId, issueId, assigneeId));
+  async updateIssue(
+    projectId: string,
+    issueId: string,
+    input: UpdateIssueInput,
+    expectedVersion: number,
+  ): Promise<IssueWriteAnswer> {
+    return wait(this.store.updateIssue(projectId, issueId, input, expectedVersion));
   }
 
   async transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue> {

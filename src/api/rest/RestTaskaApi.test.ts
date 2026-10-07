@@ -1,16 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RestTaskaApi } from "./RestTaskaApi";
+import { ApiError, RestTaskaApi } from "./RestTaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 import { ATTACHMENT_MAX_SIZE_BYTES, attachmentSizeRefusalMessage } from "../attachments";
-import {
-  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
-  AVATAR_DECLARED_MAX_SIZE_BYTES,
-  AVATAR_MAX_SIZE_BYTES,
-  avatarSizeRefusalMessage,
-} from "../avatars";
+import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES } from "../avatars";
 import { ObjectStoreError } from "../objectStore";
-import { isConflict, isMissingOrForbidden, isUndeployedRoute } from "../errors";
-import { ESTIMATE_MAX_MESSAGE, START_DATE_AFTER_STORED_DUE_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
+import { issueLinkTypeLabel } from "../../lib/format";
+import { IssueVersionConflictError, apiErrorFacts, isConflict, isMissingOrForbidden, isUndeployedRoute } from "../errors";
+import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
+import type { UpdateIssueInput } from "../TaskaApi";
 
 /**
  * The 401 path is the one piece of RestTaskaApi the UI cannot see for itself:
@@ -888,6 +885,35 @@ describe("RestTaskaApi issue links", () => {
     // The response field is not the request enum, and narrowing it to one would
     // throw away the values that make it worth having.
     expect(links.map((item) => item.viewLinkType)).toEqual(["IS_BLOCKED_BY", "SUPERSEDES"]);
+  });
+
+  it("strips the protobuf prefix the gateway sends, and reads the two non-relations as none", async () => {
+    // `IssueMapper` writes the proto enum's `.name()` (backend `60d62ee`), so
+    // the wire carries `ISSUE_LINK_VIEW_TYPE_IS_BLOCKED_BY`. `UNSPECIFIED` is
+    // the zero value with its prefix gone; `UNRECOGNIZED` is what `.name()`
+    // answers for a number the gateway does not know, and has no prefix.
+    stubFetch({
+      items: [
+        link({ viewLinkType: "ISSUE_LINK_VIEW_TYPE_IS_BLOCKED_BY" }),
+        link({ id: "link-2", viewLinkType: "ISSUE_LINK_VIEW_TYPE_UNSPECIFIED" }),
+        link({ id: "link-3", viewLinkType: "UNSPECIFIED" }),
+        link({ id: "link-4", viewLinkType: "UNRECOGNIZED" }),
+        link({ id: "link-5", viewLinkType: "" }),
+        link({ id: "link-6", viewLinkType: "ISSUE_LINK_VIEW_TYPE_SUPERSEDES" }),
+      ],
+    });
+
+    const links = await new RestTaskaApi().listIssueLinks("project-1", "issue-1");
+
+    expect(links.map((item) => item.viewLinkType)).toEqual(["IS_BLOCKED_BY", "", "", "", "", "SUPERSEDES"]);
+    expect(links.map((item) => issueLinkTypeLabel(item.viewLinkType))).toEqual([
+      "Is blocked by",
+      "Linked",
+      "Linked",
+      "Linked",
+      "Linked",
+      "Supersedes",
+    ]);
   });
 
   it("survives a link that states no relation at all", async () => {
@@ -2650,23 +2676,8 @@ describe("RestTaskaApi outbox retry", () => {
 });
 
 /**
- * The five planning fields (TAS-189) as `RestTaskaApi` puts them on the wire.
- *
- * The whole section is about one defect. `PUT /issues/{issueId}` is a **full
- * replace**: `IssueServiceImpl.updateIssue` on backend `develop` writes all five
- * unconditionally, the proto fields are `optional`, the gateway sets them with
- * `setIfPresent` and `GrpcIssueService` resolves an unset optional with
- * `.orElse(null)` — so a field the request omits is erased. The board sends
- * `{summary}`, `{priority}` and `{description}` one at a time, and against a
- * gateway that carries these fields — which the contract has declared since
- * merged PR #148 — those three edits would each wipe the story points and both
- * dates.
- *
- * What is pinned here, and cannot be seen from the mock: the exact body. A
- * partial edit re-sends the values it is keeping, a resolved `null` is omitted
- * because omission is how this contract spells "not set", and against a gateway
- * that carries no planning fields yet the body is byte for byte what it was
- * before this story.
+ * The five planning fields (TAS-189) as `RestTaskaApi` reads them and puts them
+ * on a create. The edit is a PATCH since TAS-246 and has its own block below.
  */
 describe("RestTaskaApi issue planning fields", () => {
   const answer = (status: number, body: unknown) =>
@@ -2712,25 +2723,6 @@ describe("RestTaskaApi issue planning fields", () => {
     history: [],
   });
 
-  /** A read and a write on the same path, told apart by the method. */
-  const stubIssue = (planning: Record<string, unknown> = {}, updateResponse: Record<string, unknown> = {}) =>
-    stubFetch((_input, init) =>
-      (init?.method ?? "GET") === "GET"
-        ? storedIssue(planning)
-        : {
-            id: "issue-1",
-            summary: "Login form validation fails on empty email",
-            description: "Returns a 500 instead of a 400.",
-            priority: "HIGH",
-            ...updateResponse,
-          },
-    );
-
-  const writtenBody = (fetchStub: ReturnType<typeof stubFetch>) => {
-    const put = fetchStub.mock.calls.find(([, init]) => init?.method === "PUT");
-    return JSON.parse(put?.[1]?.body ?? "{}") as Record<string, unknown>;
-  };
-
   beforeEach(() => {
     window.localStorage.clear();
     window.localStorage.setItem("taska.accessToken", "valid-access");
@@ -2738,99 +2730,6 @@ describe("RestTaskaApi issue planning fields", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
-  });
-
-  it("re-sends every planning field it is keeping when only the summary is edited", async () => {
-    const fetchStub = stubIssue({
-      storyPoints: 3,
-      startDate: "2026-06-15",
-      dueDate: "2026-06-26",
-      originalEstimateMinutes: 480,
-      remainingEstimateMinutes: 240,
-    });
-
-    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { summary: "Revisited" });
-
-    // The regression, stated on the request rather than on the answer: the four
-    // fields nobody touched are on the wire, so the full replace replaces them
-    // with themselves.
-    expect(writtenBody(fetchStub)).toEqual({
-      summary: "Revisited",
-      description: "Returns a 500 instead of a 400.",
-      priority: "HIGH",
-      storyPoints: 3,
-      startDate: "2026-06-15",
-      dueDate: "2026-06-26",
-      originalEstimateMinutes: 480,
-      remainingEstimateMinutes: 240,
-    });
-    expect(updated).toMatchObject({ storyPoints: 3, dueDate: "2026-06-26", remainingEstimateMinutes: 240 });
-  });
-
-  it("sends the same three keys it always did against a gateway that has no planning fields", async () => {
-    // The detail read stubbed here carries none of the five — a gateway older
-    // than merged PR #148, and, until one is measured, the only kind this
-    // client has evidence of — so every one of them resolves to `null` and
-    // every one is omitted. This is why the fix could ship ahead of the
-    // backend: not one request byte changes.
-    const fetchStub = stubIssue();
-
-    await new RestTaskaApi().updateIssue("project-1", "issue-1", { priority: "LOW" });
-
-    expect(writtenBody(fetchStub)).toEqual({
-      summary: "Login form validation fails on empty email",
-      description: "Returns a 500 instead of a 400.",
-      priority: "LOW",
-    });
-  });
-
-  it("omits the key it was asked to clear and keeps sending the rest", async () => {
-    const fetchStub = stubIssue({ storyPoints: 3, dueDate: "2026-06-26", originalEstimateMinutes: 480 });
-
-    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { storyPoints: null });
-
-    const body = writtenBody(fetchStub);
-    expect(body).not.toHaveProperty("storyPoints");
-    expect(body).toMatchObject({ dueDate: "2026-06-26", originalEstimateMinutes: 480 });
-    expect(updated.storyPoints).toBeNull();
-  });
-
-  it("keeps a zero and a fraction on the wire, where a falsy check would drop them", async () => {
-    const fetchStub = stubIssue({ storyPoints: 0, originalEstimateMinutes: 0 });
-
-    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { summary: "Same" });
-
-    expect(writtenBody(fetchStub)).toMatchObject({ storyPoints: 0, originalEstimateMinutes: 0 });
-    expect(updated.storyPoints).toBe(0);
-    expect(updated.originalEstimateMinutes).toBe(0);
-
-    vi.unstubAllGlobals();
-    const halfStub = stubIssue({ storyPoints: 1.5 });
-    const half = await new RestTaskaApi().updateIssue("project-1", "issue-1", { summary: "Same" });
-    expect(writtenBody(halfStub)).toMatchObject({ storyPoints: 1.5 });
-    expect(half.storyPoints).toBe(1.5);
-  });
-
-  it("reads the answer as 'not set' where it states nothing, rather than as 'unchanged'", async () => {
-    // `UpdateIssueResponseDto` carries only the fields that are set, so the
-    // cleared one is simply absent from it. Spreading the response over the
-    // pre-edit issue would leave the old 3 standing on a field just cleared.
-    const fetchStub = stubIssue({ storyPoints: 3, dueDate: "2026-06-26" }, { dueDate: "2026-06-26" });
-
-    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { storyPoints: null });
-
-    expect(writtenBody(fetchStub)).not.toHaveProperty("storyPoints");
-    expect(updated.storyPoints).toBeNull();
-    expect(updated.dueDate).toBe("2026-06-26");
-  });
-
-  it("prefers a zero the server states over the value it was sent", async () => {
-    const fetchStub = stubIssue({ storyPoints: 5 }, { storyPoints: 0 });
-
-    const updated = await new RestTaskaApi().updateIssue("project-1", "issue-1", { storyPoints: 0 });
-
-    expect(writtenBody(fetchStub)).toMatchObject({ storyPoints: 0 });
-    expect(updated.storyPoints).toBe(0);
   });
 
   it("folds an absent planning field to null instead of leaving it undefined", async () => {
@@ -2851,81 +2750,6 @@ describe("RestTaskaApi issue planning fields", () => {
       expect(Object.values(issue)).not.toContain(undefined);
       expect(issue).toHaveProperty(key);
     }
-  });
-
-  it("refuses the values the gateway would refuse, without spending the write", async () => {
-    const api = new RestTaskaApi();
-    const refuse = async (input: Record<string, unknown>, message?: string) => {
-      vi.unstubAllGlobals();
-      const fetchStub = stubIssue({ storyPoints: 3, startDate: "2026-06-15", dueDate: "2026-06-26" });
-      await expect(api.updateIssue("project-1", "issue-1", input)).rejects.toMatchObject({
-        code: "INVALID_ARGUMENT",
-        status: 400,
-        ...(message === undefined ? {} : { message }),
-      });
-      // The write did not happen. Whether the *read* did depends on which
-      // refusal it was, and that is the next test's subject.
-      expect(fetchStub.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
-    };
-
-    // The same input the mock refuses, refused with the same sentence: both
-    // sides read it from src/api/planningFields.ts.
-    await refuse({ storyPoints: -0.5 }, STORY_POINTS_RANGE_MESSAGE);
-    await refuse({ storyPoints: 1000 });
-    await refuse({ storyPoints: 1.235 });
-    await refuse({ storyPoints: Number.NaN });
-    await refuse({ originalEstimateMinutes: -1 });
-    await refuse({ remainingEstimateMinutes: 30.5 });
-    // Above int32 the gateway cannot bind the body at all, so this one is
-    // refused before the write for a reason no validator states.
-    await refuse({ originalEstimateMinutes: 2_147_483_648 }, ESTIMATE_MAX_MESSAGE);
-    await refuse({ remainingEstimateMinutes: 2_147_483_648 }, ESTIMATE_MAX_MESSAGE);
-    await refuse({ startDate: "2026-13-01" });
-    await refuse({ startDate: "2026-02-30" });
-    await refuse({ startDate: "2026-08-02", dueDate: "2026-08-01" });
-    // The stored-date cross-check, both ways round. The second is refused even
-    // though the same request clears the due date it is being compared with.
-    await refuse({ startDate: "2026-07-01" });
-    await refuse({ startDate: "2026-07-01", dueDate: null });
-    await refuse({ dueDate: "2026-06-01" });
-  });
-
-  it("refuses an input-only value without spending a single request", async () => {
-    // Eight of the ten refusals are decided by the caller's input alone, so
-    // they are answered *before* the read-modify-write's read. The read is not
-    // free: it is a gateway round trip, on a route the reader is about to be
-    // told they cannot use. `NaN` is the one a form reaches by accident —
-    // `Number("abc")` — and it is refused with nothing fetched at all.
-    const fetchStub = stubIssue({ storyPoints: 3, startDate: "2026-06-15", dueDate: "2026-06-26" });
-    const api = new RestTaskaApi();
-
-    await expect(api.updateIssue("project-1", "issue-1", { storyPoints: Number.NaN })).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      status: 400,
-    });
-    expect(fetchStub).not.toHaveBeenCalled();
-
-    // The same for the other seven input-only refusals, one of each kind: a
-    // bound, a format, and the two dates against each other.
-    for (const input of [
-      { storyPoints: 1000 },
-      { storyPoints: 1.235 },
-      { originalEstimateMinutes: 30.5 },
-      { originalEstimateMinutes: 2_147_483_648 },
-      { remainingEstimateMinutes: -1 },
-      { startDate: "2026-02-30" },
-      { startDate: "2026-08-02", dueDate: "2026-08-01" },
-    ]) {
-      await expect(api.updateIssue("project-1", "issue-1", input)).rejects.toMatchObject({ status: 400 });
-    }
-    expect(fetchStub).not.toHaveBeenCalled();
-
-    // And the line the split must not cross: a stored-date refusal still needs
-    // the issue, so that one does read — and still does not write.
-    await expect(api.updateIssue("project-1", "issue-1", { startDate: "2026-07-01" })).rejects.toMatchObject({
-      message: START_DATE_AFTER_STORED_DUE_MESSAGE,
-    });
-    expect(fetchStub.mock.calls.map(([, init]) => init?.method ?? "GET")).toEqual(["GET"]);
   });
 
   it("sends only the planning fields a create states", async () => {
@@ -2996,6 +2820,249 @@ describe("RestTaskaApi issue planning fields", () => {
   });
 });
 
+
+/**
+ * The issue edit as `RestTaskaApi` puts it on the wire since TAS-246:
+ * `PATCH /issues/{issueId}` with `If-Match`, one request, and a body of only
+ * what the caller stated (backend TAS-215, read at develop `60d62ee`). What is
+ * pinned here cannot be seen from the mock: the headers, the exact body, and
+ * how a 409 is told apart from any other.
+ */
+describe("RestTaskaApi issue writes", () => {
+  interface Init {
+    method?: string;
+    body?: string;
+    headers?: Record<string, string>;
+  }
+  interface Reply {
+    status: number;
+    body?: unknown;
+    requestId?: string;
+  }
+
+  const answer = ({ status, body, requestId }: Reply) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name === "X-Request-Id" ? (requestId ?? null) : null) },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (reply: (input: string, init?: Init) => Reply) => {
+    const fetchStub = vi.fn(async (input: string, init?: Init) => answer(reply(input, init)));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  /** `IssueResponseDto` as the PATCH answers it — `labels` always `[]`, on 200 and 409 alike. */
+  const issueBody = (over: Record<string, unknown> = {}) => ({
+    id: "issue-1",
+    projectId: "project-1",
+    issueNumber: 101,
+    issueKey: "TAS-101",
+    issueType: "BUG",
+    summary: "Login form validation fails on empty email",
+    description: "Returns a 500 instead of a 400.",
+    status: "IN_PROGRESS",
+    priority: "HIGH",
+    assigneeId: "user-mark",
+    reporterId: "user-anna",
+    createdAt: "2026-06-12T09:10:00Z",
+    updatedAt: "2026-06-12T09:11:00Z",
+    version: 5,
+    deletedAt: null,
+    labels: [],
+    storyPoints: 3,
+    startDate: "2026-06-15",
+    dueDate: "2026-06-26",
+    ...over,
+  });
+
+  const sentBody = (fetchStub: ReturnType<typeof stubFetch>, call = 0) =>
+    JSON.parse(fetchStub.mock.calls[call][1]?.body ?? "{}") as Record<string, unknown>;
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends one PATCH with If-Match and only the key that changed", async () => {
+    const fetchStub = stubFetch(() => ({ status: 200, body: issueBody({ summary: "Revisited" }) }));
+
+    await new RestTaskaApi().updateIssue("project-1", "issue-1", { summary: "Revisited" }, 4);
+
+    // No read before the write: a merge patch leaves what it does not mention.
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchStub.mock.calls[0];
+    expect(path).toBe("/api/v1/issues/issue-1");
+    expect(init?.method).toBe("PATCH");
+    expect(init?.headers?.["If-Match"]).toBe('"4"');
+    expect(sentBody(fetchStub)).toEqual({ summary: "Revisited" });
+  });
+
+  it("keeps null for every clearable key, leaves undefined out, and sends a zero", async () => {
+    const fetchStub = stubFetch(() => ({ status: 200, body: issueBody() }));
+    const api = new RestTaskaApi();
+
+    await api.updateIssue(
+      "project-1",
+      "issue-1",
+      {
+        description: null,
+        assigneeId: null,
+        storyPoints: null,
+        startDate: null,
+        dueDate: null,
+        originalEstimateMinutes: null,
+        remainingEstimateMinutes: null,
+        priority: undefined,
+      },
+      4,
+    );
+    expect(sentBody(fetchStub)).toEqual({
+      description: null,
+      assigneeId: null,
+      storyPoints: null,
+      startDate: null,
+      dueDate: null,
+      originalEstimateMinutes: null,
+      remainingEstimateMinutes: null,
+    });
+
+    await api.updateIssue("project-1", "issue-1", { storyPoints: 0, originalEstimateMinutes: 0 }, 4);
+    expect(sentBody(fetchStub, 1)).toEqual({ storyPoints: 0, originalEstimateMinutes: 0 });
+  });
+
+  it("never puts a key outside the contract on the wire", async () => {
+    const fetchStub = stubFetch(() => ({ status: 200, body: issueBody() }));
+    const wide = { priority: "LOW", version: 9, labels: [], status: "DONE" } as unknown as UpdateIssueInput;
+
+    await new RestTaskaApi().updateIssue("project-1", "issue-1", wide, 4);
+
+    expect(sentBody(fetchStub)).toEqual({ priority: "LOW" });
+  });
+
+  it("maps the answer without labels, which this route never fills", async () => {
+    stubFetch(() => ({ status: 200, body: issueBody({ storyPoints: 0, assigneeId: "" }) }));
+
+    const answer = await new RestTaskaApi().updateIssue("project-1", "issue-1", { storyPoints: 0 }, 4);
+
+    expect(answer).not.toHaveProperty("labels");
+    expect(answer).toMatchObject({ version: 5, storyPoints: 0, assigneeId: null, remainingEstimateMinutes: null });
+  });
+
+  it("turns a 409 carrying the issue into a version conflict with the server's issue", async () => {
+    stubFetch(() => ({
+      status: 409,
+      body: issueBody({ version: 7, priority: "LOW" }),
+      requestId: "req-409",
+    }));
+
+    const failure = await new RestTaskaApi()
+      .updateIssue("project-1", "issue-1", { priority: "HIGH" }, 4)
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(IssueVersionConflictError);
+    const conflict = failure as IssueVersionConflictError;
+    expect(conflict).toMatchObject({ expectedVersion: 4, requestId: "req-409", status: 409 });
+    expect(conflict.current).toMatchObject({ id: "issue-1", version: 7, priority: "LOW" });
+    expect(conflict.current).not.toHaveProperty("labels");
+    expect(isConflict(conflict)).toBe(true);
+    expect(apiErrorFacts(conflict)).toMatchObject({ requestId: "req-409", status: 409 });
+  });
+
+  it("leaves a 409 without an issue in it as the plain ApiError it is", async () => {
+    stubFetch(() => ({ status: 409, body: { code: "ABORTED", message: "Concurrent update" } }));
+
+    const failure = await new RestTaskaApi()
+      .updateIssue("project-1", "issue-1", { priority: "HIGH" }, 4)
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).not.toBeInstanceOf(IssueVersionConflictError);
+    expect(failure).toMatchObject({ status: 409, code: "ABORTED", message: "Concurrent update" });
+  });
+
+  it("passes the server's date-order refusal through in its own words", async () => {
+    // The merged pair is the server's to check since TAS-246; the client no
+    // longer refuses a date against the stored one.
+    const sentence = "Start date: 2026-07-01 must not be after Due date: 2026-06-26";
+    const fetchStub = stubFetch(() => ({ status: 400, body: { code: "INVALID_ARGUMENT", message: sentence } }));
+
+    await expect(
+      new RestTaskaApi().updateIssue("project-1", "issue-1", { startDate: "2026-07-01" }, 4),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400, message: sentence });
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses what cannot succeed without spending a request", async () => {
+    const fetchStub = stubFetch(() => ({ status: 200, body: issueBody() }));
+    const api = new RestTaskaApi();
+    const refused = (input: UpdateIssueInput, version = 4) =>
+      expect(api.updateIssue("project-1", "issue-1", input, version)).rejects.toMatchObject({ status: 400 });
+
+    // A version the gateway cannot parse, and one issue-service will not take.
+    await expect(api.updateIssue("project-1", "issue-1", { priority: "LOW" }, 0)).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "body.version must be positive",
+    });
+    await expect(api.updateIssue("project-1", "issue-1", { priority: "LOW" }, 1.5)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    await refused({ priority: "LOW" }, Number.NaN);
+    // A blank summary.
+    await expect(api.updateIssue("project-1", "issue-1", { summary: "  " }, 4)).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "body.summary must not be blank",
+    });
+    // The planning-field refusals the input decides alone.
+    await expect(api.updateIssue("project-1", "issue-1", { storyPoints: -0.5 }, 4)).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: STORY_POINTS_RANGE_MESSAGE,
+    });
+    for (const input of [
+      { storyPoints: Number.NaN },
+      { storyPoints: 1000 },
+      { storyPoints: 1.235 },
+      { originalEstimateMinutes: 30.5 },
+      { remainingEstimateMinutes: -1 },
+      { startDate: "2026-02-30" },
+      { startDate: "2026-08-02", dueDate: "2026-08-01" },
+    ]) {
+      await refused(input);
+    }
+    await expect(
+      api.updateIssue("project-1", "issue-1", { originalEstimateMinutes: 2_147_483_648 }, 4),
+    ).rejects.toMatchObject({ message: ESTIMATE_MAX_MESSAGE });
+
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it("retries a refreshed 401 with the same If-Match", async () => {
+    window.localStorage.setItem("taska.refreshToken", "stale-refresh");
+    let patches = 0;
+    const fetchStub = stubFetch((input) => {
+      if (input.endsWith("/auth/refresh")) {
+        return { status: 200, body: { accessToken: "fresh-access", refreshToken: "fresh-refresh", expiresIn: 3600 } };
+      }
+      patches += 1;
+      return patches === 1
+        ? { status: 401, body: { code: "UNAUTHENTICATED", message: "Access token expired" } }
+        : { status: 200, body: issueBody() };
+    });
+
+    await new RestTaskaApi().updateIssue("project-1", "issue-1", { priority: "LOW" }, 4);
+
+    const writes = fetchStub.mock.calls.filter(([, init]) => init?.method === "PATCH");
+    expect(writes).toHaveLength(2);
+    expect(writes.map(([, init]) => init?.headers?.["If-Match"])).toEqual(['"4"', '"4"']);
+    expect(writes.map(([, init]) => init?.body)).toEqual([writes[0][1]?.body, writes[0][1]?.body]);
+  });
+});
 
 /**
  * The attachment routes (TAS-190) as `RestTaskaApi` puts them on the wire.
@@ -3340,44 +3407,22 @@ describe("RestTaskaApi avatars", () => {
     expect(ticket).toEqual({ uploadUrl: "https://store.example/avatar?sig=1", objectKey: "obj", expiresIn: 900 });
   });
 
-  it("enforces the 2 MB the server applies, not the 5 MB its own schema declares", async () => {
+  it("refuses anything over 2 MB with the gateway's own bean-validation answer, before the type", async () => {
     const fetchStub = vi.fn(async () => answer(200, {}));
     vi.stubGlobal("fetch", fetchStub);
     const api = new RestTaskaApi();
 
-    // 3 MB passes `sizeBytes`'s declared `maximum: 5242880` and fails
-    // `S3StorageClient.validateFileParams`, which reads auth-service's
-    // `storage.max-file-size-bytes: 2097152`. The schema is the thing that is
-    // wrong here, and this is the assertion that says so.
+    // Since backend TAS-222 the schema says `maximum: 2097152`, the number
+    // auth-service enforces, so the generated DTO's `@Max` refuses a 3 MB file
+    // as the gateway reads the body — with its fixed sentence, on 400 — before
+    // the content type is looked at. One band, where there used to be two.
     const threeMegabytes = 3 * 1024 * 1024;
-    expect(threeMegabytes).toBeLessThan(5242880);
     expect(threeMegabytes).toBeGreaterThan(AVATAR_MAX_SIZE_BYTES);
-
-    await expect(
-      api.createAvatarUploadUrl({ fileName: "huge.png", contentType: "image/png", sizeBytes: threeMegabytes }),
-    ).rejects.toMatchObject({
-      // OUT_OF_RANGE on 400: `RestErrorMapper` has mapped that code to 400 since
-      // backend PR #147 (read at `develop` `1cfe4d79f074`); it fell to a 500
-      // before. Pinned as a fact about the gateway rather than a preference.
-      code: "OUT_OF_RANGE",
-      status: 400,
-      message: avatarSizeRefusalMessage(threeMegabytes),
-    });
-
-    // The second band. Past the schema's own `maximum: 5242880`, the generated
-    // DTO's `@Max` fails as the gateway reads the body, and
-    // `GatewayValidationExceptionHandler` answers with its fixed sentence on
-    // 400 — the avatar call never leaves the gateway, so this is a different
-    // code from the band above, not the same refusal with a bigger number in it.
-    const sixMegabytes = 6 * 1024 * 1024;
-    expect(sixMegabytes).toBeGreaterThan(AVATAR_DECLARED_MAX_SIZE_BYTES);
-    await expect(
-      api.createAvatarUploadUrl({ fileName: "huger.png", contentType: "image/png", sizeBytes: sixMegabytes }),
-    ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      status: 400,
-      message: AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
-    });
+    for (const contentType of ["image/png", "image/gif"]) {
+      await expect(
+        api.createAvatarUploadUrl({ fileName: "huge", contentType, sizeBytes: threeMegabytes }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400, message: AVATAR_GATEWAY_REFUSAL_MESSAGE });
+    }
 
     await expect(
       api.createAvatarUploadUrl({ fileName: "wave.gif", contentType: "image/gif", sizeBytes: 4096 }),
@@ -3392,8 +3437,8 @@ describe("RestTaskaApi avatars", () => {
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", status: 400 });
 
     // Nothing went out, and the codes are the ones MockTaskaStore throws for
-    // the same four files, so the two modes cannot disagree about which
-    // pictures are uploadable or about what refused them.
+    // the same files, so the two modes cannot disagree about which pictures are
+    // uploadable or about what refused them.
     expect(fetchStub).not.toHaveBeenCalled();
   });
 
@@ -3833,10 +3878,11 @@ describe("RestTaskaApi issue details and the key lookup", () => {
     expect(issue.reporter).toEqual({ id: ANNA, displayName: "Anna Ivanova", avatarUrl: "https://store.example/anna.png" });
     expect(issue.assignee).toEqual({ id: MARK, displayName: "Mark Lee", avatarUrl: null });
     expect(issue.labels).toEqual([{ id: "label-1", name: "backend", color: "#0052cc" }]);
-    // No count on this route, and the list is not paged: its length is the count.
+    // No count on this route, so none is stated: the list's length is not one
+    // the server gave, and a part that failed arrives as `[]`.
     expect(issue.watchers).toEqual({
       watchers: [expect.objectContaining({ userId: MARK, displayName: "Mark Lee", avatarUrl: null })],
-      totalCount: 1,
+      totalCount: null,
     });
     expect(issue.isWatching).toBe(false);
     expect(issue.links?.[0].target).toEqual({
@@ -3894,6 +3940,17 @@ describe("RestTaskaApi issue details and the key lookup", () => {
     expect(issue.links).toBeNull();
     expect(issue.attachments).toBeNull();
     expect(issue.isWatching).toBeNull();
+  });
+
+  it("states no watcher count for an empty list, which may be a part that failed", async () => {
+    // The gateway sends a failed part as `[]` (IssueMapperTest at `60d62ee`),
+    // so a "0" taken from the length would be a number nobody stated.
+    stubFetch(details({ watchers: [], isWatching: true }));
+
+    const { issue } = await new RestTaskaApi().getIssue(PROJECT, ISSUE);
+
+    expect(issue.watchers).toEqual({ watchers: [], totalCount: null });
+    expect(issue.isWatching).toBe(true);
   });
 
   it("drops a link target that names no issue rather than drawing half of one", async () => {

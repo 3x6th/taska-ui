@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isMissingOrForbidden } from "../api/errors";
@@ -38,29 +39,85 @@ const retryUnlessMissing = (failureCount: number, error: Error) => !isMissingOrF
  * While the key is being resolved nothing is drawn but the plane — the same
  * choice `/admin` makes for the same reason: a board drawn and then replaced is
  * "a second of plausible chrome" (§4.18). The words are for a screen reader.
+ *
+ * **Once the lookup has failed, the failure screen stays mounted until it
+ * succeeds** (art-director, TAS-246). react-query puts a query with no data
+ * back to `pending` when it refetches and clears its `error`, which used to
+ * swap this screen for the plane on "Try again": the button unmounted under the
+ * reader's focus, focus fell to `<body>`, `tk-pop` replayed, and a second
+ * failure arrived unfocused and unannounced. So:
+ *
+ * - the plane is drawn only for the key's *first* resolution
+ *   (`errorUpdateCount === 0`); after that the failure is drawn, from the last
+ *   error when react-query has cleared it, and nothing in it remounts;
+ * - "Try again" is `aria-disabled` while its request is out — never `disabled`,
+ *   which takes focus away in Chromium (§4.21) — and does nothing when pressed
+ *   again; its label does not change;
+ * - a repeated failure updates the server's words and the request id in place,
+ *   outside any live region, and is said once through a persistent status
+ *   region that the press empties: "{KEY} still could not be opened.";
+ * - the heading takes focus only if focus has somehow ended up on `<body>`.
+ *
+ * Only the first resolution gets the app's hidden retry. A press is the reader
+ * asking again, and making them wait through a second, silent attempt would
+ * double the time the button spends off.
  */
 export function IssueKeyScreen() {
   const { issueKey = "" } = useParams();
+  const queryClient = useQueryClient();
+  const queryKey = ["issue-by-key", issueKey];
   const query = useQuery({
-    queryKey: ["issue-by-key", issueKey],
+    queryKey,
     queryFn: () => taskaApi.getIssueByKey(issueKey),
-    retry: retryUnlessMissing,
+    retry: (failureCount: number, error: Error) =>
+      (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) === 0 && retryUnlessMissing(failureCount, error),
   });
+  const failures = query.errorUpdateCount;
+  /** The last failure, kept because react-query clears `error` when a no-data query refetches. */
+  const [lastError, setLastError] = useState<Error | null>(null);
+  if (query.error && query.error !== lastError) setLastError(query.error);
+  /** How many failures there had been when "Try again" was last pressed; `null` before any press. */
+  const [pressedAt, setPressedAt] = useState<number | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    // The fallback, not the plan: the button keeps focus through a retry. Only
+    // a focus that has been dropped is picked up.
+    if (failures > 1 && document.activeElement === document.body) heading.current?.focus();
+  }, [failures]);
 
   if (query.data) {
     return <Navigate replace to={`/projects/${query.data.projectId}/issues/${query.data.id}`} />;
   }
 
-  if (query.isError) {
-    const reason = missingReason(query.error);
+  const error = query.error ?? lastError;
+  if (failures > 0 && error) {
+    const reason = missingReason(error);
     if (reason) return <NotFoundScreen reason={reason} />;
+    const retrying = query.isFetching;
+    const stillFailing = pressedAt !== null && failures > pressedAt;
     return (
-      <main className="notfound-screen">
+      <main aria-busy={retrying || undefined} className="notfound-screen">
         <div className="notfound-content issue-key-failure">
-          <h1 className="notfound-title">{issueKey} could not be opened</h1>
-          <ApiNotice error={query.error}>The issue could not be looked up. Nothing is known about it yet.</ApiNotice>
+          <h1 className="notfound-title" ref={heading} tabIndex={-1}>
+            {issueKey} could not be opened
+          </h1>
+          <ApiNotice error={error}>The issue could not be looked up. Nothing is known about it yet.</ApiNotice>
+          {/* Mounted with the screen and only its text changes, so a repeat is
+              announced once — emptied by the press, filled by the answer. */}
+          <p className="visually-hidden issue-key-status" role="status">
+            {stillFailing ? `${issueKey} still could not be opened.` : ""}
+          </p>
           <div className="issue-key-actions">
-            <button className="secondary-button" disabled={query.isFetching} onClick={() => void query.refetch()} type="button">
+            <button
+              aria-disabled={retrying || undefined}
+              className="secondary-button issue-key-retry"
+              onClick={() => {
+                if (retrying) return;
+                setPressedAt(failures);
+                void query.refetch();
+              }}
+              type="button"
+            >
               Try again
             </button>
             <Link className="primary-button notfound-action" to="/projects">

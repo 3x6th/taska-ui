@@ -284,9 +284,9 @@ test("refuses a type and a size before spending a request, in the reader's terms
   ).toBeVisible();
   await expect(trigger(page).locator("img")).toHaveCount(0);
 
-  // 3 MB: inside the schema's declared 5 MB `maximum` and outside the 2 MB
-  // auth-service actually enforces. Refusing it here is the difference between
-  // a sentence and a wasted round trip with the bytes attached.
+  // 3 MB: over the 2 MB the schema declares and auth-service enforces (the two
+  // agree since backend TAS-222). Refusing it here is the difference between a
+  // sentence and a round trip that comes back "Invalid request parameters".
   await choose(page, "huge.png", Buffer.alloc(3 * 1024 * 1024));
   await expect(
     popover(page).getByText("huge.png is 3 MB. The largest photo this product accepts is 2 MB."),

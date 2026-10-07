@@ -62,14 +62,17 @@ async function reopenIssuePanel(page: Page, issueKey: string): Promise<Locator> 
   return page.locator(".issue-watchers");
 }
 
-test("reads the toggle and the count from the server's own answer", async ({ page }) => {
+test("reads the toggle from the server's own answer, and draws no count it did not state", async ({ page }) => {
   await signIn(page);
   const watchers = await openIssuePanel(page, "TAS-101");
 
   await expect(watchers.getByRole("heading", { name: /Watchers/ })).toBeVisible();
-  // Three seeded rows, and the count says three because the server said three —
-  // not because three rows were counted.
-  await expect(watchers.locator(".count-pill")).toHaveText("3");
+  // Three seeded rows and no count pill: the issue read states no count
+  // (TAS-246), and three rows counted is not the server saying three — on the
+  // gateway a part that failed arrives as `[]`, and the same counting would
+  // draw a "0".
+  await expect(watchers.locator(".watcher-row")).toHaveCount(3);
+  await expect(watchers.locator(".count-pill")).toHaveCount(0);
   await expect(watchers.getByRole("button", { name: "Watching", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(watchers.locator(".watcher-row")).toHaveCount(3);
   // The reader's own row is marked, so the toggle and the list cannot be read
@@ -84,19 +87,18 @@ test("watches an issue nobody watches, and the state survives a reopen", async (
   await expect(watchers.getByText("No one is watching this issue yet")).toBeVisible();
   const toggle = watchers.getByRole("button", { name: "Watch", exact: true });
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
-  // Nobody has stated a number for an empty list — the mock states 0 — so the
-  // pill is on screen reading zero rather than absent.
-  await expect(watchers.locator(".count-pill")).toHaveText("0");
+  // Nobody has stated a number, so no pill — not a "0" counted off an empty
+  // list.
+  await expect(watchers.locator(".count-pill")).toHaveCount(0);
 
   await toggle.click();
 
   await expect(watchers.getByRole("button", { name: "Watching", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(watchers.locator(".count-pill")).toHaveText("1");
   await expect(watchers.locator(".watcher-row")).toHaveCount(1);
 
   watchers = await reopenIssuePanel(page, "TAS-102");
   await expect(watchers.getByRole("button", { name: "Watching", exact: true })).toBeVisible();
-  await expect(watchers.locator(".count-pill")).toHaveText("1");
+  await expect(watchers.locator(".watcher-row")).toHaveCount(1);
 });
 
 test("keeps a populated list under an unpressed toggle", async ({ page }) => {
@@ -105,7 +107,7 @@ test("keeps a populated list under an unpressed toggle", async ({ page }) => {
 
   // The state that catches a UI deriving "am I watching" from whether the list
   // is empty: two people are watching and neither of them is the reader.
-  await expect(watchers.locator(".count-pill")).toHaveText("2");
+  await expect(watchers.locator(".watcher-row")).toHaveCount(2);
   await expect(watchers.getByRole("button", { name: "Watch", exact: true })).toHaveAttribute("aria-pressed", "false");
   await expect(watchers.getByText("(you)")).toHaveCount(0);
   // Priya is not a member of this project, so `GET /projects/{id}/members`
@@ -122,7 +124,7 @@ test("unwatches, and says so when there was nothing to remove", async ({ page })
 
   await watchers.getByRole("button", { name: "Watching", exact: true }).click();
   await expect(watchers.getByRole("button", { name: "Watch", exact: true })).toBeVisible();
-  await expect(watchers.locator(".count-pill")).toHaveText("2");
+  await expect(watchers.locator(".watcher-row")).toHaveCount(2);
   // A removal that removed something says nothing at all.
   await expect(watchers.locator(".watcher-note")).toHaveCount(0);
 
@@ -130,7 +132,7 @@ test("unwatches, and says so when there was nothing to remove", async ({ page })
   // feature that needs no member list: a remove names a `userId`, which every
   // row already carries.
   await watchers.getByRole("button", { name: /^Remove / }).first().click();
-  await expect(watchers.locator(".count-pill")).toHaveText("1");
+  await expect(watchers.locator(".watcher-row")).toHaveCount(1);
 });
 
 test("takes one watcher on a double-click of one row's remove, not two", async ({ page }) => {
@@ -178,7 +180,6 @@ test("takes one watcher on a double-click of one row's remove, not two", async (
   await page.waitForTimeout(400);
   await expect(watchers.locator(".watcher-row")).toHaveCount(2);
   await expect(watchers.getByRole("button", { name: second })).toBeVisible();
-  await expect(watchers.locator(".count-pill")).toHaveText("2");
 });
 
 test("removes a row from the keyboard and hands focus to the next one", async ({ page }) => {
@@ -218,7 +219,7 @@ test("offers an admin a picker of members who are not watching yet", async ({ pa
   await watchers.getByRole("button", { name: "Add", exact: true }).click();
 
   await expect(watchers.getByRole("button", { name: "Remove Sofia Reyes from watchers" })).toBeEnabled();
-  await expect(watchers.locator(".count-pill")).toHaveText("3");
+  await expect(watchers.locator(".watcher-row")).toHaveCount(3);
   // Somebody the ADMIN subscribed is not the ADMIN's own subscription: the
   // toggle above is untouched.
   await expect(watchers.getByRole("button", { name: "Watch", exact: true })).toHaveAttribute("aria-pressed", "false");
@@ -240,7 +241,7 @@ test("leaves a MEMBER the toggle and neither admin control", async ({ page }) =>
 
   await toggle.click();
   await expect(watchers.getByRole("button", { name: "Watch", exact: true })).toHaveAttribute("aria-pressed", "false");
-  await expect(watchers.locator(".count-pill")).toHaveText("2");
+  await expect(watchers.locator(".watcher-row")).toHaveCount(2);
 });
 
 test("shows a VIEWER their subscription and gives them no live control to change it", async ({ page }) => {
@@ -257,7 +258,7 @@ test("shows a VIEWER their subscription and gives them no live control to change
   // The state stays legible — Priya is watching, Anna is not — and the control
   // that would change it is a real `disabled`, §4.21's exception for a control
   // that is not coming back.
-  await expect(watchers.locator(".count-pill")).toHaveText("1");
+  await expect(watchers.locator(".watcher-row")).toHaveCount(1);
   const toggle = watchers.getByRole("button", { name: "Watch", exact: true });
   await expect(toggle).toBeDisabled();
   await expect(toggle).toHaveAttribute("aria-pressed", "false");

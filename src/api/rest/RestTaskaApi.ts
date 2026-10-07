@@ -16,6 +16,7 @@ import type {
   LoginInput,
   RetryableOutboxService,
   SearchIssuesParams,
+  IssueWriteAnswer,
   TaskaApi,
   UpdateIssueInput,
   UpdateProjectInput,
@@ -32,19 +33,16 @@ import {
 } from "../TaskaApi";
 import { attachmentRefusal } from "../attachments";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
-import {
-  AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE,
-  AVATAR_DECLARED_MAX_SIZE_BYTES,
-  avatarRefusal,
-  avatarRefusalKind,
-} from "../avatars";
+import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES, avatarRefusal } from "../avatars";
+import { IssueVersionConflictError } from "../errors";
+import { blankSummaryRefusal, ifMatch, issuePatchBody, issueVersionRefusal } from "../issuePatch";
 import {
   OBJECT_STORE_REJECTED_CODE,
   OBJECT_STORE_UNREACHABLE_CODE,
   ObjectStoreError,
   requireUsableUploadUrl,
 } from "../objectStore";
-import type { PlanningFieldsInput, StoredPlanningDates } from "../planningFields";
+import type { PlanningFieldsInput } from "../planningFields";
 import {
   emptyPlanningFields,
   planningFieldRefusal,
@@ -336,15 +334,16 @@ interface RestUserSummary {
 /**
  * `IssueDetailsResponseDto` — `RestIssue` plus the parts the panel used to read
  * separately. Every addition is optional, and every list may be `null` or
- * absent as well as `[]`: see `IssueDetails` in src/domain/types.ts.
+ * absent as well as `[]`: see `IssueDetails` in src/domain/types.ts for why, on
+ * this gateway, a part that failed arrives as `[]` all the same.
  *
- * Read off the gateway mapper at develop `60d62ee`
- * (`IssueMapper.toRestIssueDetailsWithHistoryResponseDto`) rather than off the
- * contract alone, because the two disagree on what is guaranteed: the contract
- * lists `reporter` and `priority` as required, and the mapper sets `reporter`
- * only when issue-service sent one and writes `priority` as `null` for a value
- * it does not know. `description` is likewise set only when present. Recorded
- * for docs/ai/API-DIVERGENCE.md.
+ * `reporter` is always sent: the gateway's mapper sets it only when
+ * issue-service sent one, and issue-service always does
+ * (`IssueDetailsMapper` resolves `core.getReporterId()`, a `NOT NULL` column) —
+ * read at develop `60d62ee`. What can be missing is its name: `displayName` is
+ * `""` when auth-service had no profile for the person or did not answer.
+ * Recorded in docs/ai/API-DIVERGENCE.md as "GET /issues/{issueId}: a failed part
+ * arrives as [] and an unnamed person as a blank or absent displayName".
  */
 type RestIssueDetails = Omit<RestIssue, "labels"> & {
   labels?: RestLabel[] | null;
@@ -473,24 +472,6 @@ interface RestBoardResponse {
   projectId: string;
   issueType: IssueType;
   columns: RestBoardColumn[];
-}
-
-interface RestUpdateIssueResponse {
-  id: string;
-  summary: string;
-  description: string;
-  priority: Issue["priority"];
-  // `UpdateIssueResponseDto` states all five (merged PR #148), and states only
-  // the ones that are set — the gateway's mapper writes a field only when the
-  // proto optional is present. So an absent key here is "not set", never
-  // "unchanged", which is what `updateIssue` folds against the value it just
-  // sent. A response older than that contract carries none of the five, which
-  // is the same absence and folds the same way.
-  storyPoints?: number | null;
-  startDate?: DateOnly | null;
-  dueDate?: DateOnly | null;
-  originalEstimateMinutes?: number | null;
-  remainingEstimateMinutes?: number | null;
 }
 
 /**
@@ -696,6 +677,12 @@ export class ApiError extends Error {
     public readonly code: string,
     public readonly status: number,
     public readonly requestId?: string,
+    /**
+     * The parsed body of the failed response, as it came. Read by exactly one
+     * caller: `updateIssue`, whose 409 carries the issue rather than a
+     * `{code, message}`.
+     */
+    public readonly body?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -1135,7 +1122,7 @@ export class RestTaskaApi implements TaskaApi {
    * collapse to the same omission here.
    */
   async createIssue(projectId: string, input: CreateIssueInput): Promise<Issue> {
-    refusePlanningFields(input, null);
+    refusePlanningFields(input);
     const response = await this.request<RestIssue>(`/projects/${this.segment(projectId)}/issues`, {
       method: "POST",
       body: {
@@ -1153,80 +1140,50 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
-   * Read, modify, write — and the read is load-bearing rather than defensive.
-   * `PUT /issues/{issueId}` replaces the whole issue: the three required fields
-   * have always had to be re-sent, and since TAS-115 the five planning fields
-   * do too, because a field the request omits is erased on the server rather
-   * than preserved (see `UpdateIssueInput` and src/api/planningFields.ts).
+   * One request: `PATCH /issues/{issueId}` with `If-Match` and a body of only
+   * the keys the caller stated (`issuePatchBody`). Nothing is read first —
+   * the merge patch leaves an absent key alone on the server, so there is
+   * nothing to re-send (see `TaskaApi.updateIssue` for the server's checks).
    *
-   * So every value the caller did not state is resolved from `current` and sent
-   * back unchanged, which makes the write a no-op for the fields nobody
-   * touched. A resolved `null` is *omitted* from the body, because omission is
-   * how this contract spells "not set" — which is also why, against a gateway
-   * that does not carry the planning fields yet, this sends the same three keys
-   * it always did and changes nothing on the wire.
+   * The refusals that need nothing but the input are answered before the
+   * request, as the gateway would answer them: the version, a blank summary,
+   * and the input-only planning-field refusals. A date that only clashes with
+   * the *stored* one is the server's to refuse, after its version check.
    *
-   * The refusals are checked against the values the caller supplied and against
-   * the issue as stored, before the request, so mock and rest answer a bad
-   * value identically. What is *not* checked is the resolved pair: an issue
-   * whose stored dates already disagree must still be editable by its summary,
-   * and the server is the one entitled to refuse that.
+   * A 409 whose body is an issue becomes `IssueVersionConflictError`, carrying
+   * that issue as `current`. A 409 without one is passed on as the `ApiError`
+   * it is: whatever it means, it is not this conflict, and inventing a
+   * `current` for it would hand the caller an issue nobody sent.
    *
-   * They are checked in **two** passes, and the first one is why the read below
-   * is not the first line of this method. Eight of the ten refusals — every
-   * bound, every format, and the two dates against each other — are decided by
-   * the caller's own input, so running them with `stored = null` refuses a
-   * value that could never be stored without spending a request at all.
-   * `planningFieldRefusal` skips its stored block on `null`, so this is the
-   * same function twice rather than a second copy of the rules; the second
-   * pass, after the read, can only add the two stored-date checks.
+   * The answer is mapped without `labels` (`IssueWriteAnswer`): on this route
+   * they are always `[]`, and a caller that took them would wipe the labels it
+   * holds.
    */
-  async updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue> {
-    refusePlanningFields(input, null);
-    // The panel's detail read, folded back to the plain issue this method
-    // answers with: the parts it carries besides the issue are no part of a
-    // `PUT`'s answer, and passing them on would hand a caller a list as of
-    // before the write.
-    const current = issueOfDetails((await this.getIssue(projectId, issueId)).issue);
-    refusePlanningFields(input, current);
-    const planning = resolvePlanningFields(input, current);
-    const updated = await this.request<RestUpdateIssueResponse>(`/issues/${this.segment(issueId)}`, {
-      method: "PUT",
-      body: {
-        summary: input.summary ?? current.summary,
-        description: input.description ?? current.description,
-        priority: input.priority ?? current.priority,
-        ...planningFieldsBody(planning),
-      },
-    });
-    return {
-      ...current,
-      ...updated,
-      // Folded after the spread, and against `planning` — the values this
-      // request just sent — rather than against `current`. The response states
-      // only the fields that are set, so an absent key means "not set", and the
-      // spread alone would leave the *old* value standing on a field this very
-      // request cleared. `??` reads a stated `null` the same way as an absent
-      // key, which is safe because the only thing it falls back to is what was
-      // just asked for: a cleared field falls back to `null` either way.
-      storyPoints: updated.storyPoints ?? planning.storyPoints,
-      startDate: updated.startDate ?? planning.startDate,
-      dueDate: updated.dueDate ?? planning.dueDate,
-      originalEstimateMinutes: updated.originalEstimateMinutes ?? planning.originalEstimateMinutes,
-      remainingEstimateMinutes: updated.remainingEstimateMinutes ?? planning.remainingEstimateMinutes,
-      updatedAt: new Date().toISOString(),
-    };
-  }
+  async updateIssue(
+    _projectId: string,
+    issueId: string,
+    input: UpdateIssueInput,
+    expectedVersion: number,
+  ): Promise<IssueWriteAnswer> {
+    const versionRefusal = issueVersionRefusal(expectedVersion);
+    if (versionRefusal) throw new ApiError(versionRefusal.message, versionRefusal.code, 400);
+    refusePlanningFields(input);
+    const summaryRefusal = blankSummaryRefusal(input);
+    if (summaryRefusal) throw new ApiError(summaryRefusal.message, summaryRefusal.code, 400);
 
-  async assignIssue(_projectId: string, issueId: string, assigneeId: string | null): Promise<Issue> {
-    if (!assigneeId) {
-      throw new ApiError("The current API contract does not support clearing an assignee", "UNSUPPORTED_OPERATION", 400);
+    try {
+      const answer = await this.request<RestIssue>(`/issues/${this.segment(issueId)}`, {
+        method: "PATCH",
+        body: issuePatchBody(input),
+        headers: { "If-Match": ifMatch(expectedVersion) },
+      });
+      return writeAnswerOf(this.toIssue(answer));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409 && isRestIssue(error.body)) {
+        throw new IssueVersionConflictError(writeAnswerOf(this.toIssue(error.body)), expectedVersion, error.requestId);
+      }
+      throw error;
     }
-    const response = await this.request<RestIssue>(`/issues/${this.segment(issueId)}/assignee`, {
-      method: "PUT",
-      body: { assigneeId },
-    });
-    return this.toIssue(response);
   }
 
   async transitionIssue(_projectId: string, issueId: string, transitionId: string): Promise<Issue> {
@@ -1502,8 +1459,8 @@ export class RestTaskaApi implements TaskaApi {
    * matches on this gateway, though it is still what `UserProfileMenu` reads
    * before it offers a control or prints a refusal.
    *
-   * Refused before the request by `refuseAvatar` below, at the ceiling the
-   * server actually enforces rather than the one the schema declares. The
+   * Refused before the request by `refuseAvatar` below, with the answers the
+   * gateway would give. The
    * response's `expiresIn` is carried up rather than dropped; `uploadUrl` and
    * `objectKey` land as `""` when absent, the way every other absent field on
    * this class does, and `requireUsableUploadUrl` is what stops an empty one
@@ -2013,15 +1970,13 @@ export class RestTaskaApi implements TaskaApi {
    * `required` block, so `null` here is a server-declared value rather than a
    * hypothesis. The difference is what a substitute costs.
    *
-   * `description` is defaulted for the *write* path, not the read one.
-   * `PUT /issues/{issueId}` is a full replace and `UpdateIssueRequestDto`
-   * requires `summary`, `description` and `priority`; `updateIssue` fills that
-   * body with `input.description ?? current.description`, and `current` is a
-   * row this method produced. An `undefined` there is dropped by
-   * `JSON.stringify`, so the PUT leaves out a required key — refused, or taken
-   * as a clear of the field nobody asked to edit. `""` is also what the rest of
-   * the UI already means by "no description" and what the issue panel writes
-   * back, so nothing downstream has to learn a second spelling of empty.
+   * `description` is defaulted because `""` is how the rest of the UI already
+   * spells "no description" — the panel's textarea, the board's search — so
+   * nothing downstream has to learn a second spelling of empty. It used to be
+   * defaulted for the edit's full-replace `PUT` as well, which re-sent the
+   * stored description and would have dropped a required key on an
+   * `undefined`; the edit is a `PATCH` now and sends only what changed, so that
+   * reason is gone and this one is enough.
    *
    * It is **not** the field that blanks the application, and an earlier version
    * of this paragraph said it was. The board's filter tests
@@ -2165,9 +2120,12 @@ export class RestTaskaApi implements TaskaApi {
       watchers: Array.isArray(watchers)
         ? {
             watchers: watchers.map((watcher) => this.toIssueWatcher(watcher, projectId, issueId)),
-            // The details DTO states no count and its list is not paged, so the
-            // list the server sent *is* its answer to "how many".
-            totalCount: watchers.length,
+            // The details DTO states no count, so none is stated here. The
+            // list's length is not one: a part that failed arrives as `[]`
+            // (`IssueDetails`), and its length would put a "0" on screen that
+            // the server never said. The panel draws no count until this read
+            // carries one (backend ask A3).
+            totalCount: null,
           }
         : null,
       isWatching: typeof isWatching === "boolean" ? isWatching : null,
@@ -2187,10 +2145,21 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
-   * Passes `viewLinkType` through untouched whenever it is a string, including
-   * values this build has never heard of — that is the whole point of the
-   * field. A non-string (or an absent one) becomes the empty string, which the
-   * label helper renders as "Linked" rather than inventing a relation.
+   * Passes `viewLinkType` through as an open string — values this build has
+   * never heard of included, which is the point of the field — with one
+   * repair: the gateway writes the proto enum's own name
+   * (`IssueMapper.toRestIssueLinkResponse` calls `.name()`, and its own test
+   * asserts `"ISSUE_LINK_VIEW_TYPE_BLOCKS"`, read at backend `60d62ee`), so the
+   * `ISSUE_LINK_VIEW_TYPE_` prefix is stripped here and `BLOCKS` reaches the
+   * label helper as `BLOCKS`.
+   *
+   * Two names mean "no relation stated" rather than a relation, and become the
+   * empty string the label helper reads as "Linked": `UNSPECIFIED`, the proto
+   * zero value once its prefix is gone, and `UNRECOGNIZED`, which protobuf's
+   * `.name()` returns for a number the gateway's generated enum does not know
+   * and which carries no prefix at all. A non-string (or absent) value is the
+   * same nothing. docs/ai/API-DIVERGENCE.md: "`viewLinkType` arrives with the
+   * protobuf prefix".
    */
   private toIssueLink(link: RestIssueLink): IssueLink {
     return {
@@ -2198,7 +2167,7 @@ export class RestTaskaApi implements TaskaApi {
       projectId: link.projectId ?? "",
       sourceIssueId: link.sourceIssueId ?? "",
       targetIssueId: link.targetIssueId ?? "",
-      viewLinkType: typeof link.viewLinkType === "string" ? link.viewLinkType : "",
+      viewLinkType: toViewLinkType(link.viewLinkType),
       createdBy: link.createdBy ?? "",
       createdAt: link.createdAt ?? "",
       target: toLinkedIssue(link.target),
@@ -2349,7 +2318,7 @@ export class RestTaskaApi implements TaskaApi {
       const message = body?.message ?? body?.error?.message ?? `Request failed with ${response.status}`;
       const code = body?.code ?? body?.error?.code ?? "UNKNOWN";
       const requestId = response.headers.get("X-Request-Id") ?? body?.error?.requestId;
-      throw new ApiError(message, code, response.status, requestId ?? undefined);
+      throw new ApiError(message, code, response.status, requestId ?? undefined, data);
     }
     return data as T;
   }
@@ -2578,20 +2547,32 @@ function toLinkedIssue(target: RestLinkedIssue | null | undefined): LinkedIssue 
   };
 }
 
-/** The plain issue inside a detail read, with the parts only that read carries taken off. */
-function issueOfDetails(details: IssueDetails): Issue {
-  const {
-    labels,
-    assignee: _assignee,
-    reporter: _reporter,
-    watchers: _watchers,
-    isWatching: _isWatching,
-    links: _links,
-    attachments: _attachments,
-    commentCount: _commentCount,
-    ...issue
-  } = details;
-  return { ...issue, labels: labels ?? [] };
+/** `toIssue`'s answer as a write states it: the same issue, without the labels a write never fills. */
+function writeAnswerOf(issue: Issue): IssueWriteAnswer {
+  const { labels: _labels, ...answer } = issue;
+  return answer;
+}
+
+/**
+ * Whether a 409's body is the issue `PATCH /issues/{issueId}` answers a
+ * conflict with, rather than a `{code, message}`. An id and a numeric version
+ * are the two facts a caller acts on: the version to send next, and that it
+ * is this issue.
+ */
+function isRestIssue(body: unknown): body is RestIssue {
+  if (typeof body !== "object" || body === null) return false;
+  const { id, version } = body as { id?: unknown; version?: unknown };
+  return typeof id === "string" && id !== "" && typeof version === "number";
+}
+
+/** The prefix the gateway's `.name()` leaves on every `IssueLinkViewType`. */
+const VIEW_LINK_TYPE_PREFIX = "ISSUE_LINK_VIEW_TYPE_";
+
+/** `viewLinkType` as the label helper reads it — see `toIssueLink`. */
+function toViewLinkType(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const name = value.startsWith(VIEW_LINK_TYPE_PREFIX) ? value.slice(VIEW_LINK_TYPE_PREFIX.length) : value;
+  return name === "UNSPECIFIED" || name === "UNRECOGNIZED" ? "" : name;
 }
 
 /**
@@ -2633,16 +2614,13 @@ function requireSearchQuery(raw: string | undefined): string | null {
 
 /**
  * The planning-field refusals, decided in src/api/planningFields.ts and
- * thrown here as the gateway's own answer: `INVALID_ARGUMENT` on `400`, the
- * same shape as `requireSearchQuery` above and the same wording the mock uses,
- * so a caller cannot tell a value stopped here from one stopped there.
- *
- * `stored` is the issue as it stands, and `null` on a create. The server's
- * date cross-check reads the stored row rather than the request, so a guard
- * without it would let through a write the gateway refuses.
+ * thrown here as the client's own `INVALID_ARGUMENT` on `400` — the same shape
+ * as `requireSearchQuery` above and the same wording the mock uses, so a caller
+ * cannot tell a value stopped here from one stopped there. Every one of them is
+ * decided by the input alone, on a create and on an edit alike.
  */
-function refusePlanningFields(input: PlanningFieldsInput, stored: StoredPlanningDates | null): void {
-  const refusal = planningFieldRefusal(input, stored);
+function refusePlanningFields(input: PlanningFieldsInput): void {
+  const refusal = planningFieldRefusal(input);
   if (refusal) {
     throw new ApiError(refusal.message, refusal.code, 400);
   }
@@ -2695,65 +2673,40 @@ function refuseAttachment(input: CreateAttachmentUploadUrlInput): void {
 }
 
 /**
- * The same refusal for an avatar, as the server would answer it, before a
- * request is spent — and the one place where this client deliberately
- * disagrees with the contract it was written against.
+ * The same refusal for an avatar, as the gateway would answer it, before a
+ * request is spent — in the gateway's order, which is not the profile menu's.
  *
- * **The declared ceiling is 5 MB and the enforced one is 2 MB**, and a size
- * over the enforced one is refused in one of two places depending on how far
- * over it is:
+ * - **over 2 MB** fails the generated DTO's `@Max(2097152)` as the gateway
+ *   reads the body (`maximum: 2097152` since backend TAS-222, `be6ea7f`), and
+ *   `GatewayValidationExceptionHandler` answers **400** `INVALID_ARGUMENT`
+ *   "Invalid request parameters". This runs before anything looks at the
+ *   content type, so a 3 MB GIF draws this answer and not the type refusal —
+ *   which is why it is checked first here.
+ * - **a disallowed type** — `S3StorageClient.validateFileParams` in
+ *   auth-service, `INVALID_ARGUMENT` on 400 in its own words.
+ * - **an empty file** — bean-validated at the gateway too (`minimum: 1`), with
+ *   the same code and status as the type arm; this throws
+ *   `validateFileParams`'s sentence for it rather than the gateway's, as
+ *   `refuseAttachment` does, and nothing reads the difference — the menu
+ *   refuses an empty file in its own words before this is reached.
  *
- * - **over 2 MB and up to 5 MB** satisfies `CreateAvatarUploadUrlRequestDto`'s
- *   `maximum: 5242880`, passes the gateway's bean validation, and is refused a
- *   layer deeper by `S3StorageClient.validateFileParams`, reading
- *   auth-service's `storage.max-file-size-bytes: 2097152`. That raises
- *   `OUT_OF_RANGE`, which `RestErrorMapper` maps to **400** since backend PR
- *   #147 gave it the row (read at `develop` `1cfe4d79f074`) — it fell to a
- *   500 before, the same oddity the attachment ceiling had.
- * - **over 5 MB** fails the generated DTO's `@Max` as the gateway reads the
- *   body, and `GatewayValidationExceptionHandler` answers **400**
- *   `INVALID_ARGUMENT` with its fixed "Invalid request parameters". The token
- *   has been checked by then — that is a call to auth-service of its own — but
- *   the avatar call never leaves the gateway.
+ * The schema used to declare 5 MB while auth-service enforced 2 MB, so a file
+ * between the two was refused a layer deeper with `OUT_OF_RANGE`; that band is
+ * gone, and `OUT_OF_RANGE` now only comes back from the confirm (leg 3), which
+ * re-measures the stored object. A code read at `60d62ee`, not a measurement:
+ * no over-size avatar has been sent to the stand.
  *
- * A disallowed type is `validateFileParams`'s other arm, `INVALID_ARGUMENT` on
- * 400 in its own words. An empty file is bean-validated too (`minimum: 1`),
- * with the same code and status as that arm; this throws `validateFileParams`'s
- * sentence for it rather than the gateway's, as `refuseAttachment` does, and
- * nothing reads the difference — the menu refuses an empty file in its own
- * words before this is reached.
- *
- * Trusting the schema would mean offering someone a file the product will not
- * take, and paying a round trip plus the bytes to find out. So the enforced
- * number is the one enforced here; both are written down in
- * `src/api/avatars.ts`, and the disagreement is recorded in
- * docs/ai/API-DIVERGENCE.md as "The avatar schema declares 5 MB and the service
- * enforces 2 MB", which names what removes it. Reproducing an answer means
- * reproducing the one that is served, band by band.
- *
- * One caveat worth stating rather than implying: this is what the gateway
- * answers for an over-ceiling upload, read off `develop` — at `368ae77355bd`,
- * and the status mapping again at `1cfe4d79f074` — rather than observed. The
- * four routes deployed on 2026-09-14, but the probes that confirmed that — an
- * invalid id, a wrong method — do not exercise this refusal, so it stays a
- * reading until one does.
- *
- * Nothing reads the status either band carries: the profile menu refuses both
- * before a request, and prints `apiErrorFacts(error).message` for anything the
- * gateway refuses.
+ * Nothing reads the status: the profile menu refuses all three before a
+ * request, and prints `apiErrorFacts(error).message` for anything the gateway
+ * refuses.
  */
 function refuseAvatar(input: CreateAvatarUploadUrlInput): void {
-  // Bean validation, which answers before the avatar call leaves the gateway.
-  if (input.sizeBytes > AVATAR_DECLARED_MAX_SIZE_BYTES) {
-    throw new ApiError(AVATAR_DECLARED_CEILING_REFUSAL_MESSAGE, "INVALID_ARGUMENT", 400);
+  if (input.sizeBytes > AVATAR_MAX_SIZE_BYTES) {
+    throw new ApiError(AVATAR_GATEWAY_REFUSAL_MESSAGE, "INVALID_ARGUMENT", 400);
   }
+  // Only the type and the empty file can be left: the size was answered above.
   const refusal = avatarRefusal(input);
-  if (!refusal) return;
-  // Split exactly as `MockTaskaStore.createAvatarUploadUrl` splits it, so the
-  // two implementations answer the same file with the same code. The status is
-  // 400 for every arm.
-  const overSize = avatarRefusalKind(input) === "size";
-  throw new ApiError(refusal, overSize ? "OUT_OF_RANGE" : "INVALID_ARGUMENT", 400);
+  if (refusal) throw new ApiError(refusal, "INVALID_ARGUMENT", 400);
 }
 
 /**

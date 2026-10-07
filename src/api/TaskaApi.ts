@@ -375,44 +375,36 @@ export interface CreateIssueInput {
 }
 
 /**
- * A partial edit of one issue. **`undefined` and `null` are different answers
- * here, and the difference is the whole reason this type has a comment.**
+ * A partial edit of one issue — `PatchIssueRequestDto`, a JSON merge patch
+ * (`PATCH /issues/{issueId}`, backend TAS-215, develop `60d62ee`).
+ * **`undefined` and `null` are different answers here, and the difference is
+ * the whole reason this type has a comment.**
  *
- * - a key left `undefined`, or absent altogether, means **leave it as it is**;
- * - a key set to `null` means **clear it**.
+ * - a key left `undefined`, or absent altogether, means **leave it as it is** —
+ *   the key is not sent;
+ * - a key set to `null` means **clear it** — the key is sent as `null`.
  *
- * `PUT /issues/{issueId}` is a *full replace*. `IssueServiceImpl.updateIssue`
- * on backend `develop` writes all five planning fields unconditionally, the
- * proto fields are `optional`, the gateway sets them through `setIfPresent`,
- * and `GrpcIssueService` resolves an unset optional with `.orElse(null)` — so a
- * field the request omits is **erased**, not preserved. The backend's own
- * *unit* test says so in its display name — «Частичное обновление —
- * непереданные planning fields затираются», in `IssuePlaningFieldsTest.java`
- * on `develop` (one `n`), which is Mockito over a stubbed repository.
+ * `summary` and `priority` cannot be cleared (the gateway refuses a `null` for
+ * either), so they have no `null` case. The other seven can.
  *
- * Every implementation therefore re-reads the issue and re-sends the value it
- * is keeping. That read is what makes "leave it as it is" true, and it is the
- * single most deletable-looking line in this API layer: it is one extra `GET`
- * before a `PUT`, it changes no visible behaviour when it is removed, and
- * removing it turns editing a summary into a write that wipes the story points,
- * both dates and both estimates of the issue being edited. Nothing in the type
- * system will notice. If you are reading this while deleting a redundant
- * re-read, this is the one that is not redundant.
+ * Only these nine keys ever reach the wire: `issuePatchBody` in
+ * src/api/issuePatch.ts copies them by name, so a caller spreading a wider
+ * object cannot widen the request.
  *
- * The three original fields keep the meaning they always had — `undefined`
- * leaves them alone — and they have no `null` case at all, because the contract
- * marks all three `required` and the server refuses a blank summary or
- * description outright.
- *
- * The alternative design, exposing the full replace to callers by requiring all
- * eight fields on every edit, was not chosen: it makes every component that
- * edits one field responsible for knowing the other seven, which is the same
- * data loss one layer up and in five more places.
+ * The edit used to be `PUT /issues/{issueId}`, a full replace that erased any
+ * field the request left out, compensated by a read before every write
+ * (docs/ai/API-DIVERGENCE.md, "Closed by TAS-246: `PUT /issues/{issueId}` is a
+ * full replace, and the client no longer calls it"). `assignIssue` went with
+ * it: assigning and unassigning are this input's `assigneeId`, so there is one
+ * write path and one place that handles the version.
  */
 export interface UpdateIssueInput {
   summary?: string;
-  description?: string;
+  /** `null` clears it. Read back as `""`, which is how the UI spells an empty description. */
+  description?: string | null;
   priority?: IssuePriority;
+  /** `null` unassigns. */
+  assigneeId?: string | null;
   /** `undefined` keeps the stored value; `null` clears it; a number sets it. `0` is a value. */
   storyPoints?: number | null;
   /** `undefined` keeps the stored value; `null` clears it. Never a `Date` — see `DateOnly`. */
@@ -421,6 +413,19 @@ export interface UpdateIssueInput {
   originalEstimateMinutes?: number | null;
   remainingEstimateMinutes?: number | null;
 }
+
+/**
+ * What an issue write answers with: the issue **without** `labels`.
+ *
+ * `PATCH /issues/{issueId}` answers `IssueResponseDto` on both 200 and 409, and
+ * on both its `labels` is `[]` whatever the issue carries — issue-service builds
+ * the answer with the label-less `toIssueProto(issue)` (read at backend
+ * `60d62ee`). A type that kept the field would invite a caller to merge an
+ * empty list over the labels it already holds; leaving it out makes that a type
+ * error. Recorded in docs/ai/API-DIVERGENCE.md as "`PATCH /issues/{issueId}`
+ * answers `labels: []` on 200 and on 409".
+ */
+export type IssueWriteAnswer = Omit<Issue, "labels">;
 
 export interface CreateIssueLinkInput {
   targetIssueId: string;
@@ -492,9 +497,10 @@ export interface ConfirmAttachmentUploadInput {
  * for the reason `src/api/avatars.ts` gives at length: the two are validated by
  * two services reading two configurations that agree today by coincidence.
  *
- * `sizeBytes` is declared `maximum: 5242880` and enforced at `2097152`. Every
- * implementation refuses the second number before sending anything, so this
- * field never carries a value the server would take a round trip to refuse.
+ * `sizeBytes` is declared `minimum: 1, maximum: 2097152` since backend TAS-222
+ * (`be6ea7f`), which is the limit auth-service enforces too. Every
+ * implementation refuses a larger one before sending anything, with the
+ * gateway's own bean-validation answer (src/api/avatars.ts).
  */
 export interface CreateAvatarUploadUrlInput {
   fileName: string;
@@ -819,8 +825,48 @@ export interface TaskaApi {
    */
   getIssueByKey(issueKey: string): Promise<Issue>;
   createIssue(projectId: string, input: CreateIssueInput): Promise<Issue>;
-  updateIssue(projectId: string, issueId: string, input: UpdateIssueInput): Promise<Issue>;
-  assignIssue(projectId: string, issueId: string, assigneeId: string | null): Promise<Issue>;
+  /**
+   * `PATCH /issues/{issueId}` with `If-Match: "<expectedVersion>"` — a merge
+   * patch under optimistic locking (backend TAS-215, develop `60d62ee`). One
+   * request: nothing is read first, because nothing has to be re-sent.
+   *
+   * `expectedVersion` is the `version` of the issue the caller is editing, as it
+   * last read it. Sent in the quoted ETag form; the gateway also accepts a bare
+   * number (`IssueMapper.parseIfMatchVersion`).
+   *
+   * What the server checks, in order (issue-service `IssuePatchServiceImpl`,
+   * read at `60d62ee`; none of it stated in the contract beyond the 409):
+   * 1. the issue exists — `404 NOT_FOUND`;
+   * 2. the caller holds `update-issue-roles` — `403 PERMISSION_DENIED`;
+   * 3. the version — **`409` with the current issue as the body**, thrown here
+   *    as `IssueVersionConflictError` (src/api/errors.ts). Nothing is written,
+   *    and no later check runs, so a stale write is a conflict even when it
+   *    would also have been refused;
+   * 4. the merged start/due pair — the request's dates laid over the stored
+   *    ones — `400 INVALID_ARGUMENT` "Start date: X must not be after Due date:
+   *    Y" (`datesOutOfOrderServerMessage` in src/api/issuePatch.ts);
+   * 5. only when the assignee actually changes: `assign-issue-roles` for the
+   *    caller, and for the new assignee unless it is `null` or the caller;
+   * 6. under `FOR UPDATE`, the version again — the same 409.
+   *
+   * A write that changes nothing answers 200 with **no** version bump and no
+   * history. A change of assignee to somebody also subscribes them as a watcher
+   * (`IssueAutoWatchService.watchAssigneeOnAssign`), with no history row of its
+   * own.
+   *
+   * Refused before any request, identically by every implementation: a version
+   * the gateway cannot use, a blank summary, and the input-only planning-field
+   * refusals (src/api/issuePatch.ts, src/api/planningFields.ts).
+   *
+   * Never retried here. A conflict is the caller's to resolve: it holds the
+   * reader's edit, and only it can decide whether to send it again.
+   */
+  updateIssue(
+    projectId: string,
+    issueId: string,
+    input: UpdateIssueInput,
+    expectedVersion: number,
+  ): Promise<IssueWriteAnswer>;
   transitionIssue(projectId: string, issueId: string, transitionId: string): Promise<Issue>;
   deleteIssue(projectId: string, issueId: string): Promise<void>;
 
@@ -1414,10 +1460,13 @@ export interface TaskaApi {
    * **400** — the contract lists `400/401/403/404` here and no `409`, while the
    * backend's own gateway test for it asserts 409, so the client believes the
    * mapper and reads the `code` (`isConflict`, src/api/errors.ts). And
-   * `GET /users/me` reports a locked account as `UNSPECIFIED`, because the
-   * gateway's `GatewayUserStatus` has no `LOCKED` member and
-   * `ValidateAccessTokenResponseDto.status` is an unconstrained string the
-   * contract makes no promise about.
+   * `GET /users/me` used to report a locked account as `UNSPECIFIED`: since
+   * backend TAS-197 (`04546f1`, deployed) the gateway's `GatewayUserStatus` has
+   * a `LOCKED` member, so a locked account whose token was issued before the
+   * lock reads `LOCKED` — and that token still works while TAS-198 (backend PR
+   * #174) is open. `ValidateAccessTokenResponseDto.status` is still an
+   * unconstrained string the contract makes no promise about (TAS-173), and
+   * `UNSPECIFIED` is still a member of the gateway's enum.
    */
   resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange>;
 }

@@ -68,3 +68,27 @@ test("keeps a VIEWER who already holds an issue as its assignee, with no way to 
   // Everyone the server does take is still an offer.
   await expect(panel.locator(".assignee-chip", { hasText: "Mark" })).toBeEnabled();
 });
+
+test("unassigns an issue with None, and the card and a reopened panel agree", async ({ page }) => {
+  // TAS-246: "None" is a request now — a PATCH with `assigneeId: null` — where
+  // the old assign route required an id and the chip could only be drawn off.
+  await signIn(page);
+  const panel = await openIssuePanel(page, "TAS-102");
+
+  const none = panel.locator(".assignee-chip", { hasText: "None" });
+  await expect(panel.locator(".assignee-chip", { hasText: "Anna" })).toHaveClass(/is-active/);
+  await expect(none).toBeEnabled();
+  await none.click();
+
+  // Not optimistic: the chip moves when the server's answer lands, and is off
+  // again because pressing it would change nothing.
+  await expect(none).toHaveClass(/is-active/);
+  await expect(none).toBeDisabled();
+  // The card behind the panel lost its assignee with the board's re-read.
+  await expect(page.locator(".issue-card", { hasText: "TAS-102" }).locator(".avatar")).toHaveClass(/avatar-empty/);
+
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator(".issue-card", { hasText: "TAS-102" }).click();
+  const reopened = page.getByRole("complementary", { name: "TAS-102 issue" });
+  await expect(reopened.locator(".assignee-chip", { hasText: "None" })).toHaveClass(/is-active/);
+});

@@ -13,6 +13,7 @@ import {
 import {
   infiniteQueryOptions,
   queryOptions,
+  replaceEqualDeep,
   useInfiniteQuery,
   useMutation,
   usePrefetchInfiniteQuery,
@@ -22,7 +23,7 @@ import {
 import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Users, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { CreateIssueLinkInput, CreateProjectLabelInput, UpdateIssueInput } from "../api/TaskaApi";
+import type { CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
 import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
@@ -33,7 +34,8 @@ import {
 } from "../api/attachments";
 import { objectStoreUploadFailure } from "../api/objectStore";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isMissingOrForbidden } from "../api/errors";
+import { apiErrorFacts, isIssueVersionConflict, isMissingOrForbidden, type IssueVersionConflictError } from "../api/errors";
+import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
@@ -97,6 +99,7 @@ import {
   parseDuration,
   parseStoryPoints,
   planningDateIncompleteEditMessage,
+  planningDateOrderAdvice,
   planningDrafts,
   planningInput,
   reseedPlanningDrafts,
@@ -156,7 +159,78 @@ function issueDetailsOptions(projectId: string, issueId: string) {
   return queryOptions({
     queryKey: ["issue", projectId, issueId],
     queryFn: () => taskaApi.getIssue(projectId, issueId),
+    /**
+     * An answer about an **older** version of the issue never replaces a newer
+     * one. A re-read that set out before a write landed can come back after the
+     * write's answer was merged (`mergeWriteAnswer`), and without this it would
+     * put the pre-write issue back on screen — and its version into the next
+     * `If-Match`, which the server then refuses as a conflict nobody caused.
+     *
+     * Strictly older: an *equal* version is accepted, because the writes that
+     * bump nothing — labels, watchers, links, attachments, comments — change
+     * what a re-read carries without changing its version, and those re-reads
+     * are how their settles land.
+     *
+     * This runs on `setQueryData` too, not only on a fetched answer
+     * (query-core's `Query.setData` goes through `replaceData`, which calls
+     * this). Harmless today — every manual write here keeps or raises the
+     * version — but a future rollback that restores a *lower* version would be
+     * dropped here without a word. Restore through a re-read instead.
+     *
+     * And on every observer's `select`ed value, which is why the version is
+     * read defensively: the sections select a part — a list, a flag — that has
+     * no `issue` in it, and those are shared the ordinary way.
+     */
+    structuralSharing: (previous: unknown, next: unknown) => {
+      const before = detailsVersion(previous);
+      const after = detailsVersion(next);
+      if (before !== undefined && after !== undefined && after < before) return previous;
+      return replaceEqualDeep(previous, next);
+    },
   });
+}
+
+/** The issue's version, when `value` is a details read; `undefined` for anything else. */
+function detailsVersion(value: unknown): number | undefined {
+  const version = (value as { issue?: { version?: unknown } } | null | undefined)?.issue?.version;
+  return typeof version === "number" ? version : undefined;
+}
+
+/**
+ * A write's answer laid over the panel's cached read (TAS-246).
+ *
+ * Takes the issue's own fields from the answer — which is the server's word on
+ * them, version included, so the next write's `If-Match` is right without a
+ * re-read — and keeps everything only the details read carries: the labels
+ * (the write answer's are always `[]`, see `IssueWriteAnswer`), the watchers,
+ * links, attachments, `isWatching`, the comment count, the reporter and the
+ * history. The re-read `invalidateBoard` starts brings those up to date.
+ *
+ * The assignee summary is dropped when the id moved: the cached summary names
+ * the *previous* assignee, and `personFor` would print that name under the new
+ * id. `null` sends it to the member list instead until the re-read names them.
+ */
+function mergeWriteAnswer(data: IssueDetailsWithHistory, answer: IssueWriteAnswer): IssueDetailsWithHistory {
+  const issue = data.issue;
+  return {
+    ...data,
+    issue: {
+      ...issue,
+      summary: answer.summary,
+      description: answer.description,
+      priority: answer.priority,
+      assigneeId: answer.assigneeId,
+      status: answer.status,
+      storyPoints: answer.storyPoints,
+      startDate: answer.startDate,
+      dueDate: answer.dueDate,
+      originalEstimateMinutes: answer.originalEstimateMinutes,
+      remainingEstimateMinutes: answer.remainingEstimateMinutes,
+      updatedAt: answer.updatedAt,
+      version: answer.version,
+      assignee: answer.assigneeId === issue.assigneeId ? issue.assignee : null,
+    },
+  };
 }
 
 /** The four parts of the detail read a panel section draws and writes. */
@@ -234,8 +308,19 @@ function issuePartCache<K extends IssuePart>(
 /** Whether the issue read came back without one of the four parts (`IssueDetails`). */
 function hasMissingPart(data: IssueDetailsWithHistory | undefined) {
   if (!data) return false;
-  const { labels, watchers, links, attachments } = data.issue;
-  return labels === null || watchers === null || links === null || attachments === null;
+  const { labels, watchers, links, attachments, isWatching } = data.issue;
+  return (
+    labels === null ||
+    watchers === null ||
+    links === null ||
+    attachments === null ||
+    // On this gateway a part that failed arrives as `[]` rather than `null`,
+    // so the four checks above rarely fire. The watcher list is the one part
+    // that can be caught anyway: the server says the reader is watching and the
+    // list is empty. The watchers section draws that as a part that did not
+    // load, and reopening has to re-ask for it as it does for the others.
+    (isWatching === true && watchers.watchers.length === 0)
+  );
 }
 
 /**
@@ -536,7 +621,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   ...item,
                   status: nextStatus,
                   updatedAt: new Date().toISOString(),
-                  version: item.version + 1,
+                  // No version: nothing optimistic may invent one. Since
+                  // TAS-246 a version is what an edit sends back as
+                  // `If-Match`, and a guessed one is a claim about the server
+                  // nobody made. The re-read after the move brings the real one.
                 }
               : item,
           ),
@@ -1528,18 +1616,63 @@ function IssuePanel({
   const availableTransitions =
     issue && workflow ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
 
+  /**
+   * A write refused because the issue had moved on (TAS-246), held apart from
+   * the mutation's own error for two reasons. Its sentence is not the error's
+   * message, and it outlives the mutation that raised it: the panel's writes
+   * share one queue (`issueWriteScope`), and a write queued behind the refused
+   * one becomes the observer's current mutation, taking the refused one's error
+   * off `updateIssue.error` while the reader still needs to be told.
+   *
+   * `fields` is what the refused write sent, which is what the sentence names.
+   * `seq` remounts the line for a repeat, as `dateNotice`'s does. Cleared when
+   * the next write starts, and by a date refusal taking the slot.
+   */
+  const [conflict, setConflict] = useState<{
+    fields: (keyof UpdateIssueInput)[];
+    error: IssueVersionConflictError;
+    seq: number;
+  } | null>(null);
+  const clearConflict = () => setConflict(null);
+  /** Every write that starts drops both lines a previous one may have left. */
+  const writeStarts = () => {
+    clearDateNotice();
+    clearConflict();
+  };
+  const { queryKey: issueKey } = issueDetailsOptions(projectId, issueId);
+
+  /**
+   * `PATCH /issues/{issueId}` with the version the cache holds **when the
+   * request leaves**, not when the reader acted (TAS-246).
+   *
+   * The panel's writes run one at a time (`scope`): a second edit made while
+   * the first is in flight has its `onMutate` run at once and waits for its
+   * request until the first has settled — and the first's `onSuccess` has
+   * merged the new version into the cache by then, so the second reads it here
+   * and does not conflict with its own predecessor.
+   *
+   * No optimistic cache write: the drafts in the boxes already show what the
+   * reader typed, and the server's answer is merged the moment it lands.
+   */
   const updateIssue = useMutation({
-    // `UpdateIssueInput` rather than the three fields this used to name: the
-    // planning fields carry a third state the three never had — `null` means
-    // *clear it* and `undefined` means *leave it alone* — and a local shape
-    // would have to restate that distinction to be able to send it.
-    mutationFn: (patch: UpdateIssueInput) => taskaApi.updateIssue(projectId, issueId, patch),
-    // See `clearDateNotice`: every one of this panel's four writes clears the
-    // date line when it starts, this one included, and this is the case that
-    // needs it — the reader who leaves the half-typed box alone and edits the
-    // estimate beside it.
-    onMutate: clearDateNotice,
-    onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
+    scope: { id: issueWriteScope(issueId) },
+    mutationFn: (patch: UpdateIssueInput) => {
+      const version = queryClient.getQueryData(issueKey)?.issue.version;
+      if (version === undefined) throw new Error("This issue is not loaded, so there is no version to edit.");
+      return taskaApi.updateIssue(projectId, issueId, patch, version);
+    },
+    // See `clearDateNotice`: every one of this panel's writes clears the date
+    // line when it starts, this one included, and this is the case that needs
+    // it — the reader who leaves the half-typed box alone and edits the
+    // estimate beside it. A conflict line goes the same way.
+    onMutate: writeStarts,
+    onSuccess: (answer) => {
+      // Synchronous, and before anything is awaited: a write queued behind
+      // this one reads its version from the cache the moment this returns.
+      queryClient.setQueryData(issueKey, (data) => (data ? mergeWriteAnswer(data, answer) : data));
+      // Not awaited, so the queue is not held behind four re-reads.
+      void invalidateBoard(queryClient, projectId, issueId);
+    },
     // Rollback (§5.5). The summary and the description recover on their own —
     // the value the reader typed is still the best thing to show while they fix
     // it, and the field is free text either way. A refused planning field is
@@ -1554,32 +1687,68 @@ function IssuePanel({
     // variables are the record of which one that was. Reverting all five would
     // undo drafts the server never saw, including whichever box the reader
     // moved on to while the refusal was in flight.
-    onError: (_error, sent) => {
+    onError: (error, sent) => {
       // And this refusal takes the slot even if a date line went up while the
       // request was in flight — see `clearDateNotice`.
       clearDateNotice();
-      setPlanning((current) => rollbackPlanningDrafts(current, sent, planningDrafts(issueQuery.data?.issue)));
+      if (!isIssueVersionConflict(error)) {
+        setPlanning((current) => rollbackPlanningDrafts(current, sent, planningDrafts(issueQuery.data?.issue)));
+        return;
+      }
+      // The issue moved on. Show it as it now is — the answer carries it — and
+      // never send the write again by ourselves: whether the reader's change
+      // still makes sense over somebody else's is theirs to decide.
+      const current = error.current;
+      queryClient.setQueryData(issueKey, (data) => (data ? mergeWriteAnswer(data, current) : data));
+      setPlanning((drafts) => rollbackPlanningDrafts(drafts, sent, planningDrafts(current)));
+      // Free text is the exception, and the reason the sentence for it differs:
+      // the reader's words are not a value the issue failed to hold, they are
+      // work. They stay in the box, and `synced` is moved to the server's text
+      // so the render-time reseed leaves them there; the next blur sends them
+      // again, now with the version this answer carried.
+      if (sent.summary !== undefined || sent.description !== undefined) {
+        setSynced((previous) =>
+          previous
+            ? {
+                ...previous,
+                ...(sent.summary !== undefined ? { summary: current.summary } : {}),
+                ...(sent.description !== undefined ? { description: current.description } : {}),
+              }
+            : previous,
+        );
+        if (sent.summary !== undefined) setSummary(sent.summary);
+        if (typeof sent.description === "string") setDescription(sent.description);
+      }
+      setConflict((previous) => ({
+        fields: Object.keys(sent) as (keyof UpdateIssueInput)[],
+        error,
+        seq: (previous?.seq ?? 0) + 1,
+      }));
+      void invalidateBoard(queryClient, projectId, issueId);
     },
   });
-  const assignIssue = useMutation({
-    mutationFn: (assigneeId: string | null) => taskaApi.assignIssue(projectId, issueId, assigneeId),
-    // The other three writes answer to the same rule as the update above, and
-    // until this round none of them did: a date line from a minute ago sat over
-    // a successful assignment, and over a *refused* one it was the only thing on
-    // screen, so the refusal never appeared anywhere (TAS-231, art-director).
-    onMutate: clearDateNotice,
-    onError: clearDateNotice,
-    onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
-  });
   const transitionIssue = useMutation({
+    // In the same queue as the edits: a transition bumps the version, so an
+    // edit queued behind it has to read the version it left.
+    scope: { id: issueWriteScope(issueId) },
     mutationFn: (transitionId: string) => taskaApi.transitionIssue(projectId, issueId, transitionId),
-    onMutate: clearDateNotice,
+    onMutate: writeStarts,
     onError: clearDateNotice,
-    onSuccess: () => invalidateBoard(queryClient, projectId, issueId),
+    onSuccess: (answer) => {
+      queryClient.setQueryData(issueKey, (data) =>
+        data
+          ? {
+              ...data,
+              issue: { ...data.issue, status: answer.status, version: answer.version, updatedAt: answer.updatedAt },
+            }
+          : data,
+      );
+      void invalidateBoard(queryClient, projectId, issueId);
+    },
   });
   const deleteIssue = useMutation({
     mutationFn: () => taskaApi.deleteIssue(projectId, issueId),
-    onMutate: clearDateNotice,
+    onMutate: writeStarts,
     onError: clearDateNotice,
     // Not `invalidateBoard`: this path deliberately does not touch
     // `["issue", projectId, issueId]`, because this panel is still mounted for
@@ -1626,7 +1795,13 @@ function IssuePanel({
               <IssuePanelSkeleton />
             </>
           ) : (
-            <div className="panel-loading form-error">{issueQuery.error.message}</div>
+            // The panel's one read is the whole panel since TAS-246, so its
+            // failure is stated the way a screen's is (`IssueKeyScreen`): a
+            // sentence, the server's words, and the request id that finds it in
+            // the gateway log — the last of which the plain line used to drop.
+            <div className="panel-loading">
+              <ApiNotice error={issueQuery.error}>This issue could not be opened.</ApiNotice>
+            </div>
           )}
         </aside>
       </div>
@@ -1668,9 +1843,8 @@ function IssuePanel({
 
   /**
    * Send one field and only that field. The body carries the single key that
-   * changed and the API layer resolves the other four from the issue as stored
-   * — which is what makes a partial edit partial on a wire that replaces (see
-   * `resolvePlanningFields` in src/api/planningFields.ts).
+   * changed, and since TAS-246 the wire is a merge patch that leaves the other
+   * four alone on the server — nothing is re-sent and nothing is read first.
    *
    * Nothing is sent when the parsed draft already equals the stored value. The
    * draft is normalised to the stored reading instead, so `3.0` becomes `3` and
@@ -1724,9 +1898,10 @@ function IssuePanel({
    */
   const refuseDate = (field: PlanningDateField) => {
     if (updateIssue.isError) updateIssue.reset();
-    if (assignIssue.isError) assignIssue.reset();
     if (transitionIssue.isError) transitionIssue.reset();
     if (deleteIssue.isError) deleteIssue.reset();
+    // The conflict line too, for the same reason: it is a refusal already read.
+    clearConflict();
     // A fresh `seq` on every refusal, including a repeat of the same sentence:
     // see the state's own comment for why identical text has to remount.
     setDateNotice((current) => ({ field, seq: (current?.seq ?? 0) + 1 }));
@@ -1763,7 +1938,7 @@ function IssuePanel({
       // The sentence the revert used to leave unsaid. Said through the panel's
       // own error slot rather than beside the box, because that slot is where
       // every other refusal of a planning field already lands — including the
-      // stored-date ones this is most likely to be confused with, and a reader
+      // date-order advice this is most likely to be confused with, and a reader
       // who learns to look in one place should not have to learn a second.
       refuseDate(field);
       return;
@@ -1798,9 +1973,26 @@ function IssuePanel({
    * since the last attempt — it keeps the first of a fixed order rather than
    * the newer refusal. That is this panel's pre-existing rule for the write
    * side and is left exactly as it was.
+   *
+   * A version conflict sits between the two (TAS-246): it is a write's refusal,
+   * but held in its own state (`conflict`), and its sentence is the panel's
+   * rather than the error's message. A refused date write gets the panel's
+   * advice instead of the server's sentence (`writeFailureText`).
    */
-  const writeError = updateIssue.error ?? assignIssue.error ?? transitionIssue.error ?? deleteIssue.error;
-  const panelNotice = dateNotice ? planningDateIncompleteEditMessage(dateNotice.field) : (writeError?.message ?? null);
+  const writeError = updateIssue.error ?? transitionIssue.error ?? deleteIssue.error;
+  const shownError: unknown = dateNotice ? null : (conflict?.error ?? writeError);
+  const panelNotice = dateNotice
+    ? planningDateIncompleteEditMessage(dateNotice.field)
+    : conflict
+      ? issueConflictText(conflict.fields)
+      : writeError
+        ? writeFailureText(writeError, updateIssue.error === writeError ? updateIssue.variables : undefined)
+        : null;
+  // The id that finds the refusal in the gateway log, beside the sentence and
+  // outside its live region — `WatcherNoteDetail`'s rule: an assertive region
+  // must not spell out a uuid. Mock mode never carries one.
+  const shownRequestId = apiErrorFacts(shownError).requestId;
+  const noticeKey = dateNotice ? `date-${dateNotice.seq}` : conflict ? `conflict-${conflict.seq}` : "write";
 
   return (
     <div className="panel-layer">
@@ -1858,7 +2050,21 @@ function IssuePanel({
           <div className="meta-grid">
             <span>Assignee</span>
             <div className="chip-row">
-              <AssigneeChip active={!issue.assigneeId} label="None" onClick={() => undefined} user={null} disabled />
+              {/* "None" unassigns, since TAS-246: the edit is a PATCH, whose
+                  `assigneeId` is nullable, where the old assign route required
+                  an id and could not clear one (docs/ai/API-DIVERGENCE.md,
+                  "Closed by TAS-246: an assignee could not be cleared — by
+                  contract"). Off while the issue is already unassigned — the
+                  press would change nothing. */}
+              <AssigneeChip
+                active={!issue.assigneeId}
+                disabled={!canEdit || issue.assigneeId == null}
+                label="None"
+                onClick={() => {
+                  if (canEdit && issue.assigneeId != null) updateIssue.mutate({ assigneeId: null });
+                }}
+                user={null}
+              />
               {/* Offered only to the people the server takes as an assignee
                   (`canBeAssigned`), where every member used to get a chip and a
                   VIEWER's was a request the server refuses.
@@ -1866,11 +2072,10 @@ function IssuePanel({
                   The current assignee stays whatever their role is now: somebody
                   assigned and then demoted is still who holds the issue, and
                   dropping the chip would draw it as unassigned. That chip is the
-                  assignment, not an offer — `disabled`, like "None" beside it,
-                  because pressing an active chip sends the assignment again, and
-                  for this person that is the refused request. The board's
-                  assignee filter keeps everyone: it asks who holds an issue,
-                  not who may. */}
+                  assignment, not an offer — `disabled`, because pressing an
+                  active chip sends the assignment again, and for this person
+                  that is the refused request. The board's assignee filter keeps
+                  everyone: it asks who holds an issue, not who may. */}
               {members
                 .filter((member) => canBeAssigned(member) || member.userId === issue.assigneeId)
                 .map((member) => {
@@ -1882,7 +2087,7 @@ function IssuePanel({
                       key={member.userId}
                       label={member.user?.displayName.split(" ")[0] ?? "User"}
                       onClick={() => {
-                        if (canEdit && assignable) assignIssue.mutate(member.userId);
+                        if (canEdit && assignable) updateIssue.mutate({ assigneeId: member.userId });
                       }}
                       user={
                         member.user
@@ -2061,12 +2266,19 @@ function IssuePanel({
               The `key` is that refusal's sequence number, so a repeat of the
               same sentence remounts this node instead of re-rendering identical
               text — a live region that emits no mutation announces nothing, and
-              the second refusal would be as silent as the first bug. A write's
-              refusal needs no counter: its mutation drops the error as the next
-              attempt starts, so the node goes away and comes back on its own. */}
+              the second refusal would be as silent as the first bug. A version
+              conflict carries one for the same reason. A write's other refusals
+              need no counter: the mutation drops the error as the next attempt
+              starts, so the node goes away and comes back on its own.
+
+              The live region is the sentence, not the box: the request id under
+              it is plain text, as in `WatcherNoteDetail` and `ApiNotice`, so an
+              assertive announcement never reads a uuid out. The box and its
+              `.request-id-line` are `EditProjectModal`'s. */}
           {panelNotice ? (
-            <div className="form-error" key={dateNotice ? dateNotice.seq : "write"} role="alert">
-              {panelNotice}
+            <div className="form-error" key={noticeKey}>
+              <span role="alert">{panelNotice}</span>
+              {shownRequestId ? <RequestId value={shownRequestId} /> : null}
             </div>
           ) : null}
 
@@ -2189,13 +2401,13 @@ interface WatcherNotice {
  *
  * **Three things here are not obvious and each has cost somebody an hour.**
  *
- * *The count is the server's field, never the array's length.*
- * `ListIssueWatchersResponseDto` states `totalCount` beside `watchers`, and
- * both writes answer with `watchersCount` — so after a toggle the number is
- * right before any refetch lands, and `null` (the server said nothing) stays
- * distinguishable from `0` (nobody is watching). Only the *membership* question
- * — am I in this list — is answered from the array, because the contract offers
- * no `…/watchers/me` read to ask it with.
+ * *There is no count, and the array's length is not one.* Since TAS-246 the
+ * section reads the issue's own read, whose DTO states no count, and a part
+ * that failed arrives there as `[]` — so the heading draws no number at all,
+ * not even one a write states, until the read carries one (backend ask A3,
+ * docs/ai/BACKLOG.md's role-lists line). Only the *membership* question — am I
+ * in this list — is answered from the array, because the contract offers no
+ * `…/watchers/me` read to ask it with.
  *
  * *`removed: false` is a success that changed nothing.* The unwatch pair
  * answers `200` with a flag saying whether a subscription was actually deleted,
@@ -2292,11 +2504,29 @@ function IssueWatchersSection({
   // The panel's issue read carries the watchers since TAS-246.
   const watchersCache = issuePartCache(queryClient, projectId, issueId, "watchers");
   const watchersQuery = useIssuePart(projectId, issueId, "watchers");
+  // The server's own answer to "am I watching", which comes from the issue's
+  // core query rather than from the watcher list, and so survives the list
+  // failing. Kept in step with the reader's own writes by `setIsWatching`.
+  const isWatchingQuery = useQuery({
+    ...issueDetailsOptions(projectId, issueId),
+    select: (data) => data.issue.isWatching,
+  });
+  const { queryKey: issueKey } = issueDetailsOptions(projectId, issueId);
+  const setIsWatching = (value: boolean | null) =>
+    queryClient.setQueryData(issueKey, (data) => (data ? { ...data, issue: { ...data.issue, isWatching: value } } : data));
 
   // `null` is a part the server did not send — said below, never drawn as
-  // "nobody is watching".
-  const answer = watchersQuery.data ?? undefined;
-  const unavailable = watchersQuery.data === null;
+  // "nobody is watching". So is a list that leaves out a reader the server
+  // says is watching: on this gateway a part that failed arrives as `[]`
+  // (`IssueDetails`), and that contradiction is the one way to tell. Offering
+  // "Watch" over it would invite a subscription the reader already has.
+  const listed = watchersQuery.data;
+  const readerMissing =
+    isWatchingQuery.data === true &&
+    Boolean(currentUserId) &&
+    !(listed?.watchers ?? []).some((watcher) => watcher.userId === currentUserId);
+  const unavailable = listed === null || readerMissing;
+  const answer = unavailable ? undefined : (listed ?? undefined);
   const watchers = useMemo(() => answer?.watchers ?? [], [answer]);
   const watching = Boolean(currentUserId) && watchers.some((watcher) => watcher.userId === currentUserId);
   /** `watcherSubject` for a person, with their row's own name when they have a row. */
@@ -2309,27 +2539,6 @@ function IssueWatchersSection({
     );
   const subscribed = useMemo(() => new Set(watchers.map((watcher) => watcher.userId)), [watchers]);
   const addable = members.filter((member) => !subscribed.has(member.userId));
-
-  /**
-   * The count as somebody *said* it. `answer.totalCount` is the list read's
-   * field and the write mutations overwrite it with theirs, so this is never
-   * `watchers.length` — and it is `null`, drawing no pill at all, when nothing
-   * has stated a number yet.
-   */
-  const count = answer?.totalCount ?? null;
-
-  /**
-   * Both halves of what a write tells us, applied to the cache the moment it
-   * lands: the server's count, and — for the two removals — whether anything
-   * was actually deleted. The count is applied even when it is the number the
-   * optimistic update had already guessed, because "the same number, from the
-   * server" and "our guess" are different states of this cache and only the
-   * first survives the next reader.
-   */
-  const applyServerCount = (watchersCount: number | null) => {
-    if (watchersCount === null) return;
-    watchersCache.set((current) => (current ? { ...current, totalCount: watchersCount } : current));
-  };
 
   /**
    * One write, and the issue read re-asked — which since TAS-246 is where the
@@ -2354,10 +2563,16 @@ function IssueWatchersSection({
     avatarUrl: null,
   });
 
+  /**
+   * Clears the notice, cancels a re-read that would land on top of the write,
+   * and snapshots what a rollback has to put back: the list, and the server's
+   * `isWatching` beside it — which the reader's own writes move with the list,
+   * so that an optimistic unwatch is not read as the contradiction above.
+   */
   const beginWrite = async () => {
     setNotice(null);
     await watchersCache.cancel();
-    return watchersCache.get();
+    return { watchers: watchersCache.get(), isWatching: queryClient.getQueryData(issueKey)?.issue.isWatching };
   };
 
   const addOptimistically = (userId: string) => {
@@ -2372,44 +2587,42 @@ function IssueWatchersSection({
       // subscription is set membership: adding it twice is adding it once.
       if (current.watchers.some((watcher) => watcher.userId === userId)) return current;
       return {
-        watchers: [...current.watchers, optimisticRow(userId)],
-        // A guess, and only until the server's own number replaces it a
-        // tick later. `null` stays `null`: a count nobody has stated is not
-        // a count this side may start one from.
-        totalCount: current.totalCount === null ? null : current.totalCount + 1,
+        // First, where the server will put it: both watcher reads answer
+        // newest first, so a row appended here would jump to the top when the
+        // re-read lands.
+        watchers: [optimisticRow(userId), ...current.watchers],
+        // Left as it is (`null` off the issue read): no count is drawn here.
+        totalCount: current.totalCount,
       };
     });
   };
 
   /**
-   * Drop a person's row and take the count down with it — optimistically for
-   * the reader's own unwatch, and only on the server's word for the ADMIN
-   * removal below, which is why this is not called `removeOptimistically`
-   * (its sibling above still is, because it has one caller and one timing).
+   * Drop a person's row — optimistically for the reader's own unwatch, and only
+   * on the server's word for the ADMIN removal below, which is why this is not
+   * called `removeOptimistically` (its sibling above still is, because it has
+   * one caller and one timing).
    */
   const removeRow = (userId: string) => {
-    watchersCache.set((current) => {
-      if (!current) return current;
-      const watchersLeft = current.watchers.filter((watcher) => watcher.userId !== userId);
-      const changed = watchersLeft.length !== current.watchers.length;
-      return {
-        watchers: watchersLeft,
-        totalCount:
-          current.totalCount === null || !changed ? current.totalCount : Math.max(0, current.totalCount - 1),
-      };
-    });
+    watchersCache.set((current) =>
+      current ? { ...current, watchers: current.watchers.filter((watcher) => watcher.userId !== userId) } : current,
+    );
   };
 
-  const rollback = (previous: IssueWatchers | null | undefined) => watchersCache.restore(previous);
+  const rollback = (previous: { watchers: IssueWatchers | null | undefined; isWatching: boolean | null | undefined } | undefined) => {
+    if (!previous) return;
+    watchersCache.restore(previous.watchers);
+    if (previous.isWatching !== undefined) setIsWatching(previous.isWatching);
+  };
 
   const watchIssue = useMutation({
     mutationFn: () => taskaApi.watchIssue(projectId, issueId),
     onMutate: async () => {
       const previous = await beginWrite();
       if (currentUserId) addOptimistically(currentUserId);
+      setIsWatching(true);
       return { previous };
     },
-    onSuccess: (result) => applyServerCount(result.watchersCount),
     onError: (error, _variables, context) => {
       rollback(context?.previous);
       setNotice({ error, tone: "error", text: watcherFailureText(error, "You were not subscribed to this issue.") });
@@ -2422,10 +2635,10 @@ function IssueWatchersSection({
     onMutate: async () => {
       const previous = await beginWrite();
       if (currentUserId) removeRow(currentUserId);
+      setIsWatching(false);
       return { previous };
     },
     onSuccess: (result) => {
-      applyServerCount(result.watchersCount);
       // Not an error and not silence. The end state is the one that was asked
       // for, so nothing rolls back; what did not happen is the *removal*, and
       // saying so is the whole reason the server sends this flag.
@@ -2445,9 +2658,9 @@ function IssueWatchersSection({
     onMutate: async (userId) => {
       const previous = await beginWrite();
       addOptimistically(userId);
+      if (userId === currentUserId) setIsWatching(true);
       return { previous };
     },
-    onSuccess: (result) => applyServerCount(result.watchersCount),
     onError: (error, userId, context) => {
       rollback(context?.previous);
       // The same sentence in the person its subject requires, and the reader's
@@ -2523,7 +2736,7 @@ function IssueWatchersSection({
     onSuccess: (result, userId) => {
       planFocusHandoff(userId);
       removeRow(userId);
-      applyServerCount(result.watchersCount);
+      if (userId === currentUserId) setIsWatching(false);
       if (!result.removed) {
         const subject = subjectOf(userId);
         setNotice({
@@ -2576,11 +2789,6 @@ function IssueWatchersSection({
   }, [watchers]);
 
   const toggling = watchIssue.isPending || unwatchIssue.isPending;
-  // Mutations first, reads second, for the reason the label section states: an
-  // observer can hold data *and* a failed background refetch at once, and in
-  // that state a refused write would otherwise be explained by whatever the
-  // refetch said instead.
-  const readError = unavailable ? new Error(partUnavailableText("watchers")) : null;
   const toggleHintId = useId();
   // The line beside the toggle, and the only place a reader is told why it is
   // off. Whether they are on the list is true for every reader and always said.
@@ -2606,12 +2814,8 @@ function IssueWatchersSection({
           answers Enter with a subscription and a reader who has just pressed ✕
           five times is exactly the reader who would press it again. */}
       <h3 ref={heading} tabIndex={-1}>
+        {/* No count pill until the issue read states one: backend ask A3, the role-lists line in docs/ai/BACKLOG.md. */}
         Watchers
-        {/* Only when somebody has stated a number. `0` states one; `null` — a
-            `200` that omitted `totalCount`, which this contract permits — does
-            not, and a pill reading "0" over it would be this side answering a
-            question the server declined. */}
-        {count !== null ? <span className="count-pill">{count}</span> : null}
       </h3>
 
       {/* Two answers have to be in before this may be drawn at all, and both for
@@ -2776,17 +2980,11 @@ function IssueWatchersSection({
         <WatcherNoteDetail error={notice?.error} sentence={notice?.text} />
       </div>
 
-      {/* The same two-part body, and deliberately **not** a second live region:
-          this box mounts together with its text, which is the shape §7 objects
-          to, and a section with two polite regions is worse than one that
-          announces a read failure a beat late. Recorded rather than fixed
-          here. */}
-      {readError ? (
-        <div className="watcher-note is-error">
-          <p className="watcher-note-sentence">{readError.message}</p>
-          <WatcherNoteDetail error={readError} sentence={readError.message} />
-        </div>
-      ) : null}
+      {/* A part that did not load says so where "nobody is watching" would
+          sit, in the one recipe all four sections share (art-director,
+          TAS-246): a state of the section rather than a refusal of something
+          the reader did, so no error box and no live region. */}
+      {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("watchers")}</p> : null}
 
       {/* Only a part the server sent may say nobody is watching. */}
       {answer && watchers.length === 0 ? <p className="issue-links-empty">No one is watching this issue yet</p> : null}
@@ -3190,7 +3388,7 @@ function IssueLabelsSection({
 
       {error ? <div className="form-error">{error}</div> : null}
 
-      {unavailable ? <p className="issue-links-empty">{partUnavailableText("labels")}</p> : null}
+      {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("labels")}</p> : null}
       {labelsQuery.data && labels.length === 0 ? <p className="issue-links-empty">No labels yet</p> : null}
 
       {labels.length ? (
@@ -3412,7 +3610,7 @@ function IssueLinksSection({
 
       {error ? <div className="form-error">{error}</div> : null}
 
-      {unavailable ? <p className="issue-links-empty">{partUnavailableText("links")}</p> : null}
+      {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("links")}</p> : null}
       {/* Only a part the server sent may say this. A part it did not send has
           no rows either, and "nothing is linked here" is a claim that answer
           never made — one a reader would act on. */}
@@ -3707,15 +3905,25 @@ function IssueAttachmentsSection({
       // The confirm failed — but a confirm can succeed on the server and fail
       // on the way back, so nobody is told the file was not attached until the
       // list has been re-read and looked at. Getting this wrong states a
-      // falsehood about a file that is sitting right there. The re-read is the
-      // issue read, which is where the list lives since TAS-246; a part it did
-      // not bring back is as unknown as a read that failed.
+      // falsehood about a file that is sitting right there.
+      //
+      // Re-read with the attachments' own route, not the issue read, and only
+      // here. On this gateway the issue read sends a part that failed as `[]`
+      // (`IssueDetails`) — one missing object in storage is enough to fail it —
+      // so it could turn "may or may not have been attached" into "was not
+      // attached", and the reader would upload the file a second time. The
+      // list route fails as a request when it fails, which is the answer this
+      // decision needs. What it finds is put on screen, since it is the newest
+      // word on the list.
       let landed: IssueAttachment[] | null;
       try {
-        landed = (await queryClient.fetchQuery({ ...issueDetailsOptions(projectId, issueId), staleTime: 0 })).issue
-          .attachments;
+        landed = await taskaApi.listAttachments(projectId, issueId);
       } catch {
         landed = null;
+      }
+      if (landed !== null) {
+        const verified = landed;
+        attachmentsCache.set(() => verified);
       }
 
       if (landed === null) {
@@ -3741,13 +3949,6 @@ function IssueAttachmentsSection({
     }
   };
 
-  /**
-   * Mutations and the upload first, the query second — the same ordering rule
-   * the labels section states: an observer can hold data *and* a failed
-   * background refetch at once, and in that state a message about the refetch
-   * would explain an action the reader just took.
-   */
-  const readError = unavailable ? new Error(partUnavailableText("attachments")) : null;
 
   return (
     <section className="issue-attachments">
@@ -3808,11 +4009,10 @@ function IssueAttachmentsSection({
         {notice?.text ?? ""}
       </div>
 
-      {/* A 404 from this list has more than one cause — a missing issue, or a
-          soft-deleted one — so it is never read as "this issue is gone" and
-          never hides the section. Every failure is shown as the failure it
-          was. */}
-      {readError ? <div className="attachment-note is-error">{readError.message}</div> : null}
+      {/* A part that did not load says so where "No attachments yet" would
+          sit, in the recipe the four sections share (art-director, TAS-246),
+          and never hides the section: the upload is its own request. */}
+      {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("attachments")}</p> : null}
 
       {/* Only a part the server sent may say there are none. */}
       {attachmentsQuery.data && attachments.length === 0 && !pending ? (
@@ -5193,6 +5393,60 @@ function mergeWorkflowStatuses(workflows?: WorkflowsByIssueType) {
   });
 
   return [...statusByKey.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+/**
+ * The queue the issue panel's writes share (TAS-246) — react-query runs the
+ * mutations of one `scope` one after another. Every edit and transition of one
+ * issue goes through it, because each bumps the version the next one has to
+ * send.
+ */
+const issueWriteScope = (issueId: string) => `issue-write:${issueId}`;
+
+/** What the conflict sentence calls each field a write can carry. */
+const issueFieldNames: Record<keyof UpdateIssueInput, string> = {
+  summary: "summary",
+  description: "description",
+  priority: "priority",
+  assigneeId: "assignee",
+  storyPoints: "story points",
+  startDate: "start date",
+  dueDate: "due date",
+  originalEstimateMinutes: "original estimate",
+  remainingEstimateMinutes: "remaining estimate",
+};
+
+/**
+ * What the panel says when a write is refused because the issue changed after
+ * the reader opened it (TAS-246). Two sentences, because the two outcomes are
+ * not the same: a choice — a priority, an assignee, a planning value — is
+ * simply not made, and the panel already shows the issue as it now is; free
+ * text is the reader's work, kept in its box, and saved by leaving the box
+ * again. The panel writes one field at a time, so `fields` names one.
+ */
+function issueConflictText(fields: (keyof UpdateIssueInput)[]): string {
+  const field = fields[0];
+  const stale = "this issue was changed elsewhere after you opened it.";
+  if (field === "summary" || field === "description") {
+    return `Your ${field} was not saved: ${stale} Your text is still in the box — leave the box to save it over the latest version.`;
+  }
+  const name = field ? issueFieldNames[field] : "issue";
+  return `Your change to the ${name} was not saved: ${stale} The panel now shows the latest version.`;
+}
+
+/**
+ * A refused write in the panel's words where it has some, and the server's
+ * where it does not. The one rewrite is the date order: the server answers a
+ * date that, laid over the other stored date, would put the start after the
+ * due date with a sentence that is true and says nothing about what to do, and
+ * the panel — which saves one box at a time — knows which box to move first.
+ */
+function writeFailureText(error: Error, sent: UpdateIssueInput | undefined): string {
+  if (sent && isDatesOutOfOrderRefusal(error)) {
+    if (sent.startDate !== undefined && sent.dueDate === undefined) return planningDateOrderAdvice("startDate");
+    if (sent.dueDate !== undefined && sent.startDate === undefined) return planningDateOrderAdvice("dueDate");
+  }
+  return error.message;
 }
 
 async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, projectId: string, issueId?: string) {

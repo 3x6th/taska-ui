@@ -39,15 +39,17 @@ const statusLabels: Record<UserStatus, string> = {
  * a different reason. There the value is a database cell, so it was never
  * promised to be an enum member. Here it is typed `UserStatus` and can still
  * arrive outside it: `GET /users/me` answers the gateway's own
- * `GatewayUserStatus`, which has **no** `LOCKED`. Backend PR #146 made the state
- * reachable without adding it there, so a locked account whose pre-lock token
- * still works — `validateUserStatus` in `AuthServiceImpl` rejects `BLOCKED` and
- * `INVITED`, and says nothing about `LOCKED` — reads back as `UNSPECIFIED`
- * today (docs/ai/API-DIVERGENCE.md).
+ * `GatewayUserStatus`. Since backend TAS-197 (`04546f1`, deployed) that enum
+ * has `LOCKED`, so a locked account whose pre-lock token still works — it does
+ * while TAS-198 (backend PR #174) is open — reads `LOCKED` and gets the label
+ * below. The fallback stays for what is still possible: `UNSPECIFIED` is a
+ * member of that enum too, and the contract types `status` as a bare string
+ * (TAS-173). A value the gateway's mapper does not know at all is no longer one
+ * of them — it fails every authenticated request with a 500 instead (read at
+ * `60d62ee`).
  *
- * A bare lookup printed an empty badge for that: `undefined` in a place typed
- * `string`, which renders as nothing and says nothing. Adding `LOCKED` to the
- * union does not fix it, because `LOCKED` is not the value that arrives.
+ * A bare lookup printed an empty badge for an unknown value: `undefined` in a
+ * place typed `string`, which renders as nothing and says nothing.
  */
 function statusLabel(status: string): string {
   const labels: Record<string, string | undefined> = statusLabels;
@@ -522,8 +524,8 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                       ) : null}
                     </div>
                     {/* Said before a file is chosen rather than after it is
-                        refused, and it states the ceiling the server actually
-                        enforces — 2 MB, not the 5 MB its own schema declares
+                        refused, and it states the server's ceiling — 2 MB, which
+                        the schema and auth-service agree on since TAS-222
                         (src/api/avatars.ts). While an upload is in flight the
                         same line carries its progress instead: one line, so
                         nothing below it moves either. */}

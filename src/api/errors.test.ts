@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { isAccountLocked, isMissingOrForbidden, isUndeployedRoute } from "./errors";
+import {
+  IssueVersionConflictError,
+  apiErrorFacts,
+  isAccountLocked,
+  isConflict,
+  isIssueVersionConflict,
+  isMissingOrForbidden,
+  isUndeployedRoute,
+} from "./errors";
+import type { IssueWriteAnswer } from "./TaskaApi";
 import { ACCOUNT_LOCKED_MESSAGE } from "../lib/accountLock";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "./TaskaApi";
 import { ApiError } from "./rest/RestTaskaApi";
@@ -156,5 +165,63 @@ describe("isAccountLocked", () => {
     expect(isAccountLocked("PERMISSION_DENIED")).toBe(false);
     expect(isAccountLocked({ code: "PERMISSION_DENIED" })).toBe(false);
     expect(isAccountLocked(null)).toBe(false);
+  });
+});
+
+describe("IssueVersionConflictError", () => {
+  const current: IssueWriteAnswer = {
+    id: "issue-1",
+    projectId: "project-1",
+    issueNumber: 1,
+    issueKey: "TAS-1",
+    issueType: "TASK",
+    summary: "Changed elsewhere",
+    description: "",
+    status: "TODO",
+    priority: "HIGH",
+    assigneeId: null,
+    reporterId: "user-anna",
+    createdAt: "2026-10-07T09:00:00Z",
+    updatedAt: "2026-10-07T09:05:00Z",
+    version: 5,
+    deletedAt: null,
+    storyPoints: null,
+    startDate: null,
+    dueDate: null,
+    originalEstimateMinutes: null,
+    remainingEstimateMinutes: null,
+  };
+  // Both implementations throw this one class; REST hands it the gateway's
+  // request id, the mock has none to hand. Nothing else may differ.
+  const fromRest = new IssueVersionConflictError(current, 4, "req-409");
+  const fromMock = new IssueVersionConflictError(current, 4);
+
+  it("is recognised by its own predicate in both shapes", () => {
+    expect(isIssueVersionConflict(fromRest)).toBe(true);
+    expect(isIssueVersionConflict(fromMock)).toBe(true);
+    expect(fromRest.current).toBe(current);
+    expect(fromRest.expectedVersion).toBe(4);
+    expect(fromMock.message).toBe("Version conflict: sent 4, the issue is at 5");
+  });
+
+  // The point of fixing `status` at 409 on the class: a mock conflict and a
+  // gateway conflict read the same through every shared helper.
+  it("reads as a conflict through the shared helpers, identically in both shapes", () => {
+    expect(isConflict(fromRest)).toBe(true);
+    expect(isConflict(fromMock)).toBe(true);
+    expect(apiErrorFacts(fromRest)).toEqual({
+      message: "Version conflict: sent 4, the issue is at 5",
+      requestId: "req-409",
+      status: 409,
+      code: null,
+    });
+    expect(apiErrorFacts(fromMock)).toEqual({ ...apiErrorFacts(fromRest), requestId: null });
+    expect(isMissingOrForbidden(fromRest)).toBe(false);
+  });
+
+  it("is not claimed by any other 409 or conflict-coded error", () => {
+    expect(isIssueVersionConflict(new ApiError("Conflict", "ABORTED", 409))).toBe(false);
+    expect(isIssueVersionConflict(new MockLikeError("ABORTED", "Cannot block user"))).toBe(false);
+    expect(isIssueVersionConflict({ current, expectedVersion: 4, status: 409 })).toBe(false);
   });
 });

@@ -380,10 +380,11 @@ describe("HybridTaskaApi", () => {
     const updateIssue = vi.spyOn(live, "updateIssue");
 
     // `storyPoints: null` means clear it; the four fields not mentioned mean
-    // leave them alone. Both halves have to survive the delegation.
-    const updated = await hybrid.updateIssue(project.id, full.id, { storyPoints: null });
+    // leave them alone. Both halves have to survive the delegation, and so does
+    // the version the caller is editing (TAS-246).
+    const updated = await hybrid.updateIssue(project.id, full.id, { storyPoints: null }, full.version);
 
-    expect(updateIssue).toHaveBeenCalledWith(project.id, full.id, { storyPoints: null });
+    expect(updateIssue).toHaveBeenCalledWith(project.id, full.id, { storyPoints: null }, full.version);
     expect(updated.storyPoints).toBeNull();
     expect(updated).toMatchObject({
       startDate: full.startDate,
@@ -393,7 +394,7 @@ describe("HybridTaskaApi", () => {
     });
 
     // And a refusal is a refusal here too, with the same code either side.
-    await expect(hybrid.updateIssue(project.id, full.id, { storyPoints: -1 })).rejects.toMatchObject({
+    await expect(hybrid.updateIssue(project.id, full.id, { storyPoints: -1 }, updated.version)).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
     });
   });
