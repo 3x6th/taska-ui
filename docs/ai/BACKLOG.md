@@ -2875,6 +2875,19 @@ Frontend, recorded rather than taken:
   r2 N3): the row looks dead for one round trip until the `PATCH` answers. Draw
   `updateIssue.variables.assigneeId` / `.priority` as active while pending; the
   answer or a 409 replaces it.
+- **A refusal of another kind can let a re-read overwrite unsaved conflict text**
+  (`art-director` r3 N1 on TAS-246, measured on mock): summary conflict → a
+  date-order refusal takes the slot → the reseed guard (`unsaved =
+  conflict?.fields`, `BoardScreen.tsx:1640`) clears with it → a later re-read
+  replaces the reader's summary with a third party's. Contradicts §5.5 «он
+  остаётся в поле»; rarer than before f26e2eb. Fix: keep unsaved free-text fields
+  in their own state, cleared only when that field is re-sent or put back.
+- **The multi-field conflict sentence lists fields out of panel order**
+  (`art-director` r3 N2): `issueFieldNames` (`BoardScreen.tsx:5538`) puts
+  priority before assignee and dates before estimates, while its doc comment
+  claims panel order. Reorder to summary, description, assigneeId, priority,
+  storyPoints, originalEstimateMinutes, remainingEstimateMinutes, startDate,
+  dueDate.
 - **A blank `displayName` on a member-map row still prints blank**
   (`art-director` ruling 1 on TAS-246): `src/lib/people.ts:44`,
   `BoardScreen.tsx:5090`. The chain treats a blank server summary as unnamed
