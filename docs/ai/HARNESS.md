@@ -247,8 +247,17 @@ Pages actually serves, so deploy-shaped regressions stay outside its reach.
 Treat a green `check` as evidence that the contract layer holds and the smoke
 flows still run, and nothing more.
 
-CI runs `npm run check` on pull requests and pushes to `main`
-(`.github/workflows/frontend.yml`), installing Chromium first and uploading
-Playwright traces and the HTML report when the gate fails. Deployment to
-GitHub Pages fires separately on push to `main` and runs only `typecheck` and
-`build`, never `check`.
+CI (`.github/workflows/frontend.yml`) runs the same four parts as
+`npm run check` on pull requests and pushes to `main`, split across runners
+since TAS-247 rather than run as one command: typecheck, lint, unit tests and
+the build with its `100dvh` assertion in one job, and the e2e suite as a
+four-shard matrix at one worker per vCPU. The shards' blob reports are merged
+into one HTML report, traces included, on green runs too — a test that passed
+on retry leaves its only trace there. A step fails the run if `check` in
+`package.json` stops being exactly those four scripts, so the split cannot
+quietly fall behind the local gate. A pull request touching only `docs/` and
+Markdown skips the e2e matrix; every other one, and every push to `main`, runs
+it. One job, `check`, reports a single status for all of it and always
+reports, which makes it the one to require. Deployment to GitHub Pages fires
+separately on push to `main` and runs only `typecheck` and `build`, never
+`check`.

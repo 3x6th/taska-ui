@@ -1,19 +1,76 @@
 name: Frontend
 
+# `npm run check` is the local gate and stays one command. CI runs the same
+# parts split across machines instead: run whole on one 4-vCPU runner it took
+# 16.5 minutes, 13.6 of them the e2e suite on two workers (TAS-247). The fast
+# checks run beside a sharded e2e matrix, and the `check` job at the bottom is
+# the one status that answers for all of it.
+
 on:
   push:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# A newer push to a pull request supersedes the run in flight. Pushes to main
+# never cancel each other: every merge commit gets a verdict of its own.
+concurrency:
+  group: frontend-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  build:
+  # Whether the e2e suite has anything to prove. A pull request touching only
+  # `docs/` and Markdown cannot change what the browser renders, so it skips
+  # the four e2e runners; everything else, and every push to main, runs them.
+  # The fast job below runs regardless, so typecheck, lint, the unit suite and
+  # the build still answer for every change.
+  changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      e2e: ${{ steps.classify.outputs.e2e }}
+    steps:
+      # A pull_request run checks out the PR's merge commit, whose first parent
+      # is the base branch: the diff between them is exactly what merging would
+      # add to main, however far behind the branch is.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Classify the change
+        id: classify
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+            echo "Push to main: the whole suite runs."
+            exit 0
+          fi
+          # --no-renames lists both sides of a rename, so moving a file out of
+          # src/ into docs/ still counts as touching src/.
+          git diff --name-only --no-renames HEAD^1 HEAD > changed.txt
+          grep -v -E '^docs/|\.md$' changed.txt > code.txt || true
+          if [ -s code.txt ]; then
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+            echo "$(wc -l < code.txt) changed file(s) outside docs/ and Markdown, e.g.:"
+            head -5 code.txt
+          else
+            echo "e2e=false" >> "$GITHUB_OUTPUT"
+            echo "Only docs/ and Markdown changed ($(wc -l < changed.txt) file(s)): e2e is skipped."
+          fi
+
+  static:
+    name: typecheck, lint, unit, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -21,23 +78,27 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+      # The split above holds only while `check` is exactly these four
+      # scripts. A fifth added to it would pass every local gate and never run
+      # here; this fails instead. The fix is a step for the new script, then
+      # the string below.
+      - name: Assert CI still runs every part of npm run check
+        run: |
+          expected='npm run typecheck && npm run lint && npm run test && npm run test:e2e'
+          actual=$(node -p 'require("./package.json").scripts.check')
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::package.json's check script is now: $actual. CI runs its parts as separate steps (typecheck, lint and test in this job, test:e2e in the e2e matrix), so a new part needs a step in .github/workflows/frontend.yml before this expected string changes."
+            exit 1
+          fi
 
-      - name: Check
-        run: npm run check
+      - name: Typecheck
+        run: npm run typecheck
 
-      # A CI-only e2e failure is otherwise unreproducible: traces and the HTML
-      # report are the only record of what the browser saw.
-      - name: Upload Playwright artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: |
-            playwright-report/
-            test-results/
-          retention-days: 7
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test
 
       - name: Build
         run: npm run build
@@ -57,3 +118,116 @@ jobs:
             exit 1
           fi
           echo "100dvh survived the CSS build: $count occurrences"
+
+  # Each shard is a whole runner with its own mock-backed Vite server, running
+  # a quarter of the tests on one worker per vCPU (`workers` in
+  # playwright.config.ts). fail-fast is off so one red shard does not hide the
+  # other three's results.
+  e2e:
+    name: e2e (${{ matrix.shard }}/4)
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Headless runs use the headless shell only, so the full Chromium build
+      # is never downloaded.
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: End-to-end tests
+        run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+      - name: Upload blob report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+          retention-days: 1
+
+  # A CI-only e2e failure is otherwise unreproducible: traces and the HTML
+  # report are the only record of what the browser saw. It is merged on a green
+  # run too, because a test that passed on retry carries the only trace of its
+  # first failure — exactly the record labels.spec.ts:242 did not leave behind.
+  # Diagnostic only: the `check` gate does not wait for it.
+  report:
+    name: e2e report
+    needs: e2e
+    if: ${{ !cancelled() && needs.e2e.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download blob reports
+        uses: actions/download-artifact@v8
+        with:
+          path: all-blob-reports
+          pattern: blob-report-*
+          merge-multiple: true
+
+      - name: Merge into one HTML report
+        run: npx playwright merge-reports --reporter html ./all-blob-reports
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  # The single status to require on main. It always reports, so a docs-only
+  # pull request gets a green `check` rather than a required check stuck at
+  # "expected". `always()` rather than `!cancelled()` on purpose: a skipped
+  # job satisfies a required check, so a cancelled run must end here red, not
+  # skipped.
+  check:
+    name: check
+    needs: [changes, static, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every part of the gate
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          STATIC: ${{ needs.static.result }}
+          E2E: ${{ needs.e2e.result }}
+          E2E_WANTED: ${{ needs.changes.outputs.e2e }}
+        run: |
+          echo "changes=$CHANGES static=$STATIC e2e=$E2E (wanted: ${E2E_WANTED:-unknown})"
+          [ "$CHANGES" = success ] || { echo "::error::Classifying the change did not succeed: $CHANGES"; exit 1; }
+          [ "$STATIC" = success ] || { echo "::error::Typecheck, lint, unit tests or build: $STATIC"; exit 1; }
+          if [ "$E2E_WANTED" = true ]; then
+            [ "$E2E" = success ] || { echo "::error::End-to-end suite: $E2E"; exit 1; }
+          else
+            [ "$E2E" = skipped ] || { echo "::error::e2e was not wanted but reports $E2E"; exit 1; }
+            echo "Docs-only change: e2e skipped by design."
+          fi
