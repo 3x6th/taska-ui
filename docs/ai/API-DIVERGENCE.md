@@ -2269,6 +2269,8 @@ Everything below is the entry as it stood, in the past tense.
 
 ### `viewLinkType` arrives with the protobuf prefix
 
+**Measured 2026-10-07 20:03 UTC:** the details read on API-2 answered `viewLinkType: "ISSUE_LINK_VIEW_TYPE_RELATES_TO"`.
+
 - **Endpoints:** every link the gateway answers with: `GET` and `POST
   /api/v1/issues/{issueId}/links`, and since backend TAS-214 the links embedded
   in `GET /api/v1/issues/{issueId}`.
@@ -2554,6 +2556,8 @@ The entry as it stood:
 
 ### GET /issues/{issueId}: a failed part arrives as [] and an unnamed person as a blank or absent displayName
 
+**Measured 2026-10-07 20:03 UTC** (owner's session, GET only, 25 issues across 12 projects; first request id `4ce3d29e-776e-46d8-9d33-32d8da87ab5d`): every `GET /issues/{id}` answered 200 with `{issue, history}`; `reporter` and `assignee` are `{id, displayName, avatarUrl}` objects; `version` is a number and equals the list read's; `links[].target` is present; a watcher whose user has no profile (the Swagger example id `3fa85f64-…`) arrives with `displayName: null` — explicitly null, not absent and not `""`; no blank `displayName` was seen on reporter or assignee (auth-service was up); comments carry `author` with a non-empty name. A key in place of the UUID answers 400 INVALID_ARGUMENT "body.issueId must be a valid UUID"; a missing UUID answers 404 NOT_FOUND "Issue not found: …". No issue on the stand had attachments, so `uploadedByUser` and the `[]`-for-a-failed-part claim stay code-read.
+
 - **Endpoints:** `GET /api/v1/issues/{issueId}`, which answers
   `IssueDetailsWithHistoryResponseDto` (backend
   [TAS-214](https://jira.ozero.dev/browse/TAS-214), develop `60d62ee`, deployed
@@ -2822,6 +2826,8 @@ found"`.
   so nothing here changed on the wire.
 
 ### The search DTO carries no `status` and no `projectId`
+
+**Measured 2026-10-07 20:03 UTC (by-key):** `GET /issues/by-key/API-2` answered 200 with the issue's id and `labels: []`; `api-2` answered the same issue; `API-999999`, `ZZQ-999999` and `not-a-key` each answered 404 NOT_FOUND "Issue not found: {key}". The 403 path was not measured (the probe ran as a GLOBAL_ADMIN).
 
 - **Endpoint:** `GET /api/v1/issues/search`.
 - **Observed 2026-08-23:** every hit is an `IssueShortResponseDto` —
