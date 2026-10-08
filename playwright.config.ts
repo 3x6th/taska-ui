@@ -10,12 +10,18 @@ import { defineConfig } from "@playwright/test";
 // start. Moving the port keeps both properties.
 const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
 
+// CI runs this suite as shards, each on a runner of its own, so a shard takes
+// one worker per vCPU ("100%") rather than Playwright's default half. Each
+// shard writes a blob, not an HTML report: a per-shard HTML report is a partial
+// one nobody downloads, and the merge job turns the blobs into the one report.
+// `list` stays so a shard's own log still reads. Locally neither changes.
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
+  workers: process.env.CI ? "100%" : undefined,
+  reporter: process.env.CI ? [["list"], ["blob"]] : "list",
   use: {
     baseURL: `http://localhost:${PORT}`,
     trace: "on-first-retry",

@@ -93,6 +93,7 @@ states are not.
 | [TAS-237](https://jira.ozero.dev/browse/TAS-237) | The sign-in screen showed a locked account a raw UTC `Instant` with microseconds, in one run-on line | Done | merged (PR #74) on 2026-09-22. Handed over by the owner mid-session. The sentence is built by string concatenation at `AuthServiceImpl.java:235-238`, and `api-contract-guard` established the fact that shapes the whole story: a search across **every production source in the backend** for `withDetails`, `ErrorInfo`, `com.google.rpc` and `Metadata.Key` returns nothing — every error in the system is a `Status.withDescription(String)` and `RestErrorResponse` is `{code, message}` in both the handwritten contract and `/v3/api-docs`. So parsing the prose was the only route, and the parser keys on the ISO substring rather than on the words, with the fraction optional because `Instant.toString()` emits 0/3/6/9 digits. The branch is chosen on `403 PERMISSION_DENIED`, which the guard proved means nothing but "locked" on this PUBLIC route by exhausting every other refusal in the method. **The mock could not produce the shape**, so the branch would have shipped unexercised exactly as TAS-233 did; it now refuses a `LOCKED` user the gateway's way. `release-reviewer` approved with no blockers and caught that the unit tests written to catch a hard-coded `+3` **cannot fail in a `+3` timezone** — only the `America/New_York` e2e held the line. `art-director` blocked on the deeper half of the same class: `Intl.DateTimeFormat(undefined, …)` hands over not the zone but the whole locale, and `fa-IR` printed a **Solar Hijri** date inside an English sentence in an `<html lang="en">` document. Pinned to `en-US` with the zone left to the runtime, which changed no recorded string — the entire evidence set had been captured in an `en-US` browser and so never exercised the departure. Two backend asks filed: [TAS-238](https://jira.ozero.dev/browse/TAS-238) and [TAS-239](https://jira.ozero.dev/browse/TAS-239). **Nothing here has met a real gateway 403** |
 | [TAS-238](https://jira.ozero.dev/browse/TAS-238) | The attempt that locks an account answers `UNAUTHENTICATED "Invalid credentials"`, so the lock is announced one attempt later | To Do | backend ask, filed 2026-09-22 from `api-contract-guard`'s TAS-237 reading. `AuthServiceImpl.handleFailedAttempt:284-315` sets `LOCKED` and `lockedUntil`, then errors as a plain bad password at `:314`. The client cannot compensate: that response is byte-identical to a wrong password. Service layer, `auth-service` only — no contract, no proto, no gateway — and the cheaper of the two asks |
 | [TAS-239](https://jira.ozero.dev/browse/TAS-239) | The error envelope carries no machine-readable detail, so a deadline exists only inside an English sentence | To Do | backend ask, filed 2026-09-22; the removal key for TAS-237's divergence entry. Three priced shapes; the one that decides the cost is that **no `.proto` changes** — gRPC trailers are not declared in proto, while `google.rpc.ErrorInfo` would drag in `StatusProto` and its descriptors. Deliberately **not** filed under epic TAS-210: that epic collapses per-screen reads, and this is the envelope every service shares — `FAILED_PRECONDITION` and `ABORTED` lose their structure the same way |
+| [TAS-247](https://jira.ozero.dev/browse/TAS-247) | CI in about five minutes: typecheck, lint, unit tests and build beside a four-shard e2e matrix, one `check` gate that always reports, docs-only PRs skip e2e; and the `labels.spec.ts:242` flake | Done | **merged (PR [#78](https://github.com/3x6th/taska-ui/pull/78))** on 2026-10-08. Handed over by the owner with the measurement already taken: 16.5 min, 13.6 of it e2e on two workers. First sharded run 3m24s to `check` (run 37684446678), 535 executed and 41 skipped as before. `npm run check` unchanged; `check` is not a required status yet — that is a ruleset change for the owner. See the section below |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
@@ -848,3 +849,74 @@ matters more than the numbers: the real `HybridTaskaApi` over the real
   `-s project` could re-enable the packs with no diff to review.
 - `npm run check` and `npm run build` pass. Neither says anything about the
   plugin claims above; those rest on the registry probes.
+
+### TAS-247 — CI in four shards, and what a docs-only PR is allowed to skip
+
+The decision, and the measurements it rests on.
+
+- **Where the 16.5 minutes went** (run 37648512272, 2026-10-07, one job on a
+  4-vCPU runner): e2e 13.6 min at "using 2 workers" — Playwright's default of
+  half the vCPUs — with `retries: 2`; vitest 2m06s; typecheck 7s; lint 10s;
+  build 8s; `npm ci` and Chromium 30s together. Setup was never the problem,
+  so caching was not pursued; the suite was.
+- **The shape**: `static` (typecheck, lint, unit, build, the `100dvh`
+  assertion) beside `e2e (i/4)`, four runners each running
+  `npm run test:e2e -- --shard=i/4` at `workers: "100%"`; a `report` job
+  merging the four blob reports into one HTML report, on green runs too; a
+  `changes` job; and `check`, the one status for all of it. Sharded by
+  `--shard`, not by `--project`: `fullyParallel` splits tests evenly
+  (144 per shard), where three viewport jobs would fix the count at three.
+- **First run on the new shape** (37684446678, this PR): `changes` 6s,
+  `static` 2m32s, shards 3m07s / 2m56s / 3m01s / 2m31s, `report` 15s, `check`
+  3s — **3m24s from run creation to `check`**, 3m37s with the report. Shards
+  summed: 534 passed + 1 flaky = 535 executed, 41 skipped, 576 total — the
+  same as the unsharded run, and `release-reviewer` checked that the union of
+  the four shards' `--list` equals the unsharded list test for test.
+- **`npm run check` stays the local gate, unchanged.** CI no longer runs it as
+  one command, so `static` asserts that `check` in `package.json` is still
+  exactly `typecheck && lint && test && test:e2e`; a fifth part added there
+  fails CI until it gets a step. Its blind spots are in `BACKLOG.md`.
+- **Docs-only.** A `pull_request` run diffs the PR's merge commit against its
+  first parent (`fetch-depth: 2`, `--no-renames`), which is exactly what the
+  merge would add to `main`. If every path is under `docs/` or ends in `.md`,
+  the e2e matrix is skipped; `static` always runs, and every push to `main`
+  runs everything. Chosen over `paths-ignore` because a workflow that does not
+  run reports nothing, and a required check that never reports blocks the PR
+  forever. Replayed over the last 40 merges on `main`: the 14 docs-only ones —
+  every "record the merge" PR — would have skipped; every PR touching code
+  would have run, `.claude/settings.json` included. Nothing in `src/`, `e2e/`
+  or the configs reads `docs/` or Markdown at runtime. Not yet seen live: the
+  first docs-only PR after this one is its first real run.
+- **`check` uses `if: always()`, not `!cancelled()`.** A skipped job satisfies a
+  required check, so a cancelled run has to end with `check` red rather than
+  skipped. `release-reviewer` ran the gate script over eleven result
+  combinations: green only for static ✓ + e2e ✓ when e2e was wanted, and
+  static ✓ + e2e skipped when it was not.
+- **`check` is not required yet.** `main` has no branch protection and its
+  ruleset carries only deletion and non-fast-forward. Requiring `check` is a
+  repository-settings change, left to the owner.
+- **`workers: "100%"` goes against `BACKLOG.md`'s CPU-contention note**, on
+  purpose: the old runs' flakes were all `labels.spec.ts:242`, a test defect.
+  The first sharded run had one flake of a different test,
+  `notifications.spec.ts:66`; the fallback, if that becomes a pattern, is
+  `workers: 3` under CI.
+- **The flake** (`frontend-builder`, reproduced independently by
+  `release-reviewer`): the sweep's `elementFromPoint` returned null because the
+  chip row was below the fold, after a retried first Add press scrolled with
+  `block: "end"`. 8/40 → 0/40 on laptop; the spec now scrolls the row into view
+  and asserts the band is on screen before asserting anything was hit. Still
+  red on a 6px row gap, 9 of 9.
+- Smaller decisions: `checkout`/`setup-node` v4 → v6 to match
+  `deploy-pages.yml` (clears the Node 20 warning; v7 exists, and both files
+  move together); `upload-artifact@v7`, `download-artifact@v8`; Chromium as
+  `--only-shell`; superseded PR runs cancel, `main` runs never do; per-job
+  `timeout-minutes`, which the old workflow lacked — the last push run on the
+  old shape (37680443742, for `2d48901`) sat in "Install Playwright browsers"
+  for over 45 minutes and was cancelled by hand.
+- Verdict: `release-reviewer`, narrow scope (configuration class), APPROVE
+  WITH NON-BLOCKING NOTES, no blockers. One note taken (a workflow comment
+  overstated what the merged report holds — reworded); the rest are in
+  `BACKLOG.md` under *Left by TAS-247*.
+- `npm run check` (535 passed, 41 skipped, e2e 3.0m) and `npm run build` pass
+  locally. Neither says anything about CI wall-clock; that rests on the run
+  above.

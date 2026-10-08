@@ -276,6 +276,16 @@ test("a wrapped label row keeps every remove control clear of the rows around it
   }
   await expect(labels.getByRole("button", { name: /^Remove label/ })).toHaveCount(7);
 
+  // The sweep below is a hit test, and `elementFromPoint` answers null for any
+  // point outside the viewport, so the row has to be on screen to be measured.
+  // That used to be left to the first Add press, which does not land in one
+  // place: pressed while the panel's entrance slide is still settling, it reads
+  // as "not stable", and Playwright's retry scrolls with `block: "end"` rather
+  // than centring — on the 900px laptop that leaves the form on the bottom edge
+  // and every chip under the fold (TAS-247: 8 of 24 repeats under load, desktop
+  // as well). The row is put in view here instead, and the sweep checks it is.
+  await labels.locator(".label-chip-row").scrollIntoViewIfNeeded();
+
   const probe = await page.evaluate(
     ({ band }) => {
       const row = document.querySelector(".label-chip-row");
@@ -332,12 +342,26 @@ test("a wrapped label row keeps every remove control clear of the rows around it
       // control at all is the space between two chips, and is not a wrong
       // target — only a control stealing another row's area is.
       const bounds = row.getBoundingClientRect();
+      // What can be hit is the viewport cut down to the panel body's scrollport.
+      // A band outside it would answer null for a reason that has nothing to do
+      // with the controls, so it is reported before anything is swept.
+      const port = row.closest(".issue-panel-body")?.getBoundingClientRect();
+      const visible = {
+        top: Math.max(0, port?.top ?? 0),
+        bottom: Math.min(window.innerHeight, port?.bottom ?? window.innerHeight),
+        left: Math.max(0, port?.left ?? 0),
+        right: Math.min(window.innerWidth, port?.right ?? window.innerWidth),
+      };
       const sweeps = rows.slice(0, -1).map((upper, index) => {
         const lower = rows[index + 1];
+        const top = upper[0].hit.bottom - 5;
+        const bottom = lower[0].hit.top + 5;
+        const onScreen =
+          top >= visible.top && bottom < visible.bottom && bounds.left >= visible.left && bounds.right <= visible.right;
         const wrong: { x: number; y: number; expected: string; got: string }[] = [];
         let probed = 0;
         for (let x = bounds.left + 1; x < bounds.right; x += 3) {
-          for (let y = upper[0].hit.bottom - 5; y <= lower[0].hit.top + 5; y += 0.25) {
+          for (let y = top; y <= bottom; y += 0.25) {
             const owner = rowIndexAt(y);
             if (owner < 0) continue;
             // The last pixel of a box belongs to the engine, not to this rule.
@@ -356,7 +380,14 @@ test("a wrapped label row keeps every remove control clear of the rows around it
             }
           }
         }
-        return { rows: `${index + 1}|${index + 2}`, probed, wrong };
+        return {
+          rows: `${index + 1}|${index + 2}`,
+          onScreen,
+          band: `x ${bounds.left.toFixed(1)}–${bounds.right.toFixed(1)}, y ${top.toFixed(1)}–${bottom.toFixed(1)}`,
+          visible: `x ${visible.left.toFixed(1)}–${visible.right.toFixed(1)}, y ${visible.top.toFixed(1)}–${visible.bottom.toFixed(1)}`,
+          probed,
+          wrong,
+        };
       });
 
       return {
@@ -410,6 +441,12 @@ test("a wrapped label row keeps every remove control clear of the rows around it
 
   expect(probe.sweeps.length, "the row did not wrap, so no boundary was walked").toBeGreaterThan(0);
   for (const sweep of probe.sweeps) {
+    // Checked first, so a row pushed out of view says that, rather than reading
+    // as the controls having gone missing.
+    expect(
+      sweep.onScreen,
+      `the band around rows ${sweep.rows} (${sweep.band}) is not inside the panel's visible area (${sweep.visible})`,
+    ).toBe(true);
     expect(sweep.probed, `no control was under the probe around rows ${sweep.rows}`).toBeGreaterThan(0);
     expect(
       sweep.wrong,

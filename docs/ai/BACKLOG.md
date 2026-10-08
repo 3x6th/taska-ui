@@ -658,7 +658,13 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   code. Playwright's default is `workers: 7` here with three viewport projects
   starting their own Vite server, so CI on a small runner is one slow box away
   from a red build nobody can reproduce. Worth an explicit `workers` cap or
-  per-test timeout rather than leaving it to luck.
+  per-test timeout rather than leaving it to luck. **TAS-247 went the other
+  way on CI, knowingly**: each of four shards now runs `workers: "100%"` (4 on
+  a 4-vCPU runner, beside its own Vite server), because the one flake the old
+  2-worker runs kept producing was a test defect, not load. First sharded run
+  (37684446678): one flaky test of 535, `notifications.spec.ts:66` — see
+  *Left by TAS-247*. If flakes per run climb above the old 2–3, the cap is
+  `workers: 3` under CI, not fewer shards.
 - **The mock seed has no test of its own** (found by `release-reviewer`,
   2026-08-05). The only assertion that Mark is `GLOBAL_ADMIN` and Anna is
   `USER` lives in `HybridTaskaApi.test.ts` — a file about a different class, so
@@ -1130,7 +1136,7 @@ the next session in this image exactly as it bit this one.
   test:e2e` cannot launch a browser at all without a `PLAYWRIGHT_BROWSERS_PATH`
   shim, and every local e2e result is therefore Chrome 141 driven by the 1.62
   driver. CI is unaffected — `frontend.yml` runs `npx playwright install
-  --with-deps chromium` and gets the right one — so this is provisioning, not
+  --with-deps --only-shell chromium` and gets the right one — so this is provisioning, not
   a repository defect, and the repository is the wrong place to fix it.
 - **`npm run check` cannot pass in this image at the suite's default timeout.**
   Eighteen admin-console tests (six specs across three viewport projects) fail
@@ -2705,11 +2711,18 @@ is what recurs.
   The fix is an epsilon on that comparison rather than a retry: a test that
   fails at the eighth decimal is measuring the floating-point unit, not the
   cap.
-- **`e2e/labels.spec.ts:242` fails in roughly one run in five on desktop and
+- ~~**`e2e/labels.spec.ts:242` fails in roughly one run in five on desktop and
   laptop** (`frontend-builder`, TAS-243). `--repeat-each 5` on the three
   projects: 2 of 15 failed on the TAS-243 tree and 3 of 15 on a `git archive`
   of untouched `HEAD`, so it predates that story. It turned one full `npm run
-  check` red there; the rerun was green.
+  check` red there; the rerun was green.~~ **Fixed in
+  [TAS-247](https://jira.ozero.dev/browse/TAS-247), 2026-10-08.** The sweep is
+  an `elementFromPoint` hit test and the chip row was below the fold: a first
+  Add press landing in the panel's entrance slide is "not stable", and
+  Playwright's retry scrolls with `block: "end"`. Mobile shared the cause. The
+  spec now scrolls the row into view and asserts the band is on screen before
+  anything else; 8/40 → 0/40 on laptop, 0/120 across all three projects at 20
+  workers, reproduced independently by `release-reviewer`.
 - **The popover's `scroll-padding-bottom` covers Tab, not a mouse scroll**
   (`art-director`, TAS-243). A focused row that is then wheeled or dragged flush
   to the panel's rounded bottom edge still loses its ring's corners. It takes
@@ -3003,3 +3016,31 @@ where it has an entry.
 - **C16 (watch, not an ask): the Liquibase changeset `taska:0008` was edited in
   `04546f1`** (TAS-197). If issue routes answer 503 after a deploy, check this
   first.
+
+### Left by TAS-247 (CI in four shards behind one `check` gate, 2026-10-08)
+
+From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
+
+- **`notifications.spec.ts:66` flaked on the first sharded run**
+  ([desktop], shard 1/4, run 37684446678, job 113008586177):
+  `.notification-item.is-inert` `toHaveCount(4)` received 0 at the 5s
+  timeout, passed on retry #1. One run, four workers per 4-vCPU box — count it
+  over the next runs before reading anything into it (see the CPU-contention
+  entry above).
+- **A shard that hits `timeout-minutes` uploads no blob.** A job timeout is a
+  cancellation, so `if: !cancelled()` skips the upload, and Playwright writes
+  the blob only when its run ends anyway. The hung shard is the one whose
+  report matters most. Fix: `globalTimeout` ~12 min under CI in
+  `playwright.config.ts`, so the run ends itself inside the job's 15.
+- **The `check`-string assertion has two blind spots**: a `precheck` /
+  `postcheck` npm hook runs locally and never in CI, and a `test:e2e` that
+  became `playwright test && x` would hand `--shard` to `x`. Fix: also assert
+  `test:e2e` is exactly `playwright test` and no `pre`/`postcheck` exists.
+- **The docs-only classifier treats `*.md` anywhere as documentation**,
+  `src/` and `e2e/` included. True today — nothing reads `docs/` or Markdown at
+  runtime (imports, `?raw`, `import.meta.glob`, fs reads all checked) — and
+  the pattern needs narrowing the day a Markdown fixture appears.
+- **Housekeeping for the next CI touch**: `persist-credentials: false` on the
+  checkouts (the token is read-only, the setting costs nothing), and
+  `checkout`/`setup-node` v7 majors exist since July 2026 — this story pinned
+  v6 to match `deploy-pages.yml`; move both files together.
