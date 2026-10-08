@@ -95,6 +95,7 @@ states are not.
 | [TAS-238](https://jira.ozero.dev/browse/TAS-238) | The attempt that locks an account answers `UNAUTHENTICATED "Invalid credentials"`, so the lock is announced one attempt later | To Do | backend ask, filed 2026-09-22 from `api-contract-guard`'s TAS-237 reading. `AuthServiceImpl.handleFailedAttempt:284-315` sets `LOCKED` and `lockedUntil`, then errors as a plain bad password at `:314`. The client cannot compensate: that response is byte-identical to a wrong password. Service layer, `auth-service` only — no contract, no proto, no gateway — and the cheaper of the two asks |
 | [TAS-239](https://jira.ozero.dev/browse/TAS-239) | The error envelope carries no machine-readable detail, so a deadline exists only inside an English sentence | To Do | backend ask, filed 2026-09-22; the removal key for TAS-237's divergence entry. Three priced shapes; the one that decides the cost is that **no `.proto` changes** — gRPC trailers are not declared in proto, while `google.rpc.ErrorInfo` would drag in `StatusProto` and its descriptors. Deliberately **not** filed under epic TAS-210: that epic collapses per-screen reads, and this is the envelope every service shares — `FAILED_PRECONDITION` and `ABORTED` lose their structure the same way |
 | [TAS-247](https://jira.ozero.dev/browse/TAS-247) | CI in about five minutes: typecheck, lint, unit tests and build beside a four-shard e2e matrix, one `check` gate that always reports, docs-only PRs skip e2e; and the `labels.spec.ts:242` flake | Done | **merged (PR [#78](https://github.com/3x6th/taska-ui/pull/78))** on 2026-10-08. Handed over by the owner with the measurement already taken: 16.5 min, 13.6 of it e2e on two workers. First sharded run 3m24s to `check` (run 37684446678), 535 executed and 41 skipped as before. `npm run check` unchanged; `check` is not a required status yet — that is a ruleset change for the owner. See the section below |
+| [TAS-249](https://jira.ozero.dev/browse/TAS-249) | The e2e shards run in Playwright's own image at the lockfile's version — no apt, no browser download per run | Done | **merged (PR [#81](https://github.com/3x6th/taska-ui/pull/81))** on 2026-10-08, at the owner's word, graduated from TAS-247's BACKLOG line. Five runs, twenty shards: container start 25–39s, `check` at 205–211s every time, against apt's 17–403s and 194–522s on the same count. Not faster on a good run — the gain is the tail. See the section below |
 
 Two rows disagree with themselves. `TAS-134` and `TAS-136` are `To Do` in Jira
 while their code exists — see the record in `HARNESS.md`. Trust the repository
@@ -928,3 +929,76 @@ The decision, and the measurements it rests on.
 - `npm run check` (535 passed, 41 skipped, e2e 3.0m) and `npm run build` pass
   locally. Neither says anything about CI wall-clock; that rests on the run
   above.
+
+### TAS-249 — the e2e shards in Playwright's image, and what the image does not buy
+
+TAS-247's own second run showed what was left: the suite takes a steady
+~2 minutes per shard, and `playwright install --with-deps chromium` took
+whatever the runner's Ubuntu mirror felt like for the same ~21 MB of fonts.
+
+- **The change.** The four `e2e (i/4)` jobs run in
+  `mcr.microsoft.com/playwright:v<version>-noble` with `--user 1001`, as in
+  Playwright's own GitHub Actions example; the install step is gone. The image
+  is Ubuntu 24.04 with Node 24, Chromium and its headless shell, and the system
+  libraries and fonts from the same `install-deps` list `--with-deps` used.
+  `setup-node` inside it still takes the runner's tool-cache Node 24.21.0, the
+  same as the `static` job.
+- **The version comes from the lockfile**, read in `changes` and fed into the
+  image tag, so a Playwright bump moves both in one diff. The drift check the
+  BACKLOG line proposed was not built, because there is nothing to drift. The
+  cost it leaves: MCR publishes the image hours after npm publishes the
+  package — on 2026-10-08 `@playwright/test` 1.64.0 had been on npm for 12
+  hours with no amd64 `v1.64.0-noble` — so a bump made too early fails red at
+  "Initialize containers" with "manifest unknown". The workflow comment says
+  so.
+- **No `--ipc=host`.** Docker's advice for Chromium is about `/dev/shm`, and
+  Playwright 1.62.1 already launches Chromium with `--disable-dev-shm-usage`.
+- **Measured, same method both sides** (from each attempt's start to `check`
+  completing; per-job step times from the jobs API):
+
+  | | apt (5 runs, 20 shards) | image (5 runs, 20 shards) |
+  | --- | --- | --- |
+  | browser + deps / container start, median | 22s | 27s |
+  | … slowest shard | 403s | 39s |
+  | shards over 60s | 3 (108s, 224s, 403s) | 0 |
+  | run start → `check` | 194s, 199s, 204s, 363s, 522s | 205s, 206s, 208s, 211s, 211s |
+
+  apt runs: 37684446678, 37686501951, 37740930973, 37746673180, 37748056775.
+  Image runs: 37751438440, and 37752757673 attempts 1–4. The pull itself is
+  1.5–2.9s on 18 of 20 shards and ~9s on the other two (905 MB from MCR); the
+  rest of container start is
+  unpacking on the runner's disk, which is the new, small variance (25–39s).
+  The old workflow's run 37680443742 sat 2931s in the same install step before
+  it was cancelled, so the 45-minute figure in TAS-247 is a measurement now.
+- **What it does not buy, stated so nobody reads it as a speed-up**: on a run
+  where apt is quick, the image is ~5s slower per shard and `check` lands
+  ~10s later (208s against the 199s median of apt's three quick runs). The
+  whole gain is the tail. At apt's observed rate a clean sample this size
+  would turn up 4–8% of the time — 4% counting shards as independent (3 slow
+  in 20), 8% counting runs (2 of 5 had a slow shard), and the slow shards did
+  bunch. All five image runs started inside 82 minutes, three of them inside
+  8. That is the strength of the evidence: one afternoon's sample, not a
+  guarantee about MCR.
+- **Same suite, same results.** Every image run executed 544 and skipped 41,
+  shard for shard identical to `main`'s apt run on `caa78f8`. (544, not 535:
+  TAS-248 added `issue-share.spec.ts`.) Two flakes in twenty shards, both
+  passed on retry, and neither failed on a layout assertion (text and
+  visibility):
+  `notifications.spec.ts:66` again and `admin-users.spec.ts:31` — in
+  `BACKLOG.md`. The npm cache misses once in the container (its HOME is a
+  different path) and has hit on every shard since.
+- **Fonts.** Same packages, but on a bare Ubuntu rather than the runner image,
+  so a generic family can resolve to a different system font. Only the two
+  specs a font is known to move (`topbar-popovers`' board case,
+  `projects-heading`) wait for the webfont; the other geometry specs do not,
+  and `labels.spec.ts:242` passed first time on all three viewports in all
+  five runs.
+- Verdict: `release-reviewer`, narrow scope, APPROVE WITH NON-BLOCKING NOTES,
+  no blockers. Its one medium — "no long tail" was not shown by one run — is
+  what the five runs above are for; its re-verdict on them closed it, along
+  with the comment on a premature bump. The fonts comment closed on a second
+  rewording — the first one swapped "the fonts do not change" for "the layout
+  specs wait for the webfonts", which was true of two specs, not all. The
+  rest in `BACKLOG.md` under *Left by TAS-249*.
+- Local gate not run: the diff is the workflow and three docs, none of which
+  `npm run check` or `npm run build` reads; CI ran all of it at every head.

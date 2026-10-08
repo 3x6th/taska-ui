@@ -3072,7 +3072,11 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
   `.notification-item.is-inert` `toHaveCount(4)` received 0 at the 5s
   timeout, passed on retry #1. One run, four workers per 4-vCPU box — count it
   over the next runs before reading anything into it (see the CPU-contention
-  entry above).
+  entry above). **Counted: it came back** on [laptop] in TAS-249's run
+  37752757673 attempt 2 (job 113253458242) — `.notification-item.is-inert`
+  filtered by "TAS-100 was deleted" not found in 5s — so twice in ten sharded
+  runs, under apt and under the image alike. A test defect or a slow mock
+  path, not the runner; worth a `frontend-builder` look with `--repeat-each`.
 - **A shard that hits `timeout-minutes` uploads no blob.** A job timeout is a
   cancellation, so `if: !cancelled()` skips the upload, and Playwright writes
   the blob only when its run ends anyway. The hung shard is the one whose
@@ -3093,7 +3097,7 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
 
 Found after the merge:
 
-- **apt, not the suite, decides how long CI takes now.** On the merged head
+- ~~**apt, not the suite, decides how long CI takes now.** On the merged head
   (run 37686501951) the shards' tests took 1.8–2.3 min each, but
   `playwright install --with-deps` spent 18s / 35s / 1m48s / 3m44s fetching
   ~21 MB of font packages from the Azure Ubuntu mirror (24 MB/s down to
@@ -3103,4 +3107,30 @@ Found after the merge:
   it, nothing makes it fast. Candidate: run the e2e shards in
   `mcr.microsoft.com/playwright:v1.62.1-noble` (deps and browsers baked in, no
   apt), with a step that fails if the image tag and `@playwright/test` in
-  `package-lock.json` drift apart. Measure the image pull before deciding.
+  `package-lock.json` drift apart. Measure the image pull before deciding.~~
+  **Graduated to [TAS-249](https://jira.ozero.dev/browse/TAS-249) on
+  2026-10-08**, at the owner's word. Built without the drift check it
+  proposed: the image tag is read from the lockfile, so there is nothing to
+  drift. Measurements in `JIRA-WORKFLOW.md`'s TAS-249 section.
+
+### Left by TAS-249 (the e2e shards in Playwright's image, 2026-10-08)
+
+From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
+
+- **Steps inside the container run under `sh -e`, not bash.** Harmless for
+  `npm ci` and `npm run test:e2e`; any bash-only syntax added to the e2e job
+  needs `shell: bash`.
+- **The image is pinned by tag, not digest**, so MCR can re-push
+  `v1.62.1-noble` with different OS or font layers. The accepted price of
+  reading the tag from the lockfile; the first run pulled
+  `sha256:dcc5531e…7580e`.
+- **A broken lockfile fails the version step through `set -e`**, not through
+  its own `::error::`, and `check` then blames "Classifying the change". Red
+  either way; only the wording is off.
+- **The container gets its own npm cache entry** (`/github/home/.npm`, not the
+  host's path): all four shards missed on the first run. Confirmed since:
+  every shard of the four later runs restored it.
+- **`admin-users.spec.ts:31` flaked once** ([mobile], run 37752757673
+  attempt 3, job 113255034540): the `Users` heading was not visible 5s after
+  clicking the Administration nav link; passed on retry. First sighting in ten
+  sharded runs.
