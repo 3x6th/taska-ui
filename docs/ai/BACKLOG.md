@@ -3108,3 +3108,21 @@ Found after the merge:
   2026-10-08**, at the owner's word. Built without the drift check it
   proposed: the image tag is read from the lockfile, so there is nothing to
   drift. Measurements in `JIRA-WORKFLOW.md`'s TAS-249 section.
+
+### Left by TAS-249 (the e2e shards in Playwright's image, 2026-10-08)
+
+From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
+
+- **Steps inside the container run under `sh -e`, not bash.** Harmless for
+  `npm ci` and `npm run test:e2e`; any bash-only syntax added to the e2e job
+  needs `shell: bash`.
+- **The image is pinned by tag, not digest**, so MCR can re-push
+  `v1.62.1-noble` with different OS or font layers. The accepted price of
+  reading the tag from the lockfile; the first run pulled
+  `sha256:dcc5531e…7580e`.
+- **A broken lockfile fails the version step through `set -e`**, not through
+  its own `::error::`, and `check` then blames "Classifying the change". Red
+  either way; only the wording is off.
+- **The container gets its own npm cache entry** (`/github/home/.npm`, not the
+  host's path): all four shards missed on the first run. Confirm it hits on
+  later runs before counting `npm ci` time in any comparison.

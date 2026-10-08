@@ -66,7 +66,10 @@ jobs:
       # The shards run in Playwright's own image, and it has to be the release
       # the lockfile installs: its browsers are the revisions that driver
       # launches, and no other. Read here rather than written into the image
-      # tag by hand, so a Playwright bump moves both in one diff.
+      # tag by hand, so a Playwright bump moves both in one diff. MCR publishes
+      # the image some hours after npm publishes the package: a bump that lands
+      # first fails at the shards' "Initialize containers" with "manifest
+      # unknown", and the fix is to wait for the image, not to pin a tag.
       - name: Read the Playwright version from the lockfile
         id: playwright
         run: |
@@ -146,8 +149,10 @@ jobs:
   # against the runner's Ubuntu mirror, which took anywhere from 18s to 3m44s
   # for the same 21 MB — the suite itself is a steady ~2 minutes, so the mirror
   # decided the wall-clock, and once held a main run for 45 minutes. The image
-  # is built with the same `install-deps` package list, so the fonts the
-  # layout-measuring specs render with do not change. `--user 1001` is the
+  # is built from the same `install-deps` list, so it carries the same font
+  # packages — on a bare Ubuntu rather than the runner's image, so which
+  # system font answers a generic family can differ; the specs that measure
+  # layout wait for the app's own webfonts first. `--user 1001` is the
   # runner's own uid, so files written into the workspace stay its own.
   e2e:
     name: e2e (${{ matrix.shard }}/4)
