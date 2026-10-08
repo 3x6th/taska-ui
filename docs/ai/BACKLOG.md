@@ -2860,12 +2860,16 @@ is what recurs.
 
 Frontend, recorded rather than taken:
 
-- **Candidate backend ask: `PATCH` answers `assigneeId: ""` for an unassigned
-  issue** (measured live 2026-10-07 on API-5, 200 and 409 alike). The contract
-  types it as a uuid; the details read omits it. Layer: gateway mapper
-  (`toRestIssueResponse` writes the proto's default empty string). The client
-  compensates with `|| null`. Not filed; belongs with the TAS-215 follow-ups on
-  the TAS-214 comment.
+- **Candidate backend ask: issue answers carry `assigneeId: ""` for an unassigned
+  issue** (measured live 2026-10-07 on API-5 for `PATCH` 200 and 409; by code,
+  every route through the gateway's `toRestIssueResponse` /
+  `toIssueShortResponseDto` — list, by-key, create, `PUT`, transition, search).
+  Conforms to the contract, which types the field as a required plain `string`
+  and cannot say "nobody". Layer: contract plus gateway mapper, no proto change —
+  drop it from `required`, add `nullable` and `format: uuid`, copy the mapper's
+  existing `isBlank()` guard (`IssueMapper.java:210`). The client compensates
+  with `|| null`. Not filed; belongs with the TAS-215 follow-ups on the TAS-214
+  comment.
 - **Unwatch always says "You were not watching this issue"** — reproduced live on
   2026-10-07 after an auto-watch; already
   [TAS-234](https://jira.ozero.dev/browse/TAS-234), where the cause (no
