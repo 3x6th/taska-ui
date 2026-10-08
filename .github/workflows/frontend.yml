@@ -151,8 +151,9 @@ jobs:
   # decided the wall-clock, and once held a main run for 45 minutes. The image
   # is built from the same `install-deps` list, so it carries the same font
   # packages — on a bare Ubuntu rather than the runner's image, so which
-  # system font answers a generic family can differ; the specs that measure
-  # layout wait for the app's own webfonts first. `--user 1001` is the
+  # system font answers a generic family can differ. The two specs a font is
+  # known to move (topbar-popovers' board case, projects-heading) wait for the
+  # webfont first; the other geometry specs do not. `--user 1001` is the
   # runner's own uid, so files written into the workspace stay its own.
   e2e:
     name: e2e (${{ matrix.shard }}/4)

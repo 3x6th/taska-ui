@@ -965,31 +965,40 @@ whatever the runner's Ubuntu mirror felt like for the same ~21 MB of fonts.
 
   apt runs: 37684446678, 37686501951, 37740930973, 37746673180, 37748056775.
   Image runs: 37751438440, and 37752757673 attempts 1–4. The pull itself is
-  ~2s (905 MB at ~450 MB/s from MCR); the rest of container start is
+  1.5–2.9s on 18 of 20 shards and ~9s on the other two (905 MB from MCR); the
+  rest of container start is
   unpacking on the runner's disk, which is the new, small variance (25–39s).
   The old workflow's run 37680443742 sat 2931s in the same install step before
   it was cancelled, so the 45-minute figure in TAS-247 is a measurement now.
 - **What it does not buy, stated so nobody reads it as a speed-up**: on a run
   where apt is quick, the image is ~5s slower per shard and `check` lands
-  ~10s later (median 208s against 199s). The whole gain is the tail. Twenty clean shards out of twenty
-  would happen about 4% of the time at apt's observed rate of 3 slow shards in
-  20 — that is the strength of the evidence, and it is one afternoon's
-  sample, not a guarantee about MCR.
+  ~10s later (208s against the 199s median of apt's three quick runs). The
+  whole gain is the tail. At apt's observed rate a clean sample this size
+  would turn up 4–8% of the time — 4% counting shards as independent (3 slow
+  in 20), 8% counting runs (2 of 5 had a slow shard), and the slow shards did
+  bunch. All five image runs started inside 82 minutes, three of them inside
+  8. That is the strength of the evidence: one afternoon's sample, not a
+  guarantee about MCR.
 - **Same suite, same results.** Every image run executed 544 and skipped 41,
   shard for shard identical to `main`'s apt run on `caa78f8`. (544, not 535:
   TAS-248 added `issue-share.spec.ts`.) Two flakes in twenty shards, both
-  passed on retry and neither in a layout-measuring spec:
+  passed on retry, and neither failed on a layout assertion (text and
+  visibility):
   `notifications.spec.ts:66` again and `admin-users.spec.ts:31` — in
   `BACKLOG.md`. The npm cache misses once in the container (its HOME is a
   different path) and has hit on every shard since.
 - **Fonts.** Same packages, but on a bare Ubuntu rather than the runner image,
-  so a generic family can resolve to a different system font; the specs that
-  measure layout wait for the app's webfonts first, and `labels.spec.ts:242`
-  passed first time on all three viewports in all five runs.
+  so a generic family can resolve to a different system font. Only the two
+  specs a font is known to move (`topbar-popovers`' board case,
+  `projects-heading`) wait for the webfont; the other geometry specs do not,
+  and `labels.spec.ts:242` passed first time on all three viewports in all
+  five runs.
 - Verdict: `release-reviewer`, narrow scope, APPROVE WITH NON-BLOCKING NOTES,
   no blockers. Its one medium — "no long tail" was not shown by one run — is
-  what the five runs above are for. Two comments reworded on its notes (what a
-  premature bump looks like; what the fonts claim covers); the rest in
-  `BACKLOG.md` under *Left by TAS-249*.
+  what the five runs above are for; its re-verdict on them closed it, along
+  with the comment on a premature bump. The fonts comment closed on a second
+  rewording — the first one swapped "the fonts do not change" for "the layout
+  specs wait for the webfonts", which was true of two specs, not all. The
+  rest in `BACKLOG.md` under *Left by TAS-249*.
 - Local gate not run: the diff is the workflow and three docs, none of which
   `npm run check` or `npm run build` reads; CI ran all of it at every head.
