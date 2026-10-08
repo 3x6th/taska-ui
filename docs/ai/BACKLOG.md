@@ -3090,3 +3090,17 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
   checkouts (the token is read-only, the setting costs nothing), and
   `checkout`/`setup-node` v7 majors exist since July 2026 — this story pinned
   v6 to match `deploy-pages.yml`; move both files together.
+
+Found after the merge:
+
+- **apt, not the suite, decides how long CI takes now.** On the merged head
+  (run 37686501951) the shards' tests took 1.8–2.3 min each, but
+  `playwright install --with-deps` spent 18s / 35s / 1m48s / 3m44s fetching
+  ~21 MB of font packages from the Azure Ubuntu mirror (24 MB/s down to
+  104 kB/s); the browser itself downloads in 4s. `check` landed at 6m03s
+  against 3m24s on the run before. Very likely the same step that held the
+  old-shape run 37680443742 for 45+ minutes; `timeout-minutes: 15` now caps
+  it, nothing makes it fast. Candidate: run the e2e shards in
+  `mcr.microsoft.com/playwright:v1.62.1-noble` (deps and browsers baked in, no
+  apt), with a step that fails if the image tag and `@playwright/test` in
+  `package-lock.json` drift apart. Measure the image pull before deciding.
