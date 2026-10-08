@@ -913,6 +913,13 @@ The decision, and the measurements it rests on.
   `timeout-minutes`, which the old workflow lacked — the last push run on the
   old shape (37680443742, for `2d48901`) sat in "Install Playwright browsers"
   for over 45 minutes and was cancelled by hand.
+- **The second run was 6m03s, and not because of the tests** (37686501951, the
+  merged head): every shard's tests took 1.8–2.3 min again, but "Install
+  Playwright browsers" took 18s / 35s / 1m48s / 3m44s. The slow part is apt —
+  `--with-deps` fetching ~21 MB of font packages from the Azure Ubuntu mirror
+  at 24 MB/s, 1.9 MB/s, 246 kB/s and 104 kB/s — while the browser download
+  itself took 4s. So ~3.5 min is what the suite costs and the rest is mirror
+  luck; the follow-up is in `BACKLOG.md` under *Left by TAS-247*.
 - Verdict: `release-reviewer`, narrow scope (configuration class), APPROVE
   WITH NON-BLOCKING NOTES, no blockers. One note taken (a workflow comment
   overstated what the merged report holds — reworded); the rest are in
