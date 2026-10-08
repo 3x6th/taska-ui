@@ -41,6 +41,7 @@ import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
+import { IssueShare } from "../components/IssueShare";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
 import { ProjectMembersModal } from "../components/ProjectMembersModal";
@@ -638,8 +639,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         queryClient.setQueryData(context.key, context.previousIssues);
       }
     },
-    onSuccess: async (_, variables) => {
-      await invalidateBoard(queryClient, projectId, variables.movedIssueId);
+    onSuccess: async () => {
+      await invalidateBoard(queryClient, projectId);
     },
   });
 
@@ -1723,7 +1724,7 @@ function IssuePanel({
       // this one reads its version from the cache the moment this returns.
       queryClient.setQueryData(issueKey, (data) => (data ? mergeWriteAnswer(data, answer) : data));
       // Not awaited, so the queue is not held behind four re-reads.
-      void invalidateBoard(queryClient, projectId, issueId);
+      void invalidateBoard(queryClient, projectId);
     },
     // Rollback (§5.5). The summary and the description recover on their own —
     // the value the reader typed is still the best thing to show while they fix
@@ -1790,7 +1791,7 @@ function IssuePanel({
         error: unsent && previous ? previous.error : error,
         seq: (previous?.seq ?? 0) + 1,
       }));
-      if (!unsent) void invalidateBoard(queryClient, projectId, issueId);
+      if (!unsent) void invalidateBoard(queryClient, projectId);
     },
   });
   /** An edit, stamped with the conflicts the reader had been shown when they made it. */
@@ -1811,7 +1812,7 @@ function IssuePanel({
             }
           : data,
       );
-      void invalidateBoard(queryClient, projectId, issueId);
+      void invalidateBoard(queryClient, projectId);
     },
   });
   const deleteIssue = useMutation({
@@ -2081,6 +2082,9 @@ function IssuePanel({
           <span className="issue-key">{issue.issueKey}</span>
           <span>{typeMeta[issue.issueType].label}</span>
           <div className="topbar-spacer" />
+          {/* Read-only, so not gated by role (TAS-248). Only in the loaded head:
+              the skeleton's has no key to share yet. */}
+          <IssueShare issueId={issue.id} issueKey={issue.issueKey} projectId={issue.projectId} />
           <button className="icon-button" disabled={!canEdit} onClick={() => deleteIssue.mutate()} title="Delete" type="button">
             <Trash2 size={15} />
           </button>
@@ -4963,7 +4967,7 @@ function CreateIssueModal({
     onMutate: clearDateNotice,
     onError: clearDateNotice,
     onSuccess: async (issue) => {
-      await invalidateBoard(queryClient, projectId, issue.id);
+      await invalidateBoard(queryClient, projectId);
       onCreated(issue);
     },
   });
@@ -5608,15 +5612,22 @@ function writeFailureText(error: Error, sent: UpdateIssueInput | undefined): str
   return error.message;
 }
 
-async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, projectId: string, issueId?: string) {
+async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, projectId: string) {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
-    issueId ? queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }) : Promise.resolve(),
-    // Every link names two issues, so anything that creates or removes one
-    // changes what the other end's panel should show. Deleting an issue is the
-    // case that bites: without this, its rows survive in a cached issue read
-    // and point at a panel that no longer opens. Since TAS-246 the links live
-    // on the issue read, so the project's issue reads are what go stale.
+    // Every issue read of the project, the open one among them. Since TAS-246
+    // an issue read carries its links, and a link row prints the other end's
+    // key, summary and status (`LinkedIssue`) — so an edit or a move of one
+    // issue changes what every issue linked to it shows, and their reads go
+    // stale with it. (Deleting an issue does not come through here; see
+    // `deleteIssue` in the panel.)
+    //
+    // The prefix alone, and never beside the issue's own key: the prefix
+    // already matches the open panel's read, so naming that key as well
+    // invalidates it twice in one settle, and the second refetch cancels the
+    // first after its request has left (`getIssue` takes no signal) — two
+    // identical reads per write, measured on the stand on 2026-10-07 and
+    // pinned in IssuePanelRequests.test.tsx.
     queryClient.invalidateQueries({ queryKey: ["issue", projectId] }),
     queryClient.invalidateQueries({ queryKey: ["notifications"] }),
     // The bare prefix, deliberately: it catches the board's own search — whose

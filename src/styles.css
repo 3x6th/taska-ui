@@ -4658,7 +4658,10 @@ h1 {
   animation: tk-slide var(--dur-panel) var(--ease) forwards;
 }
 
+/* Positioned for the share popover below, which hangs from the head rather than
+   from its trigger. */
 .issue-panel-head {
+  position: relative;
   display: flex;
   flex: none;
   align-items: center;
@@ -4669,6 +4672,117 @@ h1 {
   color: var(--fg-3);
   font-size: 11px;
   text-transform: uppercase;
+}
+
+/* ---------- Share (TAS-248) ---------- */
+
+.issue-share {
+  display: inline-flex;
+  flex: none;
+}
+
+/* Anchored to the head, not to the trigger, and that is §4.13's own
+   precondition rather than an exception to it: a popover attaches to its bar
+   only where the bar cannot wrap, and this head is one row of 52 at every
+   width. Hung from the trigger, the panel's width would be spent on the 98px of
+   Delete, Close and padding to its right: at 390 that leaves 245 for two links
+   and two buttons. From the head's content edge it gets 326 there, and §4.12's
+   360-wide shape everywhere the panel is 480.
+
+   `top` is §4.12's relation to the trigger kept: 6 below a 32px button centred
+   in the head. The head sets uppercase 11px `--fg-3` for its own key line, so
+   the popover states its type rather than inheriting it. Entrance is `tk-pop`,
+   whose first frame is readable, on the token reduced motion collapses (§3). */
+.issue-share-popover {
+  position: absolute;
+  top: 47px;
+  right: 16px;
+  z-index: 20;
+  width: min(360px, calc(100% - 32px));
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  padding: 13px 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  color: var(--fg);
+  cursor: auto;
+  font-size: 12.5px;
+  text-transform: none;
+  animation: tk-pop var(--dur-enter) var(--ease);
+}
+
+.issue-share-links {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.issue-share-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.issue-share-row label {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.issue-share-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* One line, cut with an ellipsis; the whole link is a scroll, a selection or a
+   `title` away. The compact height of the button beside it, so the pair reads
+   as one control. */
+.issue-share-field input {
+  flex: 1;
+  height: 29px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.issue-share-field .compact-button {
+  flex: none;
+}
+
+/* §7's ring on all four controls. There is no global rule for either the
+   secondary button or a read-only field, and the browser's own ring is not one
+   this design system can describe (see `.icon-button:focus-visible`). The
+   popover clips nothing, so the ring keeps its outward offset. */
+.issue-share-field input:focus-visible,
+.issue-share-field .compact-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Empty — and so zero-height — until a Copy button has an answer; the region
+   stays mounted so a screen reader is watching it before the answer lands.
+   Padding rather than a gap in the popover, which would hold the space open
+   under an empty line. */
+.issue-share-status {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.issue-share-status:not(:empty) {
+  padding-top: 10px;
+}
+
+/* A failure is an instruction to follow, not meta beside a result. */
+.issue-share-status[data-outcome="failed"] {
+  color: var(--fg);
 }
 
 .issue-panel-body {

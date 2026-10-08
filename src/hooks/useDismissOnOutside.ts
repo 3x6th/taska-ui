@@ -1,5 +1,8 @@
 import { useEffect, useRef, type RefObject } from "react";
 
+/** Which of the two ways out closed the overlay. */
+export type DismissedBy = "escape" | "outside";
+
 /**
  * The two ways out of a transient overlay that DESIGN.md requires of all of
  * them: `Escape`, and a press anywhere outside it (§4.12, §4.16, §7).
@@ -27,13 +30,19 @@ import { useEffect, useRef, type RefObject } from "react";
  * `onDismiss` is read through a ref so that an inline arrow at the call site —
  * which every one of them is — does not resubscribe both listeners on every
  * render of the screen around it.
+ *
+ * It is told which way out was taken, because the two can differ in where
+ * focus belongs afterwards (TAS-248): after `Escape` a caller may put focus
+ * back on its trigger, while a press outside has already chosen where focus
+ * goes next and must not have it taken back. The hook moves no focus itself;
+ * callers that do not care ignore the argument.
  */
 export function useDismissOnOutside(
   /** Whether the overlay is on screen. Nothing is bound while this is false. */
   open: boolean,
   /** The element that counts as "inside": the panel *and* its trigger. */
   ref: RefObject<HTMLElement | null>,
-  onDismiss: () => void,
+  onDismiss: (how: DismissedBy) => void,
 ) {
   const dismiss = useRef(onDismiss);
 
@@ -45,10 +54,10 @@ export function useDismissOnOutside(
     if (!open) return;
 
     const handlePointerDown = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) dismiss.current();
+      if (!ref.current?.contains(event.target as Node)) dismiss.current("outside");
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dismiss.current();
+      if (event.key === "Escape") dismiss.current("escape");
     };
 
     document.addEventListener("pointerdown", handlePointerDown);

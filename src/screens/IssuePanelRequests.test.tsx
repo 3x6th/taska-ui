@@ -50,13 +50,29 @@ const seededIssue = {
 /** The issue as this stub's server holds it; a PATCH moves it on, as the gateway's would. */
 let issue: Record<string, unknown> = { ...seededIssue };
 
+/** An answer that is not a 200: the status and the body the gateway sends with it. */
+class Refusal {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+  ) {}
+}
+
 /** A plausible gateway: enough of each answer for the board and the panel to draw. */
 function respond(url: string, init?: RequestInit): unknown {
   const path = url.replace(/^\/api\/v1/, "").split("?")[0];
   if (path === `/issues/${ISSUE}` && init?.method === "PATCH") {
+    // The version check first, as the gateway's: a stale `If-Match` is a 409
+    // whose body is the issue as it now is.
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    if (headers["If-Match"] !== `"${String(issue.version)}"`) return new Refusal(409, { ...issue, labels: [] });
     // The merge patch, and a version bump; `labels` is `[]` as the route sends it.
     issue = { ...issue, ...JSON.parse(String(init.body)), version: Number(issue.version) + 1, labels: [] };
     return issue;
+  }
+  if (path === `/issues/${ISSUE}/transition/start` && init?.method === "PUT") {
+    issue = { ...issue, status: "IN_PROGRESS", version: Number(issue.version) + 1 };
+    return { issue, history: [] };
   }
   if (path === "/users/me") {
     return { id: ANNA, login: "anna", email: "anna@example.com", displayName: "Anna Ivanova", status: "ACTIVE" };
@@ -75,8 +91,11 @@ function respond(url: string, init?: RequestInit): unknown {
       version: 1,
       createdAt: NOW,
       updatedAt: NOW,
-      statuses: [{ id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 }],
-      transitions: [],
+      statuses: [
+        { id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+        { id: "s2", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
+      ],
+      transitions: [{ id: "start", fromStatusId: "s1", toStatusId: "s2", name: "Start progress", sortOrder: 10 }],
     };
   }
   if (path === `/projects/${PROJECT}/issues`) return { items: [issue], totalCount: 1 };
@@ -101,7 +120,9 @@ function respond(url: string, init?: RequestInit): unknown {
 }
 
 const answer = (body: unknown) =>
-  ({ status: 200, ok: true, headers: { get: () => null }, json: async () => body }) as unknown as Response;
+  body instanceof Refusal
+    ? ({ status: body.status, ok: false, headers: { get: () => null }, json: async () => body.body } as unknown as Response)
+    : ({ status: 200, ok: true, headers: { get: () => null }, json: async () => body } as unknown as Response);
 
 describe("the issue panel's request budget against the REST implementation", () => {
   let requested: string[];
@@ -143,6 +164,32 @@ describe("the issue panel's request budget against the REST implementation", () 
     );
     return queryClient;
   };
+
+  /**
+   * One write, one re-read of the open issue. Measured on the stand
+   * (2026-10-07): every panel write was followed by two identical
+   * `GET /issues/{issueId}` in the same millisecond, because the settle
+   * invalidated the issue's key and then a prefix that matches it again — and
+   * the second invalidation restarts a refetch whose request is already out.
+   * The conflict and the transition settle through the same function, so they
+   * are pinned with it.
+   */
+  const openPanel = async () => {
+    const queryClient = renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: /TAS-102/ }));
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(panel).findByText("No comments yet")).toBeVisible();
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    return { queryClient, panel, before: sent.length };
+  };
+  const settled = (queryClient: QueryClient) =>
+    waitFor(() => {
+      expect(queryClient.isMutating()).toBe(0);
+      expect(queryClient.isFetching()).toBe(0);
+    });
+  /** How many times the open issue was read in `requests`. */
+  const issueReads = (requests: typeof sent) =>
+    requests.filter((request) => request.method === "GET" && request.path === `/api/v1/issues/${ISSUE}`).length;
 
   it("opens a panel with two requests: the issue read and the comments read", async () => {
     const queryClient = renderBoard();
@@ -191,5 +238,32 @@ describe("the issue panel's request budget against the REST implementation", () 
     expect(edit.slice(1).map((request) => request.path)).toEqual(
       expect.arrayContaining([`/api/v1/issues/${ISSUE}`, `/api/v1/projects/${PROJECT}/issues`, "/api/v1/notifications"]),
     );
+    expect(issueReads(edit.slice(1))).toBe(1);
+  });
+
+  it("re-reads the issue once after an edit the server refuses as a conflict", async () => {
+    const { queryClient, panel, before } = await openPanel();
+    // Somebody else's edit lands while the panel holds version 1.
+    issue = { ...issue, priority: "HIGH", version: 2 };
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Low" }));
+
+    await waitFor(() => expect(within(panel).getByRole("button", { name: "High" })).toHaveClass("is-active"));
+    await settled(queryClient);
+    const write = sent.slice(before);
+    expect(write[0]).toEqual({ path: `/api/v1/issues/${ISSUE}`, method: "PATCH", ifMatch: '"1"' });
+    expect(issueReads(write.slice(1))).toBe(1);
+  });
+
+  it("re-reads the issue once after a transition", async () => {
+    const { queryClient, panel, before } = await openPanel();
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Start progress" }));
+
+    await waitFor(() => expect(within(panel).getByText("In Progress")).toBeVisible());
+    await settled(queryClient);
+    const write = sent.slice(before);
+    expect(write[0]).toEqual({ path: `/api/v1/issues/${ISSUE}/transition/start`, method: "PUT", ifMatch: undefined });
+    expect(issueReads(write.slice(1))).toBe(1);
   });
 });

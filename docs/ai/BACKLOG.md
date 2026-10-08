@@ -2860,6 +2860,52 @@ is what recurs.
 
 Frontend, recorded rather than taken:
 
+- **Candidate backend ask: issue answers carry `assigneeId: ""` for an unassigned
+  issue** (measured live 2026-10-07 on API-5 for `PATCH` 200 and 409; by code,
+  every route through the gateway's `toRestIssueResponse` /
+  `toIssueShortResponseDto` — list, by-key, create, `PUT`, transition, search).
+  Conforms to the contract, which types the field as a required plain `string`
+  and cannot say "nobody". Layer: contract plus gateway mapper, no proto change —
+  drop it from `required`, add `nullable` and `format: uuid`, copy the mapper's
+  existing `isBlank()` guard (`IssueMapper.java:210`). The client compensates
+  with `|| null`. Not filed; belongs with the TAS-215 follow-ups on the TAS-214
+  comment.
+- **Unwatch always says "You were not watching this issue"** — reproduced live on
+  2026-10-07 after an auto-watch; already
+  [TAS-234](https://jira.ozero.dev/browse/TAS-234), where the cause (no
+  `@Modifying` on the `DELETE`) and the missing `ISSUE_UNWATCHED` event were added
+  as a comment the same night. The panel's neutral notice is therefore wrong on
+  every real unwatch until TAS-234 lands; no client compensation, by design.
+- **Deleting an issue leaves stale link rows elsewhere for up to `staleTime`**
+  (found fixing the double re-read, 2026-10-08, pre-existing): `deleteIssue`
+  skips the project-wide `["issue", projectId]` invalidation so the closing
+  panel does not 404, so other issues' cached reads keep a row to the deleted
+  issue for ~20 s. Fix: invalidate the prefix with a predicate excluding the
+  deleted issue.
+- **Cancelled refetches still reach the server**: `getIssue` (and the other
+  reads) ignore react-query's `AbortSignal`, so a refetch cancelled by a newer
+  one is still sent. The double re-read after a write was one symptom (fixed);
+  passing `signal` through `TaskaApi` reads would stop the class.
+- **TAS-248: the short-link field hides the issue key on the Pages host**
+  (`art-director` r1 N1): at 390 `https://taska.ozero.dev/#/browse/TAS-248`
+  shows "https://taska.ozero.dev/#/browse/…"; at 1440 from four-digit numbers.
+  Copy and `title` carry the whole link (DESIGN.md §4.23 «Известное»). Smallest
+  fix, tried on a standalone page: `direction: rtl; text-align: left` on the
+  short field only (`IssueShare.tsx:192` / `styles.css:4741`).
+- **TAS-248: Share costs the panel head 41px, so long project keys wrap it at
+  320** (`art-director` r1 N2): a 13-character key wraps inside the 52px head; a
+  20-character one pushes Close 29.7px off a 320 screen. The contract sets no
+  `maxLength` on `projectKey`. Decide with the §7 hit-target row for the head's
+  three icon buttons.
+- **TAS-248: the popover's bottom edge jumps on every copy** (`art-director` r1
+  N3): 142.3 → 169 and back after 2 s when the "… copied" line clears; and
+  `padding-top: 10` is off the §2.4 scale. Fix: revert only the check icon after
+  2 s, keep the line until the next press or close, padding 11; then update the
+  matching sentence in §4.23.
+- **One Esc must not close both an overlay and the panel** (`release-reviewer`
+  TAS-248 r1, a risk for later): `useDismissOnOutside` handles Escape on
+  `document` without `preventDefault`. The panel has no Esc today (§7 gap); when
+  it gets one, the hook should mark the event and the panel skip marked events.
 - **Opening a search hit blanks the app for one round trip** (`art-director`
   N1 on TAS-246, measured on mock: `/projects` → `/browse/TAS-104` → no topbar
   and an `aria-busy` plane from ~4 to ~156 ms; ≥ 1 s on a 5xx). A regression
