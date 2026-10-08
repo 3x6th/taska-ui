@@ -3906,3 +3906,54 @@ describe("people and link targets from the issue read", () => {
     );
   });
 });
+
+/**
+ * TAS-248: Share sits in the loaded panel's head beside Delete and Close. It
+ * only reads, so it is not gated by role — a VIEWER, whose Delete is shut, gets
+ * it live — and it needs the issue's key, so the skeleton's head has none.
+ * The popover itself is pinned in `src/components/IssueShare.test.tsx`.
+ */
+describe("sharing an issue from its panel", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("offers a VIEWER the share links, with Delete shut beside them", async () => {
+    setMembership("VIEWER");
+    renderBoard(ISSUE_PATH);
+    const panel = within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+
+    const share = panel.getByRole("button", { name: "Share issue TAS-102" });
+    await waitFor(() => expect(panel.getByRole("button", { name: "Delete" })).toBeDisabled());
+    expect(share).toBeEnabled();
+    // In the head, before Delete and Close.
+    const head = share.closest(".issue-panel-head") as HTMLElement;
+    expect(within(head).getAllByRole("button").map((button) => button.getAttribute("title"))).toEqual([
+      "Share",
+      "Delete",
+      "Close",
+    ]);
+
+    fireEvent.click(share);
+    const dialog = panel.getByRole("dialog", { name: "Share TAS-102" });
+    const valueOf = (name: string) => (within(dialog).getByRole("textbox", { name }) as HTMLInputElement).value;
+    expect(valueOf("Short link")).toMatch(/\/browse\/TAS-102$/);
+    // The issue's own ids, from the issue read.
+    expect(valueOf("Full link")).toMatch(new RegExp(`/projects/${PROJECT_ID}/issues/issue-1$`));
+  });
+
+  it("has nothing to share while the issue has not answered", async () => {
+    holdIssue(true);
+    renderBoard(ISSUE_PATH);
+
+    const pending = await screen.findByRole("complementary", { name: "Loading issue" });
+    expect(within(pending).queryByRole("button", { name: /^Share/ })).toBeNull();
+
+    releaseIssue();
+    const loaded = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(within(loaded).getByRole("button", { name: "Share issue TAS-102" })).toBeVisible();
+  });
+});

@@ -3,6 +3,25 @@ import { useCallback, useEffect, useState } from "react";
 export type CopyState = "idle" | "copied" | "failed";
 
 /**
+ * Put `value` on the clipboard. Resolves only once it is there, and rejects
+ * otherwise — including when there is no clipboard at all: an insecure origin,
+ * or a browser that withholds it. Nothing was written then, and the caller has
+ * to say so.
+ *
+ * The one place the product talks to the clipboard, so the rule below holds
+ * for every caller: `useCopied` here, and the share popover in the issue panel
+ * (TAS-248), which needs its own answer shape but not its own copy of this.
+ */
+export function writeClipboard(value: string): Promise<void> {
+  try {
+    return navigator.clipboard?.writeText(value) ?? Promise.reject(new Error("No clipboard on this page"));
+  } catch (error) {
+    // A browser that refuses by throwing rather than by rejecting.
+    return Promise.reject(error);
+  }
+}
+
+/**
  * Copy a value to the clipboard and say what happened for two seconds (§5.8).
  *
  * Shared by the request id and the primary key because the honesty rule is the
@@ -24,14 +43,10 @@ export function useCopied(): [CopyState, (value: string) => void] {
   }, [state]);
 
   const copy = useCallback((value: string) => {
-    const written = navigator.clipboard?.writeText(value);
-    // No clipboard at all — an insecure origin, or a browser that withholds it.
-    // Nothing was written, and the caller has to say so.
-    if (!written) {
-      setState("failed");
-      return;
-    }
-    void written.then(() => setState("copied")).catch(() => setState("failed"));
+    writeClipboard(value).then(
+      () => setState("copied"),
+      () => setState("failed"),
+    );
   }, []);
 
   return [state, copy];

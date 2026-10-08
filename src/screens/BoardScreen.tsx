@@ -41,6 +41,7 @@ import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
+import { IssueShare } from "../components/IssueShare";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
 import { ProjectMembersModal } from "../components/ProjectMembersModal";
@@ -2081,6 +2082,9 @@ function IssuePanel({
           <span className="issue-key">{issue.issueKey}</span>
           <span>{typeMeta[issue.issueType].label}</span>
           <div className="topbar-spacer" />
+          {/* Read-only, so not gated by role (TAS-248). Only in the loaded head:
+              the skeleton's has no key to share yet. */}
+          <IssueShare issueId={issue.id} issueKey={issue.issueKey} projectId={issue.projectId} />
           <button className="icon-button" disabled={!canEdit} onClick={() => deleteIssue.mutate()} title="Delete" type="button">
             <Trash2 size={15} />
           </button>
