@@ -2872,6 +2872,16 @@ Frontend, recorded rather than taken:
   `@Modifying` on the `DELETE`) and the missing `ISSUE_UNWATCHED` event were added
   as a comment the same night. The panel's neutral notice is therefore wrong on
   every real unwatch until TAS-234 lands; no client compensation, by design.
+- **Deleting an issue leaves stale link rows elsewhere for up to `staleTime`**
+  (found fixing the double re-read, 2026-10-08, pre-existing): `deleteIssue`
+  skips the project-wide `["issue", projectId]` invalidation so the closing
+  panel does not 404, so other issues' cached reads keep a row to the deleted
+  issue for ~20 s. Fix: invalidate the prefix with a predicate excluding the
+  deleted issue.
+- **Cancelled refetches still reach the server**: `getIssue` (and the other
+  reads) ignore react-query's `AbortSignal`, so a refetch cancelled by a newer
+  one is still sent. The double re-read after a write was one symptom (fixed);
+  passing `signal` through `TaskaApi` reads would stop the class.
 - **Opening a search hit blanks the app for one round trip** (`art-director`
   N1 on TAS-246, measured on mock: `/projects` → `/browse/TAS-104` → no topbar
   and an `aria-busy` plane from ~4 to ~156 ms; ≥ 1 s on a 5xx). A regression
