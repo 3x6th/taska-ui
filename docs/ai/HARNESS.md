@@ -251,7 +251,9 @@ CI (`.github/workflows/frontend.yml`) runs the same four parts as
 `npm run check` on pull requests and pushes to `main`, split across runners
 since TAS-247 rather than run as one command: typecheck, lint, unit tests and
 the build with its `100dvh` assertion in one job, and the e2e suite as a
-four-shard matrix at one worker per vCPU. The shards' blob reports are merged
+four-shard matrix at one worker per vCPU, inside Playwright's own image at the
+lockfile's version (TAS-249), so no shard installs a browser or a system
+library. The shards' blob reports are merged
 into one HTML report, traces included, on green runs too — a test that passed
 on retry leaves its only trace there. A step fails the run if `check` in
 `package.json` stops being exactly those four scripts, so the split cannot

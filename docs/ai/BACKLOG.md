@@ -3093,7 +3093,7 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
 
 Found after the merge:
 
-- **apt, not the suite, decides how long CI takes now.** On the merged head
+- ~~**apt, not the suite, decides how long CI takes now.** On the merged head
   (run 37686501951) the shards' tests took 1.8–2.3 min each, but
   `playwright install --with-deps` spent 18s / 35s / 1m48s / 3m44s fetching
   ~21 MB of font packages from the Azure Ubuntu mirror (24 MB/s down to
@@ -3103,4 +3103,8 @@ Found after the merge:
   it, nothing makes it fast. Candidate: run the e2e shards in
   `mcr.microsoft.com/playwright:v1.62.1-noble` (deps and browsers baked in, no
   apt), with a step that fails if the image tag and `@playwright/test` in
-  `package-lock.json` drift apart. Measure the image pull before deciding.
+  `package-lock.json` drift apart. Measure the image pull before deciding.~~
+  **Graduated to [TAS-249](https://jira.ozero.dev/browse/TAS-249) on
+  2026-10-08**, at the owner's word. Built without the drift check it
+  proposed: the image tag is read from the lockfile, so there is nothing to
+  drift. Measurements in `JIRA-WORKFLOW.md`'s TAS-249 section.

@@ -25,12 +25,14 @@ jobs:
   # `docs/` and Markdown cannot change what the browser renders, so it skips
   # the four e2e runners; everything else, and every push to main, runs them.
   # The fast job below runs regardless, so typecheck, lint, the unit suite and
-  # the build still answer for every change.
+  # the build still answer for every change. Also reads which Playwright image
+  # the shards run in.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       e2e: ${{ steps.classify.outputs.e2e }}
+      playwright: ${{ steps.playwright.outputs.version }}
     steps:
       # A pull_request run checks out the PR's merge commit, whose first parent
       # is the base branch: the diff between them is exactly what merging would
@@ -60,6 +62,21 @@ jobs:
             echo "e2e=false" >> "$GITHUB_OUTPUT"
             echo "Only docs/ and Markdown changed ($(wc -l < changed.txt) file(s)): e2e is skipped."
           fi
+
+      # The shards run in Playwright's own image, and it has to be the release
+      # the lockfile installs: its browsers are the revisions that driver
+      # launches, and no other. Read here rather than written into the image
+      # tag by hand, so a Playwright bump moves both in one diff.
+      - name: Read the Playwright version from the lockfile
+        id: playwright
+        run: |
+          version=$(node -p 'require("./package-lock.json").packages["node_modules/@playwright/test"]?.version')
+          if ! printf '%s' "$version" | grep -q -E '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::No @playwright/test version in package-lock.json (got: $version)."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "e2e image: mcr.microsoft.com/playwright:v$version-noble"
 
   static:
     name: typecheck, lint, unit, build
@@ -123,12 +140,24 @@ jobs:
   # a quarter of the tests on one worker per vCPU (`workers` in
   # playwright.config.ts). fail-fast is off so one red shard does not hide the
   # other three's results.
+  #
+  # The shards run inside Playwright's image, with the system libraries, fonts
+  # and Chromium already in it (TAS-249). Installing them per run meant apt
+  # against the runner's Ubuntu mirror, which took anywhere from 18s to 3m44s
+  # for the same 21 MB — the suite itself is a steady ~2 minutes, so the mirror
+  # decided the wall-clock, and once held a main run for 45 minutes. The image
+  # is built with the same `install-deps` package list, so the fonts the
+  # layout-measuring specs render with do not change. `--user 1001` is the
+  # runner's own uid, so files written into the workspace stay its own.
   e2e:
     name: e2e (${{ matrix.shard }}/4)
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v${{ needs.changes.outputs.playwright }}-noble
+      options: --user 1001
     strategy:
       fail-fast: false
       matrix:
@@ -145,11 +174,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      # Headless runs use the headless shell only, so the full Chromium build
-      # is never downloaded.
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps --only-shell chromium
 
       - name: End-to-end tests
         run: npm run test:e2e -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
