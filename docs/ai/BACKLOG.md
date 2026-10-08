@@ -2860,6 +2860,18 @@ is what recurs.
 
 Frontend, recorded rather than taken:
 
+- **Candidate backend ask: `PATCH` answers `assigneeId: ""` for an unassigned
+  issue** (measured live 2026-10-07 on API-5, 200 and 409 alike). The contract
+  types it as a uuid; the details read omits it. Layer: gateway mapper
+  (`toRestIssueResponse` writes the proto's default empty string). The client
+  compensates with `|| null`. Not filed; belongs with the TAS-215 follow-ups on
+  the TAS-214 comment.
+- **Unwatch always says "You were not watching this issue"** — reproduced live on
+  2026-10-07 after an auto-watch; already
+  [TAS-234](https://jira.ozero.dev/browse/TAS-234), where the cause (no
+  `@Modifying` on the `DELETE`) and the missing `ISSUE_UNWATCHED` event were added
+  as a comment the same night. The panel's neutral notice is therefore wrong on
+  every real unwatch until TAS-234 lands; no client compensation, by design.
 - **Opening a search hit blanks the app for one round trip** (`art-director`
   N1 on TAS-246, measured on mock: `/projects` → `/browse/TAS-104` → no topbar
   and an `aria-busy` plane from ~4 to ~156 ms; ≥ 1 s on a 5xx). A regression

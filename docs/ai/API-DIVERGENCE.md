@@ -3679,6 +3679,12 @@ practice because the field carries `maxLength={550}`.
 
 ### Closed by TAS-246: `PUT /issues/{issueId}` is a full replace, and the client no longer calls it
 
+**Measured live 2026-10-07 20:19–20:21 UTC** on API-5 (owner's session, owner's go-ahead to write; the issue was put back as found: Medium, unassigned, no watchers — version 21 → 26, history rows remain). From the panel of the deployed `2d48901`:
+- priority High: one `PATCH` with `If-Match: "21"` and body `{"priority":"HIGH"}`, no read before it; the token had expired, the client refreshed and resent the same `If-Match`; 200, version 22 (`924d0a0c-d40b-46d2-94e4-4c87920f6367`);
+- a direct `PATCH` at `"22"` to LOW (the "other writer", 200, v23), then Medium from the stale panel: `If-Match: "22"` → **409** with the current issue in the body (v23, LOW) (`d53b41e2-0b27-40b8-ae09-50596471575d`); the panel showed LOW, the conflict sentence and the request id; Medium again went out at `"23"` → 200, v24;
+- assign admin `{"assigneeId": …}` at `"24"` → 200, v25, and the server subscribed admin (auto-watch, as code-read); "None" from the keyboard `{"assigneeId": null}` at `"25"` → 200, v26, focus stayed on None.
+The quoted `If-Match` form, null-clear and the 409 body are therefore measured, not only read. No proxy answered 412.
+
 **Closed 2026-10-07.** Backend [TAS-215](https://jira.ozero.dev/browse/TAS-215)
 (PR #166, `f6525ce`, deployed 2026-10-02) added `PATCH /api/v1/issues/{issueId}`.
 It is a real partial update: an absent key leaves the stored value, an explicit
@@ -3812,6 +3818,8 @@ from the gateway, the proto and the service once TAS-246 is deployed; that is
 not filed (`BACKLOG.md`, "Left by TAS-246").
 
 ### `PATCH /issues/{issueId}` answers `labels: []` on 200 and on 409
+
+**Measured 2026-10-07:** both the 200 and the 409 bodies on API-5 carried `labels: []` — and `assigneeId: ""` (an empty string, not `null` and not absent) for the unassigned issue. The contract types `assigneeId` as a uuid string; the client's `toIssue` maps it with `issue.assigneeId || null`, so the UI is unaffected. Candidate ask: the write answers should omit `assigneeId` or send `null` when there is none, as the details read already does (`BACKLOG.md`, "Left by TAS-246").
 
 - **Endpoint:** `PATCH /api/v1/issues/{issueId}` (TAS-215), and
   `GET /api/v1/issues/by-key/{issueKey}` (TAS-214), which answers the same DTO
