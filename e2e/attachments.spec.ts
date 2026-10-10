@@ -70,7 +70,7 @@ test("lists the files an issue already carries, with size, uploader and time", a
   const attachments = await openIssuePanel(page, "TAS-101");
 
   await expect(attachments.getByRole("heading", { name: /Attachments/ })).toBeVisible();
-  const row = attachments.getByRole("button", { name: "Download login-500-trace.txt" });
+  const row = attachments.getByRole("button", { name: "Open login-500-trace.txt in a new tab" });
   await expect(row).toBeVisible();
   await expect(row).toContainText("2.4 KB");
   await expect(row).toContainText("Anna Ivanova");
@@ -177,56 +177,133 @@ test("re-reads the list after a failed confirm instead of claiming the file was 
   await expect(attachments.getByText("No attachments yet")).toBeVisible();
 });
 
-test("asks for a fresh download link and opens it away from the app", async ({ page }) => {
-  // Installed **before** the first navigation, which is the only time an init
-  // script gets a chance to run: everything after the sign-in is client-side
-  // routing inside one document.
-  //
-  // `window.open` is recorded rather than allowed: the link points at a
-  // presigned S3 host nothing in this suite serves, so letting a tab open would
-  // assert on a failed navigation instead of on the link that was handed over.
-  await page.addInitScript(() => {
-    const opened: string[] = [];
-    Object.defineProperty(window, "__openedUrls", { value: opened });
-    window.open = (url?: string | URL) => {
-      opened.push(String(url));
-      return null as unknown as Window;
-    };
-  });
+/**
+ * The store is `http://127.0.0.1:9000` in mock mode and nothing serves it, so
+ * every request a test's tab makes there is answered here, in the browser
+ * context, and never leaves the machine. The app itself never fetches it: the
+ * mock answers `getAttachmentBytes` from memory.
+ */
+async function serveStore(page: Page) {
+  await page.context().route("http://127.0.0.1:9000/**", (route) =>
+    route.fulfill({ status: 200, contentType: "text/plain", body: "stand-in store" }),
+  );
+}
 
+test("opens a file in a new tab from the store's link, and says nothing about a blocker", async ({ page }) => {
+  await serveStore(page);
   await signIn(page);
   const attachments = await openIssuePanel(page, "TAS-101");
-  await attachments.getByRole("button", { name: "Download login-500-trace.txt" }).click();
 
-  await expect
-    .poll(async () => page.evaluate(() => (window as unknown as { __openedUrls: string[] }).__openedUrls))
-    .toEqual([expect.stringContaining("X-Amz-Signature=")]);
+  // A real popup this time, not a stub: the defect was a false "blocked"
+  // notice over a tab that had in fact opened (TAS-253).
+  const [tab] = await Promise.all([
+    page.waitForEvent("popup"),
+    attachments.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }).click(),
+  ]);
+  await expect.poll(() => tab.url()).toContain("X-Amz-Signature=");
+  expect(tab.url()).toContain("http://127.0.0.1:9000/taska-attachments/");
+  // Cut from the page that opened it, so a store page cannot reach back.
+  expect(await tab.evaluate(() => window.opener)).toBeNull();
 
-  // The stub returns null, which is exactly what a popup blocker returns, so
-  // the row offers the link as something to click instead of swallowing it.
-  await expect(attachments.getByRole("link", { name: "Open" })).toBeVisible();
+  await expect(attachments.getByText(/did not open a tab/)).toHaveCount(0);
+  await expect(attachments.getByRole("link", { name: "Open" })).toHaveCount(0);
+});
+
+test("offers the link when the browser genuinely refuses the tab", async ({ page }) => {
+  // `null` from `window.open` without `noopener` is what a popup blocker
+  // returns, and the only case the fallback is for.
+  await page.addInitScript(() => {
+    window.open = () => null;
+  });
+  await signIn(page);
+  const attachments = await openIssuePanel(page, "TAS-101");
+  await attachments.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }).click();
+
+  await expect(attachments.getByRole("link", { name: "Open" })).toHaveAttribute("href", /X-Amz-Signature=/);
+  await expect(attachments.locator(".attachment-note")).toContainText(
+    "Your browser did not open a tab for login-500-trace.txt. Use the Open link beside it.",
+  );
+});
+
+test("downloads a file under its own name, with the bytes that were uploaded", async ({ page }) => {
+  await signIn(page);
+  const attachments = await openIssuePanel(page, "TAS-102");
+  await attach(page, "handover-notes.txt", "one\ntwo\nthree\n");
+  const download = attachments.getByRole("button", { name: "Download handover-notes.txt" });
+  await expect(download).toBeVisible();
+
+  const [file] = await Promise.all([page.waitForEvent("download"), download.click()]);
+  expect(file.suggestedFilename()).toBe("handover-notes.txt");
+  const stream = await file.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  expect(Buffer.concat(chunks).toString()).toBe("one\ntwo\nthree\n");
+  await expect(attachments.locator(".attachment-note")).toHaveCount(0);
 });
 
 test("downloads from the keyboard", async ({ page }) => {
-  await page.addInitScript(() => {
-    const opened: string[] = [];
-    Object.defineProperty(window, "__openedUrls", { value: opened });
-    window.open = (url?: string | URL) => {
-      opened.push(String(url));
-      return {} as Window;
-    };
-  });
-
   await signIn(page);
   const attachments = await openIssuePanel(page, "TAS-101");
-  const row = attachments.getByRole("button", { name: "Download login-500-trace.txt" });
-  await row.focus();
-  await expect(row).toBeFocused();
-  await page.keyboard.press("Enter");
+  const button = attachments.getByRole("button", { name: "Download login-500-trace.txt" });
+  await button.focus();
+  await expect(button).toBeFocused();
 
-  await expect
-    .poll(async () => page.evaluate(() => (window as unknown as { __openedUrls: string[] }).__openedUrls.length))
-    .toBe(1);
+  const [file] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Enter")]);
+  expect(file.suggestedFilename()).toBe("login-500-trace.txt");
+  // Focus stays on the control the reader pressed.
+  await expect(button).toBeFocused();
+});
+
+test("opens the file instead, as information, when the store will not hand over its bytes", async ({ page }) => {
+  await serveStore(page);
+  await signIn(page);
+  const attachments = await openIssuePanel(page, "TAS-102");
+  // The mock's byte GET fails with no response for this name — the shape a
+  // store whose CORS does not allow the GET would give.
+  await attach(page, "download-blocked.txt");
+  const download = attachments.getByRole("button", { name: "Download download-blocked.txt" });
+  await expect(download).toBeVisible();
+
+  const [tab] = await Promise.all([page.waitForEvent("popup"), download.click()]);
+  await expect.poll(() => tab.url()).toContain("X-Amz-Signature=");
+  const note = attachments.locator(".attachment-note");
+  await expect(note).toContainText("could not be saved directly, so it opened in a new tab instead");
+  await expect(note).not.toHaveClass(/is-error/);
+});
+
+/** Drops files on the section the way a desktop drag does. */
+async function dropFiles(attachments: Locator, files: { name: string; type: string; body: string }[]) {
+  const dataTransfer = await attachments.page().evaluateHandle((list) => {
+    const transfer = new DataTransfer();
+    for (const file of list) transfer.items.add(new File([file.body], file.name, { type: file.type }));
+    return transfer;
+  }, files);
+  await attachments.dispatchEvent("dragenter", { dataTransfer });
+  await expect(attachments).toHaveClass(/is-drop-target/);
+  await expect(attachments.locator(".attachment-drop-overlay")).toHaveText("Drop to attach");
+  await attachments.dispatchEvent("dragover", { dataTransfer });
+  await attachments.dispatchEvent("drop", { dataTransfer });
+}
+
+test("uploads dropped files one after another and refuses the type the server would", async ({ page }) => {
+  await signIn(page);
+  const attachments = await openIssuePanel(page, "TAS-102");
+
+  await dropFiles(attachments, [
+    { name: "dropped-one.txt", type: "text/plain", body: "1" },
+    { name: "cat.gif", type: "image/gif", body: "GIF89a" },
+    { name: "dropped-two.txt", type: "text/plain", body: "2" },
+  ]);
+
+  await expect(attachments).not.toHaveClass(/is-drop-target/);
+  await expect(attachments.getByText(/cat\.gif is not a type this issue accepts/)).toBeVisible();
+  await expect(attachments.getByRole("button", { name: "Download dropped-one.txt" })).toBeVisible();
+  await expect(attachments.getByRole("button", { name: "Download dropped-two.txt" })).toBeVisible();
+  await expect(attachments.getByRole("button", { name: "Download cat.gif" })).toHaveCount(0);
+
+  // And they are real rows on the server, not a cache write.
+  const reopened = await reopenIssuePanel(page, "TAS-102");
+  await expect(reopened.getByRole("button", { name: "Download dropped-two.txt" })).toBeVisible();
 });
 
 test("an admin removes any attachment and it stays gone", async ({ page }) => {
@@ -269,6 +346,28 @@ test("a viewer reads the files and is offered neither upload nor delete", async 
   const attachments = page.locator(".issue-attachments");
   await expect(attachments.getByRole("button", { name: "Download crash-report.json" })).toBeVisible();
   await expect(attachments.getByRole("button", { name: /Attach a file/ })).toHaveCount(0);
+
+  // A file dragged over a section that cannot take it draws no drop state,
+  // and the drop is swallowed rather than letting the tab navigate to it.
+  const dataTransfer = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["x"], "nope.txt", { type: "text/plain" }));
+    return transfer;
+  });
+  await attachments.dispatchEvent("dragenter", { dataTransfer });
+  await expect(attachments).not.toHaveClass(/is-drop-target/);
+  // Dispatched from inside the page and cancelable, so the handler's
+  // `preventDefault()` is observable: a script-dispatched drop never navigates,
+  // so the URL cannot tell a swallowed drop from a forgotten one.
+  const defaultPrevented = await attachments.evaluate((node) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["x"], "nope.txt", { type: "text/plain" }));
+    const drop = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer });
+    node.dispatchEvent(drop);
+    return drop.defaultPrevented;
+  });
+  expect(defaultPrevented).toBe(true);
+  await expect(attachments.getByRole("button", { name: "Download nope.txt" })).toHaveCount(0);
   await expect(attachments.getByRole("button", { name: /^Delete / })).toHaveCount(0);
   await expect(attachments.locator(".attachment-hint")).toHaveCount(0);
 });

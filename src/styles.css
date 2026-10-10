@@ -5425,6 +5425,72 @@ button.issue-link-open:hover {
   list-style: none;
 }
 
+/* The live region holds every sentence the last action produced (TAS-253: a
+   drop of several files can say more than one), stacked with `gap` per §1's
+   hard rule rather than with each box's own margin. Empty, it takes no space. */
+.attachment-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attachment-notes:not(:empty) {
+  margin-bottom: 12px;
+}
+
+.attachment-notes .attachment-note {
+  margin: 0;
+}
+
+/* ==================== Attachments: drop target (TAS-253) ====================
+   The section is the containing block for the overlay below, and nothing else
+   about its box changes, so the content under the pointer does not move while
+   files are held over it. */
+.issue-attachments {
+  position: relative;
+}
+
+/* §4.9's drag-over recipe — `inset 0 0 0 2px var(--accent)` — on a plane laid
+   over the section, so "this takes a drop" reads the same as a board column
+   that takes a card. The plane is `--surface` at 90% (a §2.1 token mixed with
+   transparent, the only way this file makes a new shade), which keeps the rows
+   faintly visible under it without competing with the one line it says. Text
+   in `--accent`: the same pair as the active segment and the focus ring, 6.3:1
+   light on the composited plane. Outset by 6 so the ring does not sit on the
+   heading's first letter; the panel body's 20/22 padding has room for it.
+
+   No animation, so `prefers-reduced-motion` has nothing to collapse and §3's
+   rule about a hidden 0% frame cannot apply: the plane is there exactly while
+   files are dragged over the section and gone when they leave or land. */
+.attachment-drop-overlay {
+  position: absolute;
+  z-index: 1;
+  inset: -6px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 34px;
+  gap: 6px;
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* The row's two icon actions, Download and Delete — §4.1's ghost icon button at
+   the 32 the panel's other row controls use (§7 records the watcher row's
+   remove at 32×32), not a smaller one invented for this row. A row action
+   whose request is out is `aria-disabled` rather than `disabled`, so focus
+   stays on it (§4.21); the cursor says it is working, the way the watcher row's
+   does, and the button keeps its colour because the row is not unavailable. */
+.attachment-action[aria-disabled="true"],
+.attachment-open[aria-disabled="true"] {
+  cursor: progress;
+}
+
 .attachment-row {
   display: flex;
   align-items: center;
@@ -6984,5 +7050,11 @@ button.attachment-open:hover:not(:disabled) {
        element is left at full opacity rather than mid-fade (§1). */
     animation-duration: 1ms;
     animation-iteration-count: 1;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .attachment-drop-hint {
+    display: none;
   }
 }

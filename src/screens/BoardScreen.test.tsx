@@ -28,7 +28,11 @@ const {
   seedAttachments,
   failAttachmentsRead,
   holdAttachmentsRead,
+  seedDownloadUrl,
   failUpload,
+  failBytes,
+  bytesReads,
+  uploadLog,
   confirmCalls,
   listedAttachments,
   deletedAttachments,
@@ -229,6 +233,11 @@ const {
     confirmLandsAnyway: boolean;
     confirmCalls: number;
     downloadUrl: string;
+    /** The GET of a link's bytes (TAS-253): refused with this, or answered with a text blob. */
+    bytesFailure?: Error;
+    bytesReads: string[];
+    /** Every leg 1 and leg 3, in the order they were sent, so a queue can be seen to run one file at a time. */
+    uploadLog: string[];
     deleted_attachments: string[];
     /**
      * A delete that refuses, and one held open. Both are needed to reach the
@@ -334,6 +343,8 @@ const {
     confirmLandsAnyway: false,
     confirmCalls: 0,
     downloadUrl: "https://store.example/taska-attachments/obj?X-Amz-Signature=abc",
+    bytesReads: [],
+    uploadLog: [],
     deleted_attachments: [],
     attachmentsHeld: false,
     deleteHeld: false,
@@ -708,7 +719,8 @@ const {
       if (state.attachmentsFailure) throw state.attachmentsFailure;
       return state.attachments.filter((item) => !state.deleted_attachments.includes(item.id));
     },
-    createAttachmentUploadUrl: async () => {
+    createAttachmentUploadUrl: async (_projectId: string, _issueId: string, input: { fileName: string }) => {
+      state.uploadLog.push(`sign ${input.fileName}`);
       if (state.uploadUrlFailure) throw state.uploadUrlFailure;
       return { uploadUrl: "https://store.example/obj?X-Amz-Signature=abc", objectKey: "obj-1" };
     },
@@ -721,6 +733,7 @@ const {
       input: { objectKey: string; fileName: string; contentType: string },
     ) => {
       state.confirmCalls += 1;
+      state.uploadLog.push(`confirm ${input.fileName}`);
       const created = {
         id: `attachment-${state.attachments.length + 1}`,
         issueId,
@@ -741,6 +754,12 @@ const {
       return created;
     },
     getAttachmentDownloadUrl: async () => ({ downloadUrl: state.downloadUrl, checksum: null }),
+    getAttachmentBytes: async (downloadUrl: string) => {
+      state.bytesReads.push(downloadUrl);
+      if (state.bytesFailure) throw state.bytesFailure;
+      return new Blob(["trace body"], { type: "text/plain" });
+    },
+
     deleteAttachment: async (_projectId: string, _issueId: string, attachmentId: string) => {
       if (state.deleteHeld) await new Promise<void>((resolve) => state.deleteReleases.push(resolve));
       // Refused *before* the row is touched: a server that says no has removed
@@ -819,6 +838,9 @@ const {
     holdAttachmentsRead: (held: boolean) => {
       state.attachmentsHeld = held;
     },
+    seedDownloadUrl: (url: string) => {
+      state.downloadUrl = url;
+    },
     failUpload: (where: "sign" | "put" | "confirm", error: Error, landsAnyway = false) => {
       if (where === "sign") state.uploadUrlFailure = error;
       if (where === "put") state.putFailure = error;
@@ -828,6 +850,12 @@ const {
       }
     },
     confirmCalls: () => state.confirmCalls,
+    failBytes: (error: Error | undefined) => {
+      state.bytesFailure = error;
+    },
+    bytesReads: () => [...state.bytesReads],
+    uploadLog: () => [...state.uploadLog],
+
     listedAttachments: () => state.attachments.filter((item) => !state.deleted_attachments.includes(item.id)),
     deletedAttachments: () => state.deleted_attachments,
     failIssueDelete: (error: Error) => {
@@ -1014,6 +1042,10 @@ const {
       state.confirmLandsAnyway = false;
       state.confirmCalls = 0;
       state.deleted_attachments = [];
+      state.bytesFailure = undefined;
+      state.bytesReads = [];
+      state.uploadLog = [];
+      state.downloadUrl = "https://store.example/taska-attachments/obj?X-Amz-Signature=abc";
       state.deleteFailure = undefined;
       state.deleteHeld = false;
       state.deleteReleases = [];
@@ -2569,7 +2601,7 @@ describe("issue attachments", () => {
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
-    const row = await panel.findByRole("button", { name: "Download login-500-trace.txt" });
+    const row = await panel.findByRole("button", { name: "Open login-500-trace.txt in a new tab" });
     expect(row).toHaveTextContent("login-500-trace.txt");
     expect(row).toHaveTextContent("2.4 KB");
     expect(row).toHaveTextContent("Anna Ivanova");
@@ -2718,42 +2750,282 @@ describe("issue attachments", () => {
     expect(listedAttachments()).toHaveLength(0);
   });
 
-  it("opens a download link in a new tab and asks for it per click", async () => {
+  /**
+   * A stand-in for the tab `window.open("", "_blank")` hands back: blank until
+   * the panel points it at the link. `opener` starts as this page, the way a
+   * real one does, so the test can see the panel cut it.
+   */
+  const fakeTab = () => {
+    const replace = vi.fn((_url: string) => {});
+    const close = vi.fn(() => {});
+    return { opener: window as Window | null, closed: false, location: { replace }, close };
+  };
+
+  it("opens the link in a new tab without telling a reader whose tab opened that it was blocked", async () => {
+    // The defect TAS-253 fixes: `window.open(url, "_blank", "noopener")`
+    // returns `null` by spec, so every tab that *did* open was reported as one
+    // the popup blocker had stopped.
     seedAttachments([attachment()]);
-    // Typed with the parameters so the assertions below can read them: a bare
-    // `vi.fn(() => …)` infers an empty argument tuple.
-    const open = vi.fn((_url: string, _target: string, _features: string) => ({}) as Window);
+    const tab = fakeTab();
+    const open = vi.fn((_url?: string, _target?: string, _features?: string) => tab as unknown as Window);
     vi.stubGlobal("open", open);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
+
+    // Opened inside the click, blank, and with no feature string — `noopener`
+    // is what made the answer `null` — and cut from this page by hand.
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open.mock.calls[0]).toEqual(["", "_blank"]);
+    expect(tab.opener).toBeNull();
+    // Then pointed at the fresh presigned link, once it came back.
+    await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith(expect.stringContaining("X-Amz-Signature=")));
+    expect(panel.queryByText(/did not open a tab/)).toBeNull();
+    expect(panel.queryByRole("link", { name: "Open" })).toBeNull();
+    // Open never fetches the bytes: it is the store's link, in the store's tab.
+    expect(bytesReads()).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
+  it("offers the link to click when the browser genuinely refused the tab", async () => {
+    seedAttachments([attachment()]);
+    // Without `noopener`, `null` is the popup blocker's one honest signal.
+    vi.stubGlobal("open", vi.fn(() => null));
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
+
+    const fallback = await panel.findByRole("link", { name: "Open" });
+    expect(fallback).toHaveAttribute("href", expect.stringContaining("X-Amz-Signature="));
+    expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
+    // And it is announced, because otherwise a keyboard reader presses Enter,
+    // nothing opens, and an unannounced tab stop appears in the row.
+    expect(
+      await panel.findByText("Your browser did not open a tab for login-500-trace.txt. Use the Open link beside it."),
+    ).toBeVisible();
+    vi.unstubAllGlobals();
+  });
+
+  it("closes the waiting tab and says why when no link comes back", async () => {
+    seedAttachments([attachment()]);
+    const tab = fakeTab();
+    vi.stubGlobal("open", vi.fn(() => tab as unknown as Window));
+    renderBoard(ISSUE_PATH);
+    const panel = await section();
+    await panel.findByRole("button", { name: "Open login-500-trace.txt in a new tab" });
+    seedDownloadUrl("");
+
+    fireEvent.click(panel.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
+
+    expect(await panel.findByText("No link came back for login-500-trace.txt.")).toBeVisible();
+    expect(tab.close).toHaveBeenCalled();
+    expect(tab.location.replace).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("never loads a javascript: link into the waiting tab or the fallback link", async () => {
+    seedAttachments([attachment()]);
+    const tab = fakeTab();
+    vi.stubGlobal("open", vi.fn(() => tab as unknown as Window));
+    renderBoard(ISSUE_PATH);
+    const panel = await section();
+    await panel.findByRole("button", { name: "Open login-500-trace.txt in a new tab" });
+    seedDownloadUrl("javascript:alert(document.domain)");
+
+    fireEvent.click(panel.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
+    expect(await panel.findByText("No link came back for login-500-trace.txt.")).toBeVisible();
+    expect(tab.close).toHaveBeenCalled();
+    expect(tab.location.replace).not.toHaveBeenCalled();
+
+    // Download: the same link neither reaches the byte GET's fallback tab nor an anchor.
+    fireEvent.click(panel.getByRole("button", { name: "Download login-500-trace.txt" }));
+    await waitFor(() => expect(panel.getAllByText("No link came back for login-500-trace.txt.").length).toBeGreaterThan(0));
+    expect(tab.location.replace).not.toHaveBeenCalled();
+    expect(bytesReads()).toEqual([]);
+    expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
+
+    // And with the browser refusing the tab, no fallback link is offered either.
+    vi.stubGlobal("open", vi.fn(() => null));
+    fireEvent.click(panel.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
+    await panel.findByText("No link came back for login-500-trace.txt.");
+    expect(panel.queryByRole("link", { name: "Open" })).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("saves the file under its own name from the fetched bytes", async () => {
+    seedAttachments([attachment()]);
+    const open = vi.fn(() => null);
+    vi.stubGlobal("open", open);
+    // jsdom has neither; `src/lib/browserFiles.test.ts` covers the revoke.
+    const original = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:taska/1");
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = vi.fn((_url: string) => {});
+    const clicked: { href: string; download: string }[] = [];
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.push({ href: this.href, download: this.download });
+      });
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
     fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
 
-    await waitFor(() => expect(open).toHaveBeenCalled());
-    expect(open.mock.calls[0][0]).toContain("X-Amz-Signature=");
-    expect(open.mock.calls[0][2]).toBe("noopener,noreferrer");
+    await waitFor(() => expect(clicked).toEqual([{ href: "blob:taska/1", download: "login-500-trace.txt" }]));
+    expect(bytesReads()).toEqual([expect.stringContaining("X-Amz-Signature=")]);
+    expect(createObjectURL.mock.calls[0][0]).toBeInstanceOf(Blob);
+    // No tab, and nothing said: the file is in the reader's downloads.
+    expect(open).not.toHaveBeenCalled();
+    expect(panel.queryByText(/could not be saved/)).toBeNull();
+    // The temporary anchor does not stay in the document.
+    expect(document.querySelector("a[download]")).toBeNull();
+    click.mockRestore();
+    Object.assign(URL, original);
     vi.unstubAllGlobals();
   });
 
-  it("offers the link to click when the browser refused to open it", async () => {
+  it("opens the link instead, as information, when the store will not hand over the bytes", async () => {
     seedAttachments([attachment()]);
-    // `window.open` returning null is the popup blocker's one honest signal.
+    failBytes(new ObjectStoreError("The file store could not be reached: Failed to fetch", "STORAGE_UNREACHABLE", null));
+    const tab = fakeTab();
+    vi.stubGlobal("open", vi.fn(() => tab as unknown as Window));
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
+
+    await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith(expect.stringContaining("X-Amz-Signature=")));
+    const note = await panel.findByText(
+      "login-500-trace.txt could not be saved directly, so it opened in a new tab instead. Save it from there.",
+    );
+    // Information, not an error: the reader still gets the file.
+    expect(note).not.toHaveClass("is-error");
+    vi.unstubAllGlobals();
+  });
+
+  it("offers the link when the bytes failed and the browser refused the fallback tab too", async () => {
+    seedAttachments([attachment()]);
+    failBytes(new ObjectStoreError("The file store answered 403.", "STORAGE_REJECTED", 403));
     vi.stubGlobal("open", vi.fn(() => null));
     renderBoard(ISSUE_PATH);
 
     const panel = await section();
     fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
 
-    const fallback = await panel.findByRole("link", { name: "Open" });
-    expect(fallback).toHaveAttribute("href", expect.stringContaining("X-Amz-Signature="));
-    expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
-    // And it is announced, because otherwise a keyboard reader presses Enter,
-    // nothing opens, and an unannounced tab stop appears in the row. The live
-    // region was emptied by `onMutate`, so silence here is the default.
-    expect(
-      await panel.findByText("Your browser blocked the download tab for login-500-trace.txt. Use the Open link beside it."),
-    ).toBeVisible();
+    expect(await panel.findByRole("link", { name: "Open" })).toHaveAttribute("href", expect.stringContaining("X-Amz-Signature="));
+    expect(await panel.findByText(/could not be saved directly, and your browser did not open a tab for it/)).not.toHaveClass(
+      "is-error",
+    );
     vi.unstubAllGlobals();
+  });
+
+  it("does not fall back on an error that is not the store's: it reaches the error notice and no tab opens", async () => {
+    seedAttachments([attachment()]);
+    failBytes(new TypeError("boom"));
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
+
+    expect(await panel.findByText("boom")).toHaveClass("is-error");
+    expect(open).not.toHaveBeenCalled();
+    expect(panel.queryByText(/could not be saved directly/)).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  /** A drag of files from the desktop, as the section receives it. */
+  const filesDrag = (files: File[]) => ({ dataTransfer: { types: ["Files"], files, dropEffect: "none" } });
+
+  it("uploads dropped files one after another and refuses the one the server would refuse", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await section();
+    const target = (await screen.findByRole("heading", { name: /attachments/i })).closest("section")!;
+    const files = [
+      new File(["one"], "first.txt", { type: "text/plain" }),
+      new File(["GIF89a"], "cat.gif", { type: "image/gif" }),
+      new File(["two"], "second.txt", { type: "text/plain" }),
+    ];
+
+    fireEvent.dragEnter(target, filesDrag(files));
+    // The drop state is drawn while files are held over the section.
+    expect(target).toHaveClass("is-drop-target");
+    expect(target.querySelector(".attachment-drop-overlay")).toHaveTextContent("Drop to attach");
+    fireEvent.dragOver(target, filesDrag(files));
+    fireEvent.drop(target, filesDrag(files));
+    expect(target).not.toHaveClass("is-drop-target");
+
+    // The GIF is refused by name, before any request; the other two land.
+    expect(await panel.findByText(/cat\.gif is not a type this issue accepts/)).toBeVisible();
+    expect(await panel.findByRole("button", { name: "Open first.txt in a new tab" })).toBeVisible();
+    expect(await panel.findByRole("button", { name: "Open second.txt in a new tab" })).toBeVisible();
+    // One at a time: the second file is not signed until the first is confirmed.
+    expect(uploadLog()).toEqual(["sign first.txt", "confirm first.txt", "sign second.txt", "confirm second.txt"]);
+  });
+
+  it("keeps the drop state steady while the pointer crosses the section's children", async () => {
+    renderBoard(ISSUE_PATH);
+    const target = (await screen.findByRole("heading", { name: /attachments/i })).closest("section")!;
+    const drag = filesDrag([new File(["x"], "a.txt", { type: "text/plain" })]);
+
+    fireEvent.dragEnter(target, drag);
+    fireEvent.dragEnter(target.querySelector(".attachment-picker")!, drag);
+    fireEvent.dragLeave(target, drag);
+    expect(target).toHaveClass("is-drop-target");
+    fireEvent.dragLeave(target.querySelector(".attachment-picker")!, drag);
+    expect(target).not.toHaveClass("is-drop-target");
+  });
+
+  it("ignores a drag that carries no files", async () => {
+    renderBoard(ISSUE_PATH);
+    const target = (await screen.findByRole("heading", { name: /attachments/i })).closest("section")!;
+    fireEvent.dragEnter(target, { dataTransfer: { types: ["text/plain"], files: [] } });
+    expect(target).not.toHaveClass("is-drop-target");
+  });
+
+  it("takes no drop from a VIEWER, and still stops the browser navigating to the file", async () => {
+    setMembership("VIEWER");
+    renderBoard(ISSUE_PATH);
+    const panel = await section();
+    const target = (await screen.findByRole("heading", { name: /attachments/i })).closest("section")!;
+    const drag = filesDrag([new File(["x"], "a.txt", { type: "text/plain" })]);
+
+    fireEvent.dragEnter(target, drag);
+    expect(target).not.toHaveClass("is-drop-target");
+    // `fireEvent` answers `false` when the handler prevented the default —
+    // the browser's own handling of an unhandled drop is to open the file.
+    expect(fireEvent.dragOver(target, drag)).toBe(false);
+    expect(fireEvent.drop(target, drag)).toBe(false);
+    expect(drag.dataTransfer.dropEffect).toBe("none");
+    expect(uploadLog()).toEqual([]);
+    expect(panel.queryByText(/Waiting|Preparing/)).toBeNull();
+  });
+
+  it("refuses a file dropped elsewhere on the panel instead of letting the tab navigate to it", async () => {
+    renderBoard(ISSUE_PATH);
+    await section();
+    const description = screen.getByRole("complementary", { name: "TAS-102 issue" }).querySelector(".issue-panel-head")!;
+    const drag = filesDrag([new File(["x"], "a.txt", { type: "text/plain" })]);
+    expect(fireEvent.dragOver(description, drag)).toBe(false);
+    expect(drag.dataTransfer.dropEffect).toBe("none");
+    expect(fireEvent.drop(description, drag)).toBe(false);
+    expect(uploadLog()).toEqual([]);
+  });
+
+  it("takes several files from the button too, which is the drop's keyboard equivalent", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await section();
+    const input = document.querySelector<HTMLInputElement>(".attachment-input")!;
+    expect(input).toHaveAttribute("multiple");
+    fireEvent.change(input, {
+      target: { files: [new File(["a"], "a.txt", { type: "text/plain" }), new File(["b"], "b.txt", { type: "text/plain" })] },
+    });
+    expect(await panel.findByRole("button", { name: "Open b.txt in a new tab" })).toBeVisible();
+    expect(confirmCalls()).toBe(2);
   });
 
   it("removes an attachment optimistically", async () => {

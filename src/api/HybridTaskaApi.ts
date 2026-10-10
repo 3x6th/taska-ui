@@ -282,6 +282,10 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.getAttachmentDownloadUrl(projectId, issueId, attachmentId);
   }
 
+  getAttachmentBytes(downloadUrl: string): Promise<Blob> {
+    return this.live.getAttachmentBytes(downloadUrl);
+  }
+
   deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {
     return this.live.deleteAttachment(projectId, issueId, attachmentId);
   }

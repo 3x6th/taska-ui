@@ -25,11 +25,28 @@ the rest.
 
 The frontend adapts to the backend, never the other way around — but the
 backend moves slower than the frontend needs to, and that is expected, not an
-exception. When a feature needs an endpoint the gateway does not have yet, the
-frontend ships it against the mock (or a hybrid compensation) so the team can
-click through it, and the gap is recorded in `docs/ai/API-DIVERGENCE.md` with
-what removes it. Mock-first delivery is the normal mode of this repository,
-not a violation of the contract.
+exception. When a feature needs an endpoint the gateway does not have *yet*,
+the frontend may ship it against the mock so the team can click through it,
+and the gap is recorded in `docs/ai/API-DIVERGENCE.md` with what removes it.
+
+### No compensations for the backend
+
+The direction is off hybrid (epic TAS-210), and the owner made it a rule on
+2026-10-11 (TAS-253): **the frontend no longer works around a backend bug or a
+missing field on a route that exists.** No N+1 reads to fill a field the
+server leaves empty, no synthesised data, no guessing, no rewriting an answer.
+That day's case: member rows arrive with `avatar: null` while
+`GET /users/{userId}/avatar` has the photo, and a per-member read was proposed
+and declined — the backend fixes it in TAS-225, and until then the board
+honestly draws initials.
+
+What happens instead: measure it on the stand, file or comment the backend
+story, record the entry in `API-DIVERGENCE.md` with **Compensation: none**, and
+let the UI show what the server actually says. If a screen would be unusable
+without a workaround, that is a question for the owner *before* the builder is
+briefed, not a decision made in the brief. Existing compensations are debt to
+remove, never precedent to copy. A bug in the frontend's own code is not a
+compensation and is fixed as usual.
 
 When two sources conflict, stop the conflicting work and follow the
 higher-ranked source.
@@ -40,7 +57,8 @@ The contract states *intended* truth. The deployed gateway at
 `api.taska.ozero.dev` is *runtime* truth. When they disagree — or when the
 contract is silent on something the UI needs — stop and record it in
 `docs/ai/API-DIVERGENCE.md` with the endpoint, the observed behaviour, the
-compensating UI behaviour, and the Jira key that will remove it. Do not absorb
+UI behaviour (no compensation for a bug on a route that exists — see *No
+compensations for the backend*), and the Jira key that will remove it. Do not absorb
 the difference into a component and move on.
 
 This has already happened: `VITE_TASKA_ASSUME_PROJECT_ADMIN` existed purely

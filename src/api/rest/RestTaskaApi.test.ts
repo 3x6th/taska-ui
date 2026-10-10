@@ -3348,6 +3348,41 @@ describe("RestTaskaApi attachments", () => {
     expect(link).toEqual({ downloadUrl: "https://store.example/get?sig=2", checksum: null });
   });
 
+  // TAS-253: the bytes behind a presigned link, fetched straight from the
+  // store. No headers (a simple GET, no preflight), no credentials, no token.
+  it("fetches a link's bytes from the store with no headers and no credentials", async () => {
+    const fetchStub = vi.fn(async () => new Response("hello", { status: 200, headers: { "Content-Type": "text/plain" } }));
+    vi.stubGlobal("fetch", fetchStub);
+
+    const blob = await new RestTaskaApi().getAttachmentBytes("https://store.example/get?sig=2");
+
+    expect(await blob.text()).toBe("hello");
+    const [url, init] = calls(fetchStub)[0];
+    expect(url).toBe("https://store.example/get?sig=2");
+    expect(init).toEqual({ credentials: "omit" });
+  });
+
+  it("reads the store's refusal and an unreachable store as ObjectStoreError, never as a gateway answer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("denied", { status: 403 })));
+    const refused = await new RestTaskaApi().getAttachmentBytes("https://store.example/get").catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ObjectStoreError);
+    expect(refused).toMatchObject({ storeStatus: 403, code: "STORAGE_REJECTED" });
+    expect(refused).not.toHaveProperty("status");
+
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
+    const unreachable = await new RestTaskaApi().getAttachmentBytes("https://store.example/get").catch((error: unknown) => error);
+    expect(unreachable).toBeInstanceOf(ObjectStoreError);
+    expect(unreachable).toMatchObject({ storeStatus: null, code: "STORAGE_UNREACHABLE" });
+  });
+
+  it("fetches nothing for an empty or relative link", async () => {
+    const fetchStub = vi.fn();
+    vi.stubGlobal("fetch", fetchStub);
+    await expect(new RestTaskaApi().getAttachmentBytes("")).rejects.toMatchObject({ code: "STORAGE_URL_UNUSABLE" });
+    await expect(new RestTaskaApi().getAttachmentBytes("/board")).rejects.toMatchObject({ code: "STORAGE_URL_UNUSABLE" });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
   it("deletes by id and accepts the 204", async () => {
     const fetchStub = vi.fn(async () => answer(204, undefined));
     vi.stubGlobal("fetch", fetchStub);

@@ -20,8 +20,17 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Users, X } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
+import { Check, ChevronLeft, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Upload, Users, X } from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type FocusEvent,
+  type KeyboardEvent,
+} from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
 import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
@@ -32,7 +41,7 @@ import {
   attachmentRefusalKind,
   type AttachmentRefusalKind,
 } from "../api/attachments";
-import { objectStoreUploadFailure } from "../api/objectStore";
+import { ObjectStoreError, isUsableDownloadUrl, objectStoreUploadFailure } from "../api/objectStore";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isIssueVersionConflict, isMissingOrForbidden, IssueVersionConflictError } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
@@ -50,6 +59,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
 import { personFor, type NamedBy } from "../lib/people";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
@@ -2076,7 +2086,14 @@ function IssuePanel({
   return (
     <div className="panel-layer">
       <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" type="button" />
-      <aside className="issue-panel" aria-label={`${issue.issueKey} issue`}>
+      {/* A file let go over the panel outside the attachments section must not
+          navigate the tab away to it (TAS-253). */}
+      <aside
+        aria-label={`${issue.issueKey} issue`}
+        className="issue-panel"
+        onDragOver={refuseStrayFileDrop}
+        onDrop={refuseStrayFileDrop}
+      >
         <header className="issue-panel-head">
           <TypeChip type={issue.issueType} />
           <span className="issue-key">{issue.issueKey}</span>
@@ -3799,21 +3816,51 @@ const attachmentStepText: Record<AttachmentUploadStep, string> = {
 
 /**
  * A sentence about something the reader just did, and the tone it is said in.
- * `info` is for the two outcomes that are not failures: the confirm that failed
- * in transit while succeeding on the server, and the download tab the browser
- * refused to open when the link itself is fine. Calling either an error would
- * tell the reader the opposite of what happened.
+ * `info` is for the outcomes that are not failures: the confirm that failed in
+ * transit while succeeding on the server, the tab the browser refused to open
+ * when the link itself is fine, and a download that could not be saved
+ * directly and was opened instead. Calling any of them an error would tell the
+ * reader the opposite of what happened.
  */
 interface AttachmentNotice {
   tone: "error" | "info";
   text: string;
 }
 
+/** A file waiting its turn behind the upload in flight (TAS-253). */
+interface WaitingUpload {
+  key: number;
+  fileName: string;
+  sizeBytes: number;
+}
+
+/**
+ * Whether a drag carries files from outside the page — the only drag this
+ * section takes. A card dragged across the panel, or selected text, carries no
+ * `Files` type and is left alone.
+ */
+function carriesFiles(dataTransfer: DataTransfer | null) {
+  return Boolean(dataTransfer && Array.from(dataTransfer.types).includes("Files"));
+}
+
+/**
+ * A file let go anywhere on the issue panel outside the attachments section —
+ * or over a section that cannot take it — must not navigate the tab away to the
+ * file, which is what a browser does with a drop nobody handled. Refused rather
+ * than accepted: `dropEffect: "none"` shows the "no" cursor, and the drop never
+ * fires. A drop the section already took is left alone (`defaultPrevented`).
+ */
+function refuseStrayFileDrop(event: ReactDragEvent<HTMLElement>) {
+  if (event.defaultPrevented || !carriesFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "none";
+}
+
 /**
  * `GET/POST/DELETE /projects/{projectId}/issues/{issueId}/attachments` and the
- * two extra routes the upload needs — plus one leg that is not a route at all.
+ * two extra routes the upload needs — plus two legs that are not routes at all.
  *
- * Three things make this section different from the links and labels sections
+ * Four things make this section different from the links and labels sections
  * it sits beside, and each of them shows in the code:
  *
  * 1. **An upload is three calls, and the middle one does not touch Taska.** The
@@ -3825,12 +3872,18 @@ interface AttachmentNotice {
  * 2. **The confirm is not retryable and not optimistic.** `object_key` has no
  *    unique constraint and the insert is unconditional, so a repeat is a
  *    duplicate row, a duplicate history entry and a duplicate outbox event. The
- *    control is disabled for the duration and the call is wrapped in no retry —
- *    and after *any* confirm failure the list is re-read before anybody is told
- *    the file was not attached, because a confirm can succeed on the server and
- *    fail on the way back.
+ *    call is wrapped in no retry — and after *any* confirm failure the list is
+ *    re-read before anybody is told the file was not attached, because a
+ *    confirm can succeed on the server and fail on the way back. Several files
+ *    (a multi-select, or a drop) go one after another, never side by side.
  * 3. **Delete is gated per row, not per section.** Your own attachment needs
  *    `ADMIN` or `MEMBER`; somebody else's needs `ADMIN`.
+ * 4. **A row has two actions, and they are different on purpose** (TAS-253).
+ *    *Open* shows the file in a new tab from the store's own link — the object
+ *    carries no `Content-Disposition`, so images, PDFs and text display there.
+ *    *Download* saves it under its own name: the bytes are fetched and handed
+ *    to an `<a download>`. Neither ever puts the file on a `blob:` URL that is
+ *    *opened* on this origin, where an HTML attachment would run as Taska.
  *
  * Deletes *are* optimistic with rollback, like every other mutation here: that
  * one is a single call whose outcome the client can predict.
@@ -3853,14 +3906,38 @@ function IssueAttachmentsSection({
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState<{ fileName: string; sizeBytes: number; step: AttachmentUploadStep } | null>(null);
-  const [notice, setNotice] = useState<AttachmentNotice | null>(null);
   /**
-   * A resolved download link the browser would not open for us. Only ever set
-   * when `window.open` came back `null`, which is the popup blocker's one
-   * honest signal — so the fallback anchor appears exactly when it is needed
-   * and never clutters a row that worked.
+   * The files behind the one in flight, shown as rows of their own so a drop
+   * of five is visibly five. The `File`s themselves live in `queue`; this is
+   * only what the rows draw.
    */
-  const [blockedDownload, setBlockedDownload] = useState<{ id: string; url: string } | null>(null);
+  const [waiting, setWaiting] = useState<WaitingUpload[]>([]);
+  const queue = useRef<{ key: number; file: File }[]>([]);
+  const draining = useRef(false);
+  const nextQueueKey = useRef(0);
+  /**
+   * Every sentence the last action produced. Usually one; a drop of several
+   * files says one per file that did not go cleanly, and they stay together
+   * until the reader does something new.
+   */
+  const [notices, setNotices] = useState<AttachmentNotice[]>([]);
+  const say = (notice: AttachmentNotice) => setNotices([notice]);
+  const addNotice = (notice: AttachmentNotice) => setNotices((current) => [...current, notice]);
+  /**
+   * A resolved link the browser would not open a tab for. Only ever set when
+   * `window.open` genuinely came back `null` (see `openBlankTab`), so the
+   * fallback anchor appears exactly when it is needed and never clutters a row
+   * that worked.
+   */
+  const [fallbackLink, setFallbackLink] = useState<{ id: string; url: string } | null>(null);
+  /** Whether files are being dragged over the section right now. */
+  const [dropActive, setDropActive] = useState(false);
+  /**
+   * `dragenter` and `dragleave` fire for every child the pointer crosses, so a
+   * boolean flips off and on as the pointer moves over a row. Counting the
+   * enters against the leaves is what keeps the drop state steady.
+   */
+  const dragDepth = useRef(0);
 
   // The panel's issue read carries the attachments since TAS-246.
   const attachmentsCache = issuePartCache(queryClient, projectId, issueId, "attachments");
@@ -3878,7 +3955,7 @@ function IssueAttachmentsSection({
   const deleteAttachment = useMutation({
     mutationFn: (attachmentId: string) => taskaApi.deleteAttachment(projectId, issueId, attachmentId),
     onMutate: async (attachmentId) => {
-      setNotice(null);
+      setNotices([]);
       await attachmentsCache.cancel();
       const previous = attachmentsCache.get();
       attachmentsCache.set((current) => (current ?? []).filter((item) => item.id !== attachmentId));
@@ -3886,66 +3963,131 @@ function IssueAttachmentsSection({
     },
     onError: (error, _attachmentId, context) => {
       attachmentsCache.restore(context?.previous);
-      setNotice({ tone: "error", text: apiErrorFacts(error).message ?? "The attachment could not be removed." });
+      say({ tone: "error", text: apiErrorFacts(error).message ?? "The attachment could not be removed." });
     },
     onSettled: settle,
   });
 
-  const download = useMutation({
-    mutationFn: (attachment: IssueAttachment) =>
+  /**
+   * **Open**: a fresh presigned link, shown in a new tab.
+   *
+   * The tab is opened by the click handler *before* this runs (`openBlankTab`),
+   * because the link is only known after a request, and Safari no longer counts
+   * the click as the reader's once an `await` has passed. So `tab` is either a
+   * blank tab waiting for its link, or `null` — and `null` now means one thing
+   * only: the browser refused to open it.
+   */
+  const open = useMutation({
+    mutationFn: ({ attachment }: { attachment: IssueAttachment; tab: Window | null }) =>
       taskaApi.getAttachmentDownloadUrl(projectId, issueId, attachment.id),
     onMutate: () => {
-      setNotice(null);
-      setBlockedDownload(null);
+      setNotices([]);
+      setFallbackLink(null);
     },
-    onSuccess: (link, attachment) => {
-      if (!link.downloadUrl) {
-        setNotice({ tone: "error", text: `No download link came back for ${attachment.fileName}.` });
+    onSuccess: (link, { attachment, tab }) => {
+      if (!isUsableDownloadUrl(link.downloadUrl)) {
+        closeTab(tab);
+        say({ tone: "error", text: `No link came back for ${attachment.fileName}.` });
         return;
       }
-      // A presigned GET on the object store, so this leaves the app rather than
-      // fetching bytes here: `noopener,noreferrer` because the destination is a
-      // server we do not control. `window.open` returning `null` is the popup
-      // blocker saying no — the only reliable way to hear it — and the row then
-      // offers the link as something to click directly.
-      const opened = window.open(link.downloadUrl, "_blank", "noopener,noreferrer");
-      if (!opened) {
-        setBlockedDownload({ id: attachment.id, url: link.downloadUrl });
-        // Said out loud, because otherwise this is the one outcome nobody is
-        // told about: `onMutate` has just emptied the live region, pressing
-        // Enter opened nothing, and a new tab stop appeared in the row without
-        // a word. Not an error — the link is real and good for fifteen minutes.
-        setNotice({
-          tone: "info",
-          text: `Your browser blocked the download tab for ${attachment.fileName}. Use the Open link beside it.`,
-        });
+      if (tab && sendTabTo(tab, link.downloadUrl)) return;
+      // Either the blocker said no, or the reader closed the waiting tab. The
+      // link is real and good for fifteen minutes, so it is offered rather
+      // than swallowed — and said out loud, because otherwise a keyboard reader
+      // presses Enter, nothing opens, and a new tab stop appears without a word.
+      setFallbackLink({ id: attachment.id, url: link.downloadUrl });
+      say({
+        tone: "info",
+        text: `Your browser did not open a tab for ${attachment.fileName}. Use the Open link beside it.`,
+      });
+    },
+    onError: (error, { tab }) => {
+      closeTab(tab);
+      say({ tone: "error", text: apiErrorFacts(error).message ?? "The link to this file could not be created." });
+    },
+  });
+
+  const openAttachment = (attachment: IssueAttachment) => {
+    if (open.isPending && open.variables?.attachment.id === attachment.id) return;
+    // Synchronously, inside the click — see `open` above.
+    const tab = openBlankTab();
+    open.mutate({ attachment, tab });
+  };
+
+  /**
+   * **Download**: the bytes behind a fresh link, saved under the file's own
+   * name. If the store will not hand the bytes to script — a network failure,
+   * or a store whose CORS stops allowing the GET — the link is opened in a tab
+   * instead, where the reader can save it, and that is said as information
+   * rather than as an error: they still get the file.
+   */
+  const download = useMutation({
+    mutationFn: async (attachment: IssueAttachment) => {
+      const link = await taskaApi.getAttachmentDownloadUrl(projectId, issueId, attachment.id);
+      // The same rule the byte GET applies, here because the fallback below
+      // hands the link to a tab and an anchor, not to a fetch.
+      if (!isUsableDownloadUrl(link.downloadUrl)) return { kind: "no-link" as const };
+      try {
+        const blob = await taskaApi.getAttachmentBytes(link.downloadUrl);
+        return { kind: "saved" as const, blob };
+      } catch (error) {
+        if (!(error instanceof ObjectStoreError)) throw error;
+        return { kind: "fallback" as const, url: link.downloadUrl };
       }
     },
+    onMutate: () => {
+      setNotices([]);
+      setFallbackLink(null);
+    },
+    onSuccess: (outcome, attachment) => {
+      if (outcome.kind === "no-link") {
+        say({ tone: "error", text: `No link came back for ${attachment.fileName}.` });
+        return;
+      }
+      if (outcome.kind === "saved") {
+        saveBlob(outcome.blob, attachment.fileName);
+        return;
+      }
+      // Two requests have passed since the click, so the browser may well
+      // refuse a tab now; a refusal is the genuine `null` and gets the link.
+      const tab = openBlankTab();
+      if (tab && sendTabTo(tab, outcome.url)) {
+        say({
+          tone: "info",
+          text: `${attachment.fileName} could not be saved directly, so it opened in a new tab instead. Save it from there.`,
+        });
+        return;
+      }
+      setFallbackLink({ id: attachment.id, url: outcome.url });
+      say({
+        tone: "info",
+        text: `${attachment.fileName} could not be saved directly, and your browser did not open a tab for it. Use the Open link beside it.`,
+      });
+    },
     onError: (error) => {
-      setNotice({ tone: "error", text: apiErrorFacts(error).message ?? "The download link could not be created." });
+      say({ tone: "error", text: apiErrorFacts(error).message ?? "The link to this file could not be created." });
     },
   });
 
   /**
-   * The whole upload, written out rather than wrapped in a mutation, because
-   * its outcomes do not fit "resolved or rejected": one of them is *"the file
-   * was attached even though this failed"*, and another is *"nobody can say
-   * either way"*. Each leg is awaited on its own so the sentence names the leg
-   * that failed.
+   * The whole upload of one file, written out rather than wrapped in a
+   * mutation, because its outcomes do not fit "resolved or rejected": one of
+   * them is *"the file was attached even though this failed"*, and another is
+   * *"nobody can say either way"*. Each leg is awaited on its own so the
+   * sentence names the leg that failed. Sentences are *added*, so a queue of
+   * files reports each one rather than the last.
    */
   const runUpload = async (file: File) => {
-    setNotice(null);
-    setBlockedDownload(null);
     const candidate = { fileName: file.name, contentType: file.type, sizeBytes: file.size };
 
     // The picker's `accept` filters by the operating system's idea of a type
     // and `File.type` is the browser's, so this is not a duplicate of it: a
     // `.zip` reported as `application/x-zip-compressed`, or an extensionless
     // file reported as `application/octet-stream`, gets past `accept` and is
-    // stopped here, before a request.
+    // stopped here, before a request. A dropped file has no `accept` at all.
     const refusal = attachmentRefusalKind(candidate);
     if (refusal) {
-      setNotice({ tone: "error", text: refusalText(refusal, file) });
+      addNotice({ tone: "error", text: refusalText(refusal, file) });
       return;
     }
 
@@ -3954,11 +4096,12 @@ function IssueAttachmentsSection({
     let ticket;
     try {
       // Leg 1, and the moment the fifteen-minute clock starts. Asked for now
-      // rather than when the panel opened, precisely so that clock is short.
+      // rather than when the panel opened — or when a queue of files was
+      // dropped — precisely so that clock is short.
       ticket = await taskaApi.createAttachmentUploadUrl(projectId, issueId, candidate);
     } catch (error) {
       setPending(null);
-      setNotice({
+      addNotice({
         tone: "error",
         text: `${file.name} was not attached. ${apiErrorFacts(error).message ?? "The upload could not be prepared."}`,
       });
@@ -3973,7 +4116,7 @@ function IssueAttachmentsSection({
       await taskaApi.putAttachmentBytes(ticket.uploadUrl, file, candidate.contentType);
     } catch (error) {
       setPending(null);
-      setNotice({ tone: "error", text: uploadFailureText(error, file.name) });
+      addNotice({ tone: "error", text: uploadFailureText(error, file.name) });
       return;
     }
 
@@ -4021,33 +4164,137 @@ function IssueAttachmentsSection({
       if (landed === null) {
         // Two unknowns and no way to resolve either. Claiming failure here
         // would be a guess with a one-in-two chance of being a lie.
-        setNotice({
+        addNotice({
           tone: "error",
           text: `${file.name} may or may not have been attached: the confirmation failed and the list could not be re-read. Reopen this issue to check.`,
         });
         return;
       }
       if (countByName(landed, file.name) > before) {
-        setNotice({
+        addNotice({
           tone: "info",
           text: `${file.name} was attached after all — the confirmation did not reach us, but the server recorded it.`,
         });
         return;
       }
-      setNotice({
+      addNotice({
         tone: "error",
         text: `${file.name} was not attached. ${apiErrorFacts(error).message ?? "The upload could not be confirmed."}`,
       });
     }
   };
 
+  /** Uploads whatever is queued, one file at a time, until the queue is empty. */
+  const drain = async () => {
+    draining.current = true;
+    try {
+      let next = queue.current.shift();
+      while (next) {
+        const { key, file } = next;
+        setWaiting((current) => current.filter((item) => item.key !== key));
+        await runUpload(file);
+        next = queue.current.shift();
+      }
+    } finally {
+      draining.current = false;
+    }
+  };
+
+  /**
+   * The one way files get into this section — chosen with the button or
+   * dropped — and the queue behind it (TAS-253). A file the server would
+   * refuse is refused here, by name, before it ever takes a place in the
+   * queue; the rest go one after another, because each confirm must be
+   * answered before the next is sent (see the section's own comment). Files
+   * added while a queue is running join the end of it, and the sentences from
+   * the files already done stay on screen.
+   */
+  const enqueue = (files: File[]) => {
+    if (!files.length) return;
+    if (!draining.current) {
+      setNotices([]);
+      setFallbackLink(null);
+    }
+    const accepted: { key: number; file: File }[] = [];
+    for (const file of files) {
+      const refusal = attachmentRefusalKind({ fileName: file.name, contentType: file.type, sizeBytes: file.size });
+      if (refusal) {
+        addNotice({ tone: "error", text: refusalText(refusal, file) });
+        continue;
+      }
+      nextQueueKey.current += 1;
+      accepted.push({ key: nextQueueKey.current, file });
+    }
+    if (!accepted.length) return;
+    queue.current.push(...accepted);
+    setWaiting((current) => [
+      ...current,
+      ...accepted.map(({ key, file }) => ({ key, fileName: file.name, sizeBytes: file.size })),
+    ]);
+    if (!draining.current) void drain();
+  };
+
+  /**
+   * The drop target (TAS-253). Only a drag that carries files is taken, and
+   * every such drag has its default prevented — over a section that can take
+   * the file, so the drop lands here; over one that cannot (a VIEWER, or a role
+   * nobody stated), so the browser does not navigate away to the file. The
+   * "Attach a file" button stays the keyboard and button equivalent.
+   */
+  const onDragEnter = (event: ReactDragEvent<HTMLElement>) => {
+    if (!carriesFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    if (!canEdit) return;
+    dragDepth.current += 1;
+    setDropActive(true);
+  };
+  const onDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!carriesFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = canEdit ? "copy" : "none";
+  };
+  const onDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    if (!carriesFiles(event.dataTransfer) || !canEdit) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDropActive(false);
+  };
+  const onDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!carriesFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDropActive(false);
+    if (!canEdit) return;
+    enqueue(Array.from(event.dataTransfer.files));
+  };
+
+  const errorNotices = notices.filter((notice) => notice.tone === "error");
+  const infoNotices = notices.filter((notice) => notice.tone === "info");
 
   return (
-    <section className="issue-attachments">
+    <section
+      className={`issue-attachments${dropActive ? " is-drop-target" : ""}`}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       <h3>
         Attachments
         {attachments.length ? <span className="count-pill">{attachments.length}</span> : null}
       </h3>
+
+      {/* The drop state: the section's own outline in the accent, and one line
+          saying what letting go does. `aria-hidden` because it only exists
+          while a pointer drags files — nobody reaches it any other way, and
+          the button below is the path everyone else takes. Drawn over the
+          section rather than in place of it, so nothing under the pointer
+          moves while the files are held over it. */}
+      {dropActive ? (
+        <div aria-hidden="true" className="attachment-drop-overlay">
+          <Upload size={16} />
+          Drop to attach
+        </div>
+      ) : null}
 
       {canEdit ? (
         <div className="attachment-picker">
@@ -4055,50 +4302,56 @@ function IssueAttachmentsSection({
               `::file-selector-button` keeps the browser's own "No file chosen"
               text, and a visually-hidden but focusable input puts a tab stop
               where nothing is visible. `hidden` takes it out of the tab order
-              entirely, and the button is a real button with §4.1's focus ring. */}
+              entirely, and the button is a real button with §4.1's focus ring.
+              `multiple`, so the button can do everything a drop can. */}
           <input
             accept={ATTACHMENT_ACCEPT_ATTRIBUTE}
             className="attachment-input"
             hidden
+            multiple
             onChange={(event) => {
-              const file = event.target.files?.[0];
+              const files = Array.from(event.target.files ?? []);
               // Cleared straight away so choosing the same file twice — after a
               // failure, which is exactly when someone would — still fires a
               // change event.
               event.target.value = "";
-              if (file) void runUpload(file);
+              enqueue(files);
             }}
             ref={fileInput}
             type="file"
           />
-          <button
-            className="secondary-button compact-button"
-            disabled={pending !== null}
-            onClick={() => fileInput.current?.click()}
-            type="button"
-          >
+          <button className="secondary-button compact-button" onClick={() => fileInput.current?.click()} type="button">
             <Paperclip size={13} />
             Attach a file
           </button>
           {/* Said before a file is chosen, not after it is refused. The list is
               stricter than people expect — no .docx, no GIF, no SVG, nothing
               without an extension — and the picker's own filter cannot be
-              trusted to enforce it. */}
+              trusted to enforce it. The drop is mentioned here, once, because
+              nothing else on screen says the section takes one. */}
           <p className="attachment-hint">
-            Up to {formatFileSize(ATTACHMENT_MAX_SIZE_BYTES)}. {ATTACHMENT_ACCEPTED_SUMMARY}.
+            Up to {formatFileSize(ATTACHMENT_MAX_SIZE_BYTES)}. {ATTACHMENT_ACCEPTED_SUMMARY}.<span className="attachment-drop-hint"> You can also drop files here.</span>
           </p>
         </div>
       ) : null}
 
-      {/* One live region that stays mounted and changes its text, rather than a
-          region that appears together with what it has to announce — §7 records
-          the second shape as depending on screen-reader timing, and this
-          section is new enough not to have to inherit it. Polite, not assertive:
-          the sentence always follows something the reader just did, and an
-          `alert` would cut across whatever they are reading. Empty, it carries
-          no class and takes no space. */}
-      <div aria-live="polite" className={notice ? `attachment-note${notice.tone === "error" ? " is-error" : ""}` : ""}>
-        {notice?.text ?? ""}
+      {/* One live region that stays mounted and changes its content, rather
+          than a region that appears together with what it has to announce — §7
+          records the second shape as depending on screen-reader timing. Polite,
+          not assertive: every sentence follows something the reader just did,
+          and an `alert` would cut across whatever they are reading. Errors first,
+          then information, each in §5.6's box; empty, it takes no space. */}
+      <div aria-live="polite" className="attachment-notes">
+        {errorNotices.map((notice, index) => (
+          <p className="attachment-note is-error" key={`error-${index}`}>
+            {notice.text}
+          </p>
+        ))}
+        {infoNotices.map((notice, index) => (
+          <p className="attachment-note" key={`info-${index}`}>
+            {notice.text}
+          </p>
+        ))}
       </div>
 
       {/* A part that did not load says so where "No attachments yet" would
@@ -4107,14 +4360,15 @@ function IssueAttachmentsSection({
       {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("attachments")}</p> : null}
 
       {/* Only a part the server sent may say there are none. */}
-      {attachmentsQuery.data && attachments.length === 0 && !pending ? (
+      {attachmentsQuery.data && attachments.length === 0 && !pending && !waiting.length ? (
         <p className="issue-links-empty">No attachments yet</p>
       ) : null}
 
-      {attachments.length || pending ? (
+      {attachments.length || pending || waiting.length ? (
         <ul className="attachment-list">
           {attachments.map((attachment) => {
             const uploader = personFor(attachment.uploadedBy, attachment.uploadedByUser, userById);
+            const name = attachment.fileName || "Unnamed file";
             // Two rules, not one. Your own file needs ADMIN or MEMBER; somebody
             // else's needs ADMIN. An attachment whose uploader the response left
             // blank is treated as somebody else's, which is the safer of the two
@@ -4122,40 +4376,63 @@ function IssueAttachmentsSection({
             const mine = Boolean(currentUserId) && attachment.uploadedBy === currentUserId;
             const canDelete = mine ? canEdit : isProjectAdmin;
             const removing = deleteAttachment.isPending && deleteAttachment.variables === attachment.id;
+            // In flight for this row. `aria-disabled` rather than `disabled`
+            // while a request is out: pressing Enter on a button that disables
+            // itself drops focus to `<body>` (§4.21). The handlers ignore a
+            // second press instead.
+            const opening = open.isPending && open.variables?.attachment.id === attachment.id;
+            const downloading = download.isPending && download.variables?.id === attachment.id;
+            // An attachment the response left unaddressable cannot be asked
+            // for: the request would name no attachment. The row still shows —
+            // the file is on the issue either way — with its two actions off.
+            const unaddressable = !attachment.id;
             return (
               <li className="attachment-row" key={attachment.id || attachment.fileName}>
                 <button
-                  aria-label={`Download ${attachment.fileName}`}
+                  aria-disabled={opening || undefined}
+                  aria-label={`Open ${name} in a new tab`}
                   className="attachment-open"
-                  // An attachment the response left unaddressable cannot be
-                  // asked for: the request would name no attachment. The row
-                  // still shows — the file is on the issue either way.
-                  disabled={!attachment.id || (download.isPending && download.variables?.id === attachment.id)}
-                  onClick={() => download.mutate(attachment)}
+                  disabled={unaddressable}
+                  onClick={() => openAttachment(attachment)}
+                  title="Open in a new tab"
                   type="button"
                 >
-                  <Download className="attachment-icon" size={14} />
-                  <span className="attachment-name">{attachment.fileName || "Unnamed file"}</span>
+                  <ExternalLink className="attachment-icon" size={14} />
+                  <span className="attachment-name">{name}</span>
                   <span className="attachment-meta">
                     {formatFileSize(attachment.sizeBytes)}
                     {uploader ? ` · ${uploader.displayName}` : ""}
                     {attachment.createdAt ? ` · ${formatDateTime(attachment.createdAt)}` : ""}
                   </span>
                 </button>
-                {blockedDownload?.id === attachment.id ? (
-                  // The browser refused to open the tab for us. The link is
-                  // real and good for fifteen minutes, so it is offered rather
-                  // than swallowed.
-                  <a className="attachment-blocked-link" href={blockedDownload.url} rel="noopener noreferrer" target="_blank">
+                {fallbackLink?.id === attachment.id ? (
+                  // The browser did not open a tab for us. The link is real and
+                  // good for fifteen minutes, so it is offered rather than
+                  // swallowed — as a plain link, which a blocker lets through.
+                  <a className="attachment-blocked-link" href={fallbackLink.url} rel="noopener noreferrer" target="_blank">
                     Open
                   </a>
                 ) : null}
+                <button
+                  aria-disabled={downloading || undefined}
+                  aria-label={`Download ${name}`}
+                  className="icon-button attachment-action"
+                  disabled={unaddressable}
+                  onClick={() => {
+                    if (!downloading) download.mutate(attachment);
+                  }}
+                  title="Download"
+                  type="button"
+                >
+                  <Download size={14} />
+                </button>
                 {canDelete ? (
                   <button
-                    aria-label={`Delete ${attachment.fileName}`}
-                    className="icon-button"
-                    disabled={!attachment.id || removing}
+                    aria-label={`Delete ${name}`}
+                    className="icon-button attachment-action"
+                    disabled={unaddressable || removing}
                     onClick={() => deleteAttachment.mutate(attachment.id)}
+                    title="Delete"
                     type="button"
                   >
                     <Trash2 size={14} />
@@ -4182,6 +4459,19 @@ function IssueAttachmentsSection({
               </span>
             </li>
           ) : null}
+
+          {waiting.map((item) => (
+            // The files queued behind it, in the order they will go.
+            <li className="attachment-row is-pending" key={`attachment-waiting-${item.key}`}>
+              <span className="attachment-open is-inert">
+                <Paperclip className="attachment-icon" size={14} />
+                <span className="attachment-name">{item.fileName}</span>
+                <span className="attachment-meta">
+                  {formatFileSize(item.sizeBytes)} · Waiting…
+                </span>
+              </span>
+            </li>
+          ))}
         </ul>
       ) : null}
     </section>

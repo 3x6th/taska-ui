@@ -440,8 +440,12 @@ describe("HybridTaskaApi", () => {
     expect(attachment.fileName).toBe("hybrid.txt");
     expect(await hybrid.listAttachments(project.id, issue.id)).toHaveLength(before.length + 1);
 
-    await hybrid.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
+    const link = await hybrid.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
     expect(downloadUrl).toHaveBeenCalledWith(project.id, issue.id, attachment.id);
+
+    const bytes = vi.spyOn(live, "getAttachmentBytes");
+    await hybrid.getAttachmentBytes(link.downloadUrl);
+    expect(bytes).toHaveBeenCalledWith(link.downloadUrl);
 
     await hybrid.deleteAttachment(project.id, issue.id, attachment.id);
     expect(remove).toHaveBeenCalledWith(project.id, issue.id, attachment.id);

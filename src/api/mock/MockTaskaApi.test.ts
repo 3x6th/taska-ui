@@ -2913,6 +2913,66 @@ describe("MockTaskaApi", () => {
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
 
+    it("hands back the very bytes that were uploaded, for a link it signed (TAS-253)", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile("round-trip.txt", "one\ntwo\n");
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+      const attachment = await api.confirmAttachmentUpload(project.id, issue.id, {
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: file.type,
+      });
+
+      const link = await api.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
+      // No disposition parameter: the deployed store sets none, so the link opens inline.
+      expect(link.downloadUrl).not.toContain("response-content-disposition");
+      const blob = await api.getAttachmentBytes(link.downloadUrl);
+      expect(blob.type).toBe("text/plain");
+      expect(await blob.text()).toBe("one\ntwo\n");
+    });
+
+    it("answers a seeded row with a deterministic stand-in, and refuses links it never signed", async () => {
+      const issue = await openIssue("TAS-101");
+      const [attachment] = await api.listAttachments(project.id, issue.id);
+      const link = await api.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
+
+      const blob = await api.getAttachmentBytes(link.downloadUrl);
+      expect(blob.type).toBe(attachment.contentType);
+      expect(await blob.text()).toContain(attachment.fileName);
+
+      await expect(api.getAttachmentBytes(`${link.downloadUrl}x`)).rejects.toMatchObject({
+        name: "ObjectStoreError",
+        storeStatus: 403,
+      });
+      await expect(api.getAttachmentBytes("")).rejects.toMatchObject({ code: "STORAGE_URL_UNUSABLE" });
+    });
+
+    it("fails the byte GET with no response for a file named to, so Download's fallback is reachable", async () => {
+      const issue = await openIssue("TAS-102");
+      const file = textFile(`${MOCK_ATTACHMENT_TRIGGERS.downloadBlocked}.txt`);
+      const ticket = await api.createAttachmentUploadUrl(project.id, issue.id, {
+        fileName: file.name,
+        contentType: file.type,
+        sizeBytes: file.size,
+      });
+      await api.putAttachmentBytes(ticket.uploadUrl, file, file.type);
+      const attachment = await api.confirmAttachmentUpload(project.id, issue.id, {
+        objectKey: ticket.objectKey,
+        fileName: file.name,
+        contentType: file.type,
+      });
+      const link = await api.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
+
+      const error = await api.getAttachmentBytes(link.downloadUrl).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ObjectStoreError);
+      expect(error).toMatchObject({ storeStatus: null });
+    });
+
     it("soft-deletes: the row leaves the list and the id stops resolving", async () => {
       const issue = await openIssue("TAS-101");
       const before = await api.listAttachments(project.id, issue.id);

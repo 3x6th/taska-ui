@@ -40,6 +40,7 @@ import {
   OBJECT_STORE_REJECTED_CODE,
   OBJECT_STORE_UNREACHABLE_CODE,
   ObjectStoreError,
+  requireUsableDownloadUrl,
   requireUsableUploadUrl,
 } from "../objectStore";
 import type { PlanningFieldsInput } from "../planningFields";
@@ -1440,6 +1441,47 @@ export class RestTaskaApi implements TaskaApi {
       `${this.attachmentsPath(projectId, issueId)}/${this.segment(attachmentId)}/download-url`,
     );
     return { downloadUrl: response.downloadUrl ?? "", checksum: response.checksum ?? null };
+  }
+
+  /**
+   * The bytes behind a presigned download link — a GET straight to the store,
+   * not through the gateway (TAS-253). Measured 2026-10-11 from
+   * `https://taska.ozero.dev`: the cross-origin `fetch()` of a link on
+   * `minio.taska.ozero.dev` answers 200 with a readable body.
+   *
+   * No headers, so it is a CORS "simple" request with no preflight to be
+   * refused; `credentials: "omit"`, because nothing of this app's belongs on a
+   * request to a host that is not the gateway; and the link is checked before
+   * it is used (`requireUsableDownloadUrl`) for the reason the PUT's is. Every
+   * failure is an `ObjectStoreError` — the store's status in `storeStatus` and
+   * the message, never in a field called `status`.
+   */
+  async getAttachmentBytes(downloadUrl: string): Promise<Blob> {
+    requireUsableDownloadUrl(downloadUrl);
+    let response: Response;
+    try {
+      response = await fetch(downloadUrl, { credentials: "omit" });
+    } catch (cause) {
+      throw new ObjectStoreError(
+        cause instanceof Error && cause.message ? `The file store could not be reached: ${cause.message}` : "The file store could not be reached.",
+        OBJECT_STORE_UNREACHABLE_CODE,
+        null,
+      );
+    }
+    if (!response.ok) {
+      throw new ObjectStoreError(`The file store answered ${response.status}.`, OBJECT_STORE_REJECTED_CODE, response.status);
+    }
+    try {
+      return await response.blob();
+    } catch (cause) {
+      // The body stopped arriving after the headers did — a dropped
+      // connection, as far as script can tell.
+      throw new ObjectStoreError(
+        cause instanceof Error && cause.message ? `The file store could not be read: ${cause.message}` : "The file store could not be read.",
+        OBJECT_STORE_UNREACHABLE_CODE,
+        null,
+      );
+    }
   }
 
   async deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {
