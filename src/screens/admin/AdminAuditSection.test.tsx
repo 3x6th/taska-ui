@@ -262,6 +262,7 @@ describe("the Audit section", () => {
       expect(notice.closest("[role=status]")).not.toBeNull();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(screen.queryByRole("table")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Filter" })).not.toBeInTheDocument();
       expect(screen.getByRole("link", { name: "TAS-160" })).toBeVisible();
     });
   }

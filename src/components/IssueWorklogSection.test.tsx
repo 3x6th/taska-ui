@@ -110,6 +110,16 @@ describe("the work log section", () => {
     expect(screen.getByText("req-251")).toBeVisible();
   });
 
+  it("marks Log work aria-disabled while the duration is empty", async () => {
+    renderSection();
+    await screen.findByText("Pairing");
+    const form = screen.getByRole("form", { name: "Log work" });
+    const button = within(form).getByRole("button", { name: "Log work" });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    fireEvent.change(within(form).getByLabelText("Time spent"), { target: { value: "2h" } });
+    expect(button).not.toHaveAttribute("aria-disabled");
+  });
+
   it("puts a refused delete back", async () => {
     state.writeFailure = refusal("Not allowed role", 403, "PERMISSION_DENIED");
     renderSection();

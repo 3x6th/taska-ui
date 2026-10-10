@@ -3869,7 +3869,7 @@ h1 {
 .global-search-note {
   flex: none;
   color: var(--fg-3);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .global-search-option .priority-bars {
@@ -6059,6 +6059,19 @@ button.attachment-open:hover:not(:disabled) {
 
 /* §4.1's ring on everything focusable in the section. Without these Chrome
    draws `outline: auto` in the reader's system accent — §7's TAS-185 entry. */
+/* §1: a clickable target is at least 28x28; the Comments copy is backlogged. */
+.issue-worklogs .comment-actions {
+  gap: 2px;
+  margin: 0 0 0 -4px;
+}
+
+.issue-worklogs .comment-actions .link-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 4px;
+}
+
 .issue-worklogs h3:focus-visible,
 .worklog-field input:focus-visible,
 .worklog-field textarea:focus-visible,

@@ -97,13 +97,15 @@ export function AdminAuditSection() {
           </p>
         ) : null}
         <div className="admin-plane-spacer" />
-        <AdminNamedFilterControl
-          definitions={auditFilters}
-          dialogLabel="Filter audit entries"
-          filters={view.filters}
-          onChange={(filters) => update({ filters, page: 1 })}
-          validate={auditFiltersProblem}
-        />
+        {notServed ? null : (
+          <AdminNamedFilterControl
+            definitions={auditFilters}
+            dialogLabel="Filter audit entries"
+            filters={view.filters}
+            onChange={(filters) => update({ filters, page: 1 })}
+            validate={auditFiltersProblem}
+          />
+        )}
       </div>
 
       {notServed ? (
