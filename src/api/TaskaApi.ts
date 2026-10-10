@@ -4,6 +4,8 @@ import type {
   AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
+  AuditEntries,
+  AuditEntriesQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -19,6 +21,7 @@ import type {
   IssueStatus,
   IssueType,
   IssueWatchers,
+  IssueWorklog,
   IssueDetailsWithHistory,
   Label,
   Notification,
@@ -27,6 +30,7 @@ import type {
   Page,
   ProblematicOutboxSummary,
   Project,
+  ProjectContext,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -320,12 +324,13 @@ export function isRetryableOutboxService(service: string): service is RetryableO
 /**
  * Every parameter `GET /issues/search` takes, all AND-combined by the server.
  *
- * The enums are the domain's own unions rather than the contract's bare
- * `string`s on purpose: an unrecognised `priority` or `issueType` is *silently
- * ignored* by the runtime, so the answer to a filter the server did not
- * understand is the whole set rather than a `400` — indistinguishable from a
- * filter that applied and matched everything (TAS-180). Types are the only
- * thing standing between a typo and a wider result than the one asked for.
+ * The enums are the domain's own unions, which is ordinary typing and no longer
+ * a compensation. Since backend TAS-218 (develop `485fea5`, deployed
+ * 2026-10-09) an unrecognised `priority` or `issueType` passes the edge — a
+ * probe without a token answers `401` where it answered `400` — and the search
+ * answers an empty page; the mock answers the same, because nothing matches a
+ * value no issue holds. Before TAS-168 the same value was silently ignored and
+ * widened the result (TAS-180), which is what these types once stood against.
  */
 export interface SearchIssuesParams {
   /**
@@ -525,6 +530,38 @@ export interface ConfirmAvatarUploadInput {
   contentType: string;
 }
 
+/**
+ * `AddIssueWorklogRequestDto` (backend PR #178). `spentMinutes` is a whole
+ * number of minutes, at least 1, with no upper bound; `workDate` is at most the
+ * server's today plus one day (`issue.max-future-days`), with no lower bound.
+ * A blank `comment` is stored as `null`; the gateway refuses one over
+ * `WORKLOG_COMMENT_MAX_LENGTH`.
+ */
+export interface AddIssueWorklogInput {
+  spentMinutes: number;
+  workDate: DateOnly;
+  comment?: string | null;
+}
+
+/**
+ * `UpdateIssueWorklogRequestDto` (backend PR #178): a partial update. An absent
+ * field is left as it is; `comment: ""` clears the comment (stored `null`); a
+ * body with no field at all is refused `400` ("No data provided for update").
+ * There is no version and no `If-Match`: the last write wins.
+ *
+ * The server declares no `maxLength` on this `comment` and stores `text`, so
+ * it would keep a longer one; the panel holds an edit to the same
+ * `WORKLOG_COMMENT_MAX_LENGTH` as an add.
+ */
+export interface UpdateIssueWorklogInput {
+  spentMinutes?: number;
+  workDate?: DateOnly;
+  comment?: string;
+}
+
+/** `maxLength` of `AddIssueWorklogRequestDto.comment`, which the panel applies to an edit too. */
+export const WORKLOG_COMMENT_MAX_LENGTH = 2000;
+
 export interface ListCommentsParams {
   page?: number;
   pageSize?: number;
@@ -563,6 +600,16 @@ export interface TaskaApi {
 
   listProjects(): Promise<Project[]>;
   createProject(input: CreateProjectInput): Promise<Project>;
+  /**
+   * `GET /projects/{projectId}` — the project alone, membership-checked (a
+   * non-member is a 403, a missing project a 404).
+   *
+   * Since TAS-251 the board's frame comes from `getProjectContext`, and this
+   * read is the board's second opinion on that one: when the context answers
+   * 404 or 403 the board asks this once, because the context's member
+   * enrichment can produce the same two statuses for one unreadable avatar
+   * object. Only a refusal here as well sends the reader to §4.18's screen.
+   */
   getProject(projectId: string): Promise<Project>;
   /**
    * `PATCH /api/v1/projects/{projectId}` — name, description and colour, and
@@ -598,6 +645,51 @@ export interface TaskaApi {
    *   `UpdateProjectInput` for why, and for why `description` is not the same.
    */
   updateProject(projectId: string, input: UpdateProjectInput): Promise<Project>;
+  /**
+   * `GET /projects/{projectId}/context` — the project, the reader's role in it,
+   * its members, its labels and the workflow of every issue type it allows, in
+   * one read (backend PR #169, TAS-212, pinned at
+   * `docs/contract/pending/pr-169-TAS-212.yml`). The board's only frame read
+   * since TAS-251; see `ProjectContext` for the shape.
+   *
+   * **Open and undeployed on 2026-10-10.** Until it deploys the gateway answers
+   * the static-resource 404, which `isUndeployedRoute` tells apart from a
+   * missing project. `HybridTaskaApi` delegates straight to the gateway.
+   *
+   * What the Java at the PR head does that the yml does not say, and every
+   * implementation reproduces:
+   *
+   * - **All or nothing.** Any part failing fails the whole response; there is no
+   *   degraded context.
+   * - **A non-member is refused with 403, a `GLOBAL_ADMIN` included; a
+   *   missing project is 404.**
+   *   At head `a1bfe19` the code intends 200 with empty members and labels (its
+   *   TODO says so), but the labels leg's denial arrives from issue-service as
+   *   a gRPC `StatusRuntimeException`, which
+   *   `ProjectServiceImpl.isPermissionDenied` (it matches only
+   *   `DomainException`) does not catch, so the whole context fails
+   *   `PERMISSION_DENIED` and answers 403. Removal: when the labels call
+   *   carries the global role, or `isPermissionDenied` also matches a gRPC
+   *   denial, the context answers 200 with empty parts and the mock must
+   *   follow.
+   * - **A 404 or 403 is not only about the project.** The members are enriched
+   *   exactly as `listMembers` enriches them (`ProjectMemberServiceImpl` at
+   *   #169): every avatar is HEADed and presigned per person with no per-row
+   *   fallback, so one missing avatar object answers 404 and a storage refusal
+   *   403 — the statuses of a missing project and of no access. The board
+   *   therefore confirms a 404/403 with one `getProject` read before it shows
+   *   §4.18's screen, and otherwise stays with a banner about the project's
+   *   details. The backend ask — an unreadable avatar as `avatar: null` rather
+   *   than a failed read — is a comment on TAS-212 (docs/ai/API-DIVERGENCE.md).
+   * - **Only the allowed issue types.** `workflows` may hold fewer than three
+   *   entries, or none, in no fixed order; an entry with an issue type this
+   *   build does not know arrives as `issueType: null` and is dropped.
+   * - Statuses and transitions are ordered by `sortOrder` and carry no
+   *   timestamps; labels carry only `id`, `name` and `color`, unordered;
+   *   members come by `userId`, and a name auth-service could not supply
+   *   arrives as `""`.
+   */
+  getProjectContext(projectId: string): Promise<ProjectContext>;
   /**
    * The reader's own standing in one project: the role they hold, whether they
    * are a member at all, and whether the project exists.
@@ -1232,6 +1324,38 @@ export interface TaskaApi {
    */
   getUserAvatarUrl(userId: string): Promise<string | null>;
 
+  /**
+   * The four worklog routes, `/projects/{projectId}/issues/{issueId}/worklogs`
+   * (backend PR #178, TAS-118 — **pending and undeployed**: until it deploys
+   * every one of them answers the gateway's static-resource 404, which
+   * `isUndeployedRoute` tells apart from a real 404).
+   *
+   * Roles, from issue-service's `issue.allowed-roles` at the PR head: the list
+   * `ADMIN, MEMBER, VIEWER`; an add `ADMIN, MEMBER`; an update or delete of
+   * your own entry `ADMIN, MEMBER`, of somebody else's `ADMIN` only. A worklog
+   * of another issue is `404`, as is a missing issue or worklog.
+   *
+   * **Every successful write moves the issue**: its `version` goes up and its
+   * `remainingEstimateMinutes` moves by the minutes added, changed or removed
+   * (never below 0). A caller holding the issue's version for a later
+   * `If-Match` has to re-read the issue after one of these.
+   *
+   * The list comes ordered by `workDate` descending with no tiebreak, so equal
+   * days come in no stated order (`sortWorklogs` in src/lib/worklog.ts).
+   */
+  listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]>;
+  /** `POST …/worklogs`, answered `201` with the entry. */
+  addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog>;
+  /** `PUT …/worklogs/{worklogId}`, a partial update — see `UpdateIssueWorklogInput`. */
+  updateIssueWorklog(
+    projectId: string,
+    issueId: string,
+    worklogId: string,
+    input: UpdateIssueWorklogInput,
+  ): Promise<IssueWorklog>;
+  /** `DELETE …/worklogs/{worklogId}`, answered `204`. */
+  deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void>;
+
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
   addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;
   updateComment(projectId: string, issueId: string, commentId: string, body: string): Promise<IssueComment>;
@@ -1296,6 +1420,39 @@ export interface TaskaApi {
    * schedules the removal of.
    */
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary>;
+
+  /**
+   * `GET /readonly/audit-entries` — the admin audit log, `GLOBAL_ADMIN` only
+   * (backend PR #172, TAS-160, pinned at `docs/contract/pending/pr-172-TAS-160.yml`).
+   * The Audit section's one read (DESIGN.md §5.8). `page` is 1-based on both
+   * sides of this interface; the rest leg converts it.
+   *
+   * **Open, CHANGES_REQUESTED and not served on 2026-10-10**, in two ways that
+   * read alike: undeployed, the gateway answers the static-resource 404; at the
+   * PR head `907fa1e` the REST route is mapped but the admin-service gRPC
+   * adapter lacks the override, so a deployment of that head answers **501**.
+   * `isRouteNotServed` in src/api/errors.ts reads both, and the section states
+   * them as "not served yet" rather than as a failure. `HybridTaskaApi`
+   * delegates straight to the gateway.
+   *
+   * What the Java at the head does that the yml does not say (read by
+   * `api-contract-guard`; the Java wins), and what each implementation does:
+   *
+   * - **Pagination and sort are ignored**: every matching row comes back,
+   *   whatever `page` and `pageSize` say. Nothing here compensates — the rest
+   *   leg maps what arrives and the section draws it; the mock pages and sorts
+   *   newest first as the server is meant to. A backend bug, commented on
+   *   TAS-160 (docs/ai/API-DIVERGENCE.md).
+   * - **Dates are `yyyy-MM-dd` only**, whole UTC days, both ends inclusive; any
+   *   other spelling, and a `from` after `to`, is a 400.
+   * - **`actorUserId` that is not a UUID is a 500**, not a 400. The section
+   *   validates it before sending; the mock answers 400 `INVALID_ARGUMENT`, the
+   *   answer the server is meant to give.
+   * - Every filter is an exact match; an empty one is not sent.
+   * - The entry has no id, and the DTO declares nothing `required`; see
+   *   `AuditEntry` for the defensive mapping.
+   */
+  listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries>;
 
   /**
    * `POST /admin/outbox/{service}/{eventId}/retry` — `retryOutboxEvent`, the

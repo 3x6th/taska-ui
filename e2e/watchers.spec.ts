@@ -21,10 +21,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // member of the project at all, so the member read cannot name her; since
 // TAS-246 her row is named by the issue's own read instead. Mark is a MEMBER, which is how the toggle — live for an
 // ADMIN or a MEMBER, by issue-service's `watch-issue-roles` — is told apart
-// from the two controls only an ADMIN gets. Anna is not a member of Mobile, so
-// the mock answers VIEWER for it, and that is where the toggle is seen shut;
-// Tom, the seed's one VIEWER member, is watching TAS-110 and sees it shut and
-// pressed.
+// from the two controls only an ADMIN gets. Tom is the seed's VIEWER, of Taska
+// Platform and (since TAS-251) of Mobile: on MOB-5 he sees the toggle shut and
+// unpressed, and on TAS-110, which he is watching, shut and pressed.
 
 const MOB_PROJECT_ID = "f315c5cf-3333-47d1-8d22-79f07c2ec99b";
 
@@ -245,17 +244,17 @@ test("leaves a MEMBER the toggle and neither admin control", async ({ page }) =>
 });
 
 test("shows a VIEWER their subscription and gives them no live control to change it", async ({ page }) => {
-  // Anna is not a member of the Mobile project, so the mock answers VIEWER for
-  // it — the non-member stand-in every VIEWER case in this suite uses. The
-  // board is reachable by URL on purpose: hiding a control is a courtesy, and
-  // the server refuses a VIEWER both halves of the pair (TAS-226).
-  await signIn(page);
+  // Tom is a VIEWER of the Mobile project (TAS-251: the board's context read
+  // refuses a non-member, so the read-only board needs a real VIEWER).
+  // The board is reachable by URL on purpose: hiding a control is a courtesy,
+  // and the server refuses a VIEWER both halves of the pair (TAS-226).
+  await signIn(page, "tom@example.com");
   await page.goto(`/projects/${MOB_PROJECT_ID}/board`);
   await page.locator(".issue-card", { hasText: "MOB-5" }).click();
   await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();
   const watchers = page.locator(".issue-watchers");
 
-  // The state stays legible — Priya is watching, Anna is not — and the control
+  // The state stays legible — Priya is watching, Tom is not — and the control
   // that would change it is a real `disabled`, §4.21's exception for a control
   // that is not coming back.
   await expect(watchers.locator(".watcher-row")).toHaveCount(1);

@@ -1,5 +1,6 @@
 import type {
   AcceptInvitationInput,
+  AddIssueWorklogInput,
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
@@ -19,6 +20,7 @@ import type {
   TaskaApi,
   IssueWriteAnswer,
   UpdateIssueInput,
+  UpdateIssueWorklogInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
 } from "./TaskaApi";
@@ -28,6 +30,8 @@ import type {
   AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
+  AuditEntries,
+  AuditEntriesQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -39,6 +43,7 @@ import type {
   IssueSearchHit,
   IssueType,
   IssueWatchers,
+  IssueWorklog,
   IssueDetailsWithHistory,
   Label,
   Notification,
@@ -47,6 +52,7 @@ import type {
   Page,
   ProblematicOutboxSummary,
   Project,
+  ProjectContext,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -123,6 +129,10 @@ export class HybridTaskaApi implements TaskaApi {
 
   updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
     return this.live.updateProject(projectId, input);
+  }
+
+  getProjectContext(projectId: string): Promise<ProjectContext> {
+    return this.live.getProjectContext(projectId);
   }
 
   getMembership(projectId: string): Promise<ProjectMembership> {
@@ -306,6 +316,27 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.getUserAvatarUrl(userId);
   }
 
+  listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {
+    return this.live.listIssueWorklogs(projectId, issueId);
+  }
+
+  addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog> {
+    return this.live.addIssueWorklog(projectId, issueId, input);
+  }
+
+  updateIssueWorklog(
+    projectId: string,
+    issueId: string,
+    worklogId: string,
+    input: UpdateIssueWorklogInput,
+  ): Promise<IssueWorklog> {
+    return this.live.updateIssueWorklog(projectId, issueId, worklogId, input);
+  }
+
+  deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void> {
+    return this.live.deleteIssueWorklog(projectId, issueId, worklogId);
+  }
+
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {
     return this.live.listComments(projectId, issueId, params);
   }
@@ -348,6 +379,10 @@ export class HybridTaskaApi implements TaskaApi {
 
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
     return this.live.getProblematicOutboxSummary();
+  }
+
+  listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries> {
+    return this.live.listAuditEntries(query);
   }
 
   blockUser(userId: string, reason: string): Promise<UserStatusChange> {

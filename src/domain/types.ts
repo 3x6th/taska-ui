@@ -364,12 +364,12 @@ export interface ProjectMember {
    */
   role: ProjectRole | null;
   /**
-   * Both optional because `ProjectMemberDetailsDto` carries neither: the row is
-   * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else.
-   * Only the mock fills them, as seed data and on the rows its own adds create
-   * — `HybridTaskaApi` also invented them from the project's own
-   * `createdAt`/`createdBy` until TAS-224 — and nothing outside the tests reads
-   * them.
+   * Both optional. `addedAt` joins `ProjectMemberDetailsDto` with backend
+   * PR #169 (TAS-212, open on 2026-10-10), and `rest` reads it where the row
+   * carries it; `addedBy` is on no read. The mock fills both, as seed data and
+   * on the rows its own adds create — `HybridTaskaApi` also invented them from
+   * the project's own `createdAt`/`createdBy` until TAS-224 — and nothing
+   * outside the tests reads them.
    */
   addedAt?: string;
   addedBy?: string;
@@ -437,6 +437,59 @@ export interface Workflow {
   updatedAt: string;
   statuses: WorkflowStatus[];
   transitions: WorkflowTransition[];
+}
+
+/**
+ * A workflow as the project context carries it. The workflow itself does carry
+ * `createdAt` and `updatedAt` on the wire; its statuses and transitions are
+ * built without timestamps (the assembler at backend PR #169's head, `a1bfe19`;
+ * the Java wins over the yml, docs/ai/API-DIVERGENCE.md, TAS-251). Nothing on
+ * the board reads the workflow's own timestamps, so the type leaves them out
+ * and the mapper does not copy them.
+ */
+export type ProjectWorkflow = Omit<Workflow, "createdAt" | "updatedAt">;
+
+/**
+ * `GET /projects/{projectId}/context` — `ProjectContextResponseDto`, backend
+ * PR #169 (TAS-212), pinned at `docs/contract/pending/pr-169-TAS-212.yml`: the
+ * board's whole frame in one read, where it used to take seven (the project,
+ * the project again for the role, the members, a workflow per issue type and
+ * the labels).
+ *
+ * All or nothing: a part that fails on the server fails the whole response, so
+ * there is no partial context. A non-member is refused with 403 — a
+ * `GLOBAL_ADMIN` included — and a missing project is 404.
+ * At head `a1bfe19` the code intends 200 with empty members and labels (its
+ * TODO says so), but the labels leg's denial arrives from issue-service as a
+ * gRPC `StatusRuntimeException`, which `ProjectServiceImpl.isPermissionDenied`
+ * (it matches only `DomainException`) does not catch, so the whole context
+ * fails `PERMISSION_DENIED` and answers 403. Removal: when the labels call
+ * carries the global role, or `isPermissionDenied` also matches a gRPC denial,
+ * the context answers 200 with empty parts and the mock must follow.
+ */
+export interface ProjectContext {
+  project: Project;
+  /**
+   * `project.currentUserRole`, narrowed the way `ProjectMembership.role` is:
+   * one of the three, or `null` for a role this build cannot act on. Never
+   * floored to VIEWER (TAS-226).
+   */
+  role: ProjectRole | null;
+  /** Ordered by `compareMembers` in `rest`; a row nobody could name has no `user`. */
+  members: ProjectMember[];
+  /**
+   * `id`, `name` and `color` and nothing else — the context's labels carry no
+   * `projectId`, `createdBy`, `createdAt` or `deletedAt`, and none is invented
+   * here. Unordered on the wire.
+   */
+  labels: Label[];
+  /**
+   * Keyed by issue type, **and only the types the project allows**: one, two,
+   * all three or none. A type that is not here is not a failure; it is a type
+   * this project does not offer. An entry whose `issueType` this build does not
+   * recognise (the wire's `null`, TAS-173) is dropped by the API layer.
+   */
+  workflows: Partial<Record<IssueType, ProjectWorkflow>>;
 }
 
 /**
@@ -590,25 +643,22 @@ export interface Issue {
  * One result of `GET /issues/search` — the contract's `IssueShortResponseDto`,
  * and **not** an `Issue`.
  *
- * Seven fields is everything the search route is ever told — six until merged
- * PR #148 added `storyPoints` to `IssueShortResponseDto`. There is no `status`,
- * no `projectId`, no `description`, no `labels`, no `updatedAt` and no
- * `version`, which is why this is its own type rather than a `Partial<Issue>`
- * or an `Issue` with holes punched in it: a hit that was typed as an issue
- * would let a column, a card or a drop target read a status the server never
- * sent.
+ * Ten fields is everything the search route is told: the seven it always had
+ * (`storyPoints` from merged PR #148) and, since backend TAS-218 (in
+ * docs/contract/openapi.yml at develop `485fea5`, deployed 2026-10-09), the
+ * issue's `projectId`, `projectKey` and `statusKey`. There is still no
+ * `description`, no `labels`, no `updatedAt` and no `version`, which is why
+ * this is its own type rather than a `Partial<Issue>`: a hit typed as an issue
+ * would let a card or an edit read fields the server never sent.
  *
- * Two consequences shape the feature rather than decorate it. A hit cannot be
- * placed in a board column, so the board renders server hits as their own group
- * (DESIGN.md §5.4 counts them, §5.2 does not hold them). And a hit outside
- * the board carries no `projectId` to be opened by, so it opens through its
- * key — `/browse/{issueKey}`, resolved by the server with `getIssueByKey` when
- * it is chosen (TAS-246), never guessed from the key's prefix. Deliberately not
- * hydrated through `getIssue` — the owner settled the general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md,
- * TAS-178): fix the backend, do not hydrate on the frontend. `listIssues` used
- * to pay exactly that N+1 and stopped in TAS-195, when its DTO grew into a
- * whole issue; this one did not, so hydrating here would be a `getIssue` per
- * hit on every keystroke.
+ * A hit carrying `projectId` opens straight to its project's board and panel
+ * (`/projects/{projectId}/issues/{id}`), with no lookup. One without — a
+ * gateway that predates TAS-218 — still opens through its key,
+ * `/browse/{issueKey}`, resolved by `getIssueByKey` when it is chosen (TAS-246),
+ * never guessed from the key's prefix. Deliberately not hydrated through
+ * `getIssue` — the owner settled the general question on 2026-08-23
+ * (docs/ai/API-DIVERGENCE.md, TAS-178): fix the backend, do not hydrate on the
+ * frontend.
  */
 export interface IssueSearchHit {
   id: string;
@@ -618,6 +668,17 @@ export interface IssueSearchHit {
   priority: IssuePriority;
   /** `""` on the wire for an unassigned issue; normalised to `null` like `Issue.assigneeId`. */
   assigneeId: string | null;
+  /** The issue's project (TAS-218). Optional in the contract, so `null` when absent or blank. */
+  projectId: string | null;
+  /** The project's key (TAS-218), optional in the contract; `null` when absent or blank. */
+  projectKey: string | null;
+  /**
+   * The issue's status key (TAS-218) — `required` in the contract, and typed as
+   * a bare string there, so a key this build has no name for is printed
+   * verbatim rather than trusted to be an `IssueStatus` (TAS-173). `null` only
+   * for a gateway that predates TAS-218 and sends none.
+   */
+  statusKey: string | null;
   /**
    * The **one** planning field the search DTO carries: `IssueShortResponseDto`
    * in docs/contract/openapi.yml states `storyPoints` and nothing else of the
@@ -752,7 +813,15 @@ export type IssueEventType =
    * recorded rather than quietly added here.
    */
   | "ATTACHMENT_UPLOADED"
-  | "ATTACHMENT_DELETED";
+  | "ATTACHMENT_DELETED"
+  /**
+   * The three the worklog routes write (backend PR #178, `WorklogExecutor`,
+   * head `f57e7ec`), each inside the same transaction as the write. The added
+   * and updated payloads carry `worklogSpentMinutes`; the deleted one does not.
+   */
+  | "WORKLOG_ADDED"
+  | "WORKLOG_UPDATED"
+  | "WORKLOG_DELETED";
 
 export interface IssueHistoryEvent {
   id: string;
@@ -1087,6 +1156,29 @@ export interface UnwatchIssueResult {
   watchersCount: number | null;
 }
 
+/**
+ * `IssueWorklogResponseDto` (backend PR #178, TAS-118 — pending, see
+ * docs/contract/pending/pr-178-TAS-118.yml). Time somebody spent on an issue.
+ *
+ * It names its author by id only: no route carries the author's name, so the
+ * panel joins it with the project context's members (`personFor`), and an id
+ * the members cannot name is drawn as the panel's unknown person.
+ */
+export interface IssueWorklog {
+  id: string;
+  issueId: string;
+  projectId: string;
+  authorUserId: string;
+  /** Whole minutes, at least 1. The server sets no upper bound. */
+  spentMinutes: number;
+  /** The day the time is booked against, `yyyy-MM-dd` — a calendar day, not an instant. */
+  workDate: DateOnly;
+  /** `null` when there is none; the server stores a blank comment as `null`. */
+  comment: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
 export interface IssueComment {
   id: string;
   issueId: string;
@@ -1248,6 +1340,64 @@ export interface AdminRows {
   rows: AdminRow[];
   pagination: AdminPagination;
   meta: AdminRowsMeta;
+}
+
+/**
+ * `GET /readonly/audit-entries` (backend PR #172, TAS-160) — what the Audit
+ * section asks. `page` is **1-based** here, like every other admin page in the
+ * domain; the rest leg converts it to the wire's 0-based one.
+ *
+ * Every filter is an exact match and an absent one is no filter. The two dates
+ * are `yyyy-MM-dd`, read by the server as whole UTC days with both ends
+ * inclusive; nothing else is accepted for them, and a `from` after `to` is a
+ * 400. `actorUserId` must be a UUID — the server at the PR head answers 500 for
+ * anything else rather than 400, so the section checks it before asking.
+ */
+export interface AuditEntriesQuery {
+  page?: number;
+  pageSize?: number;
+  actorUserId?: string;
+  action?: string;
+  targetService?: string;
+  targetTable?: string;
+  targetId?: string;
+  requestId?: string;
+  createdAtFrom?: string;
+  createdAtTo?: string;
+}
+
+/**
+ * One row of the admin audit log (`AuditEntryDto`). **There is no id**: the
+ * DTO carries none, so a row is identified only by what it says.
+ *
+ * Every field is nullable here although the table behind it declares eight of
+ * them `NOT NULL` (actor id and login, action, the three target fields, reason
+ * and the time): the schema has no `required` block, so the wire promises
+ * nothing and the mapping takes nothing on trust. `requestId`, `oldValue` and
+ * `newValue` are nullable in the database as well.
+ *
+ * `oldValue` and `newValue` are JSON documents **as text**, with sensitive
+ * values already masked by the server (`"***"`). They are carried exactly as
+ * they arrived; parsing them is the screen's job, and it falls back to the raw
+ * text when they do not parse.
+ */
+export interface AuditEntry {
+  actorUserId: string | null;
+  actorLogin: string | null;
+  action: string | null;
+  targetService: string | null;
+  targetTable: string | null;
+  targetId: string | null;
+  reason: string | null;
+  requestId: string | null;
+  createdAt: string | null;
+  oldValue: string | null;
+  newValue: string | null;
+}
+
+export interface AuditEntries {
+  entries: AuditEntry[];
+  pagination: AdminPagination;
 }
 
 /**

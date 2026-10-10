@@ -149,6 +149,11 @@ is cheaper than splitting an entry and the reader has to be told which.
   from the fallback rather than posting an id the server cannot know.
 - **Removal:** the fix above; there is no backend ask here. The endpoint answers
   `200` on the stand today.
+- **Since TAS-251 the board no longer calls this route.** Its workflows come
+  from `GET /projects/{projectId}/context` (see "Pending backend PR #169" below),
+  so a failed workflow is a failed context — said in the board's one banner — and
+  the fallback columns are also what a project that allows no issue type gets.
+  Neither case offers a move.
 
 ### The contract's status keys are open, and the UI's are closed
 
@@ -538,6 +543,180 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `hybrid`, which is the deployed mode, so TAS-219 changes nothing a person can
   see there. The compensation and the flag come out under TAS-137 when the route
   answers on the stand, in the five places listed above.
+
+### Pending backend PR #169 (TAS-212): the board's frame in one read, and where the Java says more than the yml
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/context` →
+  `ProjectContextResponseDto` `{ project, members, labels, workflows }`, pinned
+  at `docs/contract/pending/pr-169-TAS-212.yml` (head `a1bfe19`). **Open and
+  undeployed on 2026-10-10**: the route answers the gateway's static-resource
+  404 until it deploys.
+- **What the board does with it (TAS-251):** one `getProjectContext` replaces
+  seven reads — `GET /projects/{id}`, the same again for the role
+  (`getMembership`), `…/members`, `…/workflow` × 3 and `…/labels`. Measured
+  against `RestTaskaApi` over a stubbed `fetch`
+  (src/screens/IssuePanelRequests.test.tsx): a settled board went from eleven
+  requests to five — the context, the issue page, `GET /users/me`, and the top
+  bar's notifications and avatar. `HybridTaskaApi` passes it through; the
+  members dialog and the projects screen still read `…/members`.
+- **What the Java at the PR head does that the yml does not say** (read by
+  `api-contract-guard`; the Java wins), and what each implementation does:
+  - All or nothing: any part failing fails the response. The board therefore
+    has one banner for it, where it had three (project, role, workflow).
+  - A non-member is `403` — a `GLOBAL_ADMIN` included — and a missing project
+    is `404`. At head `a1bfe19` the code intends 200 with empty members and labels (its
+    TODO says so), but the labels leg's denial arrives from issue-service as a
+    gRPC `StatusRuntimeException`, which `ProjectServiceImpl.isPermissionDenied`
+    (it matches only `DomainException`) does not catch, so the whole context
+    fails `PERMISSION_DENIED` and answers 403. Removal: when the labels call
+    carries the global role, or `isPermissionDenied` also matches a gRPC denial,
+    the context answers 200 with empty parts and the mock must follow.
+    The static-resource 404 is told apart by `isUndeployedRoute` and
+    keeps the board with a "not served yet" banner.
+  - **A 404 or 403 can also be one avatar.** The members are enriched exactly
+    as `…/members` enriches them (`ProjectMemberServiceImpl` at #169): each
+    avatar HEADed and presigned per person, no per-row fallback. One missing
+    avatar object fails the whole context with 404 and a storage refusal with
+    403 — the statuses of a missing project and of no access. **Compensation:**
+    on a 404/403 the board makes one `getProject` read (no retry); only if that
+    refuses too does §4.18's screen show. If the project reads, the board stays,
+    named from that read, with a banner saying the project's details (people,
+    labels, workflows) could not be read and the request id, editing off.
+    **Backend ask** (comment on TAS-212): an unreadable avatar should come as
+    `avatar: null` on its row, not fail the read. Removal: when that ships,
+    delete the confirming read (`projectCheckQuery` in BoardScreen) and send a
+    404/403 straight to §4.18 again.
+  - `workflows` covers only the project's allowed issue types — fewer than
+    three, or `[]` — in no fixed order, and an unknown type arrives as
+    `issueType: null`. `rest` keys the entries by type and drops a `null`; the
+    type filter, the "New" and column "+" buttons and the create form offer
+    only the listed types; an issue of an unlisted type is refused a move with
+    its own sentence; a project with no types keeps the contract's three
+    columns and cannot create.
+  - Statuses and transitions carry no `createdAt`/`updatedAt` in the context,
+    though `WorkflowStatusDto` in the extract still declares them;
+    The workflow itself does carry them; `ProjectWorkflow`
+    (src/domain/types.ts) leaves them out because nothing reads them.
+  - Labels carry `id`, `name` and `color` only — not `ProjectLabelResponseDto`
+    — and are typed `Label`; the board's optimistic label rows invent no
+    `createdAt` either.
+  - Members come ordered by `userId`, with `""` names when auth-service lacks
+    the user and an optional avatar; `rest` maps them exactly as `…/members`
+    (blank name → unnamed row, `compareMembers`), and keeps `addedAt` when it
+    is there.
+- **Mock parity:** `MockTaskaApi.getProjectContext` applies the same rules:
+  403 for a non-member (Mark, the seed's `GLOBAL_ADMIN`, on WEB; removal
+  trigger above), 404 for a
+  missing project, and **Infra and Ops allows only TASK and BUG**. `createIssue`
+  refuses a type the project does not allow with `400 INVALID_ARGUMENT` ("Issue
+  type STORY is not allowed in project OPS"). **The server does not**: at
+  develop and #169, issue-service `IssueServiceImpl.createIssue` checks only the
+  role and saves any issueType (201, an issue with no workflow); nothing in
+  issue-service reads `allowedIssueTypes`. The mock models the intended rule,
+  the UI never offers such a type, and the backend ask is recorded in
+  docs/ai/BACKLOG.md (not filed yet). Its other
+  project reads stay looser than the gateway — `getMembership` still answers
+  VIEWER for a non-member — so the read-only e2e cases now sign in as Tom, a
+  real VIEWER of Taska Platform and, since TAS-251, of Mobile.
+- **Removal:** when #169 merges, delete the pending extract, refresh the
+  snapshot and probe the route. `getProject` stays on `TaskaApi` for the
+  confirming read above; `getMembership`, `getWorkflow` and `listProjectLabels`
+  stay with no screen calling them, and whether they go is a separate decision.
+
+### Pending backend PR #172 (TAS-160): the audit log, not served, and three things the Java does that the yml does not say
+
+- **Endpoint:** `GET /api/v1/readonly/audit-entries?page&pageSize&actorUserId&action&targetService&targetTable&targetId&requestId&createdAtFrom&createdAtTo`
+  → `{ entries: AuditEntryDto[], pagination }`, `GLOBAL_ADMIN` only, pinned at
+  `docs/contract/pending/pr-172-TAS-160.yml` (head `907fa1e`). **Open,
+  CHANGES_REQUESTED, not merged on 2026-10-10.** TAS-251 built the Audit
+  section (`src/screens/admin/AdminAuditSection.tsx`) on `listAuditEntries`
+  in all three implementations; `hybrid` delegates.
+- **Not served, two ways.** Undeployed, the gateway answers the static-resource
+  404. At the head the REST route is mapped but the admin-service gRPC adapter
+  lacks the override, so a deployment of that head answers **501**
+  (`UNIMPLEMENTED`). `isRouteNotServed` (src/api/errors.ts) reads both, and the
+  section shows a notice naming TAS-160 — not an error, not an empty table.
+  Mock mode cannot reproduce either (no HTTP status).
+- **Backend bug — pagination and sort ignored** (comment on TAS-160): the head
+  answers every matching row whatever `page`/`pageSize` say. **Not
+  compensated**: `rest` maps what arrives and the section draws every row;
+  `pagination` is taken from the wire, so the pager says whatever the server
+  says. The mock pages newest first and pages as the server's `normalizePageSize`
+  does: `pageSize` below 1 falls back to the default 20, a negative `page` to
+  the default first page, and only a value above 100 is clamped to 100. Removal: nothing to remove client-side once fixed.
+- **Dates `yyyy-MM-dd` only**, whole UTC days, both ends inclusive; anything
+  else, and `from` after `to`, is 400. The filter popover takes a date field,
+  sends the value as typed, and refuses `from > to` before sending; a URL with
+  `from > to` drops both bounds. The mock refuses both with
+  `INVALID_ARGUMENT`.
+- **`actorUserId` that is not a UUID answers 500**, not 400. The section
+  validates it as a UUID and never sends anything else. The mock answers
+  `400 INVALID_ARGUMENT` — the answer the server is meant to give, and a
+  documented difference from the head, not a claim that the head does it.
+- **The entry has no id**, and the schema declares nothing `required` (eight
+  fields are `NOT NULL` in the table; `requestId`, `oldValue`, `newValue` are
+  nullable). `rest` maps every field defensively to `string | null`; the
+  section keys rows by their content plus an occurrence count, and opens an
+  entry in place rather than at an address.
+- **`oldValue`/`newValue` are JSON text in a string**, sensitive values already
+  `"***"`. Pretty-printed when they parse, shown as sent when they do not; a
+  document that arrives as an object is stringified back rather than dropped.
+- **Removal:** when #172 merges, delete the pending extract, refresh the
+  snapshot and probe the route (501 vs 401 without a token).
+
+### Pending backend PR #178 (TAS-118): the work log, and what the panel makes up for
+
+- **Endpoint:** `GET|POST /api/v1/projects/{projectId}/issues/{issueId}/worklogs`,
+  `PUT|DELETE …/worklogs/{worklogId}`, pinned at
+  `docs/contract/pending/pr-178-TAS-118.yml` (head `f57e7ec`). **Open and
+  undeployed on 2026-10-10.**
+- **What the Java at the PR head does that the yml does not say** (read by
+  `api-contract-guard` and again for TAS-251; the Java wins), and what each
+  implementation does:
+  - Roles (`issue.allowed-roles`): list `ADMIN, MEMBER, VIEWER`; add `ADMIN,
+    MEMBER`; update or delete your own `ADMIN, MEMBER`, somebody else's
+    `ADMIN`. The section hides the form and the row actions on the same rules;
+    the mock refuses on them, a non-member with `"Access denied"` and a wrong
+    role with `"Not allowed role"`.
+  - A worklog of another issue is `404`, as is a missing one.
+  - The list is `ORDER BY work_date DESC` with no tiebreak. The section sorts
+    by `workDate`, then `createdAt`, then `id`, all descending
+    (`sortWorklogs`, src/lib/worklog.ts).
+  - `workDate` may be up to the server's today + 1 (`issue.max-future-days`),
+    with no lower bound. The picker and the draft check stop at the reader's
+    today.
+  - `PUT` is partial: absent = unchanged, `comment: ""` clears to `null`, an
+    empty body is `400`. No `If-Match`, so the last write wins. The panel sends
+    only changed fields and never sends an empty body. `PUT` declares no
+    `maxLength` and the column is `text`; the panel caps both add and edit at
+    2000 (`WORKLOG_COMMENT_MAX_LENGTH`), and the mock refuses past 2000 on add
+    only, as the gateway does.
+  - **Every write moves the issue:** `version + 1`, and the remaining estimate
+    moves by the minutes added, changed or removed (never below 0, only when
+    set). Nothing in the write's answer says so. The section re-reads the issue
+    and the board page after every successful write, inside the panel's
+    issue-write queue, so the next `PATCH` carries the new version
+    (src/screens/IssuePanelRequests.test.tsx pins it). The mock moves both
+    fields the same way.
+- **Compensations, each removable on its own:**
+  - *Author join.* `IssueWorklogResponseDto` carries `authorUserId` only. The
+    section names authors from the project context's members (`personFor`);
+    an id the members cannot name is drawn as "Unknown", as comments and
+    watchers draw it. Removed by a server-named `author` on the DTO (the shape
+    comments got in backend TAS-214).
+  - *Client total.* "Xh Ym logged" is the sum of the listed entries.
+    issue-service keeps `time_spent_minutes` on the issue and the gateway does
+    not send it. Removed by `timeSpentMinutes` on the issue read.
+  - *Undeployed route.* Until #178 deploys, the list answers the
+    static-resource 404. `isUndeployedRoute` turns that into "This gateway does
+    not serve work logs yet." with no form, rather than an error or an empty
+    list. Removed in the story that probes the route as deployed.
+- **The panel's request budget** grows from two reads to three, all started
+  together beside the issue read (`usePrefetchQuery`), so it is still one
+  round.
+- **Removal:** when #178 merges, delete the pending extract, refresh the
+  snapshot, probe the routes and drop the undeployed branch. The author join
+  and the client total stay until the backend sends what they stand in for.
 
 ### Accepting an invitation does not produce a session
 
@@ -2824,8 +3003,30 @@ found"`.
   `/readonly/auth/users?order=bogus` answers `400` pre-auth, `order=DESC`
   reaches `401`. The client sends only values the contract names on all three,
   so nothing here changed on the wire.
+- **TAS-218 deployed (develop `485fea5`, 2026-10-09), and the enum half is
+  closed.** An unknown `priority` or `issueType` passes the edge again —
+  measured without a token, it answers `401` where it answered `400` — and the
+  search answers an empty list, which is what TAS-218 asked for. Read again for
+  TAS-251, the "enum guard" this entry names was never a runtime check: it is
+  `SearchIssuesParams` typing `priority` and `issueType` as the domain's unions,
+  which is ordinary typing and stays as that, with its doc comment rewritten
+  to say so. The mock already answered an unknown value with an empty page —
+  its filters are equality, and nothing holds the value — and a test now pins
+  it. **The length constant stays for good**, as decided on 2026-09-11: the
+  minimum is three by configuration, and only the contract's `minLength` still
+  has to catch up (TAS-206).
 
-### The search DTO carries no `status` and no `projectId`
+### Closed by TAS-251: the search DTO carried no `status` and no `projectId`
+
+**TAS-218 put them on the hit** (develop `485fea5`, deployed 2026-10-09):
+`IssueShortResponseDto` now has a required `statusKey` and optional
+`projectId` and `projectKey`. The top bar's search opens a hit that names its
+project straight to `/projects/{projectId}/issues/{id}` — no by-key request —
+and keeps `/browse/{issueKey}` only for a hit without one; it prints the status
+by name where this build knows the key and verbatim where it does not
+(TAS-173). The board still draws server hits as their own group rather than in
+a column: that is DESIGN.md §5.2's rule, not the DTO's any more. What follows is
+the entry as it stood before.
 
 **Measured 2026-10-07 20:03 UTC (by-key):** `GET /issues/by-key/API-2` answered 200 with the issue's id and `labels: []`; `api-2` answered the same issue; `API-999999`, `ZZQ-999999` and `not-a-key` each answered 404 NOT_FOUND "Issue not found: {key}". The 403 path was not measured (the probe ran as a GLOBAL_ADMIN).
 

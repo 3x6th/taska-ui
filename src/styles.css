@@ -2899,7 +2899,7 @@ h1 {
 
 /* Several chips plus the add button, on a head that also carries the service
    selector: they wrap rather than push the selector off the edge. */
-.admin-outbox-filter {
+.admin-named-filter {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 4px;
@@ -2920,6 +2920,147 @@ h1 {
   line-height: 1.5;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* Why Apply did not close the popover — a value the server would refuse, or
+   two bounds that cannot both hold. The box goes --danger, as the work log's
+   fields do; the sentence stays --fg, because it is the thing to read and
+   --danger text on --surface is the weaker of the two. */
+.admin-filter-popover input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.admin-filter-problem {
+  margin: 0 0 4px;
+  color: var(--fg);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+/* ---------- Audit section (§5.8, TAS-251) ---------- */
+
+/* The container the opened detail measures itself against: the detail spans
+   every column, so on a table wider than its box it would otherwise be as wide
+   as the table and put half of the old/new comparison off screen. */
+.admin-audit-plane .admin-table-scroll {
+  container-type: inline-size;
+}
+
+/* Prose, and the one column whose length is up to whoever wrote it: cut by
+   width, and whole in `title` and in the opened detail. */
+.admin-audit-table .admin-audit-reason {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-audit-sep {
+  color: var(--fg-3);
+}
+
+/* The count, the chips and "+ Filter" share one head; on a phone they wrap
+   rather than squeeze the count into two lines. */
+.admin-audit-plane .admin-plane-head {
+  flex-wrap: wrap;
+}
+
+.admin-audit-plane .admin-count {
+  white-space: nowrap;
+}
+
+.admin-audit-request {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+}
+
+/* The row whose detail is open stays marked, in the hover's own colour: the
+   detail below it is about this row and nothing else says so. */
+.admin-table tbody tr.is-open td {
+  background: var(--surface-3);
+}
+
+.admin-table td.admin-audit-detail-cell {
+  height: auto;
+  padding: 0;
+  background: var(--bg);
+  white-space: normal;
+}
+
+/* Pinned to the left edge of the scroll box and exactly its width, so the
+   comparison is read in the box, not across the table. */
+.admin-audit-detail {
+  position: sticky;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100cqw;
+  padding: 10px 12px 12px;
+}
+
+.admin-audit-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.admin-audit-facts div {
+  min-width: 0;
+}
+
+.admin-audit-facts dt,
+.admin-audit-value-head {
+  color: var(--fg-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.admin-audit-facts dd {
+  margin: 2px 0 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+/* Old and new side by side: the comparison is the point of opening an entry.
+   One above the other once the box is too narrow for two documents. */
+.admin-audit-values {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@container (max-width: 560px) {
+  .admin-audit-values {
+    grid-template-columns: 1fr;
+  }
+}
+
+.admin-audit-value {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  padding: 8px 10px;
+}
+
+.admin-audit-value-head {
+  margin-bottom: 4px;
+}
+
+.admin-audit-raw {
+  font-weight: 400;
+}
+
+.admin-audit-none {
+  margin: 0;
+}
+
+.admin-audit-value .admin-card-json {
+  max-height: 320px;
+  overflow: auto;
 }
 
 /* ---------- Users section (§5.8, TAS-186) ---------- */
@@ -3728,7 +3869,7 @@ h1 {
 .global-search-note {
   flex: none;
   color: var(--fg-3);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 .global-search-option .priority-bars {
@@ -5139,7 +5280,8 @@ h1 {
 .issue-labels,
 .issue-links,
 .issue-attachments,
-.issue-watchers {
+.issue-watchers,
+.issue-worklogs {
   margin-top: 24px;
 }
 
@@ -5380,7 +5522,8 @@ button.issue-link-open:hover {
    (7 / 11); the 10 this rule used to carry is not on it. */
 .attachment-note,
 .watcher-note,
-.member-note {
+.member-note,
+.worklog-note {
   margin: 0 0 12px;
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
@@ -5402,7 +5545,8 @@ button.issue-link-open:hover {
    markup has to change to say what it already says. */
 .attachment-note.is-error,
 .watcher-note.is-error,
-.member-note.is-error {
+.member-note.is-error,
+.worklog-note.is-error {
   border-left-color: var(--danger);
 }
 
@@ -5701,11 +5845,249 @@ button.attachment-open:hover:not(:disabled) {
   margin-top: 24px;
 }
 
+/* ---- Work log (TAS-251) -------------------------------------------------
+   The panel's other sections' recipes, reused rather than restated: the
+   heading is the shared section heading, the empty and unavailable lines are
+   `.issue-links-empty`, the failure box is `.attachment-note`'s, a row reads
+   like a comment (§4.15: avatar 24, name 12.5/650, meta 11 `--fg-3`), and the
+   delete confirmation is §4.22's strip. What is new is only the layout of an
+   entry's three boxes. */
+
+/* The heading and the total share a row, so the total reads as a fact about
+   the section rather than as one more entry. The heading's own bottom margin
+   moves to the row. */
+.worklog-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.issue-worklogs .worklog-heading h3 {
+  margin: 0;
+  width: fit-content;
+  border-radius: 6px;
+}
+
+/* Meta about the list, so `--fg-2` 12px rather than a figure in `--fg`: the
+   section is quiet until somebody reads it (§1). Tabular so a total that grows
+   does not shuffle its own digits. */
+.worklog-total {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+
+.worklog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+/* In a row the editor sits under the name, on the comment's column. */
+.worklog-form.is-editing {
+  margin: 6px 0 4px;
+}
+
+.worklog-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+}
+
+.worklog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Duration takes the slack, the date keeps its own width; on a phone the two
+   wrap onto lines of their own rather than squeezing the date's picker. */
+.worklog-field-duration {
+  flex: 1 1 160px;
+}
+
+.worklog-field-date {
+  flex: 0 1 170px;
+}
+
+.worklog-field label {
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.worklog-optional {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+
+/* §4.3's input on a `--surface` plane: recessed `--surface-2` at rest, the
+   surface and the accent frame on focus — the link picker's values, at the
+   compact control height the buttons beside them use. */
+.worklog-field input,
+.worklog-field textarea {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.worklog-field input {
+  height: 32px;
+  padding: 0 10px;
+}
+
+.worklog-field textarea {
+  min-height: 48px;
+  padding: 7px 10px;
+  resize: vertical;
+}
+
+.worklog-field input:focus,
+.worklog-field textarea:focus {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+/* A box that refused the entry keeps its frame in `--danger`, so the eye finds
+   it before it finds the sentence under it. */
+.worklog-field input[aria-invalid="true"],
+.worklog-field textarea[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+/* Under the box, in place of its hint. `--fg` rather than `--danger` text for
+   the reason `.member-confirm-accept` gives — red text measures under §7's
+   4.5:1 on these surfaces — so the box's frame carries "wrong" and the words
+   carry what to do. */
+.worklog-field-error {
+  margin: 0;
+  color: var(--fg);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.worklog-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.worklog-note-sentence {
+  margin: 0;
+}
+
+.worklog-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.worklog-row {
+  display: flex;
+  gap: 11px;
+  padding-bottom: 13px;
+}
+
+.worklog-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.worklog-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 2px 0 3px;
+  font-size: 12.5px;
+}
+
+.worklog-head strong {
+  color: var(--fg);
+  font-weight: 650;
+}
+
+/* The figure the row exists for: `--fg` at the name's size, tabular. */
+.worklog-duration {
+  color: var(--fg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.worklog-head time {
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+.worklog-comment {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The optimistic row: on screen at once (§1), with its name and figure in
+   `--fg-2` until the server has it, and no actions. Never transparent. */
+.worklog-row.is-pending .worklog-head strong,
+.worklog-row.is-pending .worklog-duration {
+  color: var(--fg-2);
+}
+
+/* §4.22's strip without the member row's avatar indent: here it sits in the
+   row's text column already. Two classes, because `.member-confirm` is later
+   in this file and its `flex: 0 0 calc(100% - 32px)` — a width in the member
+   row — is a *height* in this column, and drew the strip over the next row. */
+.member-confirm.worklog-confirm {
+  flex: none;
+  margin: 8px 0 2px;
+}
+
+/* §4.1's ring on everything focusable in the section. Without these Chrome
+   draws `outline: auto` in the reader's system accent — §7's TAS-185 entry. */
+/* §1: a clickable target is at least 28x28; the Comments copy is backlogged. */
+.issue-worklogs .comment-actions {
+  gap: 2px;
+  margin: 0 0 0 -4px;
+}
+
+.issue-worklogs .comment-actions .link-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 4px;
+}
+
+.issue-worklogs h3:focus-visible,
+.worklog-field input:focus-visible,
+.worklog-field textarea:focus-visible,
+.issue-worklogs .primary-button:focus-visible,
+.issue-worklogs .secondary-button:focus-visible,
+.issue-worklogs .link-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .issue-planning h3,
 .issue-labels h3,
 .issue-links h3,
 .issue-attachments h3,
 .issue-watchers h3,
+.issue-worklogs h3,
 .comments h3,
 .activity h3 {
   display: flex;

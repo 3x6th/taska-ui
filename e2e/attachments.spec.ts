@@ -258,10 +258,11 @@ test("a member is offered a delete on their own file and on nobody else's", asyn
 });
 
 test("a viewer reads the files and is offered neither upload nor delete", async ({ page }) => {
-  // Anna is not a member of the Mobile project, so the mock answers VIEWER.
+  // Tom is a VIEWER of the Mobile project (TAS-251: the board's context read
+  // refuses a non-member, so the read-only board needs a real VIEWER).
   // The board is reachable by URL on purpose: hiding a control is a courtesy
   // and the server stays the authority.
-  await signIn(page);
+  await signIn(page, "tom@example.com");
   await page.goto(`/projects/${MOB_PROJECT_ID}/board`);
   await page.locator(".issue-card", { hasText: "MOB-5" }).click();
   await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();

@@ -9,7 +9,7 @@ import type { IssueSearchHit } from "../domain/types";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { useUnanswered } from "../hooks/useUnanswered";
-import { typeMeta } from "../lib/format";
+import { statusLabels, typeMeta } from "../lib/format";
 import { ApiNotice } from "./ApiNotice";
 import { PriorityBars, TypeChip } from "./IssueBits";
 
@@ -32,8 +32,10 @@ const GLOBAL_SEARCH_PAGE_SIZE = 8;
  * this one asks `GET /issues/search` with no `projectId` and therefore answers
  * about projects the board has never read.
  *
- * A result is an `IssueSearchHit` and carries no `projectId`, so a hit opens
- * through the issue's short address, `/browse/{issueKey}`, which asks the
+ * A result is an `IssueSearchHit`, which since backend TAS-218 names its
+ * project, so a hit opens straight to `/projects/{projectId}/issues/{id}` with
+ * no further request. A hit without one — a gateway that predates TAS-218 —
+ * opens through the issue's short address, `/browse/{issueKey}`, which asks the
  * server which issue and which project the key names (`IssueKeyScreen`,
  * backend TAS-214). Until TAS-246 the project was guessed here from the key's
  * prefix against the projects list, which left every hit in a project the list
@@ -77,10 +79,19 @@ export function GlobalSearch() {
   /** The panel is showing rows, as opposed to showing one of the other three answers. */
   const listboxOpen = showPopup && hits.length > 0;
 
-  // Every hit with a key opens; the server resolves it when it is chosen. A
-  // hit without one has nothing to resolve, so it is drawn and not offered.
+  // A hit that names its project opens straight to it (TAS-218). One that does
+  // not, but has a key, opens through the key, which the server resolves when
+  // it is chosen. A hit with neither has nothing to open by, so it is drawn and
+  // not offered.
   const routes = useMemo(
-    () => hits.map((hit) => (hit.issueKey ? `/browse/${encodeURIComponent(hit.issueKey)}` : null)),
+    () =>
+      hits.map((hit) =>
+        hit.projectId && hit.id
+          ? `/projects/${encodeURIComponent(hit.projectId)}/issues/${encodeURIComponent(hit.id)}`
+          : hit.issueKey
+            ? `/browse/${encodeURIComponent(hit.issueKey)}`
+            : null,
+      ),
     [hits],
   );
 
@@ -313,10 +324,11 @@ export function GlobalSearch() {
  * the pointer path is this click. `onMouseDown` is prevented so that clicking a
  * row does not blur the input and close the panel out from under the click.
  *
- * Everything drawn here is a field the hit actually carries. There is no status
- * and no project, so nothing pretends to either — and the assignee is a bare id
- * with no member list to resolve it against outside a project, so it is left
- * out rather than printed as a UUID.
+ * Everything drawn here is a field the hit actually carries — the status
+ * among them since TAS-218, printed by its name where this build knows the key
+ * and verbatim where it does not (TAS-173). The assignee is a bare id with no
+ * member list to resolve it against outside a project, so it is left out
+ * rather than printed as a UUID.
  */
 function GlobalSearchOption({
   active,
@@ -334,6 +346,11 @@ function GlobalSearchOption({
   onChoose: () => void;
   onHover: () => void;
 }) {
+  const status = hit.statusKey
+    ? Object.hasOwn(statusLabels, hit.statusKey)
+      ? statusLabels[hit.statusKey as keyof typeof statusLabels]
+      : hit.statusKey
+    : null;
   return (
     <li
       aria-disabled={unlinkableNote ? true : undefined}
@@ -351,6 +368,7 @@ function GlobalSearchOption({
       <span className="visually-hidden">
         {typeMeta[hit.issueType].label}, {hit.priority.toLowerCase()} priority
       </span>
+      {status ? <span className="global-search-note">{status}</span> : null}
       {unlinkableNote ? <span className="global-search-note">{unlinkableNote}</span> : null}
       <PriorityBars priority={hit.priority} />
     </li>

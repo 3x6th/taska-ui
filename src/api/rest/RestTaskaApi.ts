@@ -1,5 +1,6 @@
 import type {
   AcceptInvitationInput,
+  AddIssueWorklogInput,
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
@@ -18,6 +19,7 @@ import type {
   SearchIssuesParams,
   IssueWriteAnswer,
   TaskaApi,
+  UpdateIssueWorklogInput,
   UpdateIssueInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
@@ -60,6 +62,9 @@ import type {
   AdminRowsQuery,
   AdminService,
   AdminTable,
+  AuditEntries,
+  AuditEntriesQuery,
+  AuditEntry,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -75,6 +80,7 @@ import type {
   IssueType,
   IssueWatcher,
   IssueWatchers,
+  IssueWorklog,
   IssueDetails,
   IssueDetailsWithHistory,
   LinkedIssue,
@@ -88,6 +94,7 @@ import type {
   ProblematicOutboxEvent,
   ProblematicOutboxSummary,
   Project,
+  ProjectContext,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -100,6 +107,8 @@ import type {
   UserStatusChange,
   WatchIssueResult,
   Workflow,
+  WorkflowStatus,
+  WorkflowTransition,
   IssueHistoryEvent,
 } from "../../domain/types";
 
@@ -162,6 +171,32 @@ interface RestProjectMember {
   displayName?: string;
   email?: string;
   avatar?: { downloadUrl?: string } | null;
+  addedAt?: string | null;
+}
+
+/**
+ * `ProjectContextResponseDto` (backend PR #169, TAS-212). The four parts are
+ * `required` there; they are read with `?? []` all the same, for the reason
+ * `RestProjectMembers` is — an unguarded `.map` turns a malformed 200 into a
+ * `TypeError` nothing can name.
+ */
+interface RestProjectContext {
+  project: Project;
+  members?: RestProjectMember[];
+  labels?: RestLabel[];
+  workflows?: RestProjectWorkflowEntry[];
+}
+
+/** `ProjectWorkflowEntryDto`. `issueType` is `null` for a type the gateway's mapper does not know. */
+interface RestProjectWorkflowEntry {
+  issueType?: unknown;
+  workflow?: {
+    id?: string;
+    name?: string;
+    version?: number;
+    statuses?: WorkflowStatus[];
+    transitions?: WorkflowTransition[];
+  } | null;
 }
 
 /** `ListProjectMemberDetailsDto` — the array is `members`, not `items`. */
@@ -175,6 +210,14 @@ interface RestProjectMembers {
  * this is the one endpoint family in the codebase that has never returned a
  * byte to us: typing it as guaranteed would be a claim, not a fact.
  */
+/** `AuditEntryDto` as the wire may carry it: nothing in the schema is `required`. */
+type RestAuditEntry = Partial<Record<keyof AuditEntry, unknown>>;
+
+interface RestAuditEntries {
+  entries?: RestAuditEntry[] | null;
+  pagination?: Partial<AdminPagination>;
+}
+
 interface RestAdminRows {
   data?: AdminRow[];
   pagination?: Partial<AdminPagination>;
@@ -378,6 +421,11 @@ interface RestIssueShortItem {
   // No dates and no estimates: see `IssueSearchHit` in src/domain/types.ts for
   // why this must not be widened to match `RestIssue` above.
   storyPoints?: number | null;
+  // Backend TAS-218 (develop `485fea5`, deployed 2026-10-09): `statusKey` is
+  // required, the two project fields optional.
+  projectId?: string | null;
+  projectKey?: string | null;
+  statusKey?: string | null;
 }
 
 /**
@@ -630,6 +678,16 @@ type RestComment = Omit<IssueComment, "updatedAt" | "author"> & {
   author?: RestUserSummary | null;
 };
 
+/** `IssueWorklogResponseDto` (backend PR #178); `comment` and `updatedAt` are nullable and may be absent. */
+type RestWorklog = Omit<IssueWorklog, "comment" | "updatedAt"> & {
+  comment?: string | null;
+  updatedAt?: string | null;
+};
+
+interface RestWorklogsListResponse {
+  items: RestWorklog[];
+}
+
 interface RestCommentsListResponse {
   items: RestComment[];
   totalCount: number;
@@ -687,6 +745,35 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/**
+ * One `AuditEntryDto`, field by field. The schema declares nothing `required`,
+ * so anything that is not a string arrives here as `null` rather than as
+ * whatever it was — the section prints a dash for it, and never a `[object
+ * Object]`. `oldValue` and `newValue` stay text: they are JSON documents *as
+ * strings* on the wire, and parsing them is the screen's job.
+ */
+function toAuditEntry(wire: RestAuditEntry): AuditEntry {
+  const text = (value: unknown) => (typeof value === "string" ? value : null);
+  // The yml once typed these as objects ("changed from object to string" is
+  // still written beside them), so a document that arrives unstringified is
+  // turned back into the text the head sends rather than dropped.
+  const documentText = (value: unknown) =>
+    typeof value === "string" ? value : value !== null && typeof value === "object" ? JSON.stringify(value) : null;
+  return {
+    actorUserId: text(wire.actorUserId),
+    actorLogin: text(wire.actorLogin),
+    action: text(wire.action),
+    targetService: text(wire.targetService),
+    targetTable: text(wire.targetTable),
+    targetId: text(wire.targetId),
+    reason: text(wire.reason),
+    requestId: text(wire.requestId),
+    createdAt: text(wire.createdAt),
+    oldValue: documentText(wire.oldValue),
+    newValue: documentText(wire.newValue),
+  };
 }
 
 export class RestTaskaApi implements TaskaApi {
@@ -820,6 +907,42 @@ export class RestTaskaApi implements TaskaApi {
         ...(input.color !== undefined ? { color: input.color } : {}),
       },
     });
+  }
+
+  /**
+   * `GET /projects/{projectId}/context` — see `TaskaApi.getProjectContext`.
+   *
+   * Each part goes through the mapper its own route uses, so the board draws a
+   * context member exactly as it drew a `/members` row: blank names become an
+   * unnamed row, idless rows are dropped, and `compareMembers` decides the
+   * order. Workflows are keyed by issue type; an entry whose type this build
+   * does not recognise — `null` on the wire (TAS-173) — is dropped rather than
+   * guessed, and so is one with no workflow in it.
+   */
+  async getProjectContext(projectId: string): Promise<ProjectContext> {
+    const response = await this.request<RestProjectContext>(`/projects/${this.segment(projectId)}/context`);
+    const workflows: ProjectContext["workflows"] = {};
+    for (const entry of response.workflows ?? []) {
+      const issueType = toIssueType(entry.issueType);
+      if (!issueType || !entry.workflow) continue;
+      workflows[issueType] = {
+        id: entry.workflow.id ?? "",
+        name: entry.workflow.name ?? "",
+        version: entry.workflow.version ?? 0,
+        statuses: entry.workflow.statuses ?? [],
+        transitions: entry.workflow.transitions ?? [],
+      };
+    }
+    return {
+      project: response.project,
+      role: toProjectRole(response.project.currentUserRole),
+      members: (response.members ?? [])
+        .filter((member) => Boolean(member.userId))
+        .map((member) => toProjectMember(member))
+        .sort(compareMembers),
+      labels: (response.labels ?? []).map(toLabel),
+      workflows,
+    };
   }
 
   /**
@@ -1061,9 +1184,10 @@ export class RestTaskaApi implements TaskaApi {
    * obvious implementation, which sets the parameter on every keystroke, turns
    * a cleared field into an error.
    *
-   * The enum filters are typed, never stringly passed through: an unrecognised
-   * `priority` or `issueType` is silently ignored by the runtime and answers
-   * with a *wider* set than the one asked for.
+   * The enum filters are typed, never stringly passed through. That is the
+   * domain's own typing rather than a compensation: since backend TAS-218 an
+   * unrecognised `priority` or `issueType` passes the edge and answers an
+   * empty page (it was a `400` before, and a silently *wider* set before that).
    */
   async searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>> {
     const query = requireSearchQuery(params.query);
@@ -1080,8 +1204,9 @@ export class RestTaskaApi implements TaskaApi {
 
     const response = await this.request<RestSearchIssuesResponse>(`/issues/search${this.query(search)}`);
     // No hydration, on purpose, and the reason outlived the N+1 in `listIssues`
-    // above: the search DTO is still `IssueShortResponseDto`, so filling in a
-    // status here would mean a `getIssue` per hit on every keystroke. The owner
+    // above: the search DTO is still `IssueShortResponseDto` — with its project
+    // and status since TAS-218, and nothing more — so filling in anything else
+    // here would mean a `getIssue` per hit on every keystroke. The owner
     // settled that on 2026-08-23 — fix the backend, do not hydrate on the
     // frontend (docs/ai/API-DIVERGENCE.md, TAS-178). A hit stays as short as
     // the contract made it.
@@ -1533,6 +1658,53 @@ export class RestTaskaApi implements TaskaApi {
     return typeof response.url === "string" && response.url ? response.url : null;
   }
 
+  async listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {
+    const response = await this.request<RestWorklogsListResponse>(this.worklogsPath(projectId, issueId));
+    return (response.items ?? []).map((worklog) => this.toWorklog(worklog));
+  }
+
+  async addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog> {
+    const response = await this.request<RestWorklog>(this.worklogsPath(projectId, issueId), {
+      method: "POST",
+      body: {
+        spentMinutes: input.spentMinutes,
+        workDate: input.workDate,
+        ...(input.comment !== undefined ? { comment: input.comment } : {}),
+      },
+    });
+    return this.toWorklog(response);
+  }
+
+  /**
+   * Sends exactly the fields it is given and nothing else: an absent field is
+   * "unchanged" to the server, so filling one in would overwrite somebody
+   * else's edit (there is no `If-Match` on this route). An empty input is sent
+   * as it is and refused by the server with `400`; not sending one is the
+   * caller's job.
+   */
+  async updateIssueWorklog(
+    projectId: string,
+    issueId: string,
+    worklogId: string,
+    input: UpdateIssueWorklogInput,
+  ): Promise<IssueWorklog> {
+    const body: UpdateIssueWorklogInput = {};
+    if (input.spentMinutes !== undefined) body.spentMinutes = input.spentMinutes;
+    if (input.workDate !== undefined) body.workDate = input.workDate;
+    if (input.comment !== undefined) body.comment = input.comment;
+    const response = await this.request<RestWorklog>(
+      `${this.worklogsPath(projectId, issueId)}/${this.segment(worklogId)}`,
+      { method: "PUT", body },
+    );
+    return this.toWorklog(response);
+  }
+
+  async deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void> {
+    await this.request<void>(`${this.worklogsPath(projectId, issueId)}/${this.segment(worklogId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Promise<Page<IssueComment>> {
     const search = new URLSearchParams();
     if (params.page !== undefined) search.set("page", String(params.page));
@@ -1685,6 +1857,37 @@ export class RestTaskaApi implements TaskaApi {
     }));
   }
 
+  listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries> {
+    const search = new URLSearchParams();
+    // The same basis conversion as `listAdminRows`: 1-based in the domain,
+    // 0-based on the wire.
+    if (query.page !== undefined) search.set("page", String(Math.max(0, query.page - 1)));
+    if (query.pageSize !== undefined) search.set("pageSize", String(query.pageSize));
+    // In the contract's order. An empty value is not sent: every filter is an
+    // exact match on the server, and `""` would narrow to nothing.
+    for (const key of [
+      "actorUserId",
+      "action",
+      "targetService",
+      "targetTable",
+      "targetId",
+      "requestId",
+      "createdAtFrom",
+      "createdAtTo",
+    ] as const) {
+      // Not trimmed: the server matches exactly. Empty is no filter.
+      const value = query[key];
+      if (value) search.set(key, value);
+    }
+    return this.request<RestAuditEntries>(`/readonly/audit-entries${this.query(search)}`).then((response) => {
+      const entries = (response.entries ?? []).map(toAuditEntry);
+      // Mapped as it arrives. At PR #172's head the server ignores `page` and
+      // `pageSize` and answers every matching row; nothing here slices the
+      // answer down to the page that was asked for (docs/ai/API-DIVERGENCE.md).
+      return { entries, pagination: this.toPagination(response.pagination, query, entries.length) };
+    });
+  }
+
   async getAdminRow(query: AdminRowQuery): Promise<AdminRow> {
     const response = await this.request<RestAdminRow>(
       `/readonly/${this.segment(query.service)}/${this.segment(query.table)}/${this.segment(query.id)}`,
@@ -1831,7 +2034,7 @@ export class RestTaskaApi implements TaskaApi {
    */
   private toPagination(
     wire: Partial<AdminPagination> | undefined,
-    query: AdminRowsQuery,
+    query: { page?: number; pageSize?: number },
     rowCount: number,
   ): AdminPagination {
     return {
@@ -1920,6 +2123,10 @@ export class RestTaskaApi implements TaskaApi {
 
   private watchersPath(projectId: string, issueId: string) {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/watchers`;
+  }
+
+  private worklogsPath(projectId: string, issueId: string) {
+    return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/worklogs`;
   }
 
   private commentsPath(projectId: string, issueId: string) {
@@ -2079,8 +2286,8 @@ export class RestTaskaApi implements TaskaApi {
   /**
    * `IssueShortResponseDto` → `IssueSearchHit`, field by field rather than by
    * spread. The listing is the point: a spread would quietly widen the hit the
-   * day the DTO grows a field, and the one thing this type must keep proving is
-   * that it carries no status and no project.
+   * day the DTO grows a field. It grew three with TAS-218 — the project and
+   * the status key — and each is listed below, blank read as absent.
    */
   private toIssueSearchHit(item: RestIssueShortItem): IssueSearchHit {
     return {
@@ -2094,6 +2301,9 @@ export class RestTaskaApi implements TaskaApi {
       assigneeId: item.assigneeId || null,
       // `??`, not `||`: an issue estimated at zero points has been estimated.
       storyPoints: item.storyPoints ?? null,
+      projectId: item.projectId || null,
+      projectKey: item.projectKey || null,
+      statusKey: item.statusKey || null,
     };
   }
 
@@ -2245,6 +2455,21 @@ export class RestTaskaApi implements TaskaApi {
     };
   }
 
+  /** Field by field, for the reason `toNotification` gives. */
+  private toWorklog(worklog: RestWorklog): IssueWorklog {
+    return {
+      id: worklog.id,
+      issueId: worklog.issueId,
+      projectId: worklog.projectId,
+      authorUserId: worklog.authorUserId,
+      spentMinutes: worklog.spentMinutes,
+      workDate: worklog.workDate,
+      comment: worklog.comment ?? null,
+      createdAt: worklog.createdAt,
+      updatedAt: worklog.updatedAt ?? null,
+    };
+  }
+
   private toComment(comment: RestComment): IssueComment {
     return {
       ...comment,
@@ -2366,6 +2591,11 @@ function toProjectRole(value: unknown): ProjectRole | null {
   return value === "ADMIN" || value === "MEMBER" || value === "VIEWER" ? value : null;
 }
 
+/** One of the three issue types, or `null` for anything else — the wire's own `null` included. */
+function toIssueType(value: unknown): IssueType | null {
+  return value === "TASK" || value === "BUG" || value === "STORY" ? value : null;
+}
+
 /**
  * `ProjectMemberDetailsDto` → `ProjectMember`. `addedAt` and `addedBy` are not
  * set because the DTO does not carry them.
@@ -2390,6 +2620,8 @@ function toProjectMember(member: RestProjectMember): ProjectMember {
   return {
     userId: member.userId ?? "",
     role: toProjectRole(member.role),
+    // New on the row with backend PR #169 (TAS-212); kept only when it is there.
+    ...(typeof member.addedAt === "string" && member.addedAt ? { addedAt: member.addedAt } : {}),
     // The avatar rides inside `user` and therefore shares its condition: a row
     // the server named nobody in has no `user` at all, so a picture with no
     // name to put under it is dropped with the rest of the row. That is the

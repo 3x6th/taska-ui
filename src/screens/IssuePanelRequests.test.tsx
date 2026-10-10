@@ -6,8 +6,9 @@ import { BoardScreen } from "./BoardScreen";
 
 /**
  * The issue panel's request budget, measured on the wire (TAS-246, inherited
- * from TAS-202's acceptance): **opening a panel in `rest` mode costs at most two
- * requests — the issue read and the comments read.**
+ * from TAS-202's acceptance): **opening a panel in `rest` mode costs one round —
+ * the issue read, the comments read and, since TAS-251, the work log read, all
+ * three started together.**
  *
  * Measured against the real `RestTaskaApi` over a stubbed `fetch`, rather than
  * against a fake `TaskaApi`, because the budget is a property of what reaches
@@ -49,6 +50,10 @@ const seededIssue = {
 
 /** The issue as this stub's server holds it; a PATCH moves it on, as the gateway's would. */
 let issue: Record<string, unknown> = { ...seededIssue };
+/** The issue's work log as this stub's server holds it. */
+let worklogs: unknown[] = [];
+/** While set, the stub's worklog POST waits for it before the server answers. */
+let holdWorklogPost: Promise<void> | null = null;
 
 /** An answer that is not a 200: the status and the body the gateway sends with it. */
 class Refusal {
@@ -78,6 +83,32 @@ function respond(url: string, init?: RequestInit): unknown {
     return { id: ANNA, login: "anna", email: "anna@example.com", displayName: "Anna Ivanova", status: "ACTIVE" };
   }
   if (path === `/users/${ANNA}/avatar`) return { url: null };
+  if (path === `/projects/${PROJECT}/context`) {
+    return {
+      project: { id: PROJECT, projectKey: "TAS", name: "Taska Platform", createdBy: ANNA, createdAt: NOW, updatedAt: NOW, currentUserRole: "ADMIN" },
+      members: [{ userId: ANNA, role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com", avatar: null, addedAt: NOW }],
+      labels: [],
+      // One type only, as a project may allow (TAS-212), and no timestamps
+      // inside — the context's own shape.
+      workflows: [
+        {
+          issueType: "TASK",
+          workflow: {
+            id: "workflow",
+            name: "Default",
+            version: 1,
+            statuses: [
+              { id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+              { id: "s2", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
+            ],
+            transitions: [{ id: "start", fromStatusId: "s1", toStatusId: "s2", name: "Start progress", sortOrder: 10 }],
+          },
+        },
+        // A type this build does not know arrives as `null`, and is dropped.
+        { issueType: null, workflow: { id: "unknown", name: "Unknown", version: 1, statuses: [], transitions: [] } },
+      ],
+    };
+  }
   if (path === `/projects/${PROJECT}`) {
     return { id: PROJECT, projectKey: "TAS", name: "Taska Platform", createdBy: ANNA, createdAt: NOW, updatedAt: NOW, currentUserRole: "ADMIN" };
   }
@@ -116,6 +147,26 @@ function respond(url: string, init?: RequestInit): unknown {
     };
   }
   if (path === `/projects/${PROJECT}/issues/${ISSUE}/comments`) return { items: [], totalCount: 0 };
+  if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs` && init?.method === "POST") {
+    // What issue-service does on every worklog write (backend PR #178): the
+    // issue's version goes up, and its remaining estimate moves.
+    const body = JSON.parse(String(init.body)) as { spentMinutes: number; workDate: string; comment?: string };
+    issue = { ...issue, version: Number(issue.version) + 1, updatedAt: NOW };
+    const entry = {
+      id: "0e0e0e0e-0000-4000-8000-000000000001",
+      issueId: ISSUE,
+      projectId: PROJECT,
+      authorUserId: ANNA,
+      spentMinutes: body.spentMinutes,
+      workDate: body.workDate,
+      comment: body.comment ?? null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    worklogs = [entry];
+    return entry;
+  }
+  if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs`) return { items: worklogs };
   return { items: [], totalCount: 0 };
 }
 
@@ -134,12 +185,15 @@ describe("the issue panel's request budget against the REST implementation", () 
     requested = [];
     sent = [];
     issue = { ...seededIssue };
+    worklogs = [];
+    holdWorklogPost = null;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string, init?: RequestInit) => {
         requested.push(String(input));
         const headers = (init?.headers ?? {}) as Record<string, string>;
         sent.push({ path: String(input).split("?")[0], method: init?.method ?? "GET", ifMatch: headers["If-Match"] });
+        if (init?.method === "POST" && String(input).includes("/worklogs")) await holdWorklogPost;
         return answer(respond(String(input), init));
       }),
     );
@@ -191,7 +245,38 @@ describe("the issue panel's request budget against the REST implementation", () 
   const issueReads = (requests: typeof sent) =>
     requests.filter((request) => request.method === "GET" && request.path === `/api/v1/issues/${ISSUE}`).length;
 
-  it("opens a panel with two requests: the issue read and the comments read", async () => {
+  /**
+   * The board's own frame since TAS-251: one context read where it used to make
+   * seven — the project, the project again for the role, the members, a
+   * workflow per issue type and the labels. Beside it the issue page and the
+   * reader's profile, and the top bar's two (the notifications and the
+   * reader's avatar), which are not the board's.
+   */
+  it("loads the board with one context read, and none of the reads it replaced", async () => {
+    const queryClient = renderBoard();
+    await screen.findByRole("button", { name: /TAS-102/ });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    const paths = requested.map((url) => url.split("?")[0]);
+    expect(paths.sort()).toEqual(
+      [
+        `/api/v1/projects/${PROJECT}/context`,
+        `/api/v1/projects/${PROJECT}/issues`,
+        "/api/v1/users/me",
+        "/api/v1/notifications",
+        `/api/v1/users/${ANNA}/avatar`,
+      ].sort(),
+    );
+    for (const replaced of ["", "/members", "/workflow", "/labels"]) {
+      expect(paths).not.toContain(`/api/v1/projects/${PROJECT}${replaced}`);
+    }
+    // The workflow came from the context: the panel offers its transition.
+    fireEvent.click(screen.getByRole("button", { name: /TAS-102/ }));
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(panel).findByRole("button", { name: "Start progress" })).toBeVisible();
+  });
+
+  it("opens a panel with three requests in one round: the issue, the comments and the work log", async () => {
     const queryClient = renderBoard();
 
     // The board, settled: its card is drawn and nothing is in flight.
@@ -201,14 +286,82 @@ describe("the issue panel's request budget against the REST implementation", () 
 
     fireEvent.click(card);
 
+    // One round: all three have left before any of them has answered — the
+    // click's own render starts them, and nothing waits on the issue read.
+    const expected = [
+      `/api/v1/issues/${ISSUE}`,
+      `/api/v1/projects/${PROJECT}/issues/${ISSUE}/comments`,
+      `/api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs`,
+    ].sort();
+    expect(requested.slice(beforeOpen).map((url) => url.split("?")[0]).sort()).toEqual(expected);
+
     const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
     expect(await within(panel).findByText("No comments yet")).toBeVisible();
     expect(within(panel).getByText("No one is watching this issue yet")).toBeVisible();
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
 
+    expect(within(panel).getByText("No work logged yet")).toBeVisible();
     const opened = requested.slice(beforeOpen).map((url) => url.split("?")[0]);
-    expect(opened).toHaveLength(2);
-    expect(opened.sort()).toEqual([`/api/v1/issues/${ISSUE}`, `/api/v1/projects/${PROJECT}/issues/${ISSUE}/comments`].sort());
+    expect(opened.sort()).toEqual(expected);
+  });
+
+  /**
+   * A worklog write moves the issue's version on the server (backend PR #178),
+   * and nothing in its answer says so. Without a re-read of the issue after it,
+   * the panel's next edit would send the version it held before — and the
+   * server would refuse it as a conflict with a change nobody else made.
+   */
+  it("re-reads the issue after logging work, so the next edit carries the version the write moved to", async () => {
+    const { queryClient, panel, before } = await openPanel();
+
+    fireEvent.change(within(panel).getByLabelText("Time spent"), { target: { value: "1h 30m" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "Log work" }));
+
+    expect(await within(panel).findByText("1h 30m logged")).toBeVisible();
+    await settled(queryClient);
+    const write = sent.slice(before);
+    expect(write[0]).toEqual({
+      path: `/api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs`,
+      method: "POST",
+      ifMatch: undefined,
+    });
+    expect(issueReads(write.slice(1))).toBe(1);
+
+    const beforeEdit = sent.length;
+    fireEvent.click(within(panel).getByRole("button", { name: "Low" }));
+    await waitFor(() => expect(within(panel).getByRole("button", { name: "Low" })).toHaveClass("is-active"));
+    await settled(queryClient);
+    expect(sent[beforeEdit]).toEqual({ path: `/api/v1/issues/${ISSUE}`, method: "PATCH", ifMatch: '"2"' });
+    expect(within(panel).queryByText(/was changed elsewhere/)).toBeNull();
+  });
+
+  /**
+   * An edit made while a worklog POST is still in flight must wait for it and
+   * leave with the version the write moved the issue to, not the one the panel
+   * held when the edit was clicked.
+   */
+  it("queues an issue edit behind a pending worklog write and sends the bumped If-Match", async () => {
+    const { queryClient, panel, before } = await openPanel();
+    let release: () => void = () => {};
+    holdWorklogPost = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    fireEvent.change(within(panel).getByLabelText("Time spent"), { target: { value: "1h" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "Log work" }));
+    await waitFor(() =>
+      expect(sent.slice(before).some((request) => request.method === "POST")).toBe(true),
+    );
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Low" }));
+    expect(sent.slice(before).some((request) => request.method === "PATCH")).toBe(false);
+
+    release();
+    await waitFor(() => expect(sent.some((request) => request.method === "PATCH")).toBe(true));
+    await settled(queryClient);
+    const patch = sent.find((request) => request.method === "PATCH");
+    expect(patch).toEqual({ path: `/api/v1/issues/${ISSUE}`, method: "PATCH", ifMatch: '"2"' });
+    expect(within(panel).queryByText(/was changed elsewhere/)).toBeNull();
   });
 
   /**

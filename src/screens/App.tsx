@@ -7,6 +7,7 @@ import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE, RequireSession } from "../components/RequireSession";
 import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
+import { AdminAuditSection } from "./admin/AdminAuditSection";
 import { AdminDataSection } from "./admin/AdminDataSection";
 import { AdminEventsProblems } from "./admin/AdminEventsProblems";
 import { AdminEventsSection } from "./admin/AdminEventsSection";
@@ -161,6 +162,9 @@ export function App() {
             so there is nothing here a deeper address would open — and the two
             writes are dialogs over the list rather than pages of their own. */}
         <Route path="/admin/users" element={<AdminUsersSection />} />
+        {/* The audit log (TAS-251). No child routes: an entry has no id, so
+            it opens in place under its row rather than at an address. */}
+        <Route path="/admin/audit" element={<AdminAuditSection />} />
         {/* Every section is drawn, including the ones with no endpoints yet
             (§4.19) — the shape of the area is itself information. */}
         {adminSections

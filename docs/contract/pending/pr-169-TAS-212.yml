@@ -1,0 +1,192 @@
+# Pending gateway contract — backend PR #169 (TAS-212)
+# Project context: project, members, labels and every workflow in one read
+#
+# Source: https://github.com/VladislavYurin/taska-backend/pull/169
+# Head commit: a1bfe19632ce7d46acc26866c324d875232e897f
+# PR state on 2026-10-10: open, MERGEABLE, APPROVED, base develop
+# Base for this extract: develop @ 485fea5e26a7a9bc1d9ec0832beaf2e1da01c573
+#
+# This is NOT the contract. It is what the contract WILL say if this PR merges as it
+# stands. docs/contract/openapi.yml stays the authority until then. Delete this file when
+# the PR merges and the snapshot is refreshed. Where this extract and the PR's Java
+# disagree, the Java wins — see docs/ai/API-DIVERGENCE.md for what TAS-251 found.
+#
+# Extracted mechanically: every path and schema new in the PR or whose text differs from develop.
+paths:
+  # new in this PR
+  /api/v1/projects/{projectId}/context:
+    get:
+      summary: Контекст проекта — проект, участники, метки, все workflows
+      operationId: getProjectContext
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Контекст проекта успешно получен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectContextResponseDto'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+components:
+  schemas:
+  # changed in this PR
+    ProjectMemberDetailsDto:
+      type: object
+      properties:
+        userId:
+          type: string
+        role:
+          type: string
+        displayName:
+          type: string
+        email:
+          type: string
+        avatar:
+          allOf:
+            - $ref: '#/components/schemas/AvatarDto'
+          nullable: true
+        addedAt:
+          type: string
+          format: date-time
+          description: Когда участник добавлен в проект
+
+  # new in this PR
+    ProjectRoleDto:
+      type: string
+      enum: [ ADMIN, MEMBER, VIEWER ]
+
+  # new in this PR
+    ProjectContextResponseDto:
+      type: object
+      required: [ project, members, labels, workflows ]
+      properties:
+        project:
+          $ref: '#/components/schemas/ProjectResponseDto'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMemberDetailsDto'
+        labels:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectLabelResponseDto'
+        workflows:
+          type: array
+          description: Все типы задач проекта
+          items:
+            $ref: '#/components/schemas/ProjectWorkflowEntryDto'
+
+  # new in this PR
+    ProjectWorkflowEntryDto:
+      type: object
+      required: [ issueType, workflow ]
+      properties:
+        issueType:
+          $ref: '#/components/schemas/IssueTypeDto'
+        workflow:
+          $ref: '#/components/schemas/WorkflowResponseDto'
+
+  # changed in this PR
+    WorkflowResponseDto:
+      type: object
+      required: [ id, name, version, createdAt, updatedAt, statuses, transitions ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        version:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+        statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowStatusDto'
+        transitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowTransitionDto'
+
+  # changed in this PR
+    WorkflowStatusDto:
+      type: object
+      required: [ id, statusKey, name, category, sortOrder]
+      properties:
+        id:
+          type: string
+          format: uuid
+        statusKey:
+          type: string
+          description: Уникальный строковый ключ статуса (например, TODO, IN_PROGRESS)
+        name:
+          type: string
+          description: Отображаемое имя статуса для UI
+        category:
+          type: string
+          description: Категория жизненного цикла статуса (без жесткого ограничения enum в схеме для расширяемости)
+        sortOrder:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+  # changed in this PR
+    WorkflowTransitionDto:
+      type: object
+      required: [ id, fromStatusId, toStatusId, name, sortOrder ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fromStatusId:
+          type: string
+          format: uuid
+        toStatusId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        sortOrder:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+

@@ -244,6 +244,50 @@ describe("MockTaskaApi", () => {
    * The two string fields are asymmetric and that is most of what is here: `""`
    * clears a description and `""` cannot clear a colour.
    */
+  /**
+   * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
+   * rules its Java states rather than its yml (TAS-251).
+   */
+  describe("the project context", () => {
+    it("answers the project, the reader's role, members, three-field labels and timestamp-free workflows", async () => {
+      const context = await api.getProjectContext(project.id);
+
+      expect(context.project).toMatchObject({ id: project.id, currentUserRole: "ADMIN" });
+      expect(context.role).toBe("ADMIN");
+      expect(context.members).toEqual(await api.listMembers(project.id));
+      for (const label of context.labels) expect(Object.keys(label).sort()).toEqual(["color", "id", "name"]);
+      expect(Object.keys(context.workflows).sort()).toEqual(["BUG", "STORY", "TASK"]);
+      expect(context.workflows.TASK).not.toHaveProperty("createdAt");
+      expect(context.workflows.TASK).not.toHaveProperty("updatedAt");
+    });
+
+    it("lists a workflow only for the issue types the project allows", async () => {
+      const ops = (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
+      const context = await api.getProjectContext(ops.id);
+      expect(Object.keys(context.workflows).sort()).toEqual(["BUG", "TASK"]);
+    });
+
+    it("refuses to create an issue of a type the project does not allow, and creates one it does", async () => {
+      const ops = (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
+      const input = { summary: "Rotate the keys", description: "", priority: "LOW" as const };
+      await expect(api.createIssue(ops.id, { ...input, issueType: "STORY" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Issue type STORY is not allowed in project OPS",
+      });
+      await expect(api.createIssue(ops.id, { ...input, issueType: "BUG" })).resolves.toMatchObject({ issueType: "BUG" });
+    });
+
+    it("refuses a non-member with 403 — a GLOBAL_ADMIN included — and a missing project with 404", async () => {
+      // Mark is the seed's GLOBAL_ADMIN, and not on WEB.
+      const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
+      await api.login({ email: "mark@example.com", password: "anything" });
+      await expect(api.getProjectContext(web.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      await expect(api.getProjectContext("00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+  });
+
   describe("creating a project", () => {
     it("keeps the description and the colour it was given", async () => {
       // Both are new on `CreateProjectRequestDto` in backend PR #155, and until
@@ -1536,7 +1580,17 @@ describe("MockTaskaApi", () => {
       expect(first.items.map((hit) => hit.id)).not.toEqual(second.items.map((hit) => hit.id));
     });
 
-    it("answers with the seven fields of the short DTO and nothing else", async () => {
+    // Backend TAS-218: a filter value nobody holds passes the edge and matches
+    // nothing — neither a 400 (TAS-168) nor the whole set (TAS-180). Cast,
+    // because no caller of this build can spell one.
+    it("answers an empty page for a priority or issue type it does not know", async () => {
+      const params = { query: "board", priority: "URGENT", issueType: "EPIC" } as unknown as Parameters<
+        MockTaskaApi["searchIssues"]
+      >[0];
+      await expect(api.searchIssues(params)).resolves.toMatchObject({ items: [], totalCount: 0 });
+    });
+
+    it("answers with the ten fields of the short DTO and nothing else", async () => {
       const created = await api.createIssue(project.id, {
         issueType: "TASK",
         summary: "Unassigned needle for the search",
@@ -1548,19 +1602,23 @@ describe("MockTaskaApi", () => {
       const hit = items.find((item) => item.id === created.id);
 
       expect(hit).toBeDefined();
-      // No status, no projectId, no description, no labels: a hit that carried
-      // them would let a column or a card claim something the gateway never
-      // sent. `storyPoints` is the seventh and last — `IssueShortResponseDto`
-      // states it and states no dates and no estimates with it.
+      // No description, no labels, no version: a hit that carried them would
+      // let a card or an edit claim something the gateway never sent. The
+      // project and the status key are TAS-218's; `storyPoints` is the one
+      // planning field, with no dates and no estimates beside it.
       expect(Object.keys(hit ?? {}).sort()).toEqual([
         "assigneeId",
         "id",
         "issueKey",
         "issueType",
         "priority",
+        "projectId",
+        "projectKey",
+        "statusKey",
         "storyPoints",
         "summary",
       ]);
+      expect(hit).toMatchObject({ projectId: project.id, projectKey: project.projectKey, statusKey: "TODO" });
       // Created without one, so this states "not estimated" rather than a value.
       expect(hit?.storyPoints).toBeNull();
       // `""` on the wire for nobody, `null` here, exactly as `Issue.assigneeId`.
@@ -2117,6 +2175,86 @@ describe("MockTaskaApi", () => {
    * so the two views of the section can never disagree. That derivation is what
    * these tests are about.
    */
+  /**
+   * `GET /readonly/audit-entries` (backend PR #172, TAS-160) as the server is
+   * meant to answer it (TAS-251). The head ignores paging and sorting and
+   * answers 500 for a non-UUID actor; neither is reproduced here, both are in
+   * docs/ai/API-DIVERGENCE.md.
+   */
+  describe("the audit log", () => {
+    beforeEach(async () => {
+      await api.login({ email: "mark@example.com", password: "anything" });
+    });
+
+    it("answers newest first, twenty to a page by default, with 1-based pagination", async () => {
+      const first = await api.listAuditEntries({});
+      expect(first.entries).toHaveLength(20);
+      expect(first.pagination).toMatchObject({ currentPage: 1, pageSize: 20, totalRows: 30, totalPages: 2, hasNext: true, hasPrev: false });
+      const times = first.entries.map((entry) => Date.parse(entry.createdAt!));
+      expect([...times].sort((a, b) => b - a)).toEqual(times);
+
+      const second = await api.listAuditEntries({ page: 2 });
+      expect(second.entries).toHaveLength(10);
+      expect(second.pagination).toMatchObject({ currentPage: 2, hasNext: false, hasPrev: true });
+    });
+
+    it("clamps pageSize above 100 and falls back to 20 below 1, as the server does", async () => {
+      expect((await api.listAuditEntries({ pageSize: 500 })).pagination.pageSize).toBe(100);
+      expect((await api.listAuditEntries({ pageSize: 0 })).pagination.pageSize).toBe(20);
+    });
+
+    it("carries null documents, a null request id and masked values, as the log does", async () => {
+      const { entries } = await api.listAuditEntries({ pageSize: 100 });
+      expect(entries.some((entry) => entry.oldValue === null)).toBe(true);
+      expect(entries.some((entry) => entry.newValue === null)).toBe(true);
+      expect(entries.some((entry) => entry.requestId === null)).toBe(true);
+      expect(entries.some((entry) => entry.newValue?.includes('"***"'))).toBe(true);
+      expect(new Set(entries.map((entry) => entry.actorLogin)).size).toBeGreaterThanOrEqual(3);
+    });
+
+    it("matches every filter exactly, and takes a blank one as no filter", async () => {
+      const blocks = await api.listAuditEntries({ action: "BLOCK_USER", pageSize: 100 });
+      expect(blocks.entries.length).toBeGreaterThan(0);
+      expect(blocks.entries.every((entry) => entry.action === "BLOCK_USER")).toBe(true);
+      expect((await api.listAuditEntries({ action: "BLOCK" })).entries).toEqual([]);
+      expect((await api.listAuditEntries({ action: "  " })).pagination.totalRows).toBe(30);
+
+      const target = blocks.entries[0];
+      const narrowed = await api.listAuditEntries({
+        actorUserId: target.actorUserId!,
+        targetService: target.targetService!,
+        targetTable: target.targetTable!,
+        targetId: target.targetId!,
+        pageSize: 100,
+      });
+      expect(narrowed.entries).toContainEqual(target);
+    });
+
+    it("bounds by whole UTC days with both ends inclusive", async () => {
+      const { entries } = await api.listAuditEntries({ pageSize: 100 });
+      const day = entries[3].createdAt!.slice(0, 10);
+      const sameDay = entries.filter((entry) => entry.createdAt!.startsWith(day));
+      const answer = await api.listAuditEntries({ createdAtFrom: day, createdAtTo: day, pageSize: 100 });
+      expect(answer.entries).toEqual(sameDay);
+    });
+
+    it("refuses a date in any other spelling, a from after to, and a non-UUID actor with 400", async () => {
+      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-01T00:00:00Z" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(api.listAuditEntries({ createdAtTo: "2026-02-30" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-02", createdAtTo: "2026-10-01" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(api.listAuditEntries({ actorUserId: "mark" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("refuses anyone but a GLOBAL_ADMIN with 403", async () => {
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.listAuditEntries({})).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    });
+  });
+
   describe("problematic outbox summary", () => {
     it("gives exactly auth, project and issue an outbox_events table", async () => {
       const catalog = await api.getAdminCatalog();
@@ -3748,6 +3886,169 @@ describe("MockTaskaApi", () => {
       await expect(api.putAvatarBytes(ticket.uploadUrl, file, "image/jpeg")).rejects.toMatchObject({
         storeStatus: 403,
       });
+    });
+  });
+
+  /**
+   * Backend PR #178 (TAS-118), as the mock reproduces the Java at its head: the
+   * three role rules, the two 404s, the partial update's own rules, and what
+   * every write does to the issue.
+   */
+  describe("worklogs", () => {
+    const issueByKey = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+    const signIn = (email: string) => api.login({ email, password: "anything" });
+
+    it("lists the seeded entries newest day first, unnamed, for every member role", async () => {
+      await signIn("tom@example.com");
+      const issue = await issueByKey("TAS-101");
+      const worklogs = await api.listIssueWorklogs(project.id, issue.id);
+      expect(worklogs.map((item) => item.workDate)).toEqual(["2026-06-13", "2026-06-13", "2026-06-12"]);
+      expect(worklogs[0]).not.toHaveProperty("author");
+    });
+
+    it("refuses a non-member the list, as ProjectRoleChecker does", async () => {
+      // Priya is not a member of Taska Platform.
+      await signIn("priya@example.com");
+      const issue = await issueByKey("TAS-101");
+      await expect(api.listIssueWorklogs(project.id, issue.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Access denied",
+      });
+    });
+
+    it("lets a VIEWER read and not log", async () => {
+      await signIn("tom@example.com");
+      const issue = await issueByKey("TAS-101");
+      await expect(
+        api.addIssueWorklog(project.id, issue.id, { spentMinutes: 30, workDate: "2026-06-14" }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED", message: "Not allowed role" });
+    });
+
+    it("moves the issue's version and remaining estimate on an add, an edit and a delete", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      await edit(issue.id, { remainingEstimateMinutes: 300 });
+      const start = (await api.getIssue(project.id, issue.id)).issue;
+
+      const added = await api.addIssueWorklog(project.id, issue.id, { spentMinutes: 90, workDate: "2026-06-14" });
+      let now = (await api.getIssue(project.id, issue.id)).issue;
+      expect(now.version).toBe(start.version + 1);
+      expect(now.remainingEstimateMinutes).toBe(210);
+
+      await api.updateIssueWorklog(project.id, issue.id, added.id, { spentMinutes: 60 });
+      now = (await api.getIssue(project.id, issue.id)).issue;
+      expect(now.version).toBe(start.version + 2);
+      expect(now.remainingEstimateMinutes).toBe(240);
+
+      // A change of the comment alone still moves the version, and not the estimate.
+      await api.updateIssueWorklog(project.id, issue.id, added.id, { comment: "Reviewed" });
+      now = (await api.getIssue(project.id, issue.id)).issue;
+      expect(now.version).toBe(start.version + 3);
+      expect(now.remainingEstimateMinutes).toBe(240);
+
+      await api.deleteIssueWorklog(project.id, issue.id, added.id);
+      now = (await api.getIssue(project.id, issue.id)).issue;
+      expect(now.version).toBe(start.version + 4);
+      expect(now.remainingEstimateMinutes).toBe(300);
+    });
+
+    it("never takes the remaining estimate below zero", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      await edit(issue.id, { remainingEstimateMinutes: 30 });
+      await api.addIssueWorklog(project.id, issue.id, { spentMinutes: 90, workDate: "2026-06-14" });
+      expect((await api.getIssue(project.id, issue.id)).issue.remainingEstimateMinutes).toBe(0);
+    });
+
+    it("stores a blank comment as null, and clears one with an empty string", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      const blank = await api.addIssueWorklog(project.id, issue.id, {
+        spentMinutes: 15,
+        workDate: "2026-06-14",
+        comment: "   ",
+      });
+      expect(blank.comment).toBeNull();
+
+      const noted = await api.addIssueWorklog(project.id, issue.id, {
+        spentMinutes: 15,
+        workDate: "2026-06-14",
+        comment: "Pairing",
+      });
+      const cleared = await api.updateIssueWorklog(project.id, issue.id, noted.id, { comment: "" });
+      expect(cleared.comment).toBeNull();
+      expect(cleared.spentMinutes).toBe(15);
+    });
+
+    it("refuses an empty update, a non-positive duration and a date past tomorrow", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      const [first] = await api.listIssueWorklogs(project.id, issue.id);
+      await expect(api.updateIssueWorklog(project.id, issue.id, first.id, {})).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "No data provided for update",
+      });
+      await expect(
+        api.addIssueWorklog(project.id, issue.id, { spentMinutes: 0, workDate: "2026-06-14" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        api.addIssueWorklog(project.id, issue.id, { spentMinutes: 10, workDate: "2999-01-01" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "WorkDate is too far in the future" });
+      await expect(
+        api.addIssueWorklog(project.id, issue.id, { spentMinutes: 10, workDate: "2026-06-14", comment: "x".repeat(2001) }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("answers 404 for a worklog of another issue", async () => {
+      await signIn("anna@example.com");
+      const tas101 = await issueByKey("TAS-101");
+      const tas107 = await issueByKey("TAS-107");
+      const [other] = await api.listIssueWorklogs(project.id, tas107.id);
+      await expect(api.updateIssueWorklog(project.id, tas101.id, other.id, { spentMinutes: 5 })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+      await expect(api.deleteIssueWorklog(project.id, tas101.id, other.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(await api.listIssueWorklogs(project.id, tas107.id)).toHaveLength(2);
+    });
+
+    it("lets a MEMBER change their own entry and nobody else's, and an ADMIN change anybody's", async () => {
+      const issue = await issueByKey("TAS-101");
+      await signIn("mark@example.com");
+      const entries = await api.listIssueWorklogs(project.id, issue.id);
+      const marks = entries.find((item) => item.authorUserId === "e65186a2-b807-42ae-a66f-711be116a93b");
+      const someoneElses = entries.find((item) => item.authorUserId !== "e65186a2-b807-42ae-a66f-711be116a93b");
+      if (!marks || !someoneElses) throw new Error("seed changed");
+
+      await expect(api.updateIssueWorklog(project.id, issue.id, marks.id, { spentMinutes: 100 })).resolves.toMatchObject({
+        spentMinutes: 100,
+      });
+      await expect(
+        api.updateIssueWorklog(project.id, issue.id, someoneElses.id, { spentMinutes: 100 }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED", message: "Not allowed role" });
+      await expect(api.deleteIssueWorklog(project.id, issue.id, someoneElses.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+
+      await signIn("anna@example.com");
+      await api.deleteIssueWorklog(project.id, issue.id, marks.id);
+      expect((await api.listIssueWorklogs(project.id, issue.id)).map((item) => item.id)).not.toContain(marks.id);
+    });
+
+    it("writes a history row for each write", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      const added = await api.addIssueWorklog(project.id, issue.id, { spentMinutes: 45, workDate: "2026-06-14" });
+      await api.updateIssueWorklog(project.id, issue.id, added.id, { workDate: "2026-06-13" });
+      await api.deleteIssueWorklog(project.id, issue.id, added.id);
+      const { history } = await api.getIssue(project.id, issue.id);
+      const events = history.map((event) => event.eventType).filter((type) => type.startsWith("WORKLOG_"));
+      expect(events).toEqual(["WORKLOG_ADDED", "WORKLOG_UPDATED", "WORKLOG_DELETED"]);
+      expect(history.find((event) => event.eventType === "WORKLOG_ADDED")?.payload.worklogSpentMinutes).toBe(45);
     });
   });
 });

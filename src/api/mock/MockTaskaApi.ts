@@ -1,5 +1,6 @@
 import type {
   AcceptInvitationInput,
+  AddIssueWorklogInput,
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
@@ -19,6 +20,7 @@ import type {
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
+  UpdateIssueWorklogInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
@@ -31,6 +33,7 @@ import {
   PROJECT_COLOR_PATTERN,
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
+  WORKLOG_COMMENT_MAX_LENGTH,
 } from "../TaskaApi";
 import {
   ATTACHMENT_BUCKET,
@@ -67,6 +70,9 @@ import type {
   AdminRows,
   AdminRowsQuery,
   AdminTable,
+  AuditEntries,
+  AuditEntriesQuery,
+  AuditEntry,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -84,6 +90,7 @@ import type {
   IssueType,
   IssueWatcher,
   IssueWatchers,
+  IssueWorklog,
   IssueDetails,
   IssueDetailsWithHistory,
   Label,
@@ -96,6 +103,7 @@ import type {
   ProblematicOutboxEvent,
   ProblematicOutboxSummary,
   Project,
+  ProjectContext,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -110,7 +118,9 @@ import type {
   WatchIssueResult,
   Workflow,
 } from "../../domain/types";
+import { isDateOnly } from "../../domain/types";
 import { accountLockedMessage } from "../../lib/accountLock";
+import { addDays, localDateOnly } from "../../lib/worklog";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
 import { classifyColumnType } from "../../lib/adminColumnTypes";
 
@@ -716,6 +726,20 @@ interface StoredIssueLink {
  */
 type StoredIssueWatcher = Omit<IssueWatcher, "displayName" | "avatarUrl">;
 
+/**
+ * A worklog as stored: the entry plus the soft-delete stamp the server's row
+ * carries (`issue_worklogs.deleted_at`). Its author is an id and nothing more —
+ * no read names them (backend PR #178).
+ */
+type StoredWorklog = IssueWorklog & { deletedAt: string | null };
+
+/**
+ * `issue.max-future-days` in issue-service's `application.yml` at backend PR
+ * #178's head: a work date may be at most this many days past the server's
+ * today.
+ */
+const WORKLOG_MAX_FUTURE_DAYS = 1;
+
 /** A comment as stored. Its author's name is looked up per read, as the server does (`commentView`). */
 type StoredIssueComment = Omit<IssueComment, "author">;
 
@@ -733,6 +757,116 @@ const FORMER_ACCOUNT_ID = "9e4c2a7d-0b1f-4c83-a6d5-7f2e8b9c1d04";
 
 /** The transactional outbox table, in every service that has one. */
 const OUTBOX_TABLE = "outbox_events";
+
+/**
+ * The admin audit log's seed (TAS-251): thirty entries across three actors,
+ * five actions and four target tables, at fixed instants so a date filter in
+ * a test means the same rows every day. Newest first, which is the order the
+ * server is meant to answer in.
+ *
+ * `vera` is a former admin and `migrator` a service account: the log keeps a
+ * denormalised login, so neither has to be a user the rest of the seed knows.
+ * Some rows have no request id, some no old value (an invitation creates
+ * something) and some no new value (a session revoked is gone); secrets inside
+ * the documents are already `"***"`, as the server masks them.
+ */
+function seedAuditEntries(): AuditEntry[] {
+  const actors = [
+    { id: MARK_ID, login: "mark" },
+    { id: FORMER_ACCOUNT_ID, login: "vera" },
+    { id: "5a1c7e93-2d4b-4f60-9b8e-0c3d7a6f1e28", login: "migrator" },
+  ];
+  const userIds = [NINA_ID, OMAR_ID, LEO_ID, PRIYA_ID, TOM_ID];
+  type Template = Omit<AuditEntry, "actorUserId" | "actorLogin" | "createdAt" | "requestId" | "targetId">;
+  const templates: Template[] = [
+    {
+      action: "BLOCK_USER",
+      targetService: "auth",
+      targetTable: "users",
+      reason: "Left the company",
+      oldValue: JSON.stringify({ status: "ACTIVE" }),
+      newValue: JSON.stringify({ status: "BLOCKED" }),
+    },
+    {
+      action: "UNBLOCK_USER",
+      targetService: "auth",
+      targetTable: "users",
+      reason: "Came back from leave",
+      oldValue: JSON.stringify({ status: "BLOCKED" }),
+      newValue: JSON.stringify({ status: "ACTIVE" }),
+    },
+    {
+      action: "RESET_CREDENTIAL_LOCKOUT",
+      targetService: "auth",
+      targetTable: "credentials",
+      reason: "Identity confirmed by phone",
+      oldValue: JSON.stringify({ status: "LOCKED", failedAttempts: 5, passwordHash: "***" }),
+      newValue: JSON.stringify({ status: "ACTIVE", failedAttempts: 0, passwordHash: "***" }),
+    },
+    {
+      action: "RETRY_OUTBOX_EVENT",
+      targetService: "project",
+      targetTable: "outbox_events",
+      reason: "Kafka producer is back",
+      oldValue: JSON.stringify({ status: "FAILED", attempts: 5, lastErrorMessage: "Failed to construct kafka producer" }),
+      newValue: JSON.stringify({ status: "NEW", attempts: 0, lastErrorMessage: null }),
+    },
+    {
+      action: "RETRY_OUTBOX_EVENT",
+      targetService: "issue",
+      targetTable: "outbox_events",
+      reason: "Stuck in PROCESSING after the deploy",
+      oldValue: JSON.stringify({ status: "PROCESSING", attempts: 2 }),
+      newValue: JSON.stringify({ status: "NEW", attempts: 0 }),
+    },
+    {
+      action: "CREATE_INVITATION",
+      targetService: "auth",
+      targetTable: "invitations",
+      reason: "New contractor",
+      oldValue: null,
+      newValue: JSON.stringify({ email: "c****r@example.com", token: "***", expiresAt: "2026-10-16T00:00:00Z" }),
+    },
+    {
+      action: "REVOKE_SESSIONS",
+      targetService: "auth",
+      targetTable: "sessions",
+      reason: "Laptop reported stolen",
+      oldValue: JSON.stringify({ activeSessions: 3, refreshToken: "***" }),
+      newValue: null,
+    },
+  ];
+  const start = Date.parse("2026-10-09T16:40:00Z");
+  return Array.from({ length: 30 }, (_, index) => {
+    const template = templates[index % templates.length];
+    // Mark does most of it, as the only admin today; Vera's rows are the old
+    // ones, from before she left; the migrator only ever retries events.
+    const actor =
+      template.action === "RETRY_OUTBOX_EVENT" && index % 3 === 0 ? actors[2] : index >= 22 ? actors[1] : actors[0];
+    const targetId =
+      template.targetTable === "outbox_events"
+        ? `7f0c${String(index).padStart(4, "0")}-3b1a-4c2d-8e9f-0a1b2c3d4e5f`
+        : userIds[index % userIds.length];
+    return {
+      ...template,
+      actorUserId: actor.id,
+      actorLogin: actor.login,
+      targetId,
+      // Every fifth row came from somewhere with no request id to keep.
+      requestId: index % 5 === 4 ? null : `a0d1${String(index).padStart(4, "0")}-6c2e-4f3a-9b8d-1e2f3a4b5c6d`,
+      // About seventeen hours apart, so thirty rows span three weeks and a
+      // day holds one or two of them.
+      createdAt: new Date(start - index * 17 * 3_600_000).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    };
+  });
+}
+
+/** `yyyy-MM-dd` and a real day of the calendar — the only date spelling the audit read accepts. */
+function isAuditDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const at = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(at.getTime()) && at.toISOString().slice(0, 10) === value;
+}
 
 /**
  * The `outbox_events` catalog entry, identical in each service that carries one
@@ -873,6 +1007,8 @@ export class MockTaskaStore {
   private watchers: StoredIssueWatcher[] = [];
   /** Attachment rows, soft-deleted in place exactly as the server's are. */
   private attachments: StoredAttachment[] = [];
+  /** Worklog rows (backend PR #178), soft-deleted in place as the server's are. */
+  private worklogs: StoredWorklog[] = [];
   /**
    * The stand-in bucket: object key to what was PUT under it. Separate from
    * `attachments` on purpose — an object with no row is precisely the orphan a
@@ -907,6 +1043,18 @@ export class MockTaskaStore {
   private labelIdsByIssue: Record<string, string[]> = {};
   private notifications: Notification[];
   private workflow: Workflow;
+  /**
+   * The issue types each project allows, as backend PR #169's context reports
+   * them through its `workflows` (TAS-212). A project not named here allows all
+   * three, which is what a project created at runtime gets. **OPS allows only
+   * TASK and BUG**, so the mock-backed board has one project where a type is
+   * missing and every place that offers a type has to cope with that.
+   */
+  /** The admin audit log (`listAuditEntries`). */
+  private auditEntries: AuditEntry[] = seedAuditEntries();
+  private allowedIssueTypesByProject: Record<string, IssueType[]> = {
+    [OPS_PROJECT_ID]: ["TASK", "BUG"],
+  };
   /**
    * The outbox rows, seeded once on first read rather than in the constructor.
    * Their timestamps are relative to *now* — a row has to be genuinely three
@@ -1134,20 +1282,29 @@ export class MockTaskaStore {
     // added member, so every member list, avatar stack and filter bar the suite
     // measures keeps its size.
     //
-    // Every other VIEWER path in this store is still exercised by a non-member
-    // standing in for one: `getMembership` answers `VIEWER` for a non-member
-    // (`member?.role ?? "VIEWER"`), and Anna is not on MOB. Against the gateway
-    // those are two different answers — a non-member is refused by
-    // `ProjectRoleChecker` on `!isMember` before any role is looked at — and the
-    // mock is the looser of the two on the read routes. Recorded in
-    // docs/ai/API-DIVERGENCE.md; adding the membership check here would cost the
-    // read-only seed the attachments section demonstrates.
+    // **Tom is a VIEWER of Mobile too** (TAS-251). The board reads its frame
+    // from the project context, which refuses a non-member with 403 as the
+    // gateway does, so the read-only board on MOB — MOB-5's links, label,
+    // attachment, plan and watcher — is now reached by a real VIEWER signing
+    // in as `tom@example.com`, rather than by Anna standing in for one.
+    //
+    // The store's other reads are still looser than the gateway:
+    // `getMembership` answers `VIEWER` for a non-member (`member?.role ??
+    // "VIEWER"`), and the per-issue routes let a non-member through. Against
+    // the gateway a non-member is refused by `ProjectRoleChecker` on
+    // `!isMember` before any role is looked at. Recorded in
+    // docs/ai/API-DIVERGENCE.md.
     this.membersByProject = Object.fromEntries(
       this.projects.map((project) => [
         project.id,
         (project.memberIds ?? []).map((userId, index) => ({
           userId,
-          role: index === 0 ? "ADMIN" : project.id === TASKA_PROJECT_ID && userId === TOM_ID ? "VIEWER" : "MEMBER",
+          role:
+            index === 0
+              ? "ADMIN"
+              : (project.id === TASKA_PROJECT_ID || project.id === MOB_PROJECT_ID) && userId === TOM_ID
+                ? "VIEWER"
+                : "MEMBER",
           addedAt: ts(8 + index, 20 + index),
           addedBy: ANNA_ID,
           user: this.userSummary(userId),
@@ -1439,6 +1596,25 @@ export class MockTaskaStore {
       this.pushHistory(tas101.id, "TRANSITIONED", MARK_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(13, 31));
       this.pushHistory(tas101.id, "PRIORITY", MARK_ID, { to: "HIGH" }, ts(13, 44));
       this.comment(tas101, MARK_ID, "Bumped to high — this blocks the release checklist.", ts(13, 52));
+    }
+
+    // Seeded worklogs (TAS-251). TAS-101 has three people's entries, two of them
+    // on one day — the tie the server leaves unordered — and TAS-107 has one by
+    // an account nobody can name any more, which is what the section draws as
+    // "Unknown". Both issues are in Taska Platform, where Anna is the ADMIN who
+    // may change anybody's entry, Mark a MEMBER who may change only his own,
+    // and Tom a VIEWER who may only read them.
+    //
+    // Seeding moves neither issue's remaining estimate nor its version: the
+    // issues are seeded as they stand *after* this time was logged.
+    if (tas101) {
+      this.worklog(tas101, SOFIA_ID, 90, "2026-06-12", "Paired on the retry guard.", ts(12, 40));
+      this.worklog(tas101, MARK_ID, 120, "2026-06-13", "Traced the release blocker to the gateway timeout.", ts(13, 50));
+      this.worklog(tas101, ANNA_ID, 45, "2026-06-13", null, ts(13, 58));
+    }
+    if (tas107) {
+      this.worklog(tas107, FORMER_ACCOUNT_ID, 60, "2026-06-15", "First look at the refresh path.", ts(15, 10));
+      this.worklog(tas107, SOFIA_ID, 180, "2026-06-17", null, ts(17, 30));
     }
 
     // Seeded links so the panel has something to show on first load, and so
@@ -2064,6 +2240,51 @@ export class MockTaskaStore {
     return this.workflow;
   }
 
+  /**
+   * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
+   * rules its Java states at head `a1bfe19`: a missing project is `NOT_FOUND`,
+   * and a reader with no membership row is `PERMISSION_DENIED` — a
+   * `GLOBAL_ADMIN` included. Unlike `getProject` in this store, which answers a
+   * non-member, this read keeps the gateway's access rule.
+   * At head `a1bfe19` the code intends 200 with empty members and labels (its
+   * TODO says so), but the labels leg's denial arrives from issue-service as a
+   * gRPC `StatusRuntimeException`, which
+   * `ProjectServiceImpl.isPermissionDenied` (it matches only `DomainException`)
+   * does not catch, so the whole context fails `PERMISSION_DENIED` and answers
+   * 403. Removal: when the labels call carries the global role, or
+   * `isPermissionDenied` also matches a gRPC denial, the context answers 200
+   * with empty parts and the mock must follow.
+   *
+   * `workflows` holds one entry per allowed type (`allowedIssueTypesByProject`),
+   * each without timestamps, and the labels carry only `id`, `name` and
+   * `color` — the shapes the context sends, not the shapes the separate routes
+   * send.
+   */
+  getProjectContext(projectId: string): ProjectContext {
+    const project = this.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new MockApiError("NOT_FOUND", "Project not found");
+    }
+    const member = this.membersByProject[projectId]?.find((item) => item.userId === this.currentUserId);
+    if (!member) {
+      throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    }
+    const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflow;
+    const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
+    return {
+      project: this.withCurrentUserRole(project),
+      role: member.role,
+      members: this.listMembers(projectId),
+      labels: this.listProjectLabels(projectId).map(({ id, name, color }) => ({ id, name, color })),
+      workflows: Object.fromEntries(
+        allowed.map((issueType) => [
+          issueType,
+          { ...workflow, statuses: [...workflow.statuses], transitions: [...workflow.transitions] },
+        ]),
+      ),
+    };
+  }
+
   listIssues(projectId: string, params: ListIssuesParams = {}): Page<Issue> {
     this.getProject(projectId);
     const page = params.page ?? 0;
@@ -2241,6 +2462,18 @@ export class MockTaskaStore {
 
   createIssue(projectId: string, input: CreateIssueInput): Issue {
     const project = this.getProject(projectId);
+    // The mock models the *intended* rule, not the server's behaviour: at
+    // develop and backend #169 issue-service `createIssue` checks only the role
+    // and saves any issueType (201, an issue with no workflow). The UI never
+    // offers a disallowed type; the backend ask is in docs/ai/BACKLOG.md and
+    // the divergence in docs/ai/API-DIVERGENCE.md ("Pending backend PR #169").
+    const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
+    if (!allowed.includes(input.issueType)) {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        `Issue type ${input.issueType} is not allowed in project ${project.projectKey}`,
+      );
+    }
     requirePlanningFields(input);
     const planning = resolvePlanningFields(input, emptyPlanningFields());
     const issueNumber =
@@ -3230,6 +3463,128 @@ export class MockTaskaStore {
     return avatar.downloadUrl;
   }
 
+  /**
+   * `GET …/worklogs`, as `WorklogServiceImpl.listIssueWorklog` does it at
+   * backend PR #178's head: the issue first (404), then the role
+   * (`list-worklog-roles: ADMIN,MEMBER,VIEWER`), then the rows by `work_date`
+   * descending — with no tiebreak, so entries of one day come in the order
+   * they were stored here and in no stated order on the server.
+   */
+  listIssueWorklogs(projectId: string, issueId: string): IssueWorklog[] {
+    const issue = this.findIssue(projectId, issueId);
+    this.requireWorklogRole(projectId, ["ADMIN", "MEMBER", "VIEWER"]);
+    return this.worklogs
+      .filter((item) => item.issueId === issue.id && item.deletedAt === null)
+      .sort((a, b) => (a.workDate === b.workDate ? 0 : a.workDate < b.workDate ? 1 : -1))
+      .map((item) => this.worklogView(item));
+  }
+
+  /**
+   * `POST …/worklogs`: the body first — the gateway's bean validation
+   * (`minimum: 1`, `maxLength: 2000`) and then the service's own checks — then
+   * the issue (404), then `add-worklog-roles: ADMIN,MEMBER`. The write moves
+   * the issue as `Issue.addWorklogMinutes` does: the remaining estimate down by
+   * the minutes, never below 0 and only when there is one, and the version up.
+   */
+  addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): IssueWorklog {
+    this.refuseWorklogMinutes(input.spentMinutes);
+    if (typeof input.workDate !== "string" || !isDateOnly(input.workDate)) {
+      throw new MockApiError("INVALID_ARGUMENT", "WorkDate must be not null");
+    }
+    this.refuseFutureWorkDate(input.workDate);
+    if (typeof input.comment === "string" && input.comment.length > WORKLOG_COMMENT_MAX_LENGTH) {
+      throw new MockApiError("INVALID_ARGUMENT", `comment: size must be between 0 and ${WORKLOG_COMMENT_MAX_LENGTH}`);
+    }
+    const issue = this.findIssue(projectId, issueId);
+    this.requireWorklogRole(projectId, ["ADMIN", "MEMBER"]);
+
+    if (issue.remainingEstimateMinutes !== null) {
+      issue.remainingEstimateMinutes = Math.max(0, issue.remainingEstimateMinutes - input.spentMinutes);
+    }
+    this.touchIssue(issue);
+    const worklog = this.worklog(
+      issue,
+      this.currentUserId,
+      input.spentMinutes,
+      input.workDate,
+      // The server trims the comment and stores a blank one as `null`.
+      input.comment?.trim() || null,
+      now(),
+    );
+    this.pushHistory(issue.id, "WORKLOG_ADDED", this.currentUserId, this.worklogPayload(worklog));
+    return this.worklogView(worklog);
+  }
+
+  /**
+   * `PUT …/worklogs/{worklogId}`, a partial update: the body (an empty one is
+   * `400`), the issue, the worklog, that the worklog is this issue's (`404`
+   * otherwise), then the role — `update-worklog-roles: ADMIN,MEMBER` for your
+   * own entry, `manage-worklog-roles: ADMIN` for anybody else's. No
+   * `maxLength` on this comment: the server stores `text`.
+   *
+   * The issue's version goes up whatever changed; its remaining estimate moves
+   * by the difference only when `spentMinutes` was sent
+   * (`Issue.updateWorklogMinutes`).
+   */
+  updateIssueWorklog(projectId: string, issueId: string, worklogId: string, input: UpdateIssueWorklogInput): IssueWorklog {
+    const spentMinutes = input.spentMinutes ?? null;
+    const workDate = input.workDate ?? null;
+    const comment = input.comment ?? null;
+    if (spentMinutes === null && workDate === null && comment === null) {
+      throw new MockApiError("INVALID_ARGUMENT", "No data provided for update");
+    }
+    if (spentMinutes !== null) this.refuseWorklogMinutes(spentMinutes);
+    if (workDate !== null) {
+      if (!isDateOnly(workDate)) throw new MockApiError("INVALID_ARGUMENT", "WorkDate is not a date");
+      this.refuseFutureWorkDate(workDate);
+    }
+    const issue = this.findIssue(projectId, issueId);
+    const worklog = this.worklogOfIssue(issue, worklogId);
+    this.requireWorklogRole(projectId, worklog.authorUserId === this.currentUserId ? ["ADMIN", "MEMBER"] : ["ADMIN"]);
+
+    if (spentMinutes !== null && issue.remainingEstimateMinutes !== null) {
+      issue.remainingEstimateMinutes = Math.max(0, issue.remainingEstimateMinutes + (worklog.spentMinutes - spentMinutes));
+    }
+    this.touchIssue(issue);
+    if (spentMinutes !== null) worklog.spentMinutes = spentMinutes;
+    if (workDate !== null) worklog.workDate = workDate;
+    // `Worklog.update`: the comment is trimmed and a blank one clears it to `null`.
+    if (comment !== null) worklog.comment = comment.trim() || null;
+    worklog.updatedAt = now();
+    this.pushHistory(issue.id, "WORKLOG_UPDATED", this.currentUserId, this.worklogPayload(worklog));
+    return this.worklogView(worklog);
+  }
+
+  /**
+   * `DELETE …/worklogs/{worklogId}`: the worklog (404), that it is this
+   * issue's (404), the role as for an update, then a soft delete that gives the
+   * minutes back to the remaining estimate (`Issue.removeWorklogMinutes`) and
+   * moves the version.
+   */
+  deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): void {
+    const worklog = this.worklogs.find((item) => item.id === worklogId && item.deletedAt === null);
+    if (!worklog) throw new MockApiError("NOT_FOUND", `Worklog with id: ${worklogId} not found`);
+    const issue = this.issues.find(
+      (item) => item.projectId === projectId && item.id === issueId && item.deletedAt === null,
+    );
+    if (!issue || worklog.issueId !== issue.id) {
+      throw new MockApiError("NOT_FOUND", "Issue doesnt belongs to worklog");
+    }
+    this.requireWorklogRole(projectId, worklog.authorUserId === this.currentUserId ? ["ADMIN", "MEMBER"] : ["ADMIN"]);
+
+    worklog.deletedAt = now();
+    if (issue.remainingEstimateMinutes !== null) {
+      issue.remainingEstimateMinutes += worklog.spentMinutes;
+    }
+    this.touchIssue(issue);
+    this.pushHistory(issue.id, "WORKLOG_DELETED", this.currentUserId, {
+      issueId: issue.id,
+      worklogId: worklog.id,
+      deletedAt: worklog.deletedAt,
+      deletedBy: this.currentUserId,
+    });
+  }
+
   listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Page<IssueComment> {
     const issue = this.findIssue(projectId, issueId);
     const page = params.page ?? 0;
@@ -3832,6 +4187,89 @@ export class MockTaskaStore {
    * `FAILED_PRECONDITION` in the server's own words, including the `NEW` rows
    * this section's own list is full of.
    */
+  /**
+   * `GET /readonly/audit-entries` as the server is *meant* to answer it — see
+   * `TaskaApi.listAuditEntries` for where the head at PR #172 does not:
+   *
+   * - `GLOBAL_ADMIN` only, refused with `PERMISSION_DENIED` (403);
+   * - dates `yyyy-MM-dd` only, whole UTC days, both inclusive; any other
+   *   spelling and a `from` after `to` are `INVALID_ARGUMENT` (400);
+   * - an `actorUserId` that is not a UUID is `INVALID_ARGUMENT` here. The head
+   *   answers **500** for it; this is the answer it is meant to give, and the
+   *   section never sends one either way;
+   * - every other filter an exact match, a blank one no filter;
+   * - newest first, paged; as the server's `normalizePageSize`: a `pageSize`
+   *   below 1 falls back to the default 20 (a negative `page`, to the default
+   *   first page), only a value above 100 is clamped. The head ignores both
+   *   and answers every row — recorded, not reproduced.
+   */
+  listAuditEntries(query: AuditEntriesQuery): AuditEntries {
+    if (this.currentUser().globalRole !== "GLOBAL_ADMIN") {
+      throw new MockApiError("PERMISSION_DENIED", "Global admin role required");
+    }
+    const given = (value: string | undefined) => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    };
+    const from = given(query.createdAtFrom);
+    const to = given(query.createdAtTo);
+    for (const [name, value] of [
+      ["createdAtFrom", from],
+      ["createdAtTo", to],
+    ] as const) {
+      if (value !== undefined && !isAuditDate(value)) {
+        throw new MockApiError("INVALID_ARGUMENT", `${name} must be a date in the format yyyy-MM-dd`);
+      }
+    }
+    if (from !== undefined && to !== undefined && from > to) {
+      throw new MockApiError("INVALID_ARGUMENT", "createdAtFrom must not be after createdAtTo");
+    }
+    const actorUserId = given(query.actorUserId);
+    if (actorUserId !== undefined && !UUID_PATTERN.test(actorUserId)) {
+      throw new MockApiError("INVALID_ARGUMENT", "actorUserId must be a UUID");
+    }
+    const exact = {
+      actorUserId,
+      action: given(query.action),
+      targetService: given(query.targetService),
+      targetTable: given(query.targetTable),
+      targetId: given(query.targetId),
+      requestId: given(query.requestId),
+    };
+    const matching = this.auditEntries
+      .filter((entry) =>
+        (Object.keys(exact) as (keyof typeof exact)[]).every(
+          (key) => exact[key] === undefined || entry[key] === exact[key],
+        ),
+      )
+      .filter((entry) => {
+        // Whole UTC days: the instant's own date, compared as text, which is
+        // exact for `yyyy-MM-dd` and needs no clock.
+        const day = entry.createdAt?.slice(0, 10) ?? "";
+        return (from === undefined || day >= from) && (to === undefined || day <= to);
+      })
+      .sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""));
+
+    const requestedSize = Math.trunc(query.pageSize ?? 20);
+    const pageSize = requestedSize < 1 ? 20 : Math.min(100, requestedSize);
+    const requestedPage = Math.trunc(query.page ?? 1);
+    const currentPage = requestedPage < 1 ? 1 : requestedPage;
+    const totalRows = matching.length;
+    const totalPages = Math.ceil(totalRows / pageSize);
+    const start = (currentPage - 1) * pageSize;
+    return {
+      entries: matching.slice(start, start + pageSize).map((entry) => ({ ...entry })),
+      pagination: {
+        currentPage,
+        pageSize,
+        totalRows,
+        totalPages,
+        hasNext: currentPage < totalPages,
+        hasPrev: currentPage > 1,
+      },
+    };
+  }
+
   retryOutboxEvent(service: string, eventId: string, reason: string): OutboxRetryResult {
     requireOutboxRetryReason(reason);
     if (!UUID_PATTERN.test(eventId)) {
@@ -4421,12 +4859,11 @@ export class MockTaskaStore {
   }
 
   /**
-   * The issue as `IssueShortResponseDto` states it — seven fields since merged
-   * PR #148 added `storyPoints` to that DTO, listed one by one rather than
-   * spread, so the mock can never hand out a `status` or a `projectId` the
-   * gateway would not have sent. That narrowness is the whole reason
-   * `IssueSearchHit` exists, and adding the seventh field is the moment it was
-   * most likely to be lost.
+   * The issue as `IssueShortResponseDto` states it — ten fields since backend
+   * TAS-218 added the project and the status key, listed one by one rather than
+   * spread, so the mock can never hand out a description, a label or a version
+   * the gateway would not have sent. That narrowness is the whole reason
+   * `IssueSearchHit` exists.
    */
   private searchHit(issue: Issue): IssueSearchHit {
     return {
@@ -4440,6 +4877,10 @@ export class MockTaskaStore {
       // one by one like its neighbours so the mock can never hand out a date or
       // an estimate the gateway would not have sent.
       storyPoints: issue.storyPoints,
+      // The three TAS-218 added: the issue's project and its status key.
+      projectId: issue.projectId,
+      projectKey: this.projects.find((project) => project.id === issue.projectId)?.projectKey ?? null,
+      statusKey: issue.status,
     };
   }
 
@@ -4649,6 +5090,105 @@ export class MockTaskaStore {
     return comment;
   }
 
+  /**
+   * `ProjectRoleChecker`, which every worklog route goes through, and in its
+   * own two sentences: `"Access denied"` for somebody who is not a member of
+   * the project at all — checked before any role is — and `"Not allowed role"`
+   * for a member whose role is not in the set. Stricter than `getMembership`,
+   * which answers VIEWER for a non-member: here a non-member is refused even
+   * the list, as on the server.
+   */
+  private requireWorklogRole(projectId: string, allowed: ProjectRole[]): void {
+    const { role, isMember } = this.getMembership(projectId);
+    if (!isMember) throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    if (!allowed.includes(role as ProjectRole)) throw new MockApiError("PERMISSION_DENIED", "Not allowed role");
+  }
+
+  /** The gateway's `minimum: 1` and the service's own `> 0`. A fraction never reaches the server as a number. */
+  private refuseWorklogMinutes(minutes: unknown): void {
+    if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes <= 0) {
+      throw new MockApiError("INVALID_ARGUMENT", "SpentMinutes must be greater than 0");
+    }
+  }
+
+  /** The service's `workDate.isAfter(LocalDate.now().plusDays(maxFutureDays))`, against the mock's own today. */
+  private refuseFutureWorkDate(workDate: string): void {
+    if (workDate > addDays(localDateOnly(), WORKLOG_MAX_FUTURE_DAYS)) {
+      throw new MockApiError("INVALID_ARGUMENT", "WorkDate is too far in the future");
+    }
+  }
+
+  /**
+   * A worklog of this issue, in the server's two sentences: one that does not
+   * exist, and one that belongs to another issue — both `404`.
+   */
+  private worklogOfIssue(issue: Issue, worklogId: string): StoredWorklog {
+    const worklog = this.worklogs.find((item) => item.id === worklogId && item.deletedAt === null);
+    if (!worklog) throw new MockApiError("NOT_FOUND", `Worklog with id: ${worklogId} not found`);
+    if (worklog.issueId !== issue.id) throw new MockApiError("NOT_FOUND", "Issue doesnt belongs to worklog");
+    return worklog;
+  }
+
+  /** `Issue.touch()`: what every worklog write does to the issue whatever else it changes. */
+  private touchIssue(issue: Issue): void {
+    issue.updatedAt = now();
+    issue.version += 1;
+  }
+
+  private worklog(
+    issue: Issue,
+    authorUserId: string,
+    spentMinutes: number,
+    workDate: string,
+    comment: string | null,
+    createdAt: string,
+  ): StoredWorklog {
+    const worklog: StoredWorklog = {
+      id: makeId("worklog"),
+      issueId: issue.id,
+      projectId: issue.projectId,
+      authorUserId,
+      spentMinutes,
+      workDate,
+      // A blank comment is stored as `null`, as the server stores it.
+      comment: comment && comment.trim() ? comment : null,
+      createdAt,
+      // `updated_at` is `NOT NULL DEFAULT now()` on the server's table, so a
+      // fresh row carries the insert instant here too.
+      updatedAt: createdAt,
+      deletedAt: null,
+    };
+    this.worklogs.push(worklog);
+    return worklog;
+  }
+
+  private worklogView(worklog: StoredWorklog): IssueWorklog {
+    return {
+      id: worklog.id,
+      issueId: worklog.issueId,
+      projectId: worklog.projectId,
+      authorUserId: worklog.authorUserId,
+      spentMinutes: worklog.spentMinutes,
+      workDate: worklog.workDate,
+      comment: worklog.comment,
+      createdAt: worklog.createdAt,
+      updatedAt: worklog.updatedAt,
+    };
+  }
+
+  /** `PayloadSerializer.createWorklogPayload`'s keys. */
+  private worklogPayload(worklog: StoredWorklog): IssueHistoryEvent["payload"] {
+    return {
+      issueId: worklog.issueId,
+      projectId: worklog.projectId,
+      authorUserId: worklog.authorUserId,
+      worklogId: worklog.id,
+      worklogSpentMinutes: worklog.spentMinutes,
+      worklogDate: worklog.workDate,
+      ...(worklog.comment !== null ? { worklogComment: worklog.comment } : {}),
+    };
+  }
+
   private commentBody(body: string): string {
     const trimmed = body.trim();
     if (!trimmed || trimmed.length > 10000) {
@@ -4775,6 +5315,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
     return wait(this.store.updateProject(projectId, input));
+  }
+
+  async getProjectContext(projectId: string): Promise<ProjectContext> {
+    return wait(this.store.getProjectContext(projectId));
   }
 
   async getMembership(projectId: string): Promise<ProjectMembership> {
@@ -4995,6 +5539,28 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.getUserAvatarUrl(userId));
   }
 
+  async listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {
+    return wait(this.store.listIssueWorklogs(projectId, issueId));
+  }
+
+  async addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog> {
+    return wait(this.store.addIssueWorklog(projectId, issueId, input));
+  }
+
+  async updateIssueWorklog(
+    projectId: string,
+    issueId: string,
+    worklogId: string,
+    input: UpdateIssueWorklogInput,
+  ): Promise<IssueWorklog> {
+    return wait(this.store.updateIssueWorklog(projectId, issueId, worklogId, input));
+  }
+
+  async deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void> {
+    this.store.deleteIssueWorklog(projectId, issueId, worklogId);
+    await wait(null);
+  }
+
   async listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {
     return wait(this.store.listComments(projectId, issueId, params));
   }
@@ -5038,6 +5604,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
     return wait(this.store.problematicOutboxSummary());
+  }
+
+  async listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries> {
+    return wait(this.store.listAuditEntries(query));
   }
 
   async blockUser(userId: string, reason: string): Promise<UserStatusChange> {

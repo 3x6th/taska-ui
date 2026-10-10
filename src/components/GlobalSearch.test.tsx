@@ -16,10 +16,12 @@ import { GlobalSearch } from "./GlobalSearch";
  * answers, and a search that failed is never drawn as a search that found
  * nothing.
  *
- * The third thing worth pinning is where a hit goes. It carries no
- * `projectId`, so it opens through its key — `/browse/{issueKey}`, which the
- * server resolves (TAS-246) — and is never routed by guessing a project from
- * the key's prefix, which is what this widget did until then.
+ * The third thing worth pinning is where a hit goes. Since backend TAS-218 a
+ * hit names its project and opens straight to it. One that does not — most
+ * fixtures below, which predate it — opens through its key,
+ * `/browse/{issueKey}`, which the server resolves (TAS-246), and is never
+ * routed by guessing a project from the key's prefix, which is what this
+ * widget did until then.
  */
 const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.hoisted(() => {
   interface Hit {
@@ -38,6 +40,10 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.ho
      * honest seed for a search that does not show points.
      */
     storyPoints: number | null;
+    /** The three TAS-218 added; absent in the fixtures that stand for an older gateway. */
+    projectId?: string | null;
+    projectKey?: string | null;
+    statusKey?: string | null;
   }
   const now = "2026-08-01T09:00:00Z";
   const state: {
@@ -224,6 +230,25 @@ describe("the top bar's global search", () => {
 
     fireEvent.keyDown(box, { key: "Enter" });
     expect(screen.getByTestId("address")).toHaveTextContent("/browse/ZZZ-9");
+    expect(projectReads()).toBe(0);
+  });
+
+  it("opens a hit that names its project straight to it, and says its status", async () => {
+    seedHits([
+      { ...hit("TAS-101", "Named project"), projectId: "project-tas", projectKey: "TAS", statusKey: "IN_PROGRESS" },
+      { ...hit("TAS-102", "A status this build has no name for"), projectId: "project-tas", statusKey: "BLOCKED" },
+    ]);
+    const box = renderSearch();
+    fireEvent.change(box, { target: { value: "board" } });
+
+    const [first, second] = await screen.findAllByRole("option");
+    expect(within(first).getByText("In Progress")).toBeVisible();
+    // Verbatim, never trusted into a known status (TAS-173).
+    expect(within(second).getByText("BLOCKED")).toBeVisible();
+
+    fireEvent.keyDown(box, { key: "Enter" });
+    // No short address and no lookup: the hit said where it lives.
+    expect(screen.getByTestId("address")).toHaveTextContent("/projects/project-tas/issues/tas-101");
     expect(projectReads()).toBe(0);
   });
 

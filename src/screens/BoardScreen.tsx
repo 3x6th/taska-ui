@@ -17,6 +17,7 @@ import {
   useInfiniteQuery,
   useMutation,
   usePrefetchInfiniteQuery,
+  usePrefetchQuery,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -24,7 +25,7 @@ import { Check, ChevronLeft, Download, Eye, EyeOff, Paperclip, Pencil, Plus, Sea
 import { useEffect, useId, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
-import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
+import { SEARCH_QUERY_MIN_LENGTH, UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
   ATTACHMENT_ACCEPT_ATTRIBUTE,
@@ -34,7 +35,13 @@ import {
 } from "../api/attachments";
 import { objectStoreUploadFailure } from "../api/objectStore";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isIssueVersionConflict, isMissingOrForbidden, IssueVersionConflictError } from "../api/errors";
+import {
+  apiErrorFacts,
+  isIssueVersionConflict,
+  isMissingOrForbidden,
+  isUndeployedRoute,
+  IssueVersionConflictError,
+} from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
 import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
@@ -42,6 +49,8 @@ import { ColorSwatches } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { IssueShare } from "../components/IssueShare";
+import { IssueWorklogSection } from "../components/IssueWorklogSection";
+import { issueWorklogsOptions } from "../components/issueWorklogsQuery";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
 import { ProjectMembersModal } from "../components/ProjectMembersModal";
@@ -51,6 +60,7 @@ import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { personFor, type NamedBy } from "../lib/people";
+import { ALL_ISSUE_TYPES, allowedIssueTypes, projectContextKey } from "../lib/projectContext";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   Issue,
@@ -68,10 +78,9 @@ import type {
   IssuePriority,
   IssueStatus,
   IssueType,
-  ProjectLabel,
+  ProjectContext,
   ProjectMember,
   User,
-  Workflow,
   WorkflowStatus,
   WorkflowTransition,
 } from "../domain/types";
@@ -117,10 +126,7 @@ type IssueTypeFilter = IssueType | "ALL";
 type AssigneeFilter = string | "ALL";
 /** A project label's id, or every issue whatever it carries. */
 type LabelFilter = string | "ALL";
-type WorkflowsByIssueType = Partial<Record<IssueType, Workflow>>;
-
-const concreteIssueTypes: IssueType[] = ["TASK", "BUG", "STORY"];
-const issueTypes: IssueTypeFilter[] = ["ALL", ...concreteIssueTypes];
+type WorkflowsByIssueType = ProjectContext["workflows"];
 // "Missing or not yours" is an answer, not a transient failure. Without this,
 // the app-wide `retry: 1` (src/main.tsx) spends a full retryDelay re-asking a
 // question already answered, and the board shows a second of plausible chrome —
@@ -392,42 +398,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     }),
   );
 
-  const projectQuery = useQuery({
-    queryKey: ["project", projectId],
+  // The board's whole frame in one read since TAS-251 (backend TAS-212): the
+  // project, the reader's role, the members, the labels and one workflow per
+  // issue type the project allows. It replaced seven requests — the project,
+  // the project again for the role, the members, three workflows and the
+  // labels — and it is all or nothing on the server, so every part below is
+  // answered, or none is.
+  const contextQuery = useQuery({
+    queryKey: projectContextKey(projectId),
     enabled: Boolean(projectId),
-    queryFn: () => taskaApi.getProject(projectId),
-    retry: retryUnlessMissing,
-  });
-  const membershipQuery = useQuery({
-    queryKey: ["membership", projectId],
-    enabled: Boolean(projectId),
-    queryFn: () => taskaApi.getMembership(projectId),
-    retry: retryUnlessMissing,
-  });
-  const membersQuery = useQuery({
-    queryKey: ["members", projectId],
-    enabled: Boolean(projectId),
-    queryFn: () => taskaApi.listMembers(projectId),
-    retry: retryUnlessMissing,
-  });
-  const workflowQuery = useQuery({
-    queryKey: ["workflows", projectId],
-    enabled: Boolean(projectId),
-    retry: retryUnlessMissing,
-    queryFn: async () => {
-      const entries = await Promise.all(
-        concreteIssueTypes.map(async (issueType) => [
-          issueType,
-          await taskaApi.getWorkflow(projectId, issueType),
-        ] as const),
-      );
-      return Object.fromEntries(entries) as WorkflowsByIssueType;
-    },
-  });
-  const projectLabelsQuery = useQuery({
-    queryKey: ["project-labels", projectId],
-    enabled: Boolean(projectId),
-    queryFn: () => taskaApi.listProjectLabels(projectId),
+    queryFn: () => taskaApi.getProjectContext(projectId),
     retry: retryUnlessMissing,
   });
   // The one filter the *server* applies, so it belongs in the key rather than
@@ -451,17 +431,25 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryFn: () => taskaApi.getCurrentUser(),
   });
 
-  const project = projectQuery.data;
+  const context = contextQuery.data;
+  const project = context?.project;
   // Memoized so the `?? []` fallback does not produce a new array identity on
   // every render and invalidate the memos below.
-  const members = useMemo(() => membersQuery.data ?? [], [membersQuery.data]);
+  const members = useMemo(() => context?.members ?? [], [context]);
   const issues = useMemo(() => issuesQuery.data?.items ?? [], [issuesQuery.data]);
-  const projectLabels = useMemo(() => projectLabelsQuery.data ?? [], [projectLabelsQuery.data]);
-  // `undefined` until the membership read answers, and `null` once it has
-  // answered with no role this build can act on (`ProjectMembership.role`).
-  // Every permission below and the unstated-role banner read this one value.
-  const role = membershipQuery.data?.role;
+  const projectLabels = useMemo(() => context?.labels ?? [], [context]);
+  const workflows = context?.workflows;
+  // The types this project allows — the ones the context sent a workflow for.
+  // The type filter and the create form offer these and nothing else: a type
+  // the server did not list is not one the board may invent (TAS-251).
+  const offeredIssueTypes = useMemo(() => allowedIssueTypes(context), [context]);
+  // `undefined` until the context answers, and `null` once it has answered
+  // with no role this build can act on (`ProjectContext.role`). Every
+  // permission below and the unstated-role banner read this one value.
+  const role = context?.role;
   const canEdit = role === "ADMIN" || role === "MEMBER";
+  // Creating needs a type to create, and a project that allows none has none.
+  const canCreate = canEdit && offeredIssueTypes.length > 0;
   // Narrower than `canEdit` on purpose: TAS-119 lets a MEMBER put labels on an
   // issue but reserves creating, renaming and deleting the project's labels for
   // its ADMIN. The server enforces both; this only decides what is offered.
@@ -482,18 +470,52 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // `data?.role` for one, `isError` for the other — is what made the banner
   // disappear on every refetch while the controls stayed off, and made it
   // appear over a board that was fully writable (see `useUnanswered`).
-  const projectUnread = useUnanswered(projectQuery);
-  const roleUnread = useUnanswered(membershipQuery);
+  //
+  // Since TAS-251 the project, the role, the members, the labels and the
+  // workflow are one read, so they are one fact: each name below is that
+  // read's answer, kept apart only for what each one switches off.
+  const contextUnread = useUnanswered(contextQuery);
+  // The route is not on this gateway yet (backend PR #169 undeployed): the
+  // gateway's static-resource 404, which must not be read as "no such project".
+  const contextUndeployed =
+    contextUnread.unanswered && isUndeployedRoute(contextUnread.error, UNDEPLOYED_ROUTE_MESSAGE);
+  // A 404 or 403 from the context is not yet a statement about the project.
+  // Its members are enriched exactly as `GET /members` enriches them — an
+  // avatar presigned per person, with no per-row fallback (see
+  // `TaskaApi.listMembers`) — so one unreadable avatar object fails the whole
+  // read with 404, and a storage refusal with 403: the very pair a missing or
+  // forbidden project answers with. One plain project read tells the two apart
+  // before §4.18 is allowed to say the project is gone (TAS-251). It is asked
+  // once and never retried: a second opinion that loops is not one.
+  const contextRefused =
+    contextUnread.unanswered && !contextUndeployed && isMissingOrForbidden(contextUnread.error);
+  const projectCheckQuery = useQuery({
+    queryKey: ["project-check", projectId],
+    enabled: contextRefused,
+    queryFn: () => taskaApi.getProject(projectId),
+    retry: false,
+  });
+  const projectCheckUnread = useUnanswered(projectCheckQuery);
+  // Still waiting on the confirming read: neither the board's chrome nor a
+  // banner may claim anything yet, so the columns stay skeletons.
+  const projectChecking = contextRefused && projectCheckQuery.data === undefined && !projectCheckUnread.unanswered;
+  // The project itself is missing or not ours: both reads said so.
+  const projectGone =
+    contextRefused && projectCheckUnread.unanswered && isMissingOrForbidden(projectCheckUnread.error);
+  // The project reads fine, so the context's refusal was about its details —
+  // the people above all — and the board stays with a banner that says so.
+  const contextDetailsUnread = contextRefused && projectCheckQuery.data !== undefined;
+  const roleUnread = contextUnread;
   const issuesUnread = useUnanswered(issuesQuery);
-  const workflowUnread = useUnanswered(workflowQuery);
-  const labelsUnread = useUnanswered(projectLabelsQuery);
+  const workflowUnread = contextUnread;
+  const labelsUnread = contextUnread;
   // Read by the watchers section and by nothing else so far. Everywhere else a
   // failed member read is *already* legible — the assignee chip row simply has
   // no chips and the reporter line says "Unknown" — but a picker of people to
   // subscribe would be an empty `<select>` under the words "Add a watcher",
   // which reads as "this project has nobody left to add" (§5.6: only a
   // successful read may say there are none). This is what tells the two apart.
-  const membersUnread = useUnanswered(membersQuery);
+  const membersUnread = contextUnread;
   // "The server never told us your role" and "you are a VIEWER" are different
   // states, and only one of them is a permission. Both end in a board nobody
   // can write to — the server stays the authority, so write access we could
@@ -524,10 +546,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const workflowUnknown = workflowUnread.unanswered;
 
   const userById = useMemo(() => toUserMap(members), [members]);
-  const statuses = useMemo(
-    () => mergeWorkflowStatuses(workflowQuery.data),
-    [workflowQuery.data],
-  );
+  const statuses = useMemo(() => mergeWorkflowStatuses(workflows), [workflows]);
 
   const filteredIssues = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -670,13 +689,20 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       setActiveIssueId(null);
       return;
     }
-    const workflow = workflowQuery.data?.[issue.issueType];
+    const workflow = workflows?.[issue.issueType];
     // No fallback on this path, ever. The only transition ids this repository
     // owns are the mock's seed, and posting one to a gateway that never
     // described it invents a transition — the drop is refused instead, whether
     // the workflow read failed or has simply not answered yet.
     if (!workflow) {
-      setDragNotice(`${issue.issueKey} was not moved: this project's workflow could not be loaded.`);
+      // Two different refusals. A context that answered without this issue's
+      // type is a project that no longer allows it (TAS-251) — an old issue of
+      // a type taken away — and "could not be loaded" would be false there.
+      setDragNotice(
+        workflows
+          ? `${issue.issueKey} was not moved: this project has no workflow for ${typeMeta[issue.issueType].label.toLowerCase()} issues.`
+          : `${issue.issueKey} was not moved: this project's workflow could not be loaded.`,
+      );
       setActiveIssueId(null);
       return;
     }
@@ -701,9 +727,21 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // cleared, and this branch would then hand back the project's own chrome —
   // its name, its filters, its columns — to someone the gateway has already
   // said may not see it, until the answer came back and took it away again.
-  if (projectUnread.unanswered && isMissingOrForbidden(projectUnread.error)) {
+  //
+  // Not for a route the gateway has not deployed: that 404 is about the
+  // gateway, not the project, and §4.18 would tell the reader their project is
+  // gone. The board stays and its banner says what is actually missing.
+  //
+  // Nor for a context refusal the plain project read does not confirm
+  // (`projectCheckQuery` above): that one is about the project's details, and
+  // the board stays with its own banner.
+  if (projectGone) {
     return <NotFoundScreen />;
   }
+  // The project as far as anything has read it: the context's, or — when the
+  // context was refused over its details — the confirming read's, so the top
+  // bar can still name the project the banner is about.
+  const shownProject = project ?? projectCheckQuery.data;
 
   return (
     <main className="board-shell">
@@ -711,12 +749,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <button className="icon-button" onClick={() => navigate("/projects")} title="Back to projects" type="button">
           <ChevronLeft size={17} />
         </button>
-        {project ? (
-          <span className="key-badge" style={keyBadgeStyle(project.projectKey, project.color)}>
-            {project.projectKey}
+        {shownProject ? (
+          <span className="key-badge" style={keyBadgeStyle(shownProject.projectKey, shownProject.color)}>
+            {shownProject.projectKey}
           </span>
         ) : null}
-        <strong className="board-project-name">{project?.name ?? "Project"}</strong>
+        <strong className="board-project-name">{shownProject?.name ?? "Project"}</strong>
         <span className="muted-label">Board</span>
         {/* Beside the key and the name it edits, and before the spacer so it
             stays with them on the row they wrap onto below 820 (§4.13). Not in
@@ -754,7 +792,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <div className="topbar-actions">
           <NotificationsBell bar={topbarRef} />
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
-          <button className="primary-button board-new" disabled={!canEdit} onClick={() => setCreating(true)} type="button">
+          <button className="primary-button board-new" disabled={!canCreate} onClick={() => setCreating(true)} type="button">
             <Plus size={15} />
             New
           </button>
@@ -769,7 +807,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
       <section className="filterbar">
         <div className="segmented compact">
-          {issueTypes.map((type) => (
+          {(["ALL", ...offeredIssueTypes] as IssueTypeFilter[]).map((type) => (
             <button key={type} className={typeFilter === type ? "is-active" : ""} onClick={() => setTypeFilter(type)} type="button">
               {type === "ALL" ? "All" : typeMeta[type].label}
             </button>
@@ -841,11 +879,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                 `isLoading` rather than `isPending` so a query held disabled
                 (no projectId) never claims to be loading. */}
             <select
-              disabled={projectLabelsQuery.isLoading}
+              disabled={contextQuery.isLoading}
               onChange={(event) => setLabelFilter(event.target.value)}
-              value={projectLabelsQuery.isLoading ? "LOADING" : labelFilter}
+              value={contextQuery.isLoading ? "LOADING" : labelFilter}
             >
-              {projectLabelsQuery.isLoading ? (
+              {contextQuery.isLoading ? (
                 <option value="LOADING">Loading labels</option>
               ) : (
                 <>
@@ -929,11 +967,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           the two event notices below are both cleared when a drag starts, and
           one drag raises at most one of them — but the cap is what makes the
           count stop mattering. */}
-      {projectUnread.unanswered ||
-      roleUnknown ||
+      {(contextUnread.unanswered && !projectChecking) ||
       roleUnstated ||
       issuesUnknown ||
-      workflowUnknown ||
       transitionIssue.isError ||
       dragNotice ? (
         // Labelled and focusable: with no request id in any of them the stack
@@ -941,14 +977,25 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         // focuses a scroller of its own accord — in Firefox and Safari the
         // banners below the fold would be unreachable from the keyboard.
         <section aria-label="Board problems" className="board-notices" tabIndex={0}>
-          {projectUnread.unanswered ? (
-            <ApiNotice error={projectUnread.error}>
-              This project&apos;s details could not be loaded, so its name and key are missing above.
+          {/* One banner for the one read (TAS-251). The server answers the
+              project, the role, the members, the labels and the workflow
+              together or not at all, so they fail together and are said
+              together — three banners for one failure would be three claims
+              about three reads that no longer exist. */}
+          {contextUndeployed ? (
+            <ApiNotice error={contextUnread.error}>
+              This gateway does not serve the project read yet, so the project&apos;s name, people, labels and workflow
+              are missing and editing is off.
             </ApiNotice>
-          ) : null}
-          {roleUnknown ? (
-            <ApiNotice error={roleUnread.error}>
-              Your role could not be loaded, so editing is off — a failed read, not a read-only project.
+          ) : contextDetailsUnread ? (
+            <ApiNotice error={contextUnread.error}>
+              This project&apos;s details — its people, labels and workflows — could not be read, so editing is off.
+              The project itself is there; this is a failed read, not a read-only project.
+            </ApiNotice>
+          ) : contextUnread.unanswered && !projectChecking ? (
+            <ApiNotice error={contextUnread.error}>
+              This project could not be loaded, so its name, people, labels and workflow are missing and editing is off
+              — a failed read, not a read-only project.
             </ApiNotice>
           ) : null}
           {/* Its own sentence, because the one above would be false here: the
@@ -962,11 +1009,6 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           ) : null}
           {issuesUnknown ? (
             <ApiNotice error={issuesUnread.error}>The issues on this board could not be loaded.</ApiNotice>
-          ) : null}
-          {workflowUnknown ? (
-            <ApiNotice error={workflowUnread.error}>
-              This project&apos;s workflow could not be loaded, so no card can be moved.
-            </ApiNotice>
           ) : null}
           {/* The two below are events, not states of the screen: a rollback and
               a refused drop. An event that cannot be dismissed is how a stack
@@ -992,7 +1034,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           {/* A read that has already failed goes back to `isLoading` on every
               retry, so without the first clause the columns explained by the
               banner above would swap themselves for skeletons on a timer. */}
-          {!issuesUnknown && (workflowQuery.isLoading || issuesQuery.isLoading)
+          {!issuesUnknown && (contextQuery.isLoading || issuesQuery.isLoading || projectChecking)
             ? statuses.map((status) => <ColumnSkeleton key={status.statusKey} status={status} />)
             : statuses.map((status) => (
                 <BoardColumn
@@ -1002,6 +1044,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   issuesUnknown={issuesUnknown}
                   userById={userById}
                   canEdit={canEdit}
+                  canCreate={canCreate}
                   onAdd={() => setCreating(true)}
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
                 />
@@ -1040,7 +1083,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           issueId={issueId}
           projectId={projectId}
           members={members}
-          membersAnswered={membersQuery.data !== undefined}
+          membersAnswered={context !== undefined}
           membersUnknown={membersUnread.unanswered}
           userById={userById}
           canEdit={canEdit}
@@ -1048,7 +1091,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           canWatch={canWatch}
           isProjectViewer={isProjectViewer}
           currentUserId={meQuery.data?.id}
-          workflows={workflowQuery.data}
+          workflows={workflows}
           workflowUnknown={workflowUnknown}
           onClose={() => navigate(`/projects/${projectId}/board`)}
         />
@@ -1091,6 +1134,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
       {creating ? (
         <CreateIssueModal
+          issueTypes={offeredIssueTypes}
           projectKey={project?.projectKey ?? ""}
           projectColor={project?.color}
           onClose={() => setCreating(false)}
@@ -1132,6 +1176,7 @@ function BoardColumn({
   issuesUnknown,
   userById,
   canEdit,
+  canCreate,
   onAdd,
   onOpenIssue,
 }: {
@@ -1141,6 +1186,8 @@ function BoardColumn({
   issuesUnknown: boolean;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   canEdit: boolean;
+  /** `canEdit`, and a project that allows at least one issue type. */
+  canCreate: boolean;
   onAdd: () => void;
   onOpenIssue: (issueId: string) => void;
 }) {
@@ -1154,7 +1201,7 @@ function BoardColumn({
         <span className="status-dot" style={{ background: statusColors[status.statusKey] }} />
         <strong>{status.name}</strong>
         <span className="count-pill">{issuesUnknown ? <Unknown /> : issues.length}</span>
-        <button className="icon-button mini" disabled={!canEdit} onClick={onAdd} title="Create issue" type="button">
+        <button className="icon-button mini" disabled={!canCreate} onClick={onAdd} title="Create issue" type="button">
           <Plus size={13} />
         </button>
       </div>
@@ -1247,10 +1294,11 @@ function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "id
  * What the server found that the columns above do not hold (DESIGN.md §5.4).
  *
  * Its own group, below the board and outside the `DndContext`, because a hit is
- * an `IssueSearchHit` and has no status. Putting one in a status column would
- * be a claim the server never made, and making it a drop target would offer a
- * transition from a status nobody knows. So these rows do not lift, do not
- * drag, and say in words what they are.
+ * an `IssueSearchHit` and not an issue. It has carried a `statusKey` since
+ * backend TAS-218, but no labels, no dates and no version, so a card built from
+ * it in a column would draw less than its neighbours and could not be edited
+ * like them; DESIGN.md §5.2 keeps hits out of the columns. So these rows do not
+ * lift, do not drag, and say in words what they are.
  *
  * Four states, and they are four different sentences: a search still running, a
  * search that failed, a search that found nothing else, and the rows
@@ -1326,8 +1374,8 @@ function SearchHitsGroup({
                     <PriorityBars priority={hit.priority} />
                   </span>
                   <strong>{hit.summary}</strong>
-                  {/* Everything a hit carries and nothing else — no status, no
-                      labels, no dates, because the server sent none of them. */}
+                  {/* Nothing a hit does not carry — no labels, no dates, because
+                      the server sent none of them. */}
                   <span className="search-hit-foot">
                     <Avatar user={assignee} size="sm" />
                   </span>
@@ -1522,6 +1570,16 @@ function IssuePanel({
   // for the issue would cost the panel a second round (TAS-242). The issue read
   // and this are the panel's two requests (TAS-246).
   usePrefetchInfiniteQuery(issueCommentsOptions(projectId, issueId));
+  /**
+   * The work log (TAS-251, backend PR #178) on the same terms as the comments
+   * above: started beside the issue read, so it is a third request in the same
+   * round rather than a round of its own, and not asked again by the section
+   * when it mounts.
+   */
+  const [worklogsPrefetched] = useState(
+    () => queryClient.getQueryState(issueWorklogsOptions(projectId, issueId).queryKey) === undefined,
+  );
+  usePrefetchQuery(issueWorklogsOptions(projectId, issueId));
   const loadingLabelId = useId();
   const issue = issueQuery.data?.issue;
   const history = issueQuery.data?.history ?? [];
@@ -2118,6 +2176,13 @@ function IssuePanel({
                 know where it can go". */}
             {workflowUnknown ? (
               <span className="transition-note">The workflow could not be loaded, so no move is offered.</span>
+            ) : workflows && !workflow ? (
+              // The context answered without this issue's type: the project no
+              // longer allows it (TAS-251). Not a failure, and not "nowhere to go".
+              <span className="transition-note">
+                This project has no workflow for {typeMeta[issue.issueType].label.toLowerCase()} issues, so no move is
+                offered.
+              </span>
             ) : null}
             {availableTransitions.map((transition) => (
               <button
@@ -2419,6 +2484,17 @@ function IssuePanel({
             isProjectAdmin={isProjectAdmin}
             currentUserId={currentUserId}
             userById={userById}
+          />
+
+          <IssueWorklogSection
+            projectId={projectId}
+            issueId={issueId}
+            canLog={canEdit}
+            isProjectAdmin={isProjectAdmin}
+            currentUserId={currentUserId}
+            userById={userById}
+            prefetched={worklogsPrefetched}
+            writeScope={issueWriteScope(issueId)}
           />
 
           <CommentsSection
@@ -3356,11 +3432,14 @@ function IssueLabelsSection({
   const labelsCache = issuePartCache(queryClient, projectId, issueId, "labels");
   const labelsQuery = useIssuePart(projectId, issueId, "labels");
   const unavailable = labelsQuery.data === null;
-  // Same key the board and the manage modal use, so all three share one read.
+  // The board's own context read, so the board, this picker and the manage
+  // modal draw one list from one request (TAS-251) — the board behind the
+  // panel has already asked, and this observer only reads its answer.
   const projectLabelsQuery = useQuery({
-    queryKey: ["project-labels", projectId],
-    queryFn: () => taskaApi.listProjectLabels(projectId),
+    queryKey: projectContextKey(projectId),
+    queryFn: () => taskaApi.getProjectContext(projectId),
     retry: retryUnlessMissing,
+    select: (context: ProjectContext) => context.labels,
   });
 
   const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
@@ -4598,13 +4677,23 @@ function ProjectLabelsModal({
   const [color, setColor] = useState(labelColorChoices[0]);
   const [editing, setEditing] = useState<{ id: string; name: string; color: string } | null>(null);
 
-  const labelsKey = ["project-labels", projectId];
+  // The board's context read (TAS-251): the labels are one part of it, and the
+  // optimistic writes below patch that part in place. The rows are `Label` —
+  // `id`, `name` and `color` — because that is all the context carries, and an
+  // optimistic row invents nothing the server's answer would not have.
+  const labelsKey = projectContextKey(projectId);
   const labelsQuery = useQuery({
     queryKey: labelsKey,
-    queryFn: () => taskaApi.listProjectLabels(projectId),
+    queryFn: () => taskaApi.getProjectContext(projectId),
     retry: retryUnlessMissing,
+    select: (context: ProjectContext) => context.labels,
   });
   const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
+  /** Rewrite the context's labels and nothing else of it. */
+  const patchLabels = (write: (current: Label[]) => Label[]) =>
+    queryClient.setQueryData<ProjectContext>(labelsKey, (current) =>
+      current ? { ...current, labels: write(current.labels) } : current,
+    );
 
   // A rename or a recolour changes every chip drawn from these labels, and a
   // delete takes the label off every issue that carried it (the contract's
@@ -4621,19 +4710,8 @@ function ProjectLabelsModal({
     mutationFn: (input: CreateProjectLabelInput) => taskaApi.createProjectLabel(projectId, input),
     onMutate: async (input) => {
       await queryClient.cancelQueries({ queryKey: labelsKey });
-      const previous = queryClient.getQueryData<ProjectLabel[]>(labelsKey);
-      queryClient.setQueryData<ProjectLabel[]>(labelsKey, (current) => [
-        ...(current ?? []),
-        {
-          id: optimisticLabelId,
-          projectId,
-          name: input.name,
-          color: input.color,
-          createdBy: "",
-          createdAt: new Date().toISOString(),
-          deletedAt: null,
-        },
-      ]);
+      const previous = queryClient.getQueryData<ProjectContext>(labelsKey);
+      patchLabels((current) => [...current, { id: optimisticLabelId, name: input.name, color: input.color }]);
       return { previous };
     },
     onError: (_error, input, context) => {
@@ -4655,11 +4733,9 @@ function ProjectLabelsModal({
       taskaApi.updateProjectLabel(projectId, input.id, { name: input.name, color: input.color }),
     onMutate: async (input) => {
       await queryClient.cancelQueries({ queryKey: labelsKey });
-      const previous = queryClient.getQueryData<ProjectLabel[]>(labelsKey);
-      queryClient.setQueryData<ProjectLabel[]>(labelsKey, (current) =>
-        (current ?? []).map((label) =>
-          label.id === input.id ? { ...label, name: input.name, color: input.color } : label,
-        ),
+      const previous = queryClient.getQueryData<ProjectContext>(labelsKey);
+      patchLabels((current) =>
+        current.map((label) => (label.id === input.id ? { ...label, name: input.name, color: input.color } : label)),
       );
       return { previous };
     },
@@ -4681,10 +4757,8 @@ function ProjectLabelsModal({
     mutationFn: (labelId: string) => taskaApi.deleteProjectLabel(projectId, labelId),
     onMutate: async (labelId) => {
       await queryClient.cancelQueries({ queryKey: labelsKey });
-      const previous = queryClient.getQueryData<ProjectLabel[]>(labelsKey);
-      queryClient.setQueryData<ProjectLabel[]>(labelsKey, (current) =>
-        (current ?? []).filter((label) => label.id !== labelId),
-      );
+      const previous = queryClient.getQueryData<ProjectContext>(labelsKey);
+      patchLabels((current) => current.filter((label) => label.id !== labelId));
       return { previous };
     },
     onError: (_error, _labelId, context) => {
@@ -4865,12 +4939,20 @@ function LabelSwatches({ onPick, selected }: { onPick: (color: string) => void; 
 }
 
 function CreateIssueModal({
+  issueTypes,
   projectId,
   projectKey,
   projectColor,
   onClose,
   onCreated,
 }: {
+  /**
+   * The types this project allows (`allowedIssueTypes`), in the board's order.
+   * Only these are offered, and the first is the default. Empty means nothing
+   * can be created, and the form says so rather than offering a type the
+   * server did not list (TAS-251).
+   */
+  issueTypes: IssueType[];
   projectId: string;
   projectKey: string;
   /** Same reason as `ProjectLabelsModal`: one key, one colour, on every surface. */
@@ -4881,7 +4963,7 @@ function CreateIssueModal({
   const queryClient = useQueryClient();
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
-  const [issueType, setIssueType] = useState<IssueType>("TASK");
+  const [issueType, setIssueType] = useState<IssueType | null>(issueTypes[0] ?? null);
   const [priority, setPriority] = useState<IssuePriority>("MEDIUM");
   // The five planning fields, all optional (TAS-189). Held as drafts for the
   // same reason the panel holds them that way — the boxes are typed into — and
@@ -4959,8 +5041,8 @@ function CreateIssueModal({
     setPlanning((current) => ({ ...current, [field]: value }));
 
   const createIssue = useMutation({
-    mutationFn: () =>
-      taskaApi.createIssue(projectId, { issueType, priority, summary, description, ...planningInput(planning) }),
+    mutationFn: (type: IssueType) =>
+      taskaApi.createIssue(projectId, { issueType: type, priority, summary, description, ...planningInput(planning) }),
     // The panel's rule, on this form's one write: the slot holds a single line,
     // so a date refusal must not caption the answer to a create, and a create
     // that is refused must not be silent behind one (TAS-231, art-director).
@@ -5196,7 +5278,7 @@ function CreateIssueModal({
             return;
           }
           clearDateNotice();
-          if (summary.trim()) createIssue.mutate();
+          if (summary.trim() && issueType) createIssue.mutate(issueType);
         }}
       >
         <label className="field">
@@ -5210,13 +5292,17 @@ function CreateIssueModal({
         <div className="form-two">
           <label>
             <span>Type</span>
-            <div className="segmented compact">
-              {(["TASK", "BUG", "STORY"] as IssueType[]).map((type) => (
-                <button className={issueType === type ? "is-active" : ""} key={type} onClick={() => setIssueType(type)} type="button">
-                  {typeMeta[type].label}
-                </button>
-              ))}
-            </div>
+            {issueTypes.length ? (
+              <div className="segmented compact">
+                {issueTypes.map((type) => (
+                  <button className={issueType === type ? "is-active" : ""} key={type} onClick={() => setIssueType(type)} type="button">
+                    {typeMeta[type].label}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="muted-label">This project allows no issue types.</p>
+            )}
           </label>
           <label>
             <span>Priority</span>
@@ -5369,7 +5455,7 @@ function CreateIssueModal({
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel
           </button>
-          <button className="primary-button" disabled={!summary.trim() || createIssue.isPending} type="submit">
+          <button className="primary-button" disabled={!summary.trim() || !issueType || createIssue.isPending} type="submit">
             Create issue
           </button>
         </div>
@@ -5444,6 +5530,15 @@ function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, 
       ? `removed ${event.payload.fileName}`
       : "removed a file";
   }
+  // `worklogSpentMinutes` is in the added and updated payloads
+  // (`PayloadSerializer.createWorklogPayload`, backend PR #178); the deleted
+  // one carries only ids.
+  if (event.eventType === "WORKLOG_ADDED") {
+    const minutes = event.payload.worklogSpentMinutes;
+    return typeof minutes === "number" && minutes > 0 ? `logged ${formatDuration(minutes)}` : "logged work";
+  }
+  if (event.eventType === "WORKLOG_UPDATED") return "edited a work log entry";
+  if (event.eventType === "WORKLOG_DELETED") return "deleted a work log entry";
   return "updated this issue";
 }
 
@@ -5484,7 +5579,7 @@ function mergeWorkflowStatuses(workflows?: WorkflowsByIssueType) {
   if (!workflows) return fallbackStatuses;
 
   const statusByKey = new Map<IssueStatus, WorkflowStatus>();
-  concreteIssueTypes.forEach((issueType) => {
+  ALL_ISSUE_TYPES.forEach((issueType) => {
     workflows[issueType]?.statuses.forEach((status) => {
       const current = statusByKey.get(status.statusKey);
       if (!current || status.sortOrder < current.sortOrder) {
@@ -5493,6 +5588,11 @@ function mergeWorkflowStatuses(workflows?: WorkflowsByIssueType) {
     });
   });
 
+  // A project that allows no issue type sends no workflow at all, and its
+  // issues — created before the types were taken away — still need columns.
+  // The fallback's keys are the contract's statuses, and nothing can be moved
+  // between them: the drop path refuses a type with no workflow.
+  if (statusByKey.size === 0) return fallbackStatuses;
   return [...statusByKey.values()].sort((a, b) => a.sortOrder - b.sortOrder);
 }
 

@@ -347,6 +347,92 @@ describe("RestTaskaApi project members", () => {
     vi.unstubAllGlobals();
   });
 
+  /**
+   * `GET /projects/{projectId}/context` (backend PR #169, TAS-212) — the board's
+   * one frame read since TAS-251. Each part goes through its own route's mapper.
+   */
+  describe("the project context", () => {
+    const status = (id: string, statusKey: string, sortOrder: number) => ({
+      id,
+      statusKey,
+      name: statusKey,
+      category: statusKey,
+      sortOrder,
+    });
+    const workflow = (id: string) => ({ id, name: id, version: 1, statuses: [status("s1", "TODO", 10)], transitions: [] });
+
+    it("asks the context route and keys the workflows by the types it lists, dropping a type it cannot name", async () => {
+      const { result, fetchStub } = await call(
+        {
+          project: project({ currentUserRole: "MEMBER" }),
+          members: [],
+          labels: [],
+          workflows: [
+            { issueType: "BUG", workflow: workflow("bug") },
+            { issueType: null, workflow: workflow("unknown") },
+            { issueType: "TASK", workflow: workflow("task") },
+          ],
+        },
+        (api) => api.getProjectContext("project-1"),
+      );
+
+      expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1/context");
+      expect(fetchStub).toHaveBeenCalledTimes(1);
+      expect(result.role).toBe("MEMBER");
+      expect(Object.keys(result.workflows).sort()).toEqual(["BUG", "TASK"]);
+      expect(result.workflows.TASK).toEqual(workflow("task"));
+      expect(result.workflows.STORY).toBeUndefined();
+    });
+
+    it("answers no workflows at all for a project that allows no type", async () => {
+      const { result } = await call(
+        { project: project({ currentUserRole: "ADMIN" }), members: [], labels: [], workflows: [] },
+        (api) => api.getProjectContext("project-1"),
+      );
+      expect(result.workflows).toEqual({});
+    });
+
+    it("maps members as the member route does — blank names unnamed, name order, addedAt kept — and labels to three fields", async () => {
+      const { result } = await call(
+        {
+          project: project({ currentUserRole: "ADMIN" }),
+          members: [
+            { userId: "user-ghost", role: "MEMBER", displayName: "", email: "", avatar: null, addedAt: "2026-08-02T09:00:00Z" },
+            { userId: "user-mark", role: "MEMBER", displayName: "Mark Ruiz", email: "mark@example.com", avatar: null },
+            { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+          ],
+          labels: [{ id: "label-1", name: "backend", color: "#4f7cf0" }],
+          workflows: [],
+        },
+        (api) => api.getProjectContext("project-1"),
+      );
+
+      expect(result.members.map((member) => member.userId)).toEqual(["user-anna", "user-mark", "user-ghost"]);
+      expect(result.members[2]).toEqual({ userId: "user-ghost", role: "MEMBER", addedAt: "2026-08-02T09:00:00Z" });
+      expect(result.labels).toEqual([{ id: "label-1", name: "backend", color: "#4f7cf0" }]);
+    });
+
+    it("states no role, rather than a floor, when the project carries none", async () => {
+      const { result } = await call(
+        { project: project(), members: [], labels: [], workflows: [] },
+        (api) => api.getProjectContext("project-1"),
+      );
+      expect(result.role).toBeNull();
+    });
+
+    it("reads the gateway's static-resource 404 as an undeployed route, not as a missing project", async () => {
+      window.localStorage.setItem("taska.accessToken", "valid-access");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          answer(404, { code: "NOT_FOUND", message: "No static resource api/v1/projects/project-1/context." }),
+        ),
+      );
+      const error = await new RestTaskaApi().getProjectContext("project-1").catch((caught: unknown) => caught);
+      expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+    });
+  });
+
   it("unwraps `members`, not `items`, and asks the route the PR adds", async () => {
     const { result, fetchStub } = await call(
       {
@@ -1411,6 +1497,97 @@ describe("RestTaskaApi read-only admin", () => {
 
     expect(summary.events.map((event) => event.id)).toEqual(["older", "newer", "oldest"]);
   });
+
+  /** `GET /readonly/audit-entries` (backend PR #172, TAS-160; TAS-251). */
+  describe("the audit log", () => {
+    const auditBody = {
+      entries: [
+        {
+          actorUserId: "e65186a2-b807-42ae-a66f-711be116a93b",
+          actorLogin: "mark",
+          action: "BLOCK_USER",
+          targetService: "auth",
+          targetTable: "users",
+          targetId: "c47a9b21-6d5e-4f0b-8c72-9e13a4f8d602",
+          oldValue: '{"status":"ACTIVE"}',
+          newValue: '{"status":"BLOCKED"}',
+          reason: "Left the company",
+          requestId: "req-1",
+          createdAt: "2026-10-09T16:40:00Z",
+        },
+      ],
+      pagination: { currentPage: 1, pageSize: 20, totalRows: 41, totalPages: 3, hasNext: true, hasPrev: true },
+    };
+
+    it("asks at the contract's path with a 0-based page and only the filters that carry a value", async () => {
+      const fetchStub = vi.fn(async (input: string) => answer(auditBody, input));
+      vi.stubGlobal("fetch", fetchStub);
+
+      const result = await new RestTaskaApi().listAuditEntries({
+        page: 2,
+        pageSize: 20,
+        action: "BLOCK_USER",
+        targetId: "",
+        createdAtFrom: "2026-10-01",
+        createdAtTo: "2026-10-09",
+      });
+
+      const url = new URL(fetchStub.mock.calls[0][0], "http://localhost");
+      expect(url.pathname).toMatch(/\/readonly\/audit-entries$/);
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        page: "1",
+        pageSize: "20",
+        action: "BLOCK_USER",
+        createdAtFrom: "2026-10-01",
+        createdAtTo: "2026-10-09",
+      });
+      // The `+ 1` half of the conversion: the wire's page 1 is the domain's 2.
+      expect(result.pagination).toMatchObject({ currentPage: 2, totalRows: 41 });
+      expect(result.entries).toEqual([auditBody.entries[0]]);
+    });
+
+    it("maps what arrives — every row of it, and nothing that is not a string", async () => {
+      // The head ignores `pageSize` and answers every row; nothing slices it.
+      const many = Array.from({ length: 25 }, () => auditBody.entries[0]);
+      const odd = { actorLogin: 7, oldValue: { status: "ACTIVE" }, newValue: null };
+      const fetchStub = vi.fn(async () => answer({ entries: [...many, odd] }));
+      vi.stubGlobal("fetch", fetchStub);
+
+      const result = await new RestTaskaApi().listAuditEntries({ page: 1, pageSize: 20 });
+
+      expect(result.entries).toHaveLength(26);
+      expect(result.entries[25]).toEqual({
+        actorUserId: null,
+        actorLogin: null,
+        action: null,
+        targetService: null,
+        targetTable: null,
+        targetId: null,
+        reason: null,
+        requestId: null,
+        createdAt: null,
+        oldValue: '{"status":"ACTIVE"}',
+        newValue: null,
+      });
+      // No pagination on the wire: the caller's own page, and one page of what came.
+      expect(result.pagination).toMatchObject({ currentPage: 1, pageSize: 20, totalRows: 26, totalPages: 1 });
+    });
+
+    it("passes a 501 up with its status, so the section can say the route is not served", async () => {
+      const fetchStub = vi.fn(
+        async () =>
+          ({
+            status: 501,
+            ok: false,
+            headers: { get: () => "req-501" },
+            json: async () => ({ code: "UNIMPLEMENTED", message: "Method not implemented" }),
+          }) as unknown as Response,
+      );
+      vi.stubGlobal("fetch", fetchStub);
+
+      await expect(new RestTaskaApi().listAuditEntries({})).rejects.toMatchObject({ status: 501 });
+    });
+  });
 });
 
 /**
@@ -1546,6 +1723,10 @@ describe("RestTaskaApi issue search", () => {
         // estimate still arrives without the key, so both of these read "not
         // estimated" rather than `undefined`.
         storyPoints: null,
+        // A gateway that predates TAS-218 sends none of the three.
+        projectId: null,
+        projectKey: null,
+        statusKey: null,
       },
       {
         id: "issue-2",
@@ -1555,11 +1736,30 @@ describe("RestTaskaApi issue search", () => {
         priority: "MEDIUM",
         assigneeId: null,
         storyPoints: null,
+        projectId: null,
+        projectKey: null,
+        statusKey: null,
       },
     ]);
     // The count is of the whole matching set, not of the page.
     expect(page.totalCount).toBe(42);
     expect(page.page).toBe(0);
+  });
+
+  it("carries the project and the status key TAS-218 put on the hit, blank read as absent", async () => {
+    stubFetch({
+      items: [
+        { id: "issue-1", issueKey: "TAS-101", summary: "s", issueType: "BUG", priority: "HIGH", assigneeId: "", projectId: "project-tas", projectKey: "TAS", statusKey: "IN_PROGRESS" },
+        { id: "issue-2", issueKey: "WEB-12", summary: "s", issueType: "TASK", priority: "LOW", assigneeId: "", projectId: "", statusKey: "BLOCKED" },
+      ],
+      totalCount: 2,
+    });
+
+    const { items } = await new RestTaskaApi().searchIssues({ query: "board" });
+
+    expect(items[0]).toMatchObject({ projectId: "project-tas", projectKey: "TAS", statusKey: "IN_PROGRESS" });
+    // A key this build does not know is kept verbatim; a blank project is none.
+    expect(items[1]).toMatchObject({ projectId: null, projectKey: null, statusKey: "BLOCKED" });
   });
 
   it("never hydrates a hit, whatever the board does with a list", async () => {
@@ -2814,6 +3014,9 @@ describe("RestTaskaApi issue planning fields", () => {
       "issueKey",
       "issueType",
       "priority",
+      "projectId",
+      "projectKey",
+      "statusKey",
       "storyPoints",
       "summary",
     ]);
@@ -4013,5 +4216,92 @@ describe("RestTaskaApi issue details and the key lookup", () => {
 
     expect(failure).toMatchObject({ status, code, message });
     expect(isMissingOrForbidden(failure)).toBe(true);
+  });
+});
+
+/** Backend PR #178 (TAS-118): the four worklog routes, as `rest` sends and reads them. */
+describe("RestTaskaApi worklogs", () => {
+  const PROJECT = "b4e2d3c5-0000-4000-8000-000000000251";
+  const ISSUE = "a3f1c2d4-0000-4000-8000-000000000251";
+  const WORKLOG = "c5f3e4d6-0000-4000-8000-000000000251";
+  const ANNA = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
+  const base = `/api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs`;
+
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: RequestInit) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  const entry = {
+    id: WORKLOG,
+    issueId: ISSUE,
+    projectId: PROJECT,
+    authorUserId: ANNA,
+    spentMinutes: 90,
+    workDate: "2026-10-09",
+    createdAt: "2026-10-09T09:00:00Z",
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the list, with an absent comment and update stamp as null", async () => {
+    const fetchStub = stubFetch({ items: [entry] });
+
+    const worklogs = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE);
+
+    expect(fetchStub.mock.calls[0][0]).toBe(base);
+    expect(worklogs).toEqual([{ ...entry, comment: null, updatedAt: null }]);
+  });
+
+  it("adds with the three fields, leaving out a comment it was not given", async () => {
+    const fetchStub = stubFetch(entry, 201);
+
+    await new RestTaskaApi().addIssueWorklog(PROJECT, ISSUE, { spentMinutes: 90, workDate: "2026-10-09" });
+
+    expect(fetchStub.mock.calls[0][0]).toBe(base);
+    expect(fetchStub.mock.calls[0][1]?.method).toBe("POST");
+    expect(JSON.parse(String(fetchStub.mock.calls[0][1]?.body))).toEqual({ spentMinutes: 90, workDate: "2026-10-09" });
+  });
+
+  it("updates with only the fields it was given, an empty comment included", async () => {
+    const fetchStub = stubFetch({ ...entry, comment: null });
+
+    await new RestTaskaApi().updateIssueWorklog(PROJECT, ISSUE, WORKLOG, { comment: "" });
+
+    expect(fetchStub.mock.calls[0][0]).toBe(`${base}/${WORKLOG}`);
+    expect(fetchStub.mock.calls[0][1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchStub.mock.calls[0][1]?.body))).toEqual({ comment: "" });
+  });
+
+  it("deletes, answering nothing for a 204", async () => {
+    const fetchStub = stubFetch(undefined, 204);
+
+    await expect(new RestTaskaApi().deleteIssueWorklog(PROJECT, ISSUE, WORKLOG)).resolves.toBeUndefined();
+
+    expect(fetchStub.mock.calls[0][0]).toBe(`${base}/${WORKLOG}`);
+    expect(fetchStub.mock.calls[0][1]?.method).toBe("DELETE");
+  });
+
+  it("rejects the undeployed route with the signature isUndeployedRoute reads", async () => {
+    stubFetch({ code: "NOT_FOUND", message: `No static resource api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs.` }, 404);
+
+    const failure = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE).catch((error: unknown) => error);
+
+    expect(isUndeployedRoute(failure, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
   });
 });

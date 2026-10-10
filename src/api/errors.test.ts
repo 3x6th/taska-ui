@@ -6,6 +6,7 @@ import {
   isConflict,
   isIssueVersionConflict,
   isMissingOrForbidden,
+  isRouteNotServed,
   isUndeployedRoute,
 } from "./errors";
 import type { IssueWriteAnswer } from "./TaskaApi";
@@ -52,6 +53,26 @@ describe("isMissingOrForbidden", () => {
     expect(isMissingOrForbidden({ code: "NOT_FOUND" })).toBe(false);
     expect(isMissingOrForbidden(undefined)).toBe(false);
     expect(isMissingOrForbidden(null)).toBe(false);
+  });
+});
+
+describe("isRouteNotServed", () => {
+  const staticResource = "No static resource api/v1/readonly/audit-entries.";
+
+  it("reads a 501 and both undeployed signatures as a route this gateway does not serve", () => {
+    expect(isRouteNotServed(new ApiError("Not implemented", "UNIMPLEMENTED", 501), UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+    expect(isRouteNotServed(new ApiError(staticResource, "NOT_FOUND", 404), UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+    expect(
+      isRouteNotServed(new ApiError("Method not allowed", "METHOD_NOT_ALLOWED", 405), UNDEPLOYED_ROUTE_MESSAGE),
+    ).toBe(true);
+  });
+
+  it("does not read a refusal, a fault or a mock error as one", () => {
+    expect(isRouteNotServed(new ApiError("Access denied", "PERMISSION_DENIED", 403), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
+    expect(isRouteNotServed(new ApiError("Internal error", "INTERNAL", 500), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
+    expect(isRouteNotServed(new ApiError("Not implemented", "UNKNOWN", 501), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
+    expect(isRouteNotServed(new ApiError("Bad gateway", "UNKNOWN", 502), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
+    expect(isRouteNotServed(new MockLikeError("UNIMPLEMENTED", "Not implemented"), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
   });
 });
 
