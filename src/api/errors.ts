@@ -182,6 +182,11 @@ export function isUndeployedRoute(error: unknown, undeployedMessage: string): bo
   return unmappedPath || mappedForOtherMethods;
 }
 
+function isNotImplemented(error: unknown): boolean {
+  const { code, status } = apiErrorFacts(error);
+  return status === 501 && code === "UNIMPLEMENTED";
+}
+
 /**
  * Whether the gateway does not serve this route — either arm of
  * `isUndeployedRoute`, or a **501**.
@@ -195,9 +200,11 @@ export function isUndeployedRoute(error: unknown, undeployedMessage: string): bo
  * "this gateway does not have it yet" and neither says anything about what was
  * asked for, so a screen states them in one sentence.
  *
- * Matched on the status alone. Nothing else this gateway answers is a 501 —
- * `UNIMPLEMENTED` is the only gRPC code that maps to it — and a 501 from
- * something in front of the gateway would also mean "not served here".
+ * Matched on the status *and* the code `UNIMPLEMENTED`. The gateway's own 501
+ * always carries it (`GatewayErrorHandler` uses the gRPC status name,
+ * `RestErrorMapper` maps `UNIMPLEMENTED` to 501). A 501 from something in front
+ * of the gateway is not a statement about what the gateway shipped — the same
+ * reasoning as the 405 arm of `isUndeployedRoute`.
  *
  * A sibling of `isUndeployedRoute` rather than a third arm of it: that one's
  * callers ask about a route that is not *deployed*, and a 501 is a route that is
@@ -205,7 +212,7 @@ export function isUndeployedRoute(error: unknown, undeployedMessage: string): bo
  * against the mock, which carries no HTTP status.
  */
 export function isRouteNotServed(error: unknown, undeployedMessage: string): boolean {
-  return isUndeployedRoute(error, undeployedMessage) || apiErrorFacts(error).status === 501;
+  return isUndeployedRoute(error, undeployedMessage) || isNotImplemented(error);
 }
 
 /**

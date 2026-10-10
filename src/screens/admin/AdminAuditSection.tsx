@@ -64,6 +64,7 @@ export function AdminAuditSection() {
   const update = (changes: Partial<AuditViewState>) => {
     // Replace rather than push, as every view change in this area does: Back
     // leaves the log instead of walking its filters one by one.
+    setOpen(null);
     setSearchParams(writeAuditViewState({ ...view, ...changes }), { replace: true });
   };
 
@@ -201,7 +202,11 @@ function AuditRow({
         // The pointer path; the button in the last cell is the keyboard's
         // (§5.8: a `<tr>` cannot be a control). The button's own click is
         // stopped there so one press does not toggle twice.
-        onClick={onToggle}
+        onClick={() => {
+          // Selecting text to copy ends in a click on the row; it is not a toggle.
+          if (window.getSelection()?.toString()) return;
+          onToggle();
+        }}
       >
         <td className="admin-cell-mono">
           {time ? <time dateTime={entry.createdAt ?? undefined}>{time}</time> : <Absent />}

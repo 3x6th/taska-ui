@@ -2198,9 +2198,9 @@ describe("MockTaskaApi", () => {
       expect(second.pagination).toMatchObject({ currentPage: 2, hasNext: false, hasPrev: true });
     });
 
-    it("clamps pageSize to 1–100", async () => {
+    it("clamps pageSize above 100 and falls back to 20 below 1, as the server does", async () => {
       expect((await api.listAuditEntries({ pageSize: 500 })).pagination.pageSize).toBe(100);
-      expect((await api.listAuditEntries({ pageSize: 0 })).pagination.pageSize).toBe(1);
+      expect((await api.listAuditEntries({ pageSize: 0 })).pagination.pageSize).toBe(20);
     });
 
     it("carries null documents, a null request id and masked values, as the log does", async () => {

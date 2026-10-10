@@ -1917,7 +1917,8 @@ export class RestTaskaApi implements TaskaApi {
       "createdAtFrom",
       "createdAtTo",
     ] as const) {
-      const value = query[key]?.trim();
+      // Not trimmed: the server matches exactly. Empty is no filter.
+      const value = query[key];
       if (value) search.set(key, value);
     }
     return this.request<RestAuditEntries>(`/readonly/audit-entries${this.query(search)}`).then((response) => {

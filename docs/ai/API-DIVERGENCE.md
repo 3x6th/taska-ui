@@ -609,8 +609,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
   trigger above), 404 for a
   missing project, and **Infra and Ops allows only TASK and BUG**. `createIssue`
   refuses a type the project does not allow with `400 INVALID_ARGUMENT` ("Issue
-  type STORY is not allowed in project OPS"); the gateway refuses it too, but
-  its exact status and wording are **unmeasured**. Its other
+  type STORY is not allowed in project OPS"). **The server does not**: at
+  develop and #169, issue-service `IssueServiceImpl.createIssue` checks only the
+  role and saves any issueType (201, an issue with no workflow); nothing in
+  issue-service reads `allowedIssueTypes`. The mock models the intended rule,
+  the UI never offers such a type, and the backend ask is recorded in
+  docs/ai/BACKLOG.md (not filed yet). Its other
   project reads stay looser than the gateway — `getMembership` still answers
   VIEWER for a non-member — so the read-only e2e cases now sign in as Tom, a
   real VIEWER of Taska Platform and, since TAS-251, of Mobile.
@@ -637,8 +641,9 @@ Same rule as above: "Closed by" is settled, the rest is live.
   answers every matching row whatever `page`/`pageSize` say. **Not
   compensated**: `rest` maps what arrives and the section draws every row;
   `pagination` is taken from the wire, so the pager says whatever the server
-  says. The mock pages newest first and clamps `pageSize` to 1–100, as the
-  server is meant to. Removal: nothing to remove client-side once fixed.
+  says. The mock pages newest first and pages as the server's `normalizePageSize`
+  does: `pageSize` below 1 falls back to the default 20, a negative `page` to
+  the default first page, and only a value above 100 is clamped to 100. Removal: nothing to remove client-side once fixed.
 - **Dates `yyyy-MM-dd` only**, whole UTC days, both ends inclusive; anything
   else, and `from` after `to`, is 400. The filter popover takes a date field,
   sends the value as typed, and refuses `from > to` before sending; a URL with
