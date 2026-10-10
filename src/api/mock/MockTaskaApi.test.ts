@@ -1570,7 +1570,17 @@ describe("MockTaskaApi", () => {
       expect(first.items.map((hit) => hit.id)).not.toEqual(second.items.map((hit) => hit.id));
     });
 
-    it("answers with the seven fields of the short DTO and nothing else", async () => {
+    // Backend TAS-218: a filter value nobody holds passes the edge and matches
+    // nothing — neither a 400 (TAS-168) nor the whole set (TAS-180). Cast,
+    // because no caller of this build can spell one.
+    it("answers an empty page for a priority or issue type it does not know", async () => {
+      const params = { query: "board", priority: "URGENT", issueType: "EPIC" } as unknown as Parameters<
+        MockTaskaApi["searchIssues"]
+      >[0];
+      await expect(api.searchIssues(params)).resolves.toMatchObject({ items: [], totalCount: 0 });
+    });
+
+    it("answers with the ten fields of the short DTO and nothing else", async () => {
       const created = await api.createIssue(project.id, {
         issueType: "TASK",
         summary: "Unassigned needle for the search",
@@ -1582,19 +1592,23 @@ describe("MockTaskaApi", () => {
       const hit = items.find((item) => item.id === created.id);
 
       expect(hit).toBeDefined();
-      // No status, no projectId, no description, no labels: a hit that carried
-      // them would let a column or a card claim something the gateway never
-      // sent. `storyPoints` is the seventh and last — `IssueShortResponseDto`
-      // states it and states no dates and no estimates with it.
+      // No description, no labels, no version: a hit that carried them would
+      // let a card or an edit claim something the gateway never sent. The
+      // project and the status key are TAS-218's; `storyPoints` is the one
+      // planning field, with no dates and no estimates beside it.
       expect(Object.keys(hit ?? {}).sort()).toEqual([
         "assigneeId",
         "id",
         "issueKey",
         "issueType",
         "priority",
+        "projectId",
+        "projectKey",
+        "statusKey",
         "storyPoints",
         "summary",
       ]);
+      expect(hit).toMatchObject({ projectId: project.id, projectKey: project.projectKey, statusKey: "TODO" });
       // Created without one, so this states "not estimated" rather than a value.
       expect(hit?.storyPoints).toBeNull();
       // `""` on the wire for nobody, `null` here, exactly as `Issue.assigneeId`.

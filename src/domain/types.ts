@@ -636,25 +636,22 @@ export interface Issue {
  * One result of `GET /issues/search` — the contract's `IssueShortResponseDto`,
  * and **not** an `Issue`.
  *
- * Seven fields is everything the search route is ever told — six until merged
- * PR #148 added `storyPoints` to `IssueShortResponseDto`. There is no `status`,
- * no `projectId`, no `description`, no `labels`, no `updatedAt` and no
- * `version`, which is why this is its own type rather than a `Partial<Issue>`
- * or an `Issue` with holes punched in it: a hit that was typed as an issue
- * would let a column, a card or a drop target read a status the server never
- * sent.
+ * Ten fields is everything the search route is told: the seven it always had
+ * (`storyPoints` from merged PR #148) and, since backend TAS-218 (in
+ * docs/contract/openapi.yml at develop `485fea5`, deployed 2026-10-09), the
+ * issue's `projectId`, `projectKey` and `statusKey`. There is still no
+ * `description`, no `labels`, no `updatedAt` and no `version`, which is why
+ * this is its own type rather than a `Partial<Issue>`: a hit typed as an issue
+ * would let a card or an edit read fields the server never sent.
  *
- * Two consequences shape the feature rather than decorate it. A hit cannot be
- * placed in a board column, so the board renders server hits as their own group
- * (DESIGN.md §5.4 counts them, §5.2 does not hold them). And a hit outside
- * the board carries no `projectId` to be opened by, so it opens through its
- * key — `/browse/{issueKey}`, resolved by the server with `getIssueByKey` when
- * it is chosen (TAS-246), never guessed from the key's prefix. Deliberately not
- * hydrated through `getIssue` — the owner settled the general question on 2026-08-23 (docs/ai/API-DIVERGENCE.md,
- * TAS-178): fix the backend, do not hydrate on the frontend. `listIssues` used
- * to pay exactly that N+1 and stopped in TAS-195, when its DTO grew into a
- * whole issue; this one did not, so hydrating here would be a `getIssue` per
- * hit on every keystroke.
+ * A hit carrying `projectId` opens straight to its project's board and panel
+ * (`/projects/{projectId}/issues/{id}`), with no lookup. One without — a
+ * gateway that predates TAS-218 — still opens through its key,
+ * `/browse/{issueKey}`, resolved by `getIssueByKey` when it is chosen (TAS-246),
+ * never guessed from the key's prefix. Deliberately not hydrated through
+ * `getIssue` — the owner settled the general question on 2026-08-23
+ * (docs/ai/API-DIVERGENCE.md, TAS-178): fix the backend, do not hydrate on the
+ * frontend.
  */
 export interface IssueSearchHit {
   id: string;
@@ -664,6 +661,17 @@ export interface IssueSearchHit {
   priority: IssuePriority;
   /** `""` on the wire for an unassigned issue; normalised to `null` like `Issue.assigneeId`. */
   assigneeId: string | null;
+  /** The issue's project (TAS-218). Optional in the contract, so `null` when absent or blank. */
+  projectId: string | null;
+  /** The project's key (TAS-218), optional in the contract; `null` when absent or blank. */
+  projectKey: string | null;
+  /**
+   * The issue's status key (TAS-218) — `required` in the contract, and typed as
+   * a bare string there, so a key this build has no name for is printed
+   * verbatim rather than trusted to be an `IssueStatus` (TAS-173). `null` only
+   * for a gateway that predates TAS-218 and sends none.
+   */
+  statusKey: string | null;
   /**
    * The **one** planning field the search DTO carries: `IssueShortResponseDto`
    * in docs/contract/openapi.yml states `storyPoints` and nothing else of the

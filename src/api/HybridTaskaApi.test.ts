@@ -370,6 +370,9 @@ describe("HybridTaskaApi", () => {
       "issueKey",
       "issueType",
       "priority",
+      "projectId",
+      "projectKey",
+      "statusKey",
       "storyPoints",
       "summary",
     ]);

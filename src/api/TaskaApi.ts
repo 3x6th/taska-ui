@@ -321,12 +321,13 @@ export function isRetryableOutboxService(service: string): service is RetryableO
 /**
  * Every parameter `GET /issues/search` takes, all AND-combined by the server.
  *
- * The enums are the domain's own unions rather than the contract's bare
- * `string`s on purpose: an unrecognised `priority` or `issueType` is *silently
- * ignored* by the runtime, so the answer to a filter the server did not
- * understand is the whole set rather than a `400` — indistinguishable from a
- * filter that applied and matched everything (TAS-180). Types are the only
- * thing standing between a typo and a wider result than the one asked for.
+ * The enums are the domain's own unions, which is ordinary typing and no longer
+ * a compensation. Since backend TAS-218 (develop `485fea5`, deployed
+ * 2026-10-09) an unrecognised `priority` or `issueType` passes the edge — a
+ * probe without a token answers `401` where it answered `400` — and the search
+ * answers an empty page; the mock answers the same, because nothing matches a
+ * value no issue holds. Before TAS-168 the same value was silently ignored and
+ * widened the result (TAS-180), which is what these types once stood against.
  */
 export interface SearchIssuesParams {
   /**
