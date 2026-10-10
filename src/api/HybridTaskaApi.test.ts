@@ -301,6 +301,19 @@ describe("HybridTaskaApi", () => {
     expect((failure as Error).message).toMatch(/concurrently modified/);
   });
 
+  it("passes the audit log read straight to the live api, refusals included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live);
+    const listAuditEntries = vi.spyOn(live, "listAuditEntries");
+
+    // Anna is not a GLOBAL_ADMIN: the refusal is the live api's, unchanged.
+    await expect(hybrid.listAuditEntries({ action: "BLOCK_USER" })).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(listAuditEntries).toHaveBeenCalledWith({ action: "BLOCK_USER" });
+
+    await live.login({ email: "mark@example.com", password: "anything" });
+    await expect(hybrid.listAuditEntries({ page: 2 })).resolves.toEqual(await live.listAuditEntries({ page: 2 }));
+  });
+
   /**
    * The three admin user writes. A compensation for a write is a report of a
    * change that never happened, so each one goes straight down and the refusal

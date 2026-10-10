@@ -610,6 +610,46 @@ Same rule as above: "Closed by" is settled, the rest is live.
   confirming read above; `getMembership`, `getWorkflow` and `listProjectLabels`
   stay with no screen calling them, and whether they go is a separate decision.
 
+### Pending backend PR #172 (TAS-160): the audit log, not served, and three things the Java does that the yml does not say
+
+- **Endpoint:** `GET /api/v1/readonly/audit-entries?page&pageSize&actorUserId&action&targetService&targetTable&targetId&requestId&createdAtFrom&createdAtTo`
+  → `{ entries: AuditEntryDto[], pagination }`, `GLOBAL_ADMIN` only, pinned at
+  `docs/contract/pending/pr-172-TAS-160.yml` (head `907fa1e`). **Open,
+  CHANGES_REQUESTED, not merged on 2026-10-10.** TAS-251 built the Audit
+  section (`src/screens/admin/AdminAuditSection.tsx`) on `listAuditEntries`
+  in all three implementations; `hybrid` delegates.
+- **Not served, two ways.** Undeployed, the gateway answers the static-resource
+  404. At the head the REST route is mapped but the admin-service gRPC adapter
+  lacks the override, so a deployment of that head answers **501**
+  (`UNIMPLEMENTED`). `isRouteNotServed` (src/api/errors.ts) reads both, and the
+  section shows a notice naming TAS-160 — not an error, not an empty table.
+  Mock mode cannot reproduce either (no HTTP status).
+- **Backend bug — pagination and sort ignored** (comment on TAS-160): the head
+  answers every matching row whatever `page`/`pageSize` say. **Not
+  compensated**: `rest` maps what arrives and the section draws every row;
+  `pagination` is taken from the wire, so the pager says whatever the server
+  says. The mock pages newest first and clamps `pageSize` to 1–100, as the
+  server is meant to. Removal: nothing to remove client-side once fixed.
+- **Dates `yyyy-MM-dd` only**, whole UTC days, both ends inclusive; anything
+  else, and `from` after `to`, is 400. The filter popover takes a date field,
+  sends the value as typed, and refuses `from > to` before sending; a URL with
+  `from > to` drops both bounds. The mock refuses both with
+  `INVALID_ARGUMENT`.
+- **`actorUserId` that is not a UUID answers 500**, not 400. The section
+  validates it as a UUID and never sends anything else. The mock answers
+  `400 INVALID_ARGUMENT` — the answer the server is meant to give, and a
+  documented difference from the head, not a claim that the head does it.
+- **The entry has no id**, and the schema declares nothing `required` (eight
+  fields are `NOT NULL` in the table; `requestId`, `oldValue`, `newValue` are
+  nullable). `rest` maps every field defensively to `string | null`; the
+  section keys rows by their content plus an occurrence count, and opens an
+  entry in place rather than at an address.
+- **`oldValue`/`newValue` are JSON text in a string**, sensitive values already
+  `"***"`. Pretty-printed when they parse, shown as sent when they do not; a
+  document that arrives as an object is stringified back rather than dropped.
+- **Removal:** when #172 merges, delete the pending extract, refresh the
+  snapshot and probe the route (501 vs 401 without a token).
+
 ### Pending backend PR #178 (TAS-118): the work log, and what the panel makes up for
 
 - **Endpoint:** `GET|POST /api/v1/projects/{projectId}/issues/{issueId}/worklogs`,

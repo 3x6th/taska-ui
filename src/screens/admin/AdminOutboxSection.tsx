@@ -4,11 +4,11 @@ import { Navigate, NavLink, useParams, useSearchParams } from "react-router-dom"
 import { taskaApi } from "../../api/client";
 import type { AdminRow, AdminTable } from "../../domain/types";
 import { AdminError } from "./AdminError";
-import { AdminOutboxFilterControl } from "./AdminOutboxFilterControl";
+import { AdminNamedFilterControl } from "./AdminNamedFilterControl";
 import { AdminRowCard } from "./AdminRowCard";
 import { AdminRowsTable } from "./AdminRowsTable";
 import { findTable, isAddressableKey } from "./columns";
-import { OUTBOX_TABLE, outboxServices } from "./events";
+import { availableOutboxFilters, OUTBOX_TABLE, outboxFilters, outboxServices } from "./events";
 import type { EventsViewState } from "./eventsUrlState";
 import {
   DEFAULT_OUTBOX_ORDER,
@@ -253,13 +253,21 @@ export function AdminOutboxSection() {
         ) : null}
         <div className="admin-plane-spacer" />
         {filterable.length > 0 ? (
-          <AdminOutboxFilterControl
-            filterableColumns={filterable}
+          <AdminNamedFilterControl
+            // Only the ones this table can be asked for: a column the server
+            // will filter on and the catalog does not mark sensitive —
+            // filtering on a masked column turns the journal into a match
+            // oracle for the value it just refused to show. The types come
+            // from the table the *rows* came from, like the masking above: it
+            // is the catalog entry that describes what is on screen.
+            available={availableOutboxFilters(
+              filterable,
+              (column) => shownTable?.columns.find((item) => item.name === column)?.type,
+            )}
+            definitions={outboxFilters}
+            dialogLabel="Filter events"
             filters={view.filters}
             onChange={(filters) => update({ filters, page: 1 })}
-            // From the table the *rows* came from, like the masking above: it
-            // is the catalog entry that describes what is on screen.
-            typeOf={(column) => shownTable?.columns.find((item) => item.name === column)?.type}
           />
         ) : null}
       </div>

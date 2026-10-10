@@ -1336,6 +1336,64 @@ export interface AdminRows {
 }
 
 /**
+ * `GET /readonly/audit-entries` (backend PR #172, TAS-160) — what the Audit
+ * section asks. `page` is **1-based** here, like every other admin page in the
+ * domain; the rest leg converts it to the wire's 0-based one.
+ *
+ * Every filter is an exact match and an absent one is no filter. The two dates
+ * are `yyyy-MM-dd`, read by the server as whole UTC days with both ends
+ * inclusive; nothing else is accepted for them, and a `from` after `to` is a
+ * 400. `actorUserId` must be a UUID — the server at the PR head answers 500 for
+ * anything else rather than 400, so the section checks it before asking.
+ */
+export interface AuditEntriesQuery {
+  page?: number;
+  pageSize?: number;
+  actorUserId?: string;
+  action?: string;
+  targetService?: string;
+  targetTable?: string;
+  targetId?: string;
+  requestId?: string;
+  createdAtFrom?: string;
+  createdAtTo?: string;
+}
+
+/**
+ * One row of the admin audit log (`AuditEntryDto`). **There is no id**: the
+ * DTO carries none, so a row is identified only by what it says.
+ *
+ * Every field is nullable here although the table behind it declares eight of
+ * them `NOT NULL` (actor id and login, action, the three target fields, reason
+ * and the time): the schema has no `required` block, so the wire promises
+ * nothing and the mapping takes nothing on trust. `requestId`, `oldValue` and
+ * `newValue` are nullable in the database as well.
+ *
+ * `oldValue` and `newValue` are JSON documents **as text**, with sensitive
+ * values already masked by the server (`"***"`). They are carried exactly as
+ * they arrived; parsing them is the screen's job, and it falls back to the raw
+ * text when they do not parse.
+ */
+export interface AuditEntry {
+  actorUserId: string | null;
+  actorLogin: string | null;
+  action: string | null;
+  targetService: string | null;
+  targetTable: string | null;
+  targetId: string | null;
+  reason: string | null;
+  requestId: string | null;
+  createdAt: string | null;
+  oldValue: string | null;
+  newValue: string | null;
+}
+
+export interface AuditEntries {
+  entries: AuditEntry[];
+  pagination: AdminPagination;
+}
+
+/**
  * One row by its primary key (`GET /readonly/{service}/{table}/{id}`).
  *
  * `id` is a string here because a primary key is whatever the table says it is,

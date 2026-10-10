@@ -183,6 +183,32 @@ export function isUndeployedRoute(error: unknown, undeployedMessage: string): bo
 }
 
 /**
+ * Whether the gateway does not serve this route — either arm of
+ * `isUndeployedRoute`, or a **501**.
+ *
+ * The 501 is the signature of a route that is *mapped* on the gateway but whose
+ * gRPC adapter has no implementation behind it: the generated base method
+ * answers `UNIMPLEMENTED`, which the gateway maps to 501. The audit log met it
+ * first (TAS-251): at backend PR #172's head `907fa1e` the REST route exists and
+ * the admin-service gRPC adapter lacks the override, so a deployed head would
+ * answer 501 where an undeployed one answers the static-resource 404. Both mean
+ * "this gateway does not have it yet" and neither says anything about what was
+ * asked for, so a screen states them in one sentence.
+ *
+ * Matched on the status alone. Nothing else this gateway answers is a 501 —
+ * `UNIMPLEMENTED` is the only gRPC code that maps to it — and a 501 from
+ * something in front of the gateway would also mean "not served here".
+ *
+ * A sibling of `isUndeployedRoute` rather than a third arm of it: that one's
+ * callers ask about a route that is not *deployed*, and a 501 is a route that is
+ * deployed and empty. A caller that can meet both asks this one. Never true
+ * against the mock, which carries no HTTP status.
+ */
+export function isRouteNotServed(error: unknown, undeployedMessage: string): boolean {
+  return isUndeployedRoute(error, undeployedMessage) || apiErrorFacts(error).status === 501;
+}
+
+/**
  * Whether the server read the request, understood it, and refused it because
  * the *state* does not allow it — a business conflict rather than a bad
  * request. The admin Users section has three of them: blocking the last active
