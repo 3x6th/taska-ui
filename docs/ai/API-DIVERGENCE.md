@@ -594,6 +594,60 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `listProjectLabels` stay on `TaskaApi` with no screen calling them; whether
   they go is a separate decision.
 
+### Pending backend PR #178 (TAS-118): the work log, and what the panel makes up for
+
+- **Endpoint:** `GET|POST /api/v1/projects/{projectId}/issues/{issueId}/worklogs`,
+  `PUT|DELETE …/worklogs/{worklogId}`, pinned at
+  `docs/contract/pending/pr-178-TAS-118.yml` (head `f57e7ec`). **Open and
+  undeployed on 2026-10-10.**
+- **What the Java at the PR head does that the yml does not say** (read by
+  `api-contract-guard` and again for TAS-251; the Java wins), and what each
+  implementation does:
+  - Roles (`issue.allowed-roles`): list `ADMIN, MEMBER, VIEWER`; add `ADMIN,
+    MEMBER`; update or delete your own `ADMIN, MEMBER`, somebody else's
+    `ADMIN`. The section hides the form and the row actions on the same rules;
+    the mock refuses on them, a non-member with `"Access denied"` and a wrong
+    role with `"Not allowed role"`.
+  - A worklog of another issue is `404`, as is a missing one.
+  - The list is `ORDER BY work_date DESC` with no tiebreak. The section sorts
+    by `workDate`, then `createdAt`, then `id`, all descending
+    (`sortWorklogs`, src/lib/worklog.ts).
+  - `workDate` may be up to the server's today + 1 (`issue.max-future-days`),
+    with no lower bound. The picker and the draft check stop at the reader's
+    today.
+  - `PUT` is partial: absent = unchanged, `comment: ""` clears to `null`, an
+    empty body is `400`. No `If-Match`, so the last write wins. The panel sends
+    only changed fields and never sends an empty body. `PUT` declares no
+    `maxLength` and the column is `text`; the panel caps both add and edit at
+    2000 (`WORKLOG_COMMENT_MAX_LENGTH`), and the mock refuses past 2000 on add
+    only, as the gateway does.
+  - **Every write moves the issue:** `version + 1`, and the remaining estimate
+    moves by the minutes added, changed or removed (never below 0, only when
+    set). Nothing in the write's answer says so. The section re-reads the issue
+    and the board page after every successful write, inside the panel's
+    issue-write queue, so the next `PATCH` carries the new version
+    (src/screens/IssuePanelRequests.test.tsx pins it). The mock moves both
+    fields the same way.
+- **Compensations, each removable on its own:**
+  - *Author join.* `IssueWorklogResponseDto` carries `authorUserId` only. The
+    section names authors from the project context's members (`personFor`);
+    an id the members cannot name is drawn as "Unknown", as comments and
+    watchers draw it. Removed by a server-named `author` on the DTO (the shape
+    comments got in backend TAS-214).
+  - *Client total.* "Xh Ym logged" is the sum of the listed entries.
+    issue-service keeps `time_spent_minutes` on the issue and the gateway does
+    not send it. Removed by `timeSpentMinutes` on the issue read.
+  - *Undeployed route.* Until #178 deploys, the list answers the
+    static-resource 404. `isUndeployedRoute` turns that into "This gateway does
+    not serve work logs yet." with no form, rather than an error or an empty
+    list. Removed in the story that probes the route as deployed.
+- **The panel's request budget** grows from two reads to three, all started
+  together beside the issue read (`usePrefetchQuery`), so it is still one
+  round.
+- **Removal:** when #178 merges, delete the pending extract, refresh the
+  snapshot, probe the routes and drop the undeployed branch. The author join
+  and the client total stay until the backend sends what they stand in for.
+
 ### Accepting an invitation does not produce a session
 
 - **Endpoint:** `POST /api/v1/auth/invitations/accept` (`setPasswordByToken`).

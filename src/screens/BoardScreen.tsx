@@ -17,6 +17,7 @@ import {
   useInfiniteQuery,
   useMutation,
   usePrefetchInfiniteQuery,
+  usePrefetchQuery,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -48,6 +49,8 @@ import { ColorSwatches } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { IssueShare } from "../components/IssueShare";
+import { IssueWorklogSection } from "../components/IssueWorklogSection";
+import { issueWorklogsOptions } from "../components/issueWorklogsQuery";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
 import { ProjectMembersModal } from "../components/ProjectMembersModal";
@@ -1529,6 +1532,16 @@ function IssuePanel({
   // for the issue would cost the panel a second round (TAS-242). The issue read
   // and this are the panel's two requests (TAS-246).
   usePrefetchInfiniteQuery(issueCommentsOptions(projectId, issueId));
+  /**
+   * The work log (TAS-251, backend PR #178) on the same terms as the comments
+   * above: started beside the issue read, so it is a third request in the same
+   * round rather than a round of its own, and not asked again by the section
+   * when it mounts.
+   */
+  const [worklogsPrefetched] = useState(
+    () => queryClient.getQueryState(issueWorklogsOptions(projectId, issueId).queryKey) === undefined,
+  );
+  usePrefetchQuery(issueWorklogsOptions(projectId, issueId));
   const loadingLabelId = useId();
   const issue = issueQuery.data?.issue;
   const history = issueQuery.data?.history ?? [];
@@ -2433,6 +2446,17 @@ function IssuePanel({
             isProjectAdmin={isProjectAdmin}
             currentUserId={currentUserId}
             userById={userById}
+          />
+
+          <IssueWorklogSection
+            projectId={projectId}
+            issueId={issueId}
+            canLog={canEdit}
+            isProjectAdmin={isProjectAdmin}
+            currentUserId={currentUserId}
+            userById={userById}
+            prefetched={worklogsPrefetched}
+            writeScope={issueWriteScope(issueId)}
           />
 
           <CommentsSection
@@ -5468,6 +5492,15 @@ function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, 
       ? `removed ${event.payload.fileName}`
       : "removed a file";
   }
+  // `worklogSpentMinutes` is in the added and updated payloads
+  // (`PayloadSerializer.createWorklogPayload`, backend PR #178); the deleted
+  // one carries only ids.
+  if (event.eventType === "WORKLOG_ADDED") {
+    const minutes = event.payload.worklogSpentMinutes;
+    return typeof minutes === "number" && minutes > 0 ? `logged ${formatDuration(minutes)}` : "logged work";
+  }
+  if (event.eventType === "WORKLOG_UPDATED") return "edited a work log entry";
+  if (event.eventType === "WORKLOG_DELETED") return "deleted a work log entry";
   return "updated this issue";
 }
 

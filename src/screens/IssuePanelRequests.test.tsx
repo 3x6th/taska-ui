@@ -6,8 +6,9 @@ import { BoardScreen } from "./BoardScreen";
 
 /**
  * The issue panel's request budget, measured on the wire (TAS-246, inherited
- * from TAS-202's acceptance): **opening a panel in `rest` mode costs at most two
- * requests — the issue read and the comments read.**
+ * from TAS-202's acceptance): **opening a panel in `rest` mode costs one round —
+ * the issue read, the comments read and, since TAS-251, the work log read, all
+ * three started together.**
  *
  * Measured against the real `RestTaskaApi` over a stubbed `fetch`, rather than
  * against a fake `TaskaApi`, because the budget is a property of what reaches
@@ -49,6 +50,8 @@ const seededIssue = {
 
 /** The issue as this stub's server holds it; a PATCH moves it on, as the gateway's would. */
 let issue: Record<string, unknown> = { ...seededIssue };
+/** The issue's work log as this stub's server holds it. */
+let worklogs: unknown[] = [];
 
 /** An answer that is not a 200: the status and the body the gateway sends with it. */
 class Refusal {
@@ -142,6 +145,26 @@ function respond(url: string, init?: RequestInit): unknown {
     };
   }
   if (path === `/projects/${PROJECT}/issues/${ISSUE}/comments`) return { items: [], totalCount: 0 };
+  if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs` && init?.method === "POST") {
+    // What issue-service does on every worklog write (backend PR #178): the
+    // issue's version goes up, and its remaining estimate moves.
+    const body = JSON.parse(String(init.body)) as { spentMinutes: number; workDate: string; comment?: string };
+    issue = { ...issue, version: Number(issue.version) + 1, updatedAt: NOW };
+    const entry = {
+      id: "0e0e0e0e-0000-4000-8000-000000000001",
+      issueId: ISSUE,
+      projectId: PROJECT,
+      authorUserId: ANNA,
+      spentMinutes: body.spentMinutes,
+      workDate: body.workDate,
+      comment: body.comment ?? null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    worklogs = [entry];
+    return entry;
+  }
+  if (path === `/projects/${PROJECT}/issues/${ISSUE}/worklogs`) return { items: worklogs };
   return { items: [], totalCount: 0 };
 }
 
@@ -160,6 +183,7 @@ describe("the issue panel's request budget against the REST implementation", () 
     requested = [];
     sent = [];
     issue = { ...seededIssue };
+    worklogs = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string, init?: RequestInit) => {
@@ -248,7 +272,7 @@ describe("the issue panel's request budget against the REST implementation", () 
     expect(await within(panel).findByRole("button", { name: "Start progress" })).toBeVisible();
   });
 
-  it("opens a panel with two requests: the issue read and the comments read", async () => {
+  it("opens a panel with three requests in one round: the issue, the comments and the work log", async () => {
     const queryClient = renderBoard();
 
     // The board, settled: its card is drawn and nothing is in flight.
@@ -258,14 +282,53 @@ describe("the issue panel's request budget against the REST implementation", () 
 
     fireEvent.click(card);
 
+    // One round: all three have left before any of them has answered — the
+    // click's own render starts them, and nothing waits on the issue read.
+    const expected = [
+      `/api/v1/issues/${ISSUE}`,
+      `/api/v1/projects/${PROJECT}/issues/${ISSUE}/comments`,
+      `/api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs`,
+    ].sort();
+    expect(requested.slice(beforeOpen).map((url) => url.split("?")[0]).sort()).toEqual(expected);
+
     const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
     expect(await within(panel).findByText("No comments yet")).toBeVisible();
     expect(within(panel).getByText("No one is watching this issue yet")).toBeVisible();
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
 
+    expect(within(panel).getByText("No work logged yet")).toBeVisible();
     const opened = requested.slice(beforeOpen).map((url) => url.split("?")[0]);
-    expect(opened).toHaveLength(2);
-    expect(opened.sort()).toEqual([`/api/v1/issues/${ISSUE}`, `/api/v1/projects/${PROJECT}/issues/${ISSUE}/comments`].sort());
+    expect(opened.sort()).toEqual(expected);
+  });
+
+  /**
+   * A worklog write moves the issue's version on the server (backend PR #178),
+   * and nothing in its answer says so. Without a re-read of the issue after it,
+   * the panel's next edit would send the version it held before — and the
+   * server would refuse it as a conflict with a change nobody else made.
+   */
+  it("re-reads the issue after logging work, so the next edit carries the version the write moved to", async () => {
+    const { queryClient, panel, before } = await openPanel();
+
+    fireEvent.change(within(panel).getByLabelText("Time spent"), { target: { value: "1h 30m" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "Log work" }));
+
+    expect(await within(panel).findByText("1h 30m logged")).toBeVisible();
+    await settled(queryClient);
+    const write = sent.slice(before);
+    expect(write[0]).toEqual({
+      path: `/api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs`,
+      method: "POST",
+      ifMatch: undefined,
+    });
+    expect(issueReads(write.slice(1))).toBe(1);
+
+    const beforeEdit = sent.length;
+    fireEvent.click(within(panel).getByRole("button", { name: "Low" }));
+    await waitFor(() => expect(within(panel).getByRole("button", { name: "Low" })).toHaveClass("is-active"));
+    await settled(queryClient);
+    expect(sent[beforeEdit]).toEqual({ path: `/api/v1/issues/${ISSUE}`, method: "PATCH", ifMatch: '"2"' });
+    expect(within(panel).queryByText(/was changed elsewhere/)).toBeNull();
   });
 
   /**

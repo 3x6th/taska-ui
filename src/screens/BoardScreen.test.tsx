@@ -785,6 +785,9 @@ const {
       if (state.deleteFailure) throw state.deleteFailure;
       state.deleted_attachments.push(attachmentId);
     },
+    // The work log section (TAS-251) reads its own list; these cases are not
+    // about it, so it answers with none.
+    listIssueWorklogs: async () => [],
     listComments: async () => {
       state.sectionReads.comments += 1;
       if (state.commentsFailure) throw state.commentsFailure;
