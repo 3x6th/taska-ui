@@ -440,12 +440,12 @@ export interface Workflow {
 }
 
 /**
- * A workflow as the project context carries it: no `createdAt` and no
- * `updatedAt`. The pending yml keeps both on `WorkflowResponseDto`, but the
- * context's assembler at backend PR #169's head (`a1bfe19`) builds its
- * statuses and transitions without timestamps, and the Java wins over the yml
- * (docs/ai/API-DIVERGENCE.md, TAS-251). Nothing on the board reads a workflow's
- * timestamps, so the type simply does not offer them.
+ * A workflow as the project context carries it. The workflow itself does carry
+ * `createdAt` and `updatedAt` on the wire; its statuses and transitions are
+ * built without timestamps (the assembler at backend PR #169's head, `a1bfe19`;
+ * the Java wins over the yml, docs/ai/API-DIVERGENCE.md, TAS-251). Nothing on
+ * the board reads the workflow's own timestamps, so the type leaves them out
+ * and the mapper does not copy them.
  */
 export type ProjectWorkflow = Omit<Workflow, "createdAt" | "updatedAt">;
 
@@ -459,6 +459,13 @@ export type ProjectWorkflow = Omit<Workflow, "createdAt" | "updatedAt">;
  * All or nothing: a part that fails on the server fails the whole response, so
  * there is no partial context. A non-member is refused with 403 — a
  * `GLOBAL_ADMIN` included — and a missing project is 404.
+ * At head `a1bfe19` the code intends 200 with empty members and labels (its
+ * TODO says so), but the labels leg's denial arrives from issue-service as a
+ * gRPC `StatusRuntimeException`, which `ProjectServiceImpl.isPermissionDenied`
+ * (it matches only `DomainException`) does not catch, so the whole context
+ * fails `PERMISSION_DENIED` and answers 403. Removal: when the labels call
+ * carries the global role, or `isPermissionDenied` also matches a gRPC denial,
+ * the context answers 200 with empty parts and the mock must follow.
  */
 export interface ProjectContext {
   project: Project;
