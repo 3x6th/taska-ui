@@ -47,6 +47,7 @@ import type {
   Page,
   ProblematicOutboxSummary,
   Project,
+  ProjectContext,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -123,6 +124,10 @@ export class HybridTaskaApi implements TaskaApi {
 
   updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
     return this.live.updateProject(projectId, input);
+  }
+
+  getProjectContext(projectId: string): Promise<ProjectContext> {
+    return this.live.getProjectContext(projectId);
   }
 
   getMembership(projectId: string): Promise<ProjectMembership> {

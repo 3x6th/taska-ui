@@ -244,6 +244,40 @@ describe("MockTaskaApi", () => {
    * The two string fields are asymmetric and that is most of what is here: `""`
    * clears a description and `""` cannot clear a colour.
    */
+  /**
+   * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
+   * rules its Java states rather than its yml (TAS-251).
+   */
+  describe("the project context", () => {
+    it("answers the project, the reader's role, members, three-field labels and timestamp-free workflows", async () => {
+      const context = await api.getProjectContext(project.id);
+
+      expect(context.project).toMatchObject({ id: project.id, currentUserRole: "ADMIN" });
+      expect(context.role).toBe("ADMIN");
+      expect(context.members).toEqual(await api.listMembers(project.id));
+      for (const label of context.labels) expect(Object.keys(label).sort()).toEqual(["color", "id", "name"]);
+      expect(Object.keys(context.workflows).sort()).toEqual(["BUG", "STORY", "TASK"]);
+      expect(context.workflows.TASK).not.toHaveProperty("createdAt");
+      expect(context.workflows.TASK).not.toHaveProperty("updatedAt");
+    });
+
+    it("lists a workflow only for the issue types the project allows", async () => {
+      const ops = (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
+      const context = await api.getProjectContext(ops.id);
+      expect(Object.keys(context.workflows).sort()).toEqual(["BUG", "TASK"]);
+    });
+
+    it("refuses a non-member with 403 — a GLOBAL_ADMIN included — and a missing project with 404", async () => {
+      // Mark is the seed's GLOBAL_ADMIN, and not on WEB.
+      const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
+      await api.login({ email: "mark@example.com", password: "anything" });
+      await expect(api.getProjectContext(web.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      await expect(api.getProjectContext("00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+    });
+  });
+
   describe("creating a project", () => {
     it("keeps the description and the colour it was given", async () => {
       // Both are new on `CreateProjectRequestDto` in backend PR #155, and until

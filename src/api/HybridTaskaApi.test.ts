@@ -35,6 +35,22 @@ describe("HybridTaskaApi", () => {
     expect(getWorkflow).toHaveBeenCalledWith(project.id, undefined);
   });
 
+  it("delegates the board's context read to live, and asks nothing else", async () => {
+    const live = liveApi();
+    const getProjectContext = vi.spyOn(live, "getProjectContext");
+    const getProject = vi.spyOn(live, "getProject");
+    const listMembers = vi.spyOn(live, "listMembers");
+
+    const hybrid = new HybridTaskaApi(live);
+    const [project] = await hybrid.listProjects();
+    const context = await hybrid.getProjectContext(project.id);
+
+    expect(getProjectContext).toHaveBeenCalledWith(project.id);
+    expect(context.project.id).toBe(project.id);
+    expect(getProject).not.toHaveBeenCalled();
+    expect(listMembers).not.toHaveBeenCalled();
+  });
+
   it("delegates the panel's detail read and the key lookup to live", async () => {
     const live = liveApi();
     const getIssue = vi.spyOn(live, "getIssue");

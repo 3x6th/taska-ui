@@ -96,6 +96,7 @@ import type {
   ProblematicOutboxEvent,
   ProblematicOutboxSummary,
   Project,
+  ProjectContext,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -908,6 +909,16 @@ export class MockTaskaStore {
   private notifications: Notification[];
   private workflow: Workflow;
   /**
+   * The issue types each project allows, as backend PR #169's context reports
+   * them through its `workflows` (TAS-212). A project not named here allows all
+   * three, which is what a project created at runtime gets. **OPS allows only
+   * TASK and BUG**, so the mock-backed board has one project where a type is
+   * missing and every place that offers a type has to cope with that.
+   */
+  private allowedIssueTypesByProject: Record<string, IssueType[]> = {
+    [OPS_PROJECT_ID]: ["TASK", "BUG"],
+  };
+  /**
    * The outbox rows, seeded once on first read rather than in the constructor.
    * Their timestamps are relative to *now* — a row has to be genuinely three
    * hours old for the summary's thresholds and the list's ages to say anything
@@ -1134,20 +1145,29 @@ export class MockTaskaStore {
     // added member, so every member list, avatar stack and filter bar the suite
     // measures keeps its size.
     //
-    // Every other VIEWER path in this store is still exercised by a non-member
-    // standing in for one: `getMembership` answers `VIEWER` for a non-member
-    // (`member?.role ?? "VIEWER"`), and Anna is not on MOB. Against the gateway
-    // those are two different answers — a non-member is refused by
-    // `ProjectRoleChecker` on `!isMember` before any role is looked at — and the
-    // mock is the looser of the two on the read routes. Recorded in
-    // docs/ai/API-DIVERGENCE.md; adding the membership check here would cost the
-    // read-only seed the attachments section demonstrates.
+    // **Tom is a VIEWER of Mobile too** (TAS-251). The board reads its frame
+    // from the project context, which refuses a non-member with 403 as the
+    // gateway does, so the read-only board on MOB — MOB-5's links, label,
+    // attachment, plan and watcher — is now reached by a real VIEWER signing
+    // in as `tom@example.com`, rather than by Anna standing in for one.
+    //
+    // The store's other reads are still looser than the gateway:
+    // `getMembership` answers `VIEWER` for a non-member (`member?.role ??
+    // "VIEWER"`), and the per-issue routes let a non-member through. Against
+    // the gateway a non-member is refused by `ProjectRoleChecker` on
+    // `!isMember` before any role is looked at. Recorded in
+    // docs/ai/API-DIVERGENCE.md.
     this.membersByProject = Object.fromEntries(
       this.projects.map((project) => [
         project.id,
         (project.memberIds ?? []).map((userId, index) => ({
           userId,
-          role: index === 0 ? "ADMIN" : project.id === TASKA_PROJECT_ID && userId === TOM_ID ? "VIEWER" : "MEMBER",
+          role:
+            index === 0
+              ? "ADMIN"
+              : (project.id === TASKA_PROJECT_ID || project.id === MOB_PROJECT_ID) && userId === TOM_ID
+                ? "VIEWER"
+                : "MEMBER",
           addedAt: ts(8 + index, 20 + index),
           addedBy: ANNA_ID,
           user: this.userSummary(userId),
@@ -2062,6 +2082,44 @@ export class MockTaskaStore {
 
   getWorkflow(): Workflow {
     return this.workflow;
+  }
+
+  /**
+   * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
+   * rules its Java states at head `a1bfe19`: a missing project is `NOT_FOUND`,
+   * and a reader with no membership row is `PERMISSION_DENIED` — a
+   * `GLOBAL_ADMIN` included, because the check is the membership and nothing
+   * else. Unlike `getProject` in this store, which answers a non-member, this
+   * read keeps the gateway's access rule.
+   *
+   * `workflows` holds one entry per allowed type (`allowedIssueTypesByProject`),
+   * each without timestamps, and the labels carry only `id`, `name` and
+   * `color` — the shapes the context sends, not the shapes the separate routes
+   * send.
+   */
+  getProjectContext(projectId: string): ProjectContext {
+    const project = this.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new MockApiError("NOT_FOUND", "Project not found");
+    }
+    const member = this.membersByProject[projectId]?.find((item) => item.userId === this.currentUserId);
+    if (!member) {
+      throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    }
+    const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflow;
+    const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
+    return {
+      project: this.withCurrentUserRole(project),
+      role: member.role,
+      members: this.listMembers(projectId),
+      labels: this.listProjectLabels(projectId).map(({ id, name, color }) => ({ id, name, color })),
+      workflows: Object.fromEntries(
+        allowed.map((issueType) => [
+          issueType,
+          { ...workflow, statuses: [...workflow.statuses], transitions: [...workflow.transitions] },
+        ]),
+      ),
+    };
   }
 
   listIssues(projectId: string, params: ListIssuesParams = {}): Page<Issue> {
@@ -4775,6 +4833,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
     return wait(this.store.updateProject(projectId, input));
+  }
+
+  async getProjectContext(projectId: string): Promise<ProjectContext> {
+    return wait(this.store.getProjectContext(projectId));
   }
 
   async getMembership(projectId: string): Promise<ProjectMembership> {

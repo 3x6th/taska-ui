@@ -27,6 +27,7 @@ import type {
   Page,
   ProblematicOutboxSummary,
   Project,
+  ProjectContext,
   ProjectLabel,
   ProjectMember,
   ProjectMembership,
@@ -598,6 +599,33 @@ export interface TaskaApi {
    *   `UpdateProjectInput` for why, and for why `description` is not the same.
    */
   updateProject(projectId: string, input: UpdateProjectInput): Promise<Project>;
+  /**
+   * `GET /projects/{projectId}/context` — the project, the reader's role in it,
+   * its members, its labels and the workflow of every issue type it allows, in
+   * one read (backend PR #169, TAS-212, pinned at
+   * `docs/contract/pending/pr-169-TAS-212.yml`). The board's only frame read
+   * since TAS-251; see `ProjectContext` for the shape.
+   *
+   * **Open and undeployed on 2026-10-10.** Until it deploys the gateway answers
+   * the static-resource 404, which `isUndeployedRoute` tells apart from a
+   * missing project. `HybridTaskaApi` delegates straight to the gateway.
+   *
+   * What the Java at the PR head does that the yml does not say, and every
+   * implementation reproduces:
+   *
+   * - **All or nothing.** Any part failing fails the whole response; there is no
+   *   degraded context.
+   * - **Members only.** A non-member is refused with 403, a `GLOBAL_ADMIN`
+   *   included; a missing project is 404.
+   * - **Only the allowed issue types.** `workflows` may hold fewer than three
+   *   entries, or none, in no fixed order; an entry with an issue type this
+   *   build does not know arrives as `issueType: null` and is dropped.
+   * - Statuses and transitions are ordered by `sortOrder` and carry no
+   *   timestamps; labels carry only `id`, `name` and `color`, unordered;
+   *   members come by `userId`, and a name auth-service could not supply
+   *   arrives as `""`.
+   */
+  getProjectContext(projectId: string): Promise<ProjectContext>;
   /**
    * The reader's own standing in one project: the role they hold, whether they
    * are a member at all, and whether the project exists.
