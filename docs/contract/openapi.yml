@@ -1,7 +1,7 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: 60d62ee41188 (develop, 2026-10-07)
-# Fetched: 2026-10-07
+# Backend commit: 485fea5e26a7 (develop, 2026-10-09)
+# Fetched: 2026-10-10
 #
 # The backend repository is the single source of truth for this contract.
 # This copy exists so read-only reviewers without network access can audit
@@ -2860,7 +2860,7 @@ components:
 
     IssueShortResponseDto:
       type: object
-      required: [id, issueKey, summary, issueType, priority, assigneeId]
+      required: [id, issueKey, summary, issueType, priority, assigneeId, statusKey]
       properties:
         id:
           type: string
@@ -2879,6 +2879,13 @@ components:
           format: double
           description: Оценка сложности задачи в story points
           minimum: 0
+        projectId:
+          type: string
+        projectKey:
+          type: string
+        statusKey:
+          type: string
+
 
     ListIssuesResponseDto:
       type: object
