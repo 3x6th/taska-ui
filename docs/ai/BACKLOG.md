@@ -25,8 +25,34 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
-- **Worklogs and time tracking exist in issue-service and nowhere a browser can
-  reach** (found 2026-09-28 on TAS-243's sweep of backend `1cfe4d7..5a8d805`).
+- **Four `TaskaApi` reads no screen calls after TAS-251** — `getMembership`,
+  `getWorkflow`, `listProjectLabels`, and `getProject` outside the board's
+  confirming read on a context 403/404. Kept in mock, rest and hybrid so the
+  switch to `/context` (backend PR #169) stays reversible until it is on the
+  stand; delete once the context has run there for a while (`release-reviewer`,
+  2026-10-10).
+- **`AdminSectionPlaceholder` and its generic route are unused** since TAS-251
+  replaced the Audit stand-in. Delete, or keep for the next section — a call
+  for whoever adds one.
+- **The audit table lacks the scroll fade Users and Events have** (TAS-251,
+  builder's own note).
+- **`pr-155-TAS-145.yml` is stale**: backend PR #155's head moved from
+  `c4b8c2c` to `28f5fe1` (found by `npm run contract:pins`, 2026-10-10).
+  Re-extract and re-read TAS-148's edit dialog against it; the PR also
+  conflicts with `develop`.
+- **Backend ask, not filed yet: issue-service creates an issue of a type the
+  project does not allow.** `IssueServiceImpl.createIssue` (develop, and at
+  backend #169) checks only the role and saves any `issueType`; nothing in
+  issue-service reads `allowedIssueTypes`, which only project-service uses, for
+  the context. The result is an issue with no workflow. Service change: read the
+  project's allowed types over a project-service rpc beside
+  `getProjectKeyInternal` and answer `INVALID_ARGUMENT`. The UI never offers such
+  a type; the mock refuses it as the intended rule (`api-contract-guard`,
+  TAS-251, 2026-10-10). File under TAS-210 when TAS-212 lands.
+- **The build warns about a chunk over 500 kB** — present on TAS-251's builds,
+  not attributed to it or to anything earlier yet.
+- ~~**Worklogs and time tracking exist in issue-service and nowhere a browser can
+  reach**~~ — built mock-first in TAS-251 against backend PR #178. (found 2026-09-28 on TAS-243's sweep of backend `1cfe4d7..5a8d805`).
   Backend TAS-117 (`ff91a10`, PR #158) added worklogs as gRPC only; the gateway
   route is [TAS-118](https://jira.ozero.dev/browse/TAS-118), `To Do`, and the
   contract has no worklog path. Probed without a token: `GET
