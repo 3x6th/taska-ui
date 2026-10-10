@@ -4127,3 +4127,90 @@ describe("RestTaskaApi issue details and the key lookup", () => {
     expect(isMissingOrForbidden(failure)).toBe(true);
   });
 });
+
+/** Backend PR #178 (TAS-118): the four worklog routes, as `rest` sends and reads them. */
+describe("RestTaskaApi worklogs", () => {
+  const PROJECT = "b4e2d3c5-0000-4000-8000-000000000251";
+  const ISSUE = "a3f1c2d4-0000-4000-8000-000000000251";
+  const WORKLOG = "c5f3e4d6-0000-4000-8000-000000000251";
+  const ANNA = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
+  const base = `/api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs`;
+
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: RequestInit) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  const entry = {
+    id: WORKLOG,
+    issueId: ISSUE,
+    projectId: PROJECT,
+    authorUserId: ANNA,
+    spentMinutes: 90,
+    workDate: "2026-10-09",
+    createdAt: "2026-10-09T09:00:00Z",
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the list, with an absent comment and update stamp as null", async () => {
+    const fetchStub = stubFetch({ items: [entry] });
+
+    const worklogs = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE);
+
+    expect(fetchStub.mock.calls[0][0]).toBe(base);
+    expect(worklogs).toEqual([{ ...entry, comment: null, updatedAt: null }]);
+  });
+
+  it("adds with the three fields, leaving out a comment it was not given", async () => {
+    const fetchStub = stubFetch(entry, 201);
+
+    await new RestTaskaApi().addIssueWorklog(PROJECT, ISSUE, { spentMinutes: 90, workDate: "2026-10-09" });
+
+    expect(fetchStub.mock.calls[0][0]).toBe(base);
+    expect(fetchStub.mock.calls[0][1]?.method).toBe("POST");
+    expect(JSON.parse(String(fetchStub.mock.calls[0][1]?.body))).toEqual({ spentMinutes: 90, workDate: "2026-10-09" });
+  });
+
+  it("updates with only the fields it was given, an empty comment included", async () => {
+    const fetchStub = stubFetch({ ...entry, comment: null });
+
+    await new RestTaskaApi().updateIssueWorklog(PROJECT, ISSUE, WORKLOG, { comment: "" });
+
+    expect(fetchStub.mock.calls[0][0]).toBe(`${base}/${WORKLOG}`);
+    expect(fetchStub.mock.calls[0][1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchStub.mock.calls[0][1]?.body))).toEqual({ comment: "" });
+  });
+
+  it("deletes, answering nothing for a 204", async () => {
+    const fetchStub = stubFetch(undefined, 204);
+
+    await expect(new RestTaskaApi().deleteIssueWorklog(PROJECT, ISSUE, WORKLOG)).resolves.toBeUndefined();
+
+    expect(fetchStub.mock.calls[0][0]).toBe(`${base}/${WORKLOG}`);
+    expect(fetchStub.mock.calls[0][1]?.method).toBe("DELETE");
+  });
+
+  it("rejects the undeployed route with the signature isUndeployedRoute reads", async () => {
+    stubFetch({ code: "NOT_FOUND", message: `No static resource api/v1/projects/${PROJECT}/issues/${ISSUE}/worklogs.` }, 404);
+
+    const failure = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE).catch((error: unknown) => error);
+
+    expect(isUndeployedRoute(failure, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+  });
+});

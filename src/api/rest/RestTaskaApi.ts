@@ -1,5 +1,6 @@
 import type {
   AcceptInvitationInput,
+  AddIssueWorklogInput,
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
@@ -18,6 +19,7 @@ import type {
   SearchIssuesParams,
   IssueWriteAnswer,
   TaskaApi,
+  UpdateIssueWorklogInput,
   UpdateIssueInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
@@ -75,6 +77,7 @@ import type {
   IssueType,
   IssueWatcher,
   IssueWatchers,
+  IssueWorklog,
   IssueDetails,
   IssueDetailsWithHistory,
   LinkedIssue,
@@ -663,6 +666,16 @@ type RestComment = Omit<IssueComment, "updatedAt" | "author"> & {
   /** Since backend TAS-214. */
   author?: RestUserSummary | null;
 };
+
+/** `IssueWorklogResponseDto` (backend PR #178); `comment` and `updatedAt` are nullable and may be absent. */
+type RestWorklog = Omit<IssueWorklog, "comment" | "updatedAt"> & {
+  comment?: string | null;
+  updatedAt?: string | null;
+};
+
+interface RestWorklogsListResponse {
+  items: RestWorklog[];
+}
 
 interface RestCommentsListResponse {
   items: RestComment[];
@@ -1605,6 +1618,53 @@ export class RestTaskaApi implements TaskaApi {
     return typeof response.url === "string" && response.url ? response.url : null;
   }
 
+  async listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {
+    const response = await this.request<RestWorklogsListResponse>(this.worklogsPath(projectId, issueId));
+    return (response.items ?? []).map((worklog) => this.toWorklog(worklog));
+  }
+
+  async addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog> {
+    const response = await this.request<RestWorklog>(this.worklogsPath(projectId, issueId), {
+      method: "POST",
+      body: {
+        spentMinutes: input.spentMinutes,
+        workDate: input.workDate,
+        ...(input.comment !== undefined ? { comment: input.comment } : {}),
+      },
+    });
+    return this.toWorklog(response);
+  }
+
+  /**
+   * Sends exactly the fields it is given and nothing else: an absent field is
+   * "unchanged" to the server, so filling one in would overwrite somebody
+   * else's edit (there is no `If-Match` on this route). An empty input is sent
+   * as it is and refused by the server with `400`; not sending one is the
+   * caller's job.
+   */
+  async updateIssueWorklog(
+    projectId: string,
+    issueId: string,
+    worklogId: string,
+    input: UpdateIssueWorklogInput,
+  ): Promise<IssueWorklog> {
+    const body: UpdateIssueWorklogInput = {};
+    if (input.spentMinutes !== undefined) body.spentMinutes = input.spentMinutes;
+    if (input.workDate !== undefined) body.workDate = input.workDate;
+    if (input.comment !== undefined) body.comment = input.comment;
+    const response = await this.request<RestWorklog>(
+      `${this.worklogsPath(projectId, issueId)}/${this.segment(worklogId)}`,
+      { method: "PUT", body },
+    );
+    return this.toWorklog(response);
+  }
+
+  async deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void> {
+    await this.request<void>(`${this.worklogsPath(projectId, issueId)}/${this.segment(worklogId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Promise<Page<IssueComment>> {
     const search = new URLSearchParams();
     if (params.page !== undefined) search.set("page", String(params.page));
@@ -1994,6 +2054,10 @@ export class RestTaskaApi implements TaskaApi {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/watchers`;
   }
 
+  private worklogsPath(projectId: string, issueId: string) {
+    return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/worklogs`;
+  }
+
   private commentsPath(projectId: string, issueId: string) {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/comments`;
   }
@@ -2317,6 +2381,21 @@ export class RestTaskaApi implements TaskaApi {
       uploadedByUser: attachment.uploadedByUser
         ? toUserSummary(attachment.uploadedByUser, attachment.uploadedBy ?? null)
         : null,
+    };
+  }
+
+  /** Field by field, for the reason `toNotification` gives. */
+  private toWorklog(worklog: RestWorklog): IssueWorklog {
+    return {
+      id: worklog.id,
+      issueId: worklog.issueId,
+      projectId: worklog.projectId,
+      authorUserId: worklog.authorUserId,
+      spentMinutes: worklog.spentMinutes,
+      workDate: worklog.workDate,
+      comment: worklog.comment ?? null,
+      createdAt: worklog.createdAt,
+      updatedAt: worklog.updatedAt ?? null,
     };
   }
 

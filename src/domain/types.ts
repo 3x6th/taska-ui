@@ -806,7 +806,15 @@ export type IssueEventType =
    * recorded rather than quietly added here.
    */
   | "ATTACHMENT_UPLOADED"
-  | "ATTACHMENT_DELETED";
+  | "ATTACHMENT_DELETED"
+  /**
+   * The three the worklog routes write (backend PR #178, `WorklogExecutor`,
+   * head `f57e7ec`), each inside the same transaction as the write. The added
+   * and updated payloads carry `worklogSpentMinutes`; the deleted one does not.
+   */
+  | "WORKLOG_ADDED"
+  | "WORKLOG_UPDATED"
+  | "WORKLOG_DELETED";
 
 export interface IssueHistoryEvent {
   id: string;
@@ -1139,6 +1147,29 @@ export interface UnwatchIssueResult {
   removed: boolean;
   /** The count after the write, `null` when the server did not state one. */
   watchersCount: number | null;
+}
+
+/**
+ * `IssueWorklogResponseDto` (backend PR #178, TAS-118 — pending, see
+ * docs/contract/pending/pr-178-TAS-118.yml). Time somebody spent on an issue.
+ *
+ * It names its author by id only: no route carries the author's name, so the
+ * panel joins it with the project context's members (`personFor`), and an id
+ * the members cannot name is drawn as the panel's unknown person.
+ */
+export interface IssueWorklog {
+  id: string;
+  issueId: string;
+  projectId: string;
+  authorUserId: string;
+  /** Whole minutes, at least 1. The server sets no upper bound. */
+  spentMinutes: number;
+  /** The day the time is booked against, `yyyy-MM-dd` — a calendar day, not an instant. */
+  workDate: DateOnly;
+  /** `null` when there is none; the server stores a blank comment as `null`. */
+  comment: string | null;
+  createdAt: string;
+  updatedAt: string | null;
 }
 
 export interface IssueComment {

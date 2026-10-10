@@ -3798,4 +3798,167 @@ describe("MockTaskaApi", () => {
       });
     });
   });
+
+  /**
+   * Backend PR #178 (TAS-118), as the mock reproduces the Java at its head: the
+   * three role rules, the two 404s, the partial update's own rules, and what
+   * every write does to the issue.
+   */
+  describe("worklogs", () => {
+    const issueByKey = async (issueKey: string) => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const issue = items.find((item) => item.issueKey === issueKey);
+      if (!issue) throw new Error(`no ${issueKey} in the seed`);
+      return issue;
+    };
+    const signIn = (email: string) => api.login({ email, password: "anything" });
+
+    it("lists the seeded entries newest day first, unnamed, for every member role", async () => {
+      await signIn("tom@example.com");
+      const issue = await issueByKey("TAS-101");
+      const worklogs = await api.listIssueWorklogs(project.id, issue.id);
+      expect(worklogs.map((item) => item.workDate)).toEqual(["2026-06-13", "2026-06-13", "2026-06-12"]);
+      expect(worklogs[0]).not.toHaveProperty("author");
+    });
+
+    it("refuses a non-member the list, as ProjectRoleChecker does", async () => {
+      // Priya is not a member of Taska Platform.
+      await signIn("priya@example.com");
+      const issue = await issueByKey("TAS-101");
+      await expect(api.listIssueWorklogs(project.id, issue.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "Access denied",
+      });
+    });
+
+    it("lets a VIEWER read and not log", async () => {
+      await signIn("tom@example.com");
+      const issue = await issueByKey("TAS-101");
+      await expect(
+        api.addIssueWorklog(project.id, issue.id, { spentMinutes: 30, workDate: "2026-06-14" }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED", message: "Not allowed role" });
+    });
+
+    it("moves the issue's version and remaining estimate on an add, an edit and a delete", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      await edit(issue.id, { remainingEstimateMinutes: 300 });
+      const start = (await api.getIssue(project.id, issue.id)).issue;
+
+      const added = await api.addIssueWorklog(project.id, issue.id, { spentMinutes: 90, workDate: "2026-06-14" });
+      let now = (await api.getIssue(project.id, issue.id)).issue;
+      expect(now.version).toBe(start.version + 1);
+      expect(now.remainingEstimateMinutes).toBe(210);
+
+      await api.updateIssueWorklog(project.id, issue.id, added.id, { spentMinutes: 60 });
+      now = (await api.getIssue(project.id, issue.id)).issue;
+      expect(now.version).toBe(start.version + 2);
+      expect(now.remainingEstimateMinutes).toBe(240);
+
+      // A change of the comment alone still moves the version, and not the estimate.
+      await api.updateIssueWorklog(project.id, issue.id, added.id, { comment: "Reviewed" });
+      now = (await api.getIssue(project.id, issue.id)).issue;
+      expect(now.version).toBe(start.version + 3);
+      expect(now.remainingEstimateMinutes).toBe(240);
+
+      await api.deleteIssueWorklog(project.id, issue.id, added.id);
+      now = (await api.getIssue(project.id, issue.id)).issue;
+      expect(now.version).toBe(start.version + 4);
+      expect(now.remainingEstimateMinutes).toBe(300);
+    });
+
+    it("never takes the remaining estimate below zero", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      await edit(issue.id, { remainingEstimateMinutes: 30 });
+      await api.addIssueWorklog(project.id, issue.id, { spentMinutes: 90, workDate: "2026-06-14" });
+      expect((await api.getIssue(project.id, issue.id)).issue.remainingEstimateMinutes).toBe(0);
+    });
+
+    it("stores a blank comment as null, and clears one with an empty string", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      const blank = await api.addIssueWorklog(project.id, issue.id, {
+        spentMinutes: 15,
+        workDate: "2026-06-14",
+        comment: "   ",
+      });
+      expect(blank.comment).toBeNull();
+
+      const noted = await api.addIssueWorklog(project.id, issue.id, {
+        spentMinutes: 15,
+        workDate: "2026-06-14",
+        comment: "Pairing",
+      });
+      const cleared = await api.updateIssueWorklog(project.id, issue.id, noted.id, { comment: "" });
+      expect(cleared.comment).toBeNull();
+      expect(cleared.spentMinutes).toBe(15);
+    });
+
+    it("refuses an empty update, a non-positive duration and a date past tomorrow", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      const [first] = await api.listIssueWorklogs(project.id, issue.id);
+      await expect(api.updateIssueWorklog(project.id, issue.id, first.id, {})).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "No data provided for update",
+      });
+      await expect(
+        api.addIssueWorklog(project.id, issue.id, { spentMinutes: 0, workDate: "2026-06-14" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        api.addIssueWorklog(project.id, issue.id, { spentMinutes: 10, workDate: "2999-01-01" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "WorkDate is too far in the future" });
+      await expect(
+        api.addIssueWorklog(project.id, issue.id, { spentMinutes: 10, workDate: "2026-06-14", comment: "x".repeat(2001) }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("answers 404 for a worklog of another issue", async () => {
+      await signIn("anna@example.com");
+      const tas101 = await issueByKey("TAS-101");
+      const tas107 = await issueByKey("TAS-107");
+      const [other] = await api.listIssueWorklogs(project.id, tas107.id);
+      await expect(api.updateIssueWorklog(project.id, tas101.id, other.id, { spentMinutes: 5 })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
+      await expect(api.deleteIssueWorklog(project.id, tas101.id, other.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(await api.listIssueWorklogs(project.id, tas107.id)).toHaveLength(2);
+    });
+
+    it("lets a MEMBER change their own entry and nobody else's, and an ADMIN change anybody's", async () => {
+      const issue = await issueByKey("TAS-101");
+      await signIn("mark@example.com");
+      const entries = await api.listIssueWorklogs(project.id, issue.id);
+      const marks = entries.find((item) => item.authorUserId === "e65186a2-b807-42ae-a66f-711be116a93b");
+      const someoneElses = entries.find((item) => item.authorUserId !== "e65186a2-b807-42ae-a66f-711be116a93b");
+      if (!marks || !someoneElses) throw new Error("seed changed");
+
+      await expect(api.updateIssueWorklog(project.id, issue.id, marks.id, { spentMinutes: 100 })).resolves.toMatchObject({
+        spentMinutes: 100,
+      });
+      await expect(
+        api.updateIssueWorklog(project.id, issue.id, someoneElses.id, { spentMinutes: 100 }),
+      ).rejects.toMatchObject({ code: "PERMISSION_DENIED", message: "Not allowed role" });
+      await expect(api.deleteIssueWorklog(project.id, issue.id, someoneElses.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+
+      await signIn("anna@example.com");
+      await api.deleteIssueWorklog(project.id, issue.id, marks.id);
+      expect((await api.listIssueWorklogs(project.id, issue.id)).map((item) => item.id)).not.toContain(marks.id);
+    });
+
+    it("writes a history row for each write", async () => {
+      await signIn("anna@example.com");
+      const issue = await issueByKey("TAS-101");
+      const added = await api.addIssueWorklog(project.id, issue.id, { spentMinutes: 45, workDate: "2026-06-14" });
+      await api.updateIssueWorklog(project.id, issue.id, added.id, { workDate: "2026-06-13" });
+      await api.deleteIssueWorklog(project.id, issue.id, added.id);
+      const { history } = await api.getIssue(project.id, issue.id);
+      const events = history.map((event) => event.eventType).filter((type) => type.startsWith("WORKLOG_"));
+      expect(events).toEqual(["WORKLOG_ADDED", "WORKLOG_UPDATED", "WORKLOG_DELETED"]);
+      expect(history.find((event) => event.eventType === "WORKLOG_ADDED")?.payload.worklogSpentMinutes).toBe(45);
+    });
+  });
 });

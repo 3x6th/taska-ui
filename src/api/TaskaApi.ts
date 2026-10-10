@@ -19,6 +19,7 @@ import type {
   IssueStatus,
   IssueType,
   IssueWatchers,
+  IssueWorklog,
   IssueDetailsWithHistory,
   Label,
   Notification,
@@ -526,6 +527,38 @@ export interface ConfirmAvatarUploadInput {
   /** The same value sent at leg 1. Stored as the avatar's `contentType`. */
   contentType: string;
 }
+
+/**
+ * `AddIssueWorklogRequestDto` (backend PR #178). `spentMinutes` is a whole
+ * number of minutes, at least 1, with no upper bound; `workDate` is at most the
+ * server's today plus one day (`issue.max-future-days`), with no lower bound.
+ * A blank `comment` is stored as `null`; the gateway refuses one over
+ * `WORKLOG_COMMENT_MAX_LENGTH`.
+ */
+export interface AddIssueWorklogInput {
+  spentMinutes: number;
+  workDate: DateOnly;
+  comment?: string | null;
+}
+
+/**
+ * `UpdateIssueWorklogRequestDto` (backend PR #178): a partial update. An absent
+ * field is left as it is; `comment: ""` clears the comment (stored `null`); a
+ * body with no field at all is refused `400` ("No data provided for update").
+ * There is no version and no `If-Match`: the last write wins.
+ *
+ * The server declares no `maxLength` on this `comment` and stores `text`, so
+ * it would keep a longer one; the panel holds an edit to the same
+ * `WORKLOG_COMMENT_MAX_LENGTH` as an add.
+ */
+export interface UpdateIssueWorklogInput {
+  spentMinutes?: number;
+  workDate?: DateOnly;
+  comment?: string;
+}
+
+/** `maxLength` of `AddIssueWorklogRequestDto.comment`, which the panel applies to an edit too. */
+export const WORKLOG_COMMENT_MAX_LENGTH = 2000;
 
 export interface ListCommentsParams {
   page?: number;
@@ -1260,6 +1293,38 @@ export interface TaskaApi {
    * profile read carries no avatar at all.
    */
   getUserAvatarUrl(userId: string): Promise<string | null>;
+
+  /**
+   * The four worklog routes, `/projects/{projectId}/issues/{issueId}/worklogs`
+   * (backend PR #178, TAS-118 — **pending and undeployed**: until it deploys
+   * every one of them answers the gateway's static-resource 404, which
+   * `isUndeployedRoute` tells apart from a real 404).
+   *
+   * Roles, from issue-service's `issue.allowed-roles` at the PR head: the list
+   * `ADMIN, MEMBER, VIEWER`; an add `ADMIN, MEMBER`; an update or delete of
+   * your own entry `ADMIN, MEMBER`, of somebody else's `ADMIN` only. A worklog
+   * of another issue is `404`, as is a missing issue or worklog.
+   *
+   * **Every successful write moves the issue**: its `version` goes up and its
+   * `remainingEstimateMinutes` moves by the minutes added, changed or removed
+   * (never below 0). A caller holding the issue's version for a later
+   * `If-Match` has to re-read the issue after one of these.
+   *
+   * The list comes ordered by `workDate` descending with no tiebreak, so equal
+   * days come in no stated order (`sortWorklogs` in src/lib/worklog.ts).
+   */
+  listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]>;
+  /** `POST …/worklogs`, answered `201` with the entry. */
+  addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog>;
+  /** `PUT …/worklogs/{worklogId}`, a partial update — see `UpdateIssueWorklogInput`. */
+  updateIssueWorklog(
+    projectId: string,
+    issueId: string,
+    worklogId: string,
+    input: UpdateIssueWorklogInput,
+  ): Promise<IssueWorklog>;
+  /** `DELETE …/worklogs/{worklogId}`, answered `204`. */
+  deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void>;
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
   addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;

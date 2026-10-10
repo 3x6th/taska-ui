@@ -1,5 +1,6 @@
 import type {
   AcceptInvitationInput,
+  AddIssueWorklogInput,
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
@@ -19,6 +20,7 @@ import type {
   SearchIssuesParams,
   TaskaApi,
   UpdateIssueInput,
+  UpdateIssueWorklogInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
 } from "../TaskaApi";
@@ -31,6 +33,7 @@ import {
   PROJECT_COLOR_PATTERN,
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
+  WORKLOG_COMMENT_MAX_LENGTH,
 } from "../TaskaApi";
 import {
   ATTACHMENT_BUCKET,
@@ -84,6 +87,7 @@ import type {
   IssueType,
   IssueWatcher,
   IssueWatchers,
+  IssueWorklog,
   IssueDetails,
   IssueDetailsWithHistory,
   Label,
@@ -111,7 +115,9 @@ import type {
   WatchIssueResult,
   Workflow,
 } from "../../domain/types";
+import { isDateOnly } from "../../domain/types";
 import { accountLockedMessage } from "../../lib/accountLock";
+import { addDays, localDateOnly } from "../../lib/worklog";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
 import { classifyColumnType } from "../../lib/adminColumnTypes";
 
@@ -717,6 +723,20 @@ interface StoredIssueLink {
  */
 type StoredIssueWatcher = Omit<IssueWatcher, "displayName" | "avatarUrl">;
 
+/**
+ * A worklog as stored: the entry plus the soft-delete stamp the server's row
+ * carries (`issue_worklogs.deleted_at`). Its author is an id and nothing more —
+ * no read names them (backend PR #178).
+ */
+type StoredWorklog = IssueWorklog & { deletedAt: string | null };
+
+/**
+ * `issue.max-future-days` in issue-service's `application.yml` at backend PR
+ * #178's head: a work date may be at most this many days past the server's
+ * today.
+ */
+const WORKLOG_MAX_FUTURE_DAYS = 1;
+
 /** A comment as stored. Its author's name is looked up per read, as the server does (`commentView`). */
 type StoredIssueComment = Omit<IssueComment, "author">;
 
@@ -874,6 +894,8 @@ export class MockTaskaStore {
   private watchers: StoredIssueWatcher[] = [];
   /** Attachment rows, soft-deleted in place exactly as the server's are. */
   private attachments: StoredAttachment[] = [];
+  /** Worklog rows (backend PR #178), soft-deleted in place as the server's are. */
+  private worklogs: StoredWorklog[] = [];
   /**
    * The stand-in bucket: object key to what was PUT under it. Separate from
    * `attachments` on purpose — an object with no row is precisely the orphan a
@@ -1459,6 +1481,25 @@ export class MockTaskaStore {
       this.pushHistory(tas101.id, "TRANSITIONED", MARK_ID, { from: "TODO", to: "IN_PROGRESS" }, ts(13, 31));
       this.pushHistory(tas101.id, "PRIORITY", MARK_ID, { to: "HIGH" }, ts(13, 44));
       this.comment(tas101, MARK_ID, "Bumped to high — this blocks the release checklist.", ts(13, 52));
+    }
+
+    // Seeded worklogs (TAS-251). TAS-101 has three people's entries, two of them
+    // on one day — the tie the server leaves unordered — and TAS-107 has one by
+    // an account nobody can name any more, which is what the section draws as
+    // "Unknown". Both issues are in Taska Platform, where Anna is the ADMIN who
+    // may change anybody's entry, Mark a MEMBER who may change only his own,
+    // and Tom a VIEWER who may only read them.
+    //
+    // Seeding moves neither issue's remaining estimate nor its version: the
+    // issues are seeded as they stand *after* this time was logged.
+    if (tas101) {
+      this.worklog(tas101, SOFIA_ID, 90, "2026-06-12", "Paired on the retry guard.", ts(12, 40));
+      this.worklog(tas101, MARK_ID, 120, "2026-06-13", "Traced the release blocker to the gateway timeout.", ts(13, 50));
+      this.worklog(tas101, ANNA_ID, 45, "2026-06-13", null, ts(13, 58));
+    }
+    if (tas107) {
+      this.worklog(tas107, FORMER_ACCOUNT_ID, 60, "2026-06-15", "First look at the refresh path.", ts(15, 10));
+      this.worklog(tas107, SOFIA_ID, 180, "2026-06-17", null, ts(17, 30));
     }
 
     // Seeded links so the panel has something to show on first load, and so
@@ -3288,6 +3329,127 @@ export class MockTaskaStore {
     return avatar.downloadUrl;
   }
 
+  /**
+   * `GET …/worklogs`, as `WorklogServiceImpl.listIssueWorklog` does it at
+   * backend PR #178's head: the issue first (404), then the role
+   * (`list-worklog-roles: ADMIN,MEMBER,VIEWER`), then the rows by `work_date`
+   * descending — with no tiebreak, so entries of one day come in the order
+   * they were stored here and in no stated order on the server.
+   */
+  listIssueWorklogs(projectId: string, issueId: string): IssueWorklog[] {
+    const issue = this.findIssue(projectId, issueId);
+    this.requireWorklogRole(projectId, ["ADMIN", "MEMBER", "VIEWER"]);
+    return this.worklogs
+      .filter((item) => item.issueId === issue.id && item.deletedAt === null)
+      .sort((a, b) => (a.workDate === b.workDate ? 0 : a.workDate < b.workDate ? 1 : -1))
+      .map((item) => this.worklogView(item));
+  }
+
+  /**
+   * `POST …/worklogs`: the body first — the gateway's bean validation
+   * (`minimum: 1`, `maxLength: 2000`) and then the service's own checks — then
+   * the issue (404), then `add-worklog-roles: ADMIN,MEMBER`. The write moves
+   * the issue as `Issue.addWorklogMinutes` does: the remaining estimate down by
+   * the minutes, never below 0 and only when there is one, and the version up.
+   */
+  addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): IssueWorklog {
+    this.refuseWorklogMinutes(input.spentMinutes);
+    if (typeof input.workDate !== "string" || !isDateOnly(input.workDate)) {
+      throw new MockApiError("INVALID_ARGUMENT", "WorkDate must be not null");
+    }
+    this.refuseFutureWorkDate(input.workDate);
+    if (typeof input.comment === "string" && input.comment.length > WORKLOG_COMMENT_MAX_LENGTH) {
+      throw new MockApiError("INVALID_ARGUMENT", `comment: size must be between 0 and ${WORKLOG_COMMENT_MAX_LENGTH}`);
+    }
+    const issue = this.findIssue(projectId, issueId);
+    this.requireWorklogRole(projectId, ["ADMIN", "MEMBER"]);
+
+    if (issue.remainingEstimateMinutes !== null) {
+      issue.remainingEstimateMinutes = Math.max(0, issue.remainingEstimateMinutes - input.spentMinutes);
+    }
+    this.touchIssue(issue);
+    const worklog = this.worklog(
+      issue,
+      this.currentUserId,
+      input.spentMinutes,
+      input.workDate,
+      input.comment ?? null,
+      now(),
+    );
+    this.pushHistory(issue.id, "WORKLOG_ADDED", this.currentUserId, this.worklogPayload(worklog));
+    return this.worklogView(worklog);
+  }
+
+  /**
+   * `PUT …/worklogs/{worklogId}`, a partial update: the body (an empty one is
+   * `400`), the issue, the worklog, that the worklog is this issue's (`404`
+   * otherwise), then the role — `update-worklog-roles: ADMIN,MEMBER` for your
+   * own entry, `manage-worklog-roles: ADMIN` for anybody else's. No
+   * `maxLength` on this comment: the server stores `text`.
+   *
+   * The issue's version goes up whatever changed; its remaining estimate moves
+   * by the difference only when `spentMinutes` was sent
+   * (`Issue.updateWorklogMinutes`).
+   */
+  updateIssueWorklog(projectId: string, issueId: string, worklogId: string, input: UpdateIssueWorklogInput): IssueWorklog {
+    const spentMinutes = input.spentMinutes ?? null;
+    const workDate = input.workDate ?? null;
+    const comment = input.comment ?? null;
+    if (spentMinutes === null && workDate === null && comment === null) {
+      throw new MockApiError("INVALID_ARGUMENT", "No data provided for update");
+    }
+    if (spentMinutes !== null) this.refuseWorklogMinutes(spentMinutes);
+    if (workDate !== null) {
+      if (!isDateOnly(workDate)) throw new MockApiError("INVALID_ARGUMENT", "WorkDate is not a date");
+      this.refuseFutureWorkDate(workDate);
+    }
+    const issue = this.findIssue(projectId, issueId);
+    const worklog = this.worklogOfIssue(issue, worklogId);
+    this.requireWorklogRole(projectId, worklog.authorUserId === this.currentUserId ? ["ADMIN", "MEMBER"] : ["ADMIN"]);
+
+    if (spentMinutes !== null && issue.remainingEstimateMinutes !== null) {
+      issue.remainingEstimateMinutes = Math.max(0, issue.remainingEstimateMinutes + (worklog.spentMinutes - spentMinutes));
+    }
+    this.touchIssue(issue);
+    if (spentMinutes !== null) worklog.spentMinutes = spentMinutes;
+    if (workDate !== null) worklog.workDate = workDate;
+    // `Worklog.update`: a blank comment clears it to `null`.
+    if (comment !== null) worklog.comment = comment.trim() ? comment : null;
+    worklog.updatedAt = now();
+    this.pushHistory(issue.id, "WORKLOG_UPDATED", this.currentUserId, this.worklogPayload(worklog));
+    return this.worklogView(worklog);
+  }
+
+  /**
+   * `DELETE …/worklogs/{worklogId}`: the worklog (404), that it is this
+   * issue's (404), the role as for an update, then a soft delete that gives the
+   * minutes back to the remaining estimate (`Issue.removeWorklogMinutes`) and
+   * moves the version.
+   */
+  deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): void {
+    const worklog = this.worklogs.find((item) => item.id === worklogId && item.deletedAt === null);
+    if (!worklog) throw new MockApiError("NOT_FOUND", `Worklog with id: ${worklogId} not found`);
+    const issue = this.issues.find(
+      (item) => item.projectId === projectId && item.id === issueId && item.deletedAt === null,
+    );
+    if (!issue || worklog.issueId !== issue.id) {
+      throw new MockApiError("NOT_FOUND", "Issue doesnt belongs to worklog");
+    }
+    this.requireWorklogRole(projectId, worklog.authorUserId === this.currentUserId ? ["ADMIN", "MEMBER"] : ["ADMIN"]);
+
+    worklog.deletedAt = now();
+    if (issue.remainingEstimateMinutes !== null) {
+      issue.remainingEstimateMinutes += worklog.spentMinutes;
+    }
+    this.touchIssue(issue);
+    this.pushHistory(issue.id, "WORKLOG_DELETED", this.currentUserId, {
+      issueId: issue.id,
+      worklogId: worklog.id,
+      deletedAt: worklog.deletedAt,
+      deletedBy: this.currentUserId,
+    });
+  }
+
   listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Page<IssueComment> {
     const issue = this.findIssue(projectId, issueId);
     const page = params.page ?? 0;
@@ -4710,6 +4872,105 @@ export class MockTaskaStore {
     return comment;
   }
 
+  /**
+   * `ProjectRoleChecker`, which every worklog route goes through, and in its
+   * own two sentences: `"Access denied"` for somebody who is not a member of
+   * the project at all — checked before any role is — and `"Not allowed role"`
+   * for a member whose role is not in the set. Stricter than `getMembership`,
+   * which answers VIEWER for a non-member: here a non-member is refused even
+   * the list, as on the server.
+   */
+  private requireWorklogRole(projectId: string, allowed: ProjectRole[]): void {
+    const { role, isMember } = this.getMembership(projectId);
+    if (!isMember) throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    if (!allowed.includes(role as ProjectRole)) throw new MockApiError("PERMISSION_DENIED", "Not allowed role");
+  }
+
+  /** The gateway's `minimum: 1` and the service's own `> 0`. A fraction never reaches the server as a number. */
+  private refuseWorklogMinutes(minutes: unknown): void {
+    if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes <= 0) {
+      throw new MockApiError("INVALID_ARGUMENT", "SpentMinutes must be greater than 0");
+    }
+  }
+
+  /** The service's `workDate.isAfter(LocalDate.now().plusDays(maxFutureDays))`, against the mock's own today. */
+  private refuseFutureWorkDate(workDate: string): void {
+    if (workDate > addDays(localDateOnly(), WORKLOG_MAX_FUTURE_DAYS)) {
+      throw new MockApiError("INVALID_ARGUMENT", "WorkDate is too far in the future");
+    }
+  }
+
+  /**
+   * A worklog of this issue, in the server's two sentences: one that does not
+   * exist, and one that belongs to another issue — both `404`.
+   */
+  private worklogOfIssue(issue: Issue, worklogId: string): StoredWorklog {
+    const worklog = this.worklogs.find((item) => item.id === worklogId && item.deletedAt === null);
+    if (!worklog) throw new MockApiError("NOT_FOUND", `Worklog with id: ${worklogId} not found`);
+    if (worklog.issueId !== issue.id) throw new MockApiError("NOT_FOUND", "Issue doesnt belongs to worklog");
+    return worklog;
+  }
+
+  /** `Issue.touch()`: what every worklog write does to the issue whatever else it changes. */
+  private touchIssue(issue: Issue): void {
+    issue.updatedAt = now();
+    issue.version += 1;
+  }
+
+  private worklog(
+    issue: Issue,
+    authorUserId: string,
+    spentMinutes: number,
+    workDate: string,
+    comment: string | null,
+    createdAt: string,
+  ): StoredWorklog {
+    const worklog: StoredWorklog = {
+      id: makeId("worklog"),
+      issueId: issue.id,
+      projectId: issue.projectId,
+      authorUserId,
+      spentMinutes,
+      workDate,
+      // A blank comment is stored as `null`, as the server stores it.
+      comment: comment && comment.trim() ? comment : null,
+      createdAt,
+      // `updated_at` is `NOT NULL DEFAULT now()` on the server's table, so a
+      // fresh row carries the insert instant here too.
+      updatedAt: createdAt,
+      deletedAt: null,
+    };
+    this.worklogs.push(worklog);
+    return worklog;
+  }
+
+  private worklogView(worklog: StoredWorklog): IssueWorklog {
+    return {
+      id: worklog.id,
+      issueId: worklog.issueId,
+      projectId: worklog.projectId,
+      authorUserId: worklog.authorUserId,
+      spentMinutes: worklog.spentMinutes,
+      workDate: worklog.workDate,
+      comment: worklog.comment,
+      createdAt: worklog.createdAt,
+      updatedAt: worklog.updatedAt,
+    };
+  }
+
+  /** `PayloadSerializer.createWorklogPayload`'s keys. */
+  private worklogPayload(worklog: StoredWorklog): IssueHistoryEvent["payload"] {
+    return {
+      issueId: worklog.issueId,
+      projectId: worklog.projectId,
+      authorUserId: worklog.authorUserId,
+      worklogId: worklog.id,
+      worklogSpentMinutes: worklog.spentMinutes,
+      worklogDate: worklog.workDate,
+      ...(worklog.comment !== null ? { worklogComment: worklog.comment } : {}),
+    };
+  }
+
   private commentBody(body: string): string {
     const trimmed = body.trim();
     if (!trimmed || trimmed.length > 10000) {
@@ -5058,6 +5319,28 @@ export class MockTaskaApi implements TaskaApi {
 
   async getUserAvatarUrl(userId: string): Promise<string | null> {
     return wait(this.store.getUserAvatarUrl(userId));
+  }
+
+  async listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {
+    return wait(this.store.listIssueWorklogs(projectId, issueId));
+  }
+
+  async addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog> {
+    return wait(this.store.addIssueWorklog(projectId, issueId, input));
+  }
+
+  async updateIssueWorklog(
+    projectId: string,
+    issueId: string,
+    worklogId: string,
+    input: UpdateIssueWorklogInput,
+  ): Promise<IssueWorklog> {
+    return wait(this.store.updateIssueWorklog(projectId, issueId, worklogId, input));
+  }
+
+  async deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void> {
+    this.store.deleteIssueWorklog(projectId, issueId, worklogId);
+    await wait(null);
   }
 
   async listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

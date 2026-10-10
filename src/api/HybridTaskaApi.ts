@@ -1,5 +1,6 @@
 import type {
   AcceptInvitationInput,
+  AddIssueWorklogInput,
   AuthTokens,
   BoardParams,
   ConfirmAttachmentUploadInput,
@@ -19,6 +20,7 @@ import type {
   TaskaApi,
   IssueWriteAnswer,
   UpdateIssueInput,
+  UpdateIssueWorklogInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
 } from "./TaskaApi";
@@ -39,6 +41,7 @@ import type {
   IssueSearchHit,
   IssueType,
   IssueWatchers,
+  IssueWorklog,
   IssueDetailsWithHistory,
   Label,
   Notification,
@@ -309,6 +312,27 @@ export class HybridTaskaApi implements TaskaApi {
 
   getUserAvatarUrl(userId: string): Promise<string | null> {
     return this.live.getUserAvatarUrl(userId);
+  }
+
+  listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {
+    return this.live.listIssueWorklogs(projectId, issueId);
+  }
+
+  addIssueWorklog(projectId: string, issueId: string, input: AddIssueWorklogInput): Promise<IssueWorklog> {
+    return this.live.addIssueWorklog(projectId, issueId, input);
+  }
+
+  updateIssueWorklog(
+    projectId: string,
+    issueId: string,
+    worklogId: string,
+    input: UpdateIssueWorklogInput,
+  ): Promise<IssueWorklog> {
+    return this.live.updateIssueWorklog(projectId, issueId, worklogId, input);
+  }
+
+  deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void> {
+    return this.live.deleteIssueWorklog(projectId, issueId, worklogId);
   }
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {
