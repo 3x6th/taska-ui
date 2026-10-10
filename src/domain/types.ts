@@ -364,12 +364,12 @@ export interface ProjectMember {
    */
   role: ProjectRole | null;
   /**
-   * Both optional because `ProjectMemberDetailsDto` carries neither: the row is
-   * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else.
-   * Only the mock fills them, as seed data and on the rows its own adds create
-   * — `HybridTaskaApi` also invented them from the project's own
-   * `createdAt`/`createdBy` until TAS-224 — and nothing outside the tests reads
-   * them.
+   * Both optional. `addedAt` joins `ProjectMemberDetailsDto` with backend
+   * PR #169 (TAS-212, open on 2026-10-10), and `rest` reads it where the row
+   * carries it; `addedBy` is on no read. The mock fills both, as seed data and
+   * on the rows its own adds create — `HybridTaskaApi` also invented them from
+   * the project's own `createdAt`/`createdBy` until TAS-224 — and nothing
+   * outside the tests reads them.
    */
   addedAt?: string;
   addedBy?: string;
@@ -437,6 +437,52 @@ export interface Workflow {
   updatedAt: string;
   statuses: WorkflowStatus[];
   transitions: WorkflowTransition[];
+}
+
+/**
+ * A workflow as the project context carries it: no `createdAt` and no
+ * `updatedAt`. The pending yml keeps both on `WorkflowResponseDto`, but the
+ * context's assembler at backend PR #169's head (`a1bfe19`) builds its
+ * statuses and transitions without timestamps, and the Java wins over the yml
+ * (docs/ai/API-DIVERGENCE.md, TAS-251). Nothing on the board reads a workflow's
+ * timestamps, so the type simply does not offer them.
+ */
+export type ProjectWorkflow = Omit<Workflow, "createdAt" | "updatedAt">;
+
+/**
+ * `GET /projects/{projectId}/context` — `ProjectContextResponseDto`, backend
+ * PR #169 (TAS-212), pinned at `docs/contract/pending/pr-169-TAS-212.yml`: the
+ * board's whole frame in one read, where it used to take seven (the project,
+ * the project again for the role, the members, a workflow per issue type and
+ * the labels).
+ *
+ * All or nothing: a part that fails on the server fails the whole response, so
+ * there is no partial context. A non-member is refused with 403 — a
+ * `GLOBAL_ADMIN` included — and a missing project is 404.
+ */
+export interface ProjectContext {
+  project: Project;
+  /**
+   * `project.currentUserRole`, narrowed the way `ProjectMembership.role` is:
+   * one of the three, or `null` for a role this build cannot act on. Never
+   * floored to VIEWER (TAS-226).
+   */
+  role: ProjectRole | null;
+  /** Ordered by `compareMembers` in `rest`; a row nobody could name has no `user`. */
+  members: ProjectMember[];
+  /**
+   * `id`, `name` and `color` and nothing else — the context's labels carry no
+   * `projectId`, `createdBy`, `createdAt` or `deletedAt`, and none is invented
+   * here. Unordered on the wire.
+   */
+  labels: Label[];
+  /**
+   * Keyed by issue type, **and only the types the project allows**: one, two,
+   * all three or none. A type that is not here is not a failure; it is a type
+   * this project does not offer. An entry whose `issueType` this build does not
+   * recognise (the wire's `null`, TAS-173) is dropped by the API layer.
+   */
+  workflows: Partial<Record<IssueType, ProjectWorkflow>>;
 }
 
 /**

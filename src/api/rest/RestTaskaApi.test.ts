@@ -347,6 +347,92 @@ describe("RestTaskaApi project members", () => {
     vi.unstubAllGlobals();
   });
 
+  /**
+   * `GET /projects/{projectId}/context` (backend PR #169, TAS-212) — the board's
+   * one frame read since TAS-251. Each part goes through its own route's mapper.
+   */
+  describe("the project context", () => {
+    const status = (id: string, statusKey: string, sortOrder: number) => ({
+      id,
+      statusKey,
+      name: statusKey,
+      category: statusKey,
+      sortOrder,
+    });
+    const workflow = (id: string) => ({ id, name: id, version: 1, statuses: [status("s1", "TODO", 10)], transitions: [] });
+
+    it("asks the context route and keys the workflows by the types it lists, dropping a type it cannot name", async () => {
+      const { result, fetchStub } = await call(
+        {
+          project: project({ currentUserRole: "MEMBER" }),
+          members: [],
+          labels: [],
+          workflows: [
+            { issueType: "BUG", workflow: workflow("bug") },
+            { issueType: null, workflow: workflow("unknown") },
+            { issueType: "TASK", workflow: workflow("task") },
+          ],
+        },
+        (api) => api.getProjectContext("project-1"),
+      );
+
+      expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1/context");
+      expect(fetchStub).toHaveBeenCalledTimes(1);
+      expect(result.role).toBe("MEMBER");
+      expect(Object.keys(result.workflows).sort()).toEqual(["BUG", "TASK"]);
+      expect(result.workflows.TASK).toEqual(workflow("task"));
+      expect(result.workflows.STORY).toBeUndefined();
+    });
+
+    it("answers no workflows at all for a project that allows no type", async () => {
+      const { result } = await call(
+        { project: project({ currentUserRole: "ADMIN" }), members: [], labels: [], workflows: [] },
+        (api) => api.getProjectContext("project-1"),
+      );
+      expect(result.workflows).toEqual({});
+    });
+
+    it("maps members as the member route does — blank names unnamed, name order, addedAt kept — and labels to three fields", async () => {
+      const { result } = await call(
+        {
+          project: project({ currentUserRole: "ADMIN" }),
+          members: [
+            { userId: "user-ghost", role: "MEMBER", displayName: "", email: "", avatar: null, addedAt: "2026-08-02T09:00:00Z" },
+            { userId: "user-mark", role: "MEMBER", displayName: "Mark Ruiz", email: "mark@example.com", avatar: null },
+            { userId: "user-anna", role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com" },
+          ],
+          labels: [{ id: "label-1", name: "backend", color: "#4f7cf0" }],
+          workflows: [],
+        },
+        (api) => api.getProjectContext("project-1"),
+      );
+
+      expect(result.members.map((member) => member.userId)).toEqual(["user-anna", "user-mark", "user-ghost"]);
+      expect(result.members[2]).toEqual({ userId: "user-ghost", role: "MEMBER", addedAt: "2026-08-02T09:00:00Z" });
+      expect(result.labels).toEqual([{ id: "label-1", name: "backend", color: "#4f7cf0" }]);
+    });
+
+    it("states no role, rather than a floor, when the project carries none", async () => {
+      const { result } = await call(
+        { project: project(), members: [], labels: [], workflows: [] },
+        (api) => api.getProjectContext("project-1"),
+      );
+      expect(result.role).toBeNull();
+    });
+
+    it("reads the gateway's static-resource 404 as an undeployed route, not as a missing project", async () => {
+      window.localStorage.setItem("taska.accessToken", "valid-access");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          answer(404, { code: "NOT_FOUND", message: "No static resource api/v1/projects/project-1/context." }),
+        ),
+      );
+      const error = await new RestTaskaApi().getProjectContext("project-1").catch((caught: unknown) => caught);
+      expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+    });
+  });
+
   it("unwraps `members`, not `items`, and asks the route the PR adds", async () => {
     const { result, fetchStub } = await call(
       {
