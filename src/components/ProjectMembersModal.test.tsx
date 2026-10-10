@@ -461,7 +461,7 @@ describe("ProjectMembersModal", () => {
   it("asks before an admin demotes themselves, then re-reads their role so the controls can leave", async () => {
     state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
     const { queryClient } = renderPanel();
-    queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+    queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
 
     const mine = await within(dialog()).findByRole("combobox", { name: "Your role" });
     fireEvent.change(mine, { target: { value: "MEMBER" } });
@@ -480,7 +480,7 @@ describe("ProjectMembersModal", () => {
     expect(
       await within(dialog()).findByText("You are now a Member of this project, so only an admin can change its members."),
     ).toBeVisible();
-    await waitFor(() => expect(queryClient.getQueryState(["membership", PROJECT])?.isInvalidated).toBe(true));
+    await waitFor(() => expect(queryClient.getQueryState(["project-context", PROJECT])?.isInvalidated).toBe(true));
   });
 
   it("puts the select back when an admin answers their own question with Cancel", async () => {
@@ -683,8 +683,7 @@ describe("ProjectMembersModal", () => {
     // What the board had cached: re-entered from history or a link within the
     // cache's lifetime, these would draw the board as ADMIN with controls whose
     // every write is a 403.
-    queryClient.setQueryData(["project", PROJECT], { id: PROJECT });
-    queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+    queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
     queryClient.setQueryData(["issues", PROJECT, "ALL"], { items: [], page: 0, pageSize: 100, totalCount: 0 });
     queryClient.setQueryData(["project-summaries", PROJECT], { count: 0, members: [], failure: null });
     queryClient.setQueryData(["project", OTHER_PROJECT], { id: OTHER_PROJECT });
@@ -695,8 +694,7 @@ describe("ProjectMembersModal", () => {
 
     expect(await screen.findByText("Projects page")).toBeVisible();
     for (const key of [
-      ["project", PROJECT],
-      ["membership", PROJECT],
+      ["project-context", PROJECT],
       ["members", PROJECT],
       ["issues", PROJECT, "ALL"],
       ["project-summaries", PROJECT],
@@ -741,7 +739,7 @@ describe("ProjectMembersModal", () => {
     it("finds out who was removed and takes a reader who removed themselves back to their projects", async () => {
       state.members = twoRealAdmins();
       const { queryClient } = renderPanel({ currentUserId: undefined });
-      queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+      queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
 
       fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Anna Ivanova from this project" }));
       const row = rowOf("Anna Ivanova");
@@ -752,7 +750,7 @@ describe("ProjectMembersModal", () => {
 
       expect(await screen.findByText("Projects page")).toBeVisible();
       expect(state.meReads).toBe(1);
-      expect(queryClient.getQueryState(["membership", PROJECT])).toBeUndefined();
+      expect(queryClient.getQueryState(["project-context", PROJECT])).toBeUndefined();
     });
 
     it("stays on the board when the reader turns out to have removed somebody else", async () => {
@@ -772,8 +770,7 @@ describe("ProjectMembersModal", () => {
       state.members = twoRealAdmins();
       state.meFailure = refusal("UNAVAILABLE", 503, "Service unavailable", "req-me");
       const { queryClient } = renderPanel({ currentUserId: undefined });
-      queryClient.setQueryData(["project", PROJECT], { id: PROJECT });
-      queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+      queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
 
       fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove Anna Ivanova from this project" }));
       fireEvent.click(within(rowOf("Anna Ivanova")).getByRole("button", { name: "Remove" }));
@@ -781,9 +778,8 @@ describe("ProjectMembersModal", () => {
       // Reset, not removed and not merely invalidated: the entries are still
       // there with no data, so the board's next read answers from nothing and a
       // 403 reaches its no-access state instead of hiding under a kept answer.
-      await waitFor(() => expect(queryClient.getQueryState(["membership", PROJECT])?.data).toBeUndefined());
-      expect(queryClient.getQueryState(["membership", PROJECT])).toBeDefined();
-      expect(queryClient.getQueryState(["project", PROJECT])?.data).toBeUndefined();
+      await waitFor(() => expect(queryClient.getQueryState(["project-context", PROJECT])?.data).toBeUndefined());
+      expect(queryClient.getQueryState(["project-context", PROJECT])).toBeDefined();
       expect(screen.queryByText("Projects page")).toBeNull();
     });
   });
@@ -796,7 +792,7 @@ describe("ProjectMembersModal", () => {
   describe("refusals", () => {
     const REFUSED = "The server refused: only a project admin can change members, and your role on this project may have changed.";
     const membershipReRead = (queryClient: QueryClient) =>
-      waitFor(() => expect(queryClient.getQueryState(["membership", PROJECT])?.isInvalidated).toBe(true));
+      waitFor(() => expect(queryClient.getQueryState(["project-context", PROJECT])?.isInvalidated).toBe(true));
 
     it.each([
       [
@@ -831,7 +827,7 @@ describe("ProjectMembersModal", () => {
     ])("a 403 on %s says the server refused, keeps its words and request id, and re-reads the role", async (_case, arrange, act403) => {
       arrange();
       const { queryClient } = renderPanel();
-      queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+      queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
       await within(dialog()).findByText("Mark Lee");
 
       act403();
@@ -910,13 +906,13 @@ describe("ProjectMembersModal", () => {
         "req-404-self",
       );
       const { queryClient } = renderPanel();
-      queryClient.setQueryData(["membership", PROJECT], { role: "ADMIN", isMember: true, projectExists: true });
+      queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
 
       fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove yourself from this project" }));
       fireEvent.click(within(rowOf("Anna Ivanova")).getByRole("button", { name: "Remove me" }));
 
       expect(await screen.findByText("Projects page")).toBeVisible();
-      expect(queryClient.getQueryState(["membership", PROJECT])).toBeUndefined();
+      expect(queryClient.getQueryState(["project-context", PROJECT])).toBeUndefined();
     });
 
     it("a FAILED_PRECONDITION on a removal puts the row back and names the last-admin reason", async () => {

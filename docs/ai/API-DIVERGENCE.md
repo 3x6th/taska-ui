@@ -149,6 +149,11 @@ is cheaper than splitting an entry and the reader has to be told which.
   from the fallback rather than posting an id the server cannot know.
 - **Removal:** the fix above; there is no backend ask here. The endpoint answers
   `200` on the stand today.
+- **Since TAS-251 the board no longer calls this route.** Its workflows come
+  from `GET /projects/{projectId}/context` (see "Pending backend PR #169" below),
+  so a failed workflow is a failed context — said in the board's one banner — and
+  the fallback columns are also what a project that allows no issue type gets.
+  Neither case offers a move.
 
 ### The contract's status keys are open, and the UI's are closed
 
@@ -538,6 +543,56 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `hybrid`, which is the deployed mode, so TAS-219 changes nothing a person can
   see there. The compensation and the flag come out under TAS-137 when the route
   answers on the stand, in the five places listed above.
+
+### Pending backend PR #169 (TAS-212): the board's frame in one read, and where the Java says more than the yml
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/context` →
+  `ProjectContextResponseDto` `{ project, members, labels, workflows }`, pinned
+  at `docs/contract/pending/pr-169-TAS-212.yml` (head `a1bfe19`). **Open and
+  undeployed on 2026-10-10**: the route answers the gateway's static-resource
+  404 until it deploys.
+- **What the board does with it (TAS-251):** one `getProjectContext` replaces
+  seven reads — `GET /projects/{id}`, the same again for the role
+  (`getMembership`), `…/members`, `…/workflow` × 3 and `…/labels`. Measured
+  against `RestTaskaApi` over a stubbed `fetch`
+  (src/screens/IssuePanelRequests.test.tsx): a settled board went from eleven
+  requests to five — the context, the issue page, `GET /users/me`, and the top
+  bar's notifications and avatar. `HybridTaskaApi` passes it through; the
+  members dialog and the projects screen still read `…/members`.
+- **What the Java at the PR head does that the yml does not say** (read by
+  `api-contract-guard`; the Java wins), and what each implementation does:
+  - All or nothing: any part failing fails the response. The board therefore
+    has one banner for it, where it had three (project, role, workflow).
+  - A non-member is `403` — a `GLOBAL_ADMIN` included — and a missing project
+    `404`; both go to §4.18's screen. The static-resource 404 is told apart by
+    `isUndeployedRoute` and keeps the board with a "not served yet" banner.
+  - `workflows` covers only the project's allowed issue types — fewer than
+    three, or `[]` — in no fixed order, and an unknown type arrives as
+    `issueType: null`. `rest` keys the entries by type and drops a `null`; the
+    type filter, the "New" and column "+" buttons and the create form offer
+    only the listed types; an issue of an unlisted type is refused a move with
+    its own sentence; a project with no types keeps the contract's three
+    columns and cannot create.
+  - Statuses and transitions carry no `createdAt`/`updatedAt` in the context,
+    though `WorkflowStatusDto` in the extract still declares them;
+    `ProjectWorkflow` (src/domain/types.ts) is a `Workflow` without the two.
+  - Labels carry `id`, `name` and `color` only — not `ProjectLabelResponseDto`
+    — and are typed `Label`; the board's optimistic label rows invent no
+    `createdAt` either.
+  - Members come ordered by `userId`, with `""` names when auth-service lacks
+    the user and an optional avatar; `rest` maps them exactly as `…/members`
+    (blank name → unnamed row, `compareMembers`), and keeps `addedAt` when it
+    is there.
+- **Mock parity:** `MockTaskaApi.getProjectContext` applies the same rules:
+  403 for a non-member (Mark, the seed's `GLOBAL_ADMIN`, on WEB), 404 for a
+  missing project, and **Infra and Ops allows only TASK and BUG**. Its other
+  project reads stay looser than the gateway — `getMembership` still answers
+  VIEWER for a non-member — so the read-only e2e cases now sign in as Tom, a
+  real VIEWER of Taska Platform and, since TAS-251, of Mobile.
+- **Removal:** when #169 merges, delete the pending extract, refresh the
+  snapshot and probe the route. `getProject`, `getMembership`, `getWorkflow` and
+  `listProjectLabels` stay on `TaskaApi` with no screen calling them; whether
+  they go is a separate decision.
 
 ### Accepting an invitation does not produce a session
 

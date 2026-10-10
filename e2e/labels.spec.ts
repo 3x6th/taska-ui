@@ -15,9 +15,9 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const MOBILE_PROJECT_ID = "f315c5cf-3333-47d1-8d22-79f07c2ec99b";
 
-async function signIn(page: Page) {
+async function signIn(page: Page, email = "anna@example.com") {
   await page.goto("/login");
-  await page.getByLabel("Email").fill("anna@example.com");
+  await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
@@ -186,10 +186,11 @@ test("creates a project label, renames it, and deletes it", async ({ page }) => 
 });
 
 test("a viewer reads the labels and is offered no way to change them", async ({ page }) => {
-  // Anna is not a member of the Mobile project, so the mock answers VIEWER for
-  // it. The board is reachable by URL, which is the point: hiding the controls
-  // is a UI courtesy and the server stays the authority.
-  await signIn(page);
+  // Tom is a VIEWER of the Mobile project (TAS-251: the board's context read
+  // refuses a non-member, so the read-only board needs a real VIEWER).
+  // The board is reachable by URL, which is the point: hiding the controls is
+  // a UI courtesy and the server stays the authority.
+  await signIn(page, "tom@example.com");
   await page.goto(`/projects/${MOBILE_PROJECT_ID}/board`);
 
   // Reading is a VIEWER's right (TAS-119), so the filter and the chips stay.

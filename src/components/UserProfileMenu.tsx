@@ -127,16 +127,16 @@ interface PhotoNotice {
 }
 
 /**
- * The two cached shapes that draw somebody's face on a member row, as their
- * screens hold them: the board's `["members", projectId]` is the list itself,
- * and the project cards' `["project-summaries", projectId]` is
- * `ProjectsScreen`'s summary, whose `members` is `null` when that half of the
- * card did not load. Only `members` is read here; the rest of a summary is
- * spread through untouched.
+ * The cached shapes that draw somebody's face on a member row, as their
+ * screens hold them: the members dialog's `["members", projectId]` is the list
+ * itself; the board's `["project-context", projectId]` (TAS-251) and the
+ * project cards' `["project-summaries", projectId]` hold it under `members` —
+ * the summary's `null` when that half of the card did not load. Only `members`
+ * is read here; the rest of either holder is spread through untouched.
  */
 type MemberFaceHolder = ProjectMember[] | { members: ProjectMember[] | null };
 
-const MEMBER_FACE_FAMILIES: readonly QueryKey[] = [["members"], ["project-summaries"]];
+const MEMBER_FACE_FAMILIES: readonly QueryKey[] = [["members"], ["project-context"], ["project-summaries"]];
 
 /** One cached list the reader's row was rewritten in, and the face it carried before. */
 interface OwnFaceWrite {

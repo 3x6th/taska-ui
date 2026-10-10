@@ -138,11 +138,12 @@ test("says so quietly when an issue has no links", async ({ page }) => {
 });
 
 test("a viewer reads the links and is offered no way to change them", async ({ page }) => {
-  // Anna is not a member of the Mobile project, so the mock answers VIEWER for
-  // it. The board is reachable by URL, which is the point: hiding the controls
-  // is a UI courtesy and the server stays the authority.
+  // Tom is a VIEWER of the Mobile project (TAS-251: the board's context read
+  // refuses a non-member, so the read-only board needs a real VIEWER).
+  // The board is reachable by URL, which is the point: hiding the controls is
+  // a UI courtesy and the server stays the authority.
   await page.goto("/login");
-  await page.getByLabel("Email").fill("anna@example.com");
+  await page.getByLabel("Email").fill("tom@example.com");
   await page.getByLabel("Password").fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
