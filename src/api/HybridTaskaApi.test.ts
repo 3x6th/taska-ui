@@ -64,6 +64,30 @@ describe("HybridTaskaApi", () => {
     expect(getIssue).toHaveBeenCalledWith(issue.projectId, issue.id);
   });
 
+  it("delegates the four worklog routes to live, rejections included", async () => {
+    const live = liveApi();
+    const list = vi.spyOn(live, "listIssueWorklogs");
+    const add = vi.spyOn(live, "addIssueWorklog");
+    const update = vi.spyOn(live, "updateIssueWorklog");
+    const remove = vi.spyOn(live, "deleteIssueWorklog");
+
+    const hybrid = new HybridTaskaApi(live);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const issue = await hybrid.getIssueByKey("TAS-101");
+    await hybrid.listIssueWorklogs(issue.projectId, issue.id);
+    const added = await hybrid.addIssueWorklog(issue.projectId, issue.id, { spentMinutes: 30, workDate: "2026-06-14" });
+    await hybrid.updateIssueWorklog(issue.projectId, issue.id, added.id, { comment: "" });
+    await expect(hybrid.updateIssueWorklog(issue.projectId, issue.id, added.id, {})).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
+    await hybrid.deleteIssueWorklog(issue.projectId, issue.id, added.id);
+
+    expect(list).toHaveBeenCalledWith(issue.projectId, issue.id);
+    expect(add).toHaveBeenCalledWith(issue.projectId, issue.id, { spentMinutes: 30, workDate: "2026-06-14" });
+    expect(update).toHaveBeenCalledWith(issue.projectId, issue.id, added.id, { comment: "" });
+    expect(remove).toHaveBeenCalledWith(issue.projectId, issue.id, added.id);
+  });
+
   /**
    * The two reads TAS-224 turned into delegations. Until then this class
    * answered both itself, out of `GET /projects/{id}` and `GET /users/me`, and
