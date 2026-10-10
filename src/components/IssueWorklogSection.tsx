@@ -321,7 +321,13 @@ export function IssueWorklogSection({
             today={today}
           />
           <div className="worklog-form-actions">
-            <button className="primary-button compact-button" type="submit">
+            {/* `aria-disabled`, never `disabled` (§4.22): an empty duration reads as
+                unavailable, and a click still shows what is missing. */}
+            <button
+              aria-disabled={draft.duration.trim() === "" || undefined}
+              className="primary-button compact-button"
+              type="submit"
+            >
               Log work
             </button>
           </div>
