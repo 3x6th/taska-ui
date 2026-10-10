@@ -564,8 +564,21 @@ Same rule as above: "Closed by" is settled, the rest is live.
   - All or nothing: any part failing fails the response. The board therefore
     has one banner for it, where it had three (project, role, workflow).
   - A non-member is `403` — a `GLOBAL_ADMIN` included — and a missing project
-    `404`; both go to §4.18's screen. The static-resource 404 is told apart by
-    `isUndeployedRoute` and keeps the board with a "not served yet" banner.
+    `404`. The static-resource 404 is told apart by `isUndeployedRoute` and
+    keeps the board with a "not served yet" banner.
+  - **A 404 or 403 can also be one avatar.** The members are enriched exactly
+    as `…/members` enriches them (`ProjectMemberServiceImpl` at #169): each
+    avatar HEADed and presigned per person, no per-row fallback. One missing
+    avatar object fails the whole context with 404 and a storage refusal with
+    403 — the statuses of a missing project and of no access. **Compensation:**
+    on a 404/403 the board makes one `getProject` read (no retry); only if that
+    refuses too does §4.18's screen show. If the project reads, the board stays,
+    named from that read, with a banner saying the project's details (people,
+    labels, workflows) could not be read and the request id, editing off.
+    **Backend ask** (comment on TAS-212): an unreadable avatar should come as
+    `avatar: null` on its row, not fail the read. Removal: when that ships,
+    delete the confirming read (`projectCheckQuery` in BoardScreen) and send a
+    404/403 straight to §4.18 again.
   - `workflows` covers only the project's allowed issue types — fewer than
     three, or `[]` — in no fixed order, and an unknown type arrives as
     `issueType: null`. `rest` keys the entries by type and drops a `null`; the
@@ -585,14 +598,17 @@ Same rule as above: "Closed by" is settled, the rest is live.
     is there.
 - **Mock parity:** `MockTaskaApi.getProjectContext` applies the same rules:
   403 for a non-member (Mark, the seed's `GLOBAL_ADMIN`, on WEB), 404 for a
-  missing project, and **Infra and Ops allows only TASK and BUG**. Its other
+  missing project, and **Infra and Ops allows only TASK and BUG**. `createIssue`
+  refuses a type the project does not allow with `400 INVALID_ARGUMENT` ("Issue
+  type STORY is not allowed in project OPS"); the gateway refuses it too, but
+  its exact status and wording are **unmeasured**. Its other
   project reads stay looser than the gateway — `getMembership` still answers
   VIEWER for a non-member — so the read-only e2e cases now sign in as Tom, a
   real VIEWER of Taska Platform and, since TAS-251, of Mobile.
 - **Removal:** when #169 merges, delete the pending extract, refresh the
-  snapshot and probe the route. `getProject`, `getMembership`, `getWorkflow` and
-  `listProjectLabels` stay on `TaskaApi` with no screen calling them; whether
-  they go is a separate decision.
+  snapshot and probe the route. `getProject` stays on `TaskaApi` for the
+  confirming read above; `getMembership`, `getWorkflow` and `listProjectLabels`
+  stay with no screen calling them, and whether they go is a separate decision.
 
 ### Pending backend PR #178 (TAS-118): the work log, and what the panel makes up for
 

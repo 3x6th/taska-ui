@@ -2340,6 +2340,17 @@ export class MockTaskaStore {
 
   createIssue(projectId: string, input: CreateIssueInput): Issue {
     const project = this.getProject(projectId);
+    // The project's allowed types are the server's to enforce, not only the
+    // create form's to offer (TAS-251). The status and wording of the gateway's
+    // refusal are unmeasured; `INVALID_ARGUMENT` is this store's reading
+    // (docs/ai/API-DIVERGENCE.md, "Pending backend PR #169").
+    const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
+    if (!allowed.includes(input.issueType)) {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        `Issue type ${input.issueType} is not allowed in project ${project.projectKey}`,
+      );
+    }
     requirePlanningFields(input);
     const planning = resolvePlanningFields(input, emptyPlanningFields());
     const issueNumber =

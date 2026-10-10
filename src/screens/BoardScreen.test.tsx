@@ -70,6 +70,7 @@ const {
   failMembers,
   holdMembers,
   memberReads,
+  projectReads,
   seedWatchers,
   failWatchersRead,
   holdWatchersRead,
@@ -247,6 +248,8 @@ const {
     membersHeld: boolean;
     /** Every member read that went out, answered or not, so a retried read can be told from a single one. */
     membersReads: number;
+    /** Every plain `GET /projects/{id}` that went out — the board's confirming read after a refused context. */
+    projectReads: number;
     /**
      * The watchers section. `watchers` and `watchersTotal` are held apart
      * deliberately: the whole point of the count is that it is a field the
@@ -344,6 +347,7 @@ const {
     deleteReleases: [],
     membersHeld: false,
     membersReads: 0,
+    projectReads: 0,
     watchers: [],
     watchersTotal: null,
     watchersCountAfterWrite: null,
@@ -418,6 +422,7 @@ const {
       status: "ACTIVE" as const,
     }),
     getProject: async (projectId: string) => {
+      state.projectReads += 1;
       if (state.projectHeld) return new Promise(() => {});
       if (state.projectFailure) throw state.projectFailure;
       return {
@@ -895,6 +900,7 @@ const {
       state.membersHeld = held;
     },
     memberReads: () => state.membersReads,
+    projectReads: () => state.projectReads,
     /** The list read's two answers, stated apart so a test can make them disagree. */
     seedWatchers: (watchers: typeof state.watchers, totalCount: number | null, countAfterWrite: number | null = null) => {
       state.watchers = watchers;
@@ -1064,6 +1070,7 @@ const {
       state.membersFailure = undefined;
       state.membersHeld = false;
       state.membersReads = 0;
+      state.projectReads = 0;
       state.watchers = [];
       state.watchersTotal = null;
       state.watchersCountAfterWrite = null;
@@ -2029,6 +2036,63 @@ describe("a gateway that does not serve the context read yet", () => {
     renderBoard();
 
     expect(await screen.findByRole("heading", { name: /not found/i }, AFTER_RETRY)).toBeVisible();
+  });
+});
+
+/**
+ * The context's members are enriched as `GET /members` enriches them, so one
+ * unreadable avatar object fails the whole read with 404 — or 403 for a storage
+ * refusal — the pair a missing or forbidden project answers with as well. One
+ * plain project read decides which it was (TAS-251; `failMembers` fails the
+ * context alone, `failProject` fails both reads).
+ */
+describe("a context read refused with 404 or 403", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  for (const [status, code] of [
+    [404, "NOT_FOUND"],
+    [403, "PERMISSION_DENIED"],
+  ] as const) {
+    it(`stays on the board with a banner when the project itself reads fine (${status})`, async () => {
+      failMembers(Object.assign(new Error("Refused"), { status, code, requestId: "9d1e4f20-77ab" }));
+      const queryClient = renderBoard();
+
+      const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
+      expect(alert).toHaveTextContent(/details — its people, labels and workflows — could not be read/i);
+      expect(screen.getByRole("button", { name: /Copy request id 9d1e4f20-77ab/ })).toBeVisible();
+      expect(screen.queryByRole("heading", { name: /not found/i })).not.toBeInTheDocument();
+      // Named from the confirming read, and still not writable: no role came back.
+      expect(screen.getByText("Taska Platform")).toBeVisible();
+      expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+
+      // Each read went out once: no retry of the refusal, no loop on the check.
+      expect(memberReads()).toBe(1);
+      expect(projectReads()).toBe(1);
+      expect(queryClient.getQueryState(["project-check", PROJECT_ID])).toMatchObject({
+        status: "success",
+        fetchStatus: "idle",
+      });
+    });
+
+    it(`shows the not-found screen when the project read refuses as well (${status})`, async () => {
+      failProject(Object.assign(new Error("Refused"), { status, code }));
+      renderBoard();
+
+      expect(await screen.findByRole("heading", { name: /not found/i }, AFTER_RETRY)).toBeVisible();
+      expect(memberReads()).toBe(1);
+      expect(projectReads()).toBe(1);
+    });
+  }
+
+  it("does not ask the project for a confirmation it does not need", async () => {
+    failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
+    renderBoard();
+
+    expect(await screen.findByRole("alert", undefined, AFTER_RETRY)).toHaveTextContent(/could not be loaded/i);
+    expect(projectReads()).toBe(0);
   });
 });
 
