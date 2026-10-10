@@ -3134,3 +3134,14 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
   attempt 3, job 113255034540): the `Users` heading was not visible 5s after
   clicking the Administration nav link; passed on retry. First sighting in ten
   sharded runs.
+
+### Left by TAS-253 (attachments: Open, Download, drop to attach, 2026-10-11)
+
+- **A file dropped outside the issue panel navigates the tab to the file** (the
+  board, the backdrop). The panel swallows drops; nothing above it does. Was
+  true before TAS-253. From `release-reviewer` r1.
+- **Not measured outside Chromium:** Safari's popup rule for Download's
+  fallback tab (opened after two requests; the Open link covers a refusal),
+  Firefox with the object URL, and a real OS drag from Finder.
+- **A queue keeps uploading after the panel closes**, with no visible status.
+  Each file still lands on its own issue.

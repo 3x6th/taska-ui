@@ -356,8 +356,17 @@ test("a viewer reads the files and is offered neither upload nor delete", async 
   });
   await attachments.dispatchEvent("dragenter", { dataTransfer });
   await expect(attachments).not.toHaveClass(/is-drop-target/);
-  await attachments.dispatchEvent("drop", { dataTransfer });
-  await expect(page).toHaveURL(new RegExp(`/projects/${MOB_PROJECT_ID}/`));
+  // Dispatched from inside the page and cancelable, so the handler's
+  // `preventDefault()` is observable: a script-dispatched drop never navigates,
+  // so the URL cannot tell a swallowed drop from a forgotten one.
+  const defaultPrevented = await attachments.evaluate((node) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["x"], "nope.txt", { type: "text/plain" }));
+    const drop = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer });
+    node.dispatchEvent(drop);
+    return drop.defaultPrevented;
+  });
+  expect(defaultPrevented).toBe(true);
   await expect(attachments.getByRole("button", { name: "Download nope.txt" })).toHaveCount(0);
   await expect(attachments.getByRole("button", { name: /^Delete / })).toHaveCount(0);
   await expect(attachments.locator(".attachment-hint")).toHaveCount(0);

@@ -41,7 +41,7 @@ import {
   attachmentRefusalKind,
   type AttachmentRefusalKind,
 } from "../api/attachments";
-import { objectStoreUploadFailure } from "../api/objectStore";
+import { isUsableDownloadUrl, objectStoreUploadFailure } from "../api/objectStore";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isIssueVersionConflict, isMissingOrForbidden, IssueVersionConflictError } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
@@ -3985,7 +3985,7 @@ function IssueAttachmentsSection({
       setFallbackLink(null);
     },
     onSuccess: (link, { attachment, tab }) => {
-      if (!link.downloadUrl) {
+      if (!isUsableDownloadUrl(link.downloadUrl)) {
         closeTab(tab);
         say({ tone: "error", text: `No link came back for ${attachment.fileName}.` });
         return;
@@ -4024,7 +4024,9 @@ function IssueAttachmentsSection({
   const download = useMutation({
     mutationFn: async (attachment: IssueAttachment) => {
       const link = await taskaApi.getAttachmentDownloadUrl(projectId, issueId, attachment.id);
-      if (!link.downloadUrl) return { kind: "no-link" as const };
+      // The same rule the byte GET applies, here because the fallback below
+      // hands the link to a tab and an anchor, not to a fetch.
+      if (!isUsableDownloadUrl(link.downloadUrl)) return { kind: "no-link" as const };
       try {
         const blob = await taskaApi.getAttachmentBytes(link.downloadUrl);
         return { kind: "saved" as const, blob };

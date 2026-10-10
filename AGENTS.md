@@ -57,7 +57,8 @@ The contract states *intended* truth. The deployed gateway at
 `api.taska.ozero.dev` is *runtime* truth. When they disagree — or when the
 contract is silent on something the UI needs — stop and record it in
 `docs/ai/API-DIVERGENCE.md` with the endpoint, the observed behaviour, the
-compensating UI behaviour, and the Jira key that will remove it. Do not absorb
+UI behaviour (no compensation for a bug on a route that exists — see *No
+compensations for the backend*), and the Jira key that will remove it. Do not absorb
 the difference into a component and move on.
 
 This has already happened: `VITE_TASKA_ASSUME_PROJECT_ADMIN` existed purely

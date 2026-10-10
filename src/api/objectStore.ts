@@ -108,6 +108,20 @@ export function requireUsableDownloadUrl(downloadUrl: string): void {
   requireUsableStoreUrl(downloadUrl, "The download link was not usable, so nothing was fetched.");
 }
 
+/**
+ * `requireUsableDownloadUrl` as a question, for the places that hand the link to
+ * a tab or an `<a href>` rather than to a fetch: a `javascript:` link loaded
+ * into a blank tab runs with this app's origin.
+ */
+export function isUsableDownloadUrl(downloadUrl: string): boolean {
+  try {
+    requireUsableDownloadUrl(downloadUrl);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function requireUsableStoreUrl(url: string, message: string): void {
   let parsed: URL | null;
   try {

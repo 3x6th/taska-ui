@@ -2825,6 +2825,35 @@ describe("issue attachments", () => {
     vi.unstubAllGlobals();
   });
 
+  it("never loads a javascript: link into the waiting tab or the fallback link", async () => {
+    seedAttachments([attachment()]);
+    const tab = fakeTab();
+    vi.stubGlobal("open", vi.fn(() => tab as unknown as Window));
+    renderBoard(ISSUE_PATH);
+    const panel = await section();
+    await panel.findByRole("button", { name: "Open login-500-trace.txt in a new tab" });
+    seedDownloadUrl("javascript:alert(document.domain)");
+
+    fireEvent.click(panel.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
+    expect(await panel.findByText("No link came back for login-500-trace.txt.")).toBeVisible();
+    expect(tab.close).toHaveBeenCalled();
+    expect(tab.location.replace).not.toHaveBeenCalled();
+
+    // Download: the same link neither reaches the byte GET's fallback tab nor an anchor.
+    fireEvent.click(panel.getByRole("button", { name: "Download login-500-trace.txt" }));
+    await waitFor(() => expect(panel.getAllByText("No link came back for login-500-trace.txt.").length).toBeGreaterThan(0));
+    expect(tab.location.replace).not.toHaveBeenCalled();
+    expect(bytesReads()).toEqual([]);
+    expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
+
+    // And with the browser refusing the tab, no fallback link is offered either.
+    vi.stubGlobal("open", vi.fn(() => null));
+    fireEvent.click(panel.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
+    await panel.findByText("No link came back for login-500-trace.txt.");
+    expect(panel.queryByRole("link", { name: "Open" })).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
   it("saves the file under its own name from the fetched bytes", async () => {
     seedAttachments([attachment()]);
     const open = vi.fn(() => null);
