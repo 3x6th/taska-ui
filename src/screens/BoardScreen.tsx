@@ -1253,10 +1253,11 @@ function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "id
  * What the server found that the columns above do not hold (DESIGN.md §5.4).
  *
  * Its own group, below the board and outside the `DndContext`, because a hit is
- * an `IssueSearchHit` and has no status. Putting one in a status column would
- * be a claim the server never made, and making it a drop target would offer a
- * transition from a status nobody knows. So these rows do not lift, do not
- * drag, and say in words what they are.
+ * an `IssueSearchHit` and not an issue. It has carried a `statusKey` since
+ * backend TAS-218, but no labels, no dates and no version, so a card built from
+ * it in a column would draw less than its neighbours and could not be edited
+ * like them; DESIGN.md §5.2 keeps hits out of the columns. So these rows do not
+ * lift, do not drag, and say in words what they are.
  *
  * Four states, and they are four different sentences: a search still running, a
  * search that failed, a search that found nothing else, and the rows
@@ -1332,8 +1333,8 @@ function SearchHitsGroup({
                     <PriorityBars priority={hit.priority} />
                   </span>
                   <strong>{hit.summary}</strong>
-                  {/* Everything a hit carries and nothing else — no status, no
-                      labels, no dates, because the server sent none of them. */}
+                  {/* Nothing a hit does not carry — no labels, no dates, because
+                      the server sent none of them. */}
                   <span className="search-hit-foot">
                     <Avatar user={assignee} size="sm" />
                   </span>

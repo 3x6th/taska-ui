@@ -561,8 +561,8 @@ const {
       state.searchTotal = Math.max(0, state.searchTotal - 1);
       return answer();
     },
-    // The search route answers with the short DTO — six fields, no status and
-    // no projectId — so the fixture cannot accidentally hand the board an issue
+    // The search route answers with the short DTO — no labels, no dates, no
+    // version — so the fixture cannot accidentally hand the board an issue
     // where the gateway would hand it a hit.
     searchIssues: async () => {
       if (state.searchFailure) throw state.searchFailure;
@@ -1409,8 +1409,8 @@ describe("the board's search and the server's", () => {
 
     const group = await screen.findByRole("region", { name: "Other matches from the server" });
     expect(await within(group).findByText("TAS-900")).toBeVisible();
-    // A hit has no status, so no column may claim it — placing one would be a
-    // statement the server never made.
+    // A hit is not an issue, so no column may claim it (DESIGN.md §5.2) — even
+    // since TAS-218 gave it a status key.
     expect(within(screen.getByRole("region", { name: "To Do column" })).queryByText("TAS-900")).not.toBeInTheDocument();
     // And the group says what it is rather than appearing unexplained.
     expect(within(group).getByText(/matches in descriptions/i)).toBeVisible();

@@ -4479,12 +4479,11 @@ export class MockTaskaStore {
   }
 
   /**
-   * The issue as `IssueShortResponseDto` states it — seven fields since merged
-   * PR #148 added `storyPoints` to that DTO, listed one by one rather than
-   * spread, so the mock can never hand out a `status` or a `projectId` the
-   * gateway would not have sent. That narrowness is the whole reason
-   * `IssueSearchHit` exists, and adding the seventh field is the moment it was
-   * most likely to be lost.
+   * The issue as `IssueShortResponseDto` states it — ten fields since backend
+   * TAS-218 added the project and the status key, listed one by one rather than
+   * spread, so the mock can never hand out a description, a label or a version
+   * the gateway would not have sent. That narrowness is the whole reason
+   * `IssueSearchHit` exists.
    */
   private searchHit(issue: Issue): IssueSearchHit {
     return {
@@ -4498,6 +4497,10 @@ export class MockTaskaStore {
       // one by one like its neighbours so the mock can never hand out a date or
       // an estimate the gateway would not have sent.
       storyPoints: issue.storyPoints,
+      // The three TAS-218 added: the issue's project and its status key.
+      projectId: issue.projectId,
+      projectKey: this.projects.find((project) => project.id === issue.projectId)?.projectKey ?? null,
+      statusKey: issue.status,
     };
   }
 

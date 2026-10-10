@@ -407,6 +407,11 @@ interface RestIssueShortItem {
   // No dates and no estimates: see `IssueSearchHit` in src/domain/types.ts for
   // why this must not be widened to match `RestIssue` above.
   storyPoints?: number | null;
+  // Backend TAS-218 (develop `485fea5`, deployed 2026-10-09): `statusKey` is
+  // required, the two project fields optional.
+  projectId?: string | null;
+  projectKey?: string | null;
+  statusKey?: string | null;
 }
 
 /**
@@ -1126,9 +1131,10 @@ export class RestTaskaApi implements TaskaApi {
    * obvious implementation, which sets the parameter on every keystroke, turns
    * a cleared field into an error.
    *
-   * The enum filters are typed, never stringly passed through: an unrecognised
-   * `priority` or `issueType` is silently ignored by the runtime and answers
-   * with a *wider* set than the one asked for.
+   * The enum filters are typed, never stringly passed through. That is the
+   * domain's own typing rather than a compensation: since backend TAS-218 an
+   * unrecognised `priority` or `issueType` passes the edge and answers an
+   * empty page (it was a `400` before, and a silently *wider* set before that).
    */
   async searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>> {
     const query = requireSearchQuery(params.query);
@@ -1145,8 +1151,9 @@ export class RestTaskaApi implements TaskaApi {
 
     const response = await this.request<RestSearchIssuesResponse>(`/issues/search${this.query(search)}`);
     // No hydration, on purpose, and the reason outlived the N+1 in `listIssues`
-    // above: the search DTO is still `IssueShortResponseDto`, so filling in a
-    // status here would mean a `getIssue` per hit on every keystroke. The owner
+    // above: the search DTO is still `IssueShortResponseDto` — with its project
+    // and status since TAS-218, and nothing more — so filling in anything else
+    // here would mean a `getIssue` per hit on every keystroke. The owner
     // settled that on 2026-08-23 — fix the backend, do not hydrate on the
     // frontend (docs/ai/API-DIVERGENCE.md, TAS-178). A hit stays as short as
     // the contract made it.
@@ -2144,8 +2151,8 @@ export class RestTaskaApi implements TaskaApi {
   /**
    * `IssueShortResponseDto` → `IssueSearchHit`, field by field rather than by
    * spread. The listing is the point: a spread would quietly widen the hit the
-   * day the DTO grows a field, and the one thing this type must keep proving is
-   * that it carries no status and no project.
+   * day the DTO grows a field. It grew three with TAS-218 — the project and
+   * the status key — and each is listed below, blank read as absent.
    */
   private toIssueSearchHit(item: RestIssueShortItem): IssueSearchHit {
     return {
@@ -2159,6 +2166,9 @@ export class RestTaskaApi implements TaskaApi {
       assigneeId: item.assigneeId || null,
       // `??`, not `||`: an issue estimated at zero points has been estimated.
       storyPoints: item.storyPoints ?? null,
+      projectId: item.projectId || null,
+      projectKey: item.projectKey || null,
+      statusKey: item.statusKey || null,
     };
   }
 

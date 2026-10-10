@@ -1632,6 +1632,10 @@ describe("RestTaskaApi issue search", () => {
         // estimate still arrives without the key, so both of these read "not
         // estimated" rather than `undefined`.
         storyPoints: null,
+        // A gateway that predates TAS-218 sends none of the three.
+        projectId: null,
+        projectKey: null,
+        statusKey: null,
       },
       {
         id: "issue-2",
@@ -1641,11 +1645,30 @@ describe("RestTaskaApi issue search", () => {
         priority: "MEDIUM",
         assigneeId: null,
         storyPoints: null,
+        projectId: null,
+        projectKey: null,
+        statusKey: null,
       },
     ]);
     // The count is of the whole matching set, not of the page.
     expect(page.totalCount).toBe(42);
     expect(page.page).toBe(0);
+  });
+
+  it("carries the project and the status key TAS-218 put on the hit, blank read as absent", async () => {
+    stubFetch({
+      items: [
+        { id: "issue-1", issueKey: "TAS-101", summary: "s", issueType: "BUG", priority: "HIGH", assigneeId: "", projectId: "project-tas", projectKey: "TAS", statusKey: "IN_PROGRESS" },
+        { id: "issue-2", issueKey: "WEB-12", summary: "s", issueType: "TASK", priority: "LOW", assigneeId: "", projectId: "", statusKey: "BLOCKED" },
+      ],
+      totalCount: 2,
+    });
+
+    const { items } = await new RestTaskaApi().searchIssues({ query: "board" });
+
+    expect(items[0]).toMatchObject({ projectId: "project-tas", projectKey: "TAS", statusKey: "IN_PROGRESS" });
+    // A key this build does not know is kept verbatim; a blank project is none.
+    expect(items[1]).toMatchObject({ projectId: null, projectKey: null, statusKey: "BLOCKED" });
   });
 
   it("never hydrates a hit, whatever the board does with a list", async () => {
@@ -2900,6 +2923,9 @@ describe("RestTaskaApi issue planning fields", () => {
       "issueKey",
       "issueType",
       "priority",
+      "projectId",
+      "projectKey",
+      "statusKey",
       "storyPoints",
       "summary",
     ]);

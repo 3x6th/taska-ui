@@ -2879,8 +2879,30 @@ found"`.
   `/readonly/auth/users?order=bogus` answers `400` pre-auth, `order=DESC`
   reaches `401`. The client sends only values the contract names on all three,
   so nothing here changed on the wire.
+- **TAS-218 deployed (develop `485fea5`, 2026-10-09), and the enum half is
+  closed.** An unknown `priority` or `issueType` passes the edge again —
+  measured without a token, it answers `401` where it answered `400` — and the
+  search answers an empty list, which is what TAS-218 asked for. Read again for
+  TAS-251, the "enum guard" this entry names was never a runtime check: it is
+  `SearchIssuesParams` typing `priority` and `issueType` as the domain's unions,
+  which is ordinary typing and stays as that, with its doc comment rewritten
+  to say so. The mock already answered an unknown value with an empty page —
+  its filters are equality, and nothing holds the value — and a test now pins
+  it. **The length constant stays for good**, as decided on 2026-09-11: the
+  minimum is three by configuration, and only the contract's `minLength` still
+  has to catch up (TAS-206).
 
-### The search DTO carries no `status` and no `projectId`
+### Closed by TAS-251: the search DTO carried no `status` and no `projectId`
+
+**TAS-218 put them on the hit** (develop `485fea5`, deployed 2026-10-09):
+`IssueShortResponseDto` now has a required `statusKey` and optional
+`projectId` and `projectKey`. The top bar's search opens a hit that names its
+project straight to `/projects/{projectId}/issues/{id}` — no by-key request —
+and keeps `/browse/{issueKey}` only for a hit without one; it prints the status
+by name where this build knows the key and verbatim where it does not
+(TAS-173). The board still draws server hits as their own group rather than in
+a column: that is DESIGN.md §5.2's rule, not the DTO's any more. What follows is
+the entry as it stood before.
 
 **Measured 2026-10-07 20:03 UTC (by-key):** `GET /issues/by-key/API-2` answered 200 with the issue's id and `labels: []`; `api-2` answered the same issue; `API-999999`, `ZZQ-999999` and `not-a-key` each answered 404 NOT_FOUND "Issue not found: {key}". The 403 path was not measured (the probe ran as a GLOBAL_ADMIN).
 
