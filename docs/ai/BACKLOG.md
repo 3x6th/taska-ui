@@ -53,6 +53,12 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `.comment-actions .link-button` measures about 32×19 in the Comments section.
   Found by `art-director` on TAS-251, where the Work log copy of it was fixed;
   the Comments one predates the story.
+- **Work log polish left after `art-director` approved TAS-251** (2026-10-10):
+  Edit measures 27.9×28 — add `min-width: 28px` to
+  `.issue-worklogs .comment-actions .link-button`; "Log work" carries
+  `aria-disabled` with no visual state — `opacity: .58` as the members "Add"
+  (cursor unchanged, the click shows the validation); the actions are 28 tall
+  on phone where §7 asks 44 for touch, the gap DESIGN.md already records.
 - **The build warns about a chunk over 500 kB** — present on TAS-251's builds,
   not attributed to it or to anything earlier yet.
 - ~~**Worklogs and time tracking exist in issue-service and nowhere a browser can
