@@ -2175,6 +2175,86 @@ describe("MockTaskaApi", () => {
    * so the two views of the section can never disagree. That derivation is what
    * these tests are about.
    */
+  /**
+   * `GET /readonly/audit-entries` (backend PR #172, TAS-160) as the server is
+   * meant to answer it (TAS-251). The head ignores paging and sorting and
+   * answers 500 for a non-UUID actor; neither is reproduced here, both are in
+   * docs/ai/API-DIVERGENCE.md.
+   */
+  describe("the audit log", () => {
+    beforeEach(async () => {
+      await api.login({ email: "mark@example.com", password: "anything" });
+    });
+
+    it("answers newest first, twenty to a page by default, with 1-based pagination", async () => {
+      const first = await api.listAuditEntries({});
+      expect(first.entries).toHaveLength(20);
+      expect(first.pagination).toMatchObject({ currentPage: 1, pageSize: 20, totalRows: 30, totalPages: 2, hasNext: true, hasPrev: false });
+      const times = first.entries.map((entry) => Date.parse(entry.createdAt!));
+      expect([...times].sort((a, b) => b - a)).toEqual(times);
+
+      const second = await api.listAuditEntries({ page: 2 });
+      expect(second.entries).toHaveLength(10);
+      expect(second.pagination).toMatchObject({ currentPage: 2, hasNext: false, hasPrev: true });
+    });
+
+    it("clamps pageSize to 1–100", async () => {
+      expect((await api.listAuditEntries({ pageSize: 500 })).pagination.pageSize).toBe(100);
+      expect((await api.listAuditEntries({ pageSize: 0 })).pagination.pageSize).toBe(1);
+    });
+
+    it("carries null documents, a null request id and masked values, as the log does", async () => {
+      const { entries } = await api.listAuditEntries({ pageSize: 100 });
+      expect(entries.some((entry) => entry.oldValue === null)).toBe(true);
+      expect(entries.some((entry) => entry.newValue === null)).toBe(true);
+      expect(entries.some((entry) => entry.requestId === null)).toBe(true);
+      expect(entries.some((entry) => entry.newValue?.includes('"***"'))).toBe(true);
+      expect(new Set(entries.map((entry) => entry.actorLogin)).size).toBeGreaterThanOrEqual(3);
+    });
+
+    it("matches every filter exactly, and takes a blank one as no filter", async () => {
+      const blocks = await api.listAuditEntries({ action: "BLOCK_USER", pageSize: 100 });
+      expect(blocks.entries.length).toBeGreaterThan(0);
+      expect(blocks.entries.every((entry) => entry.action === "BLOCK_USER")).toBe(true);
+      expect((await api.listAuditEntries({ action: "BLOCK" })).entries).toEqual([]);
+      expect((await api.listAuditEntries({ action: "  " })).pagination.totalRows).toBe(30);
+
+      const target = blocks.entries[0];
+      const narrowed = await api.listAuditEntries({
+        actorUserId: target.actorUserId!,
+        targetService: target.targetService!,
+        targetTable: target.targetTable!,
+        targetId: target.targetId!,
+        pageSize: 100,
+      });
+      expect(narrowed.entries).toContainEqual(target);
+    });
+
+    it("bounds by whole UTC days with both ends inclusive", async () => {
+      const { entries } = await api.listAuditEntries({ pageSize: 100 });
+      const day = entries[3].createdAt!.slice(0, 10);
+      const sameDay = entries.filter((entry) => entry.createdAt!.startsWith(day));
+      const answer = await api.listAuditEntries({ createdAtFrom: day, createdAtTo: day, pageSize: 100 });
+      expect(answer.entries).toEqual(sameDay);
+    });
+
+    it("refuses a date in any other spelling, a from after to, and a non-UUID actor with 400", async () => {
+      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-01T00:00:00Z" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(api.listAuditEntries({ createdAtTo: "2026-02-30" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-02", createdAtTo: "2026-10-01" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(api.listAuditEntries({ actorUserId: "mark" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("refuses anyone but a GLOBAL_ADMIN with 403", async () => {
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.listAuditEntries({})).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    });
+  });
+
   describe("problematic outbox summary", () => {
     it("gives exactly auth, project and issue an outbox_events table", async () => {
       const catalog = await api.getAdminCatalog();

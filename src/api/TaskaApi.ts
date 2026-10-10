@@ -4,6 +4,8 @@ import type {
   AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
+  AuditEntries,
+  AuditEntriesQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -1409,6 +1411,39 @@ export interface TaskaApi {
    * schedules the removal of.
    */
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary>;
+
+  /**
+   * `GET /readonly/audit-entries` — the admin audit log, `GLOBAL_ADMIN` only
+   * (backend PR #172, TAS-160, pinned at `docs/contract/pending/pr-172-TAS-160.yml`).
+   * The Audit section's one read (DESIGN.md §5.8). `page` is 1-based on both
+   * sides of this interface; the rest leg converts it.
+   *
+   * **Open, CHANGES_REQUESTED and not served on 2026-10-10**, in two ways that
+   * read alike: undeployed, the gateway answers the static-resource 404; at the
+   * PR head `907fa1e` the REST route is mapped but the admin-service gRPC
+   * adapter lacks the override, so a deployment of that head answers **501**.
+   * `isRouteNotServed` in src/api/errors.ts reads both, and the section states
+   * them as "not served yet" rather than as a failure. `HybridTaskaApi`
+   * delegates straight to the gateway.
+   *
+   * What the Java at the head does that the yml does not say (read by
+   * `api-contract-guard`; the Java wins), and what each implementation does:
+   *
+   * - **Pagination and sort are ignored**: every matching row comes back,
+   *   whatever `page` and `pageSize` say. Nothing here compensates — the rest
+   *   leg maps what arrives and the section draws it; the mock pages and sorts
+   *   newest first as the server is meant to. A backend bug, commented on
+   *   TAS-160 (docs/ai/API-DIVERGENCE.md).
+   * - **Dates are `yyyy-MM-dd` only**, whole UTC days, both ends inclusive; any
+   *   other spelling, and a `from` after `to`, is a 400.
+   * - **`actorUserId` that is not a UUID is a 500**, not a 400. The section
+   *   validates it before sending; the mock answers 400 `INVALID_ARGUMENT`, the
+   *   answer the server is meant to give.
+   * - Every filter is an exact match; an empty one is not sent.
+   * - The entry has no id, and the DTO declares nothing `required`; see
+   *   `AuditEntry` for the defensive mapping.
+   */
+  listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries>;
 
   /**
    * `POST /admin/outbox/{service}/{eventId}/retry` — `retryOutboxEvent`, the

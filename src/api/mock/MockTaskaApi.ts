@@ -70,6 +70,9 @@ import type {
   AdminRows,
   AdminRowsQuery,
   AdminTable,
+  AuditEntries,
+  AuditEntriesQuery,
+  AuditEntry,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -756,6 +759,116 @@ const FORMER_ACCOUNT_ID = "9e4c2a7d-0b1f-4c83-a6d5-7f2e8b9c1d04";
 const OUTBOX_TABLE = "outbox_events";
 
 /**
+ * The admin audit log's seed (TAS-251): thirty entries across three actors,
+ * five actions and four target tables, at fixed instants so a date filter in
+ * a test means the same rows every day. Newest first, which is the order the
+ * server is meant to answer in.
+ *
+ * `vera` is a former admin and `migrator` a service account: the log keeps a
+ * denormalised login, so neither has to be a user the rest of the seed knows.
+ * Some rows have no request id, some no old value (an invitation creates
+ * something) and some no new value (a session revoked is gone); secrets inside
+ * the documents are already `"***"`, as the server masks them.
+ */
+function seedAuditEntries(): AuditEntry[] {
+  const actors = [
+    { id: MARK_ID, login: "mark" },
+    { id: FORMER_ACCOUNT_ID, login: "vera" },
+    { id: "5a1c7e93-2d4b-4f60-9b8e-0c3d7a6f1e28", login: "migrator" },
+  ];
+  const userIds = [NINA_ID, OMAR_ID, LEO_ID, PRIYA_ID, TOM_ID];
+  type Template = Omit<AuditEntry, "actorUserId" | "actorLogin" | "createdAt" | "requestId" | "targetId">;
+  const templates: Template[] = [
+    {
+      action: "BLOCK_USER",
+      targetService: "auth",
+      targetTable: "users",
+      reason: "Left the company",
+      oldValue: JSON.stringify({ status: "ACTIVE" }),
+      newValue: JSON.stringify({ status: "BLOCKED" }),
+    },
+    {
+      action: "UNBLOCK_USER",
+      targetService: "auth",
+      targetTable: "users",
+      reason: "Came back from leave",
+      oldValue: JSON.stringify({ status: "BLOCKED" }),
+      newValue: JSON.stringify({ status: "ACTIVE" }),
+    },
+    {
+      action: "RESET_CREDENTIAL_LOCKOUT",
+      targetService: "auth",
+      targetTable: "credentials",
+      reason: "Identity confirmed by phone",
+      oldValue: JSON.stringify({ status: "LOCKED", failedAttempts: 5, passwordHash: "***" }),
+      newValue: JSON.stringify({ status: "ACTIVE", failedAttempts: 0, passwordHash: "***" }),
+    },
+    {
+      action: "RETRY_OUTBOX_EVENT",
+      targetService: "project",
+      targetTable: "outbox_events",
+      reason: "Kafka producer is back",
+      oldValue: JSON.stringify({ status: "FAILED", attempts: 5, lastErrorMessage: "Failed to construct kafka producer" }),
+      newValue: JSON.stringify({ status: "NEW", attempts: 0, lastErrorMessage: null }),
+    },
+    {
+      action: "RETRY_OUTBOX_EVENT",
+      targetService: "issue",
+      targetTable: "outbox_events",
+      reason: "Stuck in PROCESSING after the deploy",
+      oldValue: JSON.stringify({ status: "PROCESSING", attempts: 2 }),
+      newValue: JSON.stringify({ status: "NEW", attempts: 0 }),
+    },
+    {
+      action: "CREATE_INVITATION",
+      targetService: "auth",
+      targetTable: "invitations",
+      reason: "New contractor",
+      oldValue: null,
+      newValue: JSON.stringify({ email: "c****r@example.com", token: "***", expiresAt: "2026-10-16T00:00:00Z" }),
+    },
+    {
+      action: "REVOKE_SESSIONS",
+      targetService: "auth",
+      targetTable: "sessions",
+      reason: "Laptop reported stolen",
+      oldValue: JSON.stringify({ activeSessions: 3, refreshToken: "***" }),
+      newValue: null,
+    },
+  ];
+  const start = Date.parse("2026-10-09T16:40:00Z");
+  return Array.from({ length: 30 }, (_, index) => {
+    const template = templates[index % templates.length];
+    // Mark does most of it, as the only admin today; Vera's rows are the old
+    // ones, from before she left; the migrator only ever retries events.
+    const actor =
+      template.action === "RETRY_OUTBOX_EVENT" && index % 3 === 0 ? actors[2] : index >= 22 ? actors[1] : actors[0];
+    const targetId =
+      template.targetTable === "outbox_events"
+        ? `7f0c${String(index).padStart(4, "0")}-3b1a-4c2d-8e9f-0a1b2c3d4e5f`
+        : userIds[index % userIds.length];
+    return {
+      ...template,
+      actorUserId: actor.id,
+      actorLogin: actor.login,
+      targetId,
+      // Every fifth row came from somewhere with no request id to keep.
+      requestId: index % 5 === 4 ? null : `a0d1${String(index).padStart(4, "0")}-6c2e-4f3a-9b8d-1e2f3a4b5c6d`,
+      // About seventeen hours apart, so thirty rows span three weeks and a
+      // day holds one or two of them.
+      createdAt: new Date(start - index * 17 * 3_600_000).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    };
+  });
+}
+
+/** `yyyy-MM-dd` and a real day of the calendar — the only date spelling the audit read accepts. */
+function isAuditDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const at = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(at.getTime()) && at.toISOString().slice(0, 10) === value;
+}
+
+/**
  * The `outbox_events` catalog entry, identical in each service that carries one
  * — auth, project and issue today, and exactly those three, which is what makes
  * the Events section's service selector a real filter over the catalog rather
@@ -937,6 +1050,8 @@ export class MockTaskaStore {
    * TASK and BUG**, so the mock-backed board has one project where a type is
    * missing and every place that offers a type has to cope with that.
    */
+  /** The admin audit log (`listAuditEntries`). */
+  private auditEntries: AuditEntry[] = seedAuditEntries();
   private allowedIssueTypesByProject: Record<string, IssueType[]> = {
     [OPS_PROJECT_ID]: ["TASK", "BUG"],
   };
@@ -4063,6 +4178,85 @@ export class MockTaskaStore {
    * `FAILED_PRECONDITION` in the server's own words, including the `NEW` rows
    * this section's own list is full of.
    */
+  /**
+   * `GET /readonly/audit-entries` as the server is *meant* to answer it — see
+   * `TaskaApi.listAuditEntries` for where the head at PR #172 does not:
+   *
+   * - `GLOBAL_ADMIN` only, refused with `PERMISSION_DENIED` (403);
+   * - dates `yyyy-MM-dd` only, whole UTC days, both inclusive; any other
+   *   spelling and a `from` after `to` are `INVALID_ARGUMENT` (400);
+   * - an `actorUserId` that is not a UUID is `INVALID_ARGUMENT` here. The head
+   *   answers **500** for it; this is the answer it is meant to give, and the
+   *   section never sends one either way;
+   * - every other filter an exact match, a blank one no filter;
+   * - newest first, paged, `pageSize` clamped to 1–100. The head ignores both
+   *   and answers every row — recorded, not reproduced.
+   */
+  listAuditEntries(query: AuditEntriesQuery): AuditEntries {
+    if (this.currentUser().globalRole !== "GLOBAL_ADMIN") {
+      throw new MockApiError("PERMISSION_DENIED", "Global admin role required");
+    }
+    const given = (value: string | undefined) => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    };
+    const from = given(query.createdAtFrom);
+    const to = given(query.createdAtTo);
+    for (const [name, value] of [
+      ["createdAtFrom", from],
+      ["createdAtTo", to],
+    ] as const) {
+      if (value !== undefined && !isAuditDate(value)) {
+        throw new MockApiError("INVALID_ARGUMENT", `${name} must be a date in the format yyyy-MM-dd`);
+      }
+    }
+    if (from !== undefined && to !== undefined && from > to) {
+      throw new MockApiError("INVALID_ARGUMENT", "createdAtFrom must not be after createdAtTo");
+    }
+    const actorUserId = given(query.actorUserId);
+    if (actorUserId !== undefined && !UUID_PATTERN.test(actorUserId)) {
+      throw new MockApiError("INVALID_ARGUMENT", "actorUserId must be a UUID");
+    }
+    const exact = {
+      actorUserId,
+      action: given(query.action),
+      targetService: given(query.targetService),
+      targetTable: given(query.targetTable),
+      targetId: given(query.targetId),
+      requestId: given(query.requestId),
+    };
+    const matching = this.auditEntries
+      .filter((entry) =>
+        (Object.keys(exact) as (keyof typeof exact)[]).every(
+          (key) => exact[key] === undefined || entry[key] === exact[key],
+        ),
+      )
+      .filter((entry) => {
+        // Whole UTC days: the instant's own date, compared as text, which is
+        // exact for `yyyy-MM-dd` and needs no clock.
+        const day = entry.createdAt?.slice(0, 10) ?? "";
+        return (from === undefined || day >= from) && (to === undefined || day <= to);
+      })
+      .sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""));
+
+    const pageSize = Math.min(100, Math.max(1, Math.trunc(query.pageSize ?? 20)));
+    const currentPage = Math.max(1, Math.trunc(query.page ?? 1));
+    const totalRows = matching.length;
+    const totalPages = Math.ceil(totalRows / pageSize);
+    const start = (currentPage - 1) * pageSize;
+    return {
+      entries: matching.slice(start, start + pageSize).map((entry) => ({ ...entry })),
+      pagination: {
+        currentPage,
+        pageSize,
+        totalRows,
+        totalPages,
+        hasNext: currentPage < totalPages,
+        hasPrev: currentPage > 1,
+      },
+    };
+  }
+
   retryOutboxEvent(service: string, eventId: string, reason: string): OutboxRetryResult {
     requireOutboxRetryReason(reason);
     if (!UUID_PATTERN.test(eventId)) {
@@ -5397,6 +5591,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
     return wait(this.store.problematicOutboxSummary());
+  }
+
+  async listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries> {
+    return wait(this.store.listAuditEntries(query));
   }
 
   async blockUser(userId: string, reason: string): Promise<UserStatusChange> {

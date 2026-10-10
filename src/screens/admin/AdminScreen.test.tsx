@@ -311,6 +311,12 @@ const {
       }
       return row;
     },
+    // The Audit section's read (TAS-251), answered empty: these tests are
+    // about the shell around it. AdminAuditSection.test.tsx is about the log.
+    listAuditEntries: async () => ({
+      entries: [],
+      pagination: { currentPage: 1, pageSize: 20, totalRows: 0, totalPages: 0, hasNext: false, hasPrev: false },
+    }),
     getProblematicOutboxSummary: async () => {
       // Counted, not just served: a refetch is invisible against a static
       // summary, and two of this section's rules — the write asks the list
@@ -699,11 +705,16 @@ describe("/admin sections under construction", () => {
     window.localStorage.clear();
   });
 
-  it("stands in for Audit", async () => {
+  // Audit left this list with TAS-251, the last of the four: the section is
+  // built against backend PR #172 and says for itself when the gateway does
+  // not serve it, so the placeholder has to be gone rather than unreachable.
+  it("no longer stands in for Audit", async () => {
     renderAdmin("/admin/audit");
 
-    expect(await screen.findByRole("heading", { name: "Audit — under construction" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "TAS-160" })).toBeVisible();
+    expect(await screen.findByRole("heading", { level: 1, name: /Administration.*Audit/ })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /under construction/ })).not.toBeInTheDocument();
+    expect(await screen.findByText("The audit log has no entries.")).toBeVisible();
+    expect(screen.getByText("read-only")).toBeVisible();
   });
 
   // Users left this list with TAS-186, the same way Events left it with

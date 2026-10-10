@@ -1,46 +1,52 @@
 import { Plus, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { AdminFilter } from "../../domain/types";
-import type { OutboxFilterDef } from "./events";
-import { availableOutboxFilters, outboxFilterChipLabel, outboxFilterKey, outboxFilters } from "./events";
+import { namedFilterChipLabel, namedFilterKey, type NamedFilterDef } from "./namedFilters";
 import { toIsoValue, toPickerValue } from "./utcField";
 
-interface AdminOutboxFilterControlProps {
+interface AdminNamedFilterControlProps {
   filters: AdminFilter[];
+  /** Every filter the section knows, which is what names an applied chip. */
+  definitions: NamedFilterDef[];
   /**
-   * Columns the server will filter on, already stripped of anything the catalog
-   * marks sensitive. A named filter whose column is not in here is not offered:
-   * filtering on a masked column turns the journal into a match oracle for the
-   * value it just refused to show.
+   * The ones that may be *offered* now, when that is fewer than all — the
+   * Outbox journal drops the ones whose column the server will not filter on
+   * or the catalog marks sensitive. Defaults to every definition.
    */
-  filterableColumns: string[];
-  /** The catalog's type for a column, which is what decides whether the gateway
-   *  will accept this filter's operator on it at all. */
-  typeOf: (column: string) => string | undefined;
+  available?: NamedFilterDef[];
+  /** The popover's accessible name: "Filter events", "Filter audit entries". */
+  dialogLabel: string;
+  /**
+   * What is wrong with the filters *together*, once one is applied — a `from`
+   * after a `to`, which neither value is wrong about alone. `null` when they
+   * may be sent; otherwise the popover stays open and says why.
+   */
+  validate?: (filters: AdminFilter[]) => string | null;
   onChange: (filters: AdminFilter[]) => void;
 }
 
 /**
- * The Outbox journal's filters (DESIGN.md §5.8): nine named ones instead of the
- * Data section's column / match / value.
+ * Named filters (DESIGN.md §5.8) — the Outbox journal's nine since TAS-167, and
+ * the Audit log's eight since TAS-251. Instead of the Data section's column /
+ * match / value: the table is known, so the useful pairings are known too, and
+ * a `match` select whose answer is already decided is a control that cannot
+ * change anything, which §5.8 rules out in the Data form as well. So the
+ * popover offers filters *by name* and the only thing left to fill in is the
+ * value.
  *
- * The table is known here, so the useful pairings are known too — and a `match`
- * select whose answer is already decided is a control that cannot change
- * anything, which §5.8 rules out in the Data form as well. So the popover
- * offers filters *by name* ("Status is", "Attempts ≥") and the only thing left
- * to fill in is the value.
- *
- * They combine as AND and each wire key appears at most once, because that is
- * what the gateway reads: a repeated key is one value there, so offering a
- * second `status.equals` would put a chip on screen that the wire silently
- * drops.
+ * They combine as AND and each key appears at most once, because that is what
+ * the gateway reads: a repeated key is one value there, so offering a second
+ * `status.equals` would put a chip on screen that the wire silently drops.
  */
-export function AdminOutboxFilterControl({
+export function AdminNamedFilterControl({
   filters,
-  filterableColumns,
-  typeOf,
+  definitions,
+  available = definitions,
+  dialogLabel,
+  validate,
   onChange,
-}: AdminOutboxFilterControlProps) {
+}: AdminNamedFilterControlProps) {
+  const errorId = useId();
   const fieldId = useId();
   const popoverId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -49,6 +55,8 @@ export function AdminOutboxFilterControl({
   /** The wire key being edited, or `null` while adding a new filter. */
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ key: string; value: string }>({ key: "", value: "" });
+  /** Why Apply was refused, said in the popover until the draft changes. */
+  const [problem, setProblem] = useState<string | null>(null);
   // Removing a filter unmounts the cross that was clicked, and with it the
   // focus — the keyboard would land on <body> (§7). A ref, not state: this is a
   // note to the next commit and nothing renders differently for it.
@@ -80,27 +88,29 @@ export function AdminOutboxFilterControl({
     };
   }, [open]);
 
-  const applied = new Set(filters.map((filter) => outboxFilterKey(filter)));
-  const offered = availableOutboxFilters(filterableColumns, typeOf).filter(
+  const applied = new Set(filters.map((filter) => namedFilterKey(filter)));
+  const offered = available.filter(
     // Already applied ones are not offered again — except the one being edited,
     // which has to stay in its own select or the field would show a blank.
-    (definition) => !applied.has(outboxFilterKey(definition)) || outboxFilterKey(definition) === editing,
+    (definition) => !applied.has(namedFilterKey(definition)) || namedFilterKey(definition) === editing,
   );
-  const definitionOf = (key: string) => offered.find((candidate) => outboxFilterKey(candidate) === key);
+  const definitionOf = (key: string) => offered.find((candidate) => namedFilterKey(candidate) === key);
   const drafted = definitionOf(draft.key);
 
   const openToAdd = () => {
     const first = offered[0];
     if (!first) return;
     setEditing(null);
-    setDraft({ key: outboxFilterKey(first), value: emptyValueFor(first) });
+    setDraft({ key: namedFilterKey(first), value: emptyValueFor(first) });
+    setProblem(null);
     setOpen(true);
   };
 
   const openToEdit = (filter: AdminFilter) => {
-    const key = outboxFilterKey(filter);
-    const definition = outboxFilters.find((candidate) => outboxFilterKey(candidate) === key);
+    const key = namedFilterKey(filter);
+    const definition = definitions.find((candidate) => namedFilterKey(candidate) === key);
     setEditing(key);
+    setProblem(null);
     // While the popover is open the draft holds what the *field* holds, so a
     // timestamp comes out of the URL as the picker's own spelling and returns
     // to ISO on Apply.
@@ -123,37 +133,47 @@ export function AdminOutboxFilterControl({
   const apply = () => {
     if (!drafted) return close();
     const value = drafted.control === "datetime" ? toIsoValue(draft.value) : draft.value.trim();
-    const key = outboxFilterKey(drafted);
+    const key = namedFilterKey(drafted);
     // Everything except the key being written and the one being replaced, in
     // the order the reader applied them.
     const kept = filters.filter((filter) => {
-      const existing = outboxFilterKey(filter);
+      const existing = namedFilterKey(filter);
       return existing !== key && existing !== editing;
     });
     // A blank value is not a filter (§5.8) — and clearing the field of an
     // applied one is how it is taken off from inside the popover.
-    onChange(value === "" ? kept : [...kept, { column: drafted.column, operator: drafted.operator, value }]);
+    const next = value === "" ? kept : [...kept, { column: drafted.column, operator: drafted.operator, value }];
+    // Refused here rather than sent: a value the server would turn away — or
+    // answer with a fault — is the form's to catch, and the popover stays open
+    // on it so the reader can correct what they typed.
+    const valueProblem = value === "" || !drafted.check ? null : drafted.check(value);
+    const refusal = valueProblem ?? validate?.(next) ?? null;
+    if (refusal !== null) {
+      setProblem(refusal);
+      return;
+    }
+    onChange(next);
     close();
   };
 
   const remove = (filter: AdminFilter) => {
     returnFocusRef.current = true;
-    const key = outboxFilterKey(filter);
-    onChange(filters.filter((candidate) => outboxFilterKey(candidate) !== key));
+    const key = namedFilterKey(filter);
+    onChange(filters.filter((candidate) => namedFilterKey(candidate) !== key));
   };
 
   return (
-    <div className="admin-filter admin-outbox-filter" ref={rootRef}>
+    <div className="admin-filter admin-named-filter" ref={rootRef}>
       {filters.map((filter) => {
-        const label = outboxFilterChipLabel(filter);
+        const label = namedFilterChipLabel(definitions, filter);
         return (
-          <span className="admin-filter-chip" key={outboxFilterKey(filter)}>
+          <span className="admin-filter-chip" key={namedFilterKey(filter)}>
             <button
               aria-controls={open ? popoverId : undefined}
-              aria-expanded={open && editing === outboxFilterKey(filter)}
+              aria-expanded={open && editing === namedFilterKey(filter)}
               aria-haspopup="dialog"
               className="admin-filter-chip-open"
-              onClick={() => (open && editing === outboxFilterKey(filter) ? close() : openToEdit(filter))}
+              onClick={() => (open && editing === namedFilterKey(filter) ? close() : openToEdit(filter))}
               // The chip truncates by width, so the whole of it stays in
               // `title` and in the accessible name: a truncation the value
               // cannot be read back out of is lost data, not saved space (§5.8).
@@ -174,9 +194,9 @@ export function AdminOutboxFilterControl({
         );
       })}
 
-      {/* Gone only when all nine are applied — a button that can add nothing is
+      {/* Gone only when every one is applied — a button that can add nothing is
           worse than no button. */}
-      {offered.some((definition) => !applied.has(outboxFilterKey(definition))) ? (
+      {offered.some((definition) => !applied.has(namedFilterKey(definition))) ? (
         <button
           aria-controls={open ? popoverId : undefined}
           aria-expanded={open && editing === null}
@@ -192,7 +212,7 @@ export function AdminOutboxFilterControl({
       ) : null}
 
       {open ? (
-        <section aria-label="Filter events" className="admin-filter-popover" id={popoverId} role="dialog">
+        <section aria-label={dialogLabel} className="admin-filter-popover" id={popoverId} role="dialog">
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -213,11 +233,12 @@ export function AdminOutboxFilterControl({
                 // nothing for a uuid, and a four-option select nothing for
                 // either.
                 setDraft({ key: event.target.value, value: next ? emptyValueFor(next) : "" });
+                setProblem(null);
               }}
               value={draft.key}
             >
               {offered.map((definition) => (
-                <option key={outboxFilterKey(definition)} value={outboxFilterKey(definition)}>
+                <option key={namedFilterKey(definition)} value={namedFilterKey(definition)}>
                   {definition.label}
                 </option>
               ))}
@@ -231,7 +252,9 @@ export function AdminOutboxFilterControl({
                   is UTC, so the picker says which clock its digits are on — the
                   explicit space is what keeps this name "Value UTC" rather than
                   "ValueUTC". */}
-              {drafted?.control === "datetime" ? <span className="admin-filter-unit">UTC</span> : null}
+              {drafted?.control === "datetime" || drafted?.control === "date" ? (
+                <span className="admin-filter-unit">UTC</span>
+              ) : null}
             </label>
             {drafted?.control === "select" ? (
               <select
@@ -247,18 +270,39 @@ export function AdminOutboxFilterControl({
               </select>
             ) : (
               <input
+                aria-describedby={problem ? errorId : undefined}
+                aria-invalid={problem ? true : undefined}
                 id={`${fieldId}-value`}
                 inputMode={drafted?.control === "integer" ? "numeric" : undefined}
                 // Attempts is a counter: whole numbers, never below zero. The
                 // gateway parses it as a number and answers 400 for anything
                 // else, so the field is what keeps that 400 from happening.
                 min={drafted?.control === "integer" ? 0 : undefined}
-                onChange={(event) => setDraft({ ...draft, value: event.target.value })}
+                onChange={(event) => {
+                  setDraft({ ...draft, value: event.target.value });
+                  setProblem(null);
+                }}
                 step={drafted?.control === "integer" ? 1 : undefined}
-                type={drafted?.control === "datetime" ? "datetime-local" : drafted?.control === "integer" ? "number" : "text"}
+                type={
+                  drafted?.control === "datetime"
+                    ? "datetime-local"
+                    : drafted?.control === "date"
+                      ? "date"
+                      : drafted?.control === "integer"
+                        ? "number"
+                        : "text"
+                }
                 value={draft.value}
               />
             )}
+            {/* Mounted only with something to say, and announced when it
+                appears: the reader pressed Apply and nothing closed, so the
+                reason is the next thing they need to hear. */}
+            {problem ? (
+              <p className="admin-filter-problem" id={errorId} role="alert">
+                {problem}
+              </p>
+            ) : null}
 
             <div className="admin-filter-actions">
               <button className="secondary-button" type="submit">
@@ -278,6 +322,6 @@ export function AdminOutboxFilterControl({
  * first option, in the lifecycle order §5.8 lists them in, and the popover
  * therefore always shows exactly what Apply will do.
  */
-function emptyValueFor(definition: OutboxFilterDef): string {
+function emptyValueFor(definition: NamedFilterDef): string {
   return definition.control === "select" ? (definition.options?.[0] ?? "") : "";
 }

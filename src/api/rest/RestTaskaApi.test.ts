@@ -1497,6 +1497,97 @@ describe("RestTaskaApi read-only admin", () => {
 
     expect(summary.events.map((event) => event.id)).toEqual(["older", "newer", "oldest"]);
   });
+
+  /** `GET /readonly/audit-entries` (backend PR #172, TAS-160; TAS-251). */
+  describe("the audit log", () => {
+    const auditBody = {
+      entries: [
+        {
+          actorUserId: "e65186a2-b807-42ae-a66f-711be116a93b",
+          actorLogin: "mark",
+          action: "BLOCK_USER",
+          targetService: "auth",
+          targetTable: "users",
+          targetId: "c47a9b21-6d5e-4f0b-8c72-9e13a4f8d602",
+          oldValue: '{"status":"ACTIVE"}',
+          newValue: '{"status":"BLOCKED"}',
+          reason: "Left the company",
+          requestId: "req-1",
+          createdAt: "2026-10-09T16:40:00Z",
+        },
+      ],
+      pagination: { currentPage: 1, pageSize: 20, totalRows: 41, totalPages: 3, hasNext: true, hasPrev: true },
+    };
+
+    it("asks at the contract's path with a 0-based page and only the filters that carry a value", async () => {
+      const fetchStub = vi.fn(async (input: string) => answer(auditBody, input));
+      vi.stubGlobal("fetch", fetchStub);
+
+      const result = await new RestTaskaApi().listAuditEntries({
+        page: 2,
+        pageSize: 20,
+        action: "BLOCK_USER",
+        targetId: "",
+        createdAtFrom: "2026-10-01",
+        createdAtTo: "2026-10-09",
+      });
+
+      const url = new URL(fetchStub.mock.calls[0][0], "http://localhost");
+      expect(url.pathname).toMatch(/\/readonly\/audit-entries$/);
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        page: "1",
+        pageSize: "20",
+        action: "BLOCK_USER",
+        createdAtFrom: "2026-10-01",
+        createdAtTo: "2026-10-09",
+      });
+      // The `+ 1` half of the conversion: the wire's page 1 is the domain's 2.
+      expect(result.pagination).toMatchObject({ currentPage: 2, totalRows: 41 });
+      expect(result.entries).toEqual([auditBody.entries[0]]);
+    });
+
+    it("maps what arrives — every row of it, and nothing that is not a string", async () => {
+      // The head ignores `pageSize` and answers every row; nothing slices it.
+      const many = Array.from({ length: 25 }, () => auditBody.entries[0]);
+      const odd = { actorLogin: 7, oldValue: { status: "ACTIVE" }, newValue: null };
+      const fetchStub = vi.fn(async () => answer({ entries: [...many, odd] }));
+      vi.stubGlobal("fetch", fetchStub);
+
+      const result = await new RestTaskaApi().listAuditEntries({ page: 1, pageSize: 20 });
+
+      expect(result.entries).toHaveLength(26);
+      expect(result.entries[25]).toEqual({
+        actorUserId: null,
+        actorLogin: null,
+        action: null,
+        targetService: null,
+        targetTable: null,
+        targetId: null,
+        reason: null,
+        requestId: null,
+        createdAt: null,
+        oldValue: '{"status":"ACTIVE"}',
+        newValue: null,
+      });
+      // No pagination on the wire: the caller's own page, and one page of what came.
+      expect(result.pagination).toMatchObject({ currentPage: 1, pageSize: 20, totalRows: 26, totalPages: 1 });
+    });
+
+    it("passes a 501 up with its status, so the section can say the route is not served", async () => {
+      const fetchStub = vi.fn(
+        async () =>
+          ({
+            status: 501,
+            ok: false,
+            headers: { get: () => "req-501" },
+            json: async () => ({ code: "UNIMPLEMENTED", message: "Method not implemented" }),
+          }) as unknown as Response,
+      );
+      vi.stubGlobal("fetch", fetchStub);
+
+      await expect(new RestTaskaApi().listAuditEntries({})).rejects.toMatchObject({ status: 501 });
+    });
+  });
 });
 
 /**

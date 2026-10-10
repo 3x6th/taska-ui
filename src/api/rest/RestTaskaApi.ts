@@ -62,6 +62,9 @@ import type {
   AdminRowsQuery,
   AdminService,
   AdminTable,
+  AuditEntries,
+  AuditEntriesQuery,
+  AuditEntry,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -207,6 +210,14 @@ interface RestProjectMembers {
  * this is the one endpoint family in the codebase that has never returned a
  * byte to us: typing it as guaranteed would be a claim, not a fact.
  */
+/** `AuditEntryDto` as the wire may carry it: nothing in the schema is `required`. */
+type RestAuditEntry = Partial<Record<keyof AuditEntry, unknown>>;
+
+interface RestAuditEntries {
+  entries?: RestAuditEntry[] | null;
+  pagination?: Partial<AdminPagination>;
+}
+
 interface RestAdminRows {
   data?: AdminRow[];
   pagination?: Partial<AdminPagination>;
@@ -734,6 +745,35 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/**
+ * One `AuditEntryDto`, field by field. The schema declares nothing `required`,
+ * so anything that is not a string arrives here as `null` rather than as
+ * whatever it was — the section prints a dash for it, and never a `[object
+ * Object]`. `oldValue` and `newValue` stay text: they are JSON documents *as
+ * strings* on the wire, and parsing them is the screen's job.
+ */
+function toAuditEntry(wire: RestAuditEntry): AuditEntry {
+  const text = (value: unknown) => (typeof value === "string" ? value : null);
+  // The yml once typed these as objects ("changed from object to string" is
+  // still written beside them), so a document that arrives unstringified is
+  // turned back into the text the head sends rather than dropped.
+  const documentText = (value: unknown) =>
+    typeof value === "string" ? value : value !== null && typeof value === "object" ? JSON.stringify(value) : null;
+  return {
+    actorUserId: text(wire.actorUserId),
+    actorLogin: text(wire.actorLogin),
+    action: text(wire.action),
+    targetService: text(wire.targetService),
+    targetTable: text(wire.targetTable),
+    targetId: text(wire.targetId),
+    reason: text(wire.reason),
+    requestId: text(wire.requestId),
+    createdAt: text(wire.createdAt),
+    oldValue: documentText(wire.oldValue),
+    newValue: documentText(wire.newValue),
+  };
 }
 
 export class RestTaskaApi implements TaskaApi {
@@ -1817,6 +1857,36 @@ export class RestTaskaApi implements TaskaApi {
     }));
   }
 
+  listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries> {
+    const search = new URLSearchParams();
+    // The same basis conversion as `listAdminRows`: 1-based in the domain,
+    // 0-based on the wire.
+    if (query.page !== undefined) search.set("page", String(Math.max(0, query.page - 1)));
+    if (query.pageSize !== undefined) search.set("pageSize", String(query.pageSize));
+    // In the contract's order. An empty value is not sent: every filter is an
+    // exact match on the server, and `""` would narrow to nothing.
+    for (const key of [
+      "actorUserId",
+      "action",
+      "targetService",
+      "targetTable",
+      "targetId",
+      "requestId",
+      "createdAtFrom",
+      "createdAtTo",
+    ] as const) {
+      const value = query[key]?.trim();
+      if (value) search.set(key, value);
+    }
+    return this.request<RestAuditEntries>(`/readonly/audit-entries${this.query(search)}`).then((response) => {
+      const entries = (response.entries ?? []).map(toAuditEntry);
+      // Mapped as it arrives. At PR #172's head the server ignores `page` and
+      // `pageSize` and answers every matching row; nothing here slices the
+      // answer down to the page that was asked for (docs/ai/API-DIVERGENCE.md).
+      return { entries, pagination: this.toPagination(response.pagination, query, entries.length) };
+    });
+  }
+
   async getAdminRow(query: AdminRowQuery): Promise<AdminRow> {
     const response = await this.request<RestAdminRow>(
       `/readonly/${this.segment(query.service)}/${this.segment(query.table)}/${this.segment(query.id)}`,
@@ -1963,7 +2033,7 @@ export class RestTaskaApi implements TaskaApi {
    */
   private toPagination(
     wire: Partial<AdminPagination> | undefined,
-    query: AdminRowsQuery,
+    query: { page?: number; pageSize?: number },
     rowCount: number,
   ): AdminPagination {
     return {

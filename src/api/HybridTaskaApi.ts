@@ -30,6 +30,8 @@ import type {
   AdminRowQuery,
   AdminRows,
   AdminRowsQuery,
+  AuditEntries,
+  AuditEntriesQuery,
   AttachmentDownloadUrl,
   AttachmentUploadTicket,
   AvatarUploadTicket,
@@ -377,6 +379,10 @@ export class HybridTaskaApi implements TaskaApi {
 
   getProblematicOutboxSummary(): Promise<ProblematicOutboxSummary> {
     return this.live.getProblematicOutboxSummary();
+  }
+
+  listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries> {
+    return this.live.listAuditEntries(query);
   }
 
   blockUser(userId: string, reason: string): Promise<UserStatusChange> {
