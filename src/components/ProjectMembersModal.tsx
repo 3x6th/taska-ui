@@ -8,18 +8,19 @@ import { PROJECT_ROLES, isUserId, normalizeUserId } from "../api/members";
 import type { Project, ProjectMember, ProjectRole } from "../domain/types";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { keyBadgeStyle } from "../lib/format";
+import { projectContextKey } from "../lib/projectContext";
 import { shortKey } from "../screens/admin/columns";
 import { Avatar } from "./Avatar";
 import { Modal } from "./Modal";
 import { RequestId } from "./RequestId";
 
 /**
- * The board's own retry rule for `["members", projectId]`, restated rather than
- * imported because it lives in a screen file that may only export components.
- * It has to be the same rule and not merely a similar one: this dialog and the
- * board observe one query, and react-query runs a refetch with the options of
- * whichever observer set them last, so two rules for one key would make "does
- * a 404 get retried" depend on which of the two mounted most recently.
+ * The board's own retry rule, restated rather than imported because it lives
+ * in a screen file that may only export components. Until TAS-251 this dialog
+ * and the board observed one `["members", projectId]` query, where two rules
+ * for one key would make "does a 404 get retried" depend on which mounted
+ * last; the board now reads its members from its context, and the rule stays
+ * the same so the two reads fail the same way.
  */
 const retryUnlessMissing = (failureCount: number, error: Error) => !isMissingOrForbidden(error) && failureCount < 1;
 
@@ -185,7 +186,7 @@ export function ProjectMembersModal({
   const [role, setRole] = useState<ProjectRole>("MEMBER");
   /**
    * Adds the server has not answered for yet. Held here rather than written
-   * into `["members", projectId]`, because the board draws that list too: an
+   * into a cached member list, because the board draws its members too: an
    * optimistic row there would put a nameless avatar into the assignee filter
    * behind the scrim for the length of the request, as a person a reader could
    * filter the board by before the server had agreed they exist.
@@ -269,12 +270,12 @@ export function ProjectMembersModal({
   };
 
   /**
-   * Everything that draws members goes stale with a write: the board's filter
-   * and this dialog read `["members", projectId]`, the project card on
-   * `/projects` reads `["project-summaries", projectId]`. A write about the
-   * reader's own row also changes the reader's role, which three more reads
-   * carry — the membership the board gates on, the project it draws, and the
-   * list rows whose edit control depends on it.
+   * Everything that draws members goes stale with a write: this dialog reads
+   * `["members", projectId]`, the board reads its members — and the reader's
+   * role, which a write about the reader's own row changes — from its context
+   * read (TAS-251), and the project card on `/projects` reads
+   * `["project-summaries", projectId]`. A write about the reader's own row also
+   * changes the list rows whose edit control depends on the role.
    *
    * `mayBeSelf` rather than `self`: before `GET /users/me` has answered, no row
    * can be ruled out as the reader's, and re-reading a role that did not change
@@ -284,14 +285,9 @@ export function ProjectMembersModal({
   const refresh = (mayBeSelf: boolean) =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: membersKey }),
+      queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) }),
       queryClient.invalidateQueries({ queryKey: ["project-summaries", projectId] }),
-      ...(mayBeSelf
-        ? [
-            queryClient.invalidateQueries({ queryKey: ["membership", projectId] }),
-            queryClient.invalidateQueries({ queryKey: ["project", projectId] }),
-            queryClient.invalidateQueries({ queryKey: ["projects"] }),
-          ]
-        : []),
+      ...(mayBeSelf ? [queryClient.invalidateQueries({ queryKey: ["projects"] })] : []),
     ]);
 
   const mayBeSelf = (userId: string) => currentUserId === undefined || userId === currentUserId;
@@ -304,8 +300,7 @@ export function ProjectMembersModal({
    */
   const forgetRoleIfRefused = (error: unknown) => {
     if (isForbidden(error)) {
-      void queryClient.invalidateQueries({ queryKey: ["membership", projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
     }
   };
 
@@ -468,10 +463,7 @@ export function ProjectMembersModal({
       return true;
     }
     if (!me) {
-      await Promise.all([
-        queryClient.resetQueries({ queryKey: ["project", projectId] }),
-        queryClient.resetQueries({ queryKey: ["membership", projectId] }),
-      ]);
+      await queryClient.resetQueries({ queryKey: projectContextKey(projectId) });
     }
     return false;
   };

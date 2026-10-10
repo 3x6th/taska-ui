@@ -4,8 +4,9 @@ import { taskaApi } from "../api/client";
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import type { UpdateProjectInput } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
-import type { Project } from "../domain/types";
+import type { Project, ProjectContext } from "../domain/types";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
+import { projectContextKey } from "../lib/projectContext";
 import { ColorSwatches, type ColorChoice } from "./ColorSwatches";
 import { Modal } from "./Modal";
 import { RequestId } from "./RequestId";
@@ -101,27 +102,31 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
   const hasChanges = Object.keys(changes).length > 0;
   const nameIsBlank = name.trim().length === 0;
 
+  const contextKey = projectContextKey(project.id);
   const save = useMutation({
     mutationFn: () => taskaApi.updateProject(project.id, changes),
     /**
      * Optimistic across both caches that hold this project, because both are on
      * screen: the card behind this dialog comes from `["projects"]`, the
-     * board's own header from `["project", id]`. Patching one and waiting for
-     * the other would make the rename appear in one place and not the other.
+     * board's own header from the project inside its context read (TAS-251).
+     * Patching one and waiting for the other would make the rename appear in
+     * one place and not the other.
      */
-    onMutate: async (): Promise<{ list?: Project[]; single?: Project }> => {
+    onMutate: async (): Promise<{ list?: Project[]; single?: ProjectContext }> => {
       await Promise.all([
         queryClient.cancelQueries({ queryKey: ["projects"] }),
-        queryClient.cancelQueries({ queryKey: ["project", project.id] }),
+        queryClient.cancelQueries({ queryKey: contextKey }),
       ]);
       const list = queryClient.getQueryData<Project[]>(["projects"]);
-      const single = queryClient.getQueryData<Project>(["project", project.id]);
+      const single = queryClient.getQueryData<ProjectContext>(contextKey);
       const patch = (current: Project) => ({ ...current, ...changes });
 
       queryClient.setQueryData<Project[]>(["projects"], (current) =>
         current?.map((item) => (item.id === project.id ? patch(item) : item)),
       );
-      queryClient.setQueryData<Project>(["project", project.id], (current) => (current ? patch(current) : current));
+      queryClient.setQueryData<ProjectContext>(contextKey, (current) =>
+        current ? { ...current, project: patch(current.project) } : current,
+      );
       return { list, single };
     },
     // Both snapshots back, and the dialog stays open carrying the reason. A
@@ -129,7 +134,7 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
     // would simply slide back to its old name with no explanation.
     onError: (_error, _variables, context) => {
       if (context?.list) queryClient.setQueryData(["projects"], context.list);
-      if (context?.single) queryClient.setQueryData(["project", project.id], context.single);
+      if (context?.single) queryClient.setQueryData(contextKey, context.single);
     },
     // The server's own row wins over the optimistic patch — it carries
     // `updatedAt`, and on a gateway that has PR #155 it is the only proof of
@@ -148,13 +153,17 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
       queryClient.setQueryData<Project[]>(["projects"], (current) =>
         current?.map((item) => (item.id === saved.id ? merge(item) : item)),
       );
-      queryClient.setQueryData<Project>(["project", project.id], (current) => (current ? merge(current) : saved));
+      // No fallback to `saved` here, unlike the list: a context is more than its
+      // project, and one nobody read is not one to build out of a write answer.
+      queryClient.setQueryData<ProjectContext>(contextKey, (current) =>
+        current ? { ...current, project: merge(current.project) } : current,
+      );
       onClose();
     },
     onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
-        queryClient.invalidateQueries({ queryKey: ["project", project.id] }),
+        queryClient.invalidateQueries({ queryKey: contextKey }),
       ]);
     },
   });

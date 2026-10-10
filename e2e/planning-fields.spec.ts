@@ -74,9 +74,9 @@ async function pressWithoutFollowing(page: Page, target: Locator) {
 
 const MOBILE_PROJECT_ID = "f315c5cf-3333-47d1-8d22-79f07c2ec99b";
 
-async function signIn(page: Page) {
+async function signIn(page: Page, email = "anna@example.com") {
   await page.goto("/login");
-  await page.getByLabel("Email").fill("anna@example.com");
+  await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
@@ -227,10 +227,11 @@ test("creates an issue with a plan, and the panel reads it back", async ({ page 
 });
 
 test("a viewer reads the plan and is offered no way to change it", async ({ page }) => {
-  // Anna is not a member of the Mobile project, so the mock answers VIEWER for
-  // it, and the board is reachable by URL — hiding a control is a courtesy and
-  // the server stays the authority (§5.7).
-  await signIn(page);
+  // Tom is a VIEWER of the Mobile project (TAS-251: the board's context read
+  // refuses a non-member, so the read-only board needs a real VIEWER).
+  // The board is reachable by URL — hiding a control is a courtesy and the
+  // server stays the authority (§5.7).
+  await signIn(page, "tom@example.com");
   await page.goto(`/projects/${MOBILE_PROJECT_ID}/board`);
   const planning = await openIssuePanel(page, "MOB-5");
 

@@ -78,6 +78,32 @@ function respond(url: string, init?: RequestInit): unknown {
     return { id: ANNA, login: "anna", email: "anna@example.com", displayName: "Anna Ivanova", status: "ACTIVE" };
   }
   if (path === `/users/${ANNA}/avatar`) return { url: null };
+  if (path === `/projects/${PROJECT}/context`) {
+    return {
+      project: { id: PROJECT, projectKey: "TAS", name: "Taska Platform", createdBy: ANNA, createdAt: NOW, updatedAt: NOW, currentUserRole: "ADMIN" },
+      members: [{ userId: ANNA, role: "ADMIN", displayName: "Anna Ivanova", email: "anna@example.com", avatar: null, addedAt: NOW }],
+      labels: [],
+      // One type only, as a project may allow (TAS-212), and no timestamps
+      // inside — the context's own shape.
+      workflows: [
+        {
+          issueType: "TASK",
+          workflow: {
+            id: "workflow",
+            name: "Default",
+            version: 1,
+            statuses: [
+              { id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+              { id: "s2", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
+            ],
+            transitions: [{ id: "start", fromStatusId: "s1", toStatusId: "s2", name: "Start progress", sortOrder: 10 }],
+          },
+        },
+        // A type this build does not know arrives as `null`, and is dropped.
+        { issueType: null, workflow: { id: "unknown", name: "Unknown", version: 1, statuses: [], transitions: [] } },
+      ],
+    };
+  }
   if (path === `/projects/${PROJECT}`) {
     return { id: PROJECT, projectKey: "TAS", name: "Taska Platform", createdBy: ANNA, createdAt: NOW, updatedAt: NOW, currentUserRole: "ADMIN" };
   }
@@ -190,6 +216,37 @@ describe("the issue panel's request budget against the REST implementation", () 
   /** How many times the open issue was read in `requests`. */
   const issueReads = (requests: typeof sent) =>
     requests.filter((request) => request.method === "GET" && request.path === `/api/v1/issues/${ISSUE}`).length;
+
+  /**
+   * The board's own frame since TAS-251: one context read where it used to make
+   * seven — the project, the project again for the role, the members, a
+   * workflow per issue type and the labels. Beside it the issue page and the
+   * reader's profile, and the top bar's two (the notifications and the
+   * reader's avatar), which are not the board's.
+   */
+  it("loads the board with one context read, and none of the reads it replaced", async () => {
+    const queryClient = renderBoard();
+    await screen.findByRole("button", { name: /TAS-102/ });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    const paths = requested.map((url) => url.split("?")[0]);
+    expect(paths.sort()).toEqual(
+      [
+        `/api/v1/projects/${PROJECT}/context`,
+        `/api/v1/projects/${PROJECT}/issues`,
+        "/api/v1/users/me",
+        "/api/v1/notifications",
+        `/api/v1/users/${ANNA}/avatar`,
+      ].sort(),
+    );
+    for (const replaced of ["", "/members", "/workflow", "/labels"]) {
+      expect(paths).not.toContain(`/api/v1/projects/${PROJECT}${replaced}`);
+    }
+    // The workflow came from the context: the panel offers its transition.
+    fireEvent.click(screen.getByRole("button", { name: /TAS-102/ }));
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(panel).findByRole("button", { name: "Start progress" })).toBeVisible();
+  });
 
   it("opens a panel with two requests: the issue read and the comments read", async () => {
     const queryClient = renderBoard();
