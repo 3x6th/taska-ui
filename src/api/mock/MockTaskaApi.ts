@@ -2462,10 +2462,11 @@ export class MockTaskaStore {
 
   createIssue(projectId: string, input: CreateIssueInput): Issue {
     const project = this.getProject(projectId);
-    // The project's allowed types are the server's to enforce, not only the
-    // create form's to offer (TAS-251). The status and wording of the gateway's
-    // refusal are unmeasured; `INVALID_ARGUMENT` is this store's reading
-    // (docs/ai/API-DIVERGENCE.md, "Pending backend PR #169").
+    // The mock models the *intended* rule, not the server's behaviour: at
+    // develop and backend #169 issue-service `createIssue` checks only the role
+    // and saves any issueType (201, an issue with no workflow). The UI never
+    // offers a disallowed type; the backend ask is in docs/ai/BACKLOG.md and
+    // the divergence in docs/ai/API-DIVERGENCE.md ("Pending backend PR #169").
     const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
     if (!allowed.includes(input.issueType)) {
       throw new MockApiError(
@@ -4197,7 +4198,9 @@ export class MockTaskaStore {
    *   answers **500** for it; this is the answer it is meant to give, and the
    *   section never sends one either way;
    * - every other filter an exact match, a blank one no filter;
-   * - newest first, paged, `pageSize` clamped to 1–100. The head ignores both
+   * - newest first, paged; as the server's `normalizePageSize`: a `pageSize`
+   *   below 1 falls back to the default 20 (a negative `page`, to the default
+   *   first page), only a value above 100 is clamped. The head ignores both
    *   and answers every row — recorded, not reproduced.
    */
   listAuditEntries(query: AuditEntriesQuery): AuditEntries {
@@ -4247,8 +4250,10 @@ export class MockTaskaStore {
       })
       .sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""));
 
-    const pageSize = Math.min(100, Math.max(1, Math.trunc(query.pageSize ?? 20)));
-    const currentPage = Math.max(1, Math.trunc(query.page ?? 1));
+    const requestedSize = Math.trunc(query.pageSize ?? 20);
+    const pageSize = requestedSize < 1 ? 20 : Math.min(100, requestedSize);
+    const requestedPage = Math.trunc(query.page ?? 1);
+    const currentPage = requestedPage < 1 ? 1 : requestedPage;
     const totalRows = matching.length;
     const totalPages = Math.ceil(totalRows / pageSize);
     const start = (currentPage - 1) * pageSize;

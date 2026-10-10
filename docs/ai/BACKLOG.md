@@ -3164,3 +3164,4 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
   attempt 3, job 113255034540): the `Users` heading was not visible 5s after
   clicking the Administration nav link; passed on retry. First sighting in ten
   sharded runs.
+- **Issue type not enforced server-side** (TAS-251): issue-service `createIssue` saves any `issueType` (201, issue with no workflow) and never reads `allowedIssueTypes`; the mock refuses it. Ask the backend to enforce the project's allowed types; not filed yet.
