@@ -16,6 +16,18 @@
  * error types meaning the same thing would be two chances for one of them to
  * drift into a shape `isMissingOrForbidden` matches, and only one of them would
  * have the test that says it must not.
+ *
+ * **A third leg joined it in TAS-253**: the GET of an attachment's bytes from
+ * its presigned download link, which is what lets "Download" save the file
+ * under its own name instead of opening it. It fails the same way and for the
+ * same reasons — no gateway, no token, no request id — so it throws the same
+ * class rather than a fourth error type meaning the same thing, and
+ * `objectStore.test.ts` proves the gateway predicates do not match what it
+ * throws. Measured on the stand on 2026-10-11: a cross-origin `fetch()` of
+ * the presigned link on `minio.taska.ozero.dev` (RustFS) from
+ * `https://taska.ozero.dev` answers 200 with a body readable as a blob, for an
+ * `image/png` and a `text/plain` file alike, and the object carries no
+ * `Content-Disposition`, so opening the link in a tab displays it inline.
  */
 
 /** The store could not be reached at all: no status, because no response came back. */
@@ -82,18 +94,29 @@ export class ObjectStoreError extends Error {
  * which are absolute and are not somewhere to PUT a file.
  */
 export function requireUsableUploadUrl(uploadUrl: string): void {
+  requireUsableStoreUrl(uploadUrl, "The upload link was not usable, so nothing was sent.");
+}
+
+/**
+ * The same check for the one **GET** this product makes to the store — the
+ * attachment's bytes, fetched so that "Download" can save the file under its
+ * own name (TAS-253). The hazard is the PUT's, read the other way round: `""`
+ * or a relative link would resolve against this app's document, and the
+ * "download" would be this app's own HTML saved under the attachment's name.
+ */
+export function requireUsableDownloadUrl(downloadUrl: string): void {
+  requireUsableStoreUrl(downloadUrl, "The download link was not usable, so nothing was fetched.");
+}
+
+function requireUsableStoreUrl(url: string, message: string): void {
   let parsed: URL | null;
   try {
-    parsed = new URL(uploadUrl);
+    parsed = new URL(url);
   } catch {
     parsed = null;
   }
   if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
-    throw new ObjectStoreError(
-      "The upload link was not usable, so nothing was sent.",
-      OBJECT_STORE_UNUSABLE_URL_CODE,
-      null,
-    );
+    throw new ObjectStoreError(message, OBJECT_STORE_UNUSABLE_URL_CODE, null);
   }
 }
 

@@ -56,6 +56,7 @@ import {
   OBJECT_STORE_REJECTED_CODE,
   OBJECT_STORE_UNREACHABLE_CODE,
   ObjectStoreError,
+  requireUsableDownloadUrl,
   requireUsableUploadUrl,
 } from "../objectStore";
 import type { PlanningFields, PlanningFieldsInput } from "../planningFields";
@@ -207,6 +208,12 @@ export const MOCK_ATTACHMENT_TRIGGERS = {
   expiredTicket: "expired-link",
   /** Legs 1 and 2 succeed and leg 3 fails — the case that orphans an object. */
   confirmFails: "confirm-fails",
+  /**
+   * The upload works, and the later GET of the bytes (`getAttachmentBytes`)
+   * rejects with no response — the shape a store without CORS for GET would
+   * give — so "Download" has to fall back to opening the link (TAS-253).
+   */
+  downloadBlocked: "download-blocked",
 } as const;
 
 // The avatar upload reads the same four names out of the same
@@ -234,6 +241,27 @@ interface MockStoredObject {
   contentType: string;
   sizeBytes: number;
   checksum: string;
+  /**
+   * What was PUT, kept so a later download hands back the very bytes that
+   * were uploaded (TAS-253) — which is what makes "Download" in mock mode a
+   * round trip rather than a placeholder.
+   */
+  bytes: Uint8Array;
+}
+
+/**
+ * One presigned **download** link this mock has handed out. Keyed by the URL,
+ * like the upload tickets, so `getAttachmentBytes` honours only links this
+ * store signed — and a link signed for a row that was deleted since still
+ * resolves, as a presigned link on a real store would: it names an object,
+ * and a soft delete does not touch the object.
+ */
+interface MockDownloadTicket {
+  objectKey: string;
+  fileName: string;
+  contentType: string;
+  /** Epoch ms. Past it, the store answers 403. */
+  expiresAt: number;
 }
 
 /**
@@ -882,6 +910,8 @@ export class MockTaskaStore {
   private storeObjects = new Map<string, MockStoredObject>();
   /** Presigned uploads handed out and not yet spent, keyed by the URL itself. */
   private uploadTickets = new Map<string, MockUploadTicket>();
+  /** Presigned download links handed out, keyed by the URL itself. */
+  private downloadTickets = new Map<string, MockDownloadTicket>();
   /**
    * One avatar per user at most, keyed by user id — which is the shape of the
    * server's own table and the reason nothing here has to guard against
@@ -2868,6 +2898,7 @@ export class MockTaskaStore {
       contentType,
       sizeBytes: bytes.length,
       checksum: mockChecksum(bytes),
+      bytes: bytes.slice(),
     });
   }
 
@@ -2944,13 +2975,58 @@ export class MockTaskaStore {
       "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
       "X-Amz-Expires": String(Math.round(ATTACHMENT_PRESIGNED_TTL_MS / 1000)),
       "X-Amz-SignedHeaders": "host",
-      "X-Amz-Signature": mockChecksum(new TextEncoder().encode(`${attachment.objectKey}:get:${Date.now()}`)),
-      "response-content-disposition": `attachment; filename="${attachment.fileName}"`,
+      // Unique per call, like a real presign whose `X-Amz-Date` moves: two
+      // links for one row are two tickets, never one overwritten by the other.
+      "X-Amz-Signature": mockChecksum(new TextEncoder().encode(`${attachment.objectKey}:get:${makeId("sig")}`)),
+      // No `response-content-disposition`, which this link used to carry: the
+      // deployed store sets no `Content-Disposition` on the object (measured
+      // 2026-10-11), so the link opens inline, and a mock link that claimed
+      // otherwise would be a wrong claim about the server (TAS-253).
     });
-    return {
-      downloadUrl: `${ATTACHMENT_STORE_ORIGIN}/${ATTACHMENT_BUCKET}/${attachment.objectKey}?${query.toString()}`,
-      checksum: attachment.checksum,
-    };
+    const downloadUrl = `${ATTACHMENT_STORE_ORIGIN}/${ATTACHMENT_BUCKET}/${attachment.objectKey}?${query.toString()}`;
+    this.downloadTickets.set(downloadUrl, {
+      objectKey: attachment.objectKey,
+      fileName: attachment.fileName,
+      contentType: attachment.contentType,
+      expiresAt: Date.now() + ATTACHMENT_PRESIGNED_TTL_MS,
+    });
+    return { downloadUrl, checksum: attachment.checksum };
+  }
+
+  /**
+   * The GET of a download link's bytes, standing in for the store the way
+   * `putAttachmentBytes` does for the PUT — so the end-to-end suite never
+   * fetches `127.0.0.1:9000`. Every refusal is an `ObjectStoreError`.
+   *
+   * An object this store holds comes back byte for byte as it was PUT. The
+   * seeded rows have no object (see the attachment seed), so they come back as
+   * a short, deterministic text body under the row's own content type — a
+   * placeholder, said so in its own words, rather than a refusal no real store
+   * would give for a row that exists.
+   */
+  getAttachmentBytes(downloadUrl: string): Blob {
+    requireUsableDownloadUrl(downloadUrl);
+    const ticket = this.downloadTickets.get(downloadUrl);
+    if (!ticket) {
+      throw new ObjectStoreError("The file store answered 403.", OBJECT_STORE_REJECTED_CODE, 403);
+    }
+    if (ticket.fileName.toLowerCase().includes(MOCK_ATTACHMENT_TRIGGERS.downloadBlocked)) {
+      throw new ObjectStoreError(
+        "The file store could not be reached: Failed to fetch",
+        OBJECT_STORE_UNREACHABLE_CODE,
+        null,
+      );
+    }
+    if (Date.now() > ticket.expiresAt) {
+      throw new ObjectStoreError("The file store answered 403.", OBJECT_STORE_REJECTED_CODE, 403);
+    }
+    const stored = this.storeObjects.get(ticket.objectKey);
+    if (stored) {
+      return new Blob([stored.bytes.slice()], { type: stored.contentType });
+    }
+    return new Blob([`Mock copy of ${ticket.fileName}: this seeded attachment has no bytes in the mock store.\n`], {
+      type: ticket.contentType,
+    });
   }
 
   /**
@@ -4959,6 +5035,16 @@ export class MockTaskaApi implements TaskaApi {
     attachmentId: string,
   ): Promise<AttachmentDownloadUrl> {
     return wait(this.store.getAttachmentDownloadUrl(projectId, issueId, attachmentId));
+  }
+
+  /**
+   * The Blob is handed back directly rather than through `wait`, which clones
+   * its value; the delay is the same 140ms every other call takes.
+   */
+  async getAttachmentBytes(downloadUrl: string): Promise<Blob> {
+    const blob = this.store.getAttachmentBytes(downloadUrl);
+    await wait(null);
+    return blob;
   }
 
   async deleteAttachment(projectId: string, issueId: string, attachmentId: string): Promise<void> {

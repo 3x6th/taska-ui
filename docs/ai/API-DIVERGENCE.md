@@ -1357,8 +1357,17 @@ Everything below is the entry as it stood, in the past tense.
   Only the issue panel's watcher section says the members could not be read,
   and only to an ADMIN with an issue open. Every project card that includes that
   person shows its members as unknown.
-- **Compensation:** none — the client draws initials when a row carries no
-  avatar, and that is the correct reading of the row.
+- **Measured 2026-10-11 (TAS-253), admin's session, GET only**, after TAS-244
+  made storage work on the stand: `GET /users/{userId}/avatar` for admin answers
+  200 with a `url` on `minio.taska.ozero.dev` that loads as an image, while
+  `GET /projects/{projectId}/members` returns `avatar: null` for admin in all 12
+  projects. The first half is no longer a code reading; the team saw initials on
+  the board for a person with a photo. The second half (one bad object fails the
+  read) was not measured.
+- **Compensation:** none, by the owner's decision on 2026-10-11 (TAS-253): a
+  per-member `GET /users/{userId}/avatar` read was proposed and declined — the
+  backend fixes it in TAS-225. Until then the client draws initials when a row
+  carries no avatar.
 - **The mock follows the fix, not the server.** It draws faces on member rows,
   and for a row whose object is gone it draws no face rather than failing the
   read. That was defensible for an open PR. Now that the PR has merged without

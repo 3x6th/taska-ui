@@ -1036,8 +1036,9 @@ export interface TaskaApi {
   ): Promise<AttachmentUploadTicket>;
 
   /**
-   * **Leg 2 of three, and the only method on this interface that does not talk
-   * to the gateway.** The browser PUTs the bytes straight to the object store
+   * **Leg 2 of three, and the first method on this interface that does not
+   * talk to the gateway** (`putAvatarBytes` and `getAttachmentBytes` followed
+   * it). The browser PUTs the bytes straight to the object store
    * at the presigned URL, cross-origin, with no bearer token and no request id.
    *
    * It is on the interface — rather than being done inline wherever an upload
@@ -1103,6 +1104,27 @@ export interface TaskaApi {
     issueId: string,
     attachmentId: string,
   ): Promise<AttachmentDownloadUrl>;
+
+  /**
+   * **The third method on this interface that does not talk to the gateway**
+   * (TAS-253): a plain GET of the bytes behind a link `getAttachmentDownloadUrl`
+   * just handed back, so the panel can save the file under its own name. The
+   * presigned object carries no `Content-Disposition` (measured 2026-10-11), so
+   * the link alone can only *open* a file, never download it.
+   *
+   * On the interface for the reason the two PUTs are: the seam that swaps mock
+   * for rest has to sit at the level of the thing it stands in for, or the
+   * end-to-end suite — whose links point at `127.0.0.1:9000` — would have no
+   * structural guarantee that it never fetches one.
+   *
+   * Failures arrive as `ObjectStoreError` (src/api/objectStore.ts), never as an
+   * `ApiError`; `objectStore.test.ts` proves the gateway predicates do not match
+   * them. No header is sent, so the request stays a CORS "simple" GET with no
+   * preflight, and no credentials. `downloadUrl` is checked first through
+   * `requireUsableDownloadUrl`, so an empty or relative link cannot turn into a
+   * same-origin read of this app's own document.
+   */
+  getAttachmentBytes(downloadUrl: string): Promise<Blob>;
 
   /**
    * Soft delete: `deleted_at` is stamped and the row stops being listed. **The
