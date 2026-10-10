@@ -2922,6 +2922,22 @@ describe("issue attachments", () => {
     vi.unstubAllGlobals();
   });
 
+  it("does not fall back on an error that is not the store's: it reaches the error notice and no tab opens", async () => {
+    seedAttachments([attachment()]);
+    failBytes(new TypeError("boom"));
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    renderBoard(ISSUE_PATH);
+
+    const panel = await section();
+    fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
+
+    expect(await panel.findByText("boom")).toHaveClass("is-error");
+    expect(open).not.toHaveBeenCalled();
+    expect(panel.queryByText(/could not be saved directly/)).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
   /** A drag of files from the desktop, as the section receives it. */
   const filesDrag = (files: File[]) => ({ dataTransfer: { types: ["Files"], files, dropEffect: "none" } });
 

@@ -3145,3 +3145,18 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
   Firefox with the object URL, and a real OS drag from Finder.
 - **A queue keeps uploading after the panel closes**, with no visible status.
   Each file still lands on its own issue.
+- **A failed `download-url` drops the gateway's request id** in both the Open
+  and the Download notice (was so on main for Open). Show it with the
+  `RequestId` pattern. From `api-contract-guard`.
+- **Download reads the whole file into memory** because the presigned GET
+  carries no `Content-Disposition`. Candidate backend ask, not filed: an
+  optional `disposition=attachment` on `…/download-url` that signs
+  `response-content-disposition` from the row's `file_name` (storage-lib one
+  builder call, proto optional field, gateway pass-through); RustFS honouring
+  the override on 1.0.0-rc.6 is unprobed. Then Download is a plain link and
+  `getAttachmentBytes` goes. From `api-contract-guard`.
+- **The vendored contract is behind `develop`**: `IssueShortResponseDto` gained
+  `statusKey` (required), `projectId`, `projectKey` (TAS-218). Refresh the
+  snapshot. From `api-contract-guard`.
+- **The `*-focus.png` evidence shows no focus ring** (shot after
+  `element.focus()`, not a Tab press). `art-director` confirmed the rings live.

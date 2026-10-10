@@ -5467,11 +5467,12 @@ button.issue-link-open:hover {
   z-index: 1;
   inset: -6px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: 34px;
   gap: 6px;
   border-radius: 11px;
-  background: color-mix(in oklab, var(--surface) 90%, transparent);
+  background: color-mix(in oklab, var(--surface) 96%, transparent);
   box-shadow: inset 0 0 0 2px var(--accent);
   color: var(--accent);
   font-size: 12.5px;
@@ -7049,5 +7050,11 @@ button.attachment-open:hover:not(:disabled) {
        element is left at full opacity rather than mid-fade (§1). */
     animation-duration: 1ms;
     animation-iteration-count: 1;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .attachment-drop-hint {
+    display: none;
   }
 }

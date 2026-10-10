@@ -1295,6 +1295,50 @@ viewer'ом значило бы выдумать ответ, которого н
 
 ---
 
+### 4.25 Вложения задачи (TAS-253)
+
+Numbered 4.25 because TAS-251 (PR #82, open on 2026-10-11) takes 4.24 for the
+work log. Written on `art-director`'s ruling of 2026-10-11.
+
+**Row.** Two actions on every row, plus Delete where §5.7 allows it. The name
+area is one button — ExternalLink icon 14 `--fg-2`, name 12.5/500 `--fg` (the
+only part that ellipsizes), meta 11 `--fg-3` — labelled "Open <name> in a new
+tab"; it opens the file from a fresh presigned link in a new tab. The tab is
+opened blank inside the click handler and then navigated, with its opener
+nulled. Download and Delete are §4.1 ghost icon buttons at 32×32, labelled
+"Download <name>" / "Delete <name>"; Download saves the bytes under the
+original name. A `blob:` URL is never opened on Taska's origin. A row action
+whose request is in flight is `aria-disabled` (not `disabled`, so focus stays,
+§4.21) with `cursor: progress`, and ignores a second press. Open and Download
+stay available to `VIEWER`.
+
+**Fallback.** The "Open" link (28 high, `--border-strong`, radius 9) appears
+beside a row only when `window.open` returned `null`. If Download could not get
+the bytes, the link opens in a tab instead and an **info** notice says so; if
+that tab is refused too, the fallback link appears. Neither case is an error.
+
+**Notices.** One `aria-live="polite"` region that stays mounted and holds a list
+of §5.6 boxes, errors first, then info, stacked with `gap: 6`. Empty, it takes
+no space. A new action clears it; files added to a running queue append to it.
+
+**Queue.** A multi-select or a drop of several files uploads one file at a time.
+Refused files (type, size) are named in error notices before the queue starts.
+The file uploading now shows its step and the files waiting behind it show
+"Waiting…", each as an inert row with meta in `--fg-2`, with no spinner or pulse
+(§5.6).
+
+**Drop target.** For writers only, and only for drags that carry `Files`. While
+files are held over the section, an overlay covers it at −6px: `--surface` at
+96% via `color-mix`, the §4.9 drag-over ring `inset 0 0 0 2px var(--accent)`,
+radius 11, with Upload 16 + "Drop to attach" at 12.5/600 in `--accent`, the
+label aligned to the top of the plane, 34 down. It is `aria-hidden` and not
+animated. Nothing under it moves. "Attach a file" (`multiple`) is the keyboard
+and non-drag route, and the hint line says once that dropping works — except on
+a coarse pointer without hover, where nothing can be dropped and the sentence
+is hidden. For `VIEWER` the section refuses the drop (`dropEffect: none`). A
+file dropped anywhere else on the panel is refused the same way and never
+navigates the tab.
+
 ## 5. Patterns
 
 ### 5.1 App shell и маршруты

@@ -41,7 +41,7 @@ import {
   attachmentRefusalKind,
   type AttachmentRefusalKind,
 } from "../api/attachments";
-import { isUsableDownloadUrl, objectStoreUploadFailure } from "../api/objectStore";
+import { ObjectStoreError, isUsableDownloadUrl, objectStoreUploadFailure } from "../api/objectStore";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isIssueVersionConflict, isMissingOrForbidden, IssueVersionConflictError } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
@@ -4030,7 +4030,8 @@ function IssueAttachmentsSection({
       try {
         const blob = await taskaApi.getAttachmentBytes(link.downloadUrl);
         return { kind: "saved" as const, blob };
-      } catch {
+      } catch (error) {
+        if (!(error instanceof ObjectStoreError)) throw error;
         return { kind: "fallback" as const, url: link.downloadUrl };
       }
     },
@@ -4329,7 +4330,7 @@ function IssueAttachmentsSection({
               trusted to enforce it. The drop is mentioned here, once, because
               nothing else on screen says the section takes one. */}
           <p className="attachment-hint">
-            Up to {formatFileSize(ATTACHMENT_MAX_SIZE_BYTES)}. {ATTACHMENT_ACCEPTED_SUMMARY}. You can also drop files here.
+            Up to {formatFileSize(ATTACHMENT_MAX_SIZE_BYTES)}. {ATTACHMENT_ACCEPTED_SUMMARY}.<span className="attachment-drop-hint"> You can also drop files here.</span>
           </p>
         </div>
       ) : null}
