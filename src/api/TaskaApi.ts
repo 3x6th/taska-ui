@@ -598,6 +598,16 @@ export interface TaskaApi {
 
   listProjects(): Promise<Project[]>;
   createProject(input: CreateProjectInput): Promise<Project>;
+  /**
+   * `GET /projects/{projectId}` — the project alone, membership-checked (a
+   * non-member is a 403, a missing project a 404).
+   *
+   * Since TAS-251 the board's frame comes from `getProjectContext`, and this
+   * read is the board's second opinion on that one: when the context answers
+   * 404 or 403 the board asks this once, because the context's member
+   * enrichment can produce the same two statuses for one unreadable avatar
+   * object. Only a refusal here as well sends the reader to §4.18's screen.
+   */
   getProject(projectId: string): Promise<Project>;
   /**
    * `PATCH /api/v1/projects/{projectId}` — name, description and colour, and
@@ -651,6 +661,15 @@ export interface TaskaApi {
    *   degraded context.
    * - **Members only.** A non-member is refused with 403, a `GLOBAL_ADMIN`
    *   included; a missing project is 404.
+   * - **A 404 or 403 is not only about the project.** The members are enriched
+   *   exactly as `listMembers` enriches them (`ProjectMemberServiceImpl` at
+   *   #169): every avatar is HEADed and presigned per person with no per-row
+   *   fallback, so one missing avatar object answers 404 and a storage refusal
+   *   403 — the statuses of a missing project and of no access. The board
+   *   therefore confirms a 404/403 with one `getProject` read before it shows
+   *   §4.18's screen, and otherwise stays with a banner about the project's
+   *   details. The backend ask — an unreadable avatar as `avatar: null` rather
+   *   than a failed read — is a comment on TAS-212 (docs/ai/API-DIVERGENCE.md).
    * - **Only the allowed issue types.** `workflows` may hold fewer than three
    *   entries, or none, in no fixed order; an entry with an issue type this
    *   build does not know arrives as `issueType: null` and is dropped.

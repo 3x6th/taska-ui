@@ -267,6 +267,16 @@ describe("MockTaskaApi", () => {
       expect(Object.keys(context.workflows).sort()).toEqual(["BUG", "TASK"]);
     });
 
+    it("refuses to create an issue of a type the project does not allow, and creates one it does", async () => {
+      const ops = (await api.listProjects()).find((item) => item.projectKey === "OPS")!;
+      const input = { summary: "Rotate the keys", description: "", priority: "LOW" as const };
+      await expect(api.createIssue(ops.id, { ...input, issueType: "STORY" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Issue type STORY is not allowed in project OPS",
+      });
+      await expect(api.createIssue(ops.id, { ...input, issueType: "BUG" })).resolves.toMatchObject({ issueType: "BUG" });
+    });
+
     it("refuses a non-member with 403 — a GLOBAL_ADMIN included — and a missing project with 404", async () => {
       // Mark is the seed's GLOBAL_ADMIN, and not on WEB.
       const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;

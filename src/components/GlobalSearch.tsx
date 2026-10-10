@@ -347,7 +347,7 @@ function GlobalSearchOption({
   onHover: () => void;
 }) {
   const status = hit.statusKey
-    ? hit.statusKey in statusLabels
+    ? Object.hasOwn(statusLabels, hit.statusKey)
       ? statusLabels[hit.statusKey as keyof typeof statusLabels]
       : hit.statusKey
     : null;
