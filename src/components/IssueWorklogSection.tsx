@@ -133,16 +133,16 @@ export function IssueWorklogSection({
 
   /**
    * After a write: the issue (its version and remaining estimate moved) and the
-   * board's page (which holds the same issue), awaited so a queued edit leaves
-   * with the version the re-read brought. Then the list, but only once no other
+   * board's page (which holds the same issue). Only the issue's own re-read is
+   * awaited, so a queued edit leaves with the version it brought; the board's
+   * page is invalidated without waiting. Then the list, but only once no other
    * worklog write of this issue is in flight — a re-read landing between two
    * optimistic writes would take the second one's row off the screen.
    */
-  const settleIssue = () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] }),
-      queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
-    ]);
+  const settleIssue = () => {
+    void queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
+    return queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] });
+  };
   const settleList = () => {
     if (queryClient.isMutating({ mutationKey: worklogMutationKey(issueId) }) > 1) return;
     void queryClient.invalidateQueries({ queryKey: read.queryKey });
@@ -261,7 +261,7 @@ export function IssueWorklogSection({
   };
   const submitEdit = (worklog: IssueWorklog) => {
     if (!editing) return;
-    const problems = worklogDraftProblems(editing.draft, today);
+    const problems = worklogDraftProblems(editing.draft, today, worklog.workDate);
     if (hasProblems(problems)) {
       setEditing({ ...editing, attempted: true });
       const first = draftFields.find((field) => problems[field]);
@@ -433,7 +433,7 @@ function WorklogRow({
   // watchers say the same.
   const name = author?.displayName ?? "Unknown";
   const what = `${duration} logged on ${day} by ${name}`;
-  const problems = editing?.attempted ? worklogDraftProblems(editing.draft, today) : {};
+  const problems = editing?.attempted ? worklogDraftProblems(editing.draft, today, worklog.workDate) : {};
 
   return (
     <li className={`worklog-row${pending ? " is-pending" : ""}`}>

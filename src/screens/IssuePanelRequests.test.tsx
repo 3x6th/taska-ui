@@ -52,6 +52,8 @@ const seededIssue = {
 let issue: Record<string, unknown> = { ...seededIssue };
 /** The issue's work log as this stub's server holds it. */
 let worklogs: unknown[] = [];
+/** While set, the stub's worklog POST waits for it before the server answers. */
+let holdWorklogPost: Promise<void> | null = null;
 
 /** An answer that is not a 200: the status and the body the gateway sends with it. */
 class Refusal {
@@ -184,12 +186,14 @@ describe("the issue panel's request budget against the REST implementation", () 
     sent = [];
     issue = { ...seededIssue };
     worklogs = [];
+    holdWorklogPost = null;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string, init?: RequestInit) => {
         requested.push(String(input));
         const headers = (init?.headers ?? {}) as Record<string, string>;
         sent.push({ path: String(input).split("?")[0], method: init?.method ?? "GET", ifMatch: headers["If-Match"] });
+        if (init?.method === "POST" && String(input).includes("/worklogs")) await holdWorklogPost;
         return answer(respond(String(input), init));
       }),
     );
@@ -328,6 +332,35 @@ describe("the issue panel's request budget against the REST implementation", () 
     await waitFor(() => expect(within(panel).getByRole("button", { name: "Low" })).toHaveClass("is-active"));
     await settled(queryClient);
     expect(sent[beforeEdit]).toEqual({ path: `/api/v1/issues/${ISSUE}`, method: "PATCH", ifMatch: '"2"' });
+    expect(within(panel).queryByText(/was changed elsewhere/)).toBeNull();
+  });
+
+  /**
+   * An edit made while a worklog POST is still in flight must wait for it and
+   * leave with the version the write moved the issue to, not the one the panel
+   * held when the edit was clicked.
+   */
+  it("queues an issue edit behind a pending worklog write and sends the bumped If-Match", async () => {
+    const { queryClient, panel, before } = await openPanel();
+    let release: () => void = () => {};
+    holdWorklogPost = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    fireEvent.change(within(panel).getByLabelText("Time spent"), { target: { value: "1h" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "Log work" }));
+    await waitFor(() =>
+      expect(sent.slice(before).some((request) => request.method === "POST")).toBe(true),
+    );
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Low" }));
+    expect(sent.slice(before).some((request) => request.method === "PATCH")).toBe(false);
+
+    release();
+    await waitFor(() => expect(sent.some((request) => request.method === "PATCH")).toBe(true));
+    await settled(queryClient);
+    const patch = sent.find((request) => request.method === "PATCH");
+    expect(patch).toEqual({ path: `/api/v1/issues/${ISSUE}`, method: "PATCH", ifMatch: '"2"' });
     expect(within(panel).queryByText(/was changed elsewhere/)).toBeNull();
   });
 

@@ -111,8 +111,16 @@ export function draftOf(worklog: IssueWorklog): WorklogDraft {
  * yet is not work to log, and the day of grace exists for clocks and zones that
  * disagree with the server's, not as a feature to offer. There is no lower
  * bound, on the server or here.
+ *
+ * `storedWorkDate` is the day of the entry being edited. A day left as it was
+ * is not checked against the future: the server may have accepted it for its
+ * own today plus one, and a comment-only edit of that entry must stay possible.
  */
-export function worklogDraftProblems(draft: WorklogDraft, today: DateOnly): WorklogDraftProblems {
+export function worklogDraftProblems(
+  draft: WorklogDraft,
+  today: DateOnly,
+  storedWorkDate?: DateOnly,
+): WorklogDraftProblems {
   const problems: WorklogDraftProblems = {};
 
   const minutes = parseDuration(draft.duration);
@@ -123,7 +131,7 @@ export function worklogDraftProblems(draft: WorklogDraft, today: DateOnly): Work
   else if (minutes > WORKLOG_MAX_MINUTES) problems.duration = "That is more time than one entry can hold.";
 
   if (!isDateOnly(draft.workDate)) problems.workDate = "Pick the day the work was done.";
-  else if (draft.workDate > today) problems.workDate = "Work cannot be logged for a day that has not come yet.";
+  else if (draft.workDate > today && draft.workDate !== storedWorkDate) problems.workDate = "Work cannot be logged for a day that has not come yet.";
 
   if (draft.comment.trim().length > WORKLOG_COMMENT_MAX_LENGTH) {
     problems.comment = `A comment can be at most ${WORKLOG_COMMENT_MAX_LENGTH} characters.`;

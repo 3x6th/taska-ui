@@ -661,8 +661,17 @@ export interface TaskaApi {
    *
    * - **All or nothing.** Any part failing fails the whole response; there is no
    *   degraded context.
-   * - **Members only.** A non-member is refused with 403, a `GLOBAL_ADMIN`
-   *   included; a missing project is 404.
+   * - **A non-member is refused with 403, a `GLOBAL_ADMIN` included; a
+   *   missing project is 404.**
+   *   At head `a1bfe19` the code intends 200 with empty members and labels (its
+   *   TODO says so), but the labels leg's denial arrives from issue-service as
+   *   a gRPC `StatusRuntimeException`, which
+   *   `ProjectServiceImpl.isPermissionDenied` (it matches only
+   *   `DomainException`) does not catch, so the whole context fails
+   *   `PERMISSION_DENIED` and answers 403. Removal: when the labels call
+   *   carries the global role, or `isPermissionDenied` also matches a gRPC
+   *   denial, the context answers 200 with empty parts and the mock must
+   *   follow.
    * - **A 404 or 403 is not only about the project.** The members are enriched
    *   exactly as `listMembers` enriches them (`ProjectMemberServiceImpl` at
    *   #169): every avatar is HEADed and presigned per person with no per-row

@@ -564,7 +564,14 @@ Same rule as above: "Closed by" is settled, the rest is live.
   - All or nothing: any part failing fails the response. The board therefore
     has one banner for it, where it had three (project, role, workflow).
   - A non-member is `403` — a `GLOBAL_ADMIN` included — and a missing project
-    `404`. The static-resource 404 is told apart by `isUndeployedRoute` and
+    is `404`. At head `a1bfe19` the code intends 200 with empty members and labels (its
+    TODO says so), but the labels leg's denial arrives from issue-service as a
+    gRPC `StatusRuntimeException`, which `ProjectServiceImpl.isPermissionDenied`
+    (it matches only `DomainException`) does not catch, so the whole context
+    fails `PERMISSION_DENIED` and answers 403. Removal: when the labels call
+    carries the global role, or `isPermissionDenied` also matches a gRPC denial,
+    the context answers 200 with empty parts and the mock must follow.
+    The static-resource 404 is told apart by `isUndeployedRoute` and
     keeps the board with a "not served yet" banner.
   - **A 404 or 403 can also be one avatar.** The members are enriched exactly
     as `…/members` enriches them (`ProjectMemberServiceImpl` at #169): each
@@ -588,7 +595,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
     columns and cannot create.
   - Statuses and transitions carry no `createdAt`/`updatedAt` in the context,
     though `WorkflowStatusDto` in the extract still declares them;
-    `ProjectWorkflow` (src/domain/types.ts) is a `Workflow` without the two.
+    The workflow itself does carry them; `ProjectWorkflow`
+    (src/domain/types.ts) leaves them out because nothing reads them.
   - Labels carry `id`, `name` and `color` only — not `ProjectLabelResponseDto`
     — and are typed `Label`; the board's optimistic label rows invent no
     `createdAt` either.
@@ -597,7 +605,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
     (blank name → unnamed row, `compareMembers`), and keeps `addedAt` when it
     is there.
 - **Mock parity:** `MockTaskaApi.getProjectContext` applies the same rules:
-  403 for a non-member (Mark, the seed's `GLOBAL_ADMIN`, on WEB), 404 for a
+  403 for a non-member (Mark, the seed's `GLOBAL_ADMIN`, on WEB; removal
+  trigger above), 404 for a
   missing project, and **Infra and Ops allows only TASK and BUG**. `createIssue`
   refuses a type the project does not allow with `400 INVALID_ARGUMENT` ("Issue
   type STORY is not allowed in project OPS"); the gateway refuses it too, but

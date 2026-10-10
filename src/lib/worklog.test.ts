@@ -56,6 +56,11 @@ describe("worklog drafts", () => {
     expect(worklogDraftProblems(draft("1h", "2019-01-01"), today)).toEqual({});
   });
 
+  it("does not refuse a day after today when the entry already holds it", () => {
+    expect(worklogDraftProblems(draft("1h", "2026-10-11"), today, "2026-10-11")).toEqual({});
+    expect(worklogDraftProblems(draft("1h", "2026-10-12"), today, "2026-10-11").workDate).toMatch(/has not come yet/);
+  });
+
   it("refuses a comment past 2000 characters", () => {
     expect(worklogDraftProblems(draft("1h", today, "x".repeat(2001)), today).comment).toMatch(/2000/);
   });

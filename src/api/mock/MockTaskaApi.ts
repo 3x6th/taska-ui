@@ -2244,9 +2244,16 @@ export class MockTaskaStore {
    * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
    * rules its Java states at head `a1bfe19`: a missing project is `NOT_FOUND`,
    * and a reader with no membership row is `PERMISSION_DENIED` — a
-   * `GLOBAL_ADMIN` included, because the check is the membership and nothing
-   * else. Unlike `getProject` in this store, which answers a non-member, this
-   * read keeps the gateway's access rule.
+   * `GLOBAL_ADMIN` included. Unlike `getProject` in this store, which answers a
+   * non-member, this read keeps the gateway's access rule.
+   * At head `a1bfe19` the code intends 200 with empty members and labels (its
+   * TODO says so), but the labels leg's denial arrives from issue-service as a
+   * gRPC `StatusRuntimeException`, which
+   * `ProjectServiceImpl.isPermissionDenied` (it matches only `DomainException`)
+   * does not catch, so the whole context fails `PERMISSION_DENIED` and answers
+   * 403. Removal: when the labels call carries the global role, or
+   * `isPermissionDenied` also matches a gRPC denial, the context answers 200
+   * with empty parts and the mock must follow.
    *
    * `workflows` holds one entry per allowed type (`allowedIssueTypesByProject`),
    * each without timestamps, and the labels carry only `id`, `name` and
@@ -3499,7 +3506,8 @@ export class MockTaskaStore {
       this.currentUserId,
       input.spentMinutes,
       input.workDate,
-      input.comment ?? null,
+      // The server trims the comment and stores a blank one as `null`.
+      input.comment?.trim() || null,
       now(),
     );
     this.pushHistory(issue.id, "WORKLOG_ADDED", this.currentUserId, this.worklogPayload(worklog));
@@ -3539,8 +3547,8 @@ export class MockTaskaStore {
     this.touchIssue(issue);
     if (spentMinutes !== null) worklog.spentMinutes = spentMinutes;
     if (workDate !== null) worklog.workDate = workDate;
-    // `Worklog.update`: a blank comment clears it to `null`.
-    if (comment !== null) worklog.comment = comment.trim() ? comment : null;
+    // `Worklog.update`: the comment is trimmed and a blank one clears it to `null`.
+    if (comment !== null) worklog.comment = comment.trim() || null;
     worklog.updatedAt = now();
     this.pushHistory(issue.id, "WORKLOG_UPDATED", this.currentUserId, this.worklogPayload(worklog));
     return this.worklogView(worklog);
