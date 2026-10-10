@@ -49,6 +49,10 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `getProjectKeyInternal` and answer `INVALID_ARGUMENT`. The UI never offers such
   a type; the mock refuses it as the intended rule (`api-contract-guard`,
   TAS-251, 2026-10-10). File under TAS-210 when TAS-212 lands.
+- **Comment Edit/Delete links are under the 28×28 clickable minimum** (§1, §7):
+  `.comment-actions .link-button` measures about 32×19 in the Comments section.
+  Found by `art-director` on TAS-251, where the Work log copy of it was fixed;
+  the Comments one predates the story.
 - **The build warns about a chunk over 500 kB** — present on TAS-251's builds,
   not attributed to it or to anything earlier yet.
 - ~~**Worklogs and time tracking exist in issue-service and nowhere a browser can
