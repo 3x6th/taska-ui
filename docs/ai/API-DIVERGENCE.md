@@ -150,7 +150,7 @@ is cheaper than splitting an entry and the reader has to be told which.
 - **Removal:** the fix above; there is no backend ask here. The endpoint answers
   `200` on the stand today.
 - **Since TAS-251 the board no longer calls this route.** Its workflows come
-  from `GET /projects/{projectId}/context` (see "Pending backend PR #169" below),
+  from `GET /projects/{projectId}/context` (see "Backend PR #169 (TAS-212), merged" below),
   so a failed workflow is a failed context — said in the board's one banner — and
   the fallback columns are also what a project that allows no issue type gets.
   Neither case offers a move.
@@ -544,13 +544,14 @@ Same rule as above: "Closed by" is settled, the rest is live.
   see there. The compensation and the flag come out under TAS-137 when the route
   answers on the stand, in the five places listed above.
 
-### Pending backend PR #169 (TAS-212): the board's frame in one read, and where the Java says more than the yml
+### Backend PR #169 (TAS-212), merged: the board's frame in one read, and where the Java says more than the yml
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/context` →
-  `ProjectContextResponseDto` `{ project, members, labels, workflows }`, pinned
-  at `docs/contract/pending/pr-169-TAS-212.yml` (head `a1bfe19`). **Open and
-  undeployed on 2026-10-10**: the route answers the gateway's static-resource
-  404 until it deploys.
+  `ProjectContextResponseDto` `{ project, members, labels, workflows }`, in
+  `docs/contract/openapi.yml`. #169 merged unchanged at `a1bfe19` and is in the
+  snapshot at develop `fa90b51`; **deployed on stage 2026-10-12**, probed
+  without a token (401 without one, 400 for a non-uuid id). The response shape
+  has not yet been measured with a token.
 - **What the board does with it (TAS-251):** one `getProjectContext` replaces
   seven reads — `GET /projects/{id}`, the same again for the role
   (`getMembership`), `…/members`, `…/workflow` × 3 and `…/labels`. Measured
@@ -571,21 +572,19 @@ Same rule as above: "Closed by" is settled, the rest is live.
     fails `PERMISSION_DENIED` and answers 403. Removal: when the labels call
     carries the global role, or `isPermissionDenied` also matches a gRPC denial,
     the context answers 200 with empty parts and the mock must follow.
-    The static-resource 404 is told apart by `isUndeployedRoute` and
-    keeps the board with a "not served yet" banner.
   - **A 404 or 403 can also be one avatar.** The members are enriched exactly
     as `…/members` enriches them (`ProjectMemberServiceImpl` at #169): each
     avatar HEADed and presigned per person, no per-row fallback. One missing
     avatar object fails the whole context with 404 and a storage refusal with
-    403 — the statuses of a missing project and of no access. **Compensation:**
-    on a 404/403 the board makes one `getProject` read (no retry); only if that
-    refuses too does §4.18's screen show. If the project reads, the board stays,
-    named from that read, with a banner saying the project's details (people,
-    labels, workflows) could not be read and the request id, editing off.
+    403 — the statuses of a missing project and of no access.
+    **Compensation: none** (AGENTS.md, "No compensations for the backend";
+    the confirming `getProject` read TAS-251 first added was removed on
+    2026-10-12). A context 404/403 goes straight to §4.18's not-found screen,
+    as the server says. **What a user sees:** a project one of whose members
+    has an unreadable avatar object shows as not found, to every member.
     **Backend ask** (comment on TAS-212): an unreadable avatar should come as
     `avatar: null` on its row, not fail the read. Removal: when that ships,
-    delete the confirming read (`projectCheckQuery` in BoardScreen) and send a
-    404/403 straight to §4.18 again.
+    this entry closes; nothing in the frontend changes.
   - `workflows` covers only the project's allowed issue types — fewer than
     three, or `[]` — in no fixed order, and an unknown type arrives as
     `issueType: null`. `rest` keys the entries by type and drops a `null`; the
@@ -610,7 +609,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
   missing project, and **Infra and Ops allows only TASK and BUG**. `createIssue`
   refuses a type the project does not allow with `400 INVALID_ARGUMENT` ("Issue
   type STORY is not allowed in project OPS"). **The server does not**: at
-  develop and #169, issue-service `IssueServiceImpl.createIssue` checks only the
+  develop `fa90b51` (#169 merged), issue-service `IssueServiceImpl.createIssue` checks only the
   role and saves any issueType (201, an issue with no workflow); nothing in
   issue-service reads `allowedIssueTypes`. The mock models the intended rule,
   the UI never offers such a type, and the backend ask is recorded in
@@ -618,10 +617,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
   project reads stay looser than the gateway — `getMembership` still answers
   VIEWER for a non-member — so the read-only e2e cases now sign in as Tom, a
   real VIEWER of Taska Platform and, since TAS-251, of Mobile.
-- **Removal:** when #169 merges, delete the pending extract, refresh the
-  snapshot and probe the route. `getProject` stays on `TaskaApi` for the
-  confirming read above; `getMembership`, `getWorkflow` and `listProjectLabels`
-  stay with no screen calling them, and whether they go is a separate decision.
+- **Removal:** done for the contract — #169 merged, the pending extract is
+  deleted and the snapshot refreshed to develop `fa90b51`; the route answers on
+  stage (2026-10-12, without a token). Still open: measure the shape with a
+  token. `getProject`, `getMembership`, `getWorkflow` and `listProjectLabels`
+  stay on `TaskaApi` with no screen calling them (docs/ai/BACKLOG.md); whether
+  they go is a separate decision.
 
 ### Pending backend PR #172 (TAS-160): the audit log, not served, and three things the Java does that the yml does not say
 

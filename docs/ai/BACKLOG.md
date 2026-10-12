@@ -26,10 +26,10 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 ## Frontend, needs a story when its turn comes
 
 - **Four `TaskaApi` reads no screen calls after TAS-251** — `getMembership`,
-  `getWorkflow`, `listProjectLabels`, and `getProject` outside the board's
-  confirming read on a context 403/404. Kept in mock, rest and hybrid so the
-  switch to `/context` (backend PR #169) stays reversible until it is on the
-  stand; delete once the context has run there for a while (`release-reviewer`,
+  `getWorkflow`, `listProjectLabels` and `getProject` (the board's confirming
+  read on a context 403/404 was removed as a compensation, 2026-10-12). Kept in
+  mock, rest and hybrid so the switch to `/context` (backend #169, merged and
+  deployed 2026-10-12) stays reversible; delete once the context has run there for a while (`release-reviewer`,
   2026-10-10).
 - **`AdminSectionPlaceholder` and its generic route are unused** since TAS-251
   replaced the Audit stand-in. Delete, or keep for the next section — a call
@@ -41,8 +41,8 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   Re-extract and re-read TAS-148's edit dialog against it; the PR also
   conflicts with `develop`.
 - **Backend ask, not filed yet: issue-service creates an issue of a type the
-  project does not allow.** `IssueServiceImpl.createIssue` (develop, and at
-  backend #169) checks only the role and saves any `issueType`; nothing in
+  project does not allow.** `IssueServiceImpl.createIssue` (develop `fa90b51`,
+  with backend #169 merged) checks only the role and saves any `issueType`; nothing in
   issue-service reads `allowedIssueTypes`, which only project-service uses, for
   the context. The result is an issue with no workflow. Service change: read the
   project's allowed types over a project-service rpc beside

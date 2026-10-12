@@ -2493,10 +2493,10 @@ export class MockTaskaStore {
   createIssue(projectId: string, input: CreateIssueInput): Issue {
     const project = this.getProject(projectId);
     // The mock models the *intended* rule, not the server's behaviour: at
-    // develop and backend #169 issue-service `createIssue` checks only the role
+    // develop `fa90b51` (backend #169 merged) issue-service `createIssue` checks only the role
     // and saves any issueType (201, an issue with no workflow). The UI never
     // offers a disallowed type; the backend ask is in docs/ai/BACKLOG.md and
-    // the divergence in docs/ai/API-DIVERGENCE.md ("Pending backend PR #169").
+    // the divergence in docs/ai/API-DIVERGENCE.md ("Backend PR #169 (TAS-212), merged").
     const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
     if (!allowed.includes(input.issueType)) {
       throw new MockApiError(

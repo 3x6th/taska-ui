@@ -34,7 +34,7 @@ import {
 } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
-import { SEARCH_QUERY_MIN_LENGTH, UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
+import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
   ATTACHMENT_ACCEPT_ATTRIBUTE,
@@ -48,7 +48,6 @@ import {
   apiErrorFacts,
   isIssueVersionConflict,
   isMissingOrForbidden,
-  isUndeployedRoute,
   IssueVersionConflictError,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
@@ -485,36 +484,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // workflow are one read, so they are one fact: each name below is that
   // read's answer, kept apart only for what each one switches off.
   const contextUnread = useUnanswered(contextQuery);
-  // The route is not on this gateway yet (backend PR #169 undeployed): the
-  // gateway's static-resource 404, which must not be read as "no such project".
-  const contextUndeployed =
-    contextUnread.unanswered && isUndeployedRoute(contextUnread.error, UNDEPLOYED_ROUTE_MESSAGE);
-  // A 404 or 403 from the context is not yet a statement about the project.
-  // Its members are enriched exactly as `GET /members` enriches them — an
-  // avatar presigned per person, with no per-row fallback (see
-  // `TaskaApi.listMembers`) — so one unreadable avatar object fails the whole
-  // read with 404, and a storage refusal with 403: the very pair a missing or
-  // forbidden project answers with. One plain project read tells the two apart
-  // before §4.18 is allowed to say the project is gone (TAS-251). It is asked
-  // once and never retried: a second opinion that loops is not one.
-  const contextRefused =
-    contextUnread.unanswered && !contextUndeployed && isMissingOrForbidden(contextUnread.error);
-  const projectCheckQuery = useQuery({
-    queryKey: ["project-check", projectId],
-    enabled: contextRefused,
-    queryFn: () => taskaApi.getProject(projectId),
-    retry: false,
-  });
-  const projectCheckUnread = useUnanswered(projectCheckQuery);
-  // Still waiting on the confirming read: neither the board's chrome nor a
-  // banner may claim anything yet, so the columns stay skeletons.
-  const projectChecking = contextRefused && projectCheckQuery.data === undefined && !projectCheckUnread.unanswered;
-  // The project itself is missing or not ours: both reads said so.
-  const projectGone =
-    contextRefused && projectCheckUnread.unanswered && isMissingOrForbidden(projectCheckUnread.error);
-  // The project reads fine, so the context's refusal was about its details —
-  // the people above all — and the board stays with a banner that says so.
-  const contextDetailsUnread = contextRefused && projectCheckQuery.data !== undefined;
+  // A 404 or 403 from the context is the server saying the project is not
+  // there or not ours, and §4.18 says so. The context enriches its members as
+  // `GET /members` does, so one unreadable avatar object fails the whole read
+  // with the same pair; that is a backend bug asked on TAS-212 and recorded in
+  // docs/ai/API-DIVERGENCE.md with no compensation (AGENTS.md, "No
+  // compensations for the backend"): the board does not second-guess it.
+  const projectGone = contextUnread.unanswered && isMissingOrForbidden(contextUnread.error);
   const roleUnread = contextUnread;
   const issuesUnread = useUnanswered(issuesQuery);
   const workflowUnread = contextUnread;
@@ -737,21 +713,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // cleared, and this branch would then hand back the project's own chrome —
   // its name, its filters, its columns — to someone the gateway has already
   // said may not see it, until the answer came back and took it away again.
-  //
-  // Not for a route the gateway has not deployed: that 404 is about the
-  // gateway, not the project, and §4.18 would tell the reader their project is
-  // gone. The board stays and its banner says what is actually missing.
-  //
-  // Nor for a context refusal the plain project read does not confirm
-  // (`projectCheckQuery` above): that one is about the project's details, and
-  // the board stays with its own banner.
   if (projectGone) {
     return <NotFoundScreen />;
   }
-  // The project as far as anything has read it: the context's, or — when the
-  // context was refused over its details — the confirming read's, so the top
-  // bar can still name the project the banner is about.
-  const shownProject = project ?? projectCheckQuery.data;
 
   return (
     <main className="board-shell">
@@ -759,12 +723,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <button className="icon-button" onClick={() => navigate("/projects")} title="Back to projects" type="button">
           <ChevronLeft size={17} />
         </button>
-        {shownProject ? (
-          <span className="key-badge" style={keyBadgeStyle(shownProject.projectKey, shownProject.color)}>
-            {shownProject.projectKey}
+        {project ? (
+          <span className="key-badge" style={keyBadgeStyle(project.projectKey, project.color)}>
+            {project.projectKey}
           </span>
         ) : null}
-        <strong className="board-project-name">{shownProject?.name ?? "Project"}</strong>
+        <strong className="board-project-name">{project?.name ?? "Project"}</strong>
         <span className="muted-label">Board</span>
         {/* Beside the key and the name it edits, and before the spacer so it
             stays with them on the row they wrap onto below 820 (§4.13). Not in
@@ -977,7 +941,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           the two event notices below are both cleared when a drag starts, and
           one drag raises at most one of them — but the cap is what makes the
           count stop mattering. */}
-      {(contextUnread.unanswered && !projectChecking) ||
+      {contextUnread.unanswered ||
       roleUnstated ||
       issuesUnknown ||
       transitionIssue.isError ||
@@ -992,17 +956,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               together or not at all, so they fail together and are said
               together — three banners for one failure would be three claims
               about three reads that no longer exist. */}
-          {contextUndeployed ? (
-            <ApiNotice error={contextUnread.error}>
-              This gateway does not serve the project read yet, so the project&apos;s name, people, labels and workflow
-              are missing and editing is off.
-            </ApiNotice>
-          ) : contextDetailsUnread ? (
-            <ApiNotice error={contextUnread.error}>
-              This project&apos;s details — its people, labels and workflows — could not be read, so editing is off.
-              The project itself is there; this is a failed read, not a read-only project.
-            </ApiNotice>
-          ) : contextUnread.unanswered && !projectChecking ? (
+          {contextUnread.unanswered ? (
             <ApiNotice error={contextUnread.error}>
               This project could not be loaded, so its name, people, labels and workflow are missing and editing is off
               — a failed read, not a read-only project.
@@ -1044,7 +998,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           {/* A read that has already failed goes back to `isLoading` on every
               retry, so without the first clause the columns explained by the
               banner above would swap themselves for skeletons on a timer. */}
-          {!issuesUnknown && (contextQuery.isLoading || issuesQuery.isLoading || projectChecking)
+          {!issuesUnknown && (contextQuery.isLoading || issuesQuery.isLoading)
             ? statuses.map((status) => <ColumnSkeleton key={status.statusKey} status={status} />)
             : statuses.map((status) => (
                 <BoardColumn

@@ -257,7 +257,7 @@ const {
     membersHeld: boolean;
     /** Every member read that went out, answered or not, so a retried read can be told from a single one. */
     membersReads: number;
-    /** Every plain `GET /projects/{id}` that went out — the board's confirming read after a refused context. */
+    /** Every plain `GET /projects/{id}` that went out — none since the board reads its frame from the context. */
     projectReads: number;
     /**
      * The watchers section. `watchers` and `watchersTotal` are held apart
@@ -2041,42 +2041,11 @@ describe("a project that allows fewer issue types", () => {
 });
 
 /**
- * Until backend PR #169 deploys, the context route answers the gateway's
- * static-resource 404. That is about the gateway, not the project, so §4.18's
- * "not found" would be a false statement (TAS-251).
- */
-describe("a gateway that does not serve the context read yet", () => {
-  beforeEach(() => {
-    reset();
-    window.localStorage.clear();
-  });
-
-  it("stays on the board and says the read is not deployed, rather than that the project is gone", async () => {
-    failProject(
-      Object.assign(new Error("No static resource api/v1/projects/x/context."), { status: 404, code: "NOT_FOUND" }),
-    );
-    renderBoard();
-
-    const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
-    expect(alert).toHaveTextContent(/does not serve the project read yet/i);
-    expect(screen.queryByRole("heading", { name: /not found/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
-  });
-
-  it("still shows the not-found screen for a project the gateway says is missing", async () => {
-    failProject(Object.assign(new Error("Project not found"), { status: 404, code: "NOT_FOUND" }));
-    renderBoard();
-
-    expect(await screen.findByRole("heading", { name: /not found/i }, AFTER_RETRY)).toBeVisible();
-  });
-});
-
-/**
- * The context's members are enriched as `GET /members` enriches them, so one
- * unreadable avatar object fails the whole read with 404 — or 403 for a storage
- * refusal — the pair a missing or forbidden project answers with as well. One
- * plain project read decides which it was (TAS-251; `failMembers` fails the
- * context alone, `failProject` fails both reads).
+ * A context 403 or 404 goes to §4.18's screen exactly as the server says it
+ * (TAS-251). The context's member enrichment can fail the same way for one
+ * unreadable avatar object; that is a backend bug asked on TAS-212 and left
+ * uncompensated (AGENTS.md, "No compensations for the backend"), so the board
+ * asks no second read to tell the two apart.
  */
 describe("a context read refused with 404 or 403", () => {
   beforeEach(() => {
@@ -2088,42 +2057,23 @@ describe("a context read refused with 404 or 403", () => {
     [404, "NOT_FOUND"],
     [403, "PERMISSION_DENIED"],
   ] as const) {
-    it(`stays on the board with a banner when the project itself reads fine (${status})`, async () => {
-      failMembers(Object.assign(new Error("Refused"), { status, code, requestId: "9d1e4f20-77ab" }));
-      const queryClient = renderBoard();
-
-      const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
-      expect(alert).toHaveTextContent(/details — its people, labels and workflows — could not be read/i);
-      expect(screen.getByRole("button", { name: /Copy request id 9d1e4f20-77ab/ })).toBeVisible();
-      expect(screen.queryByRole("heading", { name: /not found/i })).not.toBeInTheDocument();
-      // Named from the confirming read, and still not writable: no role came back.
-      expect(screen.getByText("Taska Platform")).toBeVisible();
-      expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
-
-      // Each read went out once: no retry of the refusal, no loop on the check.
-      expect(memberReads()).toBe(1);
-      expect(projectReads()).toBe(1);
-      expect(queryClient.getQueryState(["project-check", PROJECT_ID])).toMatchObject({
-        status: "success",
-        fetchStatus: "idle",
-      });
-    });
-
-    it(`shows the not-found screen when the project read refuses as well (${status})`, async () => {
-      failProject(Object.assign(new Error("Refused"), { status, code }));
+    it(`shows the not-found screen and reads nothing else about the project (${status})`, async () => {
+      failMembers(Object.assign(new Error("Refused"), { status, code }));
       renderBoard();
 
       expect(await screen.findByRole("heading", { name: /not found/i }, AFTER_RETRY)).toBeVisible();
+      // The refusal is not retried, and no project read second-guesses it.
       expect(memberReads()).toBe(1);
-      expect(projectReads()).toBe(1);
+      expect(projectReads()).toBe(0);
     });
   }
 
-  it("does not ask the project for a confirmation it does not need", async () => {
+  it("keeps the board with a banner for a failure that is not a refusal", async () => {
     failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
     renderBoard();
 
     expect(await screen.findByRole("alert", undefined, AFTER_RETRY)).toHaveTextContent(/could not be loaded/i);
+    expect(screen.queryByRole("heading", { name: /not found/i })).not.toBeInTheDocument();
     expect(projectReads()).toBe(0);
   });
 });

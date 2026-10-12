@@ -604,11 +604,11 @@ export interface TaskaApi {
    * `GET /projects/{projectId}` — the project alone, membership-checked (a
    * non-member is a 403, a missing project a 404).
    *
-   * Since TAS-251 the board's frame comes from `getProjectContext`, and this
-   * read is the board's second opinion on that one: when the context answers
-   * 404 or 403 the board asks this once, because the context's member
-   * enrichment can produce the same two statuses for one unreadable avatar
-   * object. Only a refusal here as well sends the reader to §4.18's screen.
+   * Since TAS-251 the board's frame comes from `getProjectContext`, and no
+   * screen calls this. It no longer second-guesses a context 404/403 either:
+   * that was a compensation for the context's avatar failure and came out
+   * under AGENTS.md's "No compensations for the backend". Kept for
+   * reversibility (docs/ai/BACKLOG.md).
    */
   getProject(projectId: string): Promise<Project>;
   /**
@@ -648,16 +648,15 @@ export interface TaskaApi {
   /**
    * `GET /projects/{projectId}/context` — the project, the reader's role in it,
    * its members, its labels and the workflow of every issue type it allows, in
-   * one read (backend PR #169, TAS-212, pinned at
-   * `docs/contract/pending/pr-169-TAS-212.yml`). The board's only frame read
-   * since TAS-251; see `ProjectContext` for the shape.
+   * one read (backend PR #169, TAS-212, in `docs/contract/openapi.yml`). The
+   * board's only frame read since TAS-251; see `ProjectContext` for the shape.
    *
-   * **Open and undeployed on 2026-10-10.** Until it deploys the gateway answers
-   * the static-resource 404, which `isUndeployedRoute` tells apart from a
-   * missing project. `HybridTaskaApi` delegates straight to the gateway.
+   * **Merged at develop `fa90b51` and deployed on stage 2026-10-12** (probed
+   * without a token; the shape is not yet measured with one). `HybridTaskaApi`
+   * delegates straight to the gateway.
    *
-   * What the Java at the PR head does that the yml does not say, and every
-   * implementation reproduces:
+   * What the Java does that the yml does not say, and every implementation
+   * reproduces:
    *
    * - **All or nothing.** Any part failing fails the whole response; there is no
    *   degraded context.
@@ -676,11 +675,12 @@ export interface TaskaApi {
    *   exactly as `listMembers` enriches them (`ProjectMemberServiceImpl` at
    *   #169): every avatar is HEADed and presigned per person with no per-row
    *   fallback, so one missing avatar object answers 404 and a storage refusal
-   *   403 — the statuses of a missing project and of no access. The board
-   *   therefore confirms a 404/403 with one `getProject` read before it shows
-   *   §4.18's screen, and otherwise stays with a banner about the project's
-   *   details. The backend ask — an unreadable avatar as `avatar: null` rather
-   *   than a failed read — is a comment on TAS-212 (docs/ai/API-DIVERGENCE.md).
+   *   403 — the statuses of a missing project and of no access. There is no
+   *   compensation: the board takes a 404/403 as the server states it and
+   *   shows §4.18's screen, so a project with one unreadable avatar shows as
+   *   not found. The backend ask — an unreadable avatar as `avatar: null`
+   *   rather than a failed read — is a comment on TAS-212
+   *   (docs/ai/API-DIVERGENCE.md).
    * - **Only the allowed issue types.** `workflows` may hold fewer than three
    *   entries, or none, in no fixed order; an entry with an issue type this
    *   build does not know arrives as `issueType: null` and is dropped.

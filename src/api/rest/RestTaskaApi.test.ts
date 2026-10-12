@@ -348,7 +348,7 @@ describe("RestTaskaApi project members", () => {
   });
 
   /**
-   * `GET /projects/{projectId}/context` (backend PR #169, TAS-212) — the board's
+   * `GET /projects/{projectId}/context` (backend #169, TAS-212, merged) — the board's
    * one frame read since TAS-251. Each part goes through its own route's mapper.
    */
   describe("the project context", () => {
@@ -418,18 +418,6 @@ describe("RestTaskaApi project members", () => {
         (api) => api.getProjectContext("project-1"),
       );
       expect(result.role).toBeNull();
-    });
-
-    it("reads the gateway's static-resource 404 as an undeployed route, not as a missing project", async () => {
-      window.localStorage.setItem("taska.accessToken", "valid-access");
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () =>
-          answer(404, { code: "NOT_FOUND", message: "No static resource api/v1/projects/project-1/context." }),
-        ),
-      );
-      const error = await new RestTaskaApi().getProjectContext("project-1").catch((caught: unknown) => caught);
-      expect(isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
     });
   });
 

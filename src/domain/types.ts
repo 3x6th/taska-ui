@@ -365,7 +365,7 @@ export interface ProjectMember {
   role: ProjectRole | null;
   /**
    * Both optional. `addedAt` joins `ProjectMemberDetailsDto` with backend
-   * PR #169 (TAS-212, open on 2026-10-10), and `rest` reads it where the row
+   * PR #169 (TAS-212, merged at develop `fa90b51`), and `rest` reads it where the row
    * carries it; `addedBy` is on no read. The mock fills both, as seed data and
    * on the rows its own adds create — `HybridTaskaApi` also invented them from
    * the project's own `createdAt`/`createdBy` until TAS-224 — and nothing
@@ -442,7 +442,7 @@ export interface Workflow {
 /**
  * A workflow as the project context carries it. The workflow itself does carry
  * `createdAt` and `updatedAt` on the wire; its statuses and transitions are
- * built without timestamps (the assembler at backend PR #169's head, `a1bfe19`;
+ * built without timestamps (the assembler in backend PR #169, merged at `a1bfe19`;
  * the Java wins over the yml, docs/ai/API-DIVERGENCE.md, TAS-251). Nothing on
  * the board reads the workflow's own timestamps, so the type leaves them out
  * and the mapper does not copy them.
@@ -451,7 +451,7 @@ export type ProjectWorkflow = Omit<Workflow, "createdAt" | "updatedAt">;
 
 /**
  * `GET /projects/{projectId}/context` — `ProjectContextResponseDto`, backend
- * PR #169 (TAS-212), pinned at `docs/contract/pending/pr-169-TAS-212.yml`: the
+ * PR #169 (TAS-212), in `docs/contract/openapi.yml` (develop `fa90b51`): the
  * board's whole frame in one read, where it used to take seven (the project,
  * the project again for the role, the members, a workflow per issue type and
  * the labels).
