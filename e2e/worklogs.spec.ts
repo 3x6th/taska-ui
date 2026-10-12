@@ -4,7 +4,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 // VITE_TASKA_API_MODE=mock): any seeded user signs in with any password.
 //
 // **Nothing below is evidence about the gateway.** The worklog routes are on
-// backend PR #178 (TAS-118), open and undeployed on 2026-10-10, and every
+// backend PR #178 (TAS-118), merged at 405b5fe and deployed 2026-10-12, and every
 // answer this file reacts to comes from `MockTaskaStore`, which reproduces the
 // Java at the PR's head (docs/ai/API-DIVERGENCE.md). Read these as pinning
 // what the UI does with such answers.

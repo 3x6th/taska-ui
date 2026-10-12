@@ -54,11 +54,9 @@ export function addDays(day: DateOnly, days: number): DateOnly {
  * The list in the order the section draws it: newest day first, and within a
  * day the entry logged last first.
  *
- * The server orders by `work_date DESC` and nothing else
- * (`WorklogRepository.findActiveByIssueId`), so two entries on one day arrive
- * in whatever order Postgres hands them back and may swap between two reads.
- * `createdAt` is the tiebreak the server does not apply, and the id the one
- * after it, so the order is total and a re-read never reshuffles the rows.
+ * The server orders by `work_date DESC, created_at DESC`; the id is the
+ * tiebreak after those, so the order is total even for equal timestamps, and
+ * a local insert or a re-read never reshuffles the rows.
  */
 export function sortWorklogs(worklogs: readonly IssueWorklog[]): IssueWorklog[] {
   return [...worklogs].sort((a, b) => {

@@ -3543,15 +3543,17 @@ export class MockTaskaStore {
    * `GET …/worklogs`, as `WorklogServiceImpl.listIssueWorklog` does it at
    * backend PR #178's head: the issue first (404), then the role
    * (`list-worklog-roles: ADMIN,MEMBER,VIEWER`), then the rows by `work_date`
-   * descending — with no tiebreak, so entries of one day come in the order
-   * they were stored here and in no stated order on the server.
+   * descending and `created_at` descending (merged, deployed 2026-10-12).
    */
   listIssueWorklogs(projectId: string, issueId: string): IssueWorklog[] {
     const issue = this.findIssue(projectId, issueId);
     this.requireWorklogRole(projectId, ["ADMIN", "MEMBER", "VIEWER"]);
     return this.worklogs
       .filter((item) => item.issueId === issue.id && item.deletedAt === null)
-      .sort((a, b) => (a.workDate === b.workDate ? 0 : a.workDate < b.workDate ? 1 : -1))
+      .sort((a, b) => {
+        if (a.workDate !== b.workDate) return a.workDate < b.workDate ? 1 : -1;
+        return a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? 1 : -1;
+      })
       .map((item) => this.worklogView(item));
   }
 
@@ -3595,8 +3597,8 @@ export class MockTaskaStore {
    * `PUT …/worklogs/{worklogId}`, a partial update: the body (an empty one is
    * `400`), the issue, the worklog, that the worklog is this issue's (`404`
    * otherwise), then the role — `update-worklog-roles: ADMIN,MEMBER` for your
-   * own entry, `manage-worklog-roles: ADMIN` for anybody else's. No
-   * `maxLength` on this comment: the server stores `text`.
+   * own entry, `manage-worklog-roles: ADMIN` for anybody else's. The gateway
+   * enforces `maxLength: 2000` on this comment (`400 INVALID_ARGUMENT`).
    *
    * The issue's version goes up whatever changed; its remaining estimate moves
    * by the difference only when `spentMinutes` was sent
@@ -3613,6 +3615,9 @@ export class MockTaskaStore {
     if (workDate !== null) {
       if (!isDateOnly(workDate)) throw new MockApiError("INVALID_ARGUMENT", "WorkDate is not a date");
       this.refuseFutureWorkDate(workDate);
+    }
+    if (typeof input.comment === "string" && input.comment.length > WORKLOG_COMMENT_MAX_LENGTH) {
+      throw new MockApiError("INVALID_ARGUMENT", `comment: size must be between 0 and ${WORKLOG_COMMENT_MAX_LENGTH}`);
     }
     const issue = this.findIssue(projectId, issueId);
     const worklog = this.worklogOfIssue(issue, worklogId);

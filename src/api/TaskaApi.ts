@@ -1348,8 +1348,8 @@ export interface TaskaApi {
 
   /**
    * The four worklog routes, `/projects/{projectId}/issues/{issueId}/worklogs`
-   * (backend PR #178, TAS-118 — **pending and undeployed**: until it deploys
-   * every one of them answers the gateway's static-resource 404, which
+   * (backend PR #178, TAS-118 — merged at 405b5fe, deployed 2026-10-12; a
+   * gateway that does not serve them yet answers the gateway's static-resource 404, which
    * `isUndeployedRoute` tells apart from a real 404).
    *
    * Roles, from issue-service's `issue.allowed-roles` at the PR head: the list

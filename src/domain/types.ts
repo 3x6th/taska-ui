@@ -816,7 +816,7 @@ export type IssueEventType =
   | "ATTACHMENT_DELETED"
   /**
    * The three the worklog routes write (backend PR #178, `WorklogExecutor`,
-   * head `f57e7ec`), each inside the same transaction as the write. The added
+   * merged at 405b5fe), each inside the same transaction as the write. The added
    * and updated payloads carry `worklogSpentMinutes`; the deleted one does not.
    */
   | "WORKLOG_ADDED"
@@ -1157,8 +1157,8 @@ export interface UnwatchIssueResult {
 }
 
 /**
- * `IssueWorklogResponseDto` (backend PR #178, TAS-118 — pending, see
- * docs/contract/pending/pr-178-TAS-118.yml). Time somebody spent on an issue.
+ * `IssueWorklogResponseDto` (backend PR #178, TAS-118 — merged at 405b5fe, see
+ * docs/contract/openapi.yml). Time somebody spent on an issue.
  *
  * It names its author by id only: no route carries the author's name, so the
  * panel joins it with the project context's members (`personFor`), and an id

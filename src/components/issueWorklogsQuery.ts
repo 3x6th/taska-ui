@@ -12,8 +12,8 @@ export const issueWorklogsKey = (projectId: string, issueId: string) => ["worklo
  * section that draws it.
  *
  * No retry for the two answers that will not change on a second asking: the
- * gateway not serving the route yet (the static-resource 404, until #178
- * deploys) and a refusal. Everything else keeps the app's one retry.
+ * gateway not serving the route yet (the static-resource 404 of a gateway
+ * that predates #178) and a refusal. Everything else keeps the app's one retry.
  */
 export function issueWorklogsOptions(projectId: string, issueId: string) {
   return queryOptions({

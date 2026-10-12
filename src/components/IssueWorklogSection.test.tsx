@@ -8,7 +8,7 @@ import { IssueWorklogSection } from "./IssueWorklogSection";
 /**
  * What the section does with answers the mock never gives: a write the server
  * refuses (the optimistic row has to go back), and the gateway's
- * static-resource 404 while backend PR #178 is undeployed.
+ * static-resource 404 of a gateway that does not serve the route.
  */
 const PROJECT = "p-1";
 const ISSUE = "i-1";
