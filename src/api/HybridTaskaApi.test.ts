@@ -35,6 +35,22 @@ describe("HybridTaskaApi", () => {
     expect(getWorkflow).toHaveBeenCalledWith(project.id, undefined);
   });
 
+  it("delegates the board's context read to live, and asks nothing else", async () => {
+    const live = liveApi();
+    const getProjectContext = vi.spyOn(live, "getProjectContext");
+    const getProject = vi.spyOn(live, "getProject");
+    const listMembers = vi.spyOn(live, "listMembers");
+
+    const hybrid = new HybridTaskaApi(live);
+    const [project] = await hybrid.listProjects();
+    const context = await hybrid.getProjectContext(project.id);
+
+    expect(getProjectContext).toHaveBeenCalledWith(project.id);
+    expect(context.project.id).toBe(project.id);
+    expect(getProject).not.toHaveBeenCalled();
+    expect(listMembers).not.toHaveBeenCalled();
+  });
+
   it("delegates the panel's detail read and the key lookup to live", async () => {
     const live = liveApi();
     const getIssue = vi.spyOn(live, "getIssue");
@@ -46,6 +62,30 @@ describe("HybridTaskaApi", () => {
 
     expect(getIssueByKey).toHaveBeenCalledWith("TAS-101");
     expect(getIssue).toHaveBeenCalledWith(issue.projectId, issue.id);
+  });
+
+  it("delegates the four worklog routes to live, rejections included", async () => {
+    const live = liveApi();
+    const list = vi.spyOn(live, "listIssueWorklogs");
+    const add = vi.spyOn(live, "addIssueWorklog");
+    const update = vi.spyOn(live, "updateIssueWorklog");
+    const remove = vi.spyOn(live, "deleteIssueWorklog");
+
+    const hybrid = new HybridTaskaApi(live);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const issue = await hybrid.getIssueByKey("TAS-101");
+    await hybrid.listIssueWorklogs(issue.projectId, issue.id);
+    const added = await hybrid.addIssueWorklog(issue.projectId, issue.id, { spentMinutes: 30, workDate: "2026-06-14" });
+    await hybrid.updateIssueWorklog(issue.projectId, issue.id, added.id, { comment: "" });
+    await expect(hybrid.updateIssueWorklog(issue.projectId, issue.id, added.id, {})).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+    });
+    await hybrid.deleteIssueWorklog(issue.projectId, issue.id, added.id);
+
+    expect(list).toHaveBeenCalledWith(issue.projectId, issue.id);
+    expect(add).toHaveBeenCalledWith(issue.projectId, issue.id, { spentMinutes: 30, workDate: "2026-06-14" });
+    expect(update).toHaveBeenCalledWith(issue.projectId, issue.id, added.id, { comment: "" });
+    expect(remove).toHaveBeenCalledWith(issue.projectId, issue.id, added.id);
   });
 
   /**
@@ -261,6 +301,19 @@ describe("HybridTaskaApi", () => {
     expect((failure as Error).message).toMatch(/concurrently modified/);
   });
 
+  it("passes the audit log read straight to the live api, refusals included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live);
+    const listAuditEntries = vi.spyOn(live, "listAuditEntries");
+
+    // Anna is not a GLOBAL_ADMIN: the refusal is the live api's, unchanged.
+    await expect(hybrid.listAuditEntries({ action: "BLOCK_USER" })).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(listAuditEntries).toHaveBeenCalledWith({ action: "BLOCK_USER" });
+
+    await live.login({ email: "mark@example.com", password: "anything" });
+    await expect(hybrid.listAuditEntries({ page: 2 })).resolves.toEqual(await live.listAuditEntries({ page: 2 }));
+  });
+
   /**
    * The three admin user writes. A compensation for a write is a report of a
    * change that never happened, so each one goes straight down and the refusal
@@ -354,6 +407,9 @@ describe("HybridTaskaApi", () => {
       "issueKey",
       "issueType",
       "priority",
+      "projectId",
+      "projectKey",
+      "statusKey",
       "storyPoints",
       "summary",
     ]);

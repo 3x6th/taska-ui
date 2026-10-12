@@ -74,6 +74,7 @@ const {
   failMembers,
   holdMembers,
   memberReads,
+  projectReads,
   seedWatchers,
   failWatchersRead,
   holdWatchersRead,
@@ -94,6 +95,7 @@ const {
   seedSummaries,
   seedWatcherNames,
   seedLinks,
+  seedIssueTypes,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -142,6 +144,8 @@ const {
     membershipHeld: boolean;
     projectFailure?: Error;
     projectHeld: boolean;
+    /** The issue types the project allows — the types its context sends a workflow for. */
+    issueTypes: ("TASK" | "BUG" | "STORY")[];
     issuesFailure?: Error;
     workflowFailure?: Error;
     labels: { id: string; name: string; color: string }[];
@@ -253,6 +257,8 @@ const {
     membersHeld: boolean;
     /** Every member read that went out, answered or not, so a retried read can be told from a single one. */
     membersReads: number;
+    /** Every plain `GET /projects/{id}` that went out — none since the board reads its frame from the context. */
+    projectReads: number;
     /**
      * The watchers section. `watchers` and `watchersTotal` are held apart
      * deliberately: the whole point of the count is that it is a field the
@@ -318,6 +324,7 @@ const {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
     projectHeld: false,
+    issueTypes: ["TASK", "BUG", "STORY"],
     labels: [],
     labelCreateHeld: false,
     searchHits: [],
@@ -351,6 +358,7 @@ const {
     deleteReleases: [],
     membersHeld: false,
     membersReads: 0,
+    projectReads: 0,
     watchers: [],
     watchersTotal: null,
     watchersCountAfterWrite: null,
@@ -425,6 +433,7 @@ const {
       status: "ACTIVE" as const,
     }),
     getProject: async (projectId: string) => {
+      state.projectReads += 1;
       if (state.projectHeld) return new Promise(() => {});
       if (state.projectFailure) throw state.projectFailure;
       return {
@@ -435,6 +444,39 @@ const {
         createdAt: now,
         updatedAt: now,
         archivedAt: null,
+      };
+    },
+    // The board's one frame read since TAS-251, composed from the same state
+    // the five separate reads below were. All or nothing, as on the server: a
+    // failure or a hold of any part is a failure or a hold of the whole, so
+    // each knob these tests turn now turns the one read.
+    getProjectContext: async (projectId: string) => {
+      state.membersReads += 1;
+      if (state.projectHeld || state.membershipHeld || state.membersHeld) return new Promise(() => {});
+      const failure = state.projectFailure ?? state.membershipFailure ?? state.membersFailure ?? state.workflowFailure;
+      if (failure) throw failure;
+      const workflow = {
+        id: "workflow",
+        name: "Default",
+        version: 1,
+        statuses: [{ id: "s1", statusKey: "TODO" as const, name: "To Do", category: "TODO" as const, sortOrder: 10 }],
+        transitions: [],
+      };
+      return {
+        project: {
+          id: projectId,
+          projectKey: "TAS",
+          name: "Taska Platform",
+          createdBy: "user-anna",
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          currentUserRole: state.membership.role,
+        },
+        role: state.membership.role,
+        members: state.members,
+        labels: state.labels,
+        workflows: Object.fromEntries(state.issueTypes.map((issueType) => [issueType, workflow])),
       };
     },
     getMembership: async () => {
@@ -535,8 +577,8 @@ const {
       state.searchTotal = Math.max(0, state.searchTotal - 1);
       return answer();
     },
-    // The search route answers with the short DTO — six fields, no status and
-    // no projectId — so the fixture cannot accidentally hand the board an issue
+    // The search route answers with the short DTO — no labels, no dates, no
+    // version — so the fixture cannot accidentally hand the board an issue
     // where the gateway would hand it a hit.
     searchIssues: async () => {
       if (state.searchFailure) throw state.searchFailure;
@@ -767,6 +809,9 @@ const {
       if (state.deleteFailure) throw state.deleteFailure;
       state.deleted_attachments.push(attachmentId);
     },
+    // The work log section (TAS-251) reads its own list; these cases are not
+    // about it, so it answers with none.
+    listIssueWorklogs: async () => [],
     listComments: async () => {
       state.sectionReads.comments += 1;
       if (state.commentsFailure) throw state.commentsFailure;
@@ -883,6 +928,7 @@ const {
       state.membersHeld = held;
     },
     memberReads: () => state.membersReads,
+    projectReads: () => state.projectReads,
     /** The list read's two answers, stated apart so a test can make them disagree. */
     seedWatchers: (watchers: typeof state.watchers, totalCount: number | null, countAfterWrite: number | null = null) => {
       state.watchers = watchers;
@@ -998,7 +1044,11 @@ const {
     seedLinks: (links: unknown[]) => {
       state.links = links;
     },
+    seedIssueTypes: (issueTypes: typeof state.issueTypes) => {
+      state.issueTypes = issueTypes;
+    },
     reset: () => {
+      state.issueTypes = ["TASK", "BUG", "STORY"];
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
       state.membershipHeld = false;
@@ -1052,6 +1102,7 @@ const {
       state.membersFailure = undefined;
       state.membersHeld = false;
       state.membersReads = 0;
+      state.projectReads = 0;
       state.watchers = [];
       state.watchersTotal = null;
       state.watchersCountAfterWrite = null;
@@ -1131,7 +1182,8 @@ function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
  */
 const AFTER_RETRY = { timeout: 3000 };
 
-const membershipKey = ["membership", PROJECT_ID];
+/** The board's one frame read since TAS-251: project, role, members, labels and workflows. */
+const membershipKey = ["project-context", PROJECT_ID];
 
 describe("board failures the user can see", () => {
   beforeEach(() => {
@@ -1144,7 +1196,8 @@ describe("board failures the user can see", () => {
     renderBoard();
 
     const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
-    expect(alert).toHaveTextContent(/role could not be loaded/i);
+    expect(alert).toHaveTextContent(/project could not be loaded/i);
+    expect(alert).toHaveTextContent(/editing is off/i);
     // The gateway's own words and the id that finds this failure in its log sit
     // beside the sentence, not inside its live region: `role="alert"` is
     // assertive and atomic, and a screen reader should not be interrupted to
@@ -1174,7 +1227,7 @@ describe("board failures the user can see", () => {
     await waitFor(() => expect(queryClient.getQueryState(membershipKey)?.status).toBe("pending"));
     expect(queryClient.getQueryState(membershipKey)?.error).toBeNull();
 
-    expect(screen.getByRole("alert")).toHaveTextContent(/role could not be loaded/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/project could not be loaded/i);
     expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
     // And the gateway's words are kept across the gap, so the banner does not
     // shrink and grow while the request is in flight.
@@ -1256,7 +1309,7 @@ describe("board failures the user can see", () => {
     renderBoard();
 
     const alerts = await screen.findAllByRole("alert", undefined, AFTER_RETRY);
-    const projectAlert = alerts.find((alert) => /details could not be loaded/i.test(alert.textContent ?? ""));
+    const projectAlert = alerts.find((alert) => /project could not be loaded/i.test(alert.textContent ?? ""));
     expect(projectAlert).toBeDefined();
     expect(screen.getByRole("button", { name: /Copy request id c85c0694-7909-4a8a/ })).toBeVisible();
     // The fallback title is still there — the banner is what stops it reading
@@ -1281,8 +1334,8 @@ describe("board failures the user can see", () => {
     await screen.findByRole("heading", { name: /not found/i }, AFTER_RETRY);
 
     holdProject(true);
-    void queryClient.refetchQueries({ queryKey: ["project", PROJECT_ID] });
-    await waitFor(() => expect(queryClient.getQueryState(["project", PROJECT_ID])?.status).toBe("pending"));
+    void queryClient.refetchQueries({ queryKey: membershipKey });
+    await waitFor(() => expect(queryClient.getQueryState(membershipKey)?.status).toBe("pending"));
 
     expect(screen.getByRole("heading", { name: /not found/i })).toBeVisible();
     expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument();
@@ -1398,8 +1451,8 @@ describe("the board's search and the server's", () => {
 
     const group = await screen.findByRole("region", { name: "Other matches from the server" });
     expect(await within(group).findByText("TAS-900")).toBeVisible();
-    // A hit has no status, so no column may claim it — placing one would be a
-    // statement the server never made.
+    // A hit is not an issue, so no column may claim it (DESIGN.md §5.2) — even
+    // since TAS-218 gave it a status key.
     expect(within(screen.getByRole("region", { name: "To Do column" })).queryByText("TAS-900")).not.toBeInTheDocument();
     // And the group says what it is rather than appearing unexplained.
     expect(within(group).getByText(/matches in descriptions/i)).toBeVisible();
@@ -1918,7 +1971,9 @@ describe("a board that could not read its workflow", () => {
     renderBoard();
 
     const alerts = await screen.findAllByRole("alert", undefined, AFTER_RETRY);
-    expect(alerts.some((alert) => /workflow could not be loaded/i.test(alert.textContent ?? ""))).toBe(true);
+    // One banner since TAS-251: the workflow is a part of the context read, and
+    // a part failing fails the whole of it on the server.
+    expect(alerts.some((alert) => /labels and workflow are missing/i.test(alert.textContent ?? ""))).toBe(true);
     expect(screen.getByRole("button", { name: /Copy request id 0b41d8a2-77c4-4a1f/ })).toBeVisible();
 
     // The board is still a board: three contract statuses, and the issue in the
@@ -1932,6 +1987,95 @@ describe("a board that could not read its workflow", () => {
   // the panel's transition buttons — are in e2e/board-drag.spec.ts: both need a
   // real drag or the whole issue panel, and both are only meaningful against an
   // API that would accept the invented id, which the mock does.
+});
+
+/**
+ * The context lists a workflow only for the issue types the project allows
+ * (backend TAS-212), so a type can be missing — or every type can (TAS-251).
+ */
+describe("a project that allows fewer issue types", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("offers only the allowed types in the filter and in the create form", async () => {
+    seedIssueTypes(["BUG", "TASK"]);
+    renderBoard();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+    // The type filter's segmented row — the first "All"; the second is the assignee filter's.
+    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
+    // In the board's order, whatever order the server listed them in.
+    expect(within(filter).getAllByRole("button").map((button) => button.textContent)).toEqual(["All", "Task", "Bug"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const dialog = await screen.findByRole("dialog");
+    // By text: the row sits inside a `<label>`, which names its first button "Type".
+    const types = within(dialog).getByText("Task").parentElement as HTMLElement;
+    expect(within(types).getAllByRole("button").map((button) => button.textContent)).toEqual(["Task", "Bug"]);
+    expect(within(types).getByText("Task")).toHaveClass("is-active");
+  });
+
+  it("says why an issue of a type the project no longer allows offers no move", async () => {
+    seedIssueTypes(["BUG"]);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    expect(await within(panel).findByText(/no workflow for task issues/i)).toBeVisible();
+    expect(within(panel).queryByText(/could not be loaded, so no move/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps its columns and switches creating off when the project allows no type at all", async () => {
+    seedIssueTypes([]);
+    renderBoard();
+
+    // The fallback's three contract statuses, so the issues still have a place.
+    expect(await screen.findByRole("region", { name: "To Do column" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Done column" })).toBeVisible();
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "To Do column" })).getByText(/TAS-102/)).toBeVisible());
+    expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+    // Nothing failed, so nothing says it did.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * A context 403 or 404 goes to §4.18's screen exactly as the server says it
+ * (TAS-251). The context's member enrichment can fail the same way for one
+ * unreadable avatar object; that is a backend bug asked on TAS-212 and left
+ * uncompensated (AGENTS.md, "No compensations for the backend"), so the board
+ * asks no second read to tell the two apart.
+ */
+describe("a context read refused with 404 or 403", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  for (const [status, code] of [
+    [404, "NOT_FOUND"],
+    [403, "PERMISSION_DENIED"],
+  ] as const) {
+    it(`shows the not-found screen and reads nothing else about the project (${status})`, async () => {
+      failMembers(Object.assign(new Error("Refused"), { status, code }));
+      renderBoard();
+
+      expect(await screen.findByRole("heading", { name: /not found/i }, AFTER_RETRY)).toBeVisible();
+      // The refusal is not retried, and no project read second-guesses it.
+      expect(memberReads()).toBe(1);
+      expect(projectReads()).toBe(0);
+    });
+  }
+
+  it("keeps the board with a banner for a failure that is not a refusal", async () => {
+    failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
+    renderBoard();
+
+    expect(await screen.findByRole("alert", undefined, AFTER_RETRY)).toHaveTextContent(/could not be loaded/i);
+    expect(screen.queryByRole("heading", { name: /not found/i })).not.toBeInTheDocument();
+    expect(projectReads()).toBe(0);
+  });
 });
 
 // §5.7: a VIEWER gets no drag. The first attempt left `useDraggable`'s
@@ -3352,7 +3496,7 @@ describe("issue watchers", () => {
 
     // Past the retry, so this is the failed state and not the in-flight one
     // that happens to look the same.
-    await screen.findByText(/role could not be loaded/i, undefined, AFTER_RETRY);
+    await screen.findByText(/project could not be loaded/i, undefined, AFTER_RETRY);
     const panel = await section();
     expect(await panel.findByRole("button", { name: "Watching" })).toBeDisabled();
     expect(panel.getByText("You are on this issue's watcher list.")).toBeVisible();
@@ -3505,55 +3649,25 @@ describe("issue watchers", () => {
   });
 
   it("does not present a failed member read as a project with nobody to add", async () => {
-    // A member read that failed. An empty picker under "Add a watcher" would
-    // read as "there is nobody left", which is a claim about the project that a
-    // failed read cannot support (§5.6).
+    // Since TAS-251 the members are one part of the context read, which the
+    // server answers whole or not at all — so a failed member read is a failed
+    // role read too, and nobody is an ADMIN who could be offered the picker.
+    // What must still hold is §5.6: no empty picker under "Add a watcher", and
+    // no sentence claiming there is nobody left to add. (The 404 case that
+    // used to sit beside this — a member read refused while the project read
+    // answered — cannot happen any more: a 404 on the context is the project's
+    // own, and §4.18 answers it; see "keeps a refused project refused".)
     failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
     seedWatchers([watcher(SOFIA)], 1);
     renderBoard(ISSUE_PATH);
 
+    await screen.findByText(/project could not be loaded/i, undefined, AFTER_RETRY);
     const panel = await section();
-    expect(await panel.findByText(/members could not be read/i, undefined, AFTER_RETRY)).toBeVisible();
-    // Asked twice: a 500 is a genuine failure and gets its one retry before the
-    // section says anything. The 404 case below is measured against this —
-    // without it, a member query that lost its retry option would still pass
-    // there, since this harness defaults to no retries at all.
+    // Asked twice: a 500 is a genuine failure and gets its one retry.
     expect(memberReads()).toBe(2);
     expect(panel.queryByLabelText("Add a watcher")).toBeNull();
-    // The rest of the section still works: the row is there, unnamed, and an
-    // admin can still remove it — a remove names a `userId`, which the row
-    // already carries.
-    expect(panel.getByRole("button", { name: `Remove watcher ${SOFIA}` })).toBeEnabled();
-  });
-
-  it("stays on the board, and asks once, when the member read is refused with a 404", async () => {
-    // The shape the stand's member read takes when one avatar object behind it
-    // is unreadable: the whole read fails with NOT_FOUND (or PERMISSION_DENIED)
-    // — the pair a missing or forbidden project answers with too, and the pair
-    // `isMissingOrForbidden` recognises (see `TaskaApi.listMembers`). The
-    // message is this fixture's own; nothing on screen prints it.
-    failMembers(Object.assign(new Error("Not found"), { status: 404, code: "NOT_FOUND" }));
-    seedWatchers([watcher(SOFIA)], 1);
-    const queryClient = renderBoard(ISSUE_PATH);
-
-    const panel = await section();
-    expect(await panel.findByText(/members could not be read/i, undefined, AFTER_RETRY)).toBeVisible();
-
-    // The board stays. §4.18's screen keys on the *project* read alone, and
-    // that one answered — a 404 about the members is not a 404 about the page.
-    expect(screen.queryByRole("heading", { name: /page not found/i })).toBeNull();
-    expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
-
-    // And the read went out once. `retryUnlessMissing` takes the 404 as an
-    // answer: the query settled into its error on the first failure — a retry
-    // would have counted two failures before `error` was reached — and nothing
-    // is waiting to ask again.
-    expect(memberReads()).toBe(1);
-    expect(queryClient.getQueryState(["members", PROJECT_ID])).toMatchObject({
-      status: "error",
-      fetchStatus: "idle",
-      fetchFailureCount: 1,
-    });
+    expect(panel.queryByText(/no members to add/i)).toBeNull();
+    expect(panel.queryByRole("button", { name: `Remove watcher ${SOFIA}` })).toBeNull();
   });
 
   it("draws a watcher the member list cannot name without dropping the row", async () => {
@@ -3626,13 +3740,10 @@ describe("issue watchers", () => {
     // **The one sentence of the three a browser can reach**: it is set without
     // `watcherFailureText`, so no server message can win over it.
     //
-    // The fixture is a member read that failed while the role read answered
-    // ADMIN. Those are two separate gateway reads on the stand since TAS-224,
-    // so one can fail while the other answers — a single unreadable avatar
-    // object is enough to fail the member read there, with a 404, 403 or 503
-    // (see `TaskaApi.listMembers`). The map loses the reader, and the ✕ stays
-    // on screen through it.
-    failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
+    // The fixture is an ADMIN whom the member list cannot name — since TAS-251
+    // the members and the role come in one read, so the reader is missing from
+    // the map because the list did not name them (auth-service's `""`), not
+    // because a separate member read failed. The ✕ stays on screen through it.
     seedWatchers([watcher(ANNA)], 1, 1);
     setUnwatchAnswer(false);
     renderBoard(ISSUE_PATH);
@@ -3649,8 +3760,8 @@ describe("issue watchers", () => {
   it("says a refused removal of the reader's own row about the person the row names", async () => {
     // The contradiction this pass came back for: the row read "You", its ✕ said
     // "Remove yourself from watchers", and the sentence under both said
-    // "Unknown is still watching this issue." about that same person.
-    failMembers(Object.assign(new Error("Internal error"), { status: 500, code: "INTERNAL" }));
+    // "Unknown is still watching this issue." about that same person. The
+    // member list names nobody here, the reader included.
     seedWatchers([watcher(ANNA)], 1);
     failWatcherWrite(silentRefusal());
     renderBoard(ISSUE_PATH);

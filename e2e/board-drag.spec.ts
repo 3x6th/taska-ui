@@ -104,22 +104,26 @@ test.describe("dragging a card with a mouse", () => {
 });
 
 /**
- * A board whose workflow read failed.
+ * A board with no workflow for the card's type.
  *
- * The mock cannot fail a single read on demand, and the failure is the whole
- * point here, so this one drives the app's own TanStack Query cache instead: it
- * walks the React fiber to the live client and puts the workflow query into the
- * state the gateway would have produced. Everything downstream of that — the
- * board, the drop, the panel — is the real product.
+ * Since TAS-251 the workflow comes in the project context, with the role, the
+ * members and the labels, and the server answers all of it or none — so "the
+ * role arrived and the workflow did not" is no longer a state the board can be
+ * in. What can happen is the context answering without the card's type: the
+ * project allows fewer issue types than its issues have (backend TAS-212). The
+ * mock seeds no such issue on a board the drag can reach, so this drives the
+ * app's own TanStack Query cache instead: it walks the React fiber to the live
+ * client and takes every workflow out of the context it holds. Everything
+ * downstream of that — the board, the drop, the panel — is the real product.
  *
- * Why it has to be an end-to-end test at all: with the fallback in place the
+ * Why it has to be an end-to-end test at all: with a fallback workflow the
  * drop *succeeded* here, because the four ids the fallback carried were copied
  * from this mock's own seed. Against the deployed gateway the same drop posts a
  * transition id nobody described. So what is asserted below is that no move is
  * attempted, and the mock accepting the id is exactly what made the old
  * behaviour invisible.
  */
-test.describe("a board whose workflow could not be read", () => {
+test.describe("a board with no workflow for the card's type", () => {
   test.skip(({ isMobile }) => Boolean(isMobile), "the drag below needs two columns on screen");
 
   async function failWorkflowRead(page: Page) {
@@ -130,8 +134,12 @@ test.describe("a board whose workflow could not be read", () => {
         alternate?: Fiber;
         memoizedProps?: { value?: unknown };
       }
+      interface Queryish {
+        state: { data?: Record<string, unknown> };
+        setState: (state: unknown) => void;
+      }
       interface QueryClientish {
-        getQueryCache: () => { findAll: (filter: unknown) => Array<{ setState: (state: unknown) => void }> };
+        getQueryCache: () => { findAll: (filter: unknown) => Queryish[] };
       }
 
       const root = document.getElementById("root");
@@ -146,16 +154,8 @@ test.describe("a board whose workflow could not be read", () => {
         seen.add(node);
         const value = node.memoizedProps?.value as Partial<QueryClientish> | undefined;
         if (typeof value?.getQueryCache === "function") {
-          for (const query of (value as QueryClientish).getQueryCache().findAll({ queryKey: ["workflows"] })) {
-            query.setState({
-              status: "error",
-              fetchStatus: "idle",
-              data: undefined,
-              error: Object.assign(new Error("500 Internal Server Error from workflow-service"), { status: 500 }),
-              errorUpdateCount: 1,
-              errorUpdatedAt: Date.now(),
-              dataUpdatedAt: 0,
-            });
+          for (const query of (value as QueryClientish).getQueryCache().findAll({ queryKey: ["project-context"] })) {
+            query.setState({ ...query.state, data: { ...query.state.data, workflows: {} }, dataUpdatedAt: Date.now() });
           }
           return;
         }
@@ -167,7 +167,6 @@ test.describe("a board whose workflow could not be read", () => {
       }
       throw new Error("no QueryClient on this page");
     });
-    await expect(page.getByRole("alert").filter({ hasText: /workflow could not be loaded/ })).toBeVisible();
   }
 
   test("refuses the drop instead of posting a transition the server never described", async ({ page }) => {
@@ -205,15 +204,15 @@ test.describe("a board whose workflow could not be read", () => {
     for (const name of ["Start Progress", "Complete", "Move to To Do", "Reopen"]) {
       await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
     }
-    await expect(page.getByText("The workflow could not be loaded, so no move is offered.")).toBeVisible();
+    await expect(page.getByText(/This project has no workflow for task issues, so no move is\s+offered\./)).toBeVisible();
   });
 });
 
 /**
- * §5.7's read-only board, on the real thing rather than in jsdom. Anna is not a
- * member of the Mobile project, so the mock answers VIEWER for it and the board
- * is reachable by URL — hiding controls is a courtesy, and the server stays the
- * authority.
+ * §5.7's read-only board, on the real thing rather than in jsdom. Tom is a
+ * VIEWER of the Mobile project (since TAS-251 a real one: the board's context
+ * read refuses a non-member) and the board is reachable by URL — hiding
+ * controls is a courtesy, and the server stays the authority.
  *
  * This is the permission path, not the failure path: the role arrived and said
  * no. What shipped first still let the card lift and track the cursor across
@@ -228,7 +227,7 @@ test.describe("a board this account may only read", () => {
 
   async function openViewerBoard(page: Page) {
     await page.goto("/login");
-    await page.getByLabel("Email").fill("anna@example.com");
+    await page.getByLabel("Email").fill("tom@example.com");
     await page.getByLabel("Password").fill("mock-accepts-anything");
     await page.locator("form button[type=submit]").click();
     await expect(page).toHaveURL(/\/projects$/);
