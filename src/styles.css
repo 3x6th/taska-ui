@@ -6283,28 +6283,37 @@ button.attachment-open:hover:not(:disabled) {
    does not cover is here: the padding, the explicit text colour (§1), and the
    chevron · words · count-pill row at the recipe's own gap of 7.
 
-   §1's 28 hit area without moving anything: the button is 28 high, and
-   -5.3px above and below takes it back to the 17.4 the bare 12px heading's
-   line box was, so the section keeps 24 above it and the first row still
-   lands 12 under the heading. Measured at 1920, 1440 and 390: the first row
-   sat 29.39 below the section top before and 29.41 after — 5.3 rounds to the
-   layout grid's 1/64 px. The count-pill, which makes the Comments heading
-   17.94 tall, does not set this one's height: the 28 does. The extra 5.3
-   spills into the two gaps, and nothing sits there.
+   §1's 28 hit area is drawn the way `.label-chip-remove::after` draws its own:
+   the button keeps its natural line box, so the heading is as tall as the
+   Comments one and the section keeps 24 above it and 12 to the first row,
+   and a transparent `::after` centred on the button is the 28 the pointer
+   sees. The focus ring follows the button's own box, not the hit area, so it
+   hugs the words. The same `::after` reaches §7's 44 by changing its one
+   `height`.
+
    No horizontal padding, so the chevron starts on the same left edge as the
    other section headings' words. As a flex item the button is as wide as its
    content, so the ring hugs the words (6 is §2.5's small-element band). No
    transition: nothing opens or closes with motion here. */
 .activity h3 button {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
-  min-height: 28px;
-  margin: -5.3px 0;
   padding: 0;
   border-radius: 6px;
   color: var(--fg-2);
   cursor: pointer;
+}
+
+.activity h3 button::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 28px;
+  transform: translateY(-50%);
 }
 
 .activity h3 button:hover {

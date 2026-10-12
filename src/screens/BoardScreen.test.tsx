@@ -4464,4 +4464,22 @@ describe("the activity feed's disclosure", () => {
       window.removeEventListener("error", onError);
     }
   });
+
+  it("says so when the issue has no history, without a count, and folds that line away too", async () => {
+    seedHistory([]);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    const toggle = await toggleIn(panel);
+
+    expect(toggle.querySelector(".count-pill")).toBeNull();
+    expect(items()).toHaveLength(0);
+    const line = panel.getByText("No activity yet");
+    expect(line).toBeVisible();
+    expect(document.getElementById(toggle.getAttribute("aria-controls") ?? "")).toContainElement(line);
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(panel.queryByText("No activity yet")).toBeNull();
+  });
 });

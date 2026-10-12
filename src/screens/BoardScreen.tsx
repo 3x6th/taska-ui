@@ -4861,8 +4861,9 @@ function writeActivityCollapsed(collapsed: boolean) {
  * (TAS-257). The heading stays an `h3` — it is the section's place in the
  * panel's outline — and the one button inside it is the whole of its text, so
  * a click anywhere on the words, Enter or Space folds the feed. A folded feed
- * is not rendered at all; the heading and its count stay. No open or close
- * animation (DESIGN.md §1, a quiet interface).
+ * is not rendered at all; the heading and its count stay. An issue with no
+ * history says so inside the open list, in the empty line the other sections
+ * use. No open or close animation (DESIGN.md §1, a quiet interface).
  */
 function ActivitySection({
   history,
@@ -4894,6 +4895,7 @@ function ActivitySection({
       </h3>
       {expanded ? (
         <div className="activity-list" id={listId}>
+          {history.length === 0 ? <p className="issue-links-empty">No activity yet</p> : null}
           {history
             .slice()
             .reverse()
