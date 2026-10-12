@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
-import type { Notification } from "../domain/types";
+import type { IssueHistoryEvent, Notification } from "../domain/types";
 import { BoardScreen } from "./BoardScreen";
 import { ATTACHMENT_MAX_SIZE_BYTES } from "../api/attachments";
 import { ObjectStoreError } from "../api/objectStore";
@@ -96,6 +96,7 @@ const {
   seedWatcherNames,
   seedLinks,
   seedIssueTypes,
+  seedHistory,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -320,6 +321,8 @@ const {
     watcherNames: Record<string, string>;
     /** The issue read's links, as the server resolved them — `target` included. */
     links: unknown[];
+    /** The issue read's history, oldest first, as the server sends it. Empty unless a test is about the feed. */
+    history: IssueHistoryEvent[];
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -373,6 +376,7 @@ const {
     summaries: {},
     watcherNames: {},
     links: [],
+    history: [],
   };
 
   /** The held half of an issue update — same shape as the watcher writes below. */
@@ -680,7 +684,7 @@ const {
                 })),
           commentCount: 0,
         },
-        history: [],
+        history: state.history,
       };
     },
     listIssueLabels: async () => {
@@ -1047,6 +1051,9 @@ const {
     seedIssueTypes: (issueTypes: typeof state.issueTypes) => {
       state.issueTypes = issueTypes;
     },
+    seedHistory: (history: IssueHistoryEvent[]) => {
+      state.history = history;
+    },
     reset: () => {
       state.issueTypes = ["TASK", "BUG", "STORY"];
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
@@ -1123,6 +1130,7 @@ const {
       state.summaries = {};
       state.watcherNames = {};
       state.links = [];
+      state.history = [];
     },
   };
 });
@@ -4338,5 +4346,140 @@ describe("sharing an issue from its panel", () => {
     releaseIssue();
     const loaded = await screen.findByRole("complementary", { name: "TAS-102 issue" });
     expect(within(loaded).getByRole("button", { name: "Share issue TAS-102" })).toBeVisible();
+  });
+});
+
+/**
+ * The activity feed folds away from its own heading (TAS-257), and the choice
+ * belongs to the reader rather than to an issue: one key in the browser, the
+ * way the theme is kept, so it holds across a remount until it is undone.
+ */
+describe("the activity feed's disclosure", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const STORAGE_KEY = "taska.activityCollapsed";
+
+  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+  const toggleIn = (panel: ReturnType<typeof within>) => panel.findByRole("button", { name: /^Activity/ });
+  const items = () => [...document.querySelectorAll(".activity .activity-item")];
+
+  /** Storage spies a test installs, restored even when an assertion fails first. */
+  let spies: MockInstance[] = [];
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    // Oldest first, as the server sends it; the feed draws it newest first.
+    seedHistory([
+      { id: "history-1", issueId: "issue-1", eventType: "CREATED", actorUserId: "user-anna", occurredAt: "2026-08-01T09:00:00Z", payload: {} },
+      {
+        id: "history-2",
+        issueId: "issue-1",
+        eventType: "TRANSITIONED",
+        actorUserId: "user-anna",
+        occurredAt: "2026-08-01T10:00:00Z",
+        payload: { from: "TODO", to: "IN_PROGRESS" },
+      },
+    ]);
+  });
+
+  afterEach(() => {
+    spies.forEach((spy) => spy.mockRestore());
+    spies = [];
+    window.localStorage.clear();
+  });
+
+  it("folds the feed from its heading and keeps it folded across a remount until it is opened again", async () => {
+    renderBoard(ISSUE_PATH);
+    const toggle = await toggleIn(await openPanel());
+
+    // Expanded by default, newest first, and the heading names the count.
+    expect(toggle.closest("h3")).not.toBeNull();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(toggle).getByText("2")).toHaveClass("count-pill");
+    expect(items()).toHaveLength(2);
+    expect(items()[0]).toHaveTextContent(/moved/);
+    expect(items()[1]).toHaveTextContent(/created this issue/);
+    const list = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(list).not.toBeNull();
+    expect(list).toContainElement(items()[0] as HTMLElement);
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
+
+    fireEvent.click(toggle);
+
+    // Folded: the feed is gone, not hidden; the heading and its count stay.
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).not.toHaveAttribute("aria-controls");
+    expect(items()).toHaveLength(0);
+    expect(document.querySelector(".activity-list")).toBeNull();
+    expect(within(toggle).getByText("2")).toHaveClass("count-pill");
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe("1");
+
+    // A fresh mount — another issue opened, or the page reloaded — starts folded.
+    cleanup();
+    renderBoard(ISSUE_PATH);
+    const again = await toggleIn(await openPanel());
+    expect(again).toHaveAttribute("aria-expanded", "false");
+    expect(items()).toHaveLength(0);
+
+    fireEvent.click(again);
+
+    expect(again).toHaveAttribute("aria-expanded", "true");
+    expect(items()).toHaveLength(2);
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("still folds and opens when the browser refuses storage, and opens expanded", async () => {
+    const refuse = () => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    };
+    spies = [
+      vi.spyOn(Storage.prototype, "getItem").mockImplementation(refuse),
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(refuse),
+      vi.spyOn(Storage.prototype, "removeItem").mockImplementation(refuse),
+    ];
+    // React reports an error thrown in a click handler to the window rather
+    // than to the test, after the state it set has already landed — so the
+    // toggle alone would look right with the write unguarded. This is what
+    // would see it.
+    const reported: unknown[] = [];
+    const onError = (event: ErrorEvent) => {
+      reported.push(event.error);
+      event.preventDefault();
+    };
+    window.addEventListener("error", onError);
+    try {
+      renderBoard(ISSUE_PATH);
+      const toggle = await toggleIn(await openPanel());
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(items()).toHaveLength(0);
+
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(items()).toHaveLength(2);
+      expect(reported).toEqual([]);
+    } finally {
+      window.removeEventListener("error", onError);
+    }
+  });
+
+  it("says so when the issue has no history, without a count, and folds that line away too", async () => {
+    seedHistory([]);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    const toggle = await toggleIn(panel);
+
+    expect(toggle.querySelector(".count-pill")).toBeNull();
+    expect(items()).toHaveLength(0);
+    const line = panel.getByText("No activity yet");
+    expect(line).toBeVisible();
+    expect(document.getElementById(toggle.getAttribute("aria-controls") ?? "")).toContainElement(line);
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(panel.queryByText("No activity yet")).toBeNull();
   });
 });

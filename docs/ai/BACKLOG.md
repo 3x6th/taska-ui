@@ -3196,3 +3196,21 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
   snapshot. From `api-contract-guard`.
 - **The `*-focus.png` evidence shows no focus ring** (shot after
   `element.focus()`, not a Tab press). `art-director` confirmed the rings live.
+
+### Left by TAS-257 (collapsible Activity, 2026-10-12)
+
+- ~~**Comment Delete has no confirmation.** The thread's `.link-button` Delete
+  calls `deleteComment.mutate` on one click, unlike the work log's Delete,
+  which has the §4.22 strip. Collapsing Activity at the bottom of the scroll
+  can put it under the pointer (the heading moves 156 at 1440 when the panel
+  clamps `scrollTop`), so a second click in the same spot deletes a comment.~~
+  Graduated to [TAS-259](https://jira.ozero.dev/browse/TAS-259) on 2026-10-12
+  at `release-reviewer`'s N1: a data-loss bug that stands on its own.
+  Pre-existing; the fix is the strip, not a compensation in Activity.
+- **lucide icons in the panel draw at the default stroke 2**; §8 asks 1.2–1.7
+  and nothing in `BoardScreen.tsx` sets `strokeWidth`. Pre-existing. From
+  `art-director` r1.
+- **The count-pill's text is 2.76:1 in light** (`--fg-3` on `--surface-2`;
+  3.18 in dark), below §7's 3:1 for meta; the same recipe sits on every panel
+  heading and board column. Recorded in DESIGN.md §7's open list under
+  TAS-257. From `art-director` r1.

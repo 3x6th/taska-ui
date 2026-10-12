@@ -21,7 +21,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Check, ChevronLeft, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Upload, Users, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Upload, Users, X } from "lucide-react";
 import {
   useEffect,
   useId,
@@ -2477,21 +2477,7 @@ function IssuePanel({
             prefetched={commentsPrefetched}
           />
 
-          <section className="activity">
-            <h3>Activity</h3>
-            {history
-              .slice()
-              .reverse()
-              .map((event, index) => (
-                <ActivityItem
-                  event={event}
-                  key={event.id}
-                  isLast={index === history.length - 1}
-                  user={userById.get(event.actorUserId)}
-                  userById={userById}
-                />
-              ))}
-          </section>
+          <ActivitySection history={history} userById={userById} />
         </div>
       </aside>
     </div>
@@ -4837,6 +4823,94 @@ function AssigneeChip({
       <Avatar user={user} size="sm" />
       <span>{label}</span>
     </button>
+  );
+}
+
+/**
+ * Where the reader's choice to fold the activity feed away is kept (TAS-257):
+ * `"1"` while it is collapsed, and no key at all while it is expanded, which is
+ * the default. One choice for every issue, the way the theme is one choice for
+ * every screen (`taska.theme`), so it survives a reload and a different issue.
+ */
+const activityCollapsedKey = "taska.activityCollapsed";
+
+/**
+ * Storage that refuses (private mode, a full quota, a policy) costs the
+ * remembering and nothing else: the feed opens expanded, and the toggle still
+ * works for as long as the panel is up.
+ */
+function readActivityCollapsed() {
+  try {
+    return window.localStorage.getItem(activityCollapsedKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeActivityCollapsed(collapsed: boolean) {
+  try {
+    if (collapsed) window.localStorage.setItem(activityCollapsedKey, "1");
+    else window.localStorage.removeItem(activityCollapsedKey);
+  } catch {
+    // Not remembered, and that is all: the state on screen is already right.
+  }
+}
+
+/**
+ * The issue's history, newest first, behind a disclosure in its own heading
+ * (TAS-257). The heading stays an `h3` — it is the section's place in the
+ * panel's outline — and the one button inside it is the whole of its text, so
+ * a click anywhere on the words, Enter or Space folds the feed. A folded feed
+ * is not rendered at all; the heading and its count stay. An issue with no
+ * history says so inside the open list, in the empty line the other sections
+ * use. No open or close animation (DESIGN.md §1, a quiet interface).
+ */
+function ActivitySection({
+  history,
+  userById,
+}: {
+  history: IssueHistoryEvent[];
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+}) {
+  const [expanded, setExpanded] = useState(() => !readActivityCollapsed());
+  const listId = useId();
+
+  return (
+    <section className="activity">
+      <h3>
+        <button
+          aria-controls={expanded ? listId : undefined}
+          aria-expanded={expanded}
+          onClick={() => {
+            const next = !expanded;
+            setExpanded(next);
+            writeActivityCollapsed(!next);
+          }}
+          type="button"
+        >
+          {expanded ? <ChevronDown aria-hidden="true" size={14} /> : <ChevronRight aria-hidden="true" size={14} />}
+          Activity
+          {history.length ? <span className="count-pill">{history.length}</span> : null}
+        </button>
+      </h3>
+      {expanded ? (
+        <div className="activity-list" id={listId}>
+          {history.length === 0 ? <p className="issue-links-empty">No activity yet</p> : null}
+          {history
+            .slice()
+            .reverse()
+            .map((event, index) => (
+              <ActivityItem
+                event={event}
+                key={event.id}
+                isLast={index === history.length - 1}
+                user={userById.get(event.actorUserId)}
+                userById={userById}
+              />
+            ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
