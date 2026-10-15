@@ -89,6 +89,7 @@ import type {
   IssueType,
   ProjectContext,
   ProjectMember,
+  ProjectWorkflow,
   User,
   WorkflowStatus,
   WorkflowTransition,
@@ -688,6 +689,17 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         workflows
           ? `${issue.issueKey} was not moved: this project has no workflow for ${typeMeta[issue.issueType].label.toLowerCase()} issues.`
           : `${issue.issueKey} was not moved: this project's workflow could not be loaded.`,
+      );
+      setActiveIssueId(null);
+      return;
+    }
+    // The third refusal: a workflow did arrive, with nothing in it (TAS-261).
+    // "No transition from X to Y in this workflow" would be false here — the
+    // server did not say this move is missing; it sent a workflow no move can
+    // be resolved from.
+    if (sentWithoutStatuses(workflow)) {
+      setDragNotice(
+        `${issue.issueKey} was not moved: the server sent this project's ${typeMeta[issue.issueType].label.toLowerCase()} workflow without statuses.`,
       );
       setActiveIssueId(null);
       return;
@@ -2153,6 +2165,13 @@ function IssuePanel({
               <span className="transition-note">
                 This project has no workflow for {typeMeta[issue.issueType].label.toLowerCase()} issues, so no move is
                 offered.
+              </span>
+            ) : workflow && sentWithoutStatuses(workflow) ? (
+              // A workflow arrived with nothing in it (TAS-261) — the drop's
+              // third refusal, read off the same predicate.
+              <span className="transition-note">
+                The server sent this project&rsquo;s {typeMeta[issue.issueType].label.toLowerCase()} workflow without
+                statuses, so no move is offered.
               </span>
             ) : null}
             {availableTransitions.map((transition) => (
@@ -5891,6 +5910,25 @@ function findTransition(
   transitions: WorkflowTransition[],
 ) {
   return resolveTransitions(fromStatus, statuses, transitions).find((transition) => transition.toStatus === toStatus);
+}
+
+/**
+ * A workflow the context sent present but empty: its `id`, `name` and
+ * `version` filled, its `statuses` list empty. Measured on the stand on
+ * 2026-10-15 for every issue type (backend TAS-261: project-service's mapper
+ * drops the repeated fields), while the same workflow read on its own route
+ * has three statuses and three transitions.
+ *
+ * With no statuses no transition can be resolved, so the board has nothing to
+ * offer — but an empty transition row reads as "this issue has nowhere to
+ * go", and "no transition from X to Y" as a fact about the workflow; neither
+ * is what the server said. The drop and the panel both read this one
+ * predicate, so they refuse together and in the same words. Nothing fills the
+ * gap: no read of the per-type route, no synthesised transition (AGENTS.md,
+ * "No compensations for the backend").
+ */
+function sentWithoutStatuses(workflow: ProjectWorkflow) {
+  return workflow.statuses.length === 0;
 }
 
 function mergeWorkflowStatuses(workflows?: WorkflowsByIssueType) {
