@@ -606,8 +606,10 @@ Same rule as above: "Closed by" is settled, the rest is live.
     to find, the board refuses every drop on the client and the panel offers no
     move, so `PUT …/transition` is never sent; the route itself answers 200.
     **Compensation: none** — no `getWorkflow` read to fill the gap. TAS-262
-    makes the panel and the drop say the workflow came without statuses instead
-    of "no transition in this workflow". Backend:
+    makes the panel and the drop say the workflow came without statuses,
+    instead of a bare status pill in the panel and "no transition … in this
+    workflow" on the drop. The mock keeps sending the lists; only the tests
+    empty them in the query cache. Backend:
     [TAS-261](https://jira.ozero.dev/browse/TAS-261), fix in
     [backend PR #183](https://github.com/VladislavYurin/taska-backend/pull/183).
     Removal: when #183 is deployed, the context carries the lists, the board
