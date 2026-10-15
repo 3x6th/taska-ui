@@ -3214,3 +3214,21 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
   3.18 in dark), below §7's 3:1 for meta; the same recipe sits on every panel
   heading and board column. Recorded in DESIGN.md §7's open list under
   TAS-257. From `art-director` r1.
+
+### Left by TAS-262 (a workflow sent without statuses, 2026-10-15)
+
+- **`.transition-note` sits beside or under the pill by length, not by rule**
+  (`art-director`): the row wraps, so the TAS-251 note sits beside a short pill
+  while the TAS-262 note drops underneath only because it is about as wide as
+  the row. `flex-basis: 100%` on `.transition-note` (src/styles.css ~4960)
+  puts all three refusals under the pill at every width; it moves the
+  siblings, so it was not done inside TAS-262.
+- **One apostrophe for displayed text — the curly ’** (`art-director`): §4.23
+  already prescribes "Couldn’t" / "It’s" and JSX needs an entity anyway; today
+  the drop says "project's" and the panel "project’s" for the same phrase.
+  One sweep across `src` plus the exact-string assertions in unit and e2e.
+- **The pre-existing "no workflow for this type" drop test matches
+  `/was not moved/`** (`release-reviewer`, e2e/board-drag.spec.ts ~224), which
+  the TAS-262 refusal also matches; pin the exact sentence ("was not moved:
+  this project has no workflow for task issues."). The panel test beside it
+  already pins its own.
