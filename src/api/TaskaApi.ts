@@ -589,7 +589,9 @@ export interface TaskaApi {
    * is 200 either way, and the server tells the two apart in a field of its
    * own, mapped to `avatarUnavailable`: `true` for a failed read, `false` for
    * a read with or without a photo, absent on a gateway older than that PR.
-   * No request id comes with a failed read, so there is none to show.
+   * A failed read is still a 200: its request id is in the `X-Request-Id`
+   * response header, which the REST implementation reads only on a failed
+   * request, so no id reaches the caller and the UI has none to show.
    * This replaced `GET /users/{userId}/avatar`, which was the one avatar read
    * that cost a request of its own; nothing calls that route any more.
    */

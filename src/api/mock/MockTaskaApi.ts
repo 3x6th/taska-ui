@@ -700,7 +700,7 @@ const compareAsText = (left: unknown, right: unknown) => {
  * compares exactly is compared approximately here. None of that is reachable
  * through the filter form, which picks the value control from the column's type
  * — only through a hand-edited URL. The pairing of operator and class, and the
- * one strict parse the gateway does on a `uuid` column, are `refuseAdminFilter`
+ * one strict parse the gateway does on a `uuid` column, are `refuseAdminFilters`
  * below; going further would mean keeping two copies of the backend's parsing
  * rules in sync, which is a worse failure than this one: it stops at ordering
  * deliberately, so do not read it as a promise that anything this function
@@ -732,35 +732,73 @@ const compareAsColumn = (columnClass: AdminColumnClass, left: unknown, right: un
   return compareAsText(left, right);
 };
 
+interface ClassifiedAdminFilter {
+  column: string;
+  operator: AdminFilterOperator;
+  value: string;
+  columnClass: AdminColumnClass;
+}
+
 /**
- * The two refusals of `listAdminRows` the gateway makes before any row is
- * read, in its order and its words, at backend PR #184 (TAS-232):
- * `ReadOnlyQueryValidator` refuses an operator the column's class cannot take —
- * the class's own name in the sentence, so a `uuid` column says `UUID` — and
- * then `ReadOnlyQueryBuilder.parseUuidValue` refuses an `equals` value on a
- * `uuid` column that is not a UUID in the canonical 8-4-4-4-12 form. Both are
- * `INVALID_ARGUMENT`. Everything else about value parsing stays with
- * `compareAsColumn`'s note: this is the pairing rule and the one parse that
- * is strict, not a copy of the validator.
+ * Two of the refusals `listAdminRows` meets on the gateway before any row is
+ * read, in its words and in the order its passes run them, at backend PR #184
+ * (TAS-232), `ReadOnlyQueryBuilder.buildSafePageableListQueries`.
+ *
+ * The gateway does not refuse filter by filter. It validates the whole query
+ * in passes, and a later pass runs only once every filter has cleared the
+ * earlier ones:
+ *
+ * - `ReadOnlyQueryValidator.validateFilterOperatorCompatibility`, over every
+ *   filter: an operator the column's class cannot take — the class's own name
+ *   in the sentence, so a `uuid` column says `UUID`. A blank value is skipped
+ *   there (`isBlank()`), so it is skipped here too;
+ * - then `buildConditionsAndParams`, filter by filter in column-name order:
+ *   `parseUuidValue` refuses an `equals` value on a `uuid` column that is not
+ *   a UUID in the canonical 8-4-4-4-12 form.
+ *
+ * So with one filter carrying a bad uuid and another a bad pairing, the
+ * pairing is what the gateway reports, whichever was applied first. Both are
+ * `INVALID_ARGUMENT`.
+ *
+ * Not the whole pipeline, and not claimed to be. Two passes run earlier on the
+ * gateway and have no counterpart here: `FilterParser` refuses a blank value
+ * outright ("Filter value must not be empty for key"), and `validateColumn`
+ * refuses a column the table does not have. Everything else about value
+ * parsing stays with `compareAsColumn`'s note: this is the pairing rule and
+ * the one parse that is strict, not a copy of the validator.
  */
-const refuseAdminFilter = (column: string, operator: AdminFilterOperator, value: string, columnClass: AdminColumnClass) => {
-  if (operator === "contains" && columnClass !== "TEXT") {
-    throw new MockApiError(
-      "INVALID_ARGUMENT",
-      `Operator 'contains' is not supported for column '${column}' (type: ${columnClass})`,
-    );
+const refuseAdminFilters = (filters: readonly ClassifiedAdminFilter[]) => {
+  for (const { column, operator, value, columnClass } of filters) {
+    if (value.trim() === "") continue;
+    if (operator === "contains" && columnClass !== "TEXT") {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        `Operator 'contains' is not supported for column '${column}' (type: ${columnClass})`,
+      );
+    }
+    if ((operator === "from" || operator === "to") && columnClass !== "TEMPORAL" && columnClass !== "NUMERIC") {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        `Operator '${operator}' is not supported for column '${column}' (type: ${columnClass}). Only temporal and numeric columns support range filters`,
+      );
+    }
   }
-  if ((operator === "from" || operator === "to") && columnClass !== "TEMPORAL" && columnClass !== "NUMERIC") {
-    throw new MockApiError(
-      "INVALID_ARGUMENT",
-      `Operator '${operator}' is not supported for column '${column}' (type: ${columnClass}). Only temporal and numeric columns support range filters`,
-    );
-  }
-  if (operator === "equals" && columnClass === "UUID" && !UUID_PATTERN.test(value)) {
-    throw new MockApiError(
-      "INVALID_ARGUMENT",
-      `Invalid UUID value for column '${column}': expected UUID in 8-4-4-4-12 format`,
-    );
+  // Column-name order, as the gateway sorts its filter map before it builds
+  // the conditions: by UTF-16 code unit, which is what Java's `String`
+  // comparison and `<` on two strings both do.
+  const byColumn = [...filters].sort((left, right) =>
+    left.column < right.column ? -1 : left.column > right.column ? 1 : 0,
+  );
+  for (const { column, operator, value, columnClass } of byColumn) {
+    // `StringUtils.hasText` guards each operator there, so a blank value is
+    // passed over in this pass as well.
+    if (value.trim() === "") continue;
+    if (operator === "equals" && columnClass === "UUID" && !UUID_PATTERN.test(value)) {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        `Invalid UUID value for column '${column}': expected UUID in 8-4-4-4-12 format`,
+      );
+    }
   }
 };
 
@@ -3623,8 +3661,10 @@ export class MockTaskaStore {
    * - a row with its object: `avatar` filled, `avatarUnavailable: false`;
    * - no row: `avatar: null`, `avatarUnavailable: false`;
    * - the profile read failed: `avatar: null`, `avatarUnavailable: true`. The
-   *   gateway sets that on any gRPC error and logs it; no request id reaches
-   *   the body.
+   *   gateway sets that on any gRPC error and logs it. The answer is a 200, so
+   *   its request id is only in the `X-Request-Id` header, which
+   *   `RestTaskaApi.request` does not read on a success — neither
+   *   implementation hands the caller an id for it.
    *
    * The only failure this store can make is a row whose object is gone — the
    * same-key re-confirm defect in `confirmAvatarUpload` above, or the
@@ -3997,11 +4037,13 @@ export class MockTaskaStore {
     let rows = this.adminRowsFor(query.service, query.table);
 
     // Validated before a row is filtered, as the gateway validates the whole
-    // query before it builds the SQL.
-    for (const filter of query.filters ?? []) {
-      if (filter.value === "") continue;
-      refuseAdminFilter(filter.column, filter.operator, filter.value, classifyColumnType(typeOf(filter.column)));
-    }
+    // query before it builds the SQL — in its passes, not filter by filter.
+    // An empty value is no filter at all: `RestTaskaApi` never sends one.
+    refuseAdminFilters(
+      (query.filters ?? [])
+        .filter((filter) => filter.value !== "")
+        .map((filter) => ({ ...filter, columnClass: classifyColumnType(typeOf(filter.column)) })),
+    );
 
     for (const filter of query.filters ?? []) {
       if (filter.value === "") continue;

@@ -2196,6 +2196,48 @@ describe("MockTaskaApi", () => {
       }
     });
 
+    /**
+     * The gateway validates in passes, not filter by filter (backend PR #184,
+     * `buildSafePageableListQueries`): every filter's operator against its
+     * column's class first, then the values, column by column in name order.
+     * So a bad pairing is reported over a bad uuid however the two were
+     * applied — a mock that refused in application order named the uuid.
+     */
+    it("reports a bad pairing over a bad uuid, whichever filter comes first, as the gateway's passes do", async () => {
+      await expect(
+        api.listAdminRows({
+          service: "auth",
+          table: "users",
+          filters: [
+            { column: "id", operator: "equals", value: "not-a-uuid" },
+            { column: "email", operator: "from", value: "anna@" },
+          ],
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message:
+          "Operator 'from' is not supported for column 'email' (type: TEXT). Only temporal and numeric columns support range filters",
+      });
+    });
+
+    it("parses uuid values in column-name order, not in the order the filters were applied", async () => {
+      // `user_id` applied first, `id` second: the gateway sorts its filter map
+      // by column before it parses, so `id` is the one it names.
+      await expect(
+        api.listAdminRows({
+          service: "auth",
+          table: "sessions",
+          filters: [
+            { column: "user_id", operator: "equals", value: "1-1-1-1-1" },
+            { column: "id", operator: "equals", value: "not-a-uuid" },
+          ],
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Invalid UUID value for column 'id': expected UUID in 8-4-4-4-12 format",
+      });
+    });
+
     it("refuses contains, from and to on a uuid column in the gateway's words, naming the UUID class", async () => {
       const refusal = (operator: "contains" | "from" | "to") =>
         api.listAdminRows({

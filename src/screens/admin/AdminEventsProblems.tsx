@@ -99,7 +99,8 @@ export function AdminEventsProblems() {
    * Where focus goes when the dialog closes, and it is not one answer.
    *
    * **Dismissed** — `Esc`, Cancel, the close button — goes back to the Retry
-   * button that opened it, which is certainly still there. Plain `focus()`: the
+   * button that opened it, which is still there unless a not-eligible refusal's
+   * re-read took it (then the list, below). Plain `focus()`: the
    * reader moved focus themselves inside the interaction that asked for it, so
    * `:focus-visible` follows from the modality the browser has already recorded
    * and the ring appears on its own.
@@ -143,7 +144,16 @@ export function AdminEventsProblems() {
    */
   const focusTrigger = () => {
     const button = trigger.current;
-    if (button?.isConnected) button.focus();
+    if (button?.isConnected) {
+      button.focus();
+      return;
+    }
+    // Not "certainly still there" after all on one path: the not-eligible
+    // refusal re-reads the list while the dialog stays open, and that read can
+    // come back with the row no longer retryable — the button gone before the
+    // operator dismisses. Focus then goes where the successful path sends it,
+    // the list, rather than to `<body>` with the dialog's unmount.
+    focusListAfterWrite();
   };
 
   /**

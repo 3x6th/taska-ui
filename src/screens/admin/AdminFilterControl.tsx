@@ -2,7 +2,7 @@ import { Plus, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { AdminFilter, AdminFilterOperator } from "../../domain/types";
 import type { AdminValueControl } from "./columns";
-import { operatorsForType, supportsOperator, valueControlForType } from "./columns";
+import { operatorsForType, supportsOperator, valueControlForType, valuePlaceholderForType } from "./columns";
 import { operatorLabels } from "./urlState";
 import { toIsoValue, toPickerValue } from "./utcField";
 
@@ -271,6 +271,9 @@ export function AdminFilterControl({ columns, typeOf, filter, onChange, switchin
                 id={`${fieldId}-value`}
                 inputMode={control === "number" ? "decimal" : undefined}
                 onChange={(event) => setDraft({ ...draft, value: event.target.value })}
+                // The canonical uuid shape on a `uuid` column, and nothing on
+                // any other (`valuePlaceholderForType`).
+                placeholder={valuePlaceholderForType(draftColumnType)}
                 // `any`, not the default 1: the gateway parses a numeric filter
                 // as a BigDecimal, and a `numeric(10,2)` column is filtered on
                 // fractions the browser would otherwise call invalid.

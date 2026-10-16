@@ -10,9 +10,10 @@ import { expect, test, type Page } from "@playwright/test";
  * gateway at all — the browser PUTs the bytes straight to an object store for
  * which nothing in the backend repository configures CORS. So nothing below is
  * evidence about a server. It pins what the UI does with each answer, and the
- * answers come from `MockTaskaStore`. The undeployed state itself is not here
- * for the same reason: the mock cannot produce that signature, so
- * `UserProfileMenu.test.tsx` covers it against a stubbed API.
+ * answers come from `MockTaskaStore`. The write routes' undeployed answer — the
+ * static-resource 404 — is not here for the same reason: the mock cannot
+ * produce that signature, so `UserProfileMenu.test.tsx` covers it against a
+ * stubbed API.
  *
  * One consequence of that store worth knowing while reading these: it hands
  * back the bytes it was given, as a `data:` URL, because it has no server to
@@ -65,6 +66,41 @@ const popover = (page: Page) => page.getByRole("dialog", { name: "Current user p
 async function choose(page: Page, name: string, buffer: Buffer = PNG, mimeType = "image/png") {
   await page.locator(".avatar-input").setInputFiles({ name, mimeType, buffer });
 }
+
+/**
+ * The photo band's bottom inset as a reader sees it: from the last thing in the
+ * band that draws anything to the band's own bottom edge. Measured against
+ * what has height rather than against the last child, because the defect was
+ * an empty one — the mounted live region, zero tall but in flow, which put the
+ * band's 7px gap under the hint and read 19 where a refusal read 12.
+ */
+async function photoBandInset(page: Page) {
+  return popover(page)
+    .locator(".user-profile-photo")
+    .evaluate((band) => {
+      const drawn = [...band.children].filter((child) => child.getBoundingClientRect().height > 0);
+      const last = drawn[drawn.length - 1];
+      return band.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
+    });
+}
+
+test("keeps the photo band's bottom inset at 12, at rest and with a refusal in it", async ({ page }) => {
+  await signIn(page);
+  await trigger(page).click();
+  await expect(popover(page).getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
+
+  // At rest the live region is mounted and empty — and takes no gap.
+  const live = popover(page).locator(".user-profile-photo-note-sentence");
+  await expect(live).toHaveAttribute("aria-live", "polite");
+  await expect(live).toHaveText("");
+  expect(await photoBandInset(page)).toBeCloseTo(12, 1);
+
+  // A refusal decided without a request fills that same region, in flow.
+  await choose(page, "animation.gif", Buffer.from("GIF89a"), "image/gif");
+  await expect(live).toContainText("animation.gif is not a type this product accepts.");
+  await expect(popover(page).locator(".user-profile-photo-live.user-profile-photo-note.is-error")).toBeVisible();
+  expect(await photoBandInset(page)).toBeCloseTo(12, 1);
+});
 
 test("uploads a photo from the profile menu, then deletes it and gets the initials back", async ({ page }) => {
   await signIn(page);
@@ -291,6 +327,35 @@ test("says the photo could not be loaded when the profile read fails, and an upl
   await expect(note).not.toHaveClass(/is-error/);
   expect(await note.evaluate((element) => element.closest("[aria-live]") === null)).toBe(true);
   await expect(popover(page).locator(".user-profile-photo-note-detail")).toHaveCount(0);
+  // But not the hint's fine print either: the same size and slot, set apart by
+  // tone alone — `--fg` where the hint above it is `--fg-2` — and no tint.
+  const tones = await note.evaluate((element) => {
+    const probe = (token: string) => {
+      const span = document.createElement("span");
+      span.style.color = `var(${token})`;
+      element.append(span);
+      const color = getComputedStyle(span).color;
+      span.remove();
+      return color;
+    };
+    const hint = element.parentElement?.querySelector(".user-profile-photo-hint") as HTMLElement;
+    return {
+      note: getComputedStyle(element).color,
+      noteBackground: getComputedStyle(element).backgroundColor,
+      noteSize: getComputedStyle(element).fontSize,
+      hint: getComputedStyle(hint).color,
+      hintSize: getComputedStyle(hint).fontSize,
+      fg: probe("--fg"),
+      fg2: probe("--fg-2"),
+    };
+  });
+  expect(tones.note).toBe(tones.fg);
+  expect(tones.hint).toBe(tones.fg2);
+  expect(tones.noteSize).toBe(tones.hintSize);
+  expect(tones.noteBackground).toBe("rgba(0, 0, 0, 0)");
+  // The note is the last thing in the band, and the empty live region under it
+  // adds no gap.
+  expect(await photoBandInset(page)).toBeCloseTo(12, 1);
   // Upload is the way out; there is nothing the server says to remove.
   await expect(popover(page).getByRole("button", { name: "Upload a photo" })).toBeEnabled();
   await expect(popover(page).getByRole("button", { name: "Remove photo" })).toHaveCount(0);

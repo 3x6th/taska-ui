@@ -121,13 +121,15 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    * and since that PR's head `3bd33cac` the answer says which:
    * `avatarUnavailable: true` for the failed read. Both draw initials and
    * offer Upload; the failed read adds one quiet line saying the photo could
-   * not be loaded. No request id — the server sends none with it — and no
-   * retry control: the gateway answers the next read on its own, and for a
-   * row whose object is gone (TAS-221) only an upload or a removal changes the
-   * answer at all. A gateway older than that PR sends no flag, and no flag is
-   * no line. The `["me"]` query keeps a link it already holds while the
-   * avatar's id is unchanged (`keepSignedAvatarLink`), so a re-read on focus
-   * does not download the picture again.
+   * not be loaded. No request id: the answer is a 200, whose id travels only
+   * in the `X-Request-Id` response header, and `RestTaskaApi.request` reads
+   * that header on a failure, never on a success — so this client does not
+   * hold one to show. And no retry control: the gateway answers the next read
+   * on its own, and for a row whose object is gone (TAS-221) only an upload or
+   * a removal changes the answer at all. A gateway older than that PR sends no
+   * flag, and no flag is no line. The `["me"]` query keeps a link it already
+   * holds while the avatar's id is unchanged (`keepSignedAvatarLink`), so a
+   * re-read on focus does not download the picture again.
    *
    * Only a link may say there is a photo to remove (§5.6), so "Remove photo"
    * is not offered in the failed-read state either: the server has not said
@@ -155,9 +157,18 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
       await queryClient.cancelQueries({ queryKey: ME_QUERY_KEY });
       const previous = queryClient.getQueryData<User>(ME_QUERY_KEY);
       // `avatarUnavailable: false` is the answer the next read gives once the
-      // row is gone: the profile reads, and says "none".
+      // row is gone: the profile reads, and says "none". Written only over a
+      // flag the gateway actually sent — a gateway older than backend PR #193
+      // sends none, and absent is not coerced into `false` (TaskaApi).
       queryClient.setQueryData<User>(ME_QUERY_KEY, (me) =>
-        me ? { ...me, avatarUrl: null, avatarId: null, avatarUnavailable: false } : me,
+        me
+          ? {
+              ...me,
+              avatarUrl: null,
+              avatarId: null,
+              ...(me.avatarUnavailable === undefined ? {} : { avatarUnavailable: false }),
+            }
+          : me,
       );
       const faces = user ? await writeOwnFace(queryClient, user.id, null) : [];
       return { previous, faces };
@@ -295,10 +306,19 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
       // member row the cache already holds for this person. The upload
       // replaced the row, so a failed read the profile reported before is
       // over: the presign that just succeeded is the one that was failing.
+      // The flag is cleared only where the gateway sent one; absent stays
+      // absent, as on the remove path.
       const link = saved.downloadUrl;
       await queryClient.cancelQueries({ queryKey: ME_QUERY_KEY });
       queryClient.setQueryData<User>(ME_QUERY_KEY, (me) =>
-        me ? { ...me, avatarUrl: link, avatarId: saved.id, avatarUnavailable: false } : me,
+        me
+          ? {
+              ...me,
+              avatarUrl: link,
+              avatarId: saved.id,
+              ...(me.avatarUnavailable === undefined ? {} : { avatarUnavailable: false }),
+            }
+          : me,
       );
       if (user) await writeOwnFace(queryClient, user.id, link);
     } else {
@@ -448,7 +468,9 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                     something the reader did, so it is not a live region —
                     and it yields to anything newer: a write's notice, or
                     an upload in flight, which is the way out of it. Quiet
-                    tone, no request id (the answer carries none), no retry. */}
+                    tone, no retry, and no request id: the answer is a 200,
+                    its id is only in the X-Request-Id header, and the client
+                    reads that header on failures alone. */}
                 {avatarUnavailable && !notice && !uploading ? (
                   <p className="user-profile-photo-note">Your photo could not be loaded.</p>
                 ) : null}
@@ -461,9 +483,16 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                     line beside it is outside it, which is the watchers
                     box's split (§4.21) for its reason: a polite region
                     holding the id would read a uuid aloud. Empty, the box
-                    carries no class and draws nothing. */}
+                    carries only its own stable class, which takes it out of
+                    the flow so it spends none of the band's gap; with a
+                    sentence it gains the note's classes and is laid out in
+                    flow. */}
                 <div
-                  className={notice ? `user-profile-photo-note${notice.tone === "error" ? " is-error" : ""}` : ""}
+                  className={
+                    notice
+                      ? `user-profile-photo-live user-profile-photo-note${notice.tone === "error" ? " is-error" : ""}`
+                      : "user-profile-photo-live"
+                  }
                 >
                   <p aria-live="polite" className="user-profile-photo-note-sentence">
                     {notice?.text ?? ""}

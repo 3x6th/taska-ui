@@ -1289,11 +1289,26 @@ h1 {
    — the alternative, hanging it off the 34px avatar in the header, puts a
    control inside a line whose whole job is identity. */
 .user-profile-photo {
+  /* The containing block for the empty live region below, which is taken out
+     of the flow while it has nothing to say. */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 7px;
   border-top: 1px solid var(--border);
   padding: 11px 14px 12px;
+}
+
+/* The live region, empty. It stays mounted — §7: a region that arrives with its
+   text depends on the screen reader's timing — but as an in-flow flex child it
+   took the band's 7px gap with nothing under it, so the band's bottom inset
+   read 19 at rest against 12 with a refusal showing. An absolutely positioned
+   flex child takes no gap, so the empty box sits out of the flow and the inset
+   is 12 either way. It is still in the accessibility tree: `position` hides
+   nothing. The moment a sentence arrives the box gains `.user-profile-photo-note`
+   and this rule stops matching, so a refusal is laid out in flow, as before. */
+.user-profile-photo-live:not(.user-profile-photo-note) {
+  position: absolute;
 }
 
 .user-profile-photo-actions {
@@ -1369,6 +1384,17 @@ h1 {
 .user-profile-photo-note.is-error {
   background: color-mix(in oklab, var(--danger) 10%, transparent);
   padding: 7px 9px;
+  color: var(--fg);
+}
+
+/* "Your photo could not be loaded." — the untinted `<p>`, never the live
+   region's box (a `<div>`). Same size and slot as the hint above it, so at
+   `--fg-2` the two read as one paragraph of fine print, and the line that says
+   something is wrong with the reader's own face disappeared into the line that
+   states the upload limit. `--fg` separates them by tone alone: no tint, which
+   belongs to a refusal of something the reader did, and nothing louder — this
+   describes the menu as it opened. */
+p.user-profile-photo-note:not(.is-error) {
   color: var(--fg);
 }
 
@@ -2802,6 +2828,17 @@ h1 {
 .admin-table .admin-events-action-cell {
   width: 96px;
   text-align: right;
+}
+
+/* Every Problems row the height of one that carries Retry. The cell is 30 by
+   the shared `.admin-table td` rule; a row with the button grows to the
+   button's 28 plus the cell's 6/6 padding and its 1px rule, so rows with and
+   without a Retry differed by 11px and the list stepped up and down as it
+   went. Fixed on the cell that causes it — `td` height is a minimum, so the
+   tallest cell in a row decides it — rather than on the button, which keeps
+   §7's 28px floor for a dense target. */
+.admin-table td.admin-events-action-cell {
+  height: 41px;
 }
 
 /* Two blocks under each other, each hugging its own content: the counters are

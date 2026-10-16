@@ -897,13 +897,35 @@ describe("ProjectMembersModal", () => {
       expect(within(dialog()).queryByText("mark@example.com")).toBeNull();
     });
 
+    it("a 404 on removing your own row — the stand until backend #185 deploys — takes you to your projects", async () => {
+      // develop's validator looks for the target before it checks the actor,
+      // so a reader somebody removed first is told their own row was not found.
+      // Live on the stand until backend PR #185 (TAS-229) deploys; the 403 case
+      // below is what that PR answers instead.
+      state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
+      state.removeFailure = refusal(
+        "NOT_FOUND",
+        404,
+        `Project member with id ${ANNA} was not found in project with id ${PROJECT}`,
+        "req-404-self",
+      );
+      const { queryClient } = renderPanel();
+      queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
+
+      fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove yourself from this project" }));
+      fireEvent.click(within(rowOf("Anna Ivanova")).getByRole("button", { name: "Remove me" }));
+
+      expect(await screen.findByText("Projects page")).toBeVisible();
+      expect(queryClient.getQueryState(["project-context", PROJECT])).toBeUndefined();
+    });
+
     it("a 403 on removing your own row — what somebody removing you first answers — says so and re-reads your role", async () => {
-      // Since backend PR #185 (TAS-229) the validator checks the actor's role
-      // before the target's membership. A reader another admin removed a moment
-      // earlier has no ADMIN row left to be the actor, so their own removal is
-      // refused 403, not 404: the dialog says the server refused, puts the row
-      // back, and re-reads the role — and the board's 403 on that re-read is
-      // what tells them they are out.
+      // Backend PR #185 (TAS-229), once deployed: the validator checks the
+      // actor's role before the target's membership. A reader another admin
+      // removed a moment earlier has no ADMIN row left to be the actor, so
+      // their own removal is refused 403, not 404: the dialog says the server
+      // refused, puts the row back, and re-reads the role — and the board's 403
+      // on that re-read is what tells them they are out.
       state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
       state.removeFailure = refusal(
         "PERMISSION_DENIED",

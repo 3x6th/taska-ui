@@ -42,6 +42,7 @@ const {
   summaryReads,
   setRetryStatus,
   setRetryMovesRow,
+  moveRowOnServer,
   holdRetry,
   releaseRetry,
   setMetaMismatch,
@@ -467,6 +468,14 @@ const {
     setRetryMovesRow: (on: boolean) => {
       state.retryMovesRow = on;
       state.movedStatuses = undefined;
+    },
+    /**
+     * The row changing on the server with no retry from here — picked up,
+     * finished, or retried by somebody else — which is what the not-eligible
+     * refusal reports. The next summary read answers with it.
+     */
+    moveRowOnServer: (eventId: string, status: string) => {
+      state.movedStatuses = { ...(state.movedStatuses ?? {}), [eventId]: status };
     },
     /** Keep the retry pending until `releaseRetry()`, the only way to observe a dismissal over one. */
     holdRetry: () => {
@@ -1254,10 +1263,16 @@ describe("/admin console selection in the URL", () => {
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
 
     expect(screen.getByLabelText("Value")).toHaveAttribute("type", "text");
-    // A type the gateway does not parse takes the string as written, so it
-    // keeps the free field too.
+    // A text column has no form to show, so no placeholder.
+    expect(screen.getByLabelText("Value")).not.toHaveAttribute("placeholder");
+    // A `uuid` column keeps the free field too — no narrower control helps to
+    // type one — and the field shows the one form the gateway parses.
     fireEvent.change(screen.getByLabelText("Column"), { target: { value: "id" } });
     expect(screen.getByLabelText("Value")).toHaveAttribute("type", "text");
+    expect(screen.getByLabelText("Value")).toHaveAttribute("placeholder", "00000000-0000-0000-0000-000000000000");
+    // And it goes again with the column.
+    fireEvent.change(screen.getByLabelText("Column"), { target: { value: "email" } });
+    expect(screen.getByLabelText("Value")).not.toHaveAttribute("placeholder");
   });
 
   // The gateway parses the value against the column's type — `new BigDecimal`
@@ -2388,8 +2403,55 @@ describe("admin events, retrying an event", () => {
     // refusal arrives on a 400, so a status check alone would have filed it
     // under "the gateway would not accept this request".
     const alert = await within(dialog).findByRole("alert");
-    expect(alert).toHaveTextContent(/would not retry this event/i);
+    expect(alert).toHaveTextContent(
+      "The server would not retry this event: it changed after this list was read. Nothing is wrong with the request, and this retry changed nothing.",
+    );
     expect(alert).toHaveTextContent("Outbox event with status NEW is not eligible for retry");
+    // And what was typed is still there, so pressing Retry again — or reading
+    // the reason before Cancel — costs nothing.
+    expect(within(dialog).getByLabelText("Reason")).toHaveValue("Try it");
+  });
+
+  /**
+   * The not-eligible refusal is the server saying the list is stale — the
+   * event changed after it was read — so the list is read again, and that is
+   * the one failure that does it. The dialog stays open over the read with the
+   * reason as typed: it holds the event, not a row looked up in the list.
+   */
+  it("reads the list again on the not-eligible refusal, and keeps the dialog and the reason", async () => {
+    failRetry(
+      Object.assign(new Error("Outbox event with status NEW is not eligible for retry"), {
+        code: "FAILED_PRECONDITION",
+        status: 400,
+      }),
+    );
+    await openDialog();
+    const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+    // Somebody else's retry got there first: the list, read again, says `NEW`.
+    moveRowOnServer("e1", "NEW");
+    const readsBeforeRefusal = summaryReads();
+
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+      await settle();
+    });
+
+    expect(summaryReads()).toBe(readsBeforeRefusal + 1);
+    // The list behind the dialog shows where the event is now …
+    expect(await screen.findByRole("cell", { name: "NEW" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry event e1" })).not.toBeInTheDocument());
+    // … and the dialog is still the one the operator was answering.
+    const still = screen.getByRole("dialog", { name: "Retry outbox event" });
+    expect(still).toBeVisible();
+    expect(within(still).getByRole("alert")).toHaveTextContent(/would not retry this event/i);
+    expect(within(still).getByLabelText("Reason")).toHaveValue("Try it");
+
+    // The Retry button it came from went with that read, so dismissing puts
+    // focus on the list rather than dropping it on `<body>`.
+    fireEvent.click(within(still).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Retry outbox event" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Problematic events" })).toHaveFocus();
   });
 
   /**
@@ -2417,12 +2479,17 @@ describe("admin events, retrying an event", () => {
     await openDialog();
     const dialog = screen.getByRole("dialog", { name: "Retry outbox event" });
     fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Try it" } });
+    const readsBeforeRefusal = summaryReads();
 
     await act(async () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+      await settle();
     });
 
     const alert = await within(dialog).findByRole("alert");
+    // Nor does it read the list again: only the not-eligible refusal proves
+    // the list is stale.
+    expect(summaryReads()).toBe(readsBeforeRefusal);
     // `rejected`: it was read and refused, and what to change is in the
     // server's own words below.
     expect(alert).toHaveTextContent(/would not accept this request/i);

@@ -10,6 +10,7 @@ import {
   shortKey,
   supportsOperator,
   valueControlForType,
+  valuePlaceholderForType,
 } from "./columns";
 
 describe("filter operators offered per column type", () => {
@@ -81,6 +82,21 @@ describe("which control enters a filter value", () => {
   it("keeps the free field for text, uuid, and types the gateway does not parse", () => {
     for (const type of ["text", "character varying", "uuid", "inet", "jsonb", undefined]) {
       expect(valueControlForType(type)).toBe("text");
+    }
+  });
+});
+
+describe("what the free value field shows while it is empty", () => {
+  // The gateway parses an `equals` on a `uuid` column strictly — the canonical
+  // 8-4-4-4-12 form and nothing else (TAS-232) — so the field shows that form.
+  it("shows the canonical uuid shape on a uuid column, whatever the type's case", () => {
+    expect(valuePlaceholderForType("uuid")).toBe("00000000-0000-0000-0000-000000000000");
+    expect(valuePlaceholderForType(" UUID ")).toBe("00000000-0000-0000-0000-000000000000");
+  });
+
+  it("shows nothing on any other column", () => {
+    for (const type of ["text", "character varying", "integer", "boolean", "date", "inet", "jsonb", "uuid[]", undefined]) {
+      expect(valuePlaceholderForType(type)).toBeUndefined();
     }
   });
 });

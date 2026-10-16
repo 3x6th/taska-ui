@@ -327,6 +327,19 @@ test("draws no Retry button on a stuck row the server says it would not retry ye
     .filter({ has: page.getByRole("cell", { name: "FAILED", exact: true }) })
     .filter({ has: page.getByRole("cell", { name: "project", exact: true }) });
   await expect(failed.first().getByRole("button", { name: /^Retry event / })).toBeVisible();
+
+  // And the two rows are one height. A row with the button used to be 41 and
+  // one without it 30, so the list stepped as it went; the action cell now
+  // holds every row at the height the button needs.
+  const heights = await list
+    .locator("tbody tr")
+    .evaluateAll((rows) => rows.map((row) => Math.round(row.getBoundingClientRect().height * 10) / 10));
+  expect(heights.length).toBeGreaterThan(1);
+  expect(new Set(heights).size).toBe(1);
+  expect(await stuck.evaluate((row) => row.getBoundingClientRect().height)).toBeCloseTo(
+    await failed.first().evaluate((row) => row.getBoundingClientRect().height),
+    1,
+  );
 });
 
 // The whole dialog has to be reachable and dismissable from the keyboard: it is

@@ -595,7 +595,8 @@ describe("UserProfileMenu", () => {
       // `avatar: null, avatarUnavailable: true`: the gateway's profile read
       // failed, so the null is "unknown", not "none". One quiet line, which
       // describes the menu as it opened rather than answering an action — so
-      // not a live region — with no request id (the answer carries none), no
+      // not a live region — with no request id (a 200, whose id is only in a
+      // header the client reads on failures alone), no
       // retry, and no "Remove photo": the server has not said there is a photo.
       state.avatarUnavailable = true;
       renderOnProfile();
@@ -610,8 +611,14 @@ describe("UserProfileMenu", () => {
       expect(document.querySelector(".user-profile-photo .is-error")).toBeNull();
       expect(document.querySelector(".user-profile-photo-note-detail")).toBeNull();
       expect(screen.queryByRole("button", { name: /Copy request id/ })).not.toBeInTheDocument();
-      // The live region is still there, mounted and empty, for a write's answer.
-      expect(document.querySelector(".user-profile-photo-note-sentence")).toHaveTextContent("");
+      // The live region is still there, mounted and empty, for a write's answer
+      // — in its own box, which carries none of the note's classes while it is
+      // empty, so the stylesheet can take it out of the band's flow.
+      const live = document.querySelector(".user-profile-photo-note-sentence");
+      expect(live).toHaveTextContent("");
+      expect(live).toHaveAttribute("aria-live", "polite");
+      expect(live?.parentElement).toHaveClass("user-profile-photo-live");
+      expect(live?.parentElement).not.toHaveClass("user-profile-photo-note");
 
       expect(screen.getAllByLabelText("Anna Ivanova")[0].textContent).toBe("AI");
       expect(screen.getByRole("button", { name: "Upload a photo" })).toBeEnabled();
@@ -634,6 +641,34 @@ describe("UserProfileMenu", () => {
       expect(screen.queryByRole("button", { name: "Remove photo" })).not.toBeInTheDocument();
     });
 
+    it("does not write a flag the gateway never sent, on an upload or on a removal", async () => {
+      // A profile from a gateway older than backend PR #193 carries no
+      // `avatarUnavailable` at all, and absent is not coerced (TaskaApi): the
+      // writes clear a flag that is there, and leave a missing one missing.
+      state.legacyProfile = true;
+      const client = appClient();
+      renderOnProfile({ client });
+      const trigger = await openOnProfile();
+      expect(client.getQueryData<User>(["me"])).not.toHaveProperty("avatarUnavailable");
+
+      pick(imageFile());
+
+      await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", state.confirmedUrl));
+      expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: state.confirmedUrl, avatarId: "avatar-1" });
+      expect(client.getQueryData<User>(["me"])).not.toHaveProperty("avatarUnavailable");
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Remove photo" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Remove photo" }));
+
+      await waitFor(() => expect(state.deletes).toBe(1));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Upload a photo" })).toBeEnabled());
+      expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: null, avatarId: null });
+      expect(client.getQueryData<User>(["me"])).not.toHaveProperty("avatarUnavailable");
+      // Neither write read the profile again to find out.
+      await settle();
+      expect(state.reads).toEqual(["me"]);
+    });
+
     it("lets the note yield to a write's answer", async () => {
       // Two boxes about the photo, one stale and one fresh, would be two
       // answers to one question; the newer one wins (§4.16).
@@ -650,6 +685,11 @@ describe("UserProfileMenu", () => {
 
       await waitFor(() => expect(screen.getByText("Your photo was not saved. Storage service unavailable")).toBeVisible());
       expect(screen.queryByText("Your photo could not be loaded.")).not.toBeInTheDocument();
+      // The refusal fills the same mounted region, whose box now carries the
+      // note's classes and so is laid out in flow.
+      const sentence = screen.getByText("Your photo was not saved. Storage service unavailable");
+      expect(sentence).toHaveAttribute("aria-live", "polite");
+      expect(sentence.parentElement).toHaveClass("user-profile-photo-live", "user-profile-photo-note", "is-error");
     });
 
     it("hides the note while an upload is in flight, and an upload that lands clears it", async () => {

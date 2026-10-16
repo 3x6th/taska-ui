@@ -57,6 +57,25 @@ export function valueControlForType(type?: string): AdminValueControl {
 }
 
 /**
+ * The canonical 8-4-4-4-12 shape, the only one the gateway's `parseUuidValue`
+ * takes for an `equals` on a `uuid` column (TAS-232): `UUID.fromString` alone
+ * would accept `1-1-1-1-1`, and the gateway refuses it by checking the round
+ * trip.
+ */
+export const UUID_VALUE_PLACEHOLDER = "00000000-0000-0000-0000-000000000000";
+
+/**
+ * What the free Value field shows while it is empty, or nothing. Only a `uuid`
+ * column gets one: it keeps the free field (`valueControlForType`), and the
+ * placeholder is the one help that field can give — the form the server will
+ * parse, drawn in §4.3's placeholder colour where the value will go. A text
+ * column has no form to show, and the other classes have controls of their own.
+ */
+export function valuePlaceholderForType(type?: string): string | undefined {
+  return classifyColumnType(type) === "UUID" ? UUID_VALUE_PLACEHOLDER : undefined;
+}
+
+/**
  * Whether a row of this table can be addressed at all. `GET
  * /readonly/{service}/{table}/{id}` types `id` as a `UUID` in the gateway, so a
  * table keyed by a number or a code is refused before admin-service sees it —
