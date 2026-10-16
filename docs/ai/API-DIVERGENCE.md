@@ -1654,6 +1654,28 @@ Everything below is the entry as it stood, in the past tense.
   [TAS-217](https://jira.ozero.dev/browse/TAS-217), which does not list upload
   limits today. Same position as the attachment limits entry below.
 
+### The avatar link's lifetime is not on the wire, and the client keeps a link for ten minutes on that assumption
+
+- **Endpoints:** `GET /api/v1/users/me` (`avatar.downloadUrl`, backend PR #193
+  head `3bd33ca`), and every member row's `avatar.downloadUrl`.
+- **Observed** (code, not probed): every read signs the link anew, and nothing
+  in `AvatarDto` states when it expires. The lifetime is
+  `STORAGE_PRESIGNED_URL_TTL` in auth-service, 15 minutes by default and
+  overridable per stand.
+- **Client:** `src/lib/ownAvatarLink.ts` keeps the reader's own held link while
+  the avatar id is unchanged and the link was adopted less than 10 minutes ago,
+  so a focus refetch of `["me"]` does not download the face again. It invents
+  no data and re-reads nothing — `api-contract-guard` ruled it cache handling,
+  not a compensation (2026-10-17) — but it rests on the 15-minute default. A
+  stand configured below 10 minutes would draw an expired link until the next
+  refetch, and the `Avatar` fallback would show initials. Member rows are
+  re-signed on every list read and are not held (`BACKLOG.md`, "Member reads
+  re-sign every face").
+- **Removal:** the backend stating the lifetime (`downloadUrlExpiresAt` on
+  `AvatarDto`) or signing stable links; ready-to-file ask in `BACKLOG.md`,
+  "Left by TAS-263". Until then the 10 minutes stays a constant with this entry
+  as its reason.
+
 ### Closed by TAS-263: the current user's avatar cost a second read, because `GET /users/me` carried none
 
 **Closed on 2026-10-17 by [TAS-263](https://jira.ozero.dev/browse/TAS-263)
@@ -1679,7 +1701,12 @@ because an absent flag means the server did not say, not that a read failed.
 No compensation and no second read. That is a visible change if TAS-263
 deploys first: before it the menu read `GET /users/{userId}/avatar`, which
 answers on stage, so a person with a photo sees initials in their own menu
-from the TAS-263 deploy until #193's. **Removed by:** TAS-223 — when #193
+from the TAS-263 deploy until #193's. In that window the menu also offers
+"Upload a photo" instead of "Replace photo" and no "Remove photo" to a person
+who has one, and a photo uploaded there shows until the next `/users/me`
+refetch and then falls back to initials, because the profile still carries no
+avatar (`release-reviewer`, 2026-10-17). That is why TAS-263 merges only after
+#193 and #195 are deployed and probed. **Removed by:** TAS-223 — when #193
 merges and a token read of `/users/me` shows both keys, this paragraph goes.
 
 The entry as it stood:
@@ -1715,8 +1742,12 @@ The entry as it stood:
   `avatar.objectKey`, and carried no avatar at `1cfe4d7`; since TAS-225
   (backend PR #181, merged 2026-10-12) they carry the avatar, and auth-service
   selects `object_key` for it (`UserRepository.findUsersWithAvatars` at
-  `4277199`; whether the gateway passes `objectKey` on was not checked on the
-  wire). So one user can confirm another's key and then delete it
+  `4277199`), and the gateway passes it on: `ProjectMapper.java:148` copies
+  `objectKey` into the member row's `avatar` (read at `4277199` by
+  `api-contract-guard` on 2026-10-17, not probed). Dropping `objectKey` from
+  `AvatarDto` alone would not close this: the presigned link's path carries the
+  key too. TAS-221 (the confirm checks the key was minted for the caller) is the
+  fix. So one user can confirm another's key and then delete it
   with `DELETE /users/me/avatar`. Separately, confirming the **same key twice**
   deletes the object the saved row points at and then fails, and every later
   avatar read for that user answers 404, because the download presign issues a

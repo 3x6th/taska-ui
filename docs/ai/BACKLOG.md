@@ -3338,6 +3338,41 @@ skeptics' and the critic's corrections taken. None of #184–#195 is merged, and
 backend develop is `4277199`. Everything below was read from code. None of it
 was probed on the stand.
 
+From the role verdicts on the branch (2026-10-17), not taken in this PR:
+
+- **A refused Data filter replaces the whole plane, hiding the chip that
+  caused it** (`art-director`, AD-6, pre-existing). A typo in a UUID filter
+  value answers 400 and the refusal takes the table's place; the chip with the
+  bad value is not visible beside the sentence that names it.
+- **Retry refusal re-read can still drop focus to `<body>`** (`frontend-builder`,
+  third pass). On the not-eligible refusal the Problems list is re-read; if the
+  operator dismisses before that read lands and the read removes the row's
+  Retry button, focus falls to `<body>`. `focusTrigger` falls back to the list
+  region only when the button is already gone at dismissal; the
+  `rescueFrom`/`armedAt` mechanism is armed on the success path only.
+- **The mock's admin filter validation skips two gateway passes**
+  (`frontend-builder`, third pass). It does not model `FilterParser`'s blank
+  refusal ("Filter value must not be empty for key"), so a whitespace-only
+  value filters to an empty result where the gateway answers 400, and it does
+  not model `validateColumn` for an unknown column. Both are reachable only by
+  a hand-edited URL.
+- **Backend ask, ready to file: `AvatarDto` states its link's lifetime, or the
+  link is stable** (`api-contract-guard`, F2). As-is: `downloadUrl` with no
+  expiry; the TTL is `STORAGE_PRESIGNED_URL_TTL` (15m default, overridable);
+  every `/users/me` and member read re-signs. To-be: (a) `downloadUrlExpiresAt`
+  on `AvatarResponse`/`AvatarDto` (proto + service + gateway mapper), or (b) a
+  stable redirecting link with a cache validator. Layer: auth-service and
+  gateway. Removes the `API-DIVERGENCE.md` entry "The avatar link's lifetime is
+  not on the wire". Epic: TAS-210 or new.
+- **Backend ask, ready to file: the read-only catalog states each column's
+  filter operators** (`api-contract-guard`, F4). As-is: `ColumnMetadataDto`
+  is `{name, type, sensitive}`, and the client and the mock copy
+  `DbColumnType.PG_TYPE_MAP` (TAS-263 added `UUID` to the copy). To-be:
+  `filterOperators` (or `columnClass`) per column, computed by admin-service
+  from `DbColumnType.supportsContains`/`supportsRange`. Layer: admin-service
+  and gateway mapper. Removes the copied map (`src/lib/adminColumnTypes.ts`) and
+  gives the classifier entry in `API-DIVERGENCE.md` a removal key.
+
 Frontend, recorded rather than taken:
 
 - **The mock's sibling project reads still answer a non-member, while the

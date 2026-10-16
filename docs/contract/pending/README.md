@@ -110,6 +110,7 @@ was written against it.
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
 | `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
+| `pr-172-TAS-160.yml` | [#172](https://github.com/VladislavYurin/taska-backend/pull/172) | TAS-160 | TAS-251 |
 | `pr-193-TAS-223.yml` | [#193](https://github.com/VladislavYurin/taska-backend/pull/193) | TAS-223 | TAS-263 |
 | `pr-194-TAS-228.yml` | [#194](https://github.com/VladislavYurin/taska-backend/pull/194) | TAS-228 | TAS-263 |
 | `pr-195-TAS-200.yml` | [#195](https://github.com/VladislavYurin/taska-backend/pull/195) | TAS-200 | TAS-263 |
