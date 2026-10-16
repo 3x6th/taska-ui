@@ -160,6 +160,72 @@ test("a filter that matches nothing says so instead of looking broken", async ({
   await expect(page.getByText("No rows match this filter.")).toBeVisible();
 });
 
+// A uuid column's Value field shows a whole UUID as its placeholder (§5.8): the
+// shape a pasted key has to take. In a 268px popover the field had 220px of
+// text room against the ~240 the placeholder needs, so it was clipped mid-glyph
+// at every viewport — and a real key overflowed the same way. Measured in the
+// field's own computed font rather than against a number written here, at the
+// project's viewport, at 390 and at 320, where the popover narrows to the
+// window instead of pushing the page sideways.
+test("fits a whole UUID in the filter's value field without pushing the page sideways", async ({ page }) => {
+  await openConsole(page);
+  await expect(page.getByRole("cell", { name: "anna@example.com" })).toBeVisible();
+
+  // The widths below belong to DESIGN.md §2.3's UI font; on the fallback stack
+  // they would be measuring something the product does not ship. The link is
+  // `display=swap`, so the face can arrive after first paint — poll, and ask
+  // the font set rather than `document.fonts.check` (see topbar-popovers).
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          [...document.fonts].some((face) => face.family.includes("Hanken Grotesk") && face.status === "loaded"),
+        ),
+      {
+        message: "the UI webfont never became available, so the width below would be measuring the fallback stack",
+        timeout: 10_000,
+      },
+    )
+    .toBe(true);
+
+  await page.getByRole("button", { name: "Filter" }).click();
+  await page.getByLabel("Column", { exact: true }).selectOption("id");
+  const popover = page.getByRole("dialog", { name: "Filter rows" });
+  const value = popover.getByLabel("Value", { exact: true });
+  await expect(value).toHaveAttribute("placeholder", "00000000-0000-0000-0000-000000000000");
+
+  const projectWidth = page.viewportSize()?.width ?? 1440;
+  for (const width of [...new Set([projectWidth, 390, 320])]) {
+    await page.setViewportSize({ width, height: 844 });
+    // `tk-pop` starts 7px low; the rect is read where the popover settles.
+    await popover.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+
+    const fit = await value.evaluate((element) => {
+      const input = element as HTMLInputElement;
+      const style = getComputedStyle(input);
+      const context = document.createElement("canvas").getContext("2d");
+      if (!context) throw new Error("no 2d canvas context to measure with");
+      context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      if (style.letterSpacing !== "normal") context.letterSpacing = style.letterSpacing;
+      return {
+        needed: context.measureText(input.placeholder).width,
+        room: input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+      };
+    });
+    expect(fit.needed, `UUID placeholder against the field's text room at ${width}px`).toBeLessThanOrEqual(fit.room);
+
+    const box = await popover.boundingBox();
+    expect(box, `filter popover at ${width}px`).not.toBeNull();
+    expect(box!.x, `filter popover's left edge at ${width}px`).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width, `filter popover's right edge at ${width}px`).toBeLessThanOrEqual(width);
+
+    const pageOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(pageOverflow, `horizontal page overflow at ${width}px`).toBe(0);
+  }
+});
+
 test("opens one row and comes back to the page and filter it was opened from", async ({ page }) => {
   await openConsole(page);
 

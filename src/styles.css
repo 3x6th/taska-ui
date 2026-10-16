@@ -2104,7 +2104,8 @@ p.user-profile-photo-note:not(.is-error) {
   top: 34px;
   right: 0;
   z-index: 20;
-  width: 268px;
+  width: 300px;
+  max-width: calc(100vw - 28px);
   border: 1px solid var(--border);
   border-radius: 13px;
   background: var(--surface);
