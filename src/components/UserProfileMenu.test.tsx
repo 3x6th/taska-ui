@@ -28,6 +28,14 @@ const anna: User = {
 const { fakeApi, state, reset, release } = vi.hoisted(() => {
   const state: {
     avatarUrl: string | null;
+    /**
+     * Backend PR #193's flag on the profile: `true` when the gateway's profile
+     * read failed, so `avatarUrl: null` means unknown. A write that succeeds
+     * puts it back to `false`, as replacing or removing the row does.
+     */
+    avatarUnavailable: boolean;
+    /** A gateway older than TAS-223: the profile with no avatar fields at all. */
+    legacyProfile: boolean;
     /** Profile reads, one `"me"` each. */
     reads: string[];
     deletes: number;
@@ -40,6 +48,11 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     ticketFailure?: Error;
     /** Fails the next confirm only, so the retry after it can be watched. */
     confirmFailure?: Error;
+    /**
+     * The confirm succeeds and the object is gone right after — TAS-221's
+     * cross-user path — so every later profile read is a failed one.
+     */
+    lostAfterConfirm: boolean;
     deleteFailure?: Error;
     confirmedUrl: string;
     /** `false` answers the confirm without its `downloadUrl`. */
@@ -50,6 +63,8 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     holdConfirm: boolean;
   } = {
     avatarUrl: null,
+    avatarUnavailable: false,
+    legacyProfile: false,
     reads: [],
     deletes: 0,
     minted: [],
@@ -57,6 +72,7 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     memberReads: 0,
     confirmedUrl: "https://store.example/new-face.png?sig=2",
     confirmCarriesLink: true,
+    lostAfterConfirm: false,
     holdDelete: false,
     holdConfirm: false,
   };
@@ -72,9 +88,17 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
   const fakeApi = {
     getCurrentUser: async () => {
       state.reads.push("me");
+      if (state.legacyProfile) return { ...anna };
       // The avatar's id stays the same while the picture does, as on the
-      // server: only the link is signed afresh on every read.
-      return { ...anna, avatarUrl: state.avatarUrl, avatarId: state.avatarUrl ? "avatar-1" : null };
+      // server: only the link is signed afresh on every read. A failed profile
+      // read carries no avatar at all, whatever the row holds.
+      if (state.avatarUnavailable) return { ...anna, avatarUrl: null, avatarId: null, avatarUnavailable: true };
+      return {
+        ...anna,
+        avatarUrl: state.avatarUrl,
+        avatarId: state.avatarUrl ? "avatar-1" : null,
+        avatarUnavailable: false,
+      };
     },
     createAvatarUploadUrl: async () => {
       if (state.ticketFailure) throw state.ticketFailure;
@@ -92,6 +116,7 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
         throw failure;
       }
       state.avatarUrl = state.confirmedUrl;
+      state.avatarUnavailable = state.lostAfterConfirm;
       return {
         id: "avatar-1",
         userId: anna.id,
@@ -108,6 +133,7 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
       if (state.holdDelete) await hold();
       if (state.deleteFailure) throw state.deleteFailure;
       state.avatarUrl = null;
+      state.avatarUnavailable = false;
     },
     listMembers: async () => {
       state.memberReads += 1;
@@ -117,6 +143,8 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
 
   const reset = () => {
     state.avatarUrl = null;
+    state.avatarUnavailable = false;
+    state.legacyProfile = false;
     state.reads = [];
     state.deletes = 0;
     state.minted = [];
@@ -127,6 +155,7 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     state.deleteFailure = undefined;
     state.confirmedUrl = "https://store.example/new-face.png?sig=2";
     state.confirmCarriesLink = true;
+    state.lostAfterConfirm = false;
     state.holdDelete = false;
     state.holdConfirm = false;
     releaseHeld = null;
@@ -476,9 +505,10 @@ describe("UserProfileMenu", () => {
    * from the profile and a re-read does not swap its link while the avatar is
    * the same one; that a write rewrites the profile and the member rows already
    * in the cache instead of reading every list again; that a refusal happens
-   * *before* any request is spent; and that a profile carrying no avatar —
-   * none, or a profile read the gateway could not make — draws initials and no
-   * error, because the server does not tell the two apart.
+   * *before* any request is spent; and that a profile carrying no avatar draws
+   * initials — quietly for "none", with one unannounced line for a profile
+   * read the gateway could not make, which backend PR #193 (`3bd33cac`) tells
+   * apart with `avatarUnavailable`.
    */
   describe("the profile photo", () => {
     const FACE = "https://store.example/face.png?sig=1";
@@ -549,17 +579,122 @@ describe("UserProfileMenu", () => {
       expect(screen.getAllByLabelText("Anna Ivanova")[0].textContent).toBe("AI");
     });
 
-    it("draws initials and no error when the profile carries a null avatar, whatever the reason", async () => {
-      // `avatar: null` is what the gateway sends both for no photo and for a
-      // profile read it could not make (TAS-223). It does not tell them apart,
-      // so neither does this menu: no "could not be loaded", no request id —
-      // the state the server reports, not a guess at a cause.
+    it("draws initials and no note when the profile says there is no photo", async () => {
+      // `avatar: null, avatarUnavailable: false`: the profile was read and the
+      // answer is "none" (backend PR #193). Nothing to explain.
       renderOnProfile();
       await openOnProfile();
 
+      expect(screen.getAllByLabelText("Anna Ivanova")[0].textContent).toBe("AI");
       expect(document.querySelector(".user-profile-photo .is-error")).toBeNull();
       expect(screen.queryByText(/could not be loaded/)).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Upload a photo" })).toBeEnabled();
+    });
+
+    it("says the photo could not be loaded when the server reports a failed profile read, and offers only an upload", async () => {
+      // `avatar: null, avatarUnavailable: true`: the gateway's profile read
+      // failed, so the null is "unknown", not "none". One quiet line, which
+      // describes the menu as it opened rather than answering an action — so
+      // not a live region — with no request id (the answer carries none), no
+      // retry, and no "Remove photo": the server has not said there is a photo.
+      state.avatarUnavailable = true;
+      renderOnProfile();
+      await openOnProfile();
+
+      const note = await screen.findByText("Your photo could not be loaded.");
+      expect(note).toBeVisible();
+      expect(note).toHaveClass("user-profile-photo-note");
+      expect(note).not.toHaveClass("is-error");
+      expect(note.closest("[aria-live]")).toBeNull();
+      expect(note.closest('[role="status"], [role="alert"]')).toBeNull();
+      expect(document.querySelector(".user-profile-photo .is-error")).toBeNull();
+      expect(document.querySelector(".user-profile-photo-note-detail")).toBeNull();
+      expect(screen.queryByRole("button", { name: /Copy request id/ })).not.toBeInTheDocument();
+      // The live region is still there, mounted and empty, for a write's answer.
+      expect(document.querySelector(".user-profile-photo-note-sentence")).toHaveTextContent("");
+
+      expect(screen.getAllByLabelText("Anna Ivanova")[0].textContent).toBe("AI");
+      expect(screen.getByRole("button", { name: "Upload a photo" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Remove photo" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /retry|try again/i })).not.toBeInTheDocument();
+      // The flag rode on the one profile read; nothing reads again to check it.
+      await settle();
+      expect(state.reads).toEqual(["me"]);
+    });
+
+    it("draws no note for a gateway that predates the flag", async () => {
+      // No `avatar` and no `avatarUnavailable` at all: the server said nothing
+      // about a photo, so this menu says nothing either.
+      state.legacyProfile = true;
+      renderOnProfile();
+      await openOnProfile();
+
+      expect(screen.getByRole("button", { name: "Upload a photo" })).toBeEnabled();
+      expect(screen.queryByText(/could not be loaded/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Remove photo" })).not.toBeInTheDocument();
+    });
+
+    it("lets the note yield to a write's answer", async () => {
+      // Two boxes about the photo, one stale and one fresh, would be two
+      // answers to one question; the newer one wins (§4.16).
+      state.avatarUnavailable = true;
+      state.ticketFailure = Object.assign(new Error("Storage service unavailable"), {
+        code: "UNAVAILABLE",
+        status: 503,
+      });
+      renderOnProfile();
+      await openOnProfile();
+      expect(await screen.findByText("Your photo could not be loaded.")).toBeVisible();
+
+      pick(imageFile());
+
+      await waitFor(() => expect(screen.getByText("Your photo was not saved. Storage service unavailable")).toBeVisible());
+      expect(screen.queryByText("Your photo could not be loaded.")).not.toBeInTheDocument();
+    });
+
+    it("hides the note while an upload is in flight, and an upload that lands clears it", async () => {
+      state.avatarUnavailable = true;
+      state.holdConfirm = true;
+      const client = appClient();
+      renderOnProfile({ client });
+      const trigger = await openOnProfile();
+      expect(await screen.findByText("Your photo could not be loaded.")).toBeVisible();
+
+      pick(imageFile());
+
+      await waitFor(() => expect(screen.getByText("Uploading…")).toBeVisible());
+      expect(screen.queryByText("Your photo could not be loaded.")).not.toBeInTheDocument();
+
+      release();
+
+      // The upload replaced the row, so the read that was failing is over: the
+      // picture is drawn, "Remove photo" is offered, and the note stays gone.
+      await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", state.confirmedUrl));
+      expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: state.confirmedUrl, avatarUnavailable: false });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Remove photo" })).toBeEnabled());
+      expect(screen.queryByText("Your photo could not be loaded.")).not.toBeInTheDocument();
+      await settle();
+      expect(state.reads).toEqual(["me"]);
+    });
+
+    it("does not write an unknown face onto the member rows when the re-read reports a failed profile read", async () => {
+      // The confirm answered without a link, so the profile is read again — and
+      // that read failed (`avatarUnavailable: true`). Its `null` is "unknown":
+      // writing it onto the member rows would state "no photo" there.
+      state.avatarUrl = FACE;
+      state.confirmCarriesLink = false;
+      state.lostAfterConfirm = true;
+      const client = seededClient(FACE);
+      renderOnProfile({ client, children: <MemberFaceHolders /> });
+      await openOnProfile();
+
+      pick(imageFile());
+
+      await waitFor(() => expect(state.reads).toEqual(["me", "me"]));
+      expect(await screen.findByText("Your photo could not be loaded.")).toBeVisible();
+      await settle();
+      expect(faceIn(client, anna.id)).toEqual({ members: FACE, summary: FACE });
+      expect(state.memberReads).toBe(0);
     });
 
     it("states the enforced ceiling and the accepted types before a file is chosen", async () => {
@@ -583,8 +718,12 @@ describe("UserProfileMenu", () => {
       await waitFor(() => expect(trigger.querySelector("img")).not.toBeNull());
       expect(trigger.querySelector("img")).toHaveAttribute("src", state.confirmedUrl);
       // Written onto the profile, with the id that tells a re-signed link from
-      // a new picture.
-      expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: state.confirmedUrl, avatarId: "avatar-1" });
+      // a new picture, and the flag a read of the replaced row would carry.
+      expect(client.getQueryData<User>(["me"])).toMatchObject({
+        avatarUrl: state.confirmedUrl,
+        avatarId: "avatar-1",
+        avatarUnavailable: false,
+      });
       await waitFor(() => expect(screen.getByRole("button", { name: "Replace photo" })).toBeEnabled());
       // The confirm answered with the link, so nothing re-reads to find it.
       await settle();
@@ -674,7 +813,7 @@ describe("UserProfileMenu", () => {
 
       await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null }));
       expect(trigger.querySelector("img")).toBeNull();
-      expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: null, avatarId: null });
+      expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: null, avatarId: null, avatarUnavailable: false });
 
       release();
 

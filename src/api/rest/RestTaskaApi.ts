@@ -140,10 +140,18 @@ interface RestUser {
   /**
    * `AvatarDto`, nullable, on `GET /users/me` since backend PR #193 (TAS-223).
    * Only `id` and `downloadUrl` are read. `null` both for no avatar and for a
-   * profile read the gateway could not make — it does not distinguish them.
-   * Absent on a gateway older than that PR.
+   * profile read the gateway could not make; `avatarUnavailable` below is
+   * what tells those two apart. Absent on a gateway older than that PR.
    */
   avatar?: { id?: string; downloadUrl?: string } | null;
+  /**
+   * Required boolean in backend PR #193's schema (head `3bd33cac`): `true` when
+   * the gateway's `GetUserProfile` read failed and `avatar: null` means
+   * unknown, `false` when it read the profile. Typed optional and `unknown`
+   * anyway: a gateway older than that PR omits it, and only a real boolean
+   * is taken (`toUser`).
+   */
+  avatarUnavailable?: unknown;
 }
 
 /**
@@ -1657,8 +1665,9 @@ export class RestTaskaApi implements TaskaApi {
    * not check that the key was minted for the caller, and a second confirm of
    * the key the saved row already holds deletes that very object before
    * presigning a link to it, answers 404, and leaves a row whose every later
-   * presign fails — so `GET /users/me` carries `avatar: null` for that reader.
-   * So one key is confirmed once,
+   * presign fails — so `GET /users/me` carries `avatar: null,
+   * avatarUnavailable: true` for that reader until an upload or a removal
+   * replaces the row. So one key is confirmed once,
    * and a retry starts again at leg 1. See `confirmAvatarUpload` on TaskaApi.
    */
   async confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar> {
@@ -2169,6 +2178,12 @@ export class RestTaskaApi implements TaskaApi {
    * older than TAS-223) leaves both fields `undefined` — nobody was told — and
    * an explicit `null`, or an avatar with no usable link, is `null`. An empty
    * `downloadUrl` is `null` too, because `<img src="">` re-requests the page.
+   *
+   * `avatarUnavailable` is copied only when it is a boolean, and on its own —
+   * not tied to whether `avatar` came. Absent, or anything else (`"true"`,
+   * `null`), leaves the key off rather than defaulting it to `false`: `false`
+   * is the server saying "I read the profile", and a client that writes that
+   * on the server's behalf has invented an answer.
    */
   private toUser(user: RestUser): User {
     const avatar = user.avatar;
@@ -2186,6 +2201,7 @@ export class RestTaskaApi implements TaskaApi {
             avatarUrl: typeof avatar?.downloadUrl === "string" && avatar.downloadUrl ? avatar.downloadUrl : null,
             avatarId: typeof avatar?.id === "string" && avatar.id ? avatar.id : null,
           }),
+      ...(typeof user.avatarUnavailable === "boolean" ? { avatarUnavailable: user.avatarUnavailable } : {}),
     };
   }
 

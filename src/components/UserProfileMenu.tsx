@@ -117,17 +117,25 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    * The reader's own face comes with the profile: `GET /users/me` carries the
    * avatar since backend PR #193 (TAS-223), so this menu spends no request of
    * its own on it — it used to read `GET /users/{userId}/avatar` on mount.
-   * `null` there means no photo *or* a profile read the gateway could not make;
-   * the server answers both alike, so both draw initials and offer Upload, and
-   * there is no "could not be loaded" state to draw (no compensation). The
-   * `["me"]` query keeps a link it already holds while the avatar's id is
-   * unchanged (`keepSignedAvatarLink`), so a re-read on focus does not
-   * download the picture again.
+   * `null` there means no photo *or* a profile read the gateway could not make,
+   * and since that PR's head `3bd33cac` the answer says which:
+   * `avatarUnavailable: true` for the failed read. Both draw initials and
+   * offer Upload; the failed read adds one quiet line saying the photo could
+   * not be loaded. No request id — the server sends none with it — and no
+   * retry control: the gateway answers the next read on its own, and for a
+   * row whose object is gone (TAS-221) only an upload or a removal changes the
+   * answer at all. A gateway older than that PR sends no flag, and no flag is
+   * no line. The `["me"]` query keeps a link it already holds while the
+   * avatar's id is unchanged (`keepSignedAvatarLink`), so a re-read on focus
+   * does not download the picture again.
    *
-   * Only a link may say there is a photo to remove (§5.6).
+   * Only a link may say there is a photo to remove (§5.6), so "Remove photo"
+   * is not offered in the failed-read state either: the server has not said
+   * there is anything there to remove (§4.16).
    */
   const person = user;
   const hasPhoto = typeof user?.avatarUrl === "string" && user.avatarUrl.length > 0;
+  const avatarUnavailable = user?.avatarUnavailable === true;
 
   /**
    * Optimistic with rollback, unlike the upload below it, and the asymmetry is
@@ -146,7 +154,11 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
       setNotice(null);
       await queryClient.cancelQueries({ queryKey: ME_QUERY_KEY });
       const previous = queryClient.getQueryData<User>(ME_QUERY_KEY);
-      queryClient.setQueryData<User>(ME_QUERY_KEY, (me) => (me ? { ...me, avatarUrl: null, avatarId: null } : me));
+      // `avatarUnavailable: false` is the answer the next read gives once the
+      // row is gone: the profile reads, and says "none".
+      queryClient.setQueryData<User>(ME_QUERY_KEY, (me) =>
+        me ? { ...me, avatarUrl: null, avatarId: null, avatarUnavailable: false } : me,
+      );
       const faces = user ? await writeOwnFace(queryClient, user.id, null) : [];
       return { previous, faces };
     },
@@ -280,19 +292,30 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
     if (saved.downloadUrl) {
       // The confirm answers with the link and the avatar's id, so the new face
       // goes on screen without a follow-up read — on the profile, and on every
-      // member row the cache already holds for this person.
+      // member row the cache already holds for this person. The upload
+      // replaced the row, so a failed read the profile reported before is
+      // over: the presign that just succeeded is the one that was failing.
       const link = saved.downloadUrl;
       await queryClient.cancelQueries({ queryKey: ME_QUERY_KEY });
-      queryClient.setQueryData<User>(ME_QUERY_KEY, (me) => (me ? { ...me, avatarUrl: link, avatarId: saved.id } : me));
+      queryClient.setQueryData<User>(ME_QUERY_KEY, (me) =>
+        me ? { ...me, avatarUrl: link, avatarId: saved.id, avatarUnavailable: false } : me,
+      );
       if (user) await writeOwnFace(queryClient, user.id, link);
     } else {
       // An answer that carried no link is the one case that costs a read: the
       // profile again, which states the avatar since TAS-223. Whatever it says
       // is then written to the member rows the same way a link from the confirm
-      // would have been. A re-read that fails leaves them as they were.
+      // would have been. A re-read that fails leaves them as they were, and so
+      // does one that answers `avatarUnavailable: true`: its `null` is
+      // "unknown", and writing it onto the rows would state "no photo".
       await queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
       const reread = queryClient.getQueryState<User>(ME_QUERY_KEY);
-      if (user && reread?.status === "success" && reread.data?.avatarUrl !== undefined) {
+      if (
+        user &&
+        reread?.status === "success" &&
+        reread.data?.avatarUrl !== undefined &&
+        reread.data.avatarUnavailable !== true
+      ) {
         await writeOwnFace(queryClient, user.id, reread.data.avatarUrl);
       }
     }
@@ -419,6 +442,16 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                     ? "Uploading…"
                     : `Up to ${formatFileSize(AVATAR_MAX_SIZE_BYTES)}. ${AVATAR_ACCEPTED_SUMMARY}.`}
                 </p>
+                {/* The profile read behind `GET /users/me` failed, and the
+                    server said so (`avatarUnavailable`, backend PR #193).
+                    It describes the menu as it opened, not an answer to
+                    something the reader did, so it is not a live region —
+                    and it yields to anything newer: a write's notice, or
+                    an upload in flight, which is the way out of it. Quiet
+                    tone, no request id (the answer carries none), no retry. */}
+                {avatarUnavailable && !notice && !uploading ? (
+                  <p className="user-profile-photo-note">Your photo could not be loaded.</p>
+                ) : null}
                 {/* One live region that stays mounted and changes its text,
                     rather than one that appears together with what it has
                     to announce — §7 records the second shape as depending

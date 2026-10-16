@@ -1351,6 +1351,10 @@ h1 {
    which measures 3.7:1 and would put the sentence under §7's 4.5:1 floor for
    anything that is not meta. */
 .user-profile-photo-note {
+  /* The class is also the untinted "Your photo could not be loaded." line
+     (backend PR #193's `avatarUnavailable`), which is a `<p>`: without this it
+     would carry the browser's 1em margins into the band's 7px rhythm. */
+  margin: 0;
   border-radius: 8px;
   color: var(--fg-2);
   font-size: 11px;

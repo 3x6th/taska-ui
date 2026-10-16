@@ -225,13 +225,26 @@ export const MOCK_ATTACHMENT_TRIGGERS = {
    * give — so "Download" has to fall back to opening the link (TAS-253).
    */
   downloadBlocked: "download-blocked",
+  /**
+   * **Avatar only.** All three legs succeed and the confirm answers with its
+   * link as the server does; then the object is dropped from the bucket, so
+   * the saved row points at nothing. That is the end state TAS-221's
+   * cross-user path leaves on the server, and from then on `GET /users/me`
+   * answers `avatar: null, avatarUnavailable: true` until an upload replaces
+   * the row or a removal deletes it (backend PR #193). No new answer shape:
+   * it is the state `currentUserProfile` already reads for a lost object.
+   */
+  avatarObjectLost: "object-lost",
 } as const;
 
-// The avatar upload reads the same four names out of the same
+// The avatar upload reads the same four failure names out of the same
 // `uploadBehaviourFor`, so a file called `cors-blocked.png` fails the middle leg
-// there too. Named after attachments because that is where they were written
-// and where three of the four are demonstrated; a second, identical table under
-// a second name would be two things to keep in step for no reader's benefit.
+// there too, and `expired-link` is honoured by both. Named after attachments
+// because that is where they were written and where three of the four are
+// demonstrated; a second, identical table under a second name would be two
+// things to keep in step for no reader's benefit. `avatarObjectLost` is the one
+// entry the other way round: only the avatar confirm reads it, and an
+// attachment called `object-lost.txt` uploads like any other file.
 
 type MockUploadBehaviour = "ok" | "storeUnreachable" | "storeRefused" | "confirmFails";
 
@@ -290,6 +303,8 @@ interface MockAvatarTicket {
   /** Epoch ms. Past it, leg 2 answers 403 — the store's answer for a stale signature. */
   expiresAt: number;
   behaviour: MockUploadBehaviour;
+  /** `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: the confirm succeeds, then the object is dropped. */
+  objectLost: boolean;
 }
 
 /**
@@ -2327,18 +2342,21 @@ export class MockTaskaStore {
 
   /**
    * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
-   * rules its Java states at head `a1bfe19`: a missing project is `NOT_FOUND`,
-   * and a reader with no membership row is `PERMISSION_DENIED` — a
-   * `GLOBAL_ADMIN` included. Unlike `getProject` in this store, which answers a
-   * non-member, this read keeps the gateway's access rule.
-   * At head `a1bfe19` the code intends 200 with empty members and labels (its
-   * TODO says so), but the labels leg's denial arrives from issue-service as a
-   * gRPC `StatusRuntimeException`, which
-   * `ProjectServiceImpl.isPermissionDenied` (it matches only `DomainException`)
-   * does not catch, so the whole context fails `PERMISSION_DENIED` and answers
-   * 403. Removal: when the labels call carries the global role, or
-   * `isPermissionDenied` also matches a gRPC denial, the context answers 200
-   * with empty parts and the mock must follow.
+   * access rule project-service's `ProjectServiceImpl.getProjectContext` states
+   * since backend PR #186 (TAS-255, head `cc03c0d`):
+   *
+   * - a missing project is `NOT_FOUND` "Project not found";
+   * - a reader with no membership row is `PERMISSION_DENIED` "You don't have
+   *   access to this project", whatever their global role — a `GLOBAL_ADMIN`
+   *   included — and that is checked before any of the three sub-reads
+   *   (members, labels, workflows) starts;
+   * - a sub-read that fails fails the whole read with its own status. The
+   *   context never answers a part it could not read as an empty list.
+   *
+   * Unlike `getProject` in this store, which answers a non-member, this read
+   * keeps the gateway's access rule. The third point has no counterpart here:
+   * this store is one synchronous object, so a single leg cannot fail on its
+   * own, and the mock answers either everything or the refusal above.
    *
    * `workflows` holds one entry per allowed type (`allowedIssueTypesByProject`),
    * each without timestamps, and the labels carry only `id`, `name` and
@@ -2352,7 +2370,7 @@ export class MockTaskaStore {
     }
     const member = this.membersByProject[projectId]?.find((item) => item.userId === this.currentUserId);
     if (!member) {
-      throw new MockApiError("PERMISSION_DENIED", "Access denied");
+      throw new MockApiError("PERMISSION_DENIED", "You don't have access to this project");
     }
     const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflow;
     const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
@@ -3006,10 +3024,10 @@ export class MockTaskaStore {
 
   /**
    * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`, as
-   * issue-service's `IssueWatcherServiceImpl.checkMutationRole` applies it and
-   * the contract states since backend PR #194 (TAS-228): it depends on whose
-   * subscription it is. For **somebody else's** `userId` the actor needs
-   * `manage-watchers-roles` — ADMIN. For **their own** it is
+   * issue-service's `IssueWatcherServiceImpl.checkMutationRole` applies it —
+   * backend PR #194 (TAS-228, head `a33ed5d`) states it in the contract: it
+   * depends on whose subscription it is. For **somebody else's** `userId` the
+   * actor needs `manage-watchers-roles` — ADMIN. For **their own** it is
    * `watch-issue-roles` — ADMIN or MEMBER — the same rule as the `…/watchers/me`
    * pair, so a MEMBER may subscribe or unsubscribe themselves through either
    * route, and a VIEWER through neither. Only the actor's role is checked,
@@ -3449,6 +3467,7 @@ export class MockTaskaStore {
         ? Date.now() - 60_000
         : Date.now() + AVATAR_PRESIGNED_TTL_MS,
       behaviour,
+      objectLost: input.fileName.toLowerCase().includes(MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost),
     });
 
     return { uploadUrl, objectKey, expiresIn: Math.round(AVATAR_PRESIGNED_TTL_MS / 1000) };
@@ -3513,12 +3532,13 @@ export class MockTaskaStore {
    * quietly doing the sensible thing — the attachment DELETE's precedent
    * (`deleteAttachment` above): reproduce the implementation, and flag it. The
    * server does not check that the key was minted for the caller (neither does
-   * this: the ticket is consulted only for its failure trigger), and it does
+   * this: the ticket is consulted only for its file-name triggers), and it does
    * not notice when the "previous" object *is* the one being confirmed. So a
    * second confirm of the key the saved row already holds deletes that object,
    * fails its presign's HEAD with a 404, and leaves the row pointing at
-   * nothing; every read of that user's avatar answers 404 from then on, until an
-   * upload replaces the row or a removal deletes it. A mock that treated the
+   * nothing; every read of that user's avatar answers 404 from then on — and
+   * `GET /users/me` answers `avatarUnavailable: true` — until an upload
+   * replaces the row or a removal deletes it. A mock that treated the
    * repeat as a harmless no-op would teach its callers that retrying a confirm
    * is safe, which on the server it is exactly not. The profile menu never sends
    * a key twice, and its tests pin that.
@@ -3568,6 +3588,13 @@ export class MockTaskaStore {
       // the delete above just removed the object this row points at.
       throw new MockApiError("NOT_FOUND", "Object not found in storage");
     }
+    if (ticket?.objectLost) {
+      // `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: the answer below is what
+      // the server sent, link and all, and *afterwards* the object goes — the
+      // way TAS-221's cross-user path deletes it from under this row. Every
+      // later profile read then finds a row with nothing behind it.
+      this.avatarObjects.delete(avatar.objectKey);
+    }
     return { ...avatar };
   }
 
@@ -3588,19 +3615,34 @@ export class MockTaskaStore {
   }
 
   /**
-   * `GET /users/me` as the gateway answers it since backend PR #193 (TAS-223):
-   * the profile plus the reader's own avatar, read through auth-service's
-   * profile call. `null` for no avatar, and `null` too — never an error — when
-   * that read fails: the gateway logs it and answers the profile without the
-   * avatar. The only failure this store can make is a row whose object is gone
-   * (the same-key re-confirm defect in `confirmAvatarUpload` above), which on
-   * the server fails the presign's HEAD; here it is the same `null`.
+   * `GET /users/me` as the gateway answers it since backend PR #193 (TAS-223,
+   * head `3bd33cac`, `UserServiceImpl.getMyInfo`): the profile plus the
+   * reader's own avatar, read through auth-service's `GetUserProfile`, and
+   * always a 200. Three answers:
+   *
+   * - a row with its object: `avatar` filled, `avatarUnavailable: false`;
+   * - no row: `avatar: null`, `avatarUnavailable: false`;
+   * - the profile read failed: `avatar: null`, `avatarUnavailable: true`. The
+   *   gateway sets that on any gRPC error and logs it; no request id reaches
+   *   the body.
+   *
+   * The only failure this store can make is a row whose object is gone — the
+   * same-key re-confirm defect in `confirmAvatarUpload` above, or the
+   * `avatarObjectLost` trigger standing in for TAS-221's cross-user path —
+   * which on the server fails the presign's HEAD on every read until an upload
+   * replaces the row or a removal deletes it. A transient failure (auth-service
+   * down, a deadline) has no counterpart in one synchronous store.
    */
   currentUserProfile(): User {
     const user = this.currentUser();
     const avatar = this.avatars.get(user.id);
     const usable = avatar && this.avatarObjects.has(avatar.objectKey) ? avatar : null;
-    return { ...user, avatarUrl: usable?.downloadUrl ?? null, avatarId: usable?.id ?? null };
+    return {
+      ...user,
+      avatarUrl: usable?.downloadUrl ?? null,
+      avatarId: usable?.id ?? null,
+      avatarUnavailable: avatar !== undefined && usable === null,
+    };
   }
 
   /**

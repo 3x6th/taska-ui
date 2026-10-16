@@ -2599,11 +2599,11 @@ function IssueWatchersSection({
    * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}` as this
    * section uses them: to add or remove *somebody else*, which the server allows
    * an ADMIN only. For the reader's own `userId` both routes take
-   * `watch-issue-roles` instead (the same rule as `canWatch` below; the contract
-   * says so since backend PR #194, TAS-228), but a MEMBER manages their own
-   * subscription through the `me` toggle, so this section renders both
-   * controls only for an ADMIN. Presentation only — the server checks again
-   * (DESIGN.md §5.7).
+   * `watch-issue-roles` instead (the same rule as `canWatch` below; backend PR
+   * #194, TAS-228, head `a33ed5d`, states it in the contract), but a MEMBER
+   * manages their own subscription through the `me` toggle, so this section
+   * renders both controls only for an ADMIN. Presentation only — the server
+   * checks again (DESIGN.md §5.7).
    */
   isProjectAdmin: boolean;
   /**

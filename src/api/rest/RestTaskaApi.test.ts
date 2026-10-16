@@ -265,11 +265,13 @@ describe("RestTaskaApi current user", () => {
 
   /**
    * The reader's own avatar, on the profile since backend PR #193 (TAS-223):
-   * a nullable `AvatarDto`, of which `id` and `downloadUrl` are read. `null`
-   * for no avatar and for a profile read the gateway could not make — one
-   * answer to this side, because the server sends one.
+   * a nullable `AvatarDto`, of which `id` and `downloadUrl` are read, and at
+   * that PR's head `3bd33cac` a required boolean `avatarUnavailable` beside it.
+   * `avatar: null` comes both for no avatar and for a profile read the gateway
+   * could not make; the flag is what tells them apart (`false` / `true`), and
+   * it is copied only when it is a boolean, never defaulted.
    */
-  it("reads the avatar's link and id off the profile", async () => {
+  it("reads the avatar's link and id off the profile, with the flag the server sent", async () => {
     const user = await getCurrentUserWith(
       me({
         avatar: {
@@ -281,10 +283,45 @@ describe("RestTaskaApi current user", () => {
           createdAt: "2026-10-16T08:00:00Z",
           downloadUrl: "https://store.example/face.png?sig=1",
         },
+        avatarUnavailable: false,
       }),
     );
 
-    expect(user).toMatchObject({ avatarUrl: "https://store.example/face.png?sig=1", avatarId: "avatar-1" });
+    expect(user).toMatchObject({
+      avatarUrl: "https://store.example/face.png?sig=1",
+      avatarId: "avatar-1",
+      avatarUnavailable: false,
+    });
+  });
+
+  it("tells no photo from a failed profile read by the flag, not by the avatar", async () => {
+    const none = await getCurrentUserWith(me({ avatar: null, avatarUnavailable: false }));
+    expect(none).toMatchObject({ avatarUrl: null, avatarId: null, avatarUnavailable: false });
+
+    const failed = await getCurrentUserWith(me({ avatar: null, avatarUnavailable: true }));
+    expect(failed).toMatchObject({ avatarUrl: null, avatarId: null, avatarUnavailable: true });
+  });
+
+  it("copies the flag on its own, whether or not the avatar came", async () => {
+    // Independent of the avatar spread: a body with the flag and no `avatar`
+    // key still carries the flag, and leaves the avatar unstated.
+    const user = await getCurrentUserWith(me({ avatarUnavailable: true }));
+    expect(user.avatarUnavailable).toBe(true);
+    expect(user).not.toHaveProperty("avatarUrl");
+  });
+
+  it.each([
+    ["absent", {}],
+    ["the string \"true\"", { avatarUnavailable: "true" }],
+    ["null", { avatarUnavailable: null }],
+    ["a number", { avatarUnavailable: 1 }],
+  ])("leaves the flag off when it is %s, rather than calling it false", async (_case, extra) => {
+    // `false` would be this client stating that the profile read worked, which
+    // the server did not say.
+    const user = await getCurrentUserWith(me({ avatar: null, ...extra }));
+
+    expect(user).not.toHaveProperty("avatarUnavailable");
+    expect(user.avatarUrl).toBeNull();
   });
 
   it.each([
@@ -303,6 +340,7 @@ describe("RestTaskaApi current user", () => {
 
     expect(user).not.toHaveProperty("avatarUrl");
     expect(user).not.toHaveProperty("avatarId");
+    expect(user).not.toHaveProperty("avatarUnavailable");
   });
 
   it("maps USER", async () => {

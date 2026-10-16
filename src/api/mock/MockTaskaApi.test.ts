@@ -279,13 +279,29 @@ describe("MockTaskaApi", () => {
       await expect(api.createIssue(ops.id, { ...input, issueType: "BUG" })).resolves.toMatchObject({ issueType: "BUG" });
     });
 
-    it("refuses a non-member with 403 — a GLOBAL_ADMIN included — and a missing project with 404", async () => {
+    it("refuses a non-member of any global role with the project-service sentence, and a missing project with 404", async () => {
+      // `ProjectServiceImpl.getProjectContext` at backend PR #186 (TAS-255,
+      // head `cc03c0d`): no membership row is PERMISSION_DENIED "You don't have
+      // access to this project" whatever the global role, before any sub-read.
+      const refusal = { code: "PERMISSION_DENIED", message: "You don't have access to this project" };
+
       // Mark is the seed's GLOBAL_ADMIN, and not on WEB.
       const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
       await api.login({ email: "mark@example.com", password: "anything" });
-      await expect(api.getProjectContext(web.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      await expect(api.getProjectContext(web.id)).rejects.toMatchObject(refusal);
+
+      // Anna is a plain USER and not on MOB. Mark's sign-in above is what finds
+      // MOB: `listProjects` answers a non-member nothing.
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ globalRole: "USER" });
+      await expect(api.getProjectContext(mobile.id)).rejects.toMatchObject(refusal);
+
       await expect(api.getProjectContext("00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({
         code: "NOT_FOUND",
+        message: "Project not found",
       });
     });
   });
@@ -3199,6 +3215,15 @@ describe("MockTaskaApi", () => {
       expect(error).toMatchObject({ storeStatus: null });
     });
 
+    it("ignores the avatar-only object-lost trigger: the attachment's bytes stay downloadable", async () => {
+      const issue = await openIssue("TAS-102");
+      const attachment = await upload(issue.id, textFile(`${MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost}.txt`, "kept\n"));
+      const link = await api.getAttachmentDownloadUrl(project.id, issue.id, attachment.id);
+
+      const blob = await api.getAttachmentBytes(link.downloadUrl);
+      expect(await blob.text()).toBe("kept\n");
+    });
+
     it("soft-deletes: the row leaves the list and the id stops resolving", async () => {
       const issue = await openIssue("TAS-101");
       const before = await api.listAttachments(project.id, issue.id);
@@ -3537,9 +3562,11 @@ describe("MockTaskaApi", () => {
     });
 
     it("refuses a MEMBER somebody else's subscription, and lets them manage their own through either route", async () => {
-      // `checkMutationRole` (backend PR #194, TAS-228): another person's
-      // `userId` takes `manage-watchers-roles` — ADMIN — and the actor's own
-      // takes `watch-issue-roles` — ADMIN or MEMBER — on every route.
+      // issue-service's `IssueWatcherServiceImpl.checkMutationRole` (read at
+      // develop, unchanged at `4277199`; the contract states it once backend
+      // PR #194, TAS-228, merges): another person's `userId` takes
+      // `manage-watchers-roles` — ADMIN — and the actor's own takes
+      // `watch-issue-roles` — ADMIN or MEMBER — on every route.
       await api.login({ email: "mark@example.com", password: "anything" });
       const issue = await openIssue("TAS-101");
       const me = await api.getCurrentUser();
@@ -3839,8 +3866,13 @@ describe("MockTaskaApi", () => {
       // follow-up read.
       expect(avatar.downloadUrl).toBeTruthy();
       // And `GET /users/me` carries it from then on (TAS-223), with the id that
-      // tells a re-signed link from a new picture.
-      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: avatar.downloadUrl, avatarId: avatar.id });
+      // tells a re-signed link from a new picture, and the flag that says the
+      // profile read worked (backend PR #193).
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        avatarUrl: avatar.downloadUrl,
+        avatarId: avatar.id,
+        avatarUnavailable: false,
+      });
     });
 
     it("refuses anything over 2 MB the way the gateway does, before the avatar service or the type is asked", async () => {
@@ -3888,7 +3920,12 @@ describe("MockTaskaApi", () => {
       const second = await upload(imageFile("second.png", 96));
 
       expect(second.id).not.toBe(first.id);
-      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: second.downloadUrl, avatarId: second.id });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        id: me.id,
+        avatarUrl: second.downloadUrl,
+        avatarId: second.id,
+        avatarUnavailable: false,
+      });
       // And the first object is gone from the bucket with its row, which is
       // where this differs from an attachment delete.
       await expect(
@@ -3905,7 +3942,10 @@ describe("MockTaskaApi", () => {
         api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
 
       const saved = await confirm();
-      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: saved.downloadUrl });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        avatarUrl: saved.downloadUrl,
+        avatarUnavailable: false,
+      });
 
       // Mirrors `ProfileServiceImpl.confirmAvatarUpload` at `develop`
       // `368ae77355bd`: the row is replaced, then the *previous* row's object is
@@ -3915,11 +3955,16 @@ describe("MockTaskaApi", () => {
       await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
 
       // The row survives, pointing at nothing, so the gateway's profile read
-      // fails its presign from now on — and `GET /users/me` answers the profile
-      // with `avatar: null`, the same as for somebody with no avatar: the server
-      // does not tell the two apart (TAS-223), and the profile is never refused
-      // for it…
-      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null, avatarId: null });
+      // fails its presign from now on. `GET /users/me` still answers 200 — the
+      // profile is never refused for it — with `avatar: null` *and*
+      // `avatarUnavailable: true`, which is what tells this apart from somebody
+      // with no avatar (backend PR #193, `UserServiceImpl.getMyInfo`)…
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        id: me.id,
+        avatarUrl: null,
+        avatarId: null,
+        avatarUnavailable: true,
+      });
       // …a third attempt at the key finds no object at all…
       await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
       // …and no member row draws a face that nothing can serve.
@@ -3929,7 +3974,11 @@ describe("MockTaskaApi", () => {
       // An upload replaces the broken row, and that is the way out the menu
       // offers.
       const fresh = await upload(imageFile("again.png", 96));
-      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: fresh.downloadUrl, avatarId: fresh.id });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        avatarUrl: fresh.downloadUrl,
+        avatarId: fresh.id,
+        avatarUnavailable: false,
+      });
     });
 
     it("gets out of that state by a removal too, which answers 204 like any other", async () => {
@@ -3941,11 +3990,39 @@ describe("MockTaskaApi", () => {
         api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
       await confirm();
       await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: null, avatarUnavailable: true });
 
       // The row goes, and deleting an object that is already gone is not an
-      // error on the store's side either.
+      // error on the store's side either. With no row, the profile read
+      // succeeds again and says "none", not "unknown".
       await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
-      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null, avatarId: null });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        id: me.id,
+        avatarUrl: null,
+        avatarId: null,
+        avatarUnavailable: false,
+      });
+    });
+
+    it("answers the confirm with its link and then loses the object, for a file named object-lost", async () => {
+      // `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: TAS-221's cross-user path
+      // ends with this reader's row pointing at an object somebody else's
+      // replace deleted. The confirm itself succeeded and said so.
+      const saved = await upload(imageFile(`${MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost}.png`));
+      expect(saved.downloadUrl).toBeTruthy();
+
+      // Every read from then on: 200, no picture, and the flag.
+      const after = await api.getCurrentUser();
+      expect(after).toMatchObject({ avatarUrl: null, avatarId: null, avatarUnavailable: true });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUnavailable: true });
+
+      // An upload replaces the row and the next read is whole again.
+      const fresh = await upload(imageFile("face.png"));
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        avatarUrl: fresh.downloadUrl,
+        avatarId: fresh.id,
+        avatarUnavailable: false,
+      });
     });
 
     it("draws the seeded face through the same read as an uploaded one", async () => {
@@ -3957,6 +4034,7 @@ describe("MockTaskaApi", () => {
       expect(sofia.displayName).toBe("Sofia Reyes");
       expect(sofia.avatarUrl).toMatch(/^data:image\/png;base64,/);
       expect(sofia.avatarId).toBeTruthy();
+      expect(sofia.avatarUnavailable).toBe(false);
     });
 
     it("deletes idempotently: twice in a row is two successes, and so is deleting nothing", async () => {
@@ -3964,20 +4042,22 @@ describe("MockTaskaApi", () => {
       await upload(imageFile("face.png"));
 
       await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
-      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null, avatarUnavailable: false });
       // The second call is the one that matters: the contract promises 204
       // whether or not there was an avatar, so nothing here may throw and
       // nothing may report which case it was.
       await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
-      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null, avatarUnavailable: false });
     });
 
     it("answers a person with no avatar with an explicit null on the profile", async () => {
       // Anna is deliberately unseeded — the profile flow starts at "no photo".
-      // `null`, not absent: the server was asked and stated it (TAS-223).
+      // `null`, not absent: the server was asked and stated it (TAS-223). And
+      // `false`, because asking worked: "none", not "unknown" (backend PR #193).
       const me = await api.getCurrentUser();
       expect(me.avatarUrl).toBeNull();
       expect(me.avatarId).toBeNull();
+      expect(me.avatarUnavailable).toBe(false);
     });
 
     it("carries the avatar on the member row, so a board of faces is one read", async () => {

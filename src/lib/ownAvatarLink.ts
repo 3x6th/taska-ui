@@ -49,6 +49,15 @@ function adopt(link: string | null | undefined, now: number) {
  * A different id — an upload, a removal, another account — or an older link
  * takes the new answer whole.
  *
+ * So does a **degraded** answer — `avatarUnavailable: true`, `avatar: null`
+ * (backend PR #193): its `avatarId` is `null`, so the ids differ and the held
+ * link is not kept across a failure the server reported. Keeping it would do
+ * one of two wrong things: draw the picture beside "could not be loaded", or
+ * swallow the signal so the menu never says so. The cost is that a
+ * *transient* failure — auth-service slow for one read — shows initials until
+ * the next good read adopts a link again, and that is the server's answer
+ * being drawn as it is.
+ *
  * This is cache handling of what the server said, not a compensation: the
  * server's link and the kept one point at the same object, and nothing here is
  * invented or read a second time. Everything else in the answer goes through

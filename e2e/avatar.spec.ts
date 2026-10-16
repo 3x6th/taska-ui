@@ -255,6 +255,53 @@ test("returns focus to the upload button after a plain upload, so Tab continues 
   await expect(popover(page).getByRole("button", { name: "Remove photo" })).toBeFocused();
 });
 
+/**
+ * Backend PR #193 (head `3bd33cac`): `GET /users/me` answers 200 with
+ * `avatar: null, avatarUnavailable: true` when the gateway's profile read
+ * failed. The way the mock reaches that state is TAS-221's end state — a row
+ * whose storage object is gone — which a file named `object-lost` produces:
+ * the confirm succeeds and answers with its link, then the object is dropped.
+ * Nothing is wrong until the profile is read again, so the case reads it again
+ * the way the app does on its own: past the twenty-second stale time, on the
+ * tab becoming visible.
+ */
+test("says the photo could not be loaded when the profile read fails, and an upload clears it", async ({ page }) => {
+  // Before the first navigation, so the page's own timers run on this clock
+  // from the start; time still flows, and `fastForward` is the lid closing.
+  await page.clock.install();
+  await signIn(page);
+  await trigger(page).click();
+
+  await choose(page, "object-lost.png");
+  // The confirm's own answer carried the link, so the picture is drawn at
+  // first — exactly as the server's answer would draw it.
+  await expect(trigger(page).locator("img")).toHaveCount(1);
+  const note = popover(page).getByText("Your photo could not be loaded.");
+  await expect(note).toHaveCount(0);
+
+  // Back to the tab after the profile went stale: `["me"]` is read again, and
+  // this time the read fails.
+  await page.clock.fastForward(21_000);
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+
+  await expect(trigger(page).locator("img")).toHaveCount(0);
+  await expect(trigger(page).locator(".avatar")).toHaveText("AI");
+  await expect(note).toBeVisible();
+  // Quiet, not a refusal: no danger tint, not announced, no request id.
+  await expect(note).not.toHaveClass(/is-error/);
+  expect(await note.evaluate((element) => element.closest("[aria-live]") === null)).toBe(true);
+  await expect(popover(page).locator(".user-profile-photo-note-detail")).toHaveCount(0);
+  // Upload is the way out; there is nothing the server says to remove.
+  await expect(popover(page).getByRole("button", { name: "Upload a photo" })).toBeEnabled();
+  await expect(popover(page).getByRole("button", { name: "Remove photo" })).toHaveCount(0);
+
+  await choose(page, "face.png");
+
+  await expect(trigger(page).locator("img")).toHaveCount(1);
+  await expect(note).toHaveCount(0);
+  await expect(popover(page).getByRole("button", { name: "Remove photo" })).toBeVisible();
+});
+
 test("replaces a photo with another, leaving one", async ({ page }) => {
   await signIn(page);
   await trigger(page).click();

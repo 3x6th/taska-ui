@@ -71,6 +71,48 @@ describe("keeping the reader's own avatar link across re-reads", () => {
     ).toMatchObject({ id: "user-tom", avatarUrl: "https://s/a.png?sig=id-3" });
   });
 
+  it("takes a degraded answer whole: a failed profile read does not keep the held link", () => {
+    // Backend PR #193: `avatar: null, avatarUnavailable: true` when the
+    // gateway's profile read failed. Keeping the held picture would draw it
+    // beside "could not be loaded", or hide that the read failed at all.
+    const start = 5_000_000;
+    const first = keepSignedAvatarLink(
+      undefined,
+      anna("https://s/a.png?sig=degraded-1", "av-1", { avatarUnavailable: false }),
+      start,
+    ) as User;
+    const degraded = anna(null, null, { avatarUnavailable: true });
+
+    const next = keepSignedAvatarLink(first, degraded, start + 60_000) as User;
+
+    expect(next).toEqual(degraded);
+    expect(next.avatarUrl).toBeNull();
+  });
+
+  it("adopts the next good answer's link after a degraded one, with the flag back to false", () => {
+    const start = 6_000_000;
+    const first = keepSignedAvatarLink(
+      undefined,
+      anna("https://s/a.png?sig=recover-1", "av-1", { avatarUnavailable: false }),
+      start,
+    ) as User;
+    const degraded = keepSignedAvatarLink(first, anna(null, null, { avatarUnavailable: true }), start + 1) as User;
+
+    const recovered = keepSignedAvatarLink(
+      degraded,
+      anna("https://s/a.png?sig=recover-2", "av-1", { avatarUnavailable: false }),
+      start + 2,
+    ) as User;
+
+    // The new signature, not the one held before the failure: the degraded
+    // answer broke the chain, so nothing was kept to return to.
+    expect(recovered).toMatchObject({
+      avatarUrl: "https://s/a.png?sig=recover-2",
+      avatarId: "av-1",
+      avatarUnavailable: false,
+    });
+  });
+
   it("does not keep a link it never saw adopted", () => {
     // A profile written straight into the cache by something that bypassed the
     // rule — the login form's `setQueryData` on a fresh client — has no known

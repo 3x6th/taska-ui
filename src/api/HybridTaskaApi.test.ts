@@ -610,13 +610,23 @@ describe("HybridTaskaApi", () => {
     const saved = await hybrid.confirmAvatarUpload(confirmInput);
     expect(confirm).toHaveBeenCalledWith(confirmInput);
 
-    // `GET /users/me` carries the reader's own avatar since TAS-223.
-    await expect(hybrid.getCurrentUser()).resolves.toMatchObject({ avatarUrl: saved.downloadUrl, avatarId: saved.id });
+    // `GET /users/me` carries the reader's own avatar since TAS-223, and since
+    // backend PR #193's `3bd33cac` head the flag that says whether the profile
+    // read worked — passed through as the live leg answered it.
+    await expect(hybrid.getCurrentUser()).resolves.toMatchObject({
+      avatarUrl: saved.downloadUrl,
+      avatarId: saved.id,
+      avatarUnavailable: false,
+    });
     expect(profile).toHaveBeenCalled();
 
     await hybrid.deleteMyAvatar();
     expect(remove).toHaveBeenCalledTimes(1);
-    await expect(hybrid.getCurrentUser()).resolves.toMatchObject({ avatarUrl: null, avatarId: null });
+    await expect(hybrid.getCurrentUser()).resolves.toMatchObject({
+      avatarUrl: null,
+      avatarId: null,
+      avatarUnavailable: false,
+    });
   });
 
   it("passes a store failure straight up rather than compensating for it", async () => {

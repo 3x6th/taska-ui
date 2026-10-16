@@ -113,9 +113,10 @@ export interface User {
    * Two reads fill it, and neither costs a request of its own. **`GET
    * /users/me`** carries the reader's own as `avatar` since backend PR #193
    * (TAS-223) — an explicit `null` both when they have none *and* when the
-   * gateway's profile read behind it failed: the server does not tell the two
-   * apart, so neither can this field, and a failed read draws initials like an
-   * absent photo (no compensation — docs/ai/API-DIVERGENCE.md). A *member row*
+   * gateway's profile read behind it failed. The server tells those two apart
+   * with `avatarUnavailable` (below), not with this field: here `null` only
+   * says "no picture to draw", and either way the face falls to initials. A
+   * caller that needs to know *why* reads the flag. A *member row*
    * declares the avatar inline (`ProjectMemberDetailsDto.avatar.downloadUrl`,
    * backend TAS-137). **The deployed member read never fills it yet**:
    * auth-service's `UserRepository.findUsersWithAvatars` selects no avatar id,
@@ -145,6 +146,22 @@ export interface User {
    * `["me"]` query can keep the link it holds (see `avatarUrl`).
    */
   avatarId?: string | null;
+  /**
+   * `avatarUnavailable` from `GET /users/me` — the only read that sets it, and
+   * required there since backend PR #193 (TAS-223, head `3bd33cac`; gateway
+   * `UserServiceImpl.getMyInfo`).
+   *
+   * - `true`: the gateway's `GetUserProfile` read failed, so `avatarUrl: null`
+   *   means *unknown*, not *none*. The gateway sets it on any gRPC error. One
+   *   of those is permanent rather than transient: a row whose storage object
+   *   is gone (TAS-221) fails the presign every time, until an upload replaces
+   *   the row or `DELETE /users/me/avatar` removes it.
+   * - `false`: the profile was read — the avatar came with it, or there is none.
+   * - absent: a gateway older than that merge answered, or the `User` came from
+   *   anywhere else. Member rows never carry it. Absent is not coerced to
+   *   `false`: it is "the server did not say", which is a third answer.
+   */
+  avatarUnavailable?: boolean;
 }
 
 /**

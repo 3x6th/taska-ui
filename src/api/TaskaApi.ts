@@ -585,8 +585,11 @@ export interface TaskaApi {
    *
    * Carries the reader's own avatar since backend PR #193 (TAS-223):
    * `avatarUrl` and `avatarId` from the response's nullable `avatar`, `null`
-   * when there is none *or* when the gateway's profile read failed — the server
-   * answers both the same way, so this cannot tell them apart and does not try.
+   * when there is none *or* when the gateway's profile read failed. The answer
+   * is 200 either way, and the server tells the two apart in a field of its
+   * own, mapped to `avatarUnavailable`: `true` for a failed read, `false` for
+   * a read with or without a photo, absent on a gateway older than that PR.
+   * No request id comes with a failed read, so there is none to show.
    * This replaced `GET /users/{userId}/avatar`, which was the one avatar read
    * that cost a request of its own; nothing calls that route any more.
    */
@@ -1022,9 +1025,10 @@ export interface TaskaApi {
    *   the opposite, reading the contract's silence as permission.
    * - `addIssueWatcher` and `removeIssueWatcher` name a subscriber, and the
    *   rule depends on whose subscription it is
-   *   (`IssueWatcherServiceImpl.checkMutationRole`; the contract says the same
-   *   since backend PR #194, TAS-228). For **somebody else's** `userId` the
-   *   actor needs `manage-watchers-roles` — ADMIN. For **their own** it is
+   *   (`IssueWatcherServiceImpl.checkMutationRole`; backend PR #194, TAS-228,
+   *   head `a33ed5d`, states it in the contract). For **somebody else's**
+   *   `userId` the actor needs `manage-watchers-roles` — ADMIN. For **their
+   *   own** it is
    *   `watch-issue-roles` — ADMIN or MEMBER, as for the `me` pair — so a
    *   MEMBER may use either route on themselves and a VIEWER may use neither.
    *   Only the actor's role is checked, never the subscriber's, so an ADMIN
@@ -1314,8 +1318,8 @@ export interface TaskaApi {
    *   presign's HEAD then fails with a 404. The confirm answers the 404, the row
    *   stays pointing at nothing, and every `GET /users/{userId}/avatar` for that
    *   user answers 404 from then on — and `GET /users/me` carries
-   *   `avatar: null`, its profile read failing the same way — until an upload
-   *   replaces the row or a removal deletes it.
+   *   `avatar: null, avatarUnavailable: true`, its profile read failing the
+   *   same way — until an upload replaces the row or a removal deletes it.
    *
    * A retry is a new ticket: the person chooses the file again, and leg 1 mints
    * a new key. `MockTaskaApi` reproduces the defect rather than hiding it.
