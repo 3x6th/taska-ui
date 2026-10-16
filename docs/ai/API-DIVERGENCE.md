@@ -596,6 +596,24 @@ Same rule as above: "Closed by" is settled, the rest is live.
     though `WorkflowStatusDto` in the extract still declares them;
     The workflow itself does carry them; `ProjectWorkflow`
     (src/domain/types.ts) leaves them out because nothing reads them.
+  - **On stage every workflow arrives with `statuses: []` and
+    `transitions: []`** (measured 2026-10-15 with a token, request id
+    `6c5282d7-03c4-48c3-8f66-285e41a3537f`; the same workflow from
+    `…/workflow?issueType=TASK` has three of each). project-service's MapStruct
+    `ProjectMapper.toWorkflowDataResponse` never fills the protobuf builder's
+    repeated fields, and `unmappedTargetPolicy = IGNORE` hides it — confirmed in
+    the generated `ProjectMapperImpl` at develop `3a0a1cb`. With no transition
+    to find, the board refuses every drop on the client and the panel offers no
+    move, so `PUT …/transition` is never sent; the route itself answers 200.
+    **Compensation: none** — no `getWorkflow` read to fill the gap. TAS-262
+    makes the panel and the drop say the workflow came without statuses,
+    instead of a bare status pill in the panel and "no transition … in this
+    workflow" on the drop. The mock keeps sending the lists; only the tests
+    empty them in the query cache. Backend:
+    [TAS-261](https://jira.ozero.dev/browse/TAS-261), fix in
+    [backend PR #183](https://github.com/VladislavYurin/taska-backend/pull/183).
+    Removal: when #183 is deployed, the context carries the lists, the board
+    moves statuses again, and this bullet closes with nothing to change here.
   - Labels carry `id`, `name` and `color` only — not `ProjectLabelResponseDto`
     — and are typed `Label`; the board's optimistic label rows invent no
     `createdAt` either.
@@ -619,8 +637,9 @@ Same rule as above: "Closed by" is settled, the rest is live.
   real VIEWER of Taska Platform and, since TAS-251, of Mobile.
 - **Removal:** done for the contract — #169 merged, the pending extract is
   deleted and the snapshot refreshed to develop `fa90b51`; the route answers on
-  stage (2026-10-12, without a token). Still open: measure the shape with a
-  token. `getProject`, `getMembership`, `getWorkflow` and `listProjectLabels`
+  stage (2026-10-12, without a token). The `workflows` part was measured with a
+  token on 2026-10-15 (the empty lists above); members and labels have not been
+  checked field by field. `getProject`, `getMembership`, `getWorkflow` and `listProjectLabels`
   stay on `TaskaApi` with no screen calling them (docs/ai/BACKLOG.md); whether
   they go is a separate decision.
 

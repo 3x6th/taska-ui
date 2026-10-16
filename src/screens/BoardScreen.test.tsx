@@ -96,6 +96,7 @@ const {
   seedWatcherNames,
   seedLinks,
   seedIssueTypes,
+  seedContextWorkflowParts,
   seedHistory,
   reset,
 } = vi.hoisted(() => {
@@ -147,6 +148,15 @@ const {
     projectHeld: boolean;
     /** The issue types the project allows — the types its context sends a workflow for. */
     issueTypes: ("TASK" | "BUG" | "STORY")[];
+    /**
+     * The statuses and transitions the context's workflow carries, when a test
+     * needs other than the default one status and no transition — an empty
+     * pair is what the stand sent on 2026-10-15 (backend TAS-261).
+     */
+    contextWorkflowParts?: {
+      statuses: { id: string; statusKey: "TODO" | "IN_PROGRESS" | "DONE"; name: string; category: "TODO" | "IN_PROGRESS" | "DONE"; sortOrder: number }[];
+      transitions: { id: string; fromStatusId: string; toStatusId: string; name: string; sortOrder: number }[];
+    };
     issuesFailure?: Error;
     workflowFailure?: Error;
     labels: { id: string; name: string; color: string }[];
@@ -464,7 +474,8 @@ const {
         name: "Default",
         version: 1,
         statuses: [{ id: "s1", statusKey: "TODO" as const, name: "To Do", category: "TODO" as const, sortOrder: 10 }],
-        transitions: [],
+        transitions: [] as { id: string; fromStatusId: string; toStatusId: string; name: string; sortOrder: number }[],
+        ...state.contextWorkflowParts,
       };
       return {
         project: {
@@ -1051,11 +1062,15 @@ const {
     seedIssueTypes: (issueTypes: typeof state.issueTypes) => {
       state.issueTypes = issueTypes;
     },
+    seedContextWorkflowParts: (parts: NonNullable<typeof state.contextWorkflowParts>) => {
+      state.contextWorkflowParts = parts;
+    },
     seedHistory: (history: IssueHistoryEvent[]) => {
       state.history = history;
     },
     reset: () => {
       state.issueTypes = ["TASK", "BUG", "STORY"];
+      state.contextWorkflowParts = undefined;
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
       state.membershipHeld = false;
@@ -2045,6 +2060,60 @@ describe("a project that allows fewer issue types", () => {
     expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
     // Nothing failed, so nothing says it did.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * A workflow can arrive present but empty: named and versioned, with no
+ * statuses and no transitions. That is what the stand sent for every issue type
+ * on 2026-10-15 (backend TAS-261), and the panel showed the status pill and
+ * nothing else — "nowhere to go", when the server had only left the moves out.
+ * The drop's half of the same refusal, and the drop's genuine "no transition
+ * from X to Y", are in e2e/board-drag.spec.ts, beside the other refused drops:
+ * a drop needs a real drag.
+ */
+describe("a workflow the server sent without statuses", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("says so in the transition row and offers no move", async () => {
+    seedContextWorkflowParts({ statuses: [], transitions: [] });
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const note = await within(panel).findByText(
+      "The server sent this project’s task workflow without statuses, so no move is offered.",
+    );
+    expect(note).toBeVisible();
+    // The third refusal, not either of the other two: the read did not fail,
+    // and the project does allow tasks.
+    expect(within(panel).queryByText(/could not be loaded, so no move/i)).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/no workflow for task issues/i)).not.toBeInTheDocument();
+    // No button in the row, so nothing here can post a transition.
+    expect(within(note.parentElement as HTMLElement).queryAllByRole("button")).toEqual([]);
+  });
+
+  it("keeps quiet about statuses when the workflow has them and simply no move from here", async () => {
+    // Statuses and a transition, none of it from To Do — a real workflow with
+    // nowhere to go from this status, which is not what the note is about.
+    seedContextWorkflowParts({
+      statuses: [
+        { id: "s-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+        { id: "s-done", statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30 },
+      ],
+      transitions: [{ id: "t-reopen", fromStatusId: "s-done", toStatusId: "s-todo", name: "Reopen", sortOrder: 10 }],
+    });
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    // The columns are this workflow's two statuses, so the context has answered
+    // and the absence below is about an answered workflow, not a pending one.
+    expect(await screen.findByRole("region", { name: "Done column" })).toBeVisible();
+    expect(screen.queryByRole("region", { name: "In Progress column" })).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/without statuses/i)).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Reopen" })).not.toBeInTheDocument();
   });
 });
 

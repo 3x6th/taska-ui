@@ -1480,8 +1480,20 @@ Issue card — **slide-over поверх доски**, а не отдельна�
   при ошибке — вернуть назад + тост.
 - Клавиатурная альтернатива обязательна: transition-кнопки в карточке задачи.
 - Тип без workflow в контексте проекта — не ошибка: перенос отклоняется фразой
-  «this project has no workflow for <type> issues», в панели (§4.10) та же фраза
-  `--fg-2` 11.5 вместо кнопок перехода (TAS-251).
+  «<key> was not moved: this project has no workflow for <type> issues.», в панели
+  (§4.10) вместо кнопок перехода — «This project has no workflow for <type> issues,
+  so no move is offered.» `--fg-2` 11.5 (TAS-251).
+- Workflow, пришедший без статусов (TAS-261), — не ошибка чтения и не «нет
+  перехода»: перенос отклоняется фразой «<key> was not moved: the server sent
+  this project's <type> workflow without statuses.», в панели (§4.10) вместо
+  кнопок перехода — «The server sent this project’s <type> workflow without
+  statuses, so no move is offered.» (`.transition-note`, `--fg-2` 11.5, как
+  фраза выше). Признак один — пустой `statuses`, — и перенос с панелью читают
+  его одинаково. Сервер назван намеренно: «workflow has no statuses» читалось
+  бы как настройка проекта, которую админ пошёл бы чинить, а сбой — в ответе
+  сервера. Запрос перехода не уходит, ничего не дочитывается и не
+  подставляется. «<key>: no transition from X to Y in this workflow» — только
+  для workflow со статусами, в котором нужного перехода нет (TAS-262).
 - Библиотека по умолчанию — `@dnd-kit/core`.
 
 ### 5.4 Filtering

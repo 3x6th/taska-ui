@@ -41,6 +41,97 @@ async function centreOf(locator: Locator) {
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
 
+/** Press, cross the activation distance, travel to the column, let go. */
+async function dragCardTo(page: Page, card: Locator, target: Locator) {
+  const from = await centreOf(card);
+  const to = await centreOf(target);
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 20, from.y, { steps: 5 });
+  await page.mouse.move(to.x, from.y, { steps: 15 });
+  await page.mouse.up();
+}
+
+/**
+ * What `onQueryClient` can do to the app's own TanStack Query client:
+ *
+ * - `drop-every-workflow` — the context answers without any issue type.
+ * - `empty-every-workflow` — every workflow stays, with no statuses and no
+ *   transitions: what the stand sent on 2026-10-15 (backend TAS-261).
+ * - `count-drop-moves` — how many drop moves the board has started. A drop
+ *   that finds a transition calls `mutate` with `{ movedIssueId, nextStatus,
+ *   transitionId }`, and only then does a mutation enter the cache, so zero
+ *   means no transition request was even begun.
+ */
+type QueryClientOp = "drop-every-workflow" | "empty-every-workflow" | "count-drop-moves";
+
+/**
+ * The mock seeds no board in these states, so the tests below reach the live
+ * client instead: walk the React fiber tree to the provider that holds it and
+ * act on its caches. Everything downstream — the board, the drop, the panel —
+ * is the real product.
+ */
+async function onQueryClient(page: Page, op: QueryClientOp): Promise<number> {
+  return page.evaluate((op) => {
+    interface Fiber {
+      child?: Fiber;
+      sibling?: Fiber;
+      alternate?: Fiber;
+      memoizedProps?: { value?: unknown };
+    }
+    interface Queryish {
+      state: { data?: { workflows?: Record<string, object> } };
+      setState: (state: unknown) => void;
+    }
+    interface QueryClientish {
+      getQueryCache: () => { findAll: (filter: unknown) => Queryish[] };
+      getMutationCache: () => { getAll: () => { state: { variables?: unknown } }[] };
+    }
+
+    const root = document.getElementById("root");
+    const key = root && Object.keys(root).find((name) => name.startsWith("__reactContainer$"));
+    const start = key ? (root as unknown as Record<string, Fiber>)[key] : undefined;
+    const seen = new Set<Fiber>();
+    const stack: Fiber[] = start ? [start] : [];
+
+    while (stack.length) {
+      const node = stack.pop()!;
+      if (seen.has(node)) continue;
+      seen.add(node);
+      const value = node.memoizedProps?.value as Partial<QueryClientish> | undefined;
+      if (typeof value?.getQueryCache === "function") {
+        const client = value as QueryClientish;
+        if (op === "count-drop-moves") {
+          return client
+            .getMutationCache()
+            .getAll()
+            .filter(({ state }) => typeof state.variables === "object" && state.variables !== null && "movedIssueId" in state.variables)
+            .length;
+        }
+        for (const query of client.getQueryCache().findAll({ queryKey: ["project-context"] })) {
+          const workflows =
+            op === "drop-every-workflow"
+              ? {}
+              : Object.fromEntries(
+                  Object.entries(query.state.data?.workflows ?? {}).map(([type, workflow]) => [
+                    type,
+                    { ...workflow, statuses: [], transitions: [] },
+                  ]),
+                );
+          query.setState({ ...query.state, data: { ...query.state.data, workflows }, dataUpdatedAt: Date.now() });
+        }
+        return 0;
+      }
+      // React keeps two fiber trees and swaps them, so the walk follows
+      // `alternate` as well or it can search the one that is not current.
+      for (const next of [node.child, node.sibling, node.alternate]) {
+        if (next) stack.push(next);
+      }
+    }
+    throw new Error("no QueryClient on this page");
+  }, op);
+}
+
 test.describe("dragging a card with a mouse", () => {
   // The phone viewport cannot show two columns at once, so its drag is driven
   // by touch in the block below rather than being reproduced badly here.
@@ -127,46 +218,7 @@ test.describe("a board with no workflow for the card's type", () => {
   test.skip(({ isMobile }) => Boolean(isMobile), "the drag below needs two columns on screen");
 
   async function failWorkflowRead(page: Page) {
-    await page.evaluate(() => {
-      interface Fiber {
-        child?: Fiber;
-        sibling?: Fiber;
-        alternate?: Fiber;
-        memoizedProps?: { value?: unknown };
-      }
-      interface Queryish {
-        state: { data?: Record<string, unknown> };
-        setState: (state: unknown) => void;
-      }
-      interface QueryClientish {
-        getQueryCache: () => { findAll: (filter: unknown) => Queryish[] };
-      }
-
-      const root = document.getElementById("root");
-      const key = root && Object.keys(root).find((name) => name.startsWith("__reactContainer$"));
-      const start = key ? (root as unknown as Record<string, Fiber>)[key] : undefined;
-      const seen = new Set<Fiber>();
-      const stack: Fiber[] = start ? [start] : [];
-
-      while (stack.length) {
-        const node = stack.pop()!;
-        if (seen.has(node)) continue;
-        seen.add(node);
-        const value = node.memoizedProps?.value as Partial<QueryClientish> | undefined;
-        if (typeof value?.getQueryCache === "function") {
-          for (const query of (value as QueryClientish).getQueryCache().findAll({ queryKey: ["project-context"] })) {
-            query.setState({ ...query.state, data: { ...query.state.data, workflows: {} }, dataUpdatedAt: Date.now() });
-          }
-          return;
-        }
-        // React keeps two fiber trees and swaps them, so the walk follows
-        // `alternate` as well or it can search the one that is not current.
-        for (const next of [node.child, node.sibling, node.alternate]) {
-          if (next) stack.push(next);
-        }
-      }
-      throw new Error("no QueryClient on this page");
-    });
+    await onQueryClient(page, "drop-every-workflow");
   }
 
   test("refuses the drop instead of posting a transition the server never described", async ({ page }) => {
@@ -205,6 +257,74 @@ test.describe("a board with no workflow for the card's type", () => {
       await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
     }
     await expect(page.getByText(/This project has no workflow for task issues, so no move is\s+offered\./)).toBeVisible();
+  });
+});
+
+/**
+ * A board whose workflow arrived present but empty — named and versioned, no
+ * statuses, no transitions. The stand sent exactly that for every issue type on
+ * 2026-10-15 (backend TAS-261), and the drop then said "no transition from In
+ * Progress to Done in this workflow": a claim about the workflow the server
+ * never made, since the same workflow read on its own route has that move.
+ * Nothing compensates: the board says what the server sent and sends nothing.
+ */
+test.describe("a board whose workflow came without statuses", () => {
+  test.skip(({ isMobile }) => Boolean(isMobile), "the drag below needs two columns on screen");
+
+  test("refuses the drop in its own words and starts no transition", async ({ page }) => {
+    await openBoard(page);
+    await onQueryClient(page, "empty-every-workflow");
+
+    const todo = column(page, "To Do");
+    const inProgress = column(page, "In Progress");
+    await dragCardTo(page, todo.getByRole("button", { name: CARD }), inProgress);
+
+    await expect(
+      page.getByRole("alert").filter({ hasText: "TAS-102 was not moved: the server sent this project's task workflow without statuses." }),
+    ).toBeVisible();
+    // Not the sentence for a workflow that lacks this one move.
+    await expect(page.getByText(/no transition from/)).toHaveCount(0);
+    await expect(todo.getByRole("button", { name: CARD })).toBeVisible();
+    await expect(inProgress.getByRole("button", { name: CARD })).toHaveCount(0);
+    expect(await onQueryClient(page, "count-drop-moves")).toBe(0);
+  });
+
+  test("says so in the panel instead of leaving the row bare", async ({ page }) => {
+    await openBoard(page);
+    await onQueryClient(page, "empty-every-workflow");
+
+    await column(page, "To Do").getByRole("button", { name: CARD }).click();
+    const panel = page.getByRole("complementary", { name: "TAS-102 issue" });
+    await expect(panel).toBeVisible();
+
+    await expect(
+      panel.getByText("The server sent this project’s task workflow without statuses, so no move is offered."),
+    ).toBeVisible();
+    for (const name of ["Start Progress", "Complete", "Move to To Do", "Reopen"]) {
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+    }
+  });
+
+  test("still names the missing move when the workflow has statuses but not that transition", async ({ page }) => {
+    // The mock's own workflow, untouched: it has statuses, and nothing goes
+    // from To Do straight to Done.
+    await openBoard(page);
+
+    const todo = column(page, "To Do");
+    const done = column(page, "Done");
+    await dragCardTo(page, todo.getByRole("button", { name: CARD }), done);
+
+    await expect(
+      page.getByRole("alert").filter({ hasText: "TAS-102: no transition from To Do to Done in this workflow" }),
+    ).toBeVisible();
+    await expect(page.getByText(/without statuses/)).toHaveCount(0);
+    await expect(todo.getByRole("button", { name: CARD })).toBeVisible();
+    expect(await onQueryClient(page, "count-drop-moves")).toBe(0);
+
+    // The probe can see a move: the one legal drop from here starts exactly one.
+    await dragCardTo(page, todo.getByRole("button", { name: CARD }), column(page, "In Progress"));
+    await expect(column(page, "In Progress").getByRole("button", { name: CARD })).toBeVisible();
+    expect(await onQueryClient(page, "count-drop-moves")).toBe(1);
   });
 });
 
