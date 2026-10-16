@@ -3356,22 +3356,44 @@ From the role verdicts on the branch (2026-10-17), not taken in this PR:
   value filters to an empty result where the gateway answers 400, and it does
   not model `validateColumn` for an unknown column. Both are reachable only by
   a hand-edited URL.
-- **Backend ask, ready to file: `AvatarDto` states its link's lifetime, or the
-  link is stable** (`api-contract-guard`, F2). As-is: `downloadUrl` with no
-  expiry; the TTL is `STORAGE_PRESIGNED_URL_TTL` (15m default, overridable);
-  every `/users/me` and member read re-signs. To-be: (a) `downloadUrlExpiresAt`
-  on `AvatarResponse`/`AvatarDto` (proto + service + gateway mapper), or (b) a
-  stable redirecting link with a cache validator. Layer: auth-service and
-  gateway. Removes the `API-DIVERGENCE.md` entry "The avatar link's lifetime is
-  not on the wire". Epic: TAS-210 or new.
+- **Backend ask, ready to file: the avatar link states its lifetime, or the
+  link is stable** (`api-contract-guard`, F2, re-priced on `6fe81ac`). As-is:
+  `downloadUrl` with no expiry on both `AvatarResponse` protos —
+  `auth-service/profile.proto` `AvatarResponse` (:227 @`3bd33ca`, behind
+  `/users/me` through #193's `UserServiceImpl` and user details) and
+  `project-service.proto` `AvatarResponse` (:341, behind member and context
+  rows) — and both gateway `AvatarDto` mappers (the `AuthMapper`/`UserServiceImpl`
+  path, `ProjectMapper.toAvatarDto:141`). The TTL is `STORAGE_PRESIGNED_URL_TTL`
+  (15m default, overridable); every read re-signs. Precedent already on the
+  wire: `CreateAvatarUploadUrlResponse.expires_in` (profile.proto:150) →
+  `CreateAvatarUploadUrlResponseDto.expiresIn`. To-be: an absolute
+  `downloadUrlExpiresAt` (suits a link the client keeps across refetches — no
+  receipt time needed) or `downloadUrlExpiresIn` after the precedent; or a stable
+  redirecting link with a cache validator. Layer: two protos, auth-service and
+  project-service, two gateway mappers, openapi. Removes the `API-DIVERGENCE.md`
+  entry "The avatar link's lifetime is not on the wire". Epic: TAS-210 or new.
 - **Backend ask, ready to file: the read-only catalog states each column's
-  filter operators** (`api-contract-guard`, F4). As-is: `ColumnMetadataDto`
-  is `{name, type, sensitive}`, and the client and the mock copy
-  `DbColumnType.PG_TYPE_MAP` (TAS-263 added `UUID` to the copy). To-be:
-  `filterOperators` (or `columnClass`) per column, computed by admin-service
-  from `DbColumnType.supportsContains`/`supportsRange`. Layer: admin-service
-  and gateway mapper. Removes the copied map (`src/lib/adminColumnTypes.ts`) and
-  gives the classifier entry in `API-DIVERGENCE.md` a removal key.
+  filter operators** (`api-contract-guard`, F4, re-priced on `6fe81ac`). As-is:
+  proto `ColumnMetadata` (admin-service.proto:118 @`bac0080`) is
+  `{name, type, primary_key, sensitive}` and `ColumnMetadataDto` is
+  `{name, type, sensitive}`, so nothing on the wire carries a class or an
+  operator list; the client and the mock copy `DbColumnType.PG_TYPE_MAP`
+  (TAS-263 added `UUID` to the copy). To-be: `repeated string filter_operators`
+  on `ColumnMetadata`, surfaced as `filterOperators` on `ColumnMetadataDto`,
+  computed by admin-service's `MetadataService` from
+  `DbColumnType.fromPgType(...).supportsContains()/supportsRange()` plus
+  `equals`, mapped in `AdminDataMapper.toRestColumnMetadataDto:107`. An operator
+  list, not a `columnClass` enum the client would have to narrow; per column, not
+  `TableCapabilitiesDto`, because the catalog is already the one read. Layer:
+  proto, admin-service, gateway mapper, openapi. Removes the copied map
+  (`src/lib/adminColumnTypes.ts`) and is the removal of the classifier entry in
+  `API-DIVERGENCE.md`.
+- **A write refusal in the profile menu survives closing and reopening, and
+  then hides "Your photo could not be loaded."** (`art-director`, 2026-10-17,
+  pre-existing since TAS-220). Under §4.16's yield rule the stale refusal
+  suppresses a line that describes the menu on opening. Fix: `setNotice(null)`
+  wherever the popover closes (outside click, Esc, item choice) unless an upload
+  is in flight; the region stays mounted, so nothing is announced on reopen.
 
 Frontend, recorded rather than taken:
 

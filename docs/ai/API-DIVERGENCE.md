@@ -1671,9 +1671,11 @@ Everything below is the entry as it stood, in the past tense.
   refetch, and the `Avatar` fallback would show initials. Member rows are
   re-signed on every list read and are not held (`BACKLOG.md`, "Member reads
   re-sign every face").
-- **Removal:** the backend stating the lifetime (`downloadUrlExpiresAt` on
-  `AvatarDto`) or signing stable links; ready-to-file ask in `BACKLOG.md`,
-  "Left by TAS-263". Until then the 10 minutes stays a constant with this entry
+- **Removal:** the backend stating the lifetime on both `AvatarResponse`
+  protos and both `AvatarDto`s (`downloadUrlExpiresAt`, or `downloadUrlExpiresIn`
+  after the upload URL's `expiresIn`) or signing stable links; ready-to-file ask
+  in `BACKLOG.md`, "Left by TAS-263" — its Jira key replaces this pointer once
+  filed. Until then the 10 minutes stays a constant with this entry
   as its reason.
 
 ### Closed by TAS-263: the current user's avatar cost a second read, because `GET /users/me` carried none
@@ -2421,8 +2423,12 @@ The entry as it stood:
   failure direction is the safe one — fewer operators offered, never a request
   the server refuses — but it is drift the contract cannot warn us about.
 - **Removal:** the catalog stating the operators a column accepts, rather than a
-  raw Postgres type the client has to classify for itself. `TableCapabilitiesDto`
-  is the obvious home; it already carries `filterableColumns`.
+  raw Postgres type the client has to classify for itself: `filterOperators` per
+  column on `ColumnMetadataDto`, from a new `repeated string filter_operators` on
+  proto `ColumnMetadata` (per column rather than `TableCapabilitiesDto`, because
+  the catalog is already the one read; `api-contract-guard`, 2026-10-17).
+  Ready-to-file ask in `BACKLOG.md`, "Left by TAS-263"; its Jira key replaces
+  this pointer once filed.
 
 ### Dates in a range filter must carry an offset, and the contract's example does not
 
