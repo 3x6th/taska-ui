@@ -108,37 +108,43 @@ export interface User {
   globalRole?: GlobalRole;
   /**
    * A presigned link to this person's avatar, good for fifteen minutes on
-   * auth-service's default link lifetime, or `null` when they have none.
-   * **`GET /users/me` does not carry it** and no gateway profile read does —
-   * backend PR #150 (TAS-129, merged at `develop` `368ae77355bd`) put the avatar
-   * on routes of its own and left the user DTO as it was — so nothing fills this
-   * in from a profile response and a reader must not infer that the gateway
-   * sends one.
+   * auth-service's default link lifetime, or `null` when there is none to draw.
    *
-   * Two things are meant to fill it, and they cost very different amounts. A
-   * *member row* declares the avatar inline
-   * (`ProjectMemberDetailsDto.avatar.downloadUrl`, backend TAS-137), so a board
-   * full of faces is one read. **The deployed member read never fills it yet**:
+   * Two reads fill it, and neither costs a request of its own. **`GET
+   * /users/me`** carries the reader's own as `avatar` since backend PR #193
+   * (TAS-223) — an explicit `null` both when they have none *and* when the
+   * gateway's profile read behind it failed: the server does not tell the two
+   * apart, so neither can this field, and a failed read draws initials like an
+   * absent photo (no compensation — docs/ai/API-DIVERGENCE.md). A *member row*
+   * declares the avatar inline (`ProjectMemberDetailsDto.avatar.downloadUrl`,
+   * backend TAS-137). **The deployed member read never fills it yet**:
    * auth-service's `UserRepository.findUsersWithAvatars` selects no avatar id,
    * and `ProfileMapper` attaches an avatar only when that id is present (read at
    * `develop` `1cfe4d79f074`), so every row arrives without one and the board
    * draws initials. The field is read anyway — it is the contract's, and it
-   * starts working once auth-service selects the id. The *current user*
-   * is the one case that costs a request of its own,
-   * `GET /users/{userId}/avatar`, which `UserProfileMenu` spends on a mount: a
-   * successful answer is reused for ten minutes, nothing is re-read on a window
-   * focus, and once the read has met the undeployed route it is not made again
-   * until the page reloads.
+   * starts working once auth-service selects the id.
+   *
+   * Every read of `/users/me` re-signs the link — the same picture under a new
+   * query string, which the browser's cache never recognises — so the `["me"]`
+   * query keeps the link it already holds while `avatarId` is unchanged and the
+   * link is younger than ten minutes (`keepSignedAvatarLink`,
+   * src/lib/ownAvatarLink.ts). That is cache handling, not a compensation.
    *
    * `undefined` and `null` are not the same answer and the distinction is the
-   * reason this is not simply `string | null`: absent means nobody has asked,
-   * `null` means the server was asked and said there is no avatar. Only the
-   * second is a fact about the person. Nothing draws a difference between them
-   * today — both fall to initials — but a spinner over "we have not asked" and
-   * initials over "there is none" is the shape this would grow into, and
-   * collapsing them now would make that unreachable.
+   * reason this is not simply `string | null`: absent means nobody has asked —
+   * or a gateway older than TAS-223 answered without the field — and `null`
+   * means the server was asked and gave no picture. Nothing draws a difference
+   * between them today — both fall to initials — but collapsing them now would
+   * make the difference unreachable.
    */
   avatarUrl?: string | null;
+  /**
+   * `avatar.id` from `GET /users/me` (TAS-223) — set only on the reader's own
+   * profile, `null` when the answer carried no avatar. Not drawn: it is what
+   * tells a re-signed link to the same picture from a new picture, so the
+   * `["me"]` query can keep the link it holds (see `avatarUrl`).
+   */
+  avatarId?: string | null;
 }
 
 /**
@@ -1210,12 +1216,12 @@ export interface Notification {
    * columns did not backfill them, so an issue notification that old carries
    * none of the three.
    *
-   * A third case sends `issueId` alone: `ISSUE_ATTACHMENT_ADDED` and
-   * `ISSUE_ATTACHMENT_DELETED` leave `issueKey` and `projectId` null because
-   * issue-service's `PayloadSerializer` writes `issueId` and never calls
-   * `putIssueFields` for the other two (TAS-245). `notificationRoute`
-   * (src/domain/notifications.ts) needs both `issueId` and `projectId`, so
-   * this one stays unopenable until the backend fix lands.
+   * A third case sends `issueId` alone: an `ISSUE_ATTACHMENT_ADDED` or
+   * `ISSUE_ATTACHMENT_DELETED` written before backend PR #191 (TAS-245), when
+   * issue-service's `PayloadSerializer` did not call `putIssueFields` for
+   * them. New attachment notifications carry all three; the old rows were not
+   * backfilled. `notificationRoute` (src/domain/notifications.ts) needs both
+   * `issueId` and `projectId`, so such an old row opens nothing.
    */
   issueId: string | null;
   issueKey: string | null;
@@ -1454,6 +1460,16 @@ export interface ProblematicOutboxEvent {
   requestId: string | null;
   serviceKey: string;
   reason: string;
+  /**
+   * Whether admin-service would retry this event as of the read — backend
+   * PR #195 (TAS-200), required on the wire: `FAILED`, or `PROCESSING` whose
+   * `processingStartedAt` is earlier than now minus the retry stuck threshold
+   * (`ADMIN_OUTBOX_RETRY_STUCK_THRESHOLD`, 10 minutes by default). `false` for
+   * `NEW` and `PUBLISHED`, and for a `PROCESSING` row listed as stuck by the
+   * shorter processing timeout but not yet past the retry threshold. A
+   * snapshot: the retry command checks again and may refuse.
+   */
+  retryable: boolean;
 }
 
 /**

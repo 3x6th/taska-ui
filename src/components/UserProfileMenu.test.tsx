@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
 import type { ProjectMember, User } from "../domain/types";
+import { keepSignedAvatarLink, ME_QUERY_KEY } from "../lib/ownAvatarLink";
 import { UserProfileMenu } from "./UserProfileMenu";
 
 const anna: User = {
@@ -17,14 +18,17 @@ const anna: User = {
 
 /**
  * The avatar half of this menu is the only part of it that talks to a server
- * (TAS-220), so the fake stands in for the five `TaskaApi` calls it can make
- * and records what it was asked — plus `listMembers`, which the menu must
- * *never* cause to be called, and which is here so that a case can prove it.
+ * (TAS-220), so the fake stands in for the four `TaskaApi` calls it can make,
+ * and for `getCurrentUser`, which carries the reader's avatar since TAS-223
+ * and is read by the harness the way the screens read it — plus `listMembers`,
+ * which the menu must *never* cause to be called, and which is here so that a
+ * case can prove it.
  * Hoisted because `vi.mock` is.
  */
 const { fakeApi, state, reset, release } = vi.hoisted(() => {
   const state: {
     avatarUrl: string | null;
+    /** Profile reads, one `"me"` each. */
     reads: string[];
     deletes: number;
     /** Object keys `createAvatarUploadUrl` minted, in order. */
@@ -33,7 +37,6 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     confirmed: string[];
     /** Member-list reads: what an avatar write that fanned out would spend. */
     memberReads: number;
-    readFailure?: Error;
     ticketFailure?: Error;
     /** Fails the next confirm only, so the retry after it can be watched. */
     confirmFailure?: Error;
@@ -67,10 +70,11 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
   };
 
   const fakeApi = {
-    getUserAvatarUrl: async (userId: string) => {
-      state.reads.push(userId);
-      if (state.readFailure) throw state.readFailure;
-      return state.avatarUrl;
+    getCurrentUser: async () => {
+      state.reads.push("me");
+      // The avatar's id stays the same while the picture does, as on the
+      // server: only the link is signed afresh on every read.
+      return { ...anna, avatarUrl: state.avatarUrl, avatarId: state.avatarUrl ? "avatar-1" : null };
     },
     createAvatarUploadUrl: async () => {
       if (state.ticketFailure) throw state.ticketFailure;
@@ -118,7 +122,6 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     state.minted = [];
     state.confirmed = [];
     state.memberReads = 0;
-    state.readFailure = undefined;
     state.ticketFailure = undefined;
     state.confirmFailure = undefined;
     state.deleteFailure = undefined;
@@ -136,6 +139,19 @@ vi.mock("../api/client", () => ({ taskaApi: fakeApi }));
 
 const freshClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
+/** A client with the `["me"]` rule `main.tsx` sets, so the link-keeping is the app's. */
+const appClient = () => {
+  const client = freshClient();
+  client.setQueryDefaults(ME_QUERY_KEY, { structuralSharing: keepSignedAvatarLink });
+  return client;
+};
+
+/** The menu fed by the `["me"]` query, as every screen feeds it. */
+function MenuOnProfile() {
+  const me = useQuery({ queryKey: ["me"], queryFn: () => fakeApi.getCurrentUser() });
+  return <UserProfileMenu loading={me.isPending} onLogout={() => {}} user={me.data} />;
+}
+
 // The menu can hold a router <Link> (the Administration entry), so every case
 // renders inside a router — including the ones where the entry is absent, so a
 // missing router can never be what makes them pass. The query client is per
@@ -149,6 +165,16 @@ const renderMenu = (
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <UserProfileMenu {...props} />
+        {children}
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+
+const renderOnProfile = ({ client = appClient(), children }: { client?: QueryClient; children?: ReactNode } = {}) =>
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <MenuOnProfile />
         {children}
       </MemoryRouter>
     </QueryClientProvider>,
@@ -205,7 +231,7 @@ const memberRows = (annaFace: string | null): ProjectMember[] => [
 ];
 
 const seededClient = (annaFace: string | null) => {
-  const client = freshClient();
+  const client = appClient();
   client.setQueryData(["members", PROJECT], memberRows(annaFace));
   client.setQueryData(["project-summaries", PROJECT], { count: 9, members: memberRows(annaFace), failure: null });
   client.setQueryData(["project-summaries", OTHER_PROJECT], {
@@ -444,99 +470,101 @@ describe("UserProfileMenu", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
   /**
-   * The avatar controls (TAS-220). What is pinned: that the reader's own face
-   * costs one read and is not asked for again on a second open, on a focus, or
-   * after a write whose answer already carried the link; that a write rewrites
-   * the member rows already in the cache instead of reading every list again;
-   * that a refusal happens *before* any request is spent; and that a gateway
-   * without these routes is reported as such rather than as a raw failure —
-   * which was the answer every reader got until backend PR #150 deployed on
-   * 2026-09-14.
+   * The avatar controls (TAS-220), drawn from the profile since backend PR #193
+   * (TAS-223): `GET /users/me` carries the reader's own avatar, so the menu
+   * spends no request of its own on it. What is pinned: that the face comes
+   * from the profile and a re-read does not swap its link while the avatar is
+   * the same one; that a write rewrites the profile and the member rows already
+   * in the cache instead of reading every list again; that a refusal happens
+   * *before* any request is spent; and that a profile carrying no avatar —
+   * none, or a profile read the gateway could not make — draws initials and no
+   * error, because the server does not tell the two apart.
    */
   describe("the profile photo", () => {
-    it("spends one read for the reader's own avatar and draws it in place of the initials", async () => {
-      state.avatarUrl = "https://store.example/face.png?sig=1";
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
+    const FACE = "https://store.example/face.png?sig=1";
 
-      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+    /** Waits for the profile, then opens the menu; answers the trigger. */
+    const openOnProfile = async () => {
+      const trigger = await screen.findByRole("button", { name: "Open profile for Anna Ivanova" });
+      await waitFor(() => expect(trigger).toBeEnabled());
+      fireEvent.click(trigger);
+      return trigger;
+    };
+
+    it("draws the reader's face from the profile, with no avatar request of its own", async () => {
+      state.avatarUrl = FACE;
+      renderOnProfile();
+
+      const trigger = await screen.findByRole("button", { name: "Open profile for Anna Ivanova" });
       // The picture is in the trigger as well as in the popover, and the name
       // stays on the circle rather than moving onto the image.
       await waitFor(() => expect(trigger.querySelector("img")).not.toBeNull());
-      expect(trigger.querySelector("img")).toHaveAttribute("src", "https://store.example/face.png?sig=1");
+      expect(trigger.querySelector("img")).toHaveAttribute("src", FACE);
       expect(trigger.querySelector("img")).toHaveAttribute("alt", "");
       expect(trigger.querySelector(".avatar")).toHaveAttribute("aria-label", "Anna Ivanova");
       expect(trigger.textContent).toBe("");
 
       fireEvent.click(trigger);
-      // Opening the menu asks nothing new: the read is keyed by user, not by
-      // whether the popover is on screen.
-      expect(state.reads).toEqual([anna.id]);
       expect(screen.getByRole("button", { name: "Replace photo" })).toBeVisible();
       expect(screen.getByRole("button", { name: "Remove photo" })).toBeVisible();
+      // One profile read, and nothing else: the avatar rode on it.
+      expect(state.reads).toEqual(["me"]);
     });
 
-    it("re-reads its own avatar on a mount after ten minutes, and never on a window focus", async () => {
-      // Every answer is a freshly signed link — a new URL for the same picture —
-      // so a refetch is not a cheap confirmation: the browser downloads the image
-      // again. Ten minutes stays under the fifteen a link lives.
+    it("keeps the drawn link when a re-read re-signs the same avatar, and takes a new one after ten minutes", async () => {
+      // Every read of `/users/me` signs a fresh link — a new URL for the same
+      // picture — and the browser's cache never recognises it. A focus re-read
+      // must not swap the <img src> and download the face again.
       const realNow = Date.now.bind(Date);
       let elapsed = 0;
       vi.spyOn(Date, "now").mockImplementation(() => realNow() + elapsed);
-      state.avatarUrl = "https://store.example/face.png?sig=1";
-      const client = freshClient();
-      const menus = (copies: number) => (
-        <QueryClientProvider client={client}>
-          <MemoryRouter>
-            {Array.from({ length: copies }, (_, index) => (
-              <UserProfileMenu key={index} loading={false} onLogout={vi.fn()} user={anna} />
-            ))}
-          </MemoryRouter>
-        </QueryClientProvider>
-      );
-      const { rerender } = render(menus(1));
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      state.avatarUrl = "https://store.example/face.png?sig=keep-1";
+      const client = appClient();
+      renderOnProfile({ client });
+      const trigger = await screen.findByRole("button", { name: "Open profile for Anna Ivanova" });
+      await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", state.avatarUrl));
 
-      // Nine minutes on, a second copy mounting — the board's beside the top
-      // bar's, or the next screen's — draws the link it already has.
       elapsed = 9 * 60 * 1000;
-      rerender(menus(2));
-      await settle();
-      expect(state.reads).toEqual([anna.id]);
+      state.avatarUrl = "https://store.example/face.png?sig=keep-2";
+      await act(() => client.invalidateQueries({ queryKey: ["me"] }));
+      await waitFor(() => expect(state.reads).toEqual(["me", "me"]));
+      expect(trigger.querySelector("img")).toHaveAttribute("src", "https://store.example/face.png?sig=keep-1");
 
-      // Eleven minutes on the link is stale, and coming back to the window
-      // still asks nothing: a focus is not a navigation.
+      // Past ten minutes the held link is too close to its fifteen, and the
+      // next answer's link is drawn instead.
       elapsed = 11 * 60 * 1000;
-      act(() => {
-        focusManager.setFocused(false);
-        focusManager.setFocused(true);
-      });
-      await settle();
-      expect(state.reads).toEqual([anna.id]);
-
-      // A mount past ten minutes does read, so the next screen draws a link with
-      // its lifetime ahead of it.
-      rerender(menus(3));
-      await waitFor(() => expect(state.reads).toEqual([anna.id, anna.id]));
+      state.avatarUrl = "https://store.example/face.png?sig=keep-3";
+      await act(() => client.invalidateQueries({ queryKey: ["me"] }));
+      await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", "https://store.example/face.png?sig=keep-3"));
     });
 
-    it("offers an upload and no removal when the server says there is no avatar", async () => {
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+    it("offers an upload and no removal when the profile says there is no avatar", async () => {
+      renderOnProfile();
+      await openOnProfile();
 
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
       expect(screen.getByRole("button", { name: "Upload a photo" })).toBeVisible();
-      // Only a successful read may say there is nothing to remove (§5.6), and
-      // this one said exactly that.
+      // Only a link may say there is a photo to remove (§5.6).
       expect(screen.queryByRole("button", { name: "Remove photo" })).not.toBeInTheDocument();
       // The initials are what the circle draws instead.
       expect(screen.getAllByLabelText("Anna Ivanova")[0].textContent).toBe("AI");
     });
 
+    it("draws initials and no error when the profile carries a null avatar, whatever the reason", async () => {
+      // `avatar: null` is what the gateway sends both for no photo and for a
+      // profile read it could not make (TAS-223). It does not tell them apart,
+      // so neither does this menu: no "could not be loaded", no request id —
+      // the state the server reports, not a guess at a cause.
+      renderOnProfile();
+      await openOnProfile();
+
+      expect(document.querySelector(".user-profile-photo .is-error")).toBeNull();
+      expect(screen.queryByText(/could not be loaded/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Upload a photo" })).toBeEnabled();
+    });
+
     it("states the enforced ceiling and the accepted types before a file is chosen", async () => {
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile();
+      await openOnProfile();
 
       // 2 MB — the number the schema declares and auth-service enforces, which
       // agree since backend TAS-222. The schema used to say 5 MB, and offering
@@ -545,27 +573,28 @@ describe("UserProfileMenu", () => {
       expect(document.querySelector(".avatar-input")).toHaveAttribute("accept", "image/jpeg,image/png,image/webp");
     });
 
-    it("runs the three legs and replaces the initials with what came back, without reading it again", async () => {
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
-      fireEvent.click(trigger);
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+    it("runs the three legs and replaces the initials with what came back, without reading the profile again", async () => {
+      const client = appClient();
+      renderOnProfile({ client });
+      const trigger = await openOnProfile();
 
       pick(imageFile());
 
       await waitFor(() => expect(trigger.querySelector("img")).not.toBeNull());
       expect(trigger.querySelector("img")).toHaveAttribute("src", state.confirmedUrl);
+      // Written onto the profile, with the id that tells a re-signed link from
+      // a new picture.
+      expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: state.confirmedUrl, avatarId: "avatar-1" });
       await waitFor(() => expect(screen.getByRole("button", { name: "Replace photo" })).toBeEnabled());
       // The confirm answered with the link, so nothing re-reads to find it.
       await settle();
-      expect(state.reads).toEqual([anna.id]);
+      expect(state.reads).toEqual(["me"]);
     });
 
     it("keeps the button's own label while an upload is in flight, and says so on the hint line", async () => {
       state.holdConfirm = true;
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile();
+      await openOnProfile();
       const button = screen.getByRole("button", { name: "Upload a photo" });
 
       pick(imageFile());
@@ -589,10 +618,8 @@ describe("UserProfileMenu", () => {
     it("writes the new face into every cached member row, without reading a member list again", async () => {
       const client = seededClient(null);
       const failedSummary = client.getQueryData(["project-summaries", OTHER_PROJECT]);
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client, children: <MemberFaceHolders /> });
-      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
-      fireEvent.click(trigger);
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile({ client, children: <MemberFaceHolders /> });
+      const trigger = await openOnProfile();
 
       pick(imageFile());
 
@@ -606,7 +633,7 @@ describe("UserProfileMenu", () => {
       // Invalidating the summaries instead re-runs `listIssues` and `listMembers`
       // for every card on `/projects`, to change one face.
       expect(state.memberReads).toBe(0);
-      expect(state.reads).toEqual([anna.id]);
+      expect(state.reads).toEqual(["me"]);
       // Only the reader's row moved: a neighbour keeps their face, a summary keeps
       // its count, and a card whose member half had failed is left exactly as it
       // was rather than given a list.
@@ -615,32 +642,28 @@ describe("UserProfileMenu", () => {
       expect(client.getQueryData(["project-summaries", OTHER_PROJECT])).toBe(failedSummary);
     });
 
-    it("re-reads the reader's own avatar only when the confirm answered without a link", async () => {
+    it("re-reads the profile only when the confirm answered without a link", async () => {
       state.confirmCarriesLink = false;
       const client = seededClient(null);
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client, children: <MemberFaceHolders /> });
-      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
-      fireEvent.click(trigger);
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile({ client, children: <MemberFaceHolders /> });
+      const trigger = await openOnProfile();
 
       pick(imageFile());
 
-      // The one case that costs a read, and it is a read of this one avatar: the
-      // answer did not say where the picture is, so nothing else can.
-      await waitFor(() => expect(state.reads).toEqual([anna.id, anna.id]));
+      // The one case that costs a read, and it is the profile again, which
+      // states the avatar: the answer did not say where the picture is.
+      await waitFor(() => expect(state.reads).toEqual(["me", "me"]));
       await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", state.confirmedUrl));
       await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: state.confirmedUrl, summary: state.confirmedUrl }));
       await settle();
       expect(state.memberReads).toBe(0);
     });
 
-    it("takes the face off every cached member row at once on Remove, without reading anything again", async () => {
-      const face = "https://store.example/face.png?sig=1";
-      state.avatarUrl = face;
-      const client = seededClient(face);
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client, children: <MemberFaceHolders /> });
-      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
-      fireEvent.click(trigger);
+    it("takes the face off the profile and every cached member row at once on Remove, without reading anything again", async () => {
+      state.avatarUrl = FACE;
+      const client = seededClient(FACE);
+      renderOnProfile({ client, children: <MemberFaceHolders /> });
+      const trigger = await openOnProfile();
       await waitFor(() => expect(screen.getByRole("button", { name: "Remove photo" })).toBeVisible());
 
       // Held open, because the frame being asserted is the one *between* the
@@ -651,6 +674,7 @@ describe("UserProfileMenu", () => {
 
       await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null }));
       expect(trigger.querySelector("img")).toBeNull();
+      expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: null, avatarId: null });
 
       release();
 
@@ -660,16 +684,14 @@ describe("UserProfileMenu", () => {
       expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null });
       expect(faceIn(client, "user-tom")).toEqual({ members: TOM_FACE, summary: TOM_FACE });
       expect(state.memberReads).toBe(0);
-      expect(state.reads).toEqual([anna.id]);
+      expect(state.reads).toEqual(["me"]);
     });
 
     it("puts the face back on the menu and on every cached member row when the server refuses the removal", async () => {
-      const face = "https://store.example/face.png?sig=1";
-      state.avatarUrl = face;
-      const client = seededClient(face);
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client, children: <MemberFaceHolders /> });
-      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
-      fireEvent.click(trigger);
+      state.avatarUrl = FACE;
+      const client = seededClient(FACE);
+      renderOnProfile({ client, children: <MemberFaceHolders /> });
+      const trigger = await openOnProfile();
       await waitFor(() => expect(screen.getByRole("button", { name: "Remove photo" })).toBeVisible());
 
       state.holdDelete = true;
@@ -688,13 +710,13 @@ describe("UserProfileMenu", () => {
 
       // And comes back everywhere it went, with the reason — a rollback nobody is
       // told about is what §5.6 calls out.
-      await waitFor(() => expect(trigger.querySelector("img")).not.toBeNull());
-      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: face, summary: face }));
+      await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", FACE));
+      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: FACE, summary: FACE }));
       expect(screen.getByText(/Your photo was not removed\. Something went wrong/)).toBeVisible();
       await settle();
       expect(state.deletes).toBe(1);
       expect(state.memberReads).toBe(0);
-      expect(state.reads).toEqual([anna.id]);
+      expect(state.reads).toEqual(["me"]);
     });
 
     it("never confirms one object key twice: choosing the photo again after a failed confirm starts a new ticket", async () => {
@@ -706,10 +728,8 @@ describe("UserProfileMenu", () => {
         code: "UNAVAILABLE",
         status: 503,
       });
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
-      fireEvent.click(trigger);
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile();
+      const trigger = await openOnProfile();
 
       pick(imageFile());
       await waitFor(() =>
@@ -724,9 +744,8 @@ describe("UserProfileMenu", () => {
     });
 
     it("refuses a type outside the allowlist without spending a request", async () => {
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile();
+      await openOnProfile();
 
       // A GIF passes the picker on some systems — `accept` filters by the
       // operating system's idea of a type and `File.type` is the browser's.
@@ -744,9 +763,8 @@ describe("UserProfileMenu", () => {
     });
 
     it("refuses a photo over the ceiling with its size, not with the server's sentence", async () => {
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile();
+      await openOnProfile();
 
       pick(imageFile("huge.png", 3 * 1024 * 1024));
 
@@ -762,9 +780,8 @@ describe("UserProfileMenu", () => {
         status: 503,
         requestId: REQUEST_ID,
       });
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile();
+      await openOnProfile();
 
       pick(imageFile());
 
@@ -783,126 +800,13 @@ describe("UserProfileMenu", () => {
       expect(detail).not.toHaveTextContent("Storage service unavailable");
     });
 
-    it("offers no photo controls at all when its own read already met the undeployed route", async () => {
-      // The avatar routes answered Spring's static-resource 404 on the stand
-      // before they deployed — all four when probed on 2026-09-12, and still
-      // on 2026-09-14 before PR #150 finished deploying later that day. This
-      // test reproduces that answer via a stub, since the mock cannot produce
-      // it: the read this menu makes on mount has already answered the
-      // question every control would ask. Offering "Upload a photo" and
-      // refusing only after the file picker is an interaction built to fail.
-      state.readFailure = undeployed(`${anna.id}/avatar`);
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-
-      const hint = await screen.findByText("Profile photos are not on this gateway yet.");
-      expect(hint).toHaveClass("user-profile-photo-hint");
-      // The band keeps its place and its divider, and holds nothing else: no
-      // button, no picker, no limits for a feature that is not there…
-      expect(hint.parentElement).toHaveClass("user-profile-photo");
-      expect(hint.parentElement!.children).toHaveLength(1);
-      expect(screen.queryByRole("button", { name: "Upload a photo" })).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Remove photo" })).not.toBeInTheDocument();
-      expect(document.querySelector(".avatar-input")).toBeNull();
-      expect(screen.queryByText("Up to 2 MB. JPEG, PNG or WebP.")).not.toBeInTheDocument();
-      // …and no alarm: a route that is not deployed is not a failure of anything
-      // the reader did.
-      expect(document.querySelector(".user-profile-photo .is-error")).toBeNull();
-      expect(screen.queryByText(/No static resource/)).not.toBeInTheDocument();
-      // Not retried either: the answer is final, the way it would be on a
-      // gateway without these routes.
-      expect(state.reads).toEqual([anna.id]);
-    });
-
-    it("makes no request on a second mount once its read has met the undeployed route", async () => {
-      // A failed query with no data is run again on every mount, whatever its
-      // stale time says — which on a stand without the routes was one 404 per
-      // navigation, from every reader, for as long as the stand lacks them.
-      state.readFailure = undeployed(`${anna.id}/avatar`);
-      const client = freshClient();
-      const avatarState = () => client.getQueryState(["avatar", anna.id]);
-      const first = renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client });
-      // Settled, not merely asked: a second mount while the first read is still
-      // in flight would share it and prove nothing.
-      await waitFor(() => expect(avatarState()?.status).toBe("error"));
-      expect(state.reads).toEqual([anna.id]);
-      first.unmount();
-
-      // The next screen's copy of the menu: no request, and the same band.
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client });
-      await settle();
-      expect(state.reads).toEqual([anna.id]);
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-      expect(screen.getByText("Profile photos are not on this gateway yet.")).toHaveClass("user-profile-photo-hint");
-
-      // Nor does anything else that runs a failed query again: an invalidation,
-      // or the network coming back.
-      await act(() => client.invalidateQueries({ queryKey: ["avatar"] }));
-      act(() => {
-        onlineManager.setOnline(false);
-        onlineManager.setOnline(true);
-      });
-      await settle();
-      expect(state.reads).toEqual([anna.id]);
-      expect(screen.getByText("Profile photos are not on this gateway yet.")).toBeVisible();
-    });
-
-    it("remembers the undeployed route past a cleared cache, so only a new page asks again", async () => {
-      state.readFailure = undeployed(`${anna.id}/avatar`);
-      const client = freshClient();
-      const first = renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client });
-      await waitFor(() => expect(client.getQueryState(["avatar", anna.id])?.status).toBe("error"));
-      first.unmount();
-
-      // App.tsx clears the whole cache on a sign-out and on an expired session,
-      // and the page goes on. The next person to sign in on it — somebody else,
-      // here, so the key is new too — is asked nothing, and gets the same band.
-      act(() => client.clear());
-      const tom: User = { ...anna, id: "user-tom", login: "tom", displayName: "Tom Berg" };
-      const second = renderMenu({ user: tom, loading: false, onLogout: vi.fn() }, { client });
-      await settle();
-      expect(state.reads).toEqual([anna.id]);
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Tom Berg" }));
-      expect(screen.getByText("Profile photos are not on this gateway yet.")).toHaveClass("user-profile-photo-hint");
-      expect(screen.queryByRole("button", { name: "Upload a photo" })).not.toBeInTheDocument();
-      second.unmount();
-
-      // A reload is a new page with a new query client, and that does ask.
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client: freshClient() });
-      await waitFor(() => expect(state.reads).toEqual([anna.id, anna.id]));
-    });
-
-    it("asks again on a second mount after an ordinary failure, and draws what it gets", async () => {
-      // Any failure but the undeployed route recovers the way it always has: the
-      // next mount asks again.
-      state.readFailure = Object.assign(new Error("Not Found"), {
-        code: "NOT_FOUND",
-        status: 404,
-        requestId: REQUEST_ID,
-      });
-      const client = freshClient();
-      const first = renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client });
-      await waitFor(() => expect(client.getQueryState(["avatar", anna.id])?.status).toBe("error"));
-      expect(state.reads).toEqual([anna.id]);
-      first.unmount();
-
-      state.readFailure = undefined;
-      state.avatarUrl = "https://store.example/face.png?sig=1";
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() }, { client });
-      const trigger = screen.getByRole("button", { name: "Open profile for Anna Ivanova" });
-
-      await waitFor(() => expect(state.reads).toEqual([anna.id, anna.id]));
-      await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", "https://store.example/face.png?sig=1"));
-    });
-
-    it("still says so after the fact when only a write meets the undeployed route", async () => {
-      // The fallback for a read that did not see the signature — still in flight
-      // when the file was chosen, or a gateway that deploys the read before the
-      // writes.
+    it("says so when a write meets a gateway without the avatar routes", async () => {
+      // Spring's static-resource 404, which is how the avatar routes answered
+      // before they deployed on 2026-09-14 — read on the write, the only avatar
+      // call this menu still makes.
       state.ticketFailure = undeployed("me/avatar/upload-url");
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-      await waitFor(() => expect(state.reads).toEqual([anna.id]));
+      renderOnProfile();
+      await openOnProfile();
 
       pick(imageFile());
 
@@ -912,70 +816,12 @@ describe("UserProfileMenu", () => {
       expect(screen.queryByText(/No static resource/)).not.toBeInTheDocument();
     });
 
-    it("says the photo could not be loaded, with its request id, and offers no Remove, when the read fails otherwise", async () => {
-      // A deployed route's own 404, which is what a row pointing at a deleted
-      // object answers: the download presign HEADs the object first. The message
-      // is not the static-resource one, so this is a failure and not a missing
-      // deployment — and a 404 is final, so it is not retried either.
-      state.readFailure = Object.assign(new Error("Not Found"), {
-        code: "NOT_FOUND",
-        status: 404,
-        requestId: REQUEST_ID,
-      });
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-
-      const sentence = await screen.findByText("Your photo could not be loaded. Not Found");
-      expect(sentence.parentElement).toHaveClass("user-profile-photo-note", "is-error");
-      expect(
-        within(sentence.parentElement!).getByRole("button", { name: `Copy request id ${REQUEST_ID}` }),
-      ).toBeVisible();
-      // Only a successful read may say there is a photo to remove (§5.6)…
-      expect(screen.queryByRole("button", { name: "Remove photo" })).not.toBeInTheDocument();
-      // …while an upload, which replaces whatever row is there, stays on offer
-      // with its limits.
-      expect(screen.getByRole("button", { name: "Upload a photo" })).toBeEnabled();
-      expect(screen.getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
-    });
-
-    it("shows only the write refusal, not a second box, when a write is refused after the read already failed", async () => {
-      // Both boxes carry the same class and sit one after the other in the
-      // band. Before this fix a failed read followed by a refused write drew
-      // both at once — two red boxes for one line of text each (art-director,
-      // 2026-09-14, 390 dark).
-      state.readFailure = Object.assign(new Error("Not Found"), {
-        code: "NOT_FOUND",
-        status: 404,
-        requestId: REQUEST_ID,
-      });
-      renderMenu({ user: anna, loading: false, onLogout: vi.fn() });
-      fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
-
-      await screen.findByText("Your photo could not be loaded. Not Found");
-      expect(document.querySelectorAll(".user-profile-photo-note")).toHaveLength(1);
-
-      // A GIF passes the picker on some systems, and this refusal is decided
-      // without a request (see "refuses a type outside the allowlist" above).
-      pick(imageFile("wave.gif", 32, "image/gif"));
-
-      await waitFor(() =>
-        expect(
-          screen.getByText("wave.gif is not a type this product accepts. Choose a JPEG, PNG or WebP image."),
-        ).toBeVisible(),
-      );
-      // The newer answer wins: the read failure's box is gone rather than
-      // stacked under the write refusal's, so exactly one remains.
-      expect(screen.queryByText("Your photo could not be loaded. Not Found")).not.toBeInTheDocument();
-      expect(document.querySelectorAll(".user-profile-photo-note")).toHaveLength(1);
-    });
-
-    it("asks nothing at all when the profile itself could not be loaded", async () => {
-      // No user, no id, and therefore no `GET /users/{userId}/avatar` to make:
-      // the popover keeps Log out and says only what it knows.
+    it("offers no photo controls when the profile itself could not be loaded", () => {
+      // No user, and so nothing to upload a face for: the popover keeps Log out
+      // and says only what it knows.
       renderMenu({ loading: false, onLogout: vi.fn() });
       fireEvent.click(screen.getByRole("button", { name: "Open profile" }));
 
-      expect(state.reads).toEqual([]);
       expect(screen.queryByRole("button", { name: "Upload a photo" })).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Log out" })).toBeVisible();
     });

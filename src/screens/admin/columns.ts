@@ -9,7 +9,8 @@ import { filterOperators } from "./urlState";
  *
  * `contains` is text-only (it becomes `ILIKE`), `from`/`to` are for temporal
  * and numeric columns (both become a typed range comparison), and `equals`
- * works everywhere.
+ * works everywhere — a `uuid` column, its own `UUID` class since TAS-232,
+ * included and alone.
  */
 export function operatorsForType(type?: string): AdminFilterOperator[] {
   const columnClass = classifyColumnType(type);
@@ -36,8 +37,11 @@ export type AdminValueControl = "text" | "number" | "boolean" | "datetime";
  * through `OffsetDateTime.parse`. A free text field for any of those is a 400
  * the reader was given no help avoiding.
  *
- * A type the gateway does not classify — `uuid`, `inet`, `jsonb` — keeps the
- * free field, because there the server really does take the string as written.
+ * A `uuid` column keeps the free field too, though the gateway does parse it
+ * (TAS-232): it wants the canonical 8-4-4-4-12 form in either case and answers
+ * 400 for anything else, and no narrower control helps with typing that. A
+ * type the gateway does not classify — `inet`, `jsonb` — keeps the free field
+ * because there the server really does take the string as written.
  */
 export function valueControlForType(type?: string): AdminValueControl {
   switch (classifyColumnType(type)) {

@@ -107,7 +107,6 @@ import type {
   UserStatus,
   UserStatusChange,
   WatchIssueResult,
-  Workflow,
   WorkflowStatus,
   WorkflowTransition,
   IssueHistoryEvent,
@@ -138,6 +137,13 @@ interface RestUser {
   status: UserStatus;
   color?: string;
   globalRole?: unknown;
+  /**
+   * `AvatarDto`, nullable, on `GET /users/me` since backend PR #193 (TAS-223).
+   * Only `id` and `downloadUrl` are read. `null` both for no avatar and for a
+   * profile read the gateway could not make — it does not distinguish them.
+   * Absent on a gateway older than that PR.
+   */
+  avatar?: { id?: string; downloadUrl?: string } | null;
 }
 
 /**
@@ -276,7 +282,11 @@ interface RestAdminCatalog {
  * field is optional for the same reason the reads above are: the contract
  * declares no `required` block anywhere in this family, and this endpoint has
  * additionally never answered this client (docs/ai/API-DIVERGENCE.md), so a
- * guaranteed field here would be a claim rather than a fact.
+ * guaranteed field here would be a claim rather than a fact. The one exception
+ * is `retryable` (backend PR #195, TAS-200), which its schema does mark
+ * required — and it is still read as optional, and absent as `false`, because
+ * a Retry button is the one thing on this list that must never be offered on
+ * a guess.
  */
 interface RestProblematicOutboxSummary {
   events?: Partial<ProblematicOutboxEvent>[];
@@ -636,21 +646,15 @@ interface RestAttachmentDownloadUrl {
 }
 
 /**
- * The three avatar response bodies — `CreateAvatarUploadUrlResponseDto`,
- * `AvatarResponseDto` and `GetAvatarDownloadUrlResponseDto`, in
+ * The two avatar response bodies this client reads —
+ * `CreateAvatarUploadUrlResponseDto` and `AvatarResponseDto`, in
  * `docs/contract/openapi.yml` since backend PR #150 merged at `develop`
- * `368ae77355bd`.
+ * `368ae77355bd`. The third, `GetAvatarDownloadUrlResponseDto`, is no longer
+ * read: the reader's own avatar arrives on `GET /users/me` (TAS-223).
  *
  * Every field optional, for the reason the attachment bodies above give: none
- * of these schemas declares a `required` block, and none of the four routes has
- * ever answered this client, so a field typed as guaranteed here would be a
- * claim rather than a measurement.
- *
- * `url` is the one that is optional *and* explicitly `nullable` in the schema,
- * and the two mean different things this side must not merge: absent is a
- * response shape nobody has seen, `null` is the server saying the person has no
- * avatar. Both reach `getUserAvatarUrl`'s caller as `null`, which is the same
- * answer — the distinction matters to the type, not to the reader.
+ * of these schemas declares a `required` block, so a field typed as guaranteed
+ * here would be a claim rather than a measurement.
  */
 interface RestAvatarUploadTicket {
   uploadUrl?: string;
@@ -667,10 +671,6 @@ interface RestUserAvatar {
   sizeBytes?: number;
   createdAt?: string;
   downloadUrl?: string;
-}
-
-interface RestAvatarDownloadUrl {
-  url?: string | null;
 }
 
 type RestComment = Omit<IssueComment, "updatedAt" | "author"> & {
@@ -701,10 +701,10 @@ interface RestCommentsListResponse {
  * `issueId`, `issueKey` and `projectId` are `null` together on a notification
  * that is not about an issue (`MEMBER_*`, `PROJECT_CREATED`, `USER_*`) and on
  * an issue notification stored before the migration that added them, which did
- * not backfill. A third case sends `issueId` alone: `ISSUE_ATTACHMENT_ADDED`
- * and `ISSUE_ATTACHMENT_DELETED` leave `issueKey` and `projectId` null because
- * issue-service's `PayloadSerializer` writes `issueId` and never calls
- * `putIssueFields` for the other two (TAS-245). All three are typed optional as
+ * not backfill. A third case sends `issueId` alone: an `ISSUE_ATTACHMENT_ADDED`
+ * or `ISSUE_ATTACHMENT_DELETED` written before backend PR #191 (TAS-245), when
+ * issue-service's `PayloadSerializer` did not call `putIssueFields` for those
+ * two. New ones carry all three; the old rows were not backfilled. All three are typed optional as
  * well as nullable so that an absent key lands in the domain as `null` rather
  * than as `undefined`; `readAt` is not in the schema's `required` list either,
  * and is read the same way.
@@ -847,18 +847,15 @@ export class RestTaskaApi implements TaskaApi {
     return this.sessionExpired.subscribe(listener);
   }
 
+  /**
+   * An empty collection is `200 { items: [] }` since TAS-207 — project-service
+   * used to answer it with NOT_FOUND, and this method used to turn every 404
+   * into `[]`. That catch is gone: a 404 here now means something is actually
+   * wrong, and it reaches the caller as one.
+   */
   async listProjects(): Promise<Project[]> {
-    try {
-      const response = await this.request<{ items: Project[] }>("/projects");
-      return response.items;
-    } catch (error) {
-      // project-service currently reports an empty collection as NOT_FOUND.
-      // Keep the UI onboarding flow usable until the backend returns 200 [].
-      if (error instanceof ApiError && error.status === 404) {
-        return [];
-      }
-      throw error;
-    }
+    const response = await this.request<{ items: Project[] }>("/projects");
+    return response.items;
   }
 
   /**
@@ -1108,12 +1105,6 @@ export class RestTaskaApi implements TaskaApi {
     await this.request<void>(`/projects/${this.segment(projectId)}/members/${this.segment(userId)}`, {
       method: "DELETE",
     });
-  }
-
-  getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
-    const search = new URLSearchParams();
-    search.set("issueType", issueType ?? "TASK");
-    return this.request<Workflow>(`/projects/${this.segment(projectId)}/workflow${this.query(search)}`);
   }
 
   async listIssues(projectId: string, params: ListIssuesParams = {}): Promise<Page<Issue>> {
@@ -1665,8 +1656,9 @@ export class RestTaskaApi implements TaskaApi {
    * attachment confirm's duplicate row. A repeat here is worse: the server does
    * not check that the key was minted for the caller, and a second confirm of
    * the key the saved row already holds deletes that very object before
-   * presigning a link to it, answers 404, and leaves a row that every later
-   * `GET /users/{userId}/avatar` answers 404 for. So one key is confirmed once,
+   * presigning a link to it, answers 404, and leaves a row whose every later
+   * presign fails — so `GET /users/me` carries `avatar: null` for that reader.
+   * So one key is confirmed once,
    * and a retry starts again at leg 1. See `confirmAvatarUpload` on TaskaApi.
    */
   async confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar> {
@@ -1684,20 +1676,6 @@ export class RestTaskaApi implements TaskaApi {
    */
   async deleteMyAvatar(): Promise<void> {
     await this.request<void>("/users/me/avatar", { method: "DELETE" });
-  }
-
-  /**
-   * `GET /users/{userId}/avatar`. **The answer is in the field, not in the
-   * status**: `UserProfileMapper.toRestGetAvatarDownloadUrlResponse` writes
-   * `null` into `url` when the proto carries none, so "this person has no
-   * avatar" is a 200 and never a 404.
-   *
-   * An empty string is normalised to `null` for the same reason `UserAvatar`
-   * does it: `<img src="">` re-requests the current document.
-   */
-  async getUserAvatarUrl(userId: string): Promise<string | null> {
-    const response = await this.request<RestAvatarDownloadUrl>(`/users/${this.segment(userId)}/avatar`);
-    return typeof response.url === "string" && response.url ? response.url : null;
   }
 
   async listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {
@@ -1970,6 +1948,9 @@ export class RestTaskaApi implements TaskaApi {
         requestId: event.requestId ?? null,
         serviceKey: event.serviceKey ?? "",
         reason: event.reason ?? "",
+        // Only an explicit `true` offers a Retry: anything else — `false`, an
+        // absent field from a gateway older than TAS-200 — draws no button.
+        retryable: event.retryable === true,
       })),
       counts: (response.counts ?? []).map((count) => ({
         serviceKey: count.serviceKey ?? "",
@@ -2183,7 +2164,14 @@ export class RestTaskaApi implements TaskaApi {
     return globalThis.crypto?.randomUUID?.() ?? `taska-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
+  /**
+   * The avatar is stated rather than inferred: an absent `avatar` (a gateway
+   * older than TAS-223) leaves both fields `undefined` — nobody was told — and
+   * an explicit `null`, or an avatar with no usable link, is `null`. An empty
+   * `downloadUrl` is `null` too, because `<img src="">` re-requests the page.
+   */
   private toUser(user: RestUser): User {
+    const avatar = user.avatar;
     return {
       id: user.id,
       login: user.login,
@@ -2192,6 +2180,12 @@ export class RestTaskaApi implements TaskaApi {
       status: user.status,
       color: user.color,
       globalRole: toGlobalRole(user.globalRole),
+      ...(avatar === undefined
+        ? {}
+        : {
+            avatarUrl: typeof avatar?.downloadUrl === "string" && avatar.downloadUrl ? avatar.downloadUrl : null,
+            avatarId: typeof avatar?.id === "string" && avatar.id ? avatar.id : null,
+          }),
     };
   }
 

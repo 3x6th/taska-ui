@@ -41,7 +41,6 @@ import type {
   UserAvatar,
   UserStatusChange,
   WatchIssueResult,
-  Workflow,
 } from "../domain/types";
 
 export interface LoginInput {
@@ -583,6 +582,13 @@ export interface TaskaApi {
    * absent — an older gateway, or the contract's UNSPECIFIED — and callers must
    * treat that as "not stated" rather than as a role. It is descriptive only:
    * the server, not this field, decides what the account may do.
+   *
+   * Carries the reader's own avatar since backend PR #193 (TAS-223):
+   * `avatarUrl` and `avatarId` from the response's nullable `avatar`, `null`
+   * when there is none *or* when the gateway's profile read failed — the server
+   * answers both the same way, so this cannot tell them apart and does not try.
+   * This replaced `GET /users/{userId}/avatar`, which was the one avatar read
+   * that cost a request of its own; nothing calls that route any more.
    */
   getCurrentUser(): Promise<User>;
 
@@ -788,10 +794,11 @@ export interface TaskaApi {
    *   `FOR UPDATE`) decides the rest. No rows at all — a
    *   project that does not exist — is `404 NOT_FOUND`. For **add**: an actor
    *   who is not ADMIN is `403 PERMISSION_DENIED`, then a target already on
-   *   the project is `409 ALREADY_EXISTS`. For **change** and **remove**: a
-   *   target who is not a member is `404 NOT_FOUND` — checked *before* the
-   *   actor's role, so a non-admin touching a non-member gets 404, not 403 —
-   *   then a non-ADMIN actor is 403, then the last-admin rule below.
+   *   the project is `409 ALREADY_EXISTS`. For **change** and **remove**
+   *   (backend PR #185, TAS-229): an actor who is not ADMIN is
+   *   `403 PERMISSION_DENIED` — checked *before* the target, so a non-admin
+   *   touching a non-member gets 403, not 404 — then a target who is not a
+   *   member is `404 NOT_FOUND`, then the last-admin rule below.
    * - **The last ADMIN cannot be demoted or removed**: when the target is an
    *   ADMIN and the project has one ADMIN or fewer, both writes are
    *   `FAILED_PRECONDITION` — **400**, not 409 — saying "Can't modify last
@@ -834,7 +841,6 @@ export interface TaskaApi {
    */
   removeProjectMember(projectId: string, userId: string): Promise<void>;
 
-  getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow>;
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>>;
   /**
    * `GET /projects/{projectId}/board` — the server's own grouping of one issue
@@ -845,9 +851,9 @@ export interface TaskaApi {
    * `BoardIssueDto` carries six fields, while a card in DESIGN.md §4.8 draws a
    * priority indicator, a type chip and label chips with their names and
    * colours — none of which this route sends. Until the DTO grows them, the
-   * screen keeps building its columns from `getWorkflow` and `listIssues`,
-   * which do carry them, and this method is the contract-shaped read that
-   * replaces those two the day it can (TAS-191).
+   * screen keeps building its columns from the project context's workflow and
+   * `listIssues`, which do carry them, and this method is the contract-shaped
+   * read that replaces that pair the day it can (TAS-191).
    *
    * A workflow that does not list a status one of its own issues is sitting in
    * is a 500 coded `INTERNAL_SERVER_ERROR` — the gateway's `BoardServiceImpl`
@@ -1014,22 +1020,18 @@ export interface TaskaApi {
    *   unsubscribe themselves, and the panel's toggle is live only for the two
    *   roles that rule lets through (TAS-226). Until TAS-226 this comment said
    *   the opposite, reading the contract's silence as permission.
-   * - `addIssueWatcher` and `removeIssueWatcher` are project-`ADMIN` only,
-   *   full stop, in the contract's own summaries and descriptions ("только
-   *   project ADMIN", "Доступно только пользователю с ролью ADMIN в
-   *   проекте", and "Viewer/MEMBER без роли ADMIN не может удалить чужого
-   *   watcher") and in the server's `manage-watchers-roles` — none of the
-   *   three carves out a self case. issue-service disagrees on exactly that
-   *   case: the same `checkMutationRole` cited above picks
-   *   `watch-issue-roles` instead when the subscriber is the caller, so a
-   *   MEMBER may use either route on themselves too. So on the self case the
-   *   contract and the server disagree, rather than the contract staying
-   *   silent; TAS-228 asks the backend which side is intended.
-   *   `MockTaskaStore.requireWatcherAdmin` follows the contract and refuses a
-   *   MEMBER either way, which the UI never reaches: both controls are
-   *   already hidden from anyone who is not an ADMIN. Only the actor's role
-   *   is checked, never the subscriber's, so an ADMIN may subscribe a
-   *   VIEWER. Hiding those two controls is presentation; the server decides.
+   * - `addIssueWatcher` and `removeIssueWatcher` name a subscriber, and the
+   *   rule depends on whose subscription it is
+   *   (`IssueWatcherServiceImpl.checkMutationRole`; the contract says the same
+   *   since backend PR #194, TAS-228). For **somebody else's** `userId` the
+   *   actor needs `manage-watchers-roles` — ADMIN. For **their own** it is
+   *   `watch-issue-roles` — ADMIN or MEMBER, as for the `me` pair — so a
+   *   MEMBER may use either route on themselves and a VIEWER may use neither.
+   *   Only the actor's role is checked, never the subscriber's, so an ADMIN
+   *   may subscribe a VIEWER. `MockTaskaStore.requireWatcherRoleFor` applies
+   *   the same rule. The panel renders both controls only for an ADMIN — a
+   *   MEMBER manages their own subscription through the `me` toggle — and
+   *   hiding them is presentation; the server decides.
    *
    * The `me` pair takes the user from the JWT and sends no body, which is why
    * neither signature has a `userId`. Passing one would be a lie about the
@@ -1241,9 +1243,10 @@ export interface TaskaApi {
    * neither answer is the signature `isUndeployedRoute` in src/api/errors.ts
    * matches on its first arm. A caller must still read that predicate before
    * printing a raw failure, because the mechanism stays: `UserProfileMenu`
-   * reads it on its own avatar read, where it would take the photo controls
-   * away and not ask again until the page reloads, and on each write, the way
-   * `EditProjectModal` still does for the still-undeployed project PATCH.
+   * reads it on each write, the way `EditProjectModal` still does for the
+   * still-undeployed project PATCH. Since TAS-223 this interface carries three
+   * of the four: the reader's own avatar arrives on `GET /users/me`, and
+   * `GET /users/{userId}/avatar` has no caller and no method here.
    *
    * **No role gates any of these.** Three of the four are scoped to `me`, and
    * the read is authenticated and nothing more. There is therefore no
@@ -1310,8 +1313,9 @@ export interface TaskaApi {
    *   already holds therefore deletes that very object as the "old" one, and the
    *   presign's HEAD then fails with a 404. The confirm answers the 404, the row
    *   stays pointing at nothing, and every `GET /users/{userId}/avatar` for that
-   *   user answers 404 from then on — until an upload replaces the row or a
-   *   removal deletes it.
+   *   user answers 404 from then on — and `GET /users/me` carries
+   *   `avatar: null`, its profile read failing the same way — until an upload
+   *   replaces the row or a removal deletes it.
    *
    * A retry is a new ticket: the person chooses the file again, and leg 1 mints
    * a new key. `MockTaskaApi` reproduces the defect rather than hiding it.
@@ -1326,25 +1330,6 @@ export interface TaskaApi {
    */
   deleteMyAvatar(): Promise<void>;
 
-  /**
-   * `GET /users/{userId}/avatar` — a presigned GET for one person, freshly
-   * signed per call and good for fifteen minutes.
-   *
-   * **"No avatar" is a 200 with a null `url`, not a 404.**
-   * `UserProfileMapper.toRestGetAvatarDownloadUrlResponse` writes `null` when
-   * the proto carries no url, so a caller must read the field rather than the
-   * status — which is why this returns `string | null` and not an object with a
-   * possibly-empty string in it.
-   *
-   * **Never call this in a loop.** A member list declares each row's avatar
-   * inline (`ProjectMemberDetailsDto.avatar.downloadUrl`, backend TAS-137), so
-   * a board full of faces is one read — and on the deployed gateway no row
-   * carries one yet (see `User.avatarUrl`), which is a backend fix to wait for
-   * rather than a reason to fetch faces one person at a time. This method exists
-   * for the one case that has no list to ride on: the current user, whose
-   * profile read carries no avatar at all.
-   */
-  getUserAvatarUrl(userId: string): Promise<string | null>;
 
   /**
    * The four worklog routes, `/projects/{projectId}/issues/{issueId}/worklogs`

@@ -186,52 +186,47 @@ describe("the nine named filters", () => {
 });
 
 /**
- * Which rows may be offered a Retry button (TAS-194). Two independent gates —
- * the service has to be one the retry path will carry, the status has to be one
- * admin-service will act on — and both exist for the reason the Users section's
- * `actionFor` exists: a control certain to be refused is worse than none.
+ * Which rows may be offered a Retry button (TAS-194, TAS-200). Two independent
+ * gates — the service has to be one the retry path will carry, and the server
+ * has to have said the event is retryable — and both exist for the reason the
+ * Users section's `actionFor` exists: a control certain to be refused is worse
+ * than none.
  *
- * These are the *server's* rules repeated, never a permission. The gateway is
- * `GLOBAL_ADMIN`-only and refuses everything below regardless (DESIGN.md §5.7).
+ * Neither is a permission. The gateway is `GLOBAL_ADMIN`-only and refuses
+ * everything below regardless (DESIGN.md §5.7).
  */
 describe("which problematic events may be retried", () => {
-  const event = (serviceKey: string, status: string) => ({ serviceKey, status });
+  const event = (serviceKey: string, retryable: boolean, status = "FAILED") => ({ serviceKey, retryable, status });
 
-  it("offers a retry for a failed event on any service the path can carry", () => {
+  it("offers a retry for an event the server marked retryable, on any service the path can carry", () => {
     for (const service of ["auth", "project", "issue"]) {
-      expect(canRetryOutboxEvent(event(service, "FAILED"))).toBe(true);
+      expect(canRetryOutboxEvent(event(service, true))).toBe(true);
     }
   });
 
   /**
-   * `PROCESSING` is a maybe and is deliberately allowed through. admin-service
-   * retries one only after it has been stuck longer than
-   * `admin.outbox-retry.stuck-threshold` (10m), while the summary lists it as
-   * stuck after the producing service's own timeout (5m) — two numbers this
-   * client never sees. A row in the gap gets a button and the server's own
-   * refusal, which is honest; a hardcoded threshold here would be a guess about
-   * somebody's deployment config (docs/ai/API-DIVERGENCE.md).
+   * Since backend PR #195 (TAS-200) the summary says per row whether
+   * admin-service would retry it — `FAILED`, or `PROCESSING` past the retry
+   * stuck threshold — so the client no longer re-derives it from `status`. The
+   * row that used to get a button and a refusal is the `PROCESSING` one listed
+   * as stuck by the shorter processing timeout but not yet past the retry
+   * threshold: the server says `false`, and there is no button.
    */
-  it("offers a retry for a processing event, because only the server knows if it is stuck enough", () => {
-    expect(canRetryOutboxEvent(event("project", "PROCESSING"))).toBe(true);
+  it("follows the server's retryable, not the status beside it", () => {
+    expect(canRetryOutboxEvent(event("project", true, "PROCESSING"))).toBe(true);
+    expect(canRetryOutboxEvent(event("project", false, "PROCESSING"))).toBe(false);
+    // Even a FAILED row: the flag is the server's answer, and a client rule
+    // beside it could only ever disagree with it.
+    expect(canRetryOutboxEvent(event("auth", false, "FAILED"))).toBe(false);
   });
 
   /**
    * The case the list makes most tempting and the server refuses outright.
    * Retry's whole action is to put a row back into `NEW`; an overdue `NEW` row
-   * is already there, so the request is `FAILED_PRECONDITION` rather than a
-   * no-op — which is exactly why no button is drawn for it.
+   * is already there, so the server marks it not retryable.
    */
-  it("offers nothing for an overdue NEW event, which the server will not retry", () => {
-    expect(canRetryOutboxEvent(event("auth", "NEW"))).toBe(false);
-  });
-
-  it("offers nothing for a status this build has never heard of", () => {
-    // The same rule `outboxCategory` follows (TAS-173): an unknown value prints
-    // verbatim and offers no action rather than being coerced into a known one.
-    expect(canRetryOutboxEvent(event("auth", "QUARANTINED"))).toBe(false);
-    expect(canRetryOutboxEvent(event("auth", "PUBLISHED"))).toBe(false);
-    expect(canRetryOutboxEvent(event("auth", ""))).toBe(false);
+  it("offers nothing for an overdue NEW event, which the server marks not retryable", () => {
+    expect(canRetryOutboxEvent(event("auth", false, "NEW"))).toBe(false);
   });
 
   /**
@@ -241,17 +236,12 @@ describe("which problematic events may be retried", () => {
    * response before it reaches the path enum, and the honest answer then is an
    * absent button rather than a request the gateway refuses at the boundary.
    */
-  it("offers nothing for a service the retry path cannot carry", () => {
-    expect(canRetryOutboxEvent(event("notification", "FAILED"))).toBe(false);
-    expect(canRetryOutboxEvent(event("", "FAILED"))).toBe(false);
-    // Not case-insensitive, unlike the status: `service` is a path enum whose
-    // three members are lowercase, and admin-service lowercases before its own
-    // lookup — but the contract states the three in lowercase and this build
-    // does not invent a spelling the enum has never declared.
-    expect(canRetryOutboxEvent(event("AUTH", "FAILED"))).toBe(false);
-  });
-
-  it("reads the status the way a database column would spell it", () => {
-    expect(canRetryOutboxEvent(event("auth", " failed "))).toBe(true);
+  it("offers nothing for a service the retry path cannot carry, retryable or not", () => {
+    expect(canRetryOutboxEvent(event("notification", true))).toBe(false);
+    expect(canRetryOutboxEvent(event("", true))).toBe(false);
+    // Case-sensitive: `service` is a path enum whose three members are
+    // lowercase, and this build does not invent a spelling the enum has never
+    // declared.
+    expect(canRetryOutboxEvent(event("AUTH", true))).toBe(false);
   });
 });

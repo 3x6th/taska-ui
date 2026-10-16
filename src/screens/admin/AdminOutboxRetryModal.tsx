@@ -216,24 +216,6 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
           error. The attempt count is <strong>not</strong> reset — this event has {event.attempts}{" "}
           {event.attempts === 1 ? "attempt" : "attempts"} against it and will still have {event.attempts} afterwards.
         </p>
-        {/* Only for the status where the client genuinely cannot predict the
-            answer. The list calls a PROCESSING row stuck after the producing
-            service's timeout; the retry route wants a longer one of its own, and
-            neither number is visible from here (docs/ai/API-DIVERGENCE.md). Said
-            before the press rather than only in the refusal after it.
-
-            Two sentences, because it sits under the four-line note above it and
-            at 390 the pair was nine lines of 12px prose before the field. The
-            three facts are all still here: the status, that the server's
-            threshold is both longer and its own, and that the refusal changes
-            nothing. */}
-        {event.status.trim().toUpperCase() === "PROCESSING" ? (
-          <p className="admin-write-note">
-            This event is still processing. The server calls one stuck later than this list does, by a threshold of
-            its own — so a recently stuck event is refused, unchanged.
-          </p>
-        ) : null}
-
         <label className="field">
           <span>Reason</span>
           <textarea
@@ -322,16 +304,17 @@ function RetryFailure({ error }: { error: unknown }) {
     <div className="admin-write-failure" role="alert">
       <p>
         {notEligible
-          ? // The refusal this route makes most often, and the one an operator
-            // is most likely to meet without having done anything wrong: only a
-            // failed event, or one stuck in PROCESSING past the server's own
-            // threshold, can be retried. The server's own sentence below says
-            // which of those it was.
+          ? // Since backend PR #195 (TAS-200) the list only offers Retry on a row
+            // the server itself called retryable when the list was read, so this
+            // refusal means the event changed in between — picked up, finished,
+            // or retried by somebody else. The retry command checks again and
+            // refuses rather than acting on the list's snapshot. The server's own
+            // sentence below says what it found.
             //
             // The last clause is the one that separates this arm from the two
             // below it, and it is exact rather than reassuring — see above for
             // why it is spoken only here.
-            "The server would not retry this event. Nothing is wrong with the request — it retries a failed event, or one stuck in processing past a threshold of its own, and this one is neither. The event is as it was."
+            "The server would not retry this event: it has changed since the list was read and is no longer one the server retries. Nothing is wrong with the request, and this retry changed nothing — read the list again to see where the event is now."
           : failure === "refused"
             ? "The server refused this. Either you are not a global admin as far as the gateway is concerned, or that event is no longer in this service's outbox."
             : failure === "server"

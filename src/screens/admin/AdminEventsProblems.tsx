@@ -628,8 +628,8 @@ function EventRow({
   const href = `/admin/events/outbox/${encodeURIComponent(event.serviceKey)}/${encodeURIComponent(event.id)}?from=${BACK_TO_PROBLEMS}`;
   const category = outboxCategory(event.status);
   // One button or none, the rule the Users section's action cell follows: the
-  // server decides what may be retried, the client repeats the part of that rule
-  // it can know, and a control certain to be refused is worse than no control.
+  // server decides what may be retried and says so per row (`retryable`,
+  // TAS-200), and a control certain to be refused is worse than no control.
   // No cast: `canRetryOutboxEvent` is a type predicate, so the narrowing that
   // makes this row addressable by the retry route is the compiler's rather than
   // a promise made in a comment.

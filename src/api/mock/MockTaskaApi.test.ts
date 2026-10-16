@@ -46,6 +46,8 @@ describe("MockTaskaApi", () => {
   const versionOf = async (issueId: string) => (await api.getIssue(project.id, issueId)).issue.version;
   const edit = async (issueId: string, input: UpdateIssueInput) =>
     api.updateIssue(project.id, issueId, input, await versionOf(issueId));
+  /** The TASK workflow as the board reads it — from the project context, since TAS-251. */
+  const taskWorkflow = async () => (await api.getProjectContext(project.id)).workflows.TASK!;
 
   describe("session", () => {
     it("holds no session until someone signs in", () => {
@@ -434,7 +436,7 @@ describe("MockTaskaApi", () => {
       const todo = items.find((issue) => issue.status === "TODO");
       expect(todo).toBeDefined();
 
-      const workflow = await api.getWorkflow(project.id);
+      const workflow = await taskWorkflow();
       const from = workflow.statuses.find((status) => status.statusKey === "TODO");
       const transition = workflow.transitions.find((item) => item.fromStatusId === from?.id);
       expect(transition).toBeDefined();
@@ -451,7 +453,7 @@ describe("MockTaskaApi", () => {
       const done = items.find((issue) => issue.status === "DONE");
       expect(done).toBeDefined();
 
-      const workflow = await api.getWorkflow(project.id);
+      const workflow = await taskWorkflow();
       const todoStatus = workflow.statuses.find((status) => status.statusKey === "TODO");
       const fromTodo = workflow.transitions.find((item) => item.fromStatusId === todoStatus?.id);
 
@@ -462,7 +464,7 @@ describe("MockTaskaApi", () => {
       const { items } = await api.listIssues(project.id);
       const todo = items.find((issue) => issue.status === "TODO")!;
 
-      const workflow = await api.getWorkflow(project.id);
+      const workflow = await taskWorkflow();
       const from = workflow.statuses.find((status) => status.statusKey === "TODO");
       const transition = workflow.transitions.find((item) => item.fromStatusId === from?.id)!;
 
@@ -670,7 +672,7 @@ describe("MockTaskaApi", () => {
       });
 
       const moved = await versionOf(issue.id);
-      const workflow = await api.getWorkflow(project.id);
+      const workflow = await taskWorkflow();
       const from = workflow.statuses.find((status) => status.statusKey === issue.status);
       const transition = workflow.transitions.find((item) => item.fromStatusId === from?.id)!;
       await api.transitionIssue(project.id, issue.id, transition.id);
@@ -1852,14 +1854,19 @@ describe("MockTaskaApi", () => {
       expect(deleted.projectId).toBe(project.id);
       expect(issues.some((item) => item.id === deleted.issueId)).toBe(false);
 
-      // The partial shape TAS-245 tracks: a real issue's id with issueKey and
-      // projectId still null, because issue-service never backfills them for
-      // ISSUE_ATTACHMENT_ADDED. Read, so it does not add to the unread count
-      // the other rows already account for.
+      // An attachment notification as issue-service writes it since backend
+      // PR #191 (TAS-245): all three issue fields, and the key in the body.
+      // Read, so it does not add to the unread count the other rows already
+      // account for.
       const [attachment] = byType("ISSUE_ATTACHMENT_ADDED");
       const tas101 = issues.find((item) => item.issueKey === "TAS-101");
       expect(tas101, "the seed has no TAS-101 to pin the attachment row to").toBeDefined();
-      expect(attachment).toMatchObject({ issueId: tas101!.id, issueKey: null, projectId: null });
+      expect(attachment).toMatchObject({
+        issueId: tas101!.id,
+        issueKey: "TAS-101",
+        projectId: project.id,
+        body: "An attachment was added to TAS-101",
+      });
       expect(attachment.readAt).not.toBeNull();
     });
 
@@ -1883,7 +1890,7 @@ describe("MockTaskaApi", () => {
       const [assignedRow] = (await api.listNotifications()).items;
       expect(assignedRow).toMatchObject({ notificationType: "ISSUE_ASSIGNED", issueId: created.id, projectId: project.id });
 
-      const workflow = await api.getWorkflow(project.id);
+      const workflow = await taskWorkflow();
       const todo = workflow.statuses.find((status) => status.statusKey === "TODO");
       const transition = workflow.transitions.find((item) => item.fromStatusId === todo?.id);
       await api.transitionIssue(project.id, created.id, transition!.id);
@@ -2142,6 +2149,57 @@ describe("MockTaskaApi", () => {
       expect(desc.rows.map((row) => row.failed_logins)).toEqual([35, 30, 25, 20, 15, 10, 5, 0]);
     });
 
+    /**
+     * A `uuid` column is its own class since backend PR #184 (TAS-232): an
+     * `equals` value is parsed as a `java.util.UUID`, so the case of its hex
+     * digits does not matter and anything but the canonical 8-4-4-4-12 form is
+     * a 400 — `UUID.fromString` alone would take `1-1-1-1-1`, and the gateway
+     * checks the round trip to refuse it.
+     */
+    it("matches a uuid column case-insensitively, and refuses a value that is not a canonical UUID", async () => {
+      const { rows } = await api.listAdminRows({ service: "auth", table: "users" });
+      const id = String(rows[0].id);
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+      for (const value of [id, id.toUpperCase()]) {
+        const match = await api.listAdminRows({
+          service: "auth",
+          table: "users",
+          filters: [{ column: "id", operator: "equals", value }],
+        });
+        expect(match.rows.map((row) => row.id)).toEqual([id]);
+      }
+
+      for (const value of ["1-1-1-1-1", id.replaceAll("-", ""), ` ${id}`, "not-a-uuid"]) {
+        await expect(
+          api.listAdminRows({ service: "auth", table: "users", filters: [{ column: "id", operator: "equals", value }] }),
+        ).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: "Invalid UUID value for column 'id': expected UUID in 8-4-4-4-12 format",
+        });
+      }
+    });
+
+    it("refuses contains, from and to on a uuid column in the gateway's words, naming the UUID class", async () => {
+      const refusal = (operator: "contains" | "from" | "to") =>
+        api.listAdminRows({
+          service: "auth",
+          table: "users",
+          filters: [{ column: "id", operator, value: "6d774efa" }],
+        });
+
+      await expect(refusal("contains")).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Operator 'contains' is not supported for column 'id' (type: UUID)",
+      });
+      for (const operator of ["from", "to"] as const) {
+        await expect(refusal(operator)).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: `Operator '${operator}' is not supported for column 'id' (type: UUID). Only temporal and numeric columns support range filters`,
+        });
+      }
+    });
+
     it("applies each filter operator", async () => {
       const contains = await api.listAdminRows({
         service: "auth",
@@ -2312,6 +2370,36 @@ describe("MockTaskaApi", () => {
       // `notAllShown` exists: the matrix still covers what was cut.
       expect(summary.events.length).toBeLessThan(total);
       expect(summary.notAllShown).toBe(true);
+    });
+
+    /**
+     * `retryable` (backend PR #195, TAS-200), computed with the rule the retry
+     * command applies: `FAILED`, or `PROCESSING` started more than the retry
+     * threshold (10m) ago. The seeded row in the gap — listed as stuck after
+     * the summary's shorter timeout, not yet past the retry threshold — is the
+     * one that tells this apart from a status rule.
+     */
+    it("marks each event retryable by the retry command's own rule, the gap row false", async () => {
+      const summary = await api.getProblematicOutboxSummary();
+      const tenMinutesAgo = Date.now() - 10 * 60_000;
+
+      for (const event of summary.events) {
+        const expected =
+          event.status === "FAILED" ||
+          (event.status === "PROCESSING" &&
+            event.processingStartedAt !== null &&
+            Date.parse(event.processingStartedAt) < tenMinutesAgo);
+        expect(event.retryable, `${event.serviceKey} ${event.id} ${event.status}`).toBe(expected);
+      }
+
+      const gap = summary.events.filter((event) => event.status === "PROCESSING" && !event.retryable);
+      expect(gap, "the seed lost its row between the two thresholds").toHaveLength(1);
+      expect(gap[0].serviceKey).toBe("project");
+      // Listed for a reason, and still refused by the command if asked by hand.
+      await expect(api.retryOutboxEvent("project", gap[0].id, "Looks stuck")).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+      });
+      expect(summary.events.some((event) => event.status === "NEW" && event.retryable)).toBe(false);
     });
 
     it("gives each event the backend's own sentence for why it is here", async () => {
@@ -3448,7 +3536,10 @@ describe("MockTaskaApi", () => {
       expect(result.watchersCount).toBe(1);
     });
 
-    it("refuses both ADMIN routes for a MEMBER, and leaves the me pair open to them", async () => {
+    it("refuses a MEMBER somebody else's subscription, and lets them manage their own through either route", async () => {
+      // `checkMutationRole` (backend PR #194, TAS-228): another person's
+      // `userId` takes `manage-watchers-roles` — ADMIN — and the actor's own
+      // takes `watch-issue-roles` — ADMIN or MEMBER — on every route.
       await api.login({ email: "mark@example.com", password: "anything" });
       const issue = await openIssue("TAS-101");
       const me = await api.getCurrentUser();
@@ -3458,15 +3549,19 @@ describe("MockTaskaApi", () => {
       expect(sofia).toBeDefined();
       if (!sofia) return;
 
-      await expect(api.addIssueWatcher(project.id, issue.id, me.id)).rejects.toMatchObject({
-        code: "PERMISSION_DENIED",
-      });
       await expect(api.removeIssueWatcher(project.id, issue.id, sofia.userId)).rejects.toMatchObject({
         code: "PERMISSION_DENIED",
       });
+      const anna = (await api.listMembers(project.id)).find((member) => member.user?.displayName === "Anna Ivanova");
+      expect(anna).toBeDefined();
+      await expect(api.addIssueWatcher(project.id, issue.id, anna!.userId)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
 
-      // `watch-issue-roles` is ADMIN and MEMBER, so a MEMBER keeps the me pair
-      // — the contract states no role for it, and the server has this one.
+      await expect(api.removeIssueWatcher(project.id, issue.id, me.id)).resolves.toMatchObject({ removed: true });
+      await expect(api.addIssueWatcher(project.id, issue.id, me.id)).resolves.toMatchObject({
+        watchersCount: 3,
+      });
       await expect(api.unwatchIssue(project.id, issue.id)).resolves.toMatchObject({ removed: true });
       await expect(api.watchIssue(project.id, issue.id)).resolves.toMatchObject({ watchersCount: 3 });
     });
@@ -3517,6 +3612,14 @@ describe("MockTaskaApi", () => {
 
       await expect(api.watchIssue(project.id, unwatched.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
       await expect(api.unwatchIssue(project.id, watched.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      // Naming himself on the userId routes changes nothing: his own id takes
+      // `watch-issue-roles` there too, and VIEWER is not in it.
+      await expect(api.addIssueWatcher(project.id, unwatched.id, tom.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      await expect(api.removeIssueWatcher(project.id, watched.id, tom.id)).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
       const { watchers, totalCount } = await api.listIssueWatchers(project.id, watched.id);
       expect(totalCount).toBe(1);
       expect(watchers.map((watcher) => watcher.userId)).toEqual([tom.id]);
@@ -3735,7 +3838,9 @@ describe("MockTaskaApi", () => {
       // The confirm answers with the link, so a freshly uploaded face needs no
       // follow-up read.
       expect(avatar.downloadUrl).toBeTruthy();
-      await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(avatar.downloadUrl);
+      // And `GET /users/me` carries it from then on (TAS-223), with the id that
+      // tells a re-signed link from a new picture.
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: avatar.downloadUrl, avatarId: avatar.id });
     });
 
     it("refuses anything over 2 MB the way the gateway does, before the avatar service or the type is asked", async () => {
@@ -3783,7 +3888,7 @@ describe("MockTaskaApi", () => {
       const second = await upload(imageFile("second.png", 96));
 
       expect(second.id).not.toBe(first.id);
-      await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(second.downloadUrl);
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: second.downloadUrl, avatarId: second.id });
       // And the first object is gone from the bucket with its row, which is
       // where this differs from an attachment delete.
       await expect(
@@ -3800,7 +3905,7 @@ describe("MockTaskaApi", () => {
         api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
 
       const saved = await confirm();
-      await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(saved.downloadUrl);
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: saved.downloadUrl });
 
       // Mirrors `ProfileServiceImpl.confirmAvatarUpload` at `develop`
       // `368ae77355bd`: the row is replaced, then the *previous* row's object is
@@ -3809,9 +3914,12 @@ describe("MockTaskaApi", () => {
       // caller that re-sending a confirm is safe.
       await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-      // The row survives, pointing at nothing, so the read is a 404 from now on
-      // rather than the null of somebody with no avatar…
-      await expect(api.getUserAvatarUrl(me.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      // The row survives, pointing at nothing, so the gateway's profile read
+      // fails its presign from now on — and `GET /users/me` answers the profile
+      // with `avatar: null`, the same as for somebody with no avatar: the server
+      // does not tell the two apart (TAS-223), and the profile is never refused
+      // for it…
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null, avatarId: null });
       // …a third attempt at the key finds no object at all…
       await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
       // …and no member row draws a face that nothing can serve.
@@ -3821,7 +3929,7 @@ describe("MockTaskaApi", () => {
       // An upload replaces the broken row, and that is the way out the menu
       // offers.
       const fresh = await upload(imageFile("again.png", 96));
-      await expect(api.getUserAvatarUrl(me.id)).resolves.toBe(fresh.downloadUrl);
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: fresh.downloadUrl, avatarId: fresh.id });
     });
 
     it("gets out of that state by a removal too, which answers 204 like any other", async () => {
@@ -3837,17 +3945,18 @@ describe("MockTaskaApi", () => {
       // The row goes, and deleting an object that is already gone is not an
       // error on the store's side either.
       await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
-      await expect(api.getUserAvatarUrl(me.id)).resolves.toBeNull();
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null, avatarId: null });
     });
 
     it("draws the seeded face through the same read as an uploaded one", async () => {
-      // Sofia's seeded row now has its object in the bucket, so the HEAD a read
+      // Sofia's seeded row has its object in the bucket, so the HEAD a read
       // presigns through finds it — a row with nothing behind it is the broken
       // state above, not a seed.
-      const members = await api.listMembers(project.id);
-      const sofia = members.find((member) => member.user?.displayName === "Sofia Reyes");
-      expect(sofia).toBeDefined();
-      await expect(api.getUserAvatarUrl(sofia!.userId)).resolves.toMatch(/^data:image\/png;base64,/);
+      await api.login({ email: "sofia@example.com", password: "anything" });
+      const sofia = await api.getCurrentUser();
+      expect(sofia.displayName).toBe("Sofia Reyes");
+      expect(sofia.avatarUrl).toMatch(/^data:image\/png;base64,/);
+      expect(sofia.avatarId).toBeTruthy();
     });
 
     it("deletes idempotently: twice in a row is two successes, and so is deleting nothing", async () => {
@@ -3855,26 +3964,20 @@ describe("MockTaskaApi", () => {
       await upload(imageFile("face.png"));
 
       await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
-      await expect(api.getUserAvatarUrl(me.id)).resolves.toBeNull();
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null });
       // The second call is the one that matters: the contract promises 204
       // whether or not there was an avatar, so nothing here may throw and
       // nothing may report which case it was.
       await expect(api.deleteMyAvatar()).resolves.toBeUndefined();
-      await expect(api.getUserAvatarUrl(me.id)).resolves.toBeNull();
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ id: me.id, avatarUrl: null });
     });
 
-    it("answers a person with no avatar with null rather than a refusal", async () => {
-      const me = await api.getCurrentUser();
+    it("answers a person with no avatar with an explicit null on the profile", async () => {
       // Anna is deliberately unseeded — the profile flow starts at "no photo".
-      await expect(api.getUserAvatarUrl(me.id)).resolves.toBeNull();
-    });
-
-    it("refuses a user id this deployment has never heard of", async () => {
-      // The genuine 404 of this route, and the reason a null `url` cannot be
-      // read as one: they are different answers to different questions.
-      await expect(api.getUserAvatarUrl("00000000-0000-4000-8000-000000000000")).rejects.toMatchObject({
-        code: "NOT_FOUND",
-      });
+      // `null`, not absent: the server was asked and stated it (TAS-223).
+      const me = await api.getCurrentUser();
+      expect(me.avatarUrl).toBeNull();
+      expect(me.avatarId).toBeNull();
     });
 
     it("carries the avatar on the member row, so a board of faces is one read", async () => {

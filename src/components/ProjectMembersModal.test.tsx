@@ -897,22 +897,35 @@ describe("ProjectMembersModal", () => {
       expect(within(dialog()).queryByText("mark@example.com")).toBeNull();
     });
 
-    it("a 404 on removing your own row means somebody removed you first, and takes you to your projects", async () => {
+    it("a 403 on removing your own row — what somebody removing you first answers — says so and re-reads your role", async () => {
+      // Since backend PR #185 (TAS-229) the validator checks the actor's role
+      // before the target's membership. A reader another admin removed a moment
+      // earlier has no ADMIN row left to be the actor, so their own removal is
+      // refused 403, not 404: the dialog says the server refused, puts the row
+      // back, and re-reads the role — and the board's 403 on that re-read is
+      // what tells them they are out.
       state.members = state.members.map((member) => (member.userId === MARK ? { ...member, role: "ADMIN" } : member));
       state.removeFailure = refusal(
-        "NOT_FOUND",
-        404,
-        `Project member with id ${ANNA} was not found in project with id ${PROJECT}`,
-        "req-404-self",
+        "PERMISSION_DENIED",
+        403,
+        `User with id: ${ANNA} is not an admin of project: ${PROJECT}`,
+        "req-403-self",
       );
       const { queryClient } = renderPanel();
       queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
 
       fireEvent.click(await within(dialog()).findByRole("button", { name: "Remove yourself from this project" }));
+      state.listHeld = true;
       fireEvent.click(within(rowOf("Anna Ivanova")).getByRole("button", { name: "Remove me" }));
 
-      expect(await screen.findByText("Projects page")).toBeVisible();
-      expect(queryClient.getQueryState(["project-context", PROJECT])).toBeUndefined();
+      const sentence = await within(dialog()).findByText(
+        "The server refused: only a project admin can change members, and your role on this project may have changed.",
+      );
+      expect(sentence.closest(".member-note")).toHaveClass("is-error");
+      expect(within(dialog()).getByRole("button", { name: "Copy request id req-403-self" })).toBeVisible();
+      await waitFor(() => expect(queryClient.getQueryState(["project-context", PROJECT])?.isInvalidated).toBe(true));
+      expect(within(dialog()).getByText("Anna Ivanova")).toBeVisible();
+      expect(screen.queryByText("Projects page")).toBeNull();
     });
 
     it("a FAILED_PRECONDITION on a removal puts the row back and names the last-admin reason", async () => {

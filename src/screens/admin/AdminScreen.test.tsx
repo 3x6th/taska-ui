@@ -208,6 +208,7 @@ const {
         requestId: null,
         serviceKey: "auth",
         reason: "Event processing failed",
+        retryable: true,
       },
       {
         id: "e2",
@@ -224,6 +225,7 @@ const {
         requestId: null,
         serviceKey: "auth",
         reason: "Something this build has never been told about",
+        retryable: false,
       },
     ],
     notAllShown: true,
@@ -335,7 +337,14 @@ const {
         ...summary,
         events: summary.events.map((event) => {
           const status = moved[event.id];
-          return status ? { ...event, status } : event;
+          // And `retryable` with it, as admin-service recomputes it per read
+          // (TAS-200): `FAILED`, or `PROCESSING` that started more than the
+          // retry threshold (10m) ago — so a row put back into `NEW` is not.
+          const stuck =
+            status === "PROCESSING" &&
+            event.processingStartedAt !== null &&
+            Date.parse(event.processingStartedAt) < Date.now() - 10 * 60_000;
+          return status ? { ...event, status, retryable: status === "FAILED" || stuck } : event;
         }),
       };
     },
@@ -2388,7 +2397,7 @@ describe("admin events, retrying an event", () => {
    * in `RetryFailure`: the eligibility arm is reached on the *code* rather than
    * on the taxonomy's `conflict`, and this is the case that tells them apart.
    *
-   * "The event is as it was" is a provable claim for `FAILED_PRECONDITION` —
+   * "This retry changed nothing" is a provable claim for `FAILED_PRECONDITION` —
    * admin-service checks eligibility before the `UPDATE` and again in the
    * `UPDATE`'s own `WHERE`, so that refusal moved nothing. `isConflict` also
    * admits a bare 409 and `ABORTED`, which this route does not emit today and
@@ -2419,7 +2428,7 @@ describe("admin events, retrying an event", () => {
     expect(alert).toHaveTextContent(/would not accept this request/i);
     // Not the eligibility arm, and above all not the guarantee that closes it.
     expect(alert).not.toHaveTextContent(/would not retry this event/i);
-    expect(alert).not.toHaveTextContent(/as it was/i);
+    expect(alert).not.toHaveTextContent(/changed nothing/i);
     // The server's sentence is printed either way — the arm decides the
     // explanation, never whether the operator sees what the server said.
     expect(alert).toHaveTextContent("Retry was aborted");

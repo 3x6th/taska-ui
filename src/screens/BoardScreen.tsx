@@ -2596,14 +2596,14 @@ function IssueWatchersSection({
   membersUnknown: boolean;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   /**
-   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`. The
-   * contract marks both ADMIN-only with no self-case exception, but
-   * issue-service applies `watch-issue-roles` instead when the subscriber is
-   * the reader themselves (same rule as `canWatch` below) — the contract and
-   * the server disagree there, and TAS-228 asks the backend which is
-   * intended. This section renders both controls only for an ADMIN
-   * regardless, so a MEMBER never reaches either route through it.
-   * Presentation only — the server checks again (DESIGN.md §5.7).
+   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}` as this
+   * section uses them: to add or remove *somebody else*, which the server allows
+   * an ADMIN only. For the reader's own `userId` both routes take
+   * `watch-issue-roles` instead (the same rule as `canWatch` below; the contract
+   * says so since backend PR #194, TAS-228), but a MEMBER manages their own
+   * subscription through the `me` toggle, so this section renders both
+   * controls only for an ADMIN. Presentation only — the server checks again
+   * (DESIGN.md §5.7).
    */
   isProjectAdmin: boolean;
   /**

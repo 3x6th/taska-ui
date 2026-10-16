@@ -406,9 +406,15 @@ export function ProjectMembersModal({
         // The end state is the one that was asked for, so nothing comes back.
         // What did not happen is the removal, and that is worth a sentence —
         // with the server's own words and request id under it, as every other
-        // refusal has. And if the row was the reader's, somebody removed them
-        // first: they have no board here either, and leave as a removal of
-        // their own would.
+        // refusal has.
+        //
+        // Since backend PR #185 (TAS-229) the validator asks whether the actor
+        // is an ADMIN *before* it looks for the target, so a reader whom
+        // another admin removed first is refused 403 — their own row is the
+        // actor row the check reads — and lands in the 403 arm below, which
+        // re-reads their role. A 404 therefore names somebody else's row. The
+        // reader check stays because it costs nothing when the reader is known
+        // and is the honest answer if a 404 ever does name the reader's row.
         if (await leaveIfReaderIsGone(userId)) return;
         setNotice({ tone: "info", text: notMemberText(subject), error });
         return;
