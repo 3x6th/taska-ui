@@ -3388,6 +3388,19 @@ From the role verdicts on the branch (2026-10-17), not taken in this PR:
   proto, admin-service, gateway mapper, openapi. Removes the copied map
   (`src/lib/adminColumnTypes.ts`) and is the removal of the classifier entry in
   `API-DIVERGENCE.md`.
+- **Filter chip halves draw rectangular focus rings on a pill, and the ×
+  half's ring touches the label's last glyph** (`art-director`, AD-7 re-verdict,
+  meets §7, not blocking). Fix: `.admin-filter-chip-open { padding: 0 6px 0 11px;
+  border-radius: 20px; }` and `.admin-filter-chip-remove { border-radius: 50%; }`
+  (the `+ Filter` and `.label-chip-remove` precedents; the UUID chip grows 263 →
+  265 and still fits 292 at 320); then extend the §5.8 sentence to «…и повторяет
+  форму половины: пилюля у подписи, круг у «×»…».
+- **A Data head with no filter can wrap its zero-width spacer onto a 10px
+  empty line** (`release-reviewer`, AD-7 re-verdict). The Data per-plane wrap
+  fallback always wraps; measured at 320 on a table outside the mock catalog
+  (head 27.84 → 37.84, its heading already overflowed by 6px). Possible fix: drop
+  the spacer where the filter's `margin-left: auto` already does its job. Take
+  it if it shows on the live catalog.
 - **Every `<select>` renders in Arial, not Hanken Grotesk** (`art-director`,
   2026-10-17, pre-existing, app-wide: 15 select sites across BoardScreen,
   AdminFilterControl, AdminNamedFilterControl and ProjectMembersModal). The
