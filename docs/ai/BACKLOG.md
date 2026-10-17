@@ -3388,6 +3388,15 @@ From the role verdicts on the branch (2026-10-17), not taken in this PR:
   proto, admin-service, gateway mapper, openapi. Removes the copied map
   (`src/lib/adminColumnTypes.ts`) and is the removal of the classifier entry in
   `API-DIVERGENCE.md`.
+- **Every `<select>` renders in Arial, not Hanken Grotesk** (`art-director`,
+  2026-10-17, pre-existing, app-wide: 15 select sites across BoardScreen,
+  AdminFilterControl, AdminNamedFilterControl and ProjectMembersModal). The
+  global `button, input, textarea { … font: inherit; letter-spacing: inherit }`
+  (`src/styles.css` ~77-87) omits `select`. Fix as a separate rule,
+  `select { font: inherit; letter-spacing: inherit; }` — not by adding `select`
+  to that group, which also sets `border: 0; margin: 0; color: inherit` — then
+  re-measure `.filter-select select { max-width: 148px }` truncation and the
+  29px role selects.
 - **A write refusal in the profile menu survives closing and reopening, and
   then hides "Your photo could not be loaded."** (`art-director`, 2026-10-17,
   pre-existing since TAS-220). Under §4.16's yield rule the stale refusal
