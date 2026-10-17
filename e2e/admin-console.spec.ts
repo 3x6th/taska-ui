@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 // Like the other suites, this runs against MockTaskaApi
 // (playwright.config.ts starts the server with VITE_TASKA_API_MODE=mock): any
@@ -223,6 +223,121 @@ test("fits a whole UUID in the filter's value field without pushing the page sid
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     );
     expect(pageOverflow, `horizontal page overflow at ${width}px`).toBe(0);
+  }
+});
+
+// The head that carries a filter (Data, Events, Audit) wraps, and the filter
+// group keeps the right edge of whatever line it lands on, no wider than the
+// head — so the popover, anchored to the group's right edge and 6 below it,
+// always opens inside the plane (§5.8). Before, a group that wrapped to a line
+// of its own sat at that line's left and took the popover off the left of the
+// screen (-209 at 320 on Events), a row of chips that could not wrap ran past
+// the right edge, and a 220-capped UUID chip on Data put its remove button off
+// screen at 390. The page does not scroll sideways, so each of those was
+// unreachable, not merely untidy. Phone widths, so the phone project only.
+const SEEDED_USER_ID = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6"; // Anna in the mock seed
+
+test.describe("the filter group and its popover stay on the plane", () => {
+  test.skip(({ isMobile }) => !isMobile, "phone widths only");
+
+  const cases = [
+    {
+      name: "Events with no filter at 320",
+      width: 320,
+      url: "/admin/events/outbox/auth",
+      opener: "Filter",
+      dialog: "Filter events",
+    },
+    {
+      name: "Events with one filter at 390",
+      width: 390,
+      url: "/admin/events/outbox/auth?filter=status%3Aequals%3ANEW",
+      opener: "Filter",
+      dialog: "Filter events",
+    },
+    {
+      name: "Events with three filters at 390",
+      width: 390,
+      url:
+        "/admin/events/outbox/auth?filter=status%3Aequals%3ANEW&filter=event_type%3Aequals%3AUserCreated" +
+        "&filter=attempts%3Afrom%3A3",
+      opener: "Filter",
+      dialog: "Filter events",
+    },
+    {
+      name: "Audit with two filters at 320",
+      width: 320,
+      url: "/admin/audit?filter=action%3Aequals%3ARESET_CREDENTIAL_LOCKOUT&filter=createdAt%3Afrom%3A2026-10-01",
+      opener: "Filter",
+      dialog: "Filter audit entries",
+    },
+    // Opened from the chip: with a filter applied, Data has no "+ Filter".
+    {
+      name: "Data with a UUID filter at 390",
+      width: 390,
+      url: `/admin/data/auth/users?filter=id%3Aequals%3A${SEEDED_USER_ID}`,
+      opener: `id is ${SEEDED_USER_ID}`,
+      dialog: "Filter rows",
+    },
+    {
+      name: "Data with a UUID filter at 320",
+      width: 320,
+      url: `/admin/data/auth/users?filter=id%3Aequals%3A${SEEDED_USER_ID}`,
+      opener: `id is ${SEEDED_USER_ID}`,
+      dialog: "Filter rows",
+    },
+  ];
+
+  for (const { name, width, url, opener, dialog } of cases) {
+    test(name, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      await openConsole(page);
+      await page.goto(url);
+
+      const group = page.locator(".admin-plane-head > .admin-filter");
+      const head = group.locator("xpath=..");
+      // The count is part of the head's first line, so the layout is final
+      // only once it is there.
+      await expect(head.locator(".admin-count")).toBeVisible();
+      await expect(group).toBeVisible();
+
+      const rectOf = async (locator: Locator, what: string) => {
+        const rect = await locator.boundingBox();
+        expect(rect, what).not.toBeNull();
+        return rect!;
+      };
+      const pageOverflow = () =>
+        page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+
+      const headRect = await rectOf(head, "the plane head");
+      const groupRect = await rectOf(group, "the filter group");
+      // Half a pixel for subpixel layout; the defect was hundreds of pixels.
+      expect(groupRect.x + groupRect.width, "the filter group's right edge against the head's").toBeLessThanOrEqual(
+        headRect.x + headRect.width + 0.5,
+      );
+      for (const remove of await group.locator(".admin-filter-chip-remove").all()) {
+        const removeRect = await rectOf(remove, "a chip's remove button");
+        expect(removeRect.x, "a chip's remove button, left edge").toBeGreaterThanOrEqual(0);
+        expect(removeRect.x + removeRect.width, "a chip's remove button, right edge").toBeLessThanOrEqual(width);
+      }
+      expect(await pageOverflow(), "horizontal page overflow with the popover closed").toBe(0);
+
+      await page.getByRole("button", { name: opener, exact: true }).click();
+      const popover = page.getByRole("dialog", { name: dialog });
+      await expect(popover).toBeVisible();
+      // `tk-pop` starts 7px low; the rect is read where the popover settles.
+      await popover.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+
+      const popoverRect = await rectOf(popover, "the filter popover");
+      expect(popoverRect.x, "the filter popover's left edge").toBeGreaterThanOrEqual(0);
+      expect(popoverRect.x + popoverRect.width, "the filter popover's right edge").toBeLessThanOrEqual(width);
+      // Below the whole group, not over its second row of chips.
+      const openGroupRect = await rectOf(group, "the filter group with the popover open");
+      expect(popoverRect.y, "the filter popover's top against the group's bottom").toBeGreaterThanOrEqual(
+        openGroupRect.y + openGroupRect.height,
+      );
+      expect(await pageOverflow(), "horizontal page overflow with the popover open").toBe(0);
+    });
   }
 });
 

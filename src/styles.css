@@ -2035,6 +2035,32 @@ p.user-profile-photo-note:not(.is-error) {
   gap: 2px;
 }
 
+/* Every head that carries a filter wraps, and the filter keeps the right edge
+   of whatever line it lands on, so the popover's `right: 0` anchor always
+   meets the plane edge (§5.8). A group that slid to the left of its line took
+   the popover off the left of the screen, where the page cannot scroll to it.
+   On a single line the spacer has already taken the free space, so the auto
+   margin is 0 and nothing moves. `max-width` caps the group at the head, and
+   the named filter's own wrap then breaks its chips into rows inside it. */
+.admin-plane-head:has(> .admin-filter) {
+  flex-wrap: wrap;
+}
+
+.admin-plane-head > .admin-filter {
+  max-width: 100%;
+  margin-left: auto;
+}
+
+/* Redundant wherever `:has()` works — the rule above already wraps this head.
+   It stays as the fallback where it does not: Vite's default build target still
+   includes Firefox 114–120 (ESR 115 among them), which drops that rule whole,
+   and there the 220-capped UUID chip ran its remove button off the plane. The
+   table's plane only: the row card inside `.admin-data` has a head of its own,
+   with nothing on it to wrap. */
+.admin-data-plane .admin-plane-head {
+  flex-wrap: wrap;
+}
+
 .admin-filter-add,
 .admin-filter-chip-open,
 .admin-filter-chip-remove {
@@ -2062,11 +2088,12 @@ p.user-profile-photo-note:not(.is-error) {
 }
 
 /* An applied filter is the one accent on this plane (§2.1: accent marks the
-   active filter), so the chip is tinted rather than outlined. */
+   active filter), so the chip is tinted rather than outlined. It clips nothing:
+   neither half paints a background, the ellipsis is the text span's own, and
+   `overflow: hidden` here cut each half's focus ring to a 2px sliver (§7). */
 .admin-filter-chip {
   display: inline-flex;
   align-items: center;
-  overflow: hidden;
   border-radius: 20px;
   background: color-mix(in oklab, var(--accent) 14%, transparent);
   color: var(--accent);
@@ -2098,10 +2125,12 @@ p.user-profile-photo-note:not(.is-error) {
   outline-offset: 2px;
 }
 
-/* §4.12's popover box, anchored to the chip that opened it. */
+/* §4.12's popover box, anchored to the right edge of the filter group and 6
+   below its bottom edge — 34 on one line, and still clear of its own trigger
+   when the chips have wrapped into rows. */
 .admin-filter-popover {
   position: absolute;
-  top: 34px;
+  top: calc(100% + 6px);
   right: 0;
   z-index: 20;
   width: 300px;
@@ -2947,6 +2976,12 @@ p.user-profile-photo-note:not(.is-error) {
   gap: 4px;
 }
 
+/* Redundant wherever `:has()` works — the shared filter-head rule already wraps
+   this head. It stays for two cases that rule does not reach: browsers without
+   `:has()` that Vite's default build target still includes (Firefox 114–120,
+   ESR 115 among them), where the shared rule is dropped whole; and a table with
+   no filterable column, whose head has no filter control for `:has()` to find
+   but still carries the service selector beside the count. */
 .admin-events-plane .admin-plane-head {
   flex-wrap: wrap;
 }
@@ -3001,7 +3036,10 @@ p.user-profile-photo-note:not(.is-error) {
 }
 
 /* The count, the chips and "+ Filter" share one head; on a phone they wrap
-   rather than squeeze the count into two lines. */
+   rather than squeeze the count into two lines. Redundant wherever `:has()`
+   works — the shared filter-head rule already wraps it — and kept as the
+   fallback where it does not: Vite's default build target still includes
+   Firefox 114–120 (ESR 115 among them), which drops that rule whole. */
 .admin-audit-plane .admin-plane-head {
   flex-wrap: wrap;
 }
