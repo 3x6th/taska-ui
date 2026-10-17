@@ -244,7 +244,7 @@ export function AdminDataSection() {
     <div className="admin-data">
       <AdminCatalogColumn services={services} />
 
-      <div aria-busy={busy} className="admin-plane">
+      <div aria-busy={busy} className="admin-plane admin-data-plane">
         <div className="admin-plane-head">
           {/* The table that is actually on screen, which during a switch is
               still the previous one. Naming the selection here would caption

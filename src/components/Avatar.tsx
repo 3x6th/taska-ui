@@ -10,9 +10,9 @@ interface AvatarProps {
    *
    * `avatarUrl` is what turns the circle into a picture. The contract puts it
    * on the member row for anybody on a project — which the deployed member read
-   * does not fill yet, see `User.avatarUrl` — and one read of
-   * `GET /users/{userId}/avatar` fetches it for the reader themselves; absent
-   * or `null`, this draws exactly what it drew before TAS-220.
+   * does not fill yet, see `User.avatarUrl` — and `GET /users/me` carries it
+   * for the reader themselves (TAS-223); absent or `null`, this draws exactly
+   * what it drew before TAS-220.
    */
   user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
   label?: string;

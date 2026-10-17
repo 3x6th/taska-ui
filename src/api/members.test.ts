@@ -179,15 +179,21 @@ describe("MockTaskaApi member writes", () => {
       await expect(api.getProject(TASKA)).resolves.toMatchObject({ currentUserRole: "ADMIN" });
     });
 
-    it("answers NOT_FOUND about a non-member before it asks whether the actor is an admin", async () => {
-      // The validator's order: the target's membership first, the actor's role
-      // second. So a MEMBER asking about somebody who is not on the project is
-      // told the person is not there, not that they may not ask.
+    it("answers PERMISSION_DENIED to a non-admin about a non-member, before it looks for the target", async () => {
+      // The validator's order since backend PR #185 (TAS-229): the actor's role
+      // first, the target's membership second. So a MEMBER asking about somebody
+      // who is not on the project is told they may not ask — and learns nothing
+      // about who is a member.
       await signIn("mark@example.com");
 
-      const facts = await refusal(api.changeProjectMemberRole(TASKA, PRIYA, "VIEWER"));
-      expect(facts.code).toBe("NOT_FOUND");
-      expect(facts.message).toBe(`Project member with id ${PRIYA} was not found in project with id ${TASKA}`);
+      for (const write of [
+        () => api.changeProjectMemberRole(TASKA, PRIYA, "VIEWER"),
+        () => api.removeProjectMember(TASKA, PRIYA),
+      ]) {
+        const facts = await refusal(write());
+        expect(facts.code).toBe("PERMISSION_DENIED");
+        expect(facts.message).toBe(`User with id: ${MARK} is not an admin of project: ${TASKA}`);
+      }
     });
 
     it("refuses a non-admin once the target is a real member", async () => {
@@ -262,7 +268,7 @@ describe("MockTaskaApi member writes", () => {
       await expect(rowFor(NOBODY)).resolves.toBeUndefined();
     });
 
-    it("answers NOT_FOUND for somebody who is not a member", async () => {
+    it("answers an ADMIN NOT_FOUND for somebody who is not a member", async () => {
       const facts = await refusal(api.removeProjectMember(TASKA, PRIYA));
       expect(facts.code).toBe("NOT_FOUND");
     });

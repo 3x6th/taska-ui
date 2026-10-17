@@ -15,17 +15,17 @@ const ISSUE_DELETED: NotificationType = "ISSUE_DELETED";
  * does.
  *
  * A notification targets nothing when either id is missing. Three kinds of
- * row arrive that way. Two are ordinary rather than faults: a notification
- * that is not about an issue (`MEMBER_*`, `PROJECT_CREATED`, `USER_*`), and an
- * issue notification written before the gateway stored these columns, which
- * were added without a backfill. The third is a bug, not a design: an
+ * row arrive that way: a notification that is not about an issue (`MEMBER_*`,
+ * `PROJECT_CREATED`, `USER_*`); an issue notification written before the
+ * gateway stored these columns, which were added without a backfill; and an
  * attachment notification (`ISSUE_ATTACHMENT_ADDED`, `ISSUE_ATTACHMENT_DELETED`)
- * carries `issueId` but not `issueKey` or `projectId`, because issue-service's
- * `PayloadSerializer` writes the first and never calls `putIssueFields` for the
- * other two — filed as TAS-245, and this route stays closed until it lands.
- * The body is never mined for an id, in any of the three: an old row may well
- * have a uuid in its prose — an attachment row always does, since `issueKey` is
- * null and the body names the issue the only way it can — and a uuid in prose
+ * written before backend PR #191 (TAS-245), which carries `issueId` but not
+ * `projectId` — issue-service's `PayloadSerializer` did not call
+ * `putIssueFields` for those two until then, and the fix did not backfill. An
+ * attachment row written since carries all three and opens like any other.
+ * The rule is the ids, never the kind: `issueId` without `projectId` opens
+ * nothing whatever the row is. The body is never mined for an id, in any of
+ * the three: an old row may well have a uuid in its prose, and a uuid in prose
  * is not a statement of which issue, or even which kind of thing, it names.
  *
  * `ISSUE_DELETED` is the one kind excluded by name. It carries both ids of an

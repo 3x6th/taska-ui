@@ -263,6 +263,86 @@ describe("RestTaskaApi current user", () => {
     });
   });
 
+  /**
+   * The reader's own avatar, on the profile since backend PR #193 (TAS-223):
+   * a nullable `AvatarDto`, of which `id` and `downloadUrl` are read, and at
+   * that PR's head `3bd33cac` a required boolean `avatarUnavailable` beside it.
+   * `avatar: null` comes both for no avatar and for a profile read the gateway
+   * could not make; the flag is what tells them apart (`false` / `true`), and
+   * it is copied only when it is a boolean, never defaulted.
+   */
+  it("reads the avatar's link and id off the profile, with the flag the server sent", async () => {
+    const user = await getCurrentUserWith(
+      me({
+        avatar: {
+          id: "avatar-1",
+          objectKey: "avatars/user-1/face.png",
+          fileName: "face.png",
+          contentType: "image/png",
+          sizeBytes: 2048,
+          createdAt: "2026-10-16T08:00:00Z",
+          downloadUrl: "https://store.example/face.png?sig=1",
+        },
+        avatarUnavailable: false,
+      }),
+    );
+
+    expect(user).toMatchObject({
+      avatarUrl: "https://store.example/face.png?sig=1",
+      avatarId: "avatar-1",
+      avatarUnavailable: false,
+    });
+  });
+
+  it("tells no photo from a failed profile read by the flag, not by the avatar", async () => {
+    const none = await getCurrentUserWith(me({ avatar: null, avatarUnavailable: false }));
+    expect(none).toMatchObject({ avatarUrl: null, avatarId: null, avatarUnavailable: false });
+
+    const failed = await getCurrentUserWith(me({ avatar: null, avatarUnavailable: true }));
+    expect(failed).toMatchObject({ avatarUrl: null, avatarId: null, avatarUnavailable: true });
+  });
+
+  it("copies the flag on its own, whether or not the avatar came", async () => {
+    // Independent of the avatar spread: a body with the flag and no `avatar`
+    // key still carries the flag, and leaves the avatar unstated.
+    const user = await getCurrentUserWith(me({ avatarUnavailable: true }));
+    expect(user.avatarUnavailable).toBe(true);
+    expect(user).not.toHaveProperty("avatarUrl");
+  });
+
+  it.each([
+    ["absent", {}],
+    ["the string \"true\"", { avatarUnavailable: "true" }],
+    ["null", { avatarUnavailable: null }],
+    ["a number", { avatarUnavailable: 1 }],
+  ])("leaves the flag off when it is %s, rather than calling it false", async (_case, extra) => {
+    // `false` would be this client stating that the profile read worked, which
+    // the server did not say.
+    const user = await getCurrentUserWith(me({ avatar: null, ...extra }));
+
+    expect(user).not.toHaveProperty("avatarUnavailable");
+    expect(user.avatarUrl).toBeNull();
+  });
+
+  it.each([
+    ["an explicit null", { avatar: null }],
+    ["an avatar with no link", { avatar: { id: "avatar-1" } }],
+    ["an avatar with an empty link", { avatar: { id: "avatar-1", downloadUrl: "" } }],
+  ])("reads %s as no picture to draw", async (_case, extra) => {
+    const user = await getCurrentUserWith(me(extra));
+
+    expect(user.avatarUrl).toBeNull();
+  });
+
+  it("leaves the avatar unstated when the gateway predates the field", async () => {
+    // Absent is not `null`: nobody was told anything (see `User.avatarUrl`).
+    const user = await getCurrentUserWith(me({}));
+
+    expect(user).not.toHaveProperty("avatarUrl");
+    expect(user).not.toHaveProperty("avatarId");
+    expect(user).not.toHaveProperty("avatarUnavailable");
+  });
+
   it("maps USER", async () => {
     await expect(getCurrentUserWith(me({ globalRole: "USER" }))).resolves.toMatchObject({
       email: "anna@example.com",
@@ -801,6 +881,20 @@ describe("RestTaskaApi project writes", () => {
     const { fetchStub } = await call(project(), (api) => api.createProject({ projectKey: "NEW", name: "New Thing" }));
 
     expect(sentBody(fetchStub)).toEqual({ projectKey: "NEW", name: "New Thing" });
+  });
+
+  it("lets a 404 on the project list reach the caller instead of reading it as no projects", async () => {
+    // TAS-207: the empty list is `200 { items: [] }` now, so a 404 is a real
+    // failure and is no longer folded into `[]`.
+    await expect(
+      call({ code: "NOT_FOUND", message: "Projects not found" }, (api) => api.listProjects(), 404),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("reads an empty project list as an empty list", async () => {
+    const { result } = await call({ items: [] }, (api) => api.listProjects());
+
+    expect(result).toEqual([]);
   });
 
   it("PATCHes the project path with only the fields it was given", async () => {
@@ -1442,6 +1536,8 @@ describe("RestTaskaApi read-only admin", () => {
       requestId: null,
       serviceKey: "auth",
       reason: "",
+      // Absent is not retryable: a Retry button is never offered on a guess.
+      retryable: false,
     });
     // A hole in the matrix would read as "unknown" for a service that is fine.
     expect(summary.counts[0]).toEqual({
@@ -1463,6 +1559,34 @@ describe("RestTaskaApi read-only admin", () => {
       counts: [],
       notAllShown: false,
     });
+  });
+
+  it("reads retryable as the server states it, and only an explicit true as true", async () => {
+    // Backend PR #195 (TAS-200): required on the wire, computed by admin-service
+    // with the rule its retry command applies. Anything but `true` — `false`, an
+    // absent field, a value of the wrong type — draws no Retry button.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        answer({
+          events: [
+            { id: "failed", status: "FAILED", retryable: true },
+            { id: "young-stuck", status: "PROCESSING", retryable: false },
+            { id: "absent", status: "FAILED" },
+            { id: "string", status: "FAILED", retryable: "true" },
+          ],
+        }),
+      ),
+    );
+
+    const summary = await new RestTaskaApi().getProblematicOutboxSummary();
+
+    expect(summary.events.map((event) => [event.id, event.retryable])).toEqual([
+      ["failed", true],
+      ["young-stuck", false],
+      ["absent", false],
+      ["string", false],
+    ]);
   });
 
   it("keeps the server's order instead of sorting the events itself", async () => {
@@ -3585,11 +3709,11 @@ describe("RestTaskaApi attachments", () => {
   });
 });
 /**
- * The four avatar routes — backend PR #150 (TAS-129), merged at `develop`
+ * The avatar write routes — backend PR #150 (TAS-129), merged at `develop`
  * `368ae77355bd` and deployed on 2026-09-14. What is pinned here is the request
  * shape, the ceiling this client enforces against the one the schema declares,
- * and the two answers a reader must not misread: a null `url` meaning "no
- * avatar" and the static-resource 404 meaning "not on this gateway yet".
+ * and the one answer a reader must not misread: a write route's static-resource
+ * 404, meaning "not on this gateway yet".
  */
 describe("RestTaskaApi avatars", () => {
   const answer = (status: number, body: unknown) =>
@@ -3783,33 +3907,6 @@ describe("RestTaskaApi avatars", () => {
     // Idempotent by the contract's own words, so a second call is the same
     // request and the same answer — there is nothing here to make conditional.
     await expect(new RestTaskaApi().deleteMyAvatar()).resolves.toBeUndefined();
-  });
-
-  it("reads a null url as no avatar rather than as a failure", async () => {
-    const fetchStub = vi.fn(async () => answer(200, { url: null }));
-    vi.stubGlobal("fetch", fetchStub);
-
-    // The whole point of this route's shape: "no avatar" is a **200** with a
-    // null field, because `UserProfileMapper.toRestGetAvatarDownloadUrlResponse`
-    // writes null when the proto carries no url. A caller reading the status
-    // would call this an error.
-    await expect(new RestTaskaApi().getUserAvatarUrl(USER)).resolves.toBeNull();
-    expect(calls(fetchStub)[0][0]).toBe(`/api/v1/users/${USER}/avatar`);
-  });
-
-  it("reads an absent url and an empty one as the same no-avatar answer", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => answer(200, {})));
-    await expect(new RestTaskaApi().getUserAvatarUrl(USER)).resolves.toBeNull();
-
-    vi.unstubAllGlobals();
-    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { url: "" })));
-    await expect(new RestTaskaApi().getUserAvatarUrl(USER)).resolves.toBeNull();
-  });
-
-  it("hands back the link when there is one", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { url: "https://store.example/face.png?sig=3" })));
-
-    await expect(new RestTaskaApi().getUserAvatarUrl(USER)).resolves.toBe("https://store.example/face.png?sig=3");
   });
 
   it("passes the undeployed-route 404 through so the menu can say which 404 it is", async () => {

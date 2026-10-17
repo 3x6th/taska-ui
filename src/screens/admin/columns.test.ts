@@ -10,6 +10,7 @@ import {
   shortKey,
   supportsOperator,
   valueControlForType,
+  valuePlaceholderForType,
 } from "./columns";
 
 describe("filter operators offered per column type", () => {
@@ -32,10 +33,14 @@ describe("filter operators offered per column type", () => {
   // refuses turns a filter into a 400 the reader cannot act on, while a missing
   // one only costs a narrower question.
   it("offers equality alone for a type it does not recognise", () => {
-    expect(operatorsForType("uuid")).toEqual(["equals"]);
     expect(operatorsForType("jsonb")).toEqual(["equals"]);
     expect(operatorsForType(undefined)).toEqual(["equals"]);
     expect(operatorsForType("some_type_from_a_later_migration")).toEqual(["equals"]);
+  });
+
+  it("offers equality alone for a uuid column, which the gateway parses but neither ranges nor searches", () => {
+    expect(operatorsForType("uuid")).toEqual(["equals"]);
+    expect(operatorsForType("UUID")).toEqual(["equals"]);
   });
 
   it("offers equality for every type, including the ones it knows", () => {
@@ -71,11 +76,27 @@ describe("which control enters a filter value", () => {
     }
   });
 
-  // Free text stays exactly where the server really does take the string as
-  // written: text columns, and the types it does not classify at all.
-  it("keeps the free field for text and for types the gateway does not parse", () => {
+  // Free text stays where the server takes the string as written — text
+  // columns and the types it does not classify — and for a uuid, which it
+  // parses but no narrower control helps to type.
+  it("keeps the free field for text, uuid, and types the gateway does not parse", () => {
     for (const type of ["text", "character varying", "uuid", "inet", "jsonb", undefined]) {
       expect(valueControlForType(type)).toBe("text");
+    }
+  });
+});
+
+describe("what the free value field shows while it is empty", () => {
+  // The gateway parses an `equals` on a `uuid` column strictly — the canonical
+  // 8-4-4-4-12 form and nothing else (TAS-232) — so the field shows that form.
+  it("shows the canonical uuid shape on a uuid column, whatever the type's case", () => {
+    expect(valuePlaceholderForType("uuid")).toBe("00000000-0000-0000-0000-000000000000");
+    expect(valuePlaceholderForType(" UUID ")).toBe("00000000-0000-0000-0000-000000000000");
+  });
+
+  it("shows nothing on any other column", () => {
+    for (const type of ["text", "character varying", "integer", "boolean", "date", "inet", "jsonb", "uuid[]", undefined]) {
+      expect(valuePlaceholderForType(type)).toBeUndefined();
     }
   });
 });

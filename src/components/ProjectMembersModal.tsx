@@ -406,9 +406,20 @@ export function ProjectMembersModal({
         // The end state is the one that was asked for, so nothing comes back.
         // What did not happen is the removal, and that is worth a sentence —
         // with the server's own words and request id under it, as every other
-        // refusal has. And if the row was the reader's, somebody removed them
-        // first: they have no board here either, and leave as a removal of
-        // their own would.
+        // refusal has.
+        //
+        // The reader's own row answered 404 is the reader removed by somebody
+        // else first, and this arm takes them out of the project. That is the
+        // stand today: until backend PR #185 (TAS-229) deploys, the validator
+        // looks for the target before it checks the actor, so a reader removed
+        // a moment earlier is told `Project member with id … was not found`.
+        //
+        // Once #185 is deployed the actor check runs first, and that reader is
+        // refused 403 instead — their own row is the actor row the check reads
+        // — and lands in the 403 arm below, which re-reads their role. A 404 on
+        // the reader's own row then comes only from the validator's empty read,
+        // `Project: … doesn't exist`: the project has no rows left for the
+        // reader or any admin. Leaving is the right answer to that as well.
         if (await leaveIfReaderIsGone(userId)) return;
         setNotice({ tone: "info", text: notMemberText(subject), error });
         return;

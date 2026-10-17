@@ -1,0 +1,47 @@
+# Pending gateway contract — backend PR #193 (TAS-223)
+# GET /users/me carries the reader's avatar and avatarUnavailable
+#
+# Source: https://github.com/VladislavYurin/taska-backend/pull/193
+# Head commit: 3bd33cac4afb92e3aa7cf5ebee247fc5c7d604cd
+# PR state on 2026-10-17: open, MERGEABLE, REVIEW_REQUIRED, base develop
+# Base for this extract: develop @ 4277199e2c993d0041e7bc2e1aa67e52be762c79
+#
+# This is NOT the contract. It is what the contract WILL say if this PR merges as it
+# stands. docs/contract/openapi.yml stays the authority until then. Delete this file when
+# the PR merges and the snapshot is refreshed. Where this extract and the PR's Java
+# disagree, the Java wins.
+#
+# Extracted mechanically for TAS-263: every path and schema block of the head's
+# openapi.yml whose text differs from the base, copied whole. Nothing is new; no block
+# was removed.
+#
+components:
+  schemas:
+    # text differs from develop
+    ValidateAccessTokenResponseDto:
+      type: object
+      required: [avatarUnavailable]
+      properties:
+        id:
+          type: string
+        login:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+        status:
+          type: string
+        globalRole:
+          $ref: '#/components/schemas/GlobalRoleTypeDto'
+        avatar:
+          allOf:
+            - $ref: '#/components/schemas/AvatarDto'
+          nullable: true
+          description: Аватар текущего пользователя; null, если отсутствует или профиль временно недоступен (см. avatarUnavailable).
+        avatarUnavailable:
+          type: boolean
+          default: false
+          description: >-
+            true, если профиль с аватаром не удалось прочитать и avatar=null означает ошибку,
+            а не отсутствие фото. false, если аватар прочитан или у пользователя его нет.

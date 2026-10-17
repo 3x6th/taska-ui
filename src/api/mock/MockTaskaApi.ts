@@ -66,6 +66,7 @@ import type { PlanningFields, PlanningFieldsInput } from "../planningFields";
 import { emptyPlanningFields, planningFieldRefusal, resolvePlanningFields } from "../planningFields";
 import type {
   AdminCatalog,
+  AdminFilterOperator,
   AdminRow,
   AdminRowQuery,
   AdminRows,
@@ -224,13 +225,26 @@ export const MOCK_ATTACHMENT_TRIGGERS = {
    * give — so "Download" has to fall back to opening the link (TAS-253).
    */
   downloadBlocked: "download-blocked",
+  /**
+   * **Avatar only.** All three legs succeed and the confirm answers with its
+   * link as the server does; then the object is dropped from the bucket, so
+   * the saved row points at nothing. That is the end state TAS-221's
+   * cross-user path leaves on the server, and from then on `GET /users/me`
+   * answers `avatar: null, avatarUnavailable: true` until an upload replaces
+   * the row or a removal deletes it (backend PR #193). No new answer shape:
+   * it is the state `currentUserProfile` already reads for a lost object.
+   */
+  avatarObjectLost: "object-lost",
 } as const;
 
-// The avatar upload reads the same four names out of the same
+// The avatar upload reads the same four failure names out of the same
 // `uploadBehaviourFor`, so a file called `cors-blocked.png` fails the middle leg
-// there too. Named after attachments because that is where they were written
-// and where three of the four are demonstrated; a second, identical table under
-// a second name would be two things to keep in step for no reader's benefit.
+// there too, and `expired-link` is honoured by both. Named after attachments
+// because that is where they were written and where three of the four are
+// demonstrated; a second, identical table under a second name would be two
+// things to keep in step for no reader's benefit. `avatarObjectLost` is the one
+// entry the other way round: only the avatar confirm reads it, and an
+// attachment called `object-lost.txt` uploads like any other file.
 
 type MockUploadBehaviour = "ok" | "storeUnreachable" | "storeRefused" | "confirmFails";
 
@@ -289,6 +303,8 @@ interface MockAvatarTicket {
   /** Epoch ms. Past it, leg 2 answers 403 — the store's answer for a stale signature. */
   expiresAt: number;
   behaviour: MockUploadBehaviour;
+  /** `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: the confirm succeeds, then the object is dropped. */
+  objectLost: boolean;
 }
 
 /**
@@ -683,11 +699,12 @@ const compareAsText = (left: unknown, right: unknown) => {
  * throws; and `Number` is float64, so a `bigint` past 2^53 that Postgres
  * compares exactly is compared approximately here. None of that is reachable
  * through the filter form, which picks the value control from the column's type
- * — only through a hand-edited URL. Going further would mean re-implementing
- * `ReadOnlyQueryValidator` in TypeScript and keeping two copies of the
- * backend's parsing rules in sync, which is a worse failure than this one: it
- * stops at ordering deliberately, so do not read it as a promise that anything
- * this function accepts the gateway would accept too.
+ * — only through a hand-edited URL. The pairing of operator and class, and the
+ * one strict parse the gateway does on a `uuid` column, are `refuseAdminFilters`
+ * below; going further would mean keeping two copies of the backend's parsing
+ * rules in sync, which is a worse failure than this one: it stops at ordering
+ * deliberately, so do not read it as a promise that anything this function
+ * accepts the gateway would accept too.
  */
 const compareAsColumn = (columnClass: AdminColumnClass, left: unknown, right: unknown): number | null => {
   if (left === null || left === undefined || right === null || right === undefined) return null;
@@ -703,7 +720,86 @@ const compareAsColumn = (columnClass: AdminColumnClass, left: unknown, right: un
     if (Number.isNaN(a) || Number.isNaN(b)) return null;
     return a - b;
   }
+  if (columnClass === "UUID") {
+    // A `java.util.UUID` against a `uuid` column (TAS-232): the case of the hex
+    // digits is not part of the value. Only the canonical form reaches here as
+    // a filter value — `listAdminRows` refuses any other, as the gateway does.
+    const a = String(left);
+    const b = String(right);
+    if (!UUID_PATTERN.test(a) || !UUID_PATTERN.test(b)) return null;
+    return compareAsText(a.toLowerCase(), b.toLowerCase());
+  }
   return compareAsText(left, right);
+};
+
+interface ClassifiedAdminFilter {
+  column: string;
+  operator: AdminFilterOperator;
+  value: string;
+  columnClass: AdminColumnClass;
+}
+
+/**
+ * Two of the refusals `listAdminRows` meets on the gateway before any row is
+ * read, in its words and in the order its passes run them, at backend PR #184
+ * (TAS-232), `ReadOnlyQueryBuilder.buildSafePageableListQueries`.
+ *
+ * The gateway does not refuse filter by filter. It validates the whole query
+ * in passes, and a later pass runs only once every filter has cleared the
+ * earlier ones:
+ *
+ * - `ReadOnlyQueryValidator.validateFilterOperatorCompatibility`, over every
+ *   filter: an operator the column's class cannot take — the class's own name
+ *   in the sentence, so a `uuid` column says `UUID`. A blank value is skipped
+ *   there (`isBlank()`), so it is skipped here too;
+ * - then `buildConditionsAndParams`, filter by filter in column-name order:
+ *   `parseUuidValue` refuses an `equals` value on a `uuid` column that is not
+ *   a UUID in the canonical 8-4-4-4-12 form.
+ *
+ * So with one filter carrying a bad uuid and another a bad pairing, the
+ * pairing is what the gateway reports, whichever was applied first. Both are
+ * `INVALID_ARGUMENT`.
+ *
+ * Not the whole pipeline, and not claimed to be. Two passes run earlier on the
+ * gateway and have no counterpart here: `FilterParser` refuses a blank value
+ * outright ("Filter value must not be empty for key"), and `validateColumn`
+ * refuses a column the table does not have. Everything else about value
+ * parsing stays with `compareAsColumn`'s note: this is the pairing rule and
+ * the one parse that is strict, not a copy of the validator.
+ */
+const refuseAdminFilters = (filters: readonly ClassifiedAdminFilter[]) => {
+  for (const { column, operator, value, columnClass } of filters) {
+    if (value.trim() === "") continue;
+    if (operator === "contains" && columnClass !== "TEXT") {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        `Operator 'contains' is not supported for column '${column}' (type: ${columnClass})`,
+      );
+    }
+    if ((operator === "from" || operator === "to") && columnClass !== "TEMPORAL" && columnClass !== "NUMERIC") {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        `Operator '${operator}' is not supported for column '${column}' (type: ${columnClass}). Only temporal and numeric columns support range filters`,
+      );
+    }
+  }
+  // Column-name order, as the gateway sorts its filter map before it builds
+  // the conditions: by UTF-16 code unit, which is what Java's `String`
+  // comparison and `<` on two strings both do.
+  const byColumn = [...filters].sort((left, right) =>
+    left.column < right.column ? -1 : left.column > right.column ? 1 : 0,
+  );
+  for (const { column, operator, value, columnClass } of byColumn) {
+    // `StringUtils.hasText` guards each operator there, so a blank value is
+    // passed over in this pass as well.
+    if (value.trim() === "") continue;
+    if (operator === "equals" && columnClass === "UUID" && !UUID_PATTERN.test(value)) {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        `Invalid UUID value for column '${column}': expected UUID in 8-4-4-4-12 format`,
+      );
+    }
+  }
 };
 
 /**
@@ -961,6 +1057,23 @@ const OUTBOX_NEW_OVERDUE_MINUTES = 10;
  * The ratio is the backend's; the units are the mock's, like the two above.
  */
 const OUTBOX_RETRY_STUCK_MINUTES = 10;
+
+/**
+ * admin-service's `OutboxRetryEligibility.isRetryable` (backend PR #195,
+ * TAS-200): `FAILED`, or `PROCESSING` with a `processing_started_at` strictly
+ * before now minus the retry stuck threshold. One function for both of its
+ * callers, as on the server — the summary's `retryable` snapshot and the retry
+ * command's own re-check — so the two cannot disagree about a row.
+ */
+const isOutboxRetryable = (row: AdminRow, nowMs: number): boolean => {
+  if (row.status === "FAILED") return true;
+  const startedAt = row.processing_started_at;
+  return (
+    row.status === "PROCESSING" &&
+    typeof startedAt === "string" &&
+    new Date(startedAt).getTime() < nowMs - OUTBOX_RETRY_STUCK_MINUTES * 60_000
+  );
+};
 
 /**
  * How many events the mock's summary will list. The real default is 100; a
@@ -1262,7 +1375,7 @@ export class MockTaskaStore {
       downloadUrl: SEEDED_AVATAR_PNG,
     });
     // And the object that row points at, in the bucket. A read presigns
-    // through a HEAD of the object (see `getUserAvatarUrl`), so a row with
+    // through a HEAD of the object (see `currentUserProfile`), so a row with
     // nothing behind it is the broken state, not a seeded one.
     this.avatarObjects.set("seeded-avatar-sofia", {
       contentType: "image/png",
@@ -1849,13 +1962,11 @@ export class MockTaskaStore {
     });
 
     // One row per shape the gateway sends since TAS-243, newest first. The
-    // two that open something name real TAS issues — Anna's project, and
+    // three that open something name real TAS issues — Anna's project, and
     // Mark's too — so the route they build lands on a panel rather than on a
-    // not-found. The four that open nothing are the four reasons a row can:
-    // not about an issue, about an issue that is gone, older than the
-    // columns, and — until TAS-245 — an attachment notification, which
-    // issue-service's PayloadSerializer writes with issueId alone and never
-    // backfills with issueKey or projectId.
+    // not-found. The three that open nothing are the three reasons a row can:
+    // not about an issue, about an issue that is gone, and older than the
+    // columns.
     const tas104 = this.issues.find((item) => item.issueKey === "TAS-104");
     this.notifications = [
       this.notification("ISSUE_ASSIGNED", "Issue assigned", "TAS-107 was assigned to you", tas107 ?? null, ts(25, 10), null),
@@ -1878,18 +1989,17 @@ export class MockTaskaStore {
       this.notification("ISSUE_TRANSITIONED", "Status changed", `Issue ${tas104?.id ?? ""} moved to DONE`, null, ts(24, 58), null),
       // Not about an issue at all: the project is only in the prose.
       this.notification("MEMBER_ADDED", "Added to a project", "Sofia added you to Taska Platform", null, ts(24, 50), ts(25, 8)),
-      // The bug rather than a design: TAS-101 is real and current, but
-      // issue-service's PayloadSerializer sets issueId for
-      // ISSUE_ATTACHMENT_ADDED and never calls putIssueFields to add issueKey
-      // or projectId (TAS-245), so this row is inert exactly like the two
-      // above it despite naming a live issue. The body names it the way the
-      // gateway's own body does when issueKey is null — by raw uuid. Read, so
-      // it does not move the unread total the other rows already add up to.
+      // An attachment notification as issue-service writes it since backend
+      // PR #191 (TAS-245): `PayloadSerializer` puts all three issue fields on
+      // the payload, so the row carries issueKey and projectId beside issueId
+      // and opens TAS-101 like any other issue row, and the body names the
+      // issue by its key. Read, so it does not move the unread total the other
+      // rows already add up to.
       this.notification(
         "ISSUE_ATTACHMENT_ADDED",
         "Attachment added",
-        `An attachment was added to ${tas101?.id ?? ""}`,
-        tas101 ? { id: tas101.id } : null,
+        `An attachment was added to ${tas101?.issueKey ?? "TAS-101"}`,
+        tas101 ?? null,
         ts(24, 45),
         ts(24, 47),
       ),
@@ -2237,27 +2347,29 @@ export class MockTaskaStore {
 
   /**
    * `validateBeforeModify`, shared by the role change and the removal, in the
-   * validator's order — and the order is the part worth copying exactly: the
-   * target's membership is checked **before** the actor's role, so a non-admin
-   * asking about somebody who is not on the project is told `NOT_FOUND`, not
-   * `PERMISSION_DENIED`. Then the last-admin rule, which is
+   * validator's order since backend PR #185 (TAS-229): the actor's role is
+   * checked **before** the target's membership, so a non-admin is told
+   * `PERMISSION_DENIED` whoever they name — on the project or not — and learns
+   * nothing about who is a member. Only an ADMIN can get `NOT_FOUND` for a
+   * target who is not on the project. Then the last-admin rule, which is
    * `FAILED_PRECONDITION` (a 400 on the wire) and counts every ADMIN row the
-   * project has, the actor's own included.
+   * project has, the actor's own included. A project with no rows at all is
+   * still `NOT_FOUND`, first, from `memberRowsForWrite`.
    */
   private memberForModify(projectId: string, userId: string): ProjectMember {
     const id = memberWriteId(userId);
     const rows = this.memberRowsForWrite(projectId);
+    if (rows.find((member) => member.userId === this.currentUserId)?.role !== "ADMIN") {
+      throw new MockApiError(
+        "PERMISSION_DENIED",
+        `User with id: ${this.currentUserId} is not an admin of project: ${projectId}`,
+      );
+    }
     const target = rows.find((member) => member.userId === id);
     if (!target) {
       throw new MockApiError(
         "NOT_FOUND",
         `Project member with id ${id} was not found in project with id ${projectId}`,
-      );
-    }
-    if (rows.find((member) => member.userId === this.currentUserId)?.role !== "ADMIN") {
-      throw new MockApiError(
-        "PERMISSION_DENIED",
-        `User with id: ${this.currentUserId} is not an admin of project: ${projectId}`,
       );
     }
     if (target.role === "ADMIN" && rows.filter((member) => member.role === "ADMIN").length <= 1) {
@@ -2266,24 +2378,23 @@ export class MockTaskaStore {
     return target;
   }
 
-  getWorkflow(): Workflow {
-    return this.workflow;
-  }
-
   /**
    * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
-   * rules its Java states at head `a1bfe19`: a missing project is `NOT_FOUND`,
-   * and a reader with no membership row is `PERMISSION_DENIED` — a
-   * `GLOBAL_ADMIN` included. Unlike `getProject` in this store, which answers a
-   * non-member, this read keeps the gateway's access rule.
-   * At head `a1bfe19` the code intends 200 with empty members and labels (its
-   * TODO says so), but the labels leg's denial arrives from issue-service as a
-   * gRPC `StatusRuntimeException`, which
-   * `ProjectServiceImpl.isPermissionDenied` (it matches only `DomainException`)
-   * does not catch, so the whole context fails `PERMISSION_DENIED` and answers
-   * 403. Removal: when the labels call carries the global role, or
-   * `isPermissionDenied` also matches a gRPC denial, the context answers 200
-   * with empty parts and the mock must follow.
+   * access rule project-service's `ProjectServiceImpl.getProjectContext` states
+   * since backend PR #186 (TAS-255, head `cc03c0d`):
+   *
+   * - a missing project is `NOT_FOUND` "Project not found";
+   * - a reader with no membership row is `PERMISSION_DENIED` "You don't have
+   *   access to this project", whatever their global role — a `GLOBAL_ADMIN`
+   *   included — and that is checked before any of the three sub-reads
+   *   (members, labels, workflows) starts;
+   * - a sub-read that fails fails the whole read with its own status. The
+   *   context never answers a part it could not read as an empty list.
+   *
+   * Unlike `getProject` in this store, which answers a non-member, this read
+   * keeps the gateway's access rule. The third point has no counterpart here:
+   * this store is one synchronous object, so a single leg cannot fail on its
+   * own, and the mock answers either everything or the refusal above.
    *
    * `workflows` holds one entry per allowed type (`allowedIssueTypesByProject`),
    * each without timestamps, and the labels carry only `id`, `name` and
@@ -2297,7 +2408,7 @@ export class MockTaskaStore {
     }
     const member = this.membersByProject[projectId]?.find((item) => item.userId === this.currentUserId);
     if (!member) {
-      throw new MockApiError("PERMISSION_DENIED", "Access denied");
+      throw new MockApiError("PERMISSION_DENIED", "You don't have access to this project");
     }
     const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflow;
     const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
@@ -2891,7 +3002,7 @@ export class MockTaskaStore {
   }
 
   addIssueWatcher(projectId: string, issueId: string, userId: string): WatchIssueResult {
-    this.requireWatcherAdmin(projectId);
+    this.requireWatcherRoleFor(projectId, userId);
     // A user this deployment has never heard of is a 404, not a subscription to
     // a ghost. `getUser` is the store's own "does this person exist" check and
     // is what the assignee routes would use.
@@ -2900,7 +3011,7 @@ export class MockTaskaStore {
   }
 
   removeIssueWatcher(projectId: string, issueId: string, userId: string): UnwatchIssueResult {
-    this.requireWatcherAdmin(projectId);
+    this.requireWatcherRoleFor(projectId, userId);
     // No `getUser` here, on purpose, and it is not an oversight. The whole
     // point of `removed` is that unsubscribing somebody who is not subscribed
     // is a `200` rather than a failure, and refusing an unknown user would turn
@@ -2950,13 +3061,25 @@ export class MockTaskaStore {
   }
 
   /**
-   * The gate on the two routes the contract marks "только project ADMIN".
+   * The gate on `POST …/watchers` and `DELETE …/watchers/{userId}`, as
+   * issue-service's `IssueWatcherServiceImpl.checkMutationRole` applies it —
+   * backend PR #194 (TAS-228, head `a33ed5d`) states it in the contract: it
+   * depends on whose subscription it is. For **somebody else's** `userId` the
+   * actor needs `manage-watchers-roles` — ADMIN. For **their own** it is
+   * `watch-issue-roles` — ADMIN or MEMBER — the same rule as the `…/watchers/me`
+   * pair, so a MEMBER may subscribe or unsubscribe themselves through either
+   * route, and a VIEWER through neither. Only the actor's role is checked,
+   * never the subscriber's, so an ADMIN may subscribe a VIEWER.
    *
-   * The wording is this store's, not the gateway's — nothing in the backend
-   * repository was read for it, unlike `requireUploadRole` below, whose two
-   * sentences were. Named so a reader does not take it for a measurement.
+   * The admin sentence is this store's, not the gateway's — nothing in the
+   * backend repository was read for it, unlike `requireUploadRole` below, whose
+   * two sentences were. Named so a reader does not take it for a measurement.
    */
-  private requireWatcherAdmin(projectId: string): void {
+  private requireWatcherRoleFor(projectId: string, userId: string): void {
+    if (userId === this.currentUserId) {
+      this.requireWatchRole(projectId);
+      return;
+    }
     const { role } = this.getMembership(projectId);
     if (role !== "ADMIN") {
       throw new MockApiError(
@@ -2977,7 +3100,7 @@ export class MockTaskaStore {
    * `ProjectRoleChecker`, in one of its two sentences — `"Access denied"` for a
    * non-member, `"Not allowed role"` for a member holding the wrong role (see
    * `requireUploadRole`). Nor is the order the server's: it is checked first,
-   * before the issue is looked up, as `addIssueWatcher` does.
+   * before the issue is looked up, as `requireWatcherRoleFor` is.
    */
   private requireWatchRole(projectId: string): void {
     const { role } = this.getMembership(projectId);
@@ -3382,6 +3505,7 @@ export class MockTaskaStore {
         ? Date.now() - 60_000
         : Date.now() + AVATAR_PRESIGNED_TTL_MS,
       behaviour,
+      objectLost: input.fileName.toLowerCase().includes(MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost),
     });
 
     return { uploadUrl, objectKey, expiresIn: Math.round(AVATAR_PRESIGNED_TTL_MS / 1000) };
@@ -3446,12 +3570,13 @@ export class MockTaskaStore {
    * quietly doing the sensible thing — the attachment DELETE's precedent
    * (`deleteAttachment` above): reproduce the implementation, and flag it. The
    * server does not check that the key was minted for the caller (neither does
-   * this: the ticket is consulted only for its failure trigger), and it does
+   * this: the ticket is consulted only for its file-name triggers), and it does
    * not notice when the "previous" object *is* the one being confirmed. So a
    * second confirm of the key the saved row already holds deletes that object,
    * fails its presign's HEAD with a 404, and leaves the row pointing at
-   * nothing; every read of that user's avatar answers 404 from then on, until an
-   * upload replaces the row or a removal deletes it. A mock that treated the
+   * nothing; every read of that user's avatar answers 404 from then on — and
+   * `GET /users/me` answers `avatarUnavailable: true` — until an upload
+   * replaces the row or a removal deletes it. A mock that treated the
    * repeat as a harmless no-op would teach its callers that retrying a confirm
    * is safe, which on the server it is exactly not. The profile menu never sends
    * a key twice, and its tests pin that.
@@ -3501,6 +3626,13 @@ export class MockTaskaStore {
       // the delete above just removed the object this row points at.
       throw new MockApiError("NOT_FOUND", "Object not found in storage");
     }
+    if (ticket?.objectLost) {
+      // `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: the answer below is what
+      // the server sent, link and all, and *afterwards* the object goes — the
+      // way TAS-221's cross-user path deletes it from under this row. Every
+      // later profile read then finds a row with nothing behind it.
+      this.avatarObjects.delete(avatar.objectKey);
+    }
     return { ...avatar };
   }
 
@@ -3521,22 +3653,36 @@ export class MockTaskaStore {
   }
 
   /**
-   * `null` for a user with no avatar, and **that is a 200**, not a 404: the
-   * gateway's mapper writes `null` into `url` when the proto carries none, so a
-   * caller reads the field rather than the status. A user id nobody knows is a
-   * genuine 404 — and so is a row whose object is gone, because
-   * `S3StorageClient.createPresignedDownloadUrl` HEADs the object before it
-   * signs anything. The only way this store gets such a row is the same-key
-   * re-confirm defect in `confirmAvatarUpload` above.
+   * `GET /users/me` as the gateway answers it since backend PR #193 (TAS-223,
+   * head `3bd33cac`, `UserServiceImpl.getMyInfo`): the profile plus the
+   * reader's own avatar, read through auth-service's `GetUserProfile`, and
+   * always a 200. Three answers:
+   *
+   * - a row with its object: `avatar` filled, `avatarUnavailable: false`;
+   * - no row: `avatar: null`, `avatarUnavailable: false`;
+   * - the profile read failed: `avatar: null`, `avatarUnavailable: true`. The
+   *   gateway sets that on any gRPC error and logs it. The answer is a 200, so
+   *   its request id is only in the `X-Request-Id` header, which
+   *   `RestTaskaApi.request` does not read on a success — neither
+   *   implementation hands the caller an id for it.
+   *
+   * The only failure this store can make is a row whose object is gone — the
+   * same-key re-confirm defect in `confirmAvatarUpload` above, or the
+   * `avatarObjectLost` trigger standing in for TAS-221's cross-user path —
+   * which on the server fails the presign's HEAD on every read until an upload
+   * replaces the row or a removal deletes it. A transient failure (auth-service
+   * down, a deadline) has no counterpart in one synchronous store.
    */
-  getUserAvatarUrl(userId: string): string | null {
-    this.getUser(userId);
-    const avatar = this.avatars.get(userId);
-    if (!avatar) return null;
-    if (!this.avatarObjects.has(avatar.objectKey)) {
-      throw new MockApiError("NOT_FOUND", "Object not found in storage");
-    }
-    return avatar.downloadUrl;
+  currentUserProfile(): User {
+    const user = this.currentUser();
+    const avatar = this.avatars.get(user.id);
+    const usable = avatar && this.avatarObjects.has(avatar.objectKey) ? avatar : null;
+    return {
+      ...user,
+      avatarUrl: usable?.downloadUrl ?? null,
+      avatarId: usable?.id ?? null,
+      avatarUnavailable: avatar !== undefined && usable === null,
+    };
   }
 
   /**
@@ -3890,6 +4036,15 @@ export class MockTaskaStore {
     const typeOf = (column: string) => table.columns.find((item) => item.name === column)?.type;
     let rows = this.adminRowsFor(query.service, query.table);
 
+    // Validated before a row is filtered, as the gateway validates the whole
+    // query before it builds the SQL — in its passes, not filter by filter.
+    // An empty value is no filter at all: `RestTaskaApi` never sends one.
+    refuseAdminFilters(
+      (query.filters ?? [])
+        .filter((filter) => filter.value !== "")
+        .map((filter) => ({ ...filter, columnClass: classifyColumnType(typeOf(filter.column)) })),
+    );
+
     for (const filter of query.filters ?? []) {
       if (filter.value === "") continue;
       const columnClass = classifyColumnType(typeOf(filter.column));
@@ -4209,6 +4364,8 @@ export class MockTaskaStore {
           requestId: (row.request_id as string | null) ?? null,
           serviceKey,
           reason: OUTBOX_REASONS[problem],
+          // A snapshot, as on the server: `retryOutboxEvent` checks again.
+          retryable: isOutboxRetryable(row, nowMs),
         });
       }
       // Every service, counted in full, whether or not any of its rows made the
@@ -4368,14 +4525,9 @@ export class MockTaskaStore {
       throw new MockApiError("NOT_FOUND", `Outbox event not found: ${eventId}`);
     }
 
-    const stuckBefore = Date.now() - OUTBOX_RETRY_STUCK_MINUTES * 60_000;
-    const startedAt = row.processing_started_at;
-    const eligible =
-      row.status === "FAILED" ||
-      (row.status === "PROCESSING" &&
-        typeof startedAt === "string" &&
-        new Date(startedAt).getTime() < stuckBefore);
-    if (!eligible) {
+    // The summary's `retryable` is a snapshot; the row may have moved on since
+    // it was read, so the rule is applied again here, as admin-service does.
+    if (!isOutboxRetryable(row, Date.now())) {
       throw new MockApiError(
         "FAILED_PRECONDITION",
         `Outbox event with status ${String(row.status)} is not eligible for retry`,
@@ -4424,9 +4576,9 @@ export class MockTaskaStore {
    * prove the summary applies a threshold rather than counting states.
    *
    * One row sits in the gap between the summary's threshold and the retry
-   * route's — listed as stuck, refused by retry. See `project`'s
-   * `project.member_added` PROCESSING seed; it is the only place that
-   * divergence is reachable by clicking.
+   * route's — listed as stuck, `retryable: false`, refused by retry. See
+   * `project`'s `project.member_added` PROCESSING seed; it is what shows that
+   * the section follows the server's `retryable` rather than the status.
    *
    * Two of `project`'s rows are the *same* event type in the same state for the
    * same reason, which is the last of its seeds and the one shape a summary of
@@ -4581,9 +4733,10 @@ export class MockTaskaStore {
         // The row that lives in the gap between the section's two thresholds,
         // and the reason `OUTBOX_RETRY_STUCK_MINUTES` exists at all: old enough
         // for the summary to call it "Stuck processing" (past 5m) and too young
-        // for the retry route to take it (short of 10m). Retrying it is a
-        // `FAILED_PRECONDITION`, in the server's own words, on a row that looks
-        // exactly as retryable as the ones above it.
+        // for the retry route to take it (short of 10m). Since backend PR #195
+        // (TAS-200) the summary says so itself — `retryable: false` — and the
+        // section draws no Retry button for it; a hand-made retry is still a
+        // `FAILED_PRECONDITION`, in the server's own words.
         //
         // Its shape is the one that produces this on a real stand: an event
         // created two days ago, requeued by somebody, picked up minutes ago and
@@ -4851,14 +5004,12 @@ export class MockTaskaStore {
   /**
    * `about` is the issue the notification names, or `null` for one that names
    * none — which leaves all three of `issueId`, `issueKey` and `projectId`
-   * `null`. Between those two full shapes there is a partial one this seed
-   * needs on its own: `{ id }` alone, which sets `issueId` and leaves
-   * `issueKey` and `projectId` null even though the issue is real. That is not
-   * invented — it is the shape `ISSUE_ATTACHMENT_ADDED` and
-   * `ISSUE_ATTACHMENT_DELETED` arrive in today, because issue-service's
-   * `PayloadSerializer` writes `issueId` for them and never calls
-   * `putIssueFields` for the other two (TAS-245). Typed to the kinds this
-   * build knows: the mock has no reason to invent a fourth shape.
+   * `null`. The seed uses only those two shapes. A third — `issueId` alone —
+   * is what an attachment notification written before backend PR #191
+   * (TAS-245) still carries on the stand, since that fix did not backfill;
+   * `notificationRoute` treats it as inert, and its own tests cover it, so the
+   * seed no longer needs a row in that shape. Typed to the kinds this build
+   * knows: the mock has no reason to invent a fourth shape.
    */
   private notification(
     notificationType: NotificationType,
@@ -5368,7 +5519,7 @@ export class MockTaskaApi implements TaskaApi {
   }
 
   async getCurrentUser(): Promise<User> {
-    return wait(this.store.currentUser());
+    return wait(this.store.currentUserProfile());
   }
 
   hasSession(): boolean {
@@ -5425,12 +5576,6 @@ export class MockTaskaApi implements TaskaApi {
   async removeProjectMember(projectId: string, userId: string): Promise<void> {
     this.store.removeProjectMember(projectId, userId);
     await wait(null);
-  }
-
-  async getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
-    void projectId;
-    void issueType;
-    return wait(this.store.getWorkflow());
   }
 
   async listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
@@ -5624,10 +5769,6 @@ export class MockTaskaApi implements TaskaApi {
   async deleteMyAvatar(): Promise<void> {
     this.store.deleteMyAvatar();
     await wait(null);
-  }
-
-  async getUserAvatarUrl(userId: string): Promise<string | null> {
-    return wait(this.store.getUserAvatarUrl(userId));
   }
 
   async listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {

@@ -507,18 +507,6 @@ const {
       if (state.membersFailure) throw state.membersFailure;
       return state.members;
     },
-    getWorkflow: async () => {
-      if (state.workflowFailure) throw state.workflowFailure;
-      return {
-        id: "workflow",
-        name: "Default",
-        version: 1,
-        createdAt: now,
-        updatedAt: now,
-        statuses: [{ id: "s1", statusKey: "TODO" as const, name: "To Do", category: "TODO" as const, sortOrder: 10 }],
-        transitions: [],
-      };
-    },
     listIssues: async () => {
       if (state.issuesFailure) throw state.issuesFailure;
       // The description is not empty: the board's own box searches descriptions

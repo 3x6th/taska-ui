@@ -20,19 +20,16 @@ describe("HybridTaskaApi", () => {
     window.localStorage.clear();
   });
 
-  it("delegates the issue list and the workflow read to live", async () => {
+  it("delegates the issue list to live", async () => {
     const live = liveApi();
     const listIssues = vi.spyOn(live, "listIssues");
-    const getWorkflow = vi.spyOn(live, "getWorkflow");
 
     const hybrid = new HybridTaskaApi(live);
     const [project] = await hybrid.listProjects();
 
     await hybrid.listIssues(project.id);
-    await hybrid.getWorkflow(project.id);
 
     expect(listIssues).toHaveBeenCalledWith(project.id, undefined);
-    expect(getWorkflow).toHaveBeenCalledWith(project.id, undefined);
   });
 
   it("delegates the board's context read to live, and asks nothing else", async () => {
@@ -590,17 +587,16 @@ describe("HybridTaskaApi", () => {
    * object store rather than to the gateway. What is pinned is that nothing is
    * added on the way through.
    */
-  it("delegates all five avatar calls untouched", async () => {
+  it("delegates all four avatar calls untouched, and the profile that carries the avatar", async () => {
     const live = liveApi();
     const create = vi.spyOn(live, "createAvatarUploadUrl");
     const put = vi.spyOn(live, "putAvatarBytes");
     const confirm = vi.spyOn(live, "confirmAvatarUpload");
     const remove = vi.spyOn(live, "deleteMyAvatar");
-    const read = vi.spyOn(live, "getUserAvatarUrl");
+    const profile = vi.spyOn(live, "getCurrentUser");
 
     const hybrid = new HybridTaskaApi(live);
     await hybrid.login({ email: "anna@example.com", password: "anything" });
-    const me = await hybrid.getCurrentUser();
 
     const file = new File([new Uint8Array(32)], "face.png", { type: "image/png" });
     const candidate = { fileName: file.name, contentType: file.type, sizeBytes: file.size };
@@ -614,12 +610,23 @@ describe("HybridTaskaApi", () => {
     const saved = await hybrid.confirmAvatarUpload(confirmInput);
     expect(confirm).toHaveBeenCalledWith(confirmInput);
 
-    await expect(hybrid.getUserAvatarUrl(me.id)).resolves.toBe(saved.downloadUrl);
-    expect(read).toHaveBeenCalledWith(me.id);
+    // `GET /users/me` carries the reader's own avatar since TAS-223, and since
+    // backend PR #193's `3bd33cac` head the flag that says whether the profile
+    // read worked — passed through as the live leg answered it.
+    await expect(hybrid.getCurrentUser()).resolves.toMatchObject({
+      avatarUrl: saved.downloadUrl,
+      avatarId: saved.id,
+      avatarUnavailable: false,
+    });
+    expect(profile).toHaveBeenCalled();
 
     await hybrid.deleteMyAvatar();
     expect(remove).toHaveBeenCalledTimes(1);
-    await expect(hybrid.getUserAvatarUrl(me.id)).resolves.toBeNull();
+    await expect(hybrid.getCurrentUser()).resolves.toMatchObject({
+      avatarUrl: null,
+      avatarId: null,
+      avatarUnavailable: false,
+    });
   });
 
   it("passes a store failure straight up rather than compensating for it", async () => {
