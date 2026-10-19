@@ -3,8 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminRow, AdminRowsQuery } from "../../domain/types";
-import type { TaskaApi } from "../../api/TaskaApi";
-import { MockTaskaApi } from "../../api/mock/MockTaskaApi";
+import type { InviteUserInput, TaskaApi } from "../../api/TaskaApi";
+import { MOCK_INVITE_TOKENS, MockTaskaApi } from "../../api/mock/MockTaskaApi";
 import { ApiError } from "../../api/rest/RestTaskaApi";
 import { AdminUsersSection } from "./AdminUsersSection";
 
@@ -53,6 +53,8 @@ const { fakeApi, useMock, setExtraRows, setWriteFailure, setRowsFailure, holdRow
       state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.unblockUser(userId, reason),
     resetCredentialLockout: (userId: string, reason: string) =>
       state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.resetCredentialLockout(userId, reason),
+    inviteUser: (input: InviteUserInput) =>
+      state.writeFailure ? Promise.reject(state.writeFailure) : state.mock!.inviteUser(input),
   };
 
   return {
@@ -124,7 +126,7 @@ describe("the admin Users section", () => {
     return String(rows.find((row) => row.login === login)!.id);
   };
 
-  it("names its columns and offers exactly one action per account", async () => {
+  it("names its columns and offers the actions each status allows", async () => {
     renderSection();
 
     expect(await screen.findByRole("columnheader", { name: "person" })).toBeVisible();
@@ -140,7 +142,12 @@ describe("the admin Users section", () => {
     expect(within(rowFor("Anna Ivanova")).getByText("Active")).toBeVisible();
     expect(within(rowFor("Anna Ivanova")).getByRole("button", { name: "Block Anna Ivanova" })).toBeVisible();
     expect(within(rowFor("Leo Fischer")).getByText("Invited")).toBeVisible();
-    expect(within(rowFor("Leo Fischer")).getByRole("button", { name: "Block Leo Fischer" })).toBeVisible();
+    // INVITED carries two (§5.8): Resend invite, then Block — rightmost, so the
+    // column's edge lines up with every other row's.
+    expect(within(rowFor("Leo Fischer")).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Resend invite to Leo Fischer",
+      "Block Leo Fischer",
+    ]);
     expect(within(rowFor("Nina Kowal")).getByText("Blocked")).toBeVisible();
     expect(within(rowFor("Nina Kowal")).getByRole("button", { name: "Unblock Nina Kowal" })).toBeVisible();
     // The role reads as a word rather than as the wire value.
@@ -259,7 +266,9 @@ describe("the admin Users section", () => {
     expect(row).toHaveClass("is-changed");
     // There is no toast in this product (§5.6), so the only thing a screen
     // reader would otherwise get is silence.
-    expect(screen.getByRole("status")).toHaveTextContent("Nina Kowal is now active.");
+    // One of two standing regions since TAS-204: this one, and the line that
+    // reports invitations.
+    expect(screen.getByText("Nina Kowal is now active.")).toHaveAttribute("role", "status");
     // And the row now offers the other action — with focus on it, because the
     // dialog that had it is gone. jsdom has no `:focus-visible`, so the ring
     // itself is a browser check; this is the half that can be asserted here.
@@ -291,7 +300,9 @@ describe("the admin Users section", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     const after = rowFor("Omar Haddad");
     expect(within(after).getByText("Active")).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("Omar Haddad is now active.");
+    // One of two standing regions since TAS-204: this one, and the line that
+    // reports invitations.
+    expect(screen.getByText("Omar Haddad is now active.")).toHaveAttribute("role", "status");
     // And the row now offers what an active account offers.
     expect(within(after).getByRole("button", { name: "Block Omar Haddad" })).toBeVisible();
   });
@@ -460,5 +471,169 @@ describe("the admin Users section", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/refused this/i);
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Inviting (TAS-204, DESIGN.md §5.8), against the real mock — whose answers are
+ * `AdminInviteUserServiceImpl`'s: 201 for a new address, 200 with or without a
+ * new link for an invited one, 409 for an account, 429 inside a minute.
+ */
+describe("the admin Users section, inviting", () => {
+  let mock: MockTaskaApi;
+
+  beforeEach(async () => {
+    window.localStorage.clear();
+    mock = new MockTaskaApi();
+    await mock.login({ email: "mark@example.com", password: "mock-accepts-anything" });
+    useMock(mock);
+  });
+
+  const UNTIL = /(it|the link) works until [A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2} UTC\.$/;
+  const statusLine = () => document.querySelector(".admin-users-status")!;
+
+  async function openInvite() {
+    renderSection();
+    const trigger = await screen.findByRole("button", { name: "Invite user" });
+    fireEvent.click(trigger);
+    return { trigger, dialog: await screen.findByRole("dialog", { name: "Invite user" }) };
+  }
+
+  it("keeps an empty address off the wire, and says why under the field", async () => {
+    const { dialog } = await openInvite();
+    const send = within(dialog).getByRole("button", { name: "Send invitation" });
+
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).toHaveAccessibleDescription("Enter an email address.");
+    expect(within(dialog).getByLabelText("Email")).toHaveFocus();
+    expect(within(dialog).getByText(/doesn’t add them to any project/)).toBeVisible();
+  });
+
+  it("invites a new address: the dialog closes, focus returns, the line says queued with the deadline in UTC", async () => {
+    const { trigger, dialog } = await openInvite();
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "  New.Person@Example.com " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(statusLine()).toHaveAttribute("role", "status");
+    expect(statusLine()).toHaveTextContent(/^new\.person@example\.com is invited\. The email is queued for sending;/);
+    expect(statusLine()).toHaveTextContent(UNTIL);
+    expect(statusLine().textContent).not.toMatch(/\b(sent|delivered)\b/);
+    expect(trigger).toHaveFocus();
+    // The list is read again, and the new account is in it, marked.
+    const row = await waitFor(() => rowFor("new.person"));
+    expect(row).toHaveClass("is-changed");
+  });
+
+  it("keeps the dialog for an invitation whose link still works, and sends a new one only when asked", async () => {
+    const { dialog } = await openInvite();
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "leo@example.com" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+
+    const standing = await within(dialog).findByText(/^leo@example\.com is already invited and their link still works until/);
+    expect(standing).toHaveAttribute("role", "status");
+    expect(standing).toHaveTextContent(/so no email was sent\. If they lost it, send a new link — the old one will stop working\.$/);
+    expect(within(dialog).queryByRole("alert")).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send new link" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(statusLine()).toHaveTextContent(/^A new invitation link for leo@example\.com is queued;/);
+    // Leo's emailed link is the one the new one replaced.
+    await expect(mock.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1" })).rejects.toMatchObject({
+      code: "UNAUTHENTICATED",
+    });
+  });
+
+  it("says an expired invitation was re-issued", async () => {
+    const { dialog } = await openInvite();
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "ivy@example.com" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(statusLine()).toHaveTextContent(/^ivy@example\.com was already invited\. Their link had expired, so a new one is queued;/);
+  });
+
+  it("refuses an address that already has an account, with the server's words under the sentence", async () => {
+    const { dialog } = await openInvite();
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "anna@example.com" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "This email already belongs to a Taska account, so there is nothing to invite.",
+    );
+    expect(within(dialog).getByText("An account with this email already exists")).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "Invite user" })).toBeVisible();
+  });
+
+  it("states the 429's wait from details, with no countdown", async () => {
+    const { dialog } = await openInvite();
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "fresh@example.com" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Invite user" }));
+    const again = await screen.findByRole("dialog", { name: "Invite user" });
+    fireEvent.change(within(again).getByLabelText("Email"), { target: { value: "fresh@example.com" } });
+    fireEvent.click(within(again).getByRole("button", { name: "Send invitation" }));
+    fireEvent.click(await within(again).findByRole("button", { name: "Send new link" }));
+
+    expect(await within(again).findByRole("alert")).toHaveTextContent(
+      /^An invitation to fresh@example\.com was sent less than a minute ago\. Try again in \d+ seconds\.$/,
+    );
+  });
+
+  it("prints a 400 in the server's own words and leaves the field as typed", async () => {
+    const { dialog } = await openInvite();
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "not-an-address" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "A valid email address is required (maximum 320 characters)",
+    );
+    expect(within(dialog).getByLabelText("Email")).toHaveValue("not-an-address");
+  });
+
+  it("asks before resending from a row, then says the new link is queued and gives focus back to the row", async () => {
+    renderSection();
+    const resend = await screen.findByRole("button", { name: "Resend invite to Leo Fischer" });
+    fireEvent.click(resend);
+    const dialog = await screen.findByRole("dialog", { name: "Resend invitation" });
+
+    expect(within(dialog).getByText("A new link is emailed to leo@example.com. The link sent earlier stops working.")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send new link" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(statusLine()).toHaveTextContent(/^A new invitation link for Leo Fischer is queued;/);
+    expect(statusLine()).toHaveTextContent(UNTIL);
+    expect(resend).toHaveFocus();
+    expect(rowFor("Leo Fischer")).toHaveClass("is-changed");
+  });
+
+  it("says there is nothing to resend to somebody who has set a password since, and reads the list again", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Resend invite to Leo Fischer" }));
+    const dialog = await screen.findByRole("dialog", { name: "Resend invitation" });
+    // Leo activates behind the section's back, between the list and the press.
+    await mock.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send new link" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Leo Fischer has already set a password, so there is nothing to resend.",
+    );
+    await waitFor(() =>
+      expect(within(rowFor("Leo Fischer")).queryByRole("button", { name: "Resend invite to Leo Fischer" })).toBeNull(),
+    );
+  });
+
+  it("keeps the dialog open and says so in the taxonomy's words when the API cannot be reached", async () => {
+    setWriteFailure(new TypeError("Failed to fetch"));
+    const { dialog } = await openInvite();
+    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "someone@example.com" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/^The admin API could not be reached/);
   });
 });

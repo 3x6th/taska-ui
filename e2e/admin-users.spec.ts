@@ -104,3 +104,101 @@ test("refuses to block the last active global admin and keeps the dialog open", 
   await expect(dialog).toBeVisible();
   await expect(row.getByText("Active")).toBeVisible();
 });
+
+// Inviting (TAS-204, DESIGN.md §5.8). The mock answers as
+// `AdminInviteUserServiceImpl` does: 201 for a new address, 200 for an invited
+// one — nothing sent while Leo's link still works, a new link for Ivy, whose
+// link expired — 409 for an account, and 429 inside a minute of the last link.
+// Every outcome says "queued", never "sent" or "delivered".
+
+const statusLine = (page: Page) => page.locator(".admin-users-status");
+
+async function invite(page: Page, email: string) {
+  await page.getByRole("button", { name: "Invite user" }).click();
+  const dialog = page.getByRole("dialog", { name: "Invite user" });
+  await dialog.getByLabel("Email").fill(email);
+  await dialog.getByRole("button", { name: "Send invitation" }).click();
+  return dialog;
+}
+
+test("invites a new address: queued, with the link's deadline in UTC, and the new row in the list", async ({ page }) => {
+  await openUsers(page);
+  const trigger = page.getByRole("button", { name: "Invite user" });
+
+  const dialog = await invite(page, "zoe@example.com");
+
+  await expect(dialog).toHaveCount(0);
+  await expect(statusLine(page)).toHaveText(
+    /^zoe@example\.com is invited\. The email is queued for sending; the link works until [A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2} UTC\.$/,
+  );
+  await expect(trigger).toBeFocused();
+  const row = page.getByRole("row").filter({ hasText: "zoe@example.com" });
+  // Exact: the login auth-service gives an invited account is `invited_<uuid>`.
+  await expect(row.getByText("Invited", { exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: "Resend invite to zoe" })).toBeVisible();
+});
+
+test("an invitation whose link still works sends nothing until a new link is asked for", async ({ page }) => {
+  await openUsers(page);
+
+  const dialog = await invite(page, "leo@example.com");
+
+  await expect(dialog.getByText(/^leo@example\.com is already invited and their link still works until/)).toBeVisible();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Send new link" }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(statusLine(page)).toHaveText(/^A new invitation link for leo@example\.com is queued; it works until/);
+});
+
+test("an expired invitation is re-issued; an account is refused with 409; a second link inside a minute with 429", async ({
+  page,
+}) => {
+  await openUsers(page);
+
+  await invite(page, "ivy@example.com");
+  await expect(statusLine(page)).toHaveText(/^ivy@example\.com was already invited\. Their link had expired, so a new one is queued;/);
+
+  const taken = await invite(page, "anna@example.com");
+  await expect(taken.getByRole("alert")).toHaveText(
+    "This email already belongs to a Taska account, so there is nothing to invite.",
+  );
+  await expect(taken.getByText("An account with this email already exists")).toBeVisible();
+  await taken.getByRole("button", { name: "Cancel" }).click();
+
+  // Ivy's new link was made a moment ago: asking for another is too soon.
+  const again = await invite(page, "ivy@example.com");
+  await again.getByRole("button", { name: "Send new link" }).click();
+  await expect(again.getByRole("alert")).toHaveText(
+    /^An invitation to ivy@example\.com was sent less than a minute ago\. Try again in \d+ seconds?\.$/,
+  );
+  await expect(again).toBeVisible();
+});
+
+test("resends from an INVITED row only after asking, and the row's two buttons keep Block rightmost", async ({
+  page,
+}) => {
+  await openUsers(page);
+  const row = page.getByRole("row").filter({ hasText: "Leo Fischer" });
+  const buttons = row.getByRole("button");
+  await expect(buttons).toHaveCount(2);
+  await expect(buttons.nth(0)).toHaveAccessibleName("Resend invite to Leo Fischer");
+  await expect(buttons.nth(1)).toHaveAccessibleName("Block Leo Fischer");
+
+  const resend = row.getByRole("button", { name: "Resend invite to Leo Fischer" });
+  await resend.click();
+  const dialog = page.getByRole("dialog", { name: "Resend invitation" });
+  await expect(dialog.getByText("A new link is emailed to leo@example.com. The link sent earlier stops working.")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+
+  // Cancel sends nothing and hands focus back.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(resend).toBeFocused();
+
+  await resend.click();
+  await dialog.getByRole("button", { name: "Send new link" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(statusLine(page)).toHaveText(/^A new invitation link for Leo Fischer is queued; it works until/);
+  await expect(resend).toBeFocused();
+});

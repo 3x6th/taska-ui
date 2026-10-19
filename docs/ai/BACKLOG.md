@@ -2660,13 +2660,14 @@ is what recurs.
 
 ### Left by TAS-158 (project members dialog, 2026-09-17)
 
-- **Nobody can see their own user ID anywhere in the product** (`builder`,
+- ~~**Nobody can see their own user ID anywhere in the product** (`builder`,
   TAS-158). Adding a member takes an exact ID until TAS-204 brings search, and
   today only a `GLOBAL_ADMIN` can find an ID (Administration → Data →
   auth → users). A project ADMIN who is not a global admin has to be handed the
   ID by somebody. Cheap fix: "User ID" with a copy button in the profile menu
   (§4.16). It is outside TAS-158's scope, and it matters for exactly as long as
-  the ID field does.
+  the ID field does.~~ Closed by TAS-297 (2026-10-19): the members dialog adds
+  people by searching name or email (`GET /users`); there is no ID field.
 - **Removing a member leaves their assignments and watcher subscriptions**
   (`builder`, `api-contract-guard`, TAS-158). project-service writes
   `MemberRemoved`, and only notification-service consumes it. The board then

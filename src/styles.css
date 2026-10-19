@@ -532,11 +532,58 @@ textarea:disabled {
   right: 20px;
 }
 
+/* The line under the submit button (DESIGN.md §4.27). `--fg-2`, not `--fg-3`:
+   it is the one stated way out of a forgotten password or a dead link, not
+   meta, and `--fg-3` measured 3.14 light / 3.05 dark on `--surface` against
+   7.26 / 6.75 for this. A `<p>` now, so its margins are stated. */
 .auth-hint {
-  margin-top: 2px;
-  color: var(--fg-3);
+  margin: 2px 0 0;
+  color: var(--fg-2);
   font-size: 11.5px;
   text-align: center;
+}
+
+/* What a field expects, under it and tied to it with `aria-describedby` — on
+   the login card the password policy and where a token comes from (§4.27), in
+   the invitation dialog what the address and the name are for (§5.8). Not
+   meta, so `--fg-2`, and pulled up under its field: `.field`'s gap is 6, which
+   is a label's distance, not a hint's. */
+.auth-field-hint,
+.admin-field-hint {
+  margin: -2px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+/* New password with its show-password toggle inside the box (§4.27): the
+   input keeps 40 on the right for the 28 button, which sits 5 in from each
+   edge it touches — (38 − 28) / 2 vertically. Ghost, hover and ring are
+   `.icon-button`'s own. */
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 40px;
+}
+
+/* Through the wrapper: `.icon-button`, declared further down at the same
+   weight, would otherwise put it back in the flow at 32. */
+.password-field .password-toggle {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+/* The field takes the refusal's mark when the server named the password
+   (§4.27). The edge only: the sentence under the button says what is wrong. */
+.field input[aria-invalid="true"] {
+  border-color: var(--danger);
 }
 
 .auth-footnote {
@@ -791,6 +838,7 @@ textarea:disabled {
 
 .field span,
 .field > label,
+.member-search-label,
 .description-field span,
 .form-two label > span,
 .planning-field > label {
@@ -801,14 +849,16 @@ textarea:disabled {
 
 .field input,
 .field textarea,
-.description-field textarea {
+.description-field textarea,
+.member-search-input {
   width: 100%;
   border: 1px solid var(--border-strong);
   border-radius: 9px;
   background: var(--surface);
 }
 
-.field input {
+.field input,
+.member-search-input {
   height: 38px;
   padding: 0 12px;
 }
@@ -822,6 +872,7 @@ textarea:disabled {
 .field input:focus,
 .field textarea:focus,
 .description-field textarea:focus,
+.member-search-input:focus,
 .summary-textarea:focus {
   border-color: var(--accent);
   outline: 0;
@@ -857,6 +908,7 @@ h1 {
 }
 
 .invite-note {
+  margin: 0;
   border-radius: 9px;
   padding: 9px 11px;
   background: var(--surface-2);
@@ -3353,6 +3405,54 @@ p.user-profile-photo-note:not(.is-error) {
 .admin-users-table .admin-users-action-cell {
   width: 96px;
   text-align: right;
+}
+
+/* An INVITED row carries two buttons — Resend invite, then Block — and the cell
+   grows to hold them on one line (≈151 against 96, §5.8) rather than stacking
+   them: Block stays rightmost, so the column's right edge lines up in every
+   row. On 390 the wider cell goes past the edge with the rest of the column,
+   which the fade below already says. */
+.admin-row-actions {
+  display: inline-flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* "Invite user" and the line under it stop where the table stops (§5.8), so
+   the button sits over the table's right edge rather than the screen's. */
+.admin-users-plane .admin-plane-head {
+  max-width: 860px;
+}
+
+.admin-users-invite:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The last invitation's outcome (§5.8): one standing line, `--fg-2` on `--bg`
+   (6.73 / 7.35; `--fg-3` would be 2.91 in light), heightless until it says
+   something. Not a toast — this product has none (§5.6). */
+.admin-users-status {
+  max-width: 860px;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.admin-users-status.has-text {
+  margin-bottom: 9px;
+}
+
+/* The one 200 that sends nothing (§5.8): said in the dialog's body in `--fg`,
+   with no `--danger` stripe, because nothing was refused. */
+.admin-invite-standing {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.55;
+  text-wrap: pretty;
 }
 
 /* §4.1's secondary button, sized for §5.8's density — *not* a second one built
@@ -7215,13 +7315,13 @@ button.attachment-open:hover:not(:disabled) {
   padding-bottom: 16px;
 }
 
-/* The line under the id field, in both of its jobs: at rest it is the only
-   account of why a person is added by an id rather than by name, and once
-   something is typed it is the only account of why Add is off. Neither is meta,
-   so `--fg-2` rather than `.field-note`'s `--fg-3` — the argument
+/* The line above Add, in all of its jobs: how to find somebody, why the
+   active result cannot be chosen, and who Add will send as what. None of it is
+   meta, so `--fg-2` rather than `.field-note`'s `--fg-3` — the argument
    `.attachment-hint` and `.admin-write-hint` already make — and one class for
-   both, so the slot does not change tone as the reader types. The read-only
-   note is the same sentence-shaped explanation for a reader with no controls. */
+   all of them, so the slot does not change tone as the reader moves. The
+   read-only note is the same sentence-shaped explanation for a reader with no
+   controls. */
 .member-add-hint,
 .member-readonly-note {
   margin: 0;
@@ -7273,6 +7373,130 @@ button.attachment-open:hover:not(:disabled) {
    which would flash on every role change for the ~200ms it takes. */
 .member-role-select[aria-disabled="true"] {
   cursor: progress;
+}
+
+/* The people search (§4.22, TAS-297). A label, the field or the person chosen
+   in its place, and the results under them in the dialog's own flow — no gap
+   between the three, because the results box is mounted while closed (its live
+   region must not arrive with its words) and a gap would hold its place. */
+.member-search-label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+/* The choice in the field's place: the field's box and ground, with the person
+   in it and the way back at the right — 6 in from the edge, as the 28 button
+   leaves (42 − 28) / 2 above and below it. */
+.member-chosen {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 6px 6px 6px 10px;
+  background: var(--surface);
+}
+
+.member-chosen-clear {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+/* Heightless while closed: no border, no padding, and a state line with no
+   words and no padding. */
+.member-search-state {
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.member-search.is-open {
+  max-height: 242px;
+  margin-top: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.member-search.is-open .member-search-state {
+  padding: 11px 12px;
+}
+
+/* The way out under "No one matches", read straight after it. */
+.member-search.is-open .member-search-way {
+  padding-top: 0;
+}
+
+/* A failed search is the dialog's refusal recipe (`.member-note.is-error`):
+   the `--danger` stripe, the sentence in `--fg`, the server's words and the
+   request id under it — and never "No one matches" (§4.22). */
+.member-search.is-open.is-error {
+  border-left: 2px solid var(--danger);
+  padding: 7px 11px;
+}
+
+.member-search.is-open.is-error .member-search-state {
+  padding: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+.member-search-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 44 at every width, the §7 floor, so no row of this list needs the pseudo-
+   element the compact controls around it are still waiting for. */
+.member-search-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.member-search-option[aria-disabled="true"] {
+  cursor: default;
+}
+
+/* §4.20's selection — `--surface-3` and the accent's inset ring — because
+   `aria-activedescendant` moves no focus and this is the whole of the keyboard
+   indicator. Name 14.77 / 14.52, address 6.00 / 6.23, ring 5.20 / 4.41. */
+.member-search-option.is-active {
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* The rows on the box's own corners take its inner curve, so the scroller's
+   clip has nothing of the ring to cut (the argument `.global-search-option`
+   records). */
+.member-search-list > .member-search-option:first-child {
+  border-top-left-radius: calc(9px - 1px);
+  border-top-right-radius: calc(9px - 1px);
+}
+
+.member-search-list > .member-search-option:last-child {
+  border-bottom-left-radius: calc(9px - 1px);
+  border-bottom-right-radius: calc(9px - 1px);
+}
+
+.member-search-note {
+  flex: none;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.member-search-more {
+  align-self: flex-start;
 }
 
 /* Add is `aria-disabled` rather than `disabled` for the §4.21 reason, and gets
@@ -7374,10 +7598,6 @@ button.attachment-open:hover:not(:disabled) {
   line-height: 1.4;
   overflow-wrap: anywhere;
   user-select: text;
-}
-
-.member-row.is-pending .member-id {
-  color: var(--fg);
 }
 
 .member-role-label {

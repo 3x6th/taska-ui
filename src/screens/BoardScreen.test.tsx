@@ -168,7 +168,7 @@ const {
     /** A workflow of its own for one type, where a test needs types to differ (TAS-173). */
     workflowsByType: Record<string, NonNullable<typeof state.contextWorkflowParts>>;
     /** What `GET /meta` answers (TAS-173): the dictionaries, or a failure. */
-    meta: Record<string, { code: string; name: string }[] | null> | Error;
+    meta: Record<string, { code: string; name: string; selectable?: boolean }[] | null> | Error;
     metaReads: number;
     /**
      * Issues beside the seeded one, carrying whatever type, status and
@@ -4998,6 +4998,41 @@ describe("people and link targets from the issue read", () => {
     await waitFor(() =>
       expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${OTHER_PROJECT_ID}/issues/issue-far`),
     );
+  });
+
+  // Backend #201: a row names its relation from `linkViewTypes`, whose codes
+  // include the inverses, and never from `linkTypes` — where an inverse is not
+  // listed and its outward relation's name is the nearest thing to borrow.
+  it("names a relation from /meta's view types, and never lends an inverse the outward name", async () => {
+    const link = (id: string, viewLinkType: string, issueKey: string) => ({
+      id,
+      projectId: PROJECT_ID,
+      sourceIssueId: "issue-1",
+      targetIssueId: `issue-${id}`,
+      viewLinkType,
+      createdBy: "user-anna",
+      createdAt: "2026-09-01T09:10:00Z",
+      target: { id: `issue-${id}`, issueKey, summary: "Elsewhere", projectId: PROJECT_ID, statusKey: "TODO" },
+    });
+    seedLinks([link("a", "SUPERSEDES", "TAS-301"), link("b", "IS_SUPERSEDED_BY", "TAS-302")]);
+    seedMeta({
+      issueTypes: null,
+      priorities: null,
+      linkTypes: [{ code: "SUPERSEDES", name: "Supersedes (request)", selectable: true }],
+      linkViewTypes: [{ code: "SUPERSEDES", name: "Supersedes", selectable: true }],
+      notificationTypes: null,
+      userStatuses: null,
+    });
+    renderBoard(ISSUE_PATH);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const rowFor = async (key: string) =>
+      (await within(panel).findAllByRole("button", { name: new RegExp(key) })).find((button) =>
+        button.classList.contains("issue-link-open"),
+      ) as HTMLElement;
+    expect((await rowFor("TAS-301")).querySelector(".issue-link-relation")).toHaveTextContent(/^Supersedes$/);
+    // Not listed as a view type: printed as the code, not as "Supersedes (request)".
+    expect((await rowFor("TAS-302")).querySelector(".issue-link-relation")).toHaveTextContent(/^IS_SUPERSEDED_BY$/);
   });
 });
 

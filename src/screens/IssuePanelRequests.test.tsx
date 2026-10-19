@@ -80,7 +80,9 @@ function respond(url: string, init?: RequestInit): unknown {
     return { issue, history: [] };
   }
   if (path === "/meta") {
-    // The stand's own answer (backend TAS-217): every name in Russian.
+    // The stand's answer before backend #201 (TAS-264): every name in
+    // Russian. Kept, because the Cyrillic check is permanent (DESIGN.md §6)
+    // and this is what it is for.
     return {
       issueTypes: [{ code: "TASK", name: "Задача" }, { code: "BUG", name: "Ошибка" }, { code: "STORY", name: "История" }],
       priorities: [{ code: "LOW", name: "Низкий" }, { code: "MEDIUM", name: "Средний" }, { code: "HIGH", name: "Высокий" }],

@@ -130,8 +130,8 @@ type NamedStatus = { statusKey: string; name: string };
 export const statusLabel = (key: string | null | undefined, statuses?: readonly NamedStatus[] | null) => {
   if (typeof key !== "string" || key.trim() === "") return "No status";
   const named = statuses?.find((status) => status.statusKey === key);
-  // Stays when TAS-264 lands: a workflow name is project configuration, not a
-  // `/meta` name, and the UI is English (DESIGN.md §6).
+  // A workflow name is project configuration, not a `/meta` name, so it can be
+  // in any language an admin writes; the UI is English (DESIGN.md §6).
   if (named && typeof named.name === "string" && isEnglishName(named.name)) return named.name.trim();
   return enumLabel(key, statusLabels, null, "No status");
 };
@@ -186,9 +186,15 @@ const issueLinkTypeLabels: Record<string, string> = {
  * follows the one rule of `enumLabel` — the `/meta` name for exactly that code
  * when it is English, the code verbatim otherwise (TAS-173: `SUPERSEDES` stays
  * `SUPERSEDES`, where it used to be humanised to "Supersedes" — a word the
- * server never sent). `/meta` lists only the request codes, so an inverse view
- * (`IS_SUPERSEDED_BY`) never borrows the name of the outward one. An unstated
- * relation reads "Linked", which claims only what the response proves.
+ * server never sent). An unstated relation reads "Linked", which claims only
+ * what the response proves.
+ *
+ * Which dictionary is passed depends on which side of the asymmetry is being
+ * named. A link *row* names a `viewLinkType` and passes `linkViewTypes`
+ * (backend #201), whose stripped codes include the inverses — never
+ * `linkTypes`, where an inverse (`IS_SUPERSEDED_BY`) is not listed and the
+ * outward relation's name would be the nearest thing to borrow. The *picker*
+ * names request codes and passes `linkTypes`.
  */
 export const issueLinkTypeLabel = (viewLinkType: string, served?: readonly DictionaryEntry[] | null) => {
   const value = viewLinkType.trim();

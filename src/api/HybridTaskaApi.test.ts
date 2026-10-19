@@ -44,6 +44,25 @@ describe("HybridTaskaApi", () => {
     await expect(hybrid.getMeta()).rejects.toThrow("Internal error");
   });
 
+  it("delegates the people search and the invitation to live, answer and rejection alike (TAS-204)", async () => {
+    const live = liveApi();
+    const searchUsers = vi.spyOn(live, "searchUsers");
+    const inviteUser = vi.spyOn(live, "inviteUser");
+    const hybrid = new HybridTaskaApi(live);
+
+    await expect(hybrid.searchUsers({ query: "fisch", pageSize: 5 })).resolves.toMatchObject({
+      items: [{ email: "leo@example.com" }],
+    });
+    expect(searchUsers).toHaveBeenCalledWith({ query: "fisch", pageSize: 5 });
+
+    // Anna is not a global admin, so the mock refuses as the gateway would,
+    // and the refusal comes back as it was produced.
+    await expect(hybrid.inviteUser({ email: "x@example.com", resend: true })).rejects.toMatchObject({
+      code: "PERMISSION_DENIED",
+    });
+    expect(inviteUser).toHaveBeenCalledWith({ email: "x@example.com", resend: true });
+  });
+
   it("delegates the board's context read to live, and asks nothing else", async () => {
     const live = liveApi();
     const getProjectContext = vi.spyOn(live, "getProjectContext");

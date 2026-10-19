@@ -10,6 +10,12 @@ export interface LoginRedirectState {
   from?: string;
   /** True when the user did not leave on their own — the session was rejected. */
   expired?: boolean;
+  /**
+   * True when an invitation was just activated (DESIGN.md §4.27): the account
+   * has a password now and nobody is signed in, so the form says so and waits
+   * for the email.
+   */
+  activated?: boolean;
 }
 
 /** Where a signed-in user goes when nothing more specific was requested. */

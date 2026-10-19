@@ -1318,8 +1318,9 @@ TAS-204); добавления по id нет — оно и создавало �
   Users.» (ссылка на `/admin/users`, рецепт `.admin-note-link`), иначе и при неизвестной —
   «People need a Taska account first — a global admin can invite them.»; отказ — рецепт
   отказов диалога: «People search could not be run.» + слова сервера + `X-Request-Id`,
-  никогда не «No one matches». Число — только для читалки: «{n} people.» /
-  «Showing the first {n}.»
+  никогда не «No one matches». Число — только для читалки: «{n} people.» («1 person.») /
+  «Showing the first {n}.» Строка под полем для строки «Being added»: «{Name} is being
+  added to this project.»
 - **Строка результата** (`role="option"`): `min-height:44` (пол §7 на любой ширине),
   padding 6 10, gap 8: аватар 24 (§4.4; `avatarUrl` каталога поверх цвета по id, `null` —
   инициалы) · имя 12.5/550 `--fg` над почтой 11 `--fg-2`, многоточие, полное в `title` ·
@@ -1561,7 +1562,8 @@ navigates the tab.
   плейсхолдера-образца; под ним 11.5 `--fg-2`: «Open the link in your invitation email —
   it fills this in.» Вставленная ссылка целиком принимается: значение, разбираемое как URL
   с `token` (в query или в query hash), отдаёт его; иначе сервер ответил бы «Invite token
-  is too long» — про формат, а не про ссылку.
+  is too long» — про формат, а не про ссылку. `.invite-note` «Choose a password to activate
+  your Taska account.» — в обоих состояниях, с токеном и без.
 - **New password** — без плейсхолдера; под полем 11.5 `--fg-2`, `aria-describedby`:
   «At least 8 characters, with an uppercase letter, a digit and a symbol.» Число — политика
   стенда по умолчанию; при отказе прав сервер, его фраза печатается дословно. Справа в поле —
@@ -2591,7 +2593,7 @@ history: прямая ссылка и перезагрузка обязаны д
   `maxLength 128`, под ним 11.5 `--fg-2`: «Used only for a new account. Left empty, the part
   of the email before @ is used.» Футер: Cancel и «Send invitation». Пустая почта до
   провода не доходит: primary `aria-disabled`, под полем «Enter an email address.»
-  (`aria-describedby` поля и кнопки). `Esc` — отмена, `Cmd/Ctrl+Enter` — отправка, слушатели
+  (`aria-describedby` поля и кнопки); строка уходит, как только в поле что-то есть. `Esc` — отмена, `Cmd/Ctrl+Enter` — отправка, слушатели
   в самой модалке. Без оптимизма: подписи не меняются, в полёте — `aria-disabled`.
 - **Исходы.** Слово — «queued», никогда «sent» или «delivered»: `deliveryQueued` — запись в
   надёжную очередь, не подтверждение SMTP. Срок — `expiresAt` как `MMM d, HH:mm` + « UTC».
@@ -2604,7 +2606,9 @@ history: прямая ссылка и перезагрузка обязаны д
     `--danger`-полосы (не отказ): «{email} is already invited and their link still works
     until {expiresAt} UTC, so no email was sent. If they lost it, send a new link — the old
     one will stop working.» Primary — «Send new link» с `resend: true`; правка почты
-    возвращает обычное состояние.
+    возвращает обычное состояние. Успех «Send new link» из модалки — статус «A new
+    invitation link for {email} is queued; it works until {expiresAt} UTC.» (фраза
+    «their link had expired» здесь была бы неправдой).
   - 409 — остаётся, `ErrorNote`: «This email already belongs to a Taska account, so there is
     nothing to invite.» + слова сервера + id.
   - 429 — остаётся: «An invitation to {email} was sent less than a minute ago. Try again in

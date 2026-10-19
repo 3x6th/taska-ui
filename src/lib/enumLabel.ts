@@ -10,26 +10,24 @@ import type { DictionaryEntry } from "../domain/types";
 export type KnownLabels = Readonly<Partial<Record<string, string>>>;
 
 /**
- * Whether a name from `GET /meta` may be printed in this English UI. The stand
- * names every value in Russian (backend `MetaServiceImpl`, TAS-217), and a
- * Russian word in the middle of an English screen reads as a fault rather than
- * as a label, so such a name is passed over and the code is printed as it came.
+ * Whether a name may be printed in this English UI: not blank, and no Cyrillic
+ * in it. A Russian word in the middle of an English screen reads as a fault
+ * rather than as a label, so such a name is passed over and the code is printed
+ * as it came.
  *
- * Removal, of one use only: backend TAS-264 (`/meta` names in English). Once it
- * is deployed and probed on the stand, the check in `servedName` below goes and
- * any non-blank `/meta` name is used. The other use stays: `statusLabel`
- * (src/lib/format.ts) reads a *workflow's* status name through this, and that
- * name is project configuration an admin may write in any language — the
- * English-UI rule of DESIGN.md §6, not a `/meta` gap TAS-264 closes.
+ * **Permanent** (DESIGN.md §6, the owner's ruling of 2026-10-19). `/meta` has
+ * named every value in English since backend #201 (TAS-264), so for its names
+ * the check now simply passes; it stays as the guard that keeps the UI English
+ * if a Russian name is ever served again. Its other use was never about
+ * `/meta`: `statusLabel` (src/lib/format.ts) reads a *workflow's* status name
+ * through this, and that name is project configuration an admin may write in
+ * any language.
  */
 export function isEnglishName(name: string): boolean {
   return name.trim() !== "" && !/\p{Script=Cyrillic}/u.test(name);
 }
 
-/**
- * The served name for exactly this code, when there is one this UI may print.
- * The `isEnglishName` check here is the one TAS-264 removes.
- */
+/** The served name for exactly this code, when there is one this UI may print. */
 function servedName(code: string, served: readonly DictionaryEntry[] | null | undefined): string | null {
   const entry = served?.find((item) => item.code === code);
   return entry && isEnglishName(entry.name) ? entry.name.trim() : null;
@@ -76,25 +74,22 @@ export function enumLabelInSentence(
 }
 
 /**
- * The proto-style placeholders a dictionary may list as ordinary entries —
- * backend PR #200 added `UNSPECIFIED` to the user statuses and `UNKNOWN` to the
- * notification types, and the stand lists both (probed 2026-10-19). They are names for "not stated" and "not recognised",
- * never a value anybody may choose, so no picker offers one.
- */
-const PLACEHOLDER_CODES: readonly string[] = ["UNSPECIFIED", "UNKNOWN", "UNRECOGNIZED"];
-
-/**
  * The values a picker offers (art-director's ruling 5, TAS-173). With a served
  * dictionary: the codes this build knows first, in the build's own order, then
  * the ones it does not, in the order the server listed them — so `/meta` can
  * only add segments at the end and a known value never moves. A known code the
- * dictionary leaves out leaves the set, and a placeholder is never in it. With
- * no dictionary — still loading, failed, or answered without this one — the
- * build's own set, at once, with no notice (D5): the picker works the way it
- * always did.
+ * dictionary leaves out leaves the set. With no dictionary — still loading,
+ * failed, or answered without this one — the build's own set, at once, with no
+ * notice (D5): the picker works the way it always did.
+ *
+ * Which served entries a picker may offer is the server's to say since backend
+ * #201: `selectable: false` marks its placeholders — `UNKNOWN`, `UNSPECIFIED`,
+ * `UNRECOGNIZED` — and is the whole of the filter. This used to be a list of
+ * those three codes kept here, which was a hard-coded enum list standing in for
+ * a fact the server now states.
  */
 export function selectableCodes(served: readonly DictionaryEntry[] | null | undefined, buildOrder: readonly string[]): string[] {
-  const listed = (served ?? []).map((entry) => entry.code).filter((code) => !PLACEHOLDER_CODES.includes(code));
+  const listed = (served ?? []).filter((entry) => entry.selectable !== false).map((entry) => entry.code);
   if (!listed.length) return [...buildOrder];
   return [...buildOrder.filter((code) => listed.includes(code)), ...listed.filter((code) => !buildOrder.includes(code))];
 }

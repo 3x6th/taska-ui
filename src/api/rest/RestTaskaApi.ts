@@ -11,12 +11,14 @@ import type {
   CreateIssueLinkInput,
   CreateProjectInput,
   CreateProjectLabelInput,
+  InviteUserInput,
   ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
   RetryableOutboxService,
   SearchIssuesParams,
+  SearchUsersParams,
   IssueWriteAnswer,
   TaskaApi,
   UpdateIssueWorklogInput,
@@ -28,15 +30,19 @@ import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
   ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
   ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
+  DIRECTORY_QUERY_MIN_CODE_POINTS,
+  DIRECTORY_QUERY_REFUSAL_MESSAGE,
   OUTBOX_RETRY_REASON_MAX_LENGTH,
   OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE,
   SEARCH_QUERY_MIN_LENGTH,
   SEARCH_QUERY_TOO_SHORT_MESSAGE,
+  directoryQueryLength,
 } from "../TaskaApi";
 import { attachmentRefusal } from "../attachments";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES, avatarRefusal } from "../avatars";
 import { IssueVersionConflictError, errorDetails, type ErrorDetails } from "../errors";
+import { toViewLinkType } from "../linkViewTypes";
 import { blankSummaryRefusal, ifMatch, issuePatchBody, issueVersionRefusal } from "../issuePatch";
 import {
   OBJECT_STORE_REJECTED_CODE,
@@ -73,6 +79,8 @@ import type {
   BoardIssue,
   DateOnly,
   DictionaryEntry,
+  DirectoryPage,
+  DirectoryUser,
   EnumDictionaries,
   GlobalRole,
   Issue,
@@ -86,6 +94,7 @@ import type {
   IssueWorklog,
   IssueDetails,
   IssueDetailsWithHistory,
+  InvitationResult,
   LinkedIssue,
   UserSummary,
   Label,
@@ -114,6 +123,16 @@ import type {
   WorkflowTransition,
   IssueHistoryEvent,
 } from "../../domain/types";
+
+// `InvitationResponseDto` (backend #204). All four are required by the contract
+// and read as `unknown` anyway, like every other body here: `inviteUser` is the
+// one place that decides what an absent field means.
+interface RestInvitation {
+  userId?: unknown;
+  status?: unknown;
+  deliveryQueued?: unknown;
+  expiresAt?: unknown;
+}
 
 // Gateway contract: RestErrorResponse is a flat { code, message, details };
 // the nested `error` shape is kept for older service responses. `details` is
@@ -892,8 +911,55 @@ export class RestTaskaApi implements TaskaApi {
       issueTypes: toDictionary(body.issueTypes),
       priorities: toDictionary(body.priorities),
       linkTypes: toDictionary(body.linkTypes),
+      // Through the same reading a link row's `viewLinkType` takes
+      // (`toViewLinkType`): the prefix comes off and the two placeholders read
+      // as `""` and are dropped, so a stripped code is looked up among stripped
+      // codes. Read raw, `ISSUE_LINK_VIEW_TYPE_BLOCKS` would never meet the
+      // `BLOCKS` a row carries.
+      linkViewTypes: toDictionary(body.linkViewTypes, toViewLinkType),
       notificationTypes: toDictionary(body.notificationTypes),
       userStatuses: toDictionary(body.userStatuses),
+    };
+  }
+
+  /**
+   * `GET /users` (backend #204) — see `TaskaApi.searchUsers`. The query is
+   * trimmed here and never sent under `DIRECTORY_QUERY_MIN_CODE_POINTS`, so
+   * neither of the server's two refusals of a short one is spent; a refusal on
+   * this side carries auth-service's own sentence, which is what the server
+   * answers for a trimmed query that short.
+   */
+  async searchUsers(params: SearchUsersParams): Promise<DirectoryPage> {
+    const query = params.query.trim();
+    if (directoryQueryLength(query) < DIRECTORY_QUERY_MIN_CODE_POINTS) {
+      throw new ApiError(DIRECTORY_QUERY_REFUSAL_MESSAGE, "INVALID_ARGUMENT", 400);
+    }
+    const search = new URLSearchParams();
+    search.set("query", query);
+    if (params.page !== undefined) search.set("page", String(params.page));
+    if (params.pageSize !== undefined) search.set("pageSize", String(params.pageSize));
+    const response = await this.request<unknown>(`/users${this.query(search)}`);
+    return toDirectoryPage(response);
+  }
+
+  /**
+   * `POST /auth/invitations` (backend #204) — see `TaskaApi.inviteUser`. The
+   * one write here whose HTTP status is part of the answer: 201 is a new
+   * account and 200 an existing invitation, and the body says neither.
+   * `displayName` and `resend` are sent only when they say something — the
+   * server's defaults are "the email's local part" and `false`.
+   */
+  async inviteUser(input: InviteUserInput): Promise<InvitationResult> {
+    const body: Record<string, unknown> = { email: input.email };
+    if (input.displayName !== undefined && input.displayName.trim() !== "") body.displayName = input.displayName;
+    if (input.resend) body.resend = true;
+    const { status, data } = await this.exchange<RestInvitation>("/auth/invitations", { method: "POST", body });
+    return {
+      userId: typeof data?.userId === "string" ? data.userId : "",
+      status: toUserStatus(data?.status),
+      deliveryQueued: data?.deliveryQueued === true,
+      expiresAt: typeof data?.expiresAt === "string" ? data.expiresAt : "",
+      created: status === 201,
     };
   }
 
@@ -1128,10 +1194,11 @@ export class RestTaskaApi implements TaskaApi {
    * refusals and the order the server checks them in.
    *
    * The id goes out as the caller gave it, once `requireMemberUserId` has
-   * accepted it. Trimming and lower-casing are the caller's job
-   * (`normalizeUserId`, src/api/members.ts): a layer that repaired its input
-   * would make a padded id succeed through here while the same body from any
-   * other client is a 400.
+   * accepted it, and is not repaired here: a layer that trimmed or lower-cased
+   * its input would make a padded id succeed through here while the same body
+   * from any other client is a 400. Since TAS-297 the members dialog sends
+   * only ids the people directory answered with, which are already in the
+   * stored form.
    */
   async addProjectMember(projectId: string, userId: string, role: ProjectRole): Promise<ProjectMemberWriteResult> {
     requireMemberUserId(userId);
@@ -2359,7 +2426,8 @@ export class RestTaskaApi implements TaskaApi {
         category: column.category,
         sortOrder: column.sortOrder,
         // Empty rather than absent is the ordinary case here: without
-        // `includeDone` the DONE column arrives with no issues at all.
+        // `includeDone` every column of the workflow's DONE category arrives
+        // with no issues at all (backend #202).
         issues: (column.issues ?? []).map((issue) => this.toBoardIssue(issue)),
       })),
     };
@@ -2599,16 +2667,15 @@ export class RestTaskaApi implements TaskaApi {
     };
   }
 
-  private async request<T>(
-    path: string,
-    options: {
-      method?: string;
-      body?: unknown;
-      skipAuth?: boolean;
-      headers?: Record<string, string>;
-    } = {},
-    isRetry = false,
-  ): Promise<T> {
+  private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    return (await this.exchange<T>(path, options)).data;
+  }
+
+  /**
+   * `request` with the HTTP status beside the body, for the one route whose
+   * status says something the body does not (`inviteUser`: 201 against 200).
+   */
+  private async exchange<T>(path: string, options: RequestOptions = {}, isRetry = false): Promise<{ status: number; data: T }> {
     // Captured before the request leaves: whatever comes back answers *this*
     // session, not whichever one is current when the response finally lands.
     const authVersion = this.authVersion;
@@ -2629,13 +2696,13 @@ export class RestTaskaApi implements TaskaApi {
     // silently and leave the UI signed out with no way to say so.
     if (response.status === 401 && !options.skipAuth) {
       if (!isRetry && this.refreshTokenValue && (await this.tryRefresh())) {
-        return this.request<T>(path, options, true);
+        return this.exchange<T>(path, options, true);
       }
       this.expireSession(authVersion);
     }
 
     if (response.status === 204) {
-      return undefined as T;
+      return { status: 204, data: undefined as T };
     }
 
     const data = (await response.json().catch(() => undefined)) as T | ApiErrorBody | undefined;
@@ -2646,8 +2713,15 @@ export class RestTaskaApi implements TaskaApi {
       const requestId = response.headers.get("X-Request-Id") ?? body?.error?.requestId;
       throw new ApiError(message, code, response.status, requestId ?? undefined, data, errorDetails(body?.details));
     }
-    return data as T;
+    return { status: response.status, data: data as T };
   }
+}
+
+interface RequestOptions {
+  method?: string;
+  body?: unknown;
+  skipAuth?: boolean;
+  headers?: Record<string, string>;
 }
 
 /**
@@ -2719,19 +2793,54 @@ function toIssueType(value: unknown): IssueTypeCode | null {
  * non-string `name` is `""`, which every reader prints the code for. A
  * duplicated code keeps its first row. Codes are not checked against this
  * build's unions — the values it does not know are the reason to ask.
+ *
+ * `selectable` is `true` unless the row says `false` in so many words: the
+ * contract's default is `true` and the field is not required (backend #201),
+ * so its absence — every row of a gateway older than that PR — is not a
+ * refusal to be offered.
+ *
+ * `readCode` is for the one dictionary whose codes are not read as they come:
+ * `linkViewTypes`, which goes through `toViewLinkType`. A code it answers blank
+ * for is dropped like any unusable one.
  */
-function toDictionary(value: unknown): DictionaryEntry[] | null {
+function toDictionary(value: unknown, readCode: (code: string) => string = (code) => code): DictionaryEntry[] | null {
   if (!Array.isArray(value)) return null;
   const seen = new Set<string>();
   const entries: DictionaryEntry[] = [];
   for (const row of value) {
     if (typeof row !== "object" || row === null) continue;
-    const { code, name } = row as { code?: unknown; name?: unknown };
-    if (typeof code !== "string" || code.trim() === "" || seen.has(code)) continue;
+    const { code: wire, name, selectable } = row as { code?: unknown; name?: unknown; selectable?: unknown };
+    if (typeof wire !== "string") continue;
+    const code = readCode(wire);
+    if (code.trim() === "" || seen.has(code)) continue;
     seen.add(code);
-    entries.push({ code, name: typeof name === "string" ? name : "" });
+    entries.push({ code, name: typeof name === "string" ? name : "", selectable: selectable !== false });
   }
   return entries;
+}
+
+/**
+ * `UserDirectoryResponseDto` → `DirectoryPage`. Both fields are required by the
+ * contract and are read defensively anyway: a row without a string `id` names
+ * nobody and is dropped, a missing name or email is `""`, and `hasMore` is
+ * `true` only when the server said so — a page that cannot say whether there
+ * is more offers no "Show more" rather than one that would loop.
+ */
+function toDirectoryPage(value: unknown): DirectoryPage {
+  const body = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const items: DirectoryUser[] = [];
+  for (const row of Array.isArray(body.items) ? body.items : []) {
+    if (typeof row !== "object" || row === null) continue;
+    const { id, displayName, email, avatarUrl } = row as Record<string, unknown>;
+    if (typeof id !== "string" || id === "") continue;
+    items.push({
+      id,
+      displayName: typeof displayName === "string" ? displayName : "",
+      email: typeof email === "string" ? email : "",
+      avatarUrl: typeof avatarUrl === "string" && avatarUrl !== "" ? avatarUrl : null,
+    });
+  }
+  return { items, hasMore: body.hasMore === true };
 }
 
 /**
@@ -2933,16 +3042,6 @@ function isRestIssue(body: unknown): body is RestIssue {
   if (typeof body !== "object" || body === null) return false;
   const { id, version } = body as { id?: unknown; version?: unknown };
   return typeof id === "string" && id !== "" && typeof version === "number";
-}
-
-/** The prefix the gateway's `.name()` leaves on every `IssueLinkViewType`. */
-const VIEW_LINK_TYPE_PREFIX = "ISSUE_LINK_VIEW_TYPE_";
-
-/** `viewLinkType` as the label helper reads it — see `toIssueLink`. */
-function toViewLinkType(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const name = value.startsWith(VIEW_LINK_TYPE_PREFIX) ? value.slice(VIEW_LINK_TYPE_PREFIX.length) : value;
-  return name === "UNSPECIFIED" || name === "UNRECOGNIZED" ? "" : name;
 }
 
 /**

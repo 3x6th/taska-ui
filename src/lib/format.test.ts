@@ -57,8 +57,8 @@ describe("issueLinkTypeLabel", () => {
 
   it("takes an English /meta name for exactly the code it names, and passes a Russian one over", () => {
     const served: DictionaryEntry[] = [
-      { code: "SUPERSEDES", name: "Supersedes" },
-      { code: "CAUSES", name: "Вызывает" },
+      { code: "SUPERSEDES", name: "Supersedes", selectable: true },
+      { code: "CAUSES", name: "Вызывает", selectable: true },
     ];
     expect(issueLinkTypeLabel("SUPERSEDES", served)).toBe("Supersedes");
     expect(issueLinkTypeLabel("CAUSES", served)).toBe("CAUSES");
@@ -66,7 +66,7 @@ describe("issueLinkTypeLabel", () => {
     // the outward relation's name.
     expect(issueLinkTypeLabel("IS_SUPERSEDED_BY", served)).toBe("IS_SUPERSEDED_BY");
     // A known relation keeps the build's own words whatever is served for it.
-    expect(issueLinkTypeLabel("BLOCKS", [{ code: "BLOCKS", name: "Blocks the way" }])).toBe("Blocks");
+    expect(issueLinkTypeLabel("BLOCKS", [{ code: "BLOCKS", name: "Blocks the way", selectable: true }])).toBe("Blocks");
   });
 
   it.each([
@@ -91,9 +91,9 @@ describe("issueLinkTypeLabel", () => {
  */
 describe("labels and visuals for codes off the wire", () => {
   const served: DictionaryEntry[] = [
-    { code: "TASK", name: "Задача" },
-    { code: "EPIC", name: "Epic" },
-    { code: "URGENT", name: "Срочный" },
+    { code: "TASK", name: "Задача", selectable: true },
+    { code: "EPIC", name: "Epic", selectable: true },
+    { code: "URGENT", name: "Срочный", selectable: true },
   ];
 
   it("names a known type in the build's words and an unknown one by the rule", () => {
@@ -125,7 +125,7 @@ describe("labels and visuals for codes off the wire", () => {
     expect(priorityLabel("MEDIUM", served)).toBe("Medium");
     expect(priorityLabel("URGENT", served)).toBe("URGENT");
     expect(userStatusLabel("LOCKED")).toBe("Locked");
-    expect(userStatusLabel("SUSPENDED", [{ code: "SUSPENDED", name: "Suspended" }])).toBe("Suspended");
+    expect(userStatusLabel("SUSPENDED", [{ code: "SUSPENDED", name: "Suspended", selectable: true }])).toBe("Suspended");
     expect(userStatusLabel(null)).toBe("—");
   });
 

@@ -1,11 +1,14 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Trash2, X } from "lucide-react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { DIRECTORY_QUERY_MAX_LENGTH, DIRECTORY_QUERY_MIN_CODE_POINTS, directoryQueryLength } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isMissingOrForbidden } from "../api/errors";
-import { PROJECT_ROLES, isUserId, normalizeUserId } from "../api/members";
-import type { Project, ProjectMember, ProjectRole } from "../domain/types";
+import { PROJECT_ROLES } from "../api/members";
+import type { DirectoryUser, GlobalRole, Project, ProjectMember, ProjectRole } from "../domain/types";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { keyBadgeStyle } from "../lib/format";
 import { projectContextKey } from "../lib/projectContext";
@@ -26,6 +29,24 @@ const retryUnlessMissing = (failureCount: number, error: Error) => !isMissingOrF
 
 /** How a role is said. The wire value stays the wire value (DESIGN.md §6). */
 const roleLabels: Record<ProjectRole, string> = { ADMIN: "Admin", MEMBER: "Member", VIEWER: "Viewer" };
+
+/** §4.14's debounce, shared with every other server-backed field. */
+const PEOPLE_SEARCH_DEBOUNCE_MS = 200;
+/** A page of the directory — the route's own default, and what "Show more" adds (§4.22). */
+const PEOPLE_SEARCH_PAGE_SIZE = 20;
+
+/**
+ * The directory's retry rule: once for a failure that may be passing, never for
+ * a refusal — a 4xx is the same answer the second time, one round trip later.
+ */
+const retryUnlessRefused = (failureCount: number, error: Error) => {
+  const { status, code } = apiErrorFacts(error);
+  if ((status !== null && status >= 400 && status < 500) || code === "INVALID_ARGUMENT") return false;
+  return failureCount < 1;
+};
+
+/** What to call a directory row: its name, or its address when the name came back blank. */
+const directoryName = (person: DirectoryUser) => person.displayName.trim() || person.email;
 
 /**
  * Who a row, a control or a sentence is about, worded once so the three cannot
@@ -136,12 +157,19 @@ interface ProjectMembersModalProps {
   readerRole: ProjectRole | null | undefined;
   /** `undefined` until `GET /users/me` answers; until then no row is marked as the reader's. */
   currentUserId?: string;
+  /**
+   * The reader's account-wide role, from the same `GET /users/me`. It decides
+   * one sentence only: who to send somebody to when a search finds nobody —
+   * Administration › Users for a global admin, a global admin for everybody
+   * else, and the second for a role not stated (§4.22).
+   */
+  globalRole?: GlobalRole;
   onClose: () => void;
 }
 
 /**
  * The project's members, and for its ADMIN the three writes on them (TAS-158):
- * add somebody by user id, change a member's role, remove a member.
+ * add somebody found by name or email, change a member's role, remove a member.
  *
  * **Every reader of the board can open this**; only an ADMIN sees controls in
  * it. The member list is not a secret from a VIEWER — the assignee filter
@@ -149,19 +177,20 @@ interface ProjectMembersModalProps {
  * for some readers and not others would be hiding the one thing a VIEWER is
  * most likely to need to ask an admin about.
  *
- * **Adding is by exact user id, because nothing else exists yet.** The gateway
- * has no user search (TAS-204), so the field takes an id and the role beside
- * it. When search lands, the field becomes the place a person is looked up by
- * name or email; what changes is where `candidate` below comes from, not the
- * dialog around it.
+ * **People are found, not typed** (§4.22, TAS-297). The field searches the
+ * people directory (`GET /users`, backend #204) by name or email, and a person
+ * is chosen from the results before Add will send anything; there is no way to
+ * add by id any more. Who is already on the project is marked from the list
+ * this dialog already holds, so marking costs no request.
  *
  * Three things are easy to get wrong here, and each has a comment where it is
  * handled:
  *
- * - **An id nobody holds is a successful add** (TAS-227). The row comes back
- *   from the member read with no name and no email, and is drawn as exactly
- *   that — the id, and a sentence saying no account came back for it — rather
- *   than as a person this client invented.
+ * - **An id nobody holds is a successful add** (TAS-227). Search cannot produce
+ *   one, but rows added by id before it still exist: they come back from the
+ *   member read with no name and no email, and are drawn as exactly that — the
+ *   id, and a sentence saying no account came back for it — rather than as a
+ *   person this client invented.
  * - **The last ADMIN cannot be demoted or removed.** The server refuses both
  *   with `FAILED_PRECONDITION`; the dialog does not offer them for that row and
  *   says why in words, and still reads the refusal properly when a stale list
@@ -177,21 +206,29 @@ export function ProjectMembersModal({
   projectColor,
   readerRole,
   currentUserId,
+  globalRole,
   onClose,
 }: ProjectMembersModalProps) {
   const isProjectAdmin = readerRole === "ADMIN";
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  /** What is typed in the search field. Kept while a person is chosen, so "Choose someone else" brings the search back. */
   const [draft, setDraft] = useState("");
+  /** The person Add will send, once one is chosen from the results. */
+  const [chosen, setChosen] = useState<DirectoryUser | null>(null);
+  /** Whether the results are showing; `Esc` closes them and leaves the text (§4.22). */
+  const [listOpen, setListOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const [role, setRole] = useState<ProjectRole>("MEMBER");
   /**
-   * Adds the server has not answered for yet. Held here rather than written
-   * into a cached member list, because the board draws its members too: an
-   * optimistic row there would put a nameless avatar into the assignee filter
-   * behind the scrim for the length of the request, as a person a reader could
-   * filter the board by before the server had agreed they exist.
+   * Adds the server has not answered for yet, with the person as the search
+   * named them. Held here rather than written into a cached member list,
+   * because the board draws its members too: an optimistic row there would put
+   * somebody into the assignee filter behind the scrim for the length of the
+   * request, as a person a reader could filter the board by before the server
+   * had agreed they are on the project.
    */
-  const [pendingAdds, setPendingAdds] = useState<{ userId: string; role: ProjectRole }[]>([]);
+  const [pendingAdds, setPendingAdds] = useState<{ user: DirectoryUser; role: ProjectRole }[]>([]);
   /**
    * Rows whose role write is out, with the role each held before it: their
    * select stops answering until it lands, and none of them counts as another
@@ -214,6 +251,7 @@ export function ProjectMembersModal({
   const fieldId = useId();
   const roleId = useId();
   const hintId = useId();
+  const listId = useId();
 
   /**
    * Where focus came from, read during the first render — before anything in
@@ -224,6 +262,15 @@ export function ProjectMembersModal({
   const [opener] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null));
   const heading = useRef<HTMLHeadingElement | null>(null);
   const field = useRef<HTMLInputElement | null>(null);
+  const addButton = useRef<HTMLButtonElement | null>(null);
+  const resultsList = useRef<HTMLUListElement | null>(null);
+  /** Set when the next render should put focus back in the search field — after it remounts in place of a choice. */
+  const focusFieldNext = useRef(false);
+  /** The text as typed, for the one callback that must not overwrite it: a refused add (see `addMember`). */
+  const draftNow = useRef(draft);
+  useEffect(() => {
+    draftNow.current = draft;
+  });
   /** Every row's remove toggle and role select, by user id, for the focus handoffs below. */
   const toggles = useRef(new Map<string, HTMLButtonElement>());
   const selects = useRef(new Map<string, HTMLSelectElement>());
@@ -305,12 +352,12 @@ export function ProjectMembersModal({
   };
 
   const addMember = useMutation({
-    mutationFn: (input: { userId: string; role: ProjectRole }) =>
-      taskaApi.addProjectMember(projectId, input.userId, input.role),
+    mutationFn: (input: { user: DirectoryUser; role: ProjectRole }) =>
+      taskaApi.addProjectMember(projectId, input.user.id, input.role),
     onMutate: (input) => {
       setNotice(null);
       setPendingAdds((current) =>
-        current.some((row) => row.userId === input.userId) ? current : [...current, input],
+        current.some((row) => row.user.id === input.user.id) ? current : [...current, input],
       );
     },
     // The answer is the membership and not the person — no name, no email — so
@@ -319,17 +366,17 @@ export function ProjectMembersModal({
     // neither row is on screen.
     onSuccess: async (_result, input) => {
       await refresh(false);
-      setPendingAdds((current) => current.filter((row) => row.userId !== input.userId));
+      setPendingAdds((current) => current.filter((row) => row.user.id !== input.user.id));
     },
     onError: (error, input) => {
-      setPendingAdds((current) => current.filter((row) => row.userId !== input.userId));
-      // The typed id comes back to the field — unless something has been typed
-      // since, which this must never overwrite — so the reader can correct it
-      // rather than find it again. Not for "already a member": there is nothing
-      // to correct, and the re-read below puts that person in the list.
-      if (!isAlreadyMember(error)) setDraft((current) => (current === "" ? input.userId : current));
+      setPendingAdds((current) => current.filter((row) => row.user.id !== input.user.id));
+      // The person comes back as the choice — unless something has been typed
+      // or chosen since, which this must never overwrite — so the reader can
+      // send it again rather than search again. Not for "already a member":
+      // there is nothing to resend, and the re-read below puts them in the list.
+      if (!isAlreadyMember(error) && draftNow.current === "") setChosen((current) => current ?? input.user);
       forgetRoleIfRefused(error);
-      setNotice({ tone: "error", text: addFailureText(error), error });
+      setNotice({ tone: "error", text: addFailureText(error, directoryName(input.user)), error });
       // A 409 means the list this form checked against was stale, and any other
       // refusal may be about a list that has moved too.
       void refresh(false);
@@ -520,43 +567,182 @@ export function ProjectMembersModal({
   // --- the add form -------------------------------------------------------
 
   /**
-   * The person the field names. Today that is an id and nothing more; when user
-   * search lands (TAS-204) this is where a chosen search result arrives, and the
-   * checks below — already a member, already being added — keep working on it
-   * unchanged.
+   * The search (§4.22): debounced at §4.14's 200, trimmed, and never sent under
+   * three code points — the API layer refuses that too, and `enabled` reads the
+   * same constant. One page of twenty at a time, "Show more" for the next; the
+   * previous answer stays on screen while the next question is out, so the row
+   * of controls under it does not jump.
    */
-  const candidate = normalizeUserId(draft);
-  const typed = candidate !== "";
-  const wellFormed = isUserId(candidate);
-  const existing = wellFormed ? members?.find((member) => member.userId === candidate) : undefined;
-  const beingAdded = wellFormed && pendingAdds.some((row) => row.userId === candidate);
-  const canAdd = wellFormed && !existing && !beingAdded;
+  const trimmed = draft.trim();
+  const debounced = useDebouncedValue(trimmed, PEOPLE_SEARCH_DEBOUNCE_MS);
+  const typedEnough = directoryQueryLength(trimmed) >= DIRECTORY_QUERY_MIN_CODE_POINTS;
+  const boxOpen = isProjectAdmin && chosen === null && listOpen && trimmed !== "";
+  const search = useInfiniteQuery({
+    queryKey: ["user-directory", debounced],
+    queryFn: ({ pageParam }) =>
+      taskaApi.searchUsers({ query: debounced, page: pageParam, pageSize: PEOPLE_SEARCH_PAGE_SIZE }),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => (last.hasMore ? pages.length : undefined),
+    enabled: boxOpen && directoryQueryLength(debounced) >= DIRECTORY_QUERY_MIN_CODE_POINTS,
+    placeholderData: keepPreviousData,
+    retry: retryUnlessRefused,
+  });
+  const searchUnread = useUnanswered(search);
+  const people = useMemo(() => search.data?.pages.flatMap((page) => page.items) ?? [], [search.data]);
+  const searchFailed = searchUnread.unanswered || search.isFetchNextPageError;
+  const showPeople = boxOpen && typedEnough && people.length > 0;
+
+  const memberIds = useMemo(() => new Set((members ?? []).map((member) => member.userId)), [members]);
+  /** Why a result cannot be chosen, in the words its row says it — or `null` when it can be. */
+  const inertNote = (person: DirectoryUser) =>
+    memberIds.has(person.id)
+      ? "Already a member"
+      : pendingAdds.some((row) => row.user.id === person.id)
+        ? "Being added"
+        : null;
+
+  // A new question deselects: an active row held over from the previous query
+  // would put Enter on a person the reader is no longer looking at. Adjusted
+  // during render, as `GlobalSearch` does, so the stale selection never paints.
+  const [activeFor, setActiveFor] = useState(debounced);
+  if (activeFor !== debounced) {
+    setActiveFor(debounced);
+    setActiveIndex(-1);
+  }
+
+  // The combobox keeps DOM focus in the field, so nothing scrolls the active
+  // row into a list taller than its box by itself (§4.20's rule, `GlobalSearch`).
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    resultsList.current?.children[activeIndex]?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
+  // Back into the field once it is mounted again in place of a choice.
+  useEffect(() => {
+    if (!focusFieldNext.current) return;
+    focusFieldNext.current = false;
+    field.current?.focus();
+  });
+
+  const optionId = (index: number) => `${listId}-option-${index}`;
+  const active = showPeople && activeIndex >= 0 ? people[activeIndex] : undefined;
+
+  const choose = (index: number) => {
+    const person = people[index];
+    // Members and people being added are passed over by the arrows' choice and
+    // the pointer's alike: their row says why.
+    if (!person || inertNote(person) !== null) return;
+    setChosen(person);
+    setListOpen(false);
+    // To Add, which stays mounted under the field the choice replaces (§4.22).
+    addButton.current?.focus();
+  };
+
+  const chooseSomeoneElse = () => {
+    setChosen(null);
+    setListOpen(true);
+    focusFieldNext.current = true;
+  };
+
+  const move = (delta: number) => {
+    if (!people.length) return;
+    setActiveIndex((current) => {
+      const next = current + delta;
+      if (next < 0) return people.length - 1;
+      if (next >= people.length) return 0;
+      return next;
+    });
+  };
+
+  const onFieldKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!listOpen) {
+        setListOpen(true);
+        return;
+      }
+      move(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Enter") {
+      // Never the form's submit from here: Add is the only thing that sends,
+      // and it is off until somebody is chosen.
+      event.preventDefault();
+      // Only rows that answer the question as it now stands: while the next
+      // answer is out, the rows on screen are the previous question's.
+      if (!showPeople || search.isPlaceholderData) return;
+      if (activeIndex >= 0) {
+        choose(activeIndex);
+        return;
+      }
+      const first = people.findIndex((person) => inertNote(person) === null);
+      if (first >= 0) choose(first);
+    }
+  };
+
+  const showMore = async () => {
+    if (search.isFetchingNextPage) return;
+    const before = people.length;
+    const result = await search.fetchNextPage();
+    if (result.isError) return;
+    // The first new row becomes the active one, so the arrows carry on from
+    // where the reader asked for more; with nothing left to ask for, the button
+    // goes and focus returns to the field rather than to <body>.
+    setActiveIndex(before);
+    if (!result.hasNextPage) field.current?.focus();
+  };
+
+  /** What Add would send, if anything: a chosen person not already on the list, and not already on the way. */
+  const canAdd =
+    chosen !== null && !memberIds.has(chosen.id) && !pendingAdds.some((row) => row.user.id === chosen.id);
 
   /**
-   * Why Add is off, said under the field rather than left for the reader to
-   * work out: an `aria-disabled` button reads as unavailable and explains
-   * nothing. Nothing is said about an empty field — the form explains itself.
+   * The line under the search, tied to the field and to Add and never live —
+   * it would speak on every keystroke and every arrow (§4.22). It says what
+   * Add would do, or why the active row cannot be chosen, or how to start.
    */
-  const problem = !typed
-    ? null
-    : !wellFormed
-      ? "This is not a user ID yet: an ID is 32 hexadecimal digits in groups of 8-4-4-4-12."
-      : existing
-        ? existing.user
-          ? `${existing.user.displayName} is already a member of this project.`
-          : "This user ID is already a member of this project."
-        : beingAdded
-          ? "This user ID is being added."
-          : null;
+  const activeNote = active ? inertNote(active) : null;
+  const hint = chosen
+    ? `${directoryName(chosen)} will be added as ${roleLabels[role]}.`
+    : active && activeNote === "Already a member"
+      ? `${directoryName(active)} is already a member of this project.`
+      : active && activeNote === "Being added"
+        ? `${directoryName(active)} is being added to this project.`
+        : "Search by name or email, then choose a person from the results.";
+
+  /**
+   * The one polite region in the results box, mounted with the form and never
+   * remounted, so a change of words is what gets announced (§7). It says the
+   * states in words, and only the count when there are rows — the rows say the
+   * rest.
+   */
+  const searchState = !boxOpen
+    ? ""
+    : !typedEnough
+      ? `Type at least ${DIRECTORY_QUERY_MIN_CODE_POINTS} characters to search.`
+      : searchFailed
+        ? "People search could not be run."
+        : people.length > 0
+          ? search.hasNextPage
+            ? `Showing the first ${people.length}.`
+            : `${people.length} ${people.length === 1 ? "person" : "people"}.`
+          : search.data !== undefined && !search.isPlaceholderData
+            ? `No one matches “${debounced}”.`
+            : "Searching people…";
+  const noMatch = boxOpen && typedEnough && !searchFailed && people.length === 0 && search.data !== undefined && !search.isPlaceholderData;
 
   const submitAdd = () => {
     // The guard the `aria-disabled` on Add no longer enforces by itself.
-    if (!canAdd) return;
-    addMember.mutate({ userId: candidate, role });
+    if (!canAdd || chosen === null) return;
+    addMember.mutate({ user: chosen, role });
     // Cleared here rather than when the answer lands, for the reason the label
     // and watcher pickers give: a reset a round trip later lands on whatever
-    // was typed in the meantime and takes it.
+    // was typed in the meantime and takes it. The field comes back empty and
+    // takes focus (§4.22).
+    setChosen(null);
     setDraft("");
+    setListOpen(false);
+    focusFieldNext.current = true;
   };
 
   // --- confirmations ------------------------------------------------------
@@ -635,7 +821,9 @@ export function ProjectMembersModal({
    */
   const onEscape = useRef(() => {});
   useEffect(() => {
-    onEscape.current = () => (confirm ? cancelConfirm() : close());
+    // The nearer thing first: a question, then the open results (their text
+    // stays), then the dialog (§4.22).
+    onEscape.current = () => (confirm ? cancelConfirm() : boxOpen ? setListOpen(false) : close());
   });
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -700,26 +888,171 @@ export function ProjectMembersModal({
               submitAdd();
             }}
           >
-            <div className="field">
-              <label htmlFor={fieldId}>Add by user ID</label>
-              <input
-                aria-describedby={hintId}
-                autoComplete="off"
-                autoFocus
-                className="mono-input"
-                id={fieldId}
-                onChange={(event) => setDraft(event.target.value)}
-                ref={field}
-                spellCheck={false}
-                value={draft}
-              />
+            <div className="member-search-field">
+              {/* Not a `.field`: that rule styles every span inside it as a
+                  label, and the choice below is made of spans. The label and the
+                  input join `.field`'s recipe by selector instead. A label only
+                  while there is a field to label; over a choice it names the
+                  group. */}
+              {chosen ? (
+                <span className="member-search-label" id={`${fieldId}-label`}>
+                  Add people
+                </span>
+              ) : (
+                <label className="member-search-label" htmlFor={fieldId}>
+                  Add people
+                </label>
+              )}
+              {chosen ? (
+                // The choice, in the field's place and in its box (§4.22):
+                // who will be added, and the way back to the search.
+                <div aria-labelledby={`${fieldId}-label`} className="member-chosen" role="group">
+                  <span aria-hidden="true">
+                    <Avatar
+                      size="sm"
+                      user={{ id: chosen.id, displayName: directoryName(chosen), avatarUrl: chosen.avatarUrl }}
+                    />
+                  </span>
+                  <span className="member-who">
+                    <span className="member-name" title={directoryName(chosen)}>
+                      {directoryName(chosen)}
+                    </span>
+                    <span className="member-line" title={chosen.email}>
+                      {chosen.email}
+                    </span>
+                  </span>
+                  <button
+                    aria-label="Choose someone else"
+                    className="icon-button member-chosen-clear"
+                    onClick={chooseSomeoneElse}
+                    title="Choose someone else"
+                    type="button"
+                  >
+                    <X aria-hidden="true" size={14} />
+                  </button>
+                </div>
+              ) : (
+                <input
+                  aria-activedescendant={showPeople && activeIndex >= 0 ? optionId(activeIndex) : undefined}
+                  aria-autocomplete="list"
+                  // Both follow the listbox, not the box: the states that are
+                  // one sentence are not a listbox, and an `aria-controls`
+                  // pointing at an id that is not there is the same mistake
+                  // read from the other end (`GlobalSearch`).
+                  aria-controls={showPeople ? listId : undefined}
+                  aria-describedby={hintId}
+                  aria-expanded={showPeople}
+                  autoComplete="off"
+                  autoFocus
+                  className="member-search-input"
+                  id={fieldId}
+                  maxLength={DIRECTORY_QUERY_MAX_LENGTH}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    setListOpen(true);
+                  }}
+                  onKeyDown={onFieldKeyDown}
+                  placeholder="Name or email"
+                  ref={field}
+                  role="combobox"
+                  spellCheck={false}
+                  type="text"
+                  value={draft}
+                />
+              )}
+
+              {/* In the dialog's flow, not a popover (§4.22): a popover would be
+                  a second elevation inside the modal's, and would cover the
+                  list its "Already a member" marks are about. Always mounted,
+                  and empty and heightless while closed, so its one live region
+                  is never mounted together with its words. */}
+              <div
+                className={`member-search${boxOpen ? " is-open" : ""}${boxOpen && searchFailed ? " is-error" : ""}`}
+              >
+                <p
+                  aria-live="polite"
+                  className={showPeople && !searchFailed ? "visually-hidden" : "member-search-state"}
+                >
+                  {searchState}
+                </p>
+                {noMatch ? (
+                  <p className="member-search-state member-search-way">
+                    {globalRole === "GLOBAL_ADMIN" ? (
+                      <>
+                        People need a Taska account first. Invite them from{" "}
+                        <Link className="admin-note-link" to="/admin/users">
+                          Administration › Users
+                        </Link>
+                        .
+                      </>
+                    ) : (
+                      "People need a Taska account first — a global admin can invite them."
+                    )}
+                  </p>
+                ) : null}
+                {boxOpen && searchFailed ? (
+                  <MemberNoteDetail error={searchUnread.error ?? search.error} />
+                ) : null}
+                {showPeople ? (
+                  <ul aria-label="People" className="member-search-list" id={listId} ref={resultsList} role="listbox">
+                    {people.map((person, index) => {
+                      const note = inertNote(person);
+                      const isActive = index === activeIndex;
+                      return (
+                        <li
+                          aria-disabled={note !== null || undefined}
+                          aria-selected={isActive}
+                          className={`member-search-option${isActive ? " is-active" : ""}`}
+                          id={optionId(index)}
+                          key={person.id}
+                          onClick={() => choose(index)}
+                          // Focus stays in the field for the life of the
+                          // combobox; a press on a row must not take it away
+                          // and close the list under the click.
+                          onMouseDown={(event) => event.preventDefault()}
+                          onMouseEnter={() => setActiveIndex(index)}
+                          role="option"
+                        >
+                          <span aria-hidden="true">
+                            <Avatar
+                              size="sm"
+                              user={{ id: person.id, displayName: directoryName(person), avatarUrl: person.avatarUrl }}
+                            />
+                          </span>
+                          <span className="member-who">
+                            <span className="member-name" title={directoryName(person)}>
+                              {directoryName(person)}
+                            </span>
+                            <span className="member-line" title={person.email}>
+                              {person.email}
+                            </span>
+                          </span>
+                          {/* Words, not a fade (§4.22): an opacity would take the
+                              name under 4.5:1 in light. */}
+                          {note ? <span className="member-search-note">{note}</span> : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
+              </div>
             </div>
-            {/* One line in one place: the standing explanation of why this is an
-                id and not a name, replaced by the reason Add is off whenever
-                there is one. Not a live region — it would speak on every
-                keystroke — so it is tied to the field and to Add instead. */}
+
+            {showPeople && search.hasNextPage ? (
+              <button
+                aria-disabled={search.isFetchingNextPage || undefined}
+                className="secondary-button compact-button member-search-more"
+                onClick={() => void showMore()}
+                type="button"
+              >
+                Show more
+              </button>
+            ) : null}
+
+            {/* One line in one place, tied to the field and to Add. Not a live
+                region: it would speak on every keystroke. */}
             <p className="member-add-hint" id={hintId}>
-              {problem ?? "Search by name or email is not available yet, so people are added by user ID."}
+              {hint}
             </p>
             <div className="member-add-actions">
               {/* A sibling label rather than one wrapped around the select:
@@ -736,12 +1069,13 @@ export function ProjectMembersModal({
                 </select>
               </span>
               {/* `aria-disabled`, never `disabled` (§4.21): the handler clears the
-                  field as it dispatches, so a button that disabled itself would
+                  choice as it dispatches, so a button that disabled itself would
                   drop the keyboard reader's focus to `<body>` on every add. */}
               <button
                 aria-describedby={hintId}
                 aria-disabled={!canAdd || undefined}
                 className="primary-button compact-button"
+                ref={addButton}
                 type="submit"
               >
                 Add
@@ -838,13 +1172,16 @@ export function ProjectMembersModal({
                 );
               })}
               {pendingAdds
-                .filter((row) => !members?.some((member) => member.userId === row.userId))
+                .filter((row) => !members?.some((member) => member.userId === row.user.id))
                 .map((row) => (
-                  <li className="member-row is-pending" key={`pending-${row.userId}`}>
+                  // The person as the search named them, under §4.4's dashed
+                  // circle until the member read names them itself (§4.22).
+                  <li className="member-row is-pending" key={`pending-${row.user.id}`}>
                     <Avatar label="Being added" size="sm" user={null} />
                     <span className="member-who">
-                      <span className="member-id">{row.userId}</span>
-                      <span className="member-line">Adding as {roleLabels[row.role]}…</span>
+                      <span className="member-name">{directoryName(row.user)}</span>
+                      <span className="member-line">{row.user.email}</span>
+                      <span className="member-line">Adding as {roleLabels[row.role]}</span>
                     </span>
                   </li>
                 ))}
@@ -1164,11 +1501,11 @@ function isMissing(error: unknown): boolean {
 const REFUSED_NOT_ADMIN =
   "The server refused: only a project admin can change members, and your role on this project may have changed.";
 
-function addFailureText(error: unknown): string {
-  if (isAlreadyMember(error)) return "This user ID is already a member of this project.";
+function addFailureText(error: unknown, name: string): string {
+  if (isAlreadyMember(error)) return `${name} is already a member of this project.`;
   if (isForbidden(error)) return REFUSED_NOT_ADMIN;
-  if (isMissing(error)) return "This project could not be found, so nobody was added.";
-  return "Nobody was added to this project.";
+  if (isMissing(error)) return `This project could not be found, so ${name} was not added.`;
+  return `${name} was not added to this project.`;
 }
 
 function roleFailureText(error: unknown, subject: MemberSubject): string {

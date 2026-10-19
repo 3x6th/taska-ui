@@ -47,21 +47,6 @@ export function isUserId(value: string): boolean {
 }
 
 /**
- * The id as the server will store it: trimmed, because a pasted id arrives with
- * whitespace around it far more often than without, and lower-cased, because
- * that is the form every member row comes back in. Comparing a typed id with the
- * member list is only meaningful after this.
- *
- * The UI calls it; the implementations do not. An API layer that quietly
- * repaired its input would make a padded id succeed through `TaskaApi` while the
- * same id sent by any other client is a 400 — the refusal below is the honest
- * shape for a caller that did not normalise.
- */
-export function normalizeUserId(raw: string): string {
-  return raw.trim().toLowerCase();
-}
-
-/**
  * What every implementation says when a member write names an id that is not
  * one — before the request, identically, so a caller cannot tell mock from
  * rest by the refusal.

@@ -1157,6 +1157,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       {managingMembers ? (
         <ProjectMembersModal
           currentUserId={meQuery.data?.id}
+          globalRole={meQuery.data?.globalRole}
           onClose={() => setManagingMembers(false)}
           projectColor={project?.color}
           projectId={projectId}
@@ -3867,7 +3868,9 @@ function IssueLabelsSection({
  *    page the picker holds, and then to the bare id.
  * 3. `viewLinkType` is an open string (see `IssueLink`), so it is only ever
  *    passed to `issueLinkTypeLabel`, which prints an unknown relation instead
- *    of dropping the row.
+ *    of dropping the row — named from `/meta`'s `linkViewTypes` (backend
+ *    #201), and never from `linkTypes`, which the picker reads: an inverse
+ *    must not borrow its outward relation's name.
  */
 /**
  * Id of the row an optimistic create puts in the cache before the server has
@@ -4089,7 +4092,7 @@ function IssueLinksSection({
                   onClick={() => navigate(`/projects/${otherProjectId}/issues/${otherId}`)}
                   type="button"
                 >
-                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType, meta?.linkTypes)}</span>
+                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType, meta?.linkViewTypes)}</span>
                   {/* The key is what a person recognises; an issue outside the
                       loaded page has none, and its raw id is still truer than a
                       blank row — it just has to be allowed to ellipsize. */}
@@ -4104,7 +4107,7 @@ function IssueLinksSection({
                 // the row says what it knows rather than offering a click that
                 // resolves to no issue.
                 <span className="issue-link-open is-inert">
-                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType, meta?.linkTypes)}</span>
+                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType, meta?.linkViewTypes)}</span>
                   <span className="issue-link-summary">Unknown issue</span>
                 </span>
               )}
