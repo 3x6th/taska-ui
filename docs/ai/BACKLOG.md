@@ -3777,3 +3777,26 @@ Frontend notes:
   password, `isPasswordRefusal` also matches `body.newPassword`, and the
   LoginScreen comment's count ("the policy's four … the token's two") is
   corrected — or the form refuses a blank password before sending.
+- **System focus rings on modal footers and the auth card** (`art-director`
+  TAS-297 re-verdict R2-N1): Tab onto Cancel / Send invitation / Send new link,
+  the Block confirmation, the Sign in / Accept invite tabs and both auth
+  submits draws the browser's `outline: auto` (system blue) instead of `2px
+  solid var(--accent)`. Same gap as the "no global `.secondary-button:focus-visible`"
+  line above; one rule fixes every modal footer: `.modal-actions
+  .primary-button:focus-visible, .modal-actions .secondary-button:focus-visible
+  { outline: 2px solid var(--accent); outline-offset: 2px; }`, plus the same for
+  `.auth-submit` and the auth card's segmented tabs.
+- **The modal backdrop is a Tab stop with a system ring around the viewport**
+  (R2-N2): Shift+Tab from a dialog's Close lands on `button.modal-backdrop`
+  ("Close modal", `Modal.tsx`), drawn as a 1px system-blue frame, then focus
+  leaves the dialog. `tabIndex={-1}` on it; Close and Esc stay the keyboard
+  routes. Next to the missing focus trap in §7.
+- **Resend 409 wording and the action left after it** (R2-N3, taste): "{name} can
+  no longer be invited — the account is no longer waiting for activation." says
+  "no longer" twice and answers "invite" in a resend dialog; proposed "{name}'s
+  account is no longer waiting for activation, so there is nothing to resend."
+  (mirror in §5.8), and "Send new link" can only 409 again after that —
+  `aria-disabled` it or leave only Cancel.
+- **Pressing the people-search box's own sentence moves focus to the box**
+  (R2-N4, optional): `onMouseDown` on the box with `preventDefault()` unless the
+  target is inside an `<a>` keeps focus in the field.
