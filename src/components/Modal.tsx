@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import type { KeyboardEvent, ReactNode } from "react";
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 
 interface ModalProps {
   title: string;
@@ -64,13 +64,26 @@ function trapTab(event: KeyboardEvent<HTMLElement>) {
 }
 
 export function Modal({ title, eyebrow, onClose, children, footer }: ModalProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+  // The trap above holds focus only once it is inside, and a dialog whose
+  // content asks for none (New project, release-reviewer TAS-299) left it on
+  // the button that opened it, under the scrim. So on mount the first stop
+  // takes it — unless the content has already placed it: `autoFocus` lands
+  // during commit, and a child's own effect runs before this one, so either
+  // wins.
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog || dialog.contains(document.activeElement)) return;
+    tabbables(dialog)[0]?.focus();
+  }, []);
+
   return (
     <div className="modal-layer" role="presentation">
       {/* Out of the Tab order (§7, TAS-299): a click on the scrim closes, and
           the keyboard's ways out are Close and Esc. As a stop it was reached by
           Shift+Tab from Close and drew its ring around the whole viewport. */}
       <button className="modal-backdrop" onClick={onClose} aria-label="Close modal" tabIndex={-1} type="button" />
-      <section className="modal" role="dialog" aria-modal="true" aria-label={title} onKeyDown={trapTab}>
+      <section className="modal" role="dialog" aria-modal="true" aria-label={title} onKeyDown={trapTab} ref={dialogRef}>
         <header className="modal-header">
           <div className="modal-title-row">
             {eyebrow}

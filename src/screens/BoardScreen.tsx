@@ -690,6 +690,15 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const boardRef = useRef<HTMLElement>(null);
   /** Where focus goes once the panel has closed after a delete, in order of preference; read by the effect below. */
   const deleteFocusChain = useRef<DeleteFocusStep[] | null>(null);
+  /**
+   * The issue the route shows now, for a delete that answers after the reader
+   * has already left its panel: that answer must not close whatever is open by
+   * then, nor leave a focus target behind for a later close.
+   */
+  const shownIssueId = useRef(issueId);
+  useEffect(() => {
+    shownIssueId.current = issueId;
+  }, [issueId]);
 
   /**
    * The panel deleted an issue, or found it already gone (§4.10). The card
@@ -715,7 +724,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     }
     if (inColumn) chain.push({ add: status });
     chain.push("new");
-    deleteFocusChain.current = chain;
+    // Only while its panel is still the one open (release-reviewer, TAS-299
+    // round 1): a panel the reader closed, or left for another issue, while
+    // the request was out has handed focus on already.
+    const stillOpen = shownIssueId.current === deleted.id;
+    if (stillOpen) deleteFocusChain.current = chain;
 
     queryClient.setQueriesData<Page<Issue>>({ queryKey: ["issues", projectId] }, (page) => {
       if (!page?.items.some((item) => item.id === deleted.id)) return page;
@@ -726,7 +739,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       };
     });
     setBoardStatus(alreadyGone ? `${deleted.issueKey} was already deleted.` : `${deleted.issueKey} deleted.`);
-    navigate(`/projects/${projectId}/board`, { replace: true });
+    if (stillOpen) navigate(`/projects/${projectId}/board`, { replace: true });
     // The search is the other half of the counter and moves with the list:
     // measured against the mock, a deleted match otherwise stayed in the
     // search answer and came back as a row below the board, linking to a
@@ -740,8 +753,14 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // reader did not move themselves is otherwise invisible after a pointer
   // press (see `focusTrigger` in the admin Users section).
   useEffect(() => {
+    // A panel open again means the chain, if any, belongs to a close that
+    // already happened another way: it never outlives the next route.
+    if (issueId) {
+      deleteFocusChain.current = null;
+      return;
+    }
     const chain = deleteFocusChain.current;
-    if (issueId || !chain) return;
+    if (!chain) return;
     deleteFocusChain.current = null;
     const root = boardRef.current;
     if (!root) return;
@@ -2309,8 +2328,11 @@ function IssuePanel({
       deleteButton.current?.focus();
       setAsking(false);
       // The board shows what the server actually did. A refusal is not proof
-      // that nothing was deleted (TAS-299, art-director's backend note).
+      // that nothing was deleted (TAS-299, art-director's backend note;
+      // TAS-300), so the search — the other half of the counter — is read
+      // again with the list, as on success.
       void queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["issue-search", projectId] });
     },
     onSuccess: ({ alreadyGone }) => {
       const deleted = queryClient.getQueryData(issueKey)?.issue ?? issue;
@@ -2609,7 +2631,9 @@ function IssuePanel({
             issueKey={issue.issueKey}
             onOpenChange={(open) => {
               setShareOpen(open);
-              if (open) setAsking(false);
+              // Not while the delete is out: the strip's aria-disabled
+              // answers are the only sign of the request (art-director N1).
+              if (open && !deleting) setAsking(false);
             }}
             open={shareOpen}
             projectId={issue.projectId}

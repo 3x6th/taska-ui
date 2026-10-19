@@ -2474,6 +2474,10 @@ export class MockTaskaStore {
    */
   acceptInvitation(input: AcceptInvitationInput): void {
     const { token, newPassword } = input;
+    // `trim() === ""` approximates Java's `String.isBlank`, and is not it: JS
+    // trims U+00A0, U+2007, U+202F and U+FEFF, which `Character.isWhitespace`
+    // does not count, and keeps U+001C–U+001F, which it does. Nobody types either into these
+    // two fields, so the difference is named here rather than modelled.
     if (typeof token !== "string" || token.trim() === "") {
       throw new MockApiError("INVALID_ARGUMENT", "body.token must not be blank");
     }

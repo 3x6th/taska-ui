@@ -73,6 +73,18 @@ describe("the focus ring in styles.css", () => {
     }
   });
 
+  it("takes Chrome's ring off a date field's calendar button by the pseudo-element itself", () => {
+    // The e2e walk cannot read a pseudo-element's style, so this is where the
+    // rule is held. `:focus` does not apply to `::-webkit-calendar-picker-indicator`,
+    // so a selector keyed on it matches nothing (art-director, TAS-299 round 1).
+    const all = rules(styles);
+    expect(all.filter(({ selector }) => selector.includes("::-webkit-calendar-picker-indicator:focus"))).toEqual([]);
+    const button = all.find(({ selector }) =>
+      selector.split(",").some((part) => part.trim() === "input::-webkit-calendar-picker-indicator"),
+    );
+    expect(button?.body).toMatch(/(^|[;\s])outline\s*:\s*none\s*(;|$)/m);
+  });
+
   it("keeps the field focus rule off read-only fields, whose ring it would otherwise erase", () => {
     const field = rules(styles).find(({ selector }) => selector.includes(".summary-textarea:focus"));
     expect(field?.selector.split(",").map((part) => part.trim())).toEqual([

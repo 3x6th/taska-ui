@@ -1040,16 +1040,20 @@ Same rule as above: "Closed by" is settled, the rest is live.
   "Password is required" never reach the wire; the policy (minimum
   length and character classes) comes from auth-service env with no route that
   serves it. **Compensations, both on the invite form:** `isPasswordRefusal`
-  marks New password `aria-invalid` when the message starts with "Password" — a
+  marks New password `aria-invalid` when the message starts with "Password"
+  (`PasswordValidator`) **or** "body.newPassword" (the transport's field path,
+  `GrpcRequestValidators` via `AuthGrpcService.java:96-105`, since TAS-299) — a
   branch chosen by prose, against this file's own rule, accepted because the
   only thing lost on a reword is the field marker (the sentence itself always
-  prints verbatim) — and a blank password already loses it today, since the
-  transport's sentence starts with "body."; the mock still answers the service's
-  "Password is required" there (`api-contract-guard` re-verdict N1, BACKLOG); and `PASSWORD_HINT` copies auth-service's default policy
+  prints verbatim). Since TAS-299 the mock answers a blank token or password in
+  the transport's words, token first ("body.token must not be blank", "body.newPassword
+  must not be blank"; its blank test is JS `trim()`, an approximation of Java's
+  `isBlank`); and `PASSWORD_HINT` copies auth-service's default policy
   (8 characters, an upper-case letter, a digit, a symbol). **Removal:** candidate
   ask — `PasswordValidator` raises `details {field: "newPassword", rule, min,
   max}` (strings — `details` is a string map; precedent
-  `AdminInviteUserServiceImpl.java:77`) through the existing
+  `AdminInviteUserServiceImpl.java:77`) — which removes both prefixes from
+  `isPasswordRefusal` — through the existing
   `taska-error-details` transport (#199), with blank judged by the validator;
   and the policy readable **without a session** — not `/meta`, which is
   PROTECTED and built once in the gateway, while the invitee has no session:
@@ -1538,8 +1542,9 @@ Everything below is the entry as it stood, in the past tense.
 ### `DELETE /issues/{issueId}` deletes before it checks the caller's role
 
 - **Endpoint:** `DELETE /api/v1/issues/{issueId}`.
-- **Contract:** the route is for project ADMIN and MEMBER (`delete-issue-roles`);
-  a refused caller gets 403.
+- **Contract:** silent on roles — `DELETE /issues/{issueId}` lists only 204 and
+  the default error. The role set is issue-service config `delete-issue-roles`
+  (`${ISSUE_DELETE_ROLES:ADMIN,MEMBER}`, overridable per environment).
 - **Runtime (read at develop `e8a8d316`, not probed — a probe would delete a real
   issue):** `IssueServiceImpl.deleteIssue` (issue-service, lines 318–350) runs
   `softDeleteAndReturn` (`UPDATE … RETURNING`) first and only then
@@ -1551,7 +1556,12 @@ Everything below is the entry as it stood, in the past tense.
   panel asks first and **re-reads the board after a refusal**, so a refused
   delete that the server performed anyway shows as gone rather than as still
   there.
-- **Compensation:** none (a client cannot make a server check its permissions).
+- **Compensation:** after a refused delete the board list **and** the search are
+  re-read (`BoardScreen.tsx`, the delete mutation's error path), because the
+  server may have deleted the issue anyway — one extra read on the error path.
+  Remove it, or keep it as policy, when TAS-300 lands. A client cannot make a
+  server check its permissions; this only keeps the board honest about what the
+  server did.
 - **Removal:** [TAS-300](https://jira.ozero.dev/browse/TAS-300) (High, filed
   2026-10-20 from `art-director`'s TAS-299 ruling, verified by the
   orchestrator): read the issue, check the role, then delete, in one

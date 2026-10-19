@@ -147,13 +147,19 @@ textarea:disabled {
    `outline: auto` the TAS-299 walk found on the panel's two dates and the
    work log's (the create dialog's dates and the admin filters' date fields
    carry the same button). The button's own ring goes, and the field wears
-   §7's ring instead while the button holds focus. */
+   §7's ring instead while the button holds focus.
+
+   On the pseudo-element itself, never `…-indicator:focus`: a pseudo-class
+   does not apply to it, so that selector matched nothing and the system ring
+   stayed beside the field's (art-director, TAS-299 round 1). With no focus
+   state to key on, the button carries no outline at all; it draws none at
+   rest either. `src/styles.test.ts` pins both halves. */
 :where(input:focus-within:not(:focus)) {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-input::-webkit-calendar-picker-indicator:focus {
+input::-webkit-calendar-picker-indicator {
   outline: none;
 }
 

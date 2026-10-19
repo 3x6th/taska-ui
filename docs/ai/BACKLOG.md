@@ -3812,3 +3812,9 @@ Frontend notes:
 - **The planning hints appear when an ADMIN's role lands after the issue**, so
   the estimate row grows by the hint line once. Low; same family as New while
   the role is read (§5.7).
+- **Steady `aria-disabled` at `.58` dims its own focus ring below 3:1**
+  (`art-director` TAS-299 N2): "Send new link" after a 409 keeps focus, and
+  element `opacity` dims the §7 ring with it. Proposed §4.1 amendment: the steady
+  recipe dims fill, border and label with `color-mix(in oklab, <token> 58%,
+  var(--surface))` instead of `opacity`, so the ring stays at full `--accent`;
+  apply to all four steady `aria-disabled` controls at once.

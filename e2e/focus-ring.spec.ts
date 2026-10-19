@@ -181,7 +181,13 @@ async function inspect(page: Page, scope: string | null): Promise<Stop | null> {
  */
 async function walk(
   page: Page,
-  { scope = null, from, back = false, max = 160 }: { scope?: string | null; from?: Locator; back?: boolean; max?: number },
+  {
+    scope = null,
+    from,
+    back = false,
+    max = 160,
+    trapped = false,
+  }: { scope?: string | null; from?: Locator; back?: boolean; max?: number; trapped?: boolean },
 ) {
   const seen = new Set<string>();
   const failures: string[] = [];
@@ -205,15 +211,27 @@ async function walk(
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   }
   let previous = startKey;
+  // How the walk ended: back round to a stop it had counted, out of the scope,
+  // or out of presses. A dialog (`trapped`) may only end the first way — Tab
+  // that walks out of a modal into the page under its scrim is a failure of
+  // its own (§7), not the end of the walk.
+  let ended: "cycle" | "left" | "max" = "max";
   for (let step = 0; step < max; step += 1) {
     await page.keyboard.press(back ? "Shift+Tab" : "Tab");
     const stop = await inspect(page, scope);
     if (!stop) {
-      if (entered && scope) break;
+      if (entered && scope) {
+        ended = "left";
+        break;
+      }
       continue;
     }
     if (!stop.inside) {
-      if (entered) break;
+      if (entered || trapped) {
+        ended = "left";
+        if (trapped) failures.push(`focus left the dialog for ${stop.label}`);
+        break;
+      }
       continue;
     }
     entered = true;
@@ -221,10 +239,17 @@ async function walk(
     // stop, judged as focus lands on it.
     if (stop.key === previous) continue;
     previous = stop.key;
-    if (seen.has(stop.key)) break;
+    if (seen.has(stop.key)) {
+      ended = "cycle";
+      break;
+    }
     count(stop);
-    if (stop.key === startKey) break;
+    if (stop.key === startKey) {
+      ended = "cycle";
+      break;
+    }
   }
+  if (trapped && ended !== "cycle") failures.push(`the ${back ? "Shift+Tab" : "Tab"} walk did not come back round (${ended})`);
   return { stops: seen.size, failures };
 }
 
@@ -242,11 +267,14 @@ async function walkBoth(
     last?: () => Locator;
     max?: number;
     reopen?: () => Promise<void>;
+    /** A modal: Tab must wrap inside it and never leave (`Modal`'s trap). */
+    trapped?: boolean;
   } = {},
 ) {
-  const forward = await walk(page, { scope: options.scope, from: options.first?.(), max: options.max });
+  const { scope, max, trapped } = options;
+  const forward = await walk(page, { scope, from: options.first?.(), max, trapped });
   await options.reopen?.();
-  const backward = await walk(page, { scope: options.scope, from: options.last?.(), back: true, max: options.max });
+  const backward = await walk(page, { scope, from: options.last?.(), back: true, max, trapped });
   test.info().annotations.push({
     type: "tab-walk",
     description: `${name}: ${forward.stops} stops by Tab, ${backward.stops} by Shift+Tab`,
@@ -286,9 +314,25 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await walkBoth(page, "/login, Accept invite");
     });
 
-    test("projects, the profile menu, notifications and the global search", async ({ page }) => {
+    test("projects, the New project dialog, the profile menu, notifications and the global search", async ({ page }) => {
       await signIn(page, "anna@example.com");
       await walkBoth(page, "/projects");
+
+      // Nothing in it asks for focus, so `Modal` puts it on the first stop:
+      // without that the trap below had nothing to hold (release-reviewer).
+      await pressOpen(page, page.getByRole("button", { name: "New project" }));
+      const created = page.getByRole("dialog", { name: "New project" });
+      await expect(created).toBeVisible();
+      await expect(created.getByRole("button", { name: "Close", exact: true })).toBeFocused();
+      await walkBoth(page, "New project dialog", {
+        scope: ".modal",
+        first: () => firstIn(page, ".modal"),
+        last: () => lastIn(page, ".modal"),
+        trapped: true,
+      });
+      await page.keyboard.press("Escape");
+      if (await created.isVisible()) await created.getByRole("button", { name: "Close", exact: true }).click();
+      await expect(created).toBeHidden();
 
       await pressOpen(page, page.locator(".user-profile-trigger"));
       await expect(page.locator(".user-profile-popover")).toBeVisible();
@@ -341,6 +385,7 @@ for (const theme of ["light", "dark"] as Theme[]) {
           scope: ".modal",
           first: () => firstIn(page, ".modal"),
           last: () => lastIn(page, ".modal"),
+          trapped: true,
         });
         await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
         await expect(dialog).toBeHidden();
@@ -436,6 +481,7 @@ for (const theme of ["light", "dark"] as Theme[]) {
           scope: ".modal",
           first: () => firstIn(page, ".modal"),
           last: () => lastIn(page, ".modal"),
+          trapped: true,
         });
         await page.keyboard.press("Escape");
         await expect(dialog).toBeHidden();

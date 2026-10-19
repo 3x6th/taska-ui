@@ -54,6 +54,30 @@ describe("Modal", () => {
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
   });
 
+  it("takes focus onto its first stop when nothing inside asked for it, so the trap has something to hold", () => {
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    opener.focus();
+    render(
+      <Modal onClose={() => {}} title="New project">
+        <input aria-label="Key" />
+      </Modal>,
+    );
+
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    opener.remove();
+  });
+
+  it("leaves focus where the content put it — an autoFocus field wins", () => {
+    render(
+      <Modal onClose={() => {}} title="New issue">
+        <input aria-label="Summary" autoFocus />
+      </Modal>,
+    );
+
+    expect(screen.getByLabelText("Summary")).toHaveFocus();
+  });
+
   it("leaves Tab between the ends to the browser", () => {
     renderModal();
     const field = screen.getByLabelText("Email");

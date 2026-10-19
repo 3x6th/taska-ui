@@ -2724,6 +2724,23 @@ describe("deleting an issue from its panel", () => {
   const boardStatus = () =>
     [...document.querySelectorAll(".board-shell > p.visually-hidden[role='status']")].map((node) => node.textContent);
   let spies: MockInstance[] = [];
+  /**
+   * The next delete waits until the returned function is called, and then
+   * deletes as the fake server does — so the re-read behind it agrees.
+   */
+  const holdIssueDelete = () => {
+    const deleteForReal = fakeApi.deleteIssue.bind(fakeApi);
+    let answer: () => void = () => {};
+    spies.push(
+      vi.spyOn(fakeApi, "deleteIssue").mockImplementation(
+        (projectId, issueId) =>
+          new Promise<void>((resolve, reject) => {
+            answer = () => void deleteForReal(projectId, issueId).then(resolve, reject);
+          }),
+      ),
+    );
+    return () => answer();
+  };
 
   beforeEach(() => {
     reset();
@@ -2813,15 +2830,7 @@ describe("deleting an issue from its panel", () => {
   });
 
   it("holds both answers aria-disabled while the request is out, and Esc and Cancel do nothing then", async () => {
-    let answer: () => void = () => {};
-    spies.push(
-      vi.spyOn(fakeApi, "deleteIssue").mockImplementation(
-        () =>
-          new Promise<void>((resolve) => {
-            answer = resolve;
-          }),
-      ),
-    );
+    const answer = holdIssueDelete();
     seedExtraIssues(neighbours);
     renderBoard(ISSUE_PATH);
     const panel = await openPanel();
@@ -2841,6 +2850,67 @@ describe("deleting an issue from its panel", () => {
 
     answer();
     await waitFor(() => expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+  });
+
+  it("keeps the strip when Share opens while the delete is out — its answers are the only sign of the request", async () => {
+    const answer = holdIssueDelete();
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    fireEvent.click(panel.getByRole("button", { name: "Delete issue TAS-102" }));
+    const accept = within(zone()!).getByRole("button", { name: "Delete issue" });
+    fireEvent.click(accept);
+    await waitFor(() => expect(accept).toHaveAttribute("aria-disabled", "true"));
+
+    fireEvent.click(panel.getByRole("button", { name: "Share issue TAS-102" }));
+    expect(screen.getByRole("dialog", { name: "Share TAS-102" })).toBeVisible();
+    expect(zone()).not.toBeNull();
+    expect(accept).toHaveAttribute("aria-disabled", "true");
+
+    answer();
+    await waitFor(() => expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+  });
+
+  it("takes the card off in the same frame, before any re-read of the list has answered", async () => {
+    seedExtraIssues(neighbours);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    await waitFor(() => expect(cardOf("issue-7")).not.toBeNull());
+    // From here every read of the list waits for ever, so a card that goes can
+    // only have gone from the cache the delete wrote itself.
+    spies.push(vi.spyOn(fakeApi, "listIssues").mockImplementation(() => new Promise(() => {})));
+
+    fireEvent.click(panel.getByRole("button", { name: "Delete issue TAS-102" }));
+    fireEvent.click(within(zone()!).getByRole("button", { name: "Delete issue" }));
+
+    await waitFor(() => expect(cardOf("issue-1")).toBeNull());
+    await waitFor(() => expect(cardOf("issue-7")).toHaveFocus());
+    expect(screen.getByText("2 of 2")).toBeVisible();
+  });
+
+  it("leaves a panel the reader has moved on from alone, and no focus target behind, when the delete answers late", async () => {
+    const answer = holdIssueDelete();
+    seedExtraIssues(neighbours);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    fireEvent.click(panel.getByRole("button", { name: "Delete issue TAS-102" }));
+    fireEvent.click(within(zone()!).getByRole("button", { name: "Delete issue" }));
+
+    // Closed while the request is out, and another issue opened.
+    fireEvent.click(panel.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+    fireEvent.click(cardOf("issue-8")!);
+    const other = within(await screen.findByRole("complementary", { name: "TAS-108 issue" }));
+
+    answer();
+    // The card goes and the board says so — and the open panel stays open.
+    await waitFor(() => expect(cardOf("issue-1")).toBeNull());
+    expect(boardStatus()).toEqual(["TAS-102 deleted."]);
+    expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-8`);
+
+    // Closing it later goes nowhere the old delete chose.
+    fireEvent.click(other.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+    expect(cardOf("issue-7")).not.toHaveFocus();
   });
 
   it("on success takes the card off the board at once, replaces the panel's route, focuses the card that took its place and says so", async () => {

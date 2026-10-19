@@ -649,7 +649,12 @@ describe("the admin Users section, inviting", () => {
     fireEvent.click(send);
     fireEvent.keyDown(document, { key: "Enter", metaKey: true });
     fireEvent.keyDown(document, { key: "Enter", ctrlKey: true });
+    // Settled first: a request these presses had started would reach the API
+    // only after react-query's own microtasks, and asserting before them would
+    // pass whether or not one went out (release-reviewer F2).
+    await act(async () => {});
     expect(invites).toHaveBeenCalledTimes(1);
+    expect(send).toHaveFocus();
     invites.mockRestore();
 
     // Leo is ACTIVE now, so his row offers Block — where focus goes on close.
