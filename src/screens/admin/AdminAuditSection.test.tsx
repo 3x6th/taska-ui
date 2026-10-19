@@ -198,9 +198,11 @@ describe("the Audit section", () => {
     const detail = document.getElementById(toggle.getAttribute("aria-controls")!)!;
     const old = within(detail).getByRole("figure", { name: "Old value" });
     const next = within(detail).getByRole("figure", { name: "New value" });
-    // Pretty-printed, and the masked value printed as the server sent it.
+    // Pretty-printed, and the masked value printed as the server sent it — in
+    // the order the server sent the keys, which is jsonb's (shorter first),
+    // not the order they were written in.
     expect(old.querySelector("pre")!.textContent).toBe(
-      JSON.stringify({ status: "LOCKED", failedAttempts: 5, passwordHash: "***" }, null, 2),
+      JSON.stringify({ status: "LOCKED", passwordHash: "***", failedAttempts: 5 }, null, 2),
     );
     expect(next.querySelector("pre")!.textContent).toContain('"status": "ACTIVE"');
     expect(within(detail).getByRole("button", { name: /Copy request id/ })).toBeVisible();

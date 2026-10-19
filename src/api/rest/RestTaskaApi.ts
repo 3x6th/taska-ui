@@ -2962,15 +2962,18 @@ function toWatchersCount(value: number | undefined): number | null {
 
 /**
  * The search query as the gateway would accept it, or `null` for "no text
- * filter". The same rule the mock applies, and it lives on this side of the
- * wire so that the `400` the gateway would answer with is never spent: the
- * minimum is 3 (`minLength: 3`, and the contract's own words since backend PR
- * #200, which also say an empty string is a 400), so a cleared field becomes
- * an absent parameter rather than an empty one.
+ * filter". It lives on this side of the wire so that the `400` the gateway
+ * would answer with is never spent: the minimum is 3 (`minLength: 3` since
+ * backend PR #200, an empty string included), so a cleared field becomes an
+ * absent parameter rather than an empty one. Measured on the trimmed value,
+ * which is what gets searched.
  *
- * The error is the gateway's own answer reproduced locally, `INVALID_ARGUMENT`
- * with `400` and its wording, so a caller cannot tell a query stopped here from
- * one stopped there and nothing has to special-case the compensation.
+ * The refusal is the **client's own**: `INVALID_ARGUMENT` on `400`, the code
+ * and status the gateway uses, so nothing has to special-case it — but the
+ * sentence is `SEARCH_QUERY_TOO_SHORT_MESSAGE`, issue-service's wording, which
+ * the server never sends at its default configuration. The gateway's binding
+ * refuses such a query first, as "Invalid request parameters", and that is
+ * what the mock answers.
  */
 function requireSearchQuery(raw: string | undefined): string | null {
   if (raw === undefined) return null;

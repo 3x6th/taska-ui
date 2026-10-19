@@ -551,6 +551,9 @@ const wait = async <T>(value: T, ms = 140): Promise<T> =>
     window.setTimeout(() => resolve(clone(value)), ms);
   });
 
+/** The largest `format: int32` value — what the gateway's parameter binding can hold. */
+const INT32_MAX = 2147483647;
+
 const makeId = (prefix: string) => {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -604,13 +607,21 @@ const byLabelName = <T extends { name: string; id: string }>(a: T, b: T) =>
  * empty string is a rejected query rather than a quiet "everything" — the trap
  * that catches an implementation which sets the parameter on every keystroke.
  *
- * Measured on the trimmed value, and the trimmed value is what gets searched:
- * the gateway counts raw characters, so `"ab "` is three to it and finds
- * nothing, where refusing it says what actually happened. RestTaskaApi applies
- * exactly the same rule.
+ * Two refusals, in two voices. A **raw** value under the minimum, the empty
+ * one included, is the gateway's: it binds `minLength: 3` from the contract and
+ * answers "Invalid request parameters" before sign-in (probed 2026-10-19, see
+ * `SEARCH_QUERY_MIN_LENGTH`); issue-service's own check counts the same raw
+ * characters and is never reached. Then a value that is long enough raw but
+ * not once trimmed — `"ab "` — is refused in the **client's** words
+ * (`SEARCH_QUERY_TOO_SHORT_MESSAGE`), because that is what `RestTaskaApi`
+ * does before sending; the server itself would search the padded text and
+ * find nothing. The trimmed value is what gets searched.
  */
 const requireSearchQuery = (raw: string | undefined): string | null => {
   if (raw === undefined) return null;
+  if (raw.length < SEARCH_QUERY_MIN_LENGTH) {
+    throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+  }
   const query = raw.trim();
   if (query.length < SEARCH_QUERY_MIN_LENGTH) {
     throw new MockApiError("INVALID_ARGUMENT", SEARCH_QUERY_TOO_SHORT_MESSAGE);
@@ -1058,7 +1069,9 @@ const OUTBOX_TABLE = "outbox_events";
  * denormalised login, so neither has to be a user the rest of the seed knows.
  * Some rows have no request id, some no old value (an invitation creates
  * something) and some no new value (a session revoked is gone); secrets inside
- * the documents are already `"***"`, as the server masks them.
+ * the documents are already `"***"`, as the server masks them. The documents
+ * are spelt as the audit route spells them, compact and in jsonb's key order
+ * (`jsonbCompact`).
  *
  * Every row has an id, as every row on the stand does (backend PR #197): a
  * lowercase UUID, fixed per row so a test can name one, and in no particular
@@ -1078,40 +1091,40 @@ function seedAuditEntries(): AuditEntry[] {
       targetService: "auth",
       targetTable: "users",
       reason: "Left the company",
-      oldValue: JSON.stringify({ status: "ACTIVE" }),
-      newValue: JSON.stringify({ status: "BLOCKED" }),
+      oldValue: jsonbCompact({ status: "ACTIVE" }),
+      newValue: jsonbCompact({ status: "BLOCKED" }),
     },
     {
       action: "UNBLOCK_USER",
       targetService: "auth",
       targetTable: "users",
       reason: "Came back from leave",
-      oldValue: JSON.stringify({ status: "BLOCKED" }),
-      newValue: JSON.stringify({ status: "ACTIVE" }),
+      oldValue: jsonbCompact({ status: "BLOCKED" }),
+      newValue: jsonbCompact({ status: "ACTIVE" }),
     },
     {
       action: "RESET_CREDENTIAL_LOCKOUT",
       targetService: "auth",
       targetTable: "credentials",
       reason: "Identity confirmed by phone",
-      oldValue: JSON.stringify({ status: "LOCKED", failedAttempts: 5, passwordHash: "***" }),
-      newValue: JSON.stringify({ status: "ACTIVE", failedAttempts: 0, passwordHash: "***" }),
+      oldValue: jsonbCompact({ status: "LOCKED", failedAttempts: 5, passwordHash: "***" }),
+      newValue: jsonbCompact({ status: "ACTIVE", failedAttempts: 0, passwordHash: "***" }),
     },
     {
       action: "RETRY_OUTBOX_EVENT",
       targetService: "project",
       targetTable: "outbox_events",
       reason: "Kafka producer is back",
-      oldValue: JSON.stringify({ status: "FAILED", attempts: 5, lastErrorMessage: "Failed to construct kafka producer" }),
-      newValue: JSON.stringify({ status: "NEW", attempts: 0, lastErrorMessage: null }),
+      oldValue: jsonbCompact({ status: "FAILED", attempts: 5, lastErrorMessage: "Failed to construct kafka producer" }),
+      newValue: jsonbCompact({ status: "NEW", attempts: 0, lastErrorMessage: null }),
     },
     {
       action: "RETRY_OUTBOX_EVENT",
       targetService: "issue",
       targetTable: "outbox_events",
       reason: "Stuck in PROCESSING after the deploy",
-      oldValue: JSON.stringify({ status: "PROCESSING", attempts: 2 }),
-      newValue: JSON.stringify({ status: "NEW", attempts: 0 }),
+      oldValue: jsonbCompact({ status: "PROCESSING", attempts: 2 }),
+      newValue: jsonbCompact({ status: "NEW", attempts: 0 }),
     },
     {
       action: "CREATE_INVITATION",
@@ -1119,14 +1132,14 @@ function seedAuditEntries(): AuditEntry[] {
       targetTable: "invitations",
       reason: "New contractor",
       oldValue: null,
-      newValue: JSON.stringify({ email: "c****r@example.com", token: "***", expiresAt: "2026-10-16T00:00:00Z" }),
+      newValue: jsonbCompact({ email: "c****r@example.com", token: "***", expiresAt: "2026-10-16T00:00:00Z" }),
     },
     {
       action: "REVOKE_SESSIONS",
       targetService: "auth",
       targetTable: "sessions",
       reason: "Laptop reported stolen",
-      oldValue: JSON.stringify({ activeSessions: 3, refreshToken: "***" }),
+      oldValue: jsonbCompact({ activeSessions: 3, refreshToken: "***" }),
       newValue: null,
     },
   ];
@@ -1158,27 +1171,50 @@ function seedAuditEntries(): AuditEntry[] {
 }
 
 /**
+ * A JSON value with its objects' keys in jsonb's own storage order — shorter
+ * keys first, equal lengths by their bytes — which is the order every reader
+ * of a `jsonb` column gets them back in, whoever wrote them in what order.
+ * `keyGap` and `itemGap` are what goes after a key and between members; the
+ * two spellings this store needs are `jsonbText` and `jsonbCompact` below.
+ */
+function jsonbOrdered(value: unknown, keyGap: string, itemGap: string): string {
+  if (Array.isArray(value)) return `[${value.map((item) => jsonbOrdered(item, keyGap, itemGap)).join(itemGap)}]`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).sort((a, b) => a.length - b.length || byText(a, b));
+    const members = keys.map(
+      (key) => `${JSON.stringify(key)}${keyGap}${jsonbOrdered((value as Record<string, unknown>)[key], keyGap, itemGap)}`,
+    );
+    return `{${members.join(itemGap)}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
  * A JSON value as PostgreSQL prints a `jsonb` column — which is how the
  * read-only table API hands one over: as **text in a string**, not as a JSON
  * value (probed 2026-10-19 on `admin.admin_audit_log`, request id
  * `940a576d-2d14-483d-9377-7e1b71fbf5ad`).
  *
  * An approximation of `jsonb_out`, close enough to read as the stand does:
- * `": "` after a key and `", "` between members, and an object's keys in
- * jsonb's own storage order — shorter keys first, equal lengths by their bytes
- * — which is why the probed `{"status": …, "lockedUntil": …, "lastFailedAt":
- * …, "failedAttempts": …}` is not in the order anybody wrote it. Numbers are
+ * `": "` after a key and `", "` between members, in jsonb's key order — which
+ * is why the probed `{"status": …, "lockedUntil": …, "lastFailedAt": …,
+ * "failedAttempts": …}` is not in the order anybody wrote it. Numbers are
  * printed as JavaScript prints them, where PostgreSQL keeps a `numeric`'s own
  * digits; nothing in this seed tells the two apart.
  */
 function jsonbText(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(jsonbText).join(", ")}]`;
-  if (value !== null && typeof value === "object") {
-    const keys = Object.keys(value).sort((a, b) => a.length - b.length || byText(a, b));
-    const members = keys.map((key) => `${JSON.stringify(key)}: ${jsonbText((value as Record<string, unknown>)[key])}`);
-    return `{${members.join(", ")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
+  return jsonbOrdered(value, ": ", ", ");
+}
+
+/**
+ * The same document as the audit route sends it: admin-service reads the
+ * `jsonb` back into a `JsonNode`, masks it, and prints it with Jackson's
+ * `toString()` — compact, but in the key order the column handed over. So the
+ * Audit section's detail and the Data section's row card show one entry's keys
+ * in one order, as they do on the stand.
+ */
+function jsonbCompact(value: unknown): string {
+  return jsonbOrdered(value, ":", ",");
 }
 
 /** `yyyy-MM-dd` and a real day of the calendar — the only date spelling the audit read accepts. */
@@ -2748,16 +2784,18 @@ export class MockTaskaStore {
   }
 
   /**
-   * `GET /issues/search`, from the gateway probe of 2026-08-23 — which the
-   * contract has agreed with since backend PR #200 put the minimum of three
-   * and the empty-string 400 into it — and from the order that PR declares.
+   * `GET /issues/search`, as the gateway answers it since backend PR #200 put
+   * the minimum of three into the contract it generates its controller from,
+   * and in the order that PR declares.
    *
    * The semantics that matter, because the e2e suite runs against this and
    * would otherwise pass cases the deployed gateway refuses: a query below
    * `SEARCH_QUERY_MIN_LENGTH` (the empty string included) is an
-   * `INVALID_ARGUMENT`, an *absent* query is "no text filter"; the match is a
-   * case-insensitive substring over `issueKey` OR `summary` OR `description`;
-   * every other parameter ANDs onto it; the answer is newest first, `id`
+   * `INVALID_ARGUMENT` — the gateway's "Invalid request parameters" for a raw
+   * value under three, see `requireSearchQuery` — an *absent* query is "no
+   * text filter"; the match is a case-insensitive substring over `issueKey` OR
+   * `summary` OR `description`; every other parameter ANDs onto it; the answer
+   * is newest first, `id`
    * descending among equal instants; `totalCount` counts the whole matching set
    * and the page is sliced after; and with no `projectId` the search covers the
    * projects this user can see — not every project in the store.
@@ -4304,7 +4342,9 @@ export class MockTaskaStore {
               // (`0001-admin-audit-log.sql`), in its column order and with no
               // column marked sensitive — the catalog's `admin` entry names
               // none. Its rows are the Audit section's seed, so the two views
-              // of the log agree.
+              // of the log agree: the same ids, and each document's keys in
+              // jsonb's one order, spaced as each route spaces them (see
+              // `jsonbCompact` and the rows in `adminRowsFor`).
               name: "admin_audit_log",
               primaryKey: "id",
               columns: [
@@ -4691,11 +4731,11 @@ export class MockTaskaStore {
    * order the request meets each check:
    *
    * - a date in any spelling but `yyyy-MM-dd`, an `actorUserId` that is not a
-   *   UUID, and a `pageSize` outside 1–100 (or a page or size that is not a
-   *   whole number) are refused by the gateway's parameter validation before
-   *   anything else, the role included: `INVALID_ARGUMENT` (400), "Invalid
-   *   request parameters" — probed tokenless for `pageSize` on 2026-10-19, see
-   *   `TaskaApi.listAuditEntries`;
+   *   UUID, a `pageSize` outside 1–100, a page past `int32` and a page or size
+   *   that is not a whole number are refused by the gateway's parameter
+   *   validation before anything else, the role included: `INVALID_ARGUMENT`
+   *   (400), "Invalid request parameters" — probed tokenless for `pageSize` and
+   *   `page` on 2026-10-19, see `TaskaApi.listAuditEntries`;
    * - then `GLOBAL_ADMIN` only, `PERMISSION_DENIED` (403), "User doesn't have
    *   permission";
    * - then a `from` after `to`, admin-service's `INVALID_ARGUMENT` (400) in its
@@ -4727,7 +4767,12 @@ export class MockTaskaStore {
       !Number.isInteger(pageSize) ||
       pageSize < 1 ||
       pageSize > 100 ||
-      !Number.isInteger(requestedPage)
+      !Number.isInteger(requestedPage) ||
+      // `page` is `format: int32` on the wire, where it is this page less one:
+      // probed 2026-10-19, `page=2147483647` reaches sign-in (401,
+      // `36256d82-dcb4-40e3-b861-38be1f590e3e`) and `page=2147483648` does not
+      // bind (400, `7f84f3a1-aa67-4c52-b970-a2947433bfe9`).
+      requestedPage - 1 > INT32_MAX
     ) {
       throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
     }
@@ -5268,13 +5313,21 @@ export class MockTaskaStore {
     if (service === "admin" && table === "admin_audit_log") {
       // The Audit section's own entries, column for column — thirty of them,
       // so paging is a real control here too. The three `jsonb` columns arrive
-      // as text, the way the stand sends them (`jsonbText`): `actor_roles` is
-      // the actor's global role as admin-service writes it (`valueToTree(role)`,
-      // a JSON string, so `"\"GLOBAL_ADMIN\""` on the wire), and the two
-      // documents are reprinted in jsonb's form rather than passed on in the
-      // compact form the audit route's seed holds. A document that does not
-      // parse is passed on as it is. `created_at` is the seed's own spelling,
-      // to the second with `Z`, which is what the probe showed for this column.
+      // as text, the way the stand sends them (`jsonbText`).
+      //
+      // `actor_roles` is what admin-service wrote, and it writes two shapes
+      // (read at backend develop `398285cde074`): the user operations store the
+      // actor's one global role, `valueToTree(role)` — a JSON string, so
+      // `"\"GLOBAL_ADMIN\""` on the wire — while the outbox retry stores the
+      // whole list, `valueToTree(getActorRolesList())`
+      // (`GrpcAdminReadonlyService`) — a JSON array, `"[\"GLOBAL_ADMIN\"]"`.
+      //
+      // The two documents are the audit route's own, re-read: the seed holds
+      // them in jsonb's key order already (`jsonbCompact`), so only the spacing
+      // changes between the two views and the keys run in one order in both. A
+      // document that does not parse is passed on as it is. `created_at` is the
+      // seed's own spelling, to the second with `Z`, which is what the probe
+      // showed for this column.
       const document = (text: string | null): string | null => {
         if (text === null) return null;
         try {
@@ -5288,7 +5341,7 @@ export class MockTaskaStore {
         request_id: entry.requestId,
         actor_user_id: entry.actorUserId,
         actor_login: entry.actorLogin,
-        actor_roles: jsonbText("GLOBAL_ADMIN"),
+        actor_roles: entry.action === "RETRY_OUTBOX_EVENT" ? jsonbText(["GLOBAL_ADMIN"]) : jsonbText("GLOBAL_ADMIN"),
         action: entry.action,
         target_service: entry.targetService,
         target_table: entry.targetTable,

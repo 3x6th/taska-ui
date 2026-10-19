@@ -1664,16 +1664,21 @@ describe("MockTaskaApi", () => {
    * gateway answers 400 to.
    */
   describe("issue search", () => {
-    it("refuses a query below the minimum, and the empty string with it", async () => {
-      await expect(api.searchIssues({ query: "bo" })).rejects.toMatchObject({
+    it("refuses a query below the minimum, and the empty string with it, in the gateway's words", async () => {
+      // The gateway binds `minLength: 3` and answers before sign-in (probed
+      // 2026-10-19, `f4857c3e…` and `69e851a1…`); issue-service's own sentence
+      // is never reached for these.
+      const binding = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
+      await expect(api.searchIssues({ query: "bo" })).rejects.toMatchObject(binding);
+      await expect(api.searchIssues({ query: "" })).rejects.toMatchObject(binding);
+      // Whitespace is not length: the field the reader types into trims, and so
+      // does the rest leg before sending — so the mock refuses " a " too, in the
+      // client's own words, where the gateway would take three characters and
+      // search them for one.
+      await expect(api.searchIssues({ query: " a " })).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
         message: "Search query must be at least 3 characters",
       });
-      await expect(api.searchIssues({ query: "" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-      // Whitespace is not length: the field the reader types into trims, and so
-      // does this, or " a " would be a legal three-character search for one
-      // character.
-      await expect(api.searchIssues({ query: " a " })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     });
 
     it("answers newest first, and breaks a tie in time by id, descending", async () => {
@@ -2257,8 +2262,29 @@ describe("MockTaskaApi", () => {
       const [row] = rows;
       expect(row.old_value).toBe('{"status": "LOCKED", "passwordHash": "***", "failedAttempts": 5}');
       expect(row.new_value).toBe('{"status": "ACTIVE", "passwordHash": "***", "failedAttempts": 0}');
+      // A user operation stores the actor's one role, a JSON string.
       expect(row.actor_roles).toBe('"GLOBAL_ADMIN"');
       expect(row.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+
+      // The audit route sends the same document compact, as Jackson prints the
+      // `JsonNode` it read back — but in the same key order, so the Audit
+      // section's detail and the Data section's card list one entry's keys
+      // alike.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const audit = await api.listAuditEntries({ action: "RESET_CREDENTIAL_LOCKOUT", pageSize: 100 });
+      const entry = audit.entries.find((item) => item.id === row.id)!;
+      expect(entry.oldValue).toBe('{"status":"LOCKED","passwordHash":"***","failedAttempts":5}');
+      expect(Object.keys(JSON.parse(entry.oldValue!))).toEqual(Object.keys(JSON.parse(String(row.old_value))));
+
+      // The outbox retry stores the whole role list instead, a JSON array.
+      const { rows: retries } = await api.listAdminRows({
+        service: "admin",
+        table: "admin_audit_log",
+        pageSize: 100,
+        filters: [{ column: "action", operator: "equals", value: "RETRY_OUTBOX_EVENT" }],
+      });
+      expect(retries.length).toBeGreaterThan(0);
+      expect(retries.every((retry) => retry.actor_roles === '["GLOBAL_ADMIN"]')).toBe(true);
 
       // A document the log does not hold stays `null`, not the text "null".
       const { rows: all } = await api.listAdminRows({ service: "admin", table: "admin_audit_log", pageSize: 100 });
@@ -2611,6 +2637,10 @@ describe("MockTaskaApi", () => {
       await expect(api.listAuditEntries({ pageSize: 0 })).rejects.toMatchObject(binding);
       await expect(api.listAuditEntries({ pageSize: 20.5 })).rejects.toMatchObject(binding);
       await expect(api.listAuditEntries({ page: 1.5 })).rejects.toMatchObject(binding);
+      // The wire's page is this one less one, and `int32`: 2147483647 binds,
+      // 2147483648 does not (probed 2026-10-19).
+      await expect(api.listAuditEntries({ page: 2147483649 })).rejects.toMatchObject(binding);
+      expect((await api.listAuditEntries({ page: 2147483648 })).entries).toEqual([]);
       expect((await api.listAuditEntries({ pageSize: 100 })).pagination.pageSize).toBe(100);
       expect((await api.listAuditEntries({ pageSize: 1 })).entries).toHaveLength(1);
       // The rest leg sends `max(0, page - 1)`, so a domain page below 1 is the

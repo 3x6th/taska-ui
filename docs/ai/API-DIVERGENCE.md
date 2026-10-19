@@ -897,14 +897,24 @@ Same rule as above: "Closed by" is settled, the rest is live.
   - Undeployed, the route answers the static-resource 404; the section reads
     that through `isUndeployedRoute` and says so rather than drawing an empty
     table.
-  - `AuditEntryDto` declares nothing `required` although eight columns are
-    `NOT NULL`; `rest` maps every field defensively to `string | null` (review
+  - `AuditEntryDto` declares nothing `required` although nine of its fields
+    come from `NOT NULL` columns (eight plus `id`); `rest` maps every field defensively to `string | null` (review
     remark on TAS-160, not filed).
   - `oldValue`/`newValue` are JSON text in a string, sensitive values already
     `"***"`; pretty-printed when they parse, shown as sent when they do not.
     Masking turns a document that is not a JSON object into an absent field
     (`AdminReadonlyServiceImpl`, review remark on TAS-160), so an array or
     scalar old/new value arrives as `null`.
+  - **The same documents read through Data are not masked at all.** A retry of
+    an outbox event writes the whole event snapshot, payload included, into
+    `old_value`/`new_value` (`OutboxRetryServiceImpl`, at `398285c`), and the
+    `admin` catalog entry declares no sensitive columns or JSON fields, so
+    `GET /readonly/admin/admin_audit_log` returns a retried `USER_INVITED`
+    event's `rawInviteToken` and email in clear while this route masks them.
+    Filed as [TAS-296](https://jira.ozero.dev/browse/TAS-296) (High, 2026-10-19;
+    read in code, no such row on the stand yet). The client does not mask and
+    will not; **the mock is kinder than the server here** — its Data rows are
+    reprinted from already-masked seed documents.
 - **The mock** pages newest first with `id` as the tiebreak, refuses a
   non-UUID actor, a bad date and an out-of-range `pageSize` with "Invalid
   request parameters" before the role check (as the edge does), a non-admin
@@ -3435,7 +3445,7 @@ nullable only inside the gateway mapper.**
   hygiene ticket, and is not written onto it. Nothing in the client changes
   when it lands.
 
-### `GET /issues/search` rejects the query length its own contract permits, and ignores filter values it does not understand
+### `GET /issues/search` ignores filter values it does not understand — the query-length half closed by contract in TAS-265
 
 - **Endpoint:** `GET /api/v1/issues/search`, new in backend `4241be2ec144`
   (TAS-110), connected by [TAS-179](https://jira.ozero.dev/browse/TAS-179).
@@ -3487,6 +3497,18 @@ found"`.
     query and not for an empty or one-character one, where the edge answers
     `"Invalid request parameters"` instead. Only a developer reading a thrown
     error ever sees the difference — the UI never sends either.
+  - **Since backend PR #200 deployed (develop `398285c`, 2026-10-19) the edge
+    holds the line at 3.** The gateway generates its controller from
+    `openapi.yml`, now `minLength: 3`, so a raw `query` under three characters
+    (and an empty one) is refused at binding **before authentication** with
+    `400 INVALID_ARGUMENT "Invalid request parameters"`: tokenless probes
+    `?query=ab` (`f4857c3e-98fa-4450-a193-9146767cea70`) and `?query=`
+    (`69e851a1-9e3f-4762-b8a5-2bac1de81ee0`) answer that, `?query=abc` reaches
+    `401` (`ae6f1390-aa64-4828-9fd2-133470cdc8f1`). issue-service's "Search
+    query must be at least 3 characters" is unreachable at the default config.
+    `SEARCH_QUERY_TOO_SHORT_MESSAGE` stays as the client's own refusal text,
+    no longer described as the gateway's; the mock answers "Invalid request
+    parameters" like the edge (TAS-265, `release-reviewer`'s blocker).
 - **An empty `query` is a `400`; an absent `query` is a `200`.** This one has a
   real trap in it: the obvious implementation sets the parameter on every
   keystroke and therefore sends `query=` the moment the field is cleared,

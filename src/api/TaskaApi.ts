@@ -148,22 +148,33 @@ export interface BoardParams {
 }
 
 /**
- * The shortest `query` `GET /issues/search` will answer — **three**, measured
- * against the deployed gateway on 2026-08-23 and the contract's own
- * `minLength: 3` since backend PR #200, which also says the number is
- * issue-service configuration and states its default. It is exported so the
- * mock, the REST mapper and every field in the UI read the same number: a UI
- * that searched from two characters would meet a `400` at the boundary and
- * nowhere else, which is the worst place to find a gap.
+ * The shortest `query` `GET /issues/search` will answer — **three**, the
+ * contract's `minLength: 3` since backend PR #200. The gateway generates its
+ * controller from that contract, so it refuses a raw `query` under three
+ * characters, the empty one included, while binding the request — before
+ * sign-in, as 400 `INVALID_ARGUMENT` "Invalid request parameters",
+ * `details: null`. Probed without a token 2026-10-19: `?query=ab` 400
+ * (`f4857c3e-98fa-4450-a193-9146767cea70`), `?query=` 400
+ * (`69e851a1-9e3f-4762-b8a5-2bac1de81ee0`), `?query=abc` 401
+ * (`ae6f1390-aa64-4828-9fd2-133470cdc8f1`). It is exported so the mock, the
+ * REST mapper and every field in the UI read the same number: a UI that
+ * searched from two characters would meet a `400` at the boundary and nowhere
+ * else, which is the worst place to find a gap.
  *
- * The empty string is a `400` too — the contract says so since the same PR —
- * while omitting the parameter is a `200` with everything. So an absent query
- * means "no text filter" and an *empty* one is a rejected query, never a
- * silent "show me everything".
+ * Omitting the parameter is a `200` with everything. So an absent query means
+ * "no text filter" and an *empty* one is a rejected query, never a silent
+ * "show me everything".
  */
 export const SEARCH_QUERY_MIN_LENGTH = 3;
 
-/** The gateway's own wording for a query below that minimum, reproduced verbatim. */
+/**
+ * The client's own refusal of a query below that minimum — what `RestTaskaApi`
+ * throws instead of spending the request. The words are issue-service's
+ * (`IssueServiceImpl.searchIssues`), but issue-service never gets to say them
+ * at its default configuration: the gateway's binding refuses the same query
+ * first, in its own sentence (see `SEARCH_QUERY_MIN_LENGTH`). So this is not
+ * an answer the server gives, and nothing should read it as one.
+ */
 export const SEARCH_QUERY_TOO_SHORT_MESSAGE = `Search query must be at least ${SEARCH_QUERY_MIN_LENGTH} characters`;
 
 /**
@@ -202,9 +213,8 @@ export const ADMIN_WRITE_REASON_MAX_LENGTH = 550;
 
 /**
  * What every implementation says when the reason is longer than that, worded
- * once here for the same reason `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: two copies
- * of a sentence are two chances to drift, and the whole point of this pair of
- * guards is that a caller cannot tell mock from rest.
+ * once here: two copies of a sentence are two chances to drift, and the whole
+ * point of this pair of guards is that a caller cannot tell mock from rest.
  *
  * Not the server's own wording, because the server has none to reproduce. The
  * 550 is stated in exactly one place on the backend — `maxLength` in the
@@ -337,8 +347,8 @@ export function isRetryableOutboxService(service: string): service is RetryableO
 export interface SearchIssuesParams {
   /**
    * Absent means "no text filter". Present means it is searched, so anything
-   * shorter than `SEARCH_QUERY_MIN_LENGTH` is rejected by the implementation
-   * before it reaches the wire rather than sent and refused.
+   * shorter than `SEARCH_QUERY_MIN_LENGTH` is refused: the rest leg refuses it
+   * before it reaches the wire, and the mock as the gateway would.
    */
   query?: string;
   /** Absent searches every project the caller can see. Unknown id → `NOT_FOUND`. */
@@ -904,10 +914,12 @@ export interface TaskaApi {
    * total this frontend has been able to print.
    *
    * A `query` shorter than `SEARCH_QUERY_MIN_LENGTH` — the empty string
-   * included — rejects with `INVALID_ARGUMENT` in every implementation, without
-   * a request. That is not politeness: the gateway answers `400` for exactly
-   * these, so a mock that quietly accepted them would hide the failure from the
-   * e2e suite.
+   * included — rejects with `INVALID_ARGUMENT` in every implementation. The
+   * rest leg refuses it without a request, in the client's own words
+   * (`SEARCH_QUERY_TOO_SHORT_MESSAGE`); the mock answers what the gateway
+   * answers when such a query does reach it, "Invalid request parameters". That
+   * is not politeness: the gateway refuses exactly these, so a mock that quietly
+   * accepted them would hide the failure from the e2e suite.
    *
    * Newest first: `createdAt` descending, then `id` descending, as the route
    * declares since backend PR #200. The mock sorts the same way.
@@ -1490,7 +1502,10 @@ export interface TaskaApi {
    *   `pageSize=100` reached authentication and answered 401
    *   (`ed1bc134-db9e-41f8-b55a-32d9e64b8d01`). The mock refuses the same way;
    *   the section always asks for 20. The wire's `page` has `minimum: 0`,
-   *   which the rest leg cannot break: it sends `max(0, page - 1)`.
+   *   which the rest leg cannot break: it sends `max(0, page - 1)`. Its other
+   *   bound is `int32`: `page=2147483647` reaches sign-in (401,
+   *   `36256d82-dcb4-40e3-b861-38be1f590e3e`), `page=2147483648` is the same
+   *   binding 400 (`7f84f3a1-aa67-4c52-b970-a2947433bfe9`).
    * - **Dates are `yyyy-MM-dd` only**, whole UTC days, both ends inclusive. Any
    *   other spelling — and an `actorUserId` that is not a UUID — is refused
    *   by the gateway's own parameter binding before authentication: 400
@@ -1710,9 +1725,9 @@ export interface TaskaApi {
  * deployed, the list route answered `401` without a token on 2026-09-16, and
  * TAS-224 took that branch out.
  *
- * Pinned here rather than inline in a component for the reason
- * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a
- * measurement, and it belongs where the measurement can be read.
+ * Pinned here rather than inline in a component: a gateway string the UI
+ * branches on is a measurement, and it belongs where the measurement can be
+ * read.
  *
  * The *signature* removes itself; the *code* does not, and this build has now
  * shipped the worked example three times — the attachments branch above is the

@@ -1938,8 +1938,10 @@ describe("RestTaskaApi issue search", () => {
     const fetchStub = stubFetch({ items: [], totalCount: 0 });
     const api = new RestTaskaApi();
 
-    // Two characters is below the contract's `minLength: 3`; the empty string
-    // is the contract's own named 400.
+    // Two characters is below the contract's `minLength: 3`, and so is the
+    // empty string; the gateway would answer both with its binding 400. The
+    // sentence is the client's own (`SEARCH_QUERY_TOO_SHORT_MESSAGE`), not the
+    // gateway's "Invalid request parameters", because nothing was asked.
     await expect(api.searchIssues({ query: "bo" })).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
       status: 400,

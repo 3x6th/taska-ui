@@ -3670,10 +3670,10 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
 
 ### Left by TAS-265 (the frontend for merged backend #197–#200, 2026-10-19)
 
-- **The mock's attachment confirm still answers "Object not found in storage"**
-  (`frontend-builder`). Not checked against the gateway's sentence for the
-  attachment path; outside #198, which is avatars only. One read of
-  `AttachmentServiceImpl` at develop settles it.
+- ~~**The mock's attachment confirm still answers "Object not found in storage"**
+  (`frontend-builder`).~~ It matches: `AttachmentServiceImpl.checkObjectExistsInStorage`
+  raises `NOT_FOUND "Object not found in storage"` at develop `398285c`
+  (`api-contract-guard`, `release-reviewer`, TAS-265 verdicts).
 - **The lock refusal's `details.lockedUntil` has never been seen on the wire.**
   The client reads it first and keeps the sentence parse as a fallback
   (`API-DIVERGENCE.md`, the lock-deadline entry). Probing needs a throwaway
@@ -3691,15 +3691,24 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   gateway's `AdminDataMapper` names the first flagged column (`project_id`) as the
   table's key, so the console would link member rows by project, and a by-id read
   would match the project rather than the member. A backend question first.
-- **`admin_audit_log` through the Data section is not masked by the audit
-  route's rules** (`frontend-builder`, probed 2026-10-19,
-  `940a576d-2d14-483d-9377-7e1b71fbf5ad`). The `admin` catalog entry declares no
-  sensitive columns and no sensitive JSON fields, so `old_value`/`new_value` come
-  back as stored. Nothing sensitive was in them on the stand (lockout counters and
-  statuses only), but the audit route masks with TAS-104's rules and this one does
-  not. Backend question: should the Data read apply the same JSON masking, or is
-  the audit log trusted to have masked at write time?
+- ~~**`admin_audit_log` through the Data section is not masked by the audit
+  route's rules** — a backend question.~~ Answered by `api-contract-guard` from
+  the write path and filed as [TAS-296](https://jira.ozero.dev/browse/TAS-296)
+  (High): an outbox retry writes the event snapshot with its payload, so a
+  retried `USER_INVITED` puts `rawInviteToken` and the email into the log, and
+  Data returns them in clear. Not on the stand yet (no such row, probe
+  `940a576d-2d14-483d-9377-7e1b71fbf5ad`). TAS-296 also carries the two shapes
+  of `actor_roles` (a string for user operations, an array for outbox retry).
 - **`topbar-popovers` › "a full page of results is never clipped" is flaky**
   (`frontend-builder`, measured 3 of 12 on main's order, 1 of 12 after TAS-265):
   the last option overshoots by `1.5e-5` px against an exact `<= 0`. Older than
-  TAS-265; a sub-pixel tolerance in that assertion is the fix.
+  TAS-265. **Fixed in TAS-265:** both float comparisons in that test take a
+  layout-unit (1/64 px) tolerance; 40 of 40 with `--repeat-each=40`.
+- **"1 issues" on a project card** (`art-director`, TAS-265 verdict AD-3, older
+  than TAS-265): the count is not pluralised (`ProjectsScreen.tsx`). One-line
+  copy fix; take it with the next projects-screen story.
+- **The mock's comment, link and attachment lists carry no `id` tiebreak**
+  (`api-contract-guard`, TAS-265 F3). The contract now declares one for each;
+  the mock's ids are random, so a tiebreak would sort equal timestamps
+  randomly, and insertion order stands in. Harmless while seeds never share a
+  timestamp.
