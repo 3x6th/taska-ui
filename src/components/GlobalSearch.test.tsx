@@ -27,9 +27,10 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.ho
   interface Hit {
     id: string;
     issueKey: string;
-    issueType: "TASK" | "BUG" | "STORY";
+    /** Any code: the search route can carry a type or a priority this build has no name for (TAS-173). */
+    issueType: string;
     summary: string;
-    priority: "LOW" | "MEDIUM" | "HIGH";
+    priority: string;
     assigneeId: string | null;
     /**
      * The one planning field `IssueShortResponseDto` carries
@@ -63,6 +64,21 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.ho
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
+    // `GET /meta` (TAS-173): the stand's Russian names, plus an English one for
+    // a type this build does not know — what a hit of that type is called.
+    getMeta: async () => ({
+      issueTypes: [
+        { code: "TASK", name: "Задача" },
+        { code: "EPIC", name: "Epic" },
+      ],
+      priorities: [
+        { code: "HIGH", name: "Высокий" },
+        { code: "URGENT", name: "Срочный" },
+      ],
+      linkTypes: null,
+      notificationTypes: null,
+      userStatuses: null,
+    }),
     listProjects: async () => {
       state.projectReads += 1;
       return [{ id: "project-tas", projectKey: "TAS", name: "TAS", createdBy: "user-anna", createdAt: now, updatedAt: now, archivedAt: null }];
@@ -305,5 +321,53 @@ describe("the top bar's global search", () => {
     fireEvent.change(box, { target: { value: "board" } });
 
     expect(await screen.findByText(/No issues match “board”/)).toBeVisible();
+  });
+
+  // TAS-173: a hit of a type, a priority and a status this build does not know
+  // is a row like any other — named by the one label rule, never indexed into a
+  // table that has no entry for it, which is what took the top bar down.
+  it("draws a hit of an unknown type, priority and status by the label rule", async () => {
+    seedHits([
+      {
+        ...hit("WEB-15", "Checkout redesign"),
+        issueType: "EPIC",
+        priority: "URGENT",
+        projectId: "project-web",
+        statusKey: "IN_REVIEW",
+      },
+    ]);
+    const box = renderSearch();
+
+    fireEvent.change(box, { target: { value: "checkout" } });
+
+    const option = await screen.findByRole("option", { name: /WEB-15/ });
+    // The type by its English /meta name, the priority as its code — /meta
+    // names it in Russian — and lowercased only where the word is the build's.
+    expect(await within(option).findByText("Epic, URGENT priority")).toHaveClass("visually-hidden");
+    expect(within(option).getByText("URGENT")).toHaveClass("global-search-note");
+    expect(within(option).getByText("IN_REVIEW")).toHaveClass("global-search-note");
+    expect(option.querySelector(".type-chip")).toHaveClass("is-unknown");
+  });
+
+  it("stands in for a row it cannot draw, and still opens it", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    seedHits([
+      { ...hit("TAS-101", "Fine"), projectId: "project-tas" },
+      { ...hit("TAS-102", { text: "not a string" } as unknown as string), projectId: "project-tas" },
+    ]);
+    const box = renderSearch();
+
+    fireEvent.change(box, { target: { value: "board" } });
+
+    const list = await screen.findByRole("listbox", { name: "Issue search results" });
+    const options = within(list).getAllByRole("option");
+    expect(options[0]).toHaveTextContent("Fine");
+    expect(options[1]).toHaveTextContent("TAS-102This result could not be shown.");
+    // An empty, hidden chip slot keeps the key in its column; no type is claimed.
+    expect(options[1].querySelector(".type-chip")).toHaveClass("is-placeholder");
+    expect(options[1].querySelector(".type-chip")).toHaveAttribute("aria-hidden", "true");
+    fireEvent.click(options[1]);
+    expect(screen.getByTestId("address")).toHaveTextContent("/projects/project-tas/issues/tas-102");
+    consoleError.mockRestore();
   });
 });

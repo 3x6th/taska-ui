@@ -80,16 +80,18 @@ import type {
   AvatarUploadTicket,
   Board,
   BoardColumn,
+  DictionaryEntry,
+  EnumDictionaries,
   Issue,
   IssueAttachment,
   IssueComment,
   IssueHistoryEvent,
   IssueLink,
-  IssueLinkType,
-  IssuePriority,
+  IssueLinkTypeCode,
+  IssuePriorityCode,
   IssueSearchHit,
-  IssueStatus,
-  IssueType,
+  IssueStatusKey,
+  IssueTypeCode,
   IssueWatcher,
   IssueWatchers,
   IssueWorklog,
@@ -190,6 +192,81 @@ const WORKFLOW_ID = "11111111-1111-1111-1111-111111111111";
 const TODO_STATUS_ID = "22222222-2222-2222-2222-222222222222";
 const IN_PROGRESS_STATUS_ID = "33333333-3333-3333-3333-333333333333";
 const DONE_STATUS_ID = "44444444-4444-4444-4444-444444444444";
+/**
+ * An account as this store holds it: its status is one of the four it can
+ * write, never the open code `User.status` admits off the wire (TAS-173) — the
+ * store is the server here, and a server knows its own states.
+ */
+type StoredUser = User & { status: UserStatus };
+
+/** The extra status of WEB's EPIC workflow (TAS-173) — a key this build has no word for. */
+const IN_REVIEW_STATUS_ID = "45454545-4545-4545-4545-454545454545";
+const EPIC_WORKFLOW_ID = "12121212-1212-1212-1212-121212121212";
+
+/**
+ * `GET /meta` as the stand answers it (backend `MetaServiceImpl`, TAS-217,
+ * deployed 2026-10-19): every code of the contract's five enums, each named in
+ * Russian — plus two codes this build does not know, so the frontend's answer
+ * to a value the backend adds before the frontend ships can be clicked through
+ * (TAS-173): `EPIC`, named in English, which the UI prints as "Epic", and
+ * `URGENT`, named in Russian, which it prints as the code. Both are real
+ * values in this store — WEB allows epics, and a listed priority is accepted —
+ * which is what a backend that served them would do.
+ */
+const META: EnumDictionaries = {
+  issueTypes: [
+    { code: "TASK", name: "Задача" },
+    { code: "BUG", name: "Ошибка" },
+    { code: "STORY", name: "История" },
+    { code: "EPIC", name: "Epic" },
+  ],
+  priorities: [
+    { code: "LOW", name: "Низкий" },
+    { code: "MEDIUM", name: "Средний" },
+    { code: "HIGH", name: "Высокий" },
+    { code: "URGENT", name: "Срочный" },
+  ],
+  linkTypes: [
+    { code: "BLOCKS", name: "Блокирует" },
+    { code: "RELATES_TO", name: "Связана с" },
+    { code: "DUPLICATES", name: "Дублирует" },
+  ],
+  notificationTypes: [
+    { code: "ISSUE_ASSIGNED", name: "Назначена задача" },
+    { code: "ISSUE_TRANSITIONED", name: "Сменился статус" },
+    { code: "ISSUE_CREATED", name: "Создана задача" },
+    { code: "ISSUE_UPDATED", name: "Изменена задача" },
+    { code: "ISSUE_DELETED", name: "Удалена задача" },
+    { code: "USER_INVITED", name: "Приглашён пользователь" },
+    { code: "USER_ACTIVATED", name: "Активирован пользователь" },
+    { code: "PROJECT_CREATED", name: "Создан проект" },
+    { code: "MEMBER_ADDED", name: "Добавлен участник" },
+    { code: "MEMBER_UPDATED", name: "Изменена роль участника" },
+    { code: "MEMBER_REMOVED", name: "Удалён участник" },
+  ],
+  userStatuses: [
+    { code: "INVITED", name: "Приглашён" },
+    { code: "ACTIVE", name: "Активен" },
+    { code: "BLOCKED", name: "Заблокирован" },
+    { code: "LOCKED", name: "Залочен" },
+  ],
+};
+
+/**
+ * A request value the dictionary does not list is refused the way develop
+ * refuses it on all three paths this store checks — create, edit and link: the
+ * request DTOs bind priority and link type to their enums, so an unlisted value
+ * fails decoding before any mapper runs, and `GatewayValidationExceptionHandler`
+ * answers 400 `INVALID_ARGUMENT` "Invalid request parameters" for that
+ * `ServerWebInputException` (api-contract-guard, TAS-173). The list here is
+ * the served one, so this store accepts exactly what it tells the client is
+ * selectable.
+ */
+function requireListed(dictionary: readonly DictionaryEntry[] | null, value: string): void {
+  if (!dictionary?.some((entry) => entry.code === value)) {
+    throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+  }
+}
 
 /**
  * File names that steer this mock down a failure branch, matched
@@ -825,18 +902,22 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * deployed gateway turns out to echo the stored type from both ends instead,
  * this map is the one place that changes.
  */
-const inverseViewLinkType: Record<IssueLinkType, string> = {
+const inverseViewLinkTypes: Record<string, string> = {
   BLOCKS: "IS_BLOCKED_BY",
   RELATES_TO: "RELATES_TO",
   DUPLICATES: "IS_DUPLICATED_BY",
 };
+
+/** The view from the receiving end — for a relation this map does not know, the stored code as it is. */
+const inverseViewLinkType = (linkType: string) =>
+  Object.hasOwn(inverseViewLinkTypes, linkType) ? inverseViewLinkTypes[linkType] : linkType;
 
 interface StoredIssueLink {
   id: string;
   projectId: string;
   sourceIssueId: string;
   targetIssueId: string;
-  linkType: IssueLinkType;
+  linkType: IssueLinkTypeCode;
   createdBy: string;
   createdAt: string;
 }
@@ -1133,7 +1214,7 @@ function outboxProblem(row: AdminRow, nowMs: number): keyof typeof OUTBOX_REASON
 }
 
 export class MockTaskaStore {
-  private users: User[];
+  private users: StoredUser[];
   private projects: Project[];
   private membersByProject: Record<string, ProjectMember[]>;
   private issues: Issue[];
@@ -1195,9 +1276,19 @@ export class MockTaskaStore {
    */
   /** The admin audit log (`listAuditEntries`). */
   private auditEntries: AuditEntry[] = seedAuditEntries();
-  private allowedIssueTypesByProject: Record<string, IssueType[]> = {
+  private allowedIssueTypesByProject: Record<string, IssueTypeCode[]> = {
     [OPS_PROJECT_ID]: ["TASK", "BUG"],
+    // WEB also allows EPIC, a type this build has no name or colour for, with
+    // a workflow of its own (`workflowOverrides`) — the project where TAS-173's
+    // unknown values can be seen (TAS-173).
+    [WEB_PROJECT_ID]: ["TASK", "BUG", "STORY", "EPIC"],
   };
+  /**
+   * Workflows other than the default, by project and issue type. WEB's EPIC
+   * workflow adds `IN_REVIEW` between In Progress and Done — a status key this
+   * build does not know, in a category it does.
+   */
+  private workflowOverrides: Record<string, Partial<Record<string, Workflow>>> = {};
   /**
    * The outbox rows, seeded once on first read rather than in the constructor.
    * Their timestamps are relative to *now* — a row has to be genuinely three
@@ -1504,16 +1595,47 @@ export class MockTaskaStore {
       ],
     };
 
+    this.workflowOverrides = {
+      [WEB_PROJECT_ID]: {
+        EPIC: {
+          ...this.workflow,
+          id: EPIC_WORKFLOW_ID,
+          name: "Epic workflow",
+          statuses: [
+            ...this.workflow.statuses,
+            { id: IN_REVIEW_STATUS_ID, statusKey: "IN_REVIEW", name: "In Review", category: "IN_PROGRESS", sortOrder: 25 },
+          ],
+          transitions: [
+            ...this.workflow.transitions,
+            {
+              id: "99999999-9999-9999-9999-999999999991",
+              fromStatusId: IN_PROGRESS_STATUS_ID,
+              toStatusId: IN_REVIEW_STATUS_ID,
+              name: "Send to review",
+              sortOrder: 22,
+            },
+            {
+              id: "99999999-9999-9999-9999-999999999992",
+              fromStatusId: IN_REVIEW_STATUS_ID,
+              toStatusId: DONE_STATUS_ID,
+              name: "Approve",
+              sortOrder: 27,
+            },
+          ],
+        },
+      },
+    };
+
     let minute = 10;
     const issue = (
       projectId: string,
       key: string,
       number: number,
-      issueType: IssueType,
+      issueType: IssueTypeCode,
       summary: string,
       description: string,
-      status: IssueStatus,
-      priority: IssuePriority,
+      status: IssueStatusKey,
+      priority: IssuePriorityCode,
       assigneeId: string | null,
       reporterId: string,
       day: number,
@@ -1708,6 +1830,14 @@ export class MockTaskaStore {
       issue(MOB_PROJECT_ID, "MOB", 5, "TASK", "Push notification permission flow", "Ask for permission after the first assignment, not on launch.", "TODO", "MEDIUM", TOM_ID, MARK_ID, 10),
       issue(MOB_PROJECT_ID, "MOB", 6, "BUG", "Pull-to-refresh duplicates issues", "List occasionally renders duplicates after refresh.", "IN_PROGRESS", "MEDIUM", MARK_ID, TOM_ID, 11),
       issue(OPS_PROJECT_ID, "OPS", 3, "TASK", "Add board endpoint dashboards", "Grafana panels for /board latency.", "TODO", "LOW", TOM_ID, ANNA_ID, 9),
+      // Three values this build does not know, on one project (TAS-173): an
+      // EPIC with the URGENT priority, sitting in its own workflow's IN_REVIEW;
+      // and a task in BLOCKED_BY_QA, a status no workflow of the project
+      // lists, so the board has no column for it. Appended so no seeded id or
+      // timestamp above moves, and worded to stay out of every search the e2e
+      // suite types.
+      issue(WEB_PROJECT_ID, "WEB", 15, "EPIC", "Checkout redesign", "Group the checkout work for the next release.", "IN_REVIEW", "URGENT", SOFIA_ID, ANNA_ID, 13),
+      issue(WEB_PROJECT_ID, "WEB", 16, "TASK", "Payment form QA sign-off", "Waiting on QA for the payment form.", "BLOCKED_BY_QA", "MEDIUM", PRIYA_ID, ANNA_ID, 14),
     ];
 
     this.historyByIssue = Object.fromEntries(
@@ -1763,7 +1893,7 @@ export class MockTaskaStore {
     // Seeded links so the panel has something to show on first load, and so
     // both directions of the view are reachable: TAS-101 reads "Blocks
     // TAS-102", TAS-102 reads "Is blocked by TAS-101".
-    const linkSeed: [string, IssueLinkType, string][] = [
+    const linkSeed: [string, IssueLinkTypeCode, string][] = [
       ["TAS-101", "BLOCKS", "TAS-102"],
       ["TAS-103", "RELATES_TO", "TAS-106"],
       ["TAS-110", "DUPLICATES", "TAS-101"],
@@ -2401,6 +2531,27 @@ export class MockTaskaStore {
    * `color` — the shapes the context sends, not the shapes the separate routes
    * send.
    */
+  /**
+   * `GET /meta`. A copy, so nothing a caller does to the answer reaches the
+   * dictionaries this store checks its writes against.
+   */
+  getMeta(): EnumDictionaries {
+    const copy = (dictionary: DictionaryEntry[] | null) => dictionary?.map((entry) => ({ ...entry })) ?? null;
+    return {
+      issueTypes: copy(META.issueTypes),
+      priorities: copy(META.priorities),
+      linkTypes: copy(META.linkTypes),
+      notificationTypes: copy(META.notificationTypes),
+      userStatuses: copy(META.userStatuses),
+    };
+  }
+
+  /** The workflow an issue of this type follows in this project: its own, or the default. */
+  private workflowFor(projectId: string, issueType: string): Workflow {
+    const overrides = this.workflowOverrides[projectId];
+    return (overrides && Object.hasOwn(overrides, issueType) ? overrides[issueType] : undefined) ?? this.workflow;
+  }
+
   getProjectContext(projectId: string): ProjectContext {
     const project = this.projects.find((item) => item.id === projectId);
     if (!project) {
@@ -2410,7 +2561,6 @@ export class MockTaskaStore {
     if (!member) {
       throw new MockApiError("PERMISSION_DENIED", "You don't have access to this project");
     }
-    const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflow;
     const allowed = this.allowedIssueTypesByProject[projectId] ?? ["TASK", "BUG", "STORY"];
     return {
       project: this.withCurrentUserRole(project),
@@ -2418,10 +2568,10 @@ export class MockTaskaStore {
       members: this.listMembers(projectId),
       labels: this.listProjectLabels(projectId).map(({ id, name, color }) => ({ id, name, color })),
       workflows: Object.fromEntries(
-        allowed.map((issueType) => [
-          issueType,
-          { ...workflow, statuses: [...workflow.statuses], transitions: [...workflow.transitions] },
-        ]),
+        allowed.map((issueType) => {
+          const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflowFor(projectId, issueType);
+          return [issueType, { ...workflow, statuses: [...workflow.statuses], transitions: [...workflow.transitions] }];
+        }),
       ),
     };
   }
@@ -2475,7 +2625,7 @@ export class MockTaskaStore {
       // not a stand-in for one.
       .sort(byCreatedAt)
       .map((item) => this.issueView(item));
-    return buildMockBoard(projectId, this.workflow, issues, params);
+    return buildMockBoard(projectId, this.workflowFor(projectId, params.issueType), issues, params);
   }
 
   /**
@@ -2615,6 +2765,7 @@ export class MockTaskaStore {
         `Issue type ${input.issueType} is not allowed in project ${project.projectKey}`,
       );
     }
+    requireListed(META.priorities, input.priority);
     requirePlanningFields(input);
     const planning = resolvePlanningFields(input, emptyPlanningFields());
     const issueNumber =
@@ -2685,6 +2836,7 @@ export class MockTaskaStore {
     requirePlanningFields(input);
     const summaryRefusal = blankSummaryRefusal(input);
     if (summaryRefusal) throw new MockApiError(summaryRefusal.code, summaryRefusal.message);
+    if (input.priority !== undefined) requireListed(META.priorities, input.priority);
 
     const issue = this.findIssue(projectId, issueId);
     if (expectedVersion !== issue.version) {
@@ -2788,11 +2940,12 @@ export class MockTaskaStore {
 
   transitionIssue(projectId: string, issueId: string, transitionId: string): Issue {
     const issue = this.findIssue(projectId, issueId);
-    const fromStatus = this.workflow.statuses.find((status) => status.statusKey === issue.status);
-    const transition = this.workflow.transitions.find(
+    const workflow = this.workflowFor(projectId, issue.issueType);
+    const fromStatus = workflow.statuses.find((status) => status.statusKey === issue.status);
+    const transition = workflow.transitions.find(
       (item) => item.id === transitionId && item.fromStatusId === fromStatus?.id,
     );
-    const toStatus = this.workflow.statuses.find((status) => status.id === transition?.toStatusId)?.statusKey;
+    const toStatus = workflow.statuses.find((status) => status.id === transition?.toStatusId)?.statusKey;
     if (!transition || !toStatus) {
       throw new MockApiError("FAILED_PRECONDITION", "Transition is not available for the current issue status");
     }
@@ -2827,6 +2980,7 @@ export class MockTaskaStore {
   }
 
   createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): IssueLink {
+    requireListed(META.linkTypes, input.linkType);
     const issue = this.findIssue(projectId, issueId);
     if (input.targetIssueId === issue.id) {
       throw new MockApiError("INVALID_ARGUMENT", "An issue cannot be linked to itself");
@@ -4294,7 +4448,7 @@ export class MockTaskaStore {
    * here because the mock is the reference implementation: a hand-made call has
    * to hit the same wall in both modes.
    */
-  private adminUser(userId: string, reason: string): User {
+  private adminUser(userId: string, reason: string): StoredUser {
     requireAdminWriteReason(reason);
     if (!UUID_PATTERN.test(userId)) {
       throw new MockApiError("INVALID_ARGUMENT", `User id ${userId} is not a UUID`);
@@ -4313,7 +4467,7 @@ export class MockTaskaStore {
    * `updated_at` (see `UserStatusChange`); nothing draws either, because the
    * section refetches the list and reads the timestamp there.
    */
-  private changeUserStatus(user: User, currentStatus: UserStatus): UserStatusChange {
+  private changeUserStatus(user: StoredUser, currentStatus: UserStatus): UserStatusChange {
     const previousStatus = user.status;
     user.status = currentStatus;
     return { userId: user.id, previousStatus, currentStatus, changedAt: now() };
@@ -5033,7 +5187,7 @@ export class MockTaskaStore {
     };
   }
 
-  private getUser(userId: string): User {
+  private getUser(userId: string): StoredUser {
     const user = this.users.find((item) => item.id === userId);
     if (!user) {
       throw new MockApiError("NOT_FOUND", "User not found");
@@ -5270,7 +5424,7 @@ export class MockTaskaStore {
       projectId: link.projectId,
       sourceIssueId: link.sourceIssueId,
       targetIssueId: link.targetIssueId,
-      viewLinkType: link.sourceIssueId === viewerIssueId ? link.linkType : inverseViewLinkType[link.linkType],
+      viewLinkType: link.sourceIssueId === viewerIssueId ? link.linkType : inverseViewLinkType(link.linkType),
       createdBy: link.createdBy,
       createdAt: link.createdAt,
     };
@@ -5531,6 +5685,10 @@ export class MockTaskaApi implements TaskaApi {
   // on its own. Signing out is not an expiry and does not belong here either.
   onSessionExpired(_listener: () => void): () => void {
     return () => {};
+  }
+
+  async getMeta(): Promise<EnumDictionaries> {
+    return wait(this.store.getMeta());
   }
 
   async listProjects(): Promise<Project[]> {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { DictionaryEntry } from "../domain/types";
 import {
   avatarColor,
   avatarColorChoices,
@@ -7,9 +8,19 @@ import {
   formatFileSize,
   issueLinkTypeLabel,
   issueLinkTypes,
+  issueTypeInSentence,
+  issueTypeLabel,
+  issueTypeVisual,
   keyBadgeStyle,
   labelColorChoices,
+  priorityInSentence,
+  priorityLabel,
+  priorityVisual,
   readableTextOn,
+  statusColor,
+  statusLabel,
+  userStatusInSentence,
+  userStatusLabel,
 } from "./format";
 
 /**
@@ -21,7 +32,7 @@ import {
  */
 describe("issueLinkTypeLabel", () => {
   it("labels every relation a request may ask for", () => {
-    expect(issueLinkTypes.map(issueLinkTypeLabel)).toEqual(["Blocks", "Relates to", "Duplicates"]);
+    expect(issueLinkTypes.map((type) => issueLinkTypeLabel(type))).toEqual(["Blocks", "Relates to", "Duplicates"]);
   });
 
   it.each([
@@ -34,21 +45,33 @@ describe("issueLinkTypeLabel", () => {
     expect(issueLinkTypeLabel(value)).toBe(expected);
   });
 
-  it.each([
-    ["SUPERSEDES", "Supersedes"],
-    ["IS_SUPERSEDED_BY", "Is superseded by"],
-    ["depends-on", "Depends on"],
-    ["CAUSES", "Causes"],
-  ])("humanises %s, a relation this build has never heard of, as %s", (value, expected) => {
-    // Not dropped and not coerced into a relation it is not: the link is real
-    // whatever the server chose to call it.
-    expect(issueLinkTypeLabel(value)).toBe(expected);
+  it.each([["SUPERSEDES"], ["IS_SUPERSEDED_BY"], ["depends-on"], ["CAUSES"], ["__"]])(
+    "prints %s, a relation this build has never heard of, as it came",
+    (value) => {
+      // Not dropped and not coerced into a relation it is not: the link is real
+      // whatever the server chose to call it. And not humanised either since
+      // TAS-173 — "Supersedes" was a word the server never sent.
+      expect(issueLinkTypeLabel(value)).toBe(value);
+    },
+  );
+
+  it("takes an English /meta name for exactly the code it names, and passes a Russian one over", () => {
+    const served: DictionaryEntry[] = [
+      { code: "SUPERSEDES", name: "Supersedes" },
+      { code: "CAUSES", name: "Вызывает" },
+    ];
+    expect(issueLinkTypeLabel("SUPERSEDES", served)).toBe("Supersedes");
+    expect(issueLinkTypeLabel("CAUSES", served)).toBe("CAUSES");
+    // `/meta` lists the request codes only, so the inverse view never borrows
+    // the outward relation's name.
+    expect(issueLinkTypeLabel("IS_SUPERSEDED_BY", served)).toBe("IS_SUPERSEDED_BY");
+    // A known relation keeps the build's own words whatever is served for it.
+    expect(issueLinkTypeLabel("BLOCKS", [{ code: "BLOCKS", name: "Blocks the way" }])).toBe("Blocks");
   });
 
   it.each([
     ["an empty string", ""],
     ["whitespace", "   "],
-    ["separators only", "__"],
   ])("says only that the issues are linked when the relation is %s", (_case, value) => {
     // The response DTO requires no fields, so "no relation stated" is a shape
     // the contract permits. It claims exactly what the response proves.
@@ -58,6 +81,83 @@ describe("issueLinkTypeLabel", () => {
   it("does not care how the server cased the value", () => {
     expect(issueLinkTypeLabel("blocks")).toBe("Blocks");
     expect(issueLinkTypeLabel("is_blocked_by")).toBe("Is blocked by");
+  });
+});
+
+/**
+ * TAS-173: a code this build does not know is printed by one rule — the
+ * build's word, an English `/meta` name, or the code as it came — and drawn in
+ * a neutral form rather than indexed into a table that has no entry for it.
+ */
+describe("labels and visuals for codes off the wire", () => {
+  const served: DictionaryEntry[] = [
+    { code: "TASK", name: "Задача" },
+    { code: "EPIC", name: "Epic" },
+    { code: "URGENT", name: "Срочный" },
+  ];
+
+  it("names a known type in the build's words and an unknown one by the rule", () => {
+    expect(issueTypeLabel("TASK", served)).toBe("Task");
+    expect(issueTypeLabel("EPIC", served)).toBe("Epic");
+    expect(issueTypeLabel("SPIKE", served)).toBe("SPIKE");
+  });
+
+  // DESIGN.md §6: no value reads as "No …", the way a missing status reads
+  // "No status" — in running text lowercased, as the build's own words are.
+  it.each([[null], [undefined], [""], ["  "]])("names a type and a priority of %j as none", (code) => {
+    expect(issueTypeLabel(code)).toBe("No type");
+    expect(issueTypeInSentence(code)).toBe("no type");
+    expect(priorityLabel(code)).toBe("No priority");
+    expect(priorityInSentence(code)).toBe("no priority");
+  });
+
+  it("lowercases only the build's own words in a sentence", () => {
+    expect(issueTypeInSentence("BUG")).toBe("bug");
+    expect(issueTypeInSentence("EPIC", served)).toBe("Epic");
+    expect(issueTypeInSentence("SPIKE")).toBe("SPIKE");
+    expect(priorityInSentence("HIGH")).toBe("high");
+    expect(priorityInSentence("URGENT", served)).toBe("URGENT");
+    expect(userStatusInSentence("BLOCKED")).toBe("blocked");
+    expect(userStatusInSentence("SUSPENDED")).toBe("SUSPENDED");
+  });
+
+  it("names a priority and an account status by the same rule", () => {
+    expect(priorityLabel("MEDIUM", served)).toBe("Medium");
+    expect(priorityLabel("URGENT", served)).toBe("URGENT");
+    expect(userStatusLabel("LOCKED")).toBe("Locked");
+    expect(userStatusLabel("SUSPENDED", [{ code: "SUSPENDED", name: "Suspended" }])).toBe("Suspended");
+    expect(userStatusLabel(null)).toBe("—");
+  });
+
+  it("names a status by its workflow's English name first, then the build's word, then the key", () => {
+    const statuses = [
+      { statusKey: "IN_REVIEW", name: "In Review" },
+      { statusKey: "TODO", name: "Backlog" },
+      { statusKey: "QA", name: "Проверка" },
+    ];
+    expect(statusLabel("IN_REVIEW", statuses)).toBe("In Review");
+    // The project chose to call its TODO column something else.
+    expect(statusLabel("TODO", statuses)).toBe("Backlog");
+    expect(statusLabel("DONE", statuses)).toBe("Done");
+    expect(statusLabel("QA", statuses)).toBe("QA");
+    expect(statusLabel("BLOCKED_BY_QA")).toBe("BLOCKED_BY_QA");
+    expect(statusLabel("")).toBe("No status");
+    expect(statusLabel(null)).toBe("No status");
+  });
+
+  it("colours a status by its key, else by its category, else not at all", () => {
+    expect(statusColor("DONE")).toBe("#3fa863");
+    expect(statusColor("IN_REVIEW", "IN_PROGRESS")).toBe("var(--accent)");
+    expect(statusColor("IN_REVIEW", "REVIEW")).toBeNull();
+    expect(statusColor("constructor")).toBeNull();
+  });
+
+  it("draws an unknown type as a neutral square and an unknown priority with no bars filled", () => {
+    expect(issueTypeVisual("BUG")).toEqual({ color: "#e5544b", radius: "50%", known: true });
+    expect(issueTypeVisual("EPIC")).toEqual({ color: "var(--fg-3)", radius: "4px", known: false });
+    expect(issueTypeVisual("toString")).toEqual({ color: "var(--fg-3)", radius: "4px", known: false });
+    expect(priorityVisual("HIGH")).toMatchObject({ level: 3, known: true });
+    expect(priorityVisual("URGENT")).toMatchObject({ level: 0, known: false });
   });
 });
 

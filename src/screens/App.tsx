@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { RedirectSignedIn } from "../components/RedirectSignedIn";
 import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE, RequireSession } from "../components/RequireSession";
@@ -16,6 +17,7 @@ import { AdminScreen } from "./admin/AdminScreen";
 import { AdminSectionPlaceholder } from "./admin/AdminSectionPlaceholder";
 import { AdminUsersSection } from "./admin/AdminUsersSection";
 import { adminSections } from "./admin/sections";
+import { AppFailureScreen } from "./AppFailureScreen";
 import { BoardScreen } from "./BoardScreen";
 import { IssueKeyScreen } from "./IssueKeyScreen";
 import { LoginScreen } from "./LoginScreen";
@@ -65,124 +67,130 @@ export function App() {
   }, [from, onAuthRoute, navigate, queryClient]);
 
   return (
-    <Routes>
-      <Route path="/" element={<Navigate to={DEFAULT_SIGNED_IN_ROUTE} replace />} />
-      <Route
-        path="/login"
-        element={
-          <RedirectSignedIn>
-            <LoginScreen {...screenProps} initialMode="signin" />
-          </RedirectSignedIn>
-        }
-      />
-      {/* Public on purpose: accepting an invitation has to work while signed in
-          as somebody else. */}
-      <Route path="/invite" element={<LoginScreen {...screenProps} initialMode="invite" />} />
-      <Route
-        path="/projects"
-        element={
-          <RequireSession>
-            <ProjectsScreen {...screenProps} />
-          </RequireSession>
-        }
-      />
-      <Route
-        path="/projects/:projectId/board"
-        element={
-          <RequireSession>
-            <BoardScreen {...screenProps} />
-          </RequireSession>
-        }
-      />
-      <Route
-        path="/projects/:projectId/issues/:issueId"
-        element={
-          <RequireSession>
-            <BoardScreen {...screenProps} />
-          </RequireSession>
-        }
-      />
-      {/* The short address of an issue, by its key (TAS-246). Behind the guard
-          like the issue route it resolves into: a signed-out visitor is sent
-          to sign in and comes back here, and the key is looked up only once
-          there is somebody to look it up for. */}
-      <Route
-        path="/browse/:issueKey"
-        element={
-          <RequireSession>
-            <IssueKeyScreen />
-          </RequireSession>
-        }
-      />
-      {/* Behind the session guard like any other private page; who may actually
-          see it is decided inside the screen, which answers a non-admin with
-          the not-found screen rather than confirming the area exists.
+    // Around every route and outside every shell (TAS-173): a page that throws
+    // while rendering becomes one screen that says so, rather than a blank tab.
+    // A new address tries the routes again — the reader may have moved on with
+    // Back — and the screen itself offers a full navigation out.
+    <ErrorBoundary fallback={(error) => <AppFailureScreen error={error} />} resetKey={location.pathname}>
+      <Routes>
+        <Route path="/" element={<Navigate to={DEFAULT_SIGNED_IN_ROUTE} replace />} />
+        <Route
+          path="/login"
+          element={
+            <RedirectSignedIn>
+              <LoginScreen {...screenProps} initialMode="signin" />
+            </RedirectSignedIn>
+          }
+        />
+        {/* Public on purpose: accepting an invitation has to work while signed in
+            as somebody else. */}
+        <Route path="/invite" element={<LoginScreen {...screenProps} initialMode="invite" />} />
+        <Route
+          path="/projects"
+          element={
+            <RequireSession>
+              <ProjectsScreen {...screenProps} />
+            </RequireSession>
+          }
+        />
+        <Route
+          path="/projects/:projectId/board"
+          element={
+            <RequireSession>
+              <BoardScreen {...screenProps} />
+            </RequireSession>
+          }
+        />
+        <Route
+          path="/projects/:projectId/issues/:issueId"
+          element={
+            <RequireSession>
+              <BoardScreen {...screenProps} />
+            </RequireSession>
+          }
+        />
+        {/* The short address of an issue, by its key (TAS-246). Behind the guard
+            like the issue route it resolves into: a signed-out visitor is sent
+            to sign in and comes back here, and the key is looked up only once
+            there is somebody to look it up for. */}
+        <Route
+          path="/browse/:issueKey"
+          element={
+            <RequireSession>
+              <IssueKeyScreen />
+            </RequireSession>
+          }
+        />
+        {/* Behind the session guard like any other private page; who may actually
+            see it is decided inside the screen, which answers a non-admin with
+            the not-found screen rather than confirming the area exists.
 
-          An area with sections rather than a screen (DESIGN.md §5.8), so the
-          shell — gate, top bar, rail, section heading — is the parent route and
-          each section is a child of it. An address inside /admin that matches
-          no section falls through to the `*` route below and gets the
-          full-screen answer, which is why there is no catch-all here. */}
-      <Route
-        path="/admin"
-        element={
-          <RequireSession>
-            <AdminScreen {...screenProps} />
-          </RequireSession>
-        }
-      >
-        <Route index element={<Navigate to="/admin/data" replace />} />
-        {/* The service and the table are optional so that `/admin/data` is a
-            real address: it resolves to the catalog's first table and redirects
-            into it, in the bar rather than silently. */}
-        <Route path="/admin/data/:service?/:table?" element={<AdminDataSection />} />
-        {/* One row of that table, by its primary key (§5.8). The same section:
-            the card replaces the table in the body while the rail and the
-            catalog column stay, so this is a deeper address rather than another
-            screen. */}
-        <Route path="/admin/data/:service/:table/:id" element={<AdminDataSection />} />
-        {/* The Events section has two views under one section head (§5.8), so
-            the head is a layout route and each view is a child of it: the
-            Problems / Outbox switch is then rendered once and `aria-current`
-            comes from the router rather than from a component asserting it.
-            Problems is the index — the section opens on the summary, and there
-            is no redirect because the summary *is* the root. */}
-        <Route path="/admin/events" element={<AdminEventsSection />}>
-          <Route index element={<AdminEventsProblems />} />
-          {/* The service is optional so that `/admin/events/outbox` is a real
-              address: it resolves into the first service with an outbox and
-              redirects there, in the bar rather than silently. */}
-          <Route path="/admin/events/outbox/:service?" element={<AdminOutboxSection />} />
-          {/* One event of that journal, by its id — the same section with the
-              card in place of the table. */}
-          <Route path="/admin/events/outbox/:service/:id" element={<AdminOutboxSection />} />
+            An area with sections rather than a screen (DESIGN.md §5.8), so the
+            shell — gate, top bar, rail, section heading — is the parent route and
+            each section is a child of it. An address inside /admin that matches
+            no section falls through to the `*` route below and gets the
+            full-screen answer, which is why there is no catch-all here. */}
+        <Route
+          path="/admin"
+          element={
+            <RequireSession>
+              <AdminScreen {...screenProps} />
+            </RequireSession>
+          }
+        >
+          <Route index element={<Navigate to="/admin/data" replace />} />
+          {/* The service and the table are optional so that `/admin/data` is a
+              real address: it resolves to the catalog's first table and redirects
+              into it, in the bar rather than silently. */}
+          <Route path="/admin/data/:service?/:table?" element={<AdminDataSection />} />
+          {/* One row of that table, by its primary key (§5.8). The same section:
+              the card replaces the table in the body while the rail and the
+              catalog column stay, so this is a deeper address rather than another
+              screen. */}
+          <Route path="/admin/data/:service/:table/:id" element={<AdminDataSection />} />
+          {/* The Events section has two views under one section head (§5.8), so
+              the head is a layout route and each view is a child of it: the
+              Problems / Outbox switch is then rendered once and `aria-current`
+              comes from the router rather than from a component asserting it.
+              Problems is the index — the section opens on the summary, and there
+              is no redirect because the summary *is* the root. */}
+          <Route path="/admin/events" element={<AdminEventsSection />}>
+            <Route index element={<AdminEventsProblems />} />
+            {/* The service is optional so that `/admin/events/outbox` is a real
+                address: it resolves into the first service with an outbox and
+                redirects there, in the bar rather than silently. */}
+            <Route path="/admin/events/outbox/:service?" element={<AdminOutboxSection />} />
+            {/* One event of that journal, by its id — the same section with the
+                card in place of the table. */}
+            <Route path="/admin/events/outbox/:service/:id" element={<AdminOutboxSection />} />
+          </Route>
+          {/* The one section of this area that writes (§5.8). No child routes:
+              an account is a row of a table the Data section already addresses,
+              so there is nothing here a deeper address would open — and the two
+              writes are dialogs over the list rather than pages of their own. */}
+          <Route path="/admin/users" element={<AdminUsersSection />} />
+          {/* The audit log (TAS-251). No child routes: an entry has no id, so
+              it opens in place under its row rather than at an address. */}
+          <Route path="/admin/audit" element={<AdminAuditSection />} />
+          {/* Every section is drawn, including the ones with no endpoints yet
+              (§4.19) — the shape of the area is itself information. */}
+          {adminSections
+            .filter((section) => section.stories.length > 0)
+            .map((section) => (
+              <Route
+                key={section.id}
+                path={section.path}
+                element={<AdminSectionPlaceholder section={section} />}
+              />
+            ))}
         </Route>
-        {/* The one section of this area that writes (§5.8). No child routes:
-            an account is a row of a table the Data section already addresses,
-            so there is nothing here a deeper address would open — and the two
-            writes are dialogs over the list rather than pages of their own. */}
-        <Route path="/admin/users" element={<AdminUsersSection />} />
-        {/* The audit log (TAS-251). No child routes: an entry has no id, so
-            it opens in place under its row rather than at an address. */}
-        <Route path="/admin/audit" element={<AdminAuditSection />} />
-        {/* Every section is drawn, including the ones with no endpoints yet
-            (§4.19) — the shape of the area is itself information. */}
-        {adminSections
-          .filter((section) => section.stories.length > 0)
-          .map((section) => (
-            <Route
-              key={section.id}
-              path={section.path}
-              element={<AdminSectionPlaceholder section={section} />}
-            />
-          ))}
-      </Route>
-      {/* An unknown URL is an answer, not a redirect: bouncing to /projects
-          hid the typo and pretended the address was fine (DESIGN.md §4.18).
-          It stays outside the guard for the same reason — a signed-out visitor
-          asking for a page that does not exist gets told that, not a login
-          form implying the page is behind one. */}
-      <Route path="*" element={<NotFoundScreen />} />
-    </Routes>
+        {/* An unknown URL is an answer, not a redirect: bouncing to /projects
+            hid the typo and pretended the address was fine (DESIGN.md §4.18).
+            It stays outside the guard for the same reason — a signed-out visitor
+            asking for a page that does not exist gets told that, not a login
+            form implying the page is behind one. */}
+        <Route path="*" element={<NotFoundScreen />} />
+      </Routes>
+    </ErrorBoundary>
   );
 }

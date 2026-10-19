@@ -8,6 +8,7 @@ import {
   personLabel,
   readUserRow,
   targetStatus,
+  userStatusInSentence,
   userStatusLabel,
   userWriteFailure,
 } from "./users";
@@ -86,6 +87,24 @@ describe("admin users, statuses and roles", () => {
     // build has never seen is still the message.
     expect(userStatusLabel("QUARANTINED")).toBe("QUARANTINED");
     expect(userStatusLabel(null)).toBe("—");
+  });
+
+  it("names an unknown status by an English /meta name only, and lowercases only its own words in a sentence", () => {
+    // The one rule every dictionary follows since TAS-173, shared with the
+    // profile menu: the build's word, then a served name with no Cyrillic in
+    // it, then the value as it came.
+    const served = [
+      { code: "QUARANTINED", name: "Quarantined" },
+      { code: "ACTIVE", name: "Активен" },
+      { code: "ARCHIVED", name: "В архиве" },
+    ];
+    expect(userStatusLabel("QUARANTINED", served)).toBe("Quarantined");
+    expect(userStatusLabel("ACTIVE", served)).toBe("Active");
+    expect(userStatusLabel("ARCHIVED", served)).toBe("ARCHIVED");
+    // "Anna is now blocked." — and "Anna is now QUARANTINED.", never a
+    // lowercased code nobody sent.
+    expect(userStatusInSentence("BLOCKED")).toBe("blocked");
+    expect(userStatusInSentence("QUARANTINED")).toBe("QUARANTINED");
   });
 
   it("writes the two roles out and prints anything else verbatim", () => {

@@ -98,6 +98,11 @@ const {
   seedIssueTypes,
   seedContextWorkflowParts,
   seedHistory,
+  seedMeta,
+  seedExtraIssues,
+  seedWorkflowsByType,
+  metaReads,
+  createCalls,
   reset,
 } = vi.hoisted(() => {
   const now = "2026-08-01T09:00:00Z";
@@ -146,17 +151,29 @@ const {
     membershipHeld: boolean;
     projectFailure?: Error;
     projectHeld: boolean;
-    /** The issue types the project allows — the types its context sends a workflow for. */
-    issueTypes: ("TASK" | "BUG" | "STORY")[];
+    /** The issue types the project allows — the types its context sends a workflow for. Any code (TAS-173). */
+    issueTypes: string[];
     /**
      * The statuses and transitions the context's workflow carries, when a test
      * needs other than the default one status and no transition — an empty
      * pair is what the stand sent on 2026-10-15 (backend TAS-261).
      */
     contextWorkflowParts?: {
-      statuses: { id: string; statusKey: "TODO" | "IN_PROGRESS" | "DONE"; name: string; category: "TODO" | "IN_PROGRESS" | "DONE"; sortOrder: number }[];
+      statuses: { id: string; statusKey: string; name: string; category: string; sortOrder: number }[];
       transitions: { id: string; fromStatusId: string; toStatusId: string; name: string; sortOrder: number }[];
     };
+    /** A workflow of its own for one type, where a test needs types to differ (TAS-173). */
+    workflowsByType: Record<string, NonNullable<typeof state.contextWorkflowParts>>;
+    /** What `GET /meta` answers (TAS-173): the dictionaries, or a failure. */
+    meta: Record<string, { code: string; name: string }[] | null> | Error;
+    metaReads: number;
+    /**
+     * Issues beside the seeded one, carrying whatever type, status and
+     * priority a test gives them — the panel reads them too (TAS-173).
+     */
+    extraIssues: ({ id: string; issueKey: string } & Record<string, unknown>)[];
+    /** What every create asked for. */
+    createCalls: Record<string, unknown>[];
     issuesFailure?: Error;
     workflowFailure?: Error;
     labels: { id: string; name: string; color: string }[];
@@ -338,6 +355,11 @@ const {
     membershipHeld: false,
     projectHeld: false,
     issueTypes: ["TASK", "BUG", "STORY"],
+    workflowsByType: {},
+    meta: { issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null },
+    metaReads: 0,
+    extraIssues: [],
+    createCalls: [],
     labels: [],
     labelCreateHeld: false,
     searchHits: [],
@@ -430,6 +452,7 @@ const {
     dueDate: "2026-06-26",
     originalEstimateMinutes: 480,
     remainingEstimateMinutes: null,
+    ...(state.extraIssues.find((item) => item.id === issueId) ?? {}),
     ...(state.edits[issueId] ?? {}),
     assigneeId: state.assigneeId,
     version: state.version,
@@ -439,6 +462,11 @@ const {
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
+    getMeta: async () => {
+      state.metaReads += 1;
+      if (state.meta instanceof Error) throw state.meta;
+      return state.meta;
+    },
     getCurrentUser: async () => ({
       id: "user-anna",
       login: "anna",
@@ -491,7 +519,12 @@ const {
         role: state.membership.role,
         members: state.members,
         labels: state.labels,
-        workflows: Object.fromEntries(state.issueTypes.map((issueType) => [issueType, workflow])),
+        workflows: Object.fromEntries(
+          state.issueTypes.map((issueType) => [
+            issueType,
+            Object.hasOwn(state.workflowsByType, issueType) ? { ...workflow, ...state.workflowsByType[issueType] } : workflow,
+          ]),
+        ),
       };
     },
     getMembership: async () => {
@@ -512,7 +545,11 @@ const {
       // The description is not empty: the board's own box searches descriptions
       // too, and a fixture with none could not tell whether it does.
       const seeded = makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", "Point the columns at the deployed gateway.");
-      const items = [seeded, ...state.created]
+      // Built from a neutral base and laid over with the test's fields, so a
+      // deliberately malformed one (a key that is not a string) reaches the
+      // board rather than failing in this fixture.
+      const extras = state.extraIssues.map((extra) => ({ ...makeIssue(extra.id, "TAS-0", "", ""), ...extra }));
+      const items = [seeded, ...extras, ...state.created]
         .filter((issue) => !state.deleted.has(issue.id))
         .map((issue) => ({ ...issue, ...(state.edits[issue.id] ?? {}) }));
       return { items, page: 0, pageSize: 100, totalCount: items.length };
@@ -522,6 +559,7 @@ const {
     // one of them moved could not tell a counter that invalidates its search
     // from one that strands it.
     createIssue: async (_projectId: string, input: { summary: string; description: string }) => {
+      state.createCalls.push({ ...input });
       const created = makeIssue(`issue-${state.created.length + 2}`, `TAS-20${state.created.length}`, input.summary, input.description);
       state.created = [...state.created, created];
       state.searchTotal += 1;
@@ -1056,8 +1094,24 @@ const {
     seedHistory: (history: IssueHistoryEvent[]) => {
       state.history = history;
     },
+    seedMeta: (meta: typeof state.meta) => {
+      state.meta = meta;
+    },
+    seedExtraIssues: (issues: typeof state.extraIssues) => {
+      state.extraIssues = issues;
+    },
+    seedWorkflowsByType: (workflows: typeof state.workflowsByType) => {
+      state.workflowsByType = workflows;
+    },
+    metaReads: () => state.metaReads,
+    createCalls: () => state.createCalls,
     reset: () => {
       state.issueTypes = ["TASK", "BUG", "STORY"];
+      state.workflowsByType = {};
+      state.meta = { issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null };
+      state.metaReads = 0;
+      state.extraIssues = [];
+      state.createCalls = [];
       state.contextWorkflowParts = undefined;
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
       state.membershipFailure = undefined;
@@ -2048,6 +2102,347 @@ describe("a project that allows fewer issue types", () => {
     expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
     // Nothing failed, so nothing says it did.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * TAS-173: an issue type, a priority or a status the backend has and this build
+ * does not must not take the board down, and must not vanish from it. The
+ * project below allows EPIC — a type with no name or colour here — with a
+ * workflow that adds IN_REVIEW, and holds three issues: the seeded task, an
+ * URGENT epic in review, and a task in BLOCKED_BY_QA, which no workflow lists.
+ */
+describe("values this build does not know", () => {
+  const epicWorkflow = {
+    statuses: [
+      { id: "s-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+      { id: "s-progress", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
+      { id: "s-review", statusKey: "IN_REVIEW", name: "In Review", category: "IN_PROGRESS", sortOrder: 25 },
+      { id: "s-done", statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30 },
+    ],
+    transitions: [{ id: "t-approve", fromStatusId: "s-review", toStatusId: "s-done", name: "Approve", sortOrder: 10 }],
+  };
+  const stand = {
+    issueTypes: [
+      { code: "TASK", name: "Задача" },
+      { code: "EPIC", name: "Epic" },
+    ],
+    priorities: [
+      { code: "LOW", name: "Низкий" },
+      { code: "MEDIUM", name: "Средний" },
+      { code: "HIGH", name: "Высокий" },
+      { code: "URGENT", name: "Срочный" },
+    ],
+    linkTypes: null,
+    notificationTypes: null,
+    userStatuses: null,
+  };
+  const epic = { id: "issue-epic", issueKey: "TAS-150", summary: "Checkout redesign", issueType: "EPIC", status: "IN_REVIEW", priority: "URGENT" };
+  const orphan = { id: "issue-orphan", issueKey: "TAS-151", summary: "Payment form QA sign-off", status: "BLOCKED_BY_QA" };
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    seedIssueTypes(["TASK", "BUG", "STORY", "EPIC"]);
+    seedWorkflowsByType({ EPIC: epicWorkflow });
+    seedExtraIssues([epic, orphan]);
+    seedMeta(stand);
+  });
+
+  it("draws an unknown type and priority on a card, in its own workflow's column, named and coloured by the rule", async () => {
+    renderBoard();
+
+    const review = await screen.findByRole("region", { name: "In Review column" });
+    // Category IN_PROGRESS, so the dot takes that colour though the key is new.
+    expect(review.querySelector(".status-dot")?.getAttribute("style")).toContain("var(--accent)");
+    const card = await within(review).findByRole("button", { name: /TAS-150/ });
+    // The type by its English /meta name; the chip neutral, named in `title`.
+    expect(await within(card).findByText("Epic")).toBeVisible();
+    expect(card.querySelector(".type-chip")).toHaveClass("is-unknown");
+    expect(card.querySelector(".type-chip")).toHaveAttribute("title", "Epic");
+    // The priority by its code — its /meta name is Russian — before three empty bars.
+    expect(within(card).getByText("URGENT")).toHaveClass("priority-name");
+    expect(within(card).getByTitle("URGENT priority")).toHaveClass("priority-bars");
+    // An unknown type's issues are not dropped from the type filter either.
+    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
+    expect(within(filter).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "All",
+      "Task",
+      "Bug",
+      "Story",
+      "Epic",
+    ]);
+  });
+
+  it("prints a type code verbatim when /meta names it in Russian, and when /meta failed", async () => {
+    seedMeta(new Error("Internal error"));
+    renderBoard();
+
+    const card = await screen.findByRole("button", { name: /TAS-150/ });
+    expect(within(card).getByText("EPIC")).toBeVisible();
+    // Silent (D5): a failed /meta raises no notice anywhere.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("puts an issue no column holds in one trailing group, and counts what it draws", async () => {
+    renderBoard();
+
+    const group = await screen.findByRole("region", { name: "Other statuses" });
+    const card = within(group).getByRole("button", { name: /TAS-151/ });
+    // Its status in words, beside the date, since the group's head cannot say it.
+    expect(within(card).getByText("BLOCKED_BY_QA")).toHaveClass("issue-card-status");
+    // Not a drag source, even for an ADMIN, and no "+": nothing can be put here.
+    expect(card).toHaveClass("is-static");
+    expect(card).not.toHaveAttribute("aria-roledescription");
+    expect(within(group).queryByRole("button", { name: "Create issue" })).not.toBeInTheDocument();
+    expect(group.querySelector(".status-dot")).toBeNull();
+
+    // Every pill, the group's included, adds up to X.
+    const pills = screen
+      .getAllByRole("region")
+      .filter((region) => region.classList.contains("board-column"))
+      .map((region) => Number(region.querySelector(".count-pill")?.textContent));
+    expect(pills.reduce((sum, count) => sum + count, 0)).toBe(3);
+    expect(screen.getByText("3 of 3")).toBeVisible();
+    // The draggable card in the epic's column is still draggable.
+    const epicCard = within(screen.getByRole("region", { name: "In Review column" })).getByRole("button", { name: /TAS-150/ });
+    await waitFor(() => expect(epicCard).toHaveAttribute("aria-roledescription", "draggable"));
+  });
+
+  it("does not draw the group when no issue needs it, or when the filters leave it empty", async () => {
+    seedExtraIssues([epic]);
+    renderBoard();
+    await screen.findByRole("region", { name: "In Review column" });
+    expect(screen.queryByRole("region", { name: "Other statuses" })).not.toBeInTheDocument();
+  });
+
+  it("draws a hollow dot for a status whose key and category are both unknown", async () => {
+    seedWorkflowsByType({
+      EPIC: {
+        statuses: [{ id: "s-qa", statusKey: "QA", name: "Проверка", category: "REVIEW", sortOrder: 15 }],
+        transitions: [],
+      },
+    });
+    seedExtraIssues([]);
+    renderBoard();
+
+    // A Russian workflow name is passed over for the key itself.
+    const column = await screen.findByRole("region", { name: "QA column" });
+    expect(column.querySelector(".status-dot")).toHaveClass("is-unknown");
+  });
+
+  it("opens an epic in review with its status, its priority active and its own transitions", async () => {
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    expect(await within(panel).findByText("In Review")).toHaveClass("status-pill");
+    expect(within(panel).getByRole("button", { name: "Approve" })).toBeVisible();
+    const priority = within(panel).getByRole("button", { name: "URGENT" });
+    expect(priority).toHaveClass("is-active");
+    expect(within(panel).getAllByRole("button", { name: /^(Low|Medium|High|URGENT)$/ }).map((b) => b.textContent)).toEqual([
+      "Low",
+      "Medium",
+      "High",
+      "URGENT",
+    ]);
+  });
+
+  it("keeps a priority /meta does not list on the panel, appended last and active", async () => {
+    seedMeta(new Error("Internal error"));
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    const segments = (await within(panel).findByRole("button", { name: "URGENT" })).parentElement as HTMLElement;
+    expect(within(segments).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Low",
+      "Medium",
+      "High",
+      "URGENT",
+    ]);
+    expect(within(segments).getByRole("button", { name: "URGENT" })).toHaveClass("is-active");
+  });
+
+  it("says why an issue in a status its workflow does not list offers no move", async () => {
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-orphan`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-151 issue" });
+    expect(
+      await within(panel).findByText("BLOCKED_BY_QA is not in this project’s task workflow, so no move is offered."),
+    ).toBeVisible();
+    // Neutral: neither the key nor a category gives it a colour.
+    expect(within(panel).getByText("BLOCKED_BY_QA", { selector: ".status-pill" })).toHaveAttribute(
+      "style",
+      expect.stringContaining("var(--fg-2)"),
+    );
+  });
+
+  it("says an issue with no status at all offers no move", async () => {
+    seedExtraIssues([{ ...orphan, status: "" }]);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-orphan`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-151 issue" });
+    expect(await within(panel).findByText("This issue has no status, so no move is offered.")).toBeVisible();
+    expect(within(panel).getByText("No status", { selector: ".status-pill" })).toBeVisible();
+  });
+
+  it("writes history about unknown values as they came", async () => {
+    seedHistory([
+      {
+        id: "h-1",
+        issueId: "issue-epic",
+        eventType: "TRANSITIONED",
+        actorUserId: "user-anna",
+        occurredAt: "2026-08-01T10:00:00Z",
+        payload: { from: "BLOCKED_BY_QA", to: "IN_REVIEW" },
+      },
+      {
+        id: "h-2",
+        issueId: "issue-epic",
+        eventType: "PRIORITY",
+        actorUserId: "user-anna",
+        occurredAt: "2026-08-01T11:00:00Z",
+        payload: { to: "URGENT" },
+      },
+    ]);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    // The from-key verbatim, the to-key by its workflow's English name.
+    expect(await within(panel).findByText(/moved BLOCKED_BY_QA to In Review/)).toBeVisible();
+    expect(within(panel).getByText(/set priority to URGENT/)).toBeVisible();
+  });
+
+  it("offers /meta's priorities in the create form, Medium first chosen, and stacks the pickers for a code", async () => {
+    renderBoard();
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const dialog = await screen.findByRole("dialog");
+
+    const priorities = (await within(dialog).findByRole("button", { name: "URGENT" })).parentElement as HTMLElement;
+    expect(within(priorities).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Low",
+      "Medium",
+      "High",
+      "URGENT",
+    ]);
+    expect(within(priorities).getByRole("button", { name: "Medium" })).toHaveClass("is-active");
+    const types = within(dialog).getByRole("button", { name: "Epic" }).parentElement as HTMLElement;
+    expect(within(types).getAllByRole("button").map((button) => button.textContent)).toEqual(["Task", "Bug", "Story", "Epic"]);
+    expect(dialog.querySelector(".form-two")).toHaveClass("is-stacked");
+
+    fireEvent.click(within(priorities).getByRole("button", { name: "URGENT" }));
+    fireEvent.click(within(types).getByRole("button", { name: "Epic" }));
+    fireEvent.change(within(dialog).getByLabelText("Summary"), { target: { value: "Quarterly plan" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create issue" }));
+    await waitFor(() => expect(createCalls()).toHaveLength(1));
+    expect(createCalls()[0]).toMatchObject({ issueType: "EPIC", priority: "URGENT" });
+  });
+
+  it("offers the contract's three when /meta failed, side by side, and says nothing about it", async () => {
+    seedMeta(new Error("Internal error"));
+    seedIssueTypes(["TASK", "BUG"]);
+    seedExtraIssues([]);
+    renderBoard();
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const dialog = await screen.findByRole("dialog");
+
+    const priorities = within(dialog).getByRole("button", { name: "Medium" }).parentElement as HTMLElement;
+    expect(within(priorities).getAllByRole("button").map((button) => button.textContent)).toEqual(["Low", "Medium", "High"]);
+    expect(dialog.querySelector(".form-two")).not.toHaveClass("is-stacked");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("asks for the dictionaries once, however many chips and pickers read them", async () => {
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
+    await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    await screen.findByRole("region", { name: "Other statuses" });
+    expect(metaReads()).toBe(1);
+  });
+
+  // `retryOnMount: false` in `useMeta` is what this pins (release-reviewer F2
+  // on 64742b3): react-query re-asks a failed query for every observer that
+  // mounts on it, so without the flag each card the filter brings back, and
+  // the panel's chips and pickers, would send `GET /meta` again.
+  it("does not ask again for dictionaries that failed, as cards and the panel mount", async () => {
+    seedMeta(new Error("Internal error"));
+    renderBoard();
+    await screen.findByRole("button", { name: /TAS-150/ });
+    await waitFor(() => expect(metaReads()).toBe(1));
+
+    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
+    fireEvent.click(within(filter).getByRole("button", { name: "Bug" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /TAS-150/ })).not.toBeInTheDocument());
+    fireEvent.click(within(filter).getByRole("button", { name: "All" }));
+    fireEvent.click(await screen.findByRole("button", { name: /TAS-150/ }));
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    expect(await within(panel).findByRole("button", { name: "URGENT" })).toHaveClass("is-active");
+    expect(metaReads()).toBe(1);
+  });
+
+  // The group waits for the columns (release-reviewer F2 on 64742b3): while the
+  // context read is out the columns are skeletons, and an issue that only looks
+  // orphaned against the fallback three must not be drawn in a group the
+  // project's own workflow may yet give a column to.
+  it("draws no group while the context read is still out, though the issues are in", async () => {
+    holdProject(true);
+    renderBoard();
+
+    // X of Y is drawn from the issue read alone, so this is the issues landing.
+    expect(await screen.findByText("3 of 3")).toBeVisible();
+    expect(document.querySelectorAll(".skeleton-card").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("region", { name: "Other statuses" })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * TAS-173's error boundaries on the board: one issue that cannot be drawn
+ * costs its card and, opened, its panel — never the board.
+ */
+describe("an issue the board cannot draw", () => {
+  let consoleError: MockInstance;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleError.mockRestore();
+  });
+
+  it("stands in for the card with its key and a sentence, still counted and still opening the issue", async () => {
+    // An object where text belongs is what a React child cannot be.
+    seedExtraIssues([{ id: "issue-bad", issueKey: "TAS-160", summary: { text: "not a string" } as unknown as string }]);
+    renderBoard();
+
+    const column = await screen.findByRole("region", { name: "To Do column" });
+    const stand = await within(column).findByRole("button", { name: /TAS-160/ });
+    expect(stand).toHaveTextContent("TAS-160This card could not be shown.");
+    expect(stand).toHaveClass("issue-card", "is-static");
+    // The neighbour is untouched, and the pill and the counter count both.
+    expect(within(column).getByRole("button", { name: /TAS-102/ })).toBeVisible();
+    expect(column.querySelector(".count-pill")).toHaveTextContent("2");
+    expect(screen.getByText("2 of 2")).toBeVisible();
+
+    fireEvent.click(stand);
+    expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-bad`);
+  });
+
+  it("stands in for the panel with a closable head and the error's message, and leaves the board", async () => {
+    seedExtraIssues([{ id: "issue-bad", issueKey: { key: "TAS-161" } as unknown as string }]);
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-bad`);
+
+    const panel = await screen.findByRole("complementary", { name: "Issue" });
+    expect(within(panel).getByRole("status")).toHaveTextContent("This issue could not be shown.");
+    expect(within(panel).getByText(/Objects are not valid as a React child/)).toBeVisible();
+    expect(screen.getByRole("region", { name: "To Do column" })).toBeVisible();
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Close" }));
+    expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/board`);
+    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
   });
 });
 

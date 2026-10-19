@@ -368,6 +368,147 @@ describe("RestTaskaApi current user", () => {
       status: "ACTIVE",
     });
   });
+
+  /**
+   * TAS-173. The contract types `status` as a bare string, the gateway's
+   * `AuthMapper` can write `null`, and backend PR #200 adds the zero value
+   * `UNSPECIFIED` to `UserStatusDto`. A string the build does not know is kept
+   * — it is printed as it came — while "no status stated" in any spelling is
+   * `null`, which the profile menu draws as "—" instead of throwing on it.
+   */
+  it.each([
+    ["explicitly null", { status: null }],
+    ["missing", { status: undefined }],
+    ["not a string", { status: 2 }],
+    ["the UNSPECIFIED zero value", { status: "UNSPECIFIED" }],
+  ])("reads a status that is %s as none", async (_case, extra) => {
+    const user = await getCurrentUserWith(me(extra));
+    expect(user.status).toBeNull();
+    expect(user.displayName).toBe("Anna Ivanova");
+  });
+
+  it("keeps a status this build has no word for as it came", async () => {
+    const user = await getCurrentUserWith(me({ status: "SUSPENDED" }));
+    expect(user.status).toBe("SUSPENDED");
+  });
+});
+
+/**
+ * `GET /meta` (backend TAS-217, TAS-173). Five dictionaries of code/name pairs,
+ * mapped defensively and never checked against this build's unions — the codes
+ * it does not know are the point of asking. And the request carries nothing a
+ * browser would not: no `cache` mode and no `If-None-Match`, so a 304 is the
+ * browser's to resolve against the answer it stored, never this code's.
+ */
+describe("RestTaskaApi dictionaries", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const getMetaWith = async (status: number, body: unknown) => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    const fetchStub = vi.fn(async (_input: string, _init?: RequestInit) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    const api = new RestTaskaApi();
+    return { api, fetchStub, result: api.getMeta() };
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("maps every dictionary and keeps codes this build does not know", async () => {
+    const { result, fetchStub } = await getMetaWith(200, {
+      issueTypes: [{ code: "TASK", name: "Задача" }, { code: "EPIC", name: "Epic" }],
+      priorities: [{ code: "URGENT", name: "Срочный" }],
+      linkTypes: [{ code: "BLOCKS", name: "Блокирует" }],
+      notificationTypes: [{ code: "ISSUE_CREATED", name: "Создана задача" }],
+      userStatuses: [{ code: "ACTIVE", name: "Активен" }],
+    });
+
+    await expect(result).resolves.toEqual({
+      issueTypes: [{ code: "TASK", name: "Задача" }, { code: "EPIC", name: "Epic" }],
+      priorities: [{ code: "URGENT", name: "Срочный" }],
+      linkTypes: [{ code: "BLOCKS", name: "Блокирует" }],
+      notificationTypes: [{ code: "ISSUE_CREATED", name: "Создана задача" }],
+      userStatuses: [{ code: "ACTIVE", name: "Активен" }],
+    });
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/meta");
+  });
+
+  it("sends no cache mode and no conditional header of its own", async () => {
+    const { result, fetchStub } = await getMetaWith(200, { issueTypes: [] });
+    await result;
+    const init = fetchStub.mock.calls[0][1] ?? {};
+    expect(init).not.toHaveProperty("cache");
+    const headers = Object.keys((init.headers ?? {}) as Record<string, string>).map((name) => name.toLowerCase());
+    expect(headers).not.toContain("if-none-match");
+    expect(headers).toContain("authorization");
+  });
+
+  it("reads a dictionary that is missing or not a list as absent, and drops rows it cannot use", async () => {
+    const { result } = await getMetaWith(200, {
+      issueTypes: "TASK",
+      priorities: [
+        { code: "LOW", name: "Низкий" },
+        { code: "", name: "blank" },
+        { code: "  ", name: "spaces" },
+        { name: "no code" },
+        { code: 3, name: "number" },
+        null,
+        "HIGH",
+        { code: "LOW", name: "duplicate" },
+        { code: "URGENT" },
+        { code: "TRIVIAL", name: 7 },
+      ],
+      linkTypes: null,
+    });
+
+    await expect(result).resolves.toEqual({
+      issueTypes: null,
+      priorities: [
+        { code: "LOW", name: "Низкий" },
+        { code: "URGENT", name: "" },
+        { code: "TRIVIAL", name: "" },
+      ],
+      linkTypes: null,
+      notificationTypes: null,
+      userStatuses: null,
+    });
+  });
+
+  it("answers every dictionary absent for a body that is not an object", async () => {
+    const { result } = await getMetaWith(200, "not json at all");
+    await expect(result).resolves.toEqual({
+      issueTypes: null,
+      priorities: null,
+      linkTypes: null,
+      notificationTypes: null,
+      userStatuses: null,
+    });
+  });
+
+  it("goes through the session path on a 401, like every other read", async () => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => answer(401, { code: "UNAUTHENTICATED", message: "Access token expired" })),
+    );
+    const api = new RestTaskaApi();
+    const expired = vi.fn();
+    api.onSessionExpired(expired);
+
+    await expect(api.getMeta()).rejects.toThrow("Access token expired");
+    expect(expired).toHaveBeenCalledTimes(1);
+  });
 });
 
 /**
@@ -462,6 +603,33 @@ describe("RestTaskaApi project members", () => {
       expect(Object.keys(result.workflows).sort()).toEqual(["BUG", "TASK"]);
       expect(result.workflows.TASK).toEqual(workflow("task"));
       expect(result.workflows.STORY).toBeUndefined();
+    });
+
+    // TAS-173: a type this build has no name for still keys its workflow — that
+    // workflow is where its issues' columns come from. Only a type that is not
+    // there at all is dropped, and a key spelled like a prototype member is a
+    // key like any other.
+    it("keeps the workflow of a type this build does not know, and drops only one with no type", async () => {
+      const { result } = await call(
+        {
+          project: project({ currentUserRole: "MEMBER" }),
+          members: [],
+          labels: [],
+          workflows: [
+            { issueType: "EPIC", workflow: workflow("epic") },
+            { issueType: "", workflow: workflow("blank") },
+            { issueType: 4, workflow: workflow("number") },
+            { issueType: "__proto__", workflow: workflow("proto") },
+            { issueType: "TASK", workflow: workflow("task") },
+          ],
+        },
+        (api) => api.getProjectContext("project-1"),
+      );
+
+      expect(Object.keys(result.workflows)).toEqual(["EPIC", "__proto__", "TASK"]);
+      expect(result.workflows.EPIC).toEqual(workflow("epic"));
+      expect(Object.getPrototypeOf(result.workflows)).toBe(Object.prototype);
+      expect(Object.hasOwn(result.workflows, "__proto__")).toBe(true);
     });
 
     it("answers no workflows at all for a project that allows no type", async () => {
@@ -1080,7 +1248,8 @@ describe("RestTaskaApi issue links", () => {
       "Linked",
       "Linked",
       "Linked",
-      "Supersedes",
+      // As it came (TAS-173): no longer humanised to a word the server never sent.
+      "SUPERSEDES",
     ]);
   });
 
@@ -2018,6 +2187,20 @@ describe("RestTaskaApi issue list", () => {
     expect(issue.summary).toBeUndefined();
     expect(issue.priority).toBeUndefined();
     expect(issue.createdAt).toBeUndefined();
+  });
+
+  // TAS-173: the type, the status and the priority are passed through as the
+  // server sent them. Narrowing one here would drop the issue or invent a
+  // value; the screens print an unknown code by the one label rule instead.
+  it("passes a type, a status and a priority this build does not know through untouched", async () => {
+    stubFetch({
+      items: [{ id: "issue-3", issueKey: "WEB-15", issueType: "EPIC", status: "IN_REVIEW", priority: "URGENT" }],
+      totalCount: 1,
+    });
+
+    const [issue] = (await new RestTaskaApi().listIssues("project-1")).items;
+
+    expect(issue).toMatchObject({ issueType: "EPIC", status: "IN_REVIEW", priority: "URGENT" });
   });
 
   it("reads a page the gateway sent no items for as empty rather than throwing", async () => {

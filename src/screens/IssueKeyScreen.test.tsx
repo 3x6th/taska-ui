@@ -22,6 +22,9 @@ const { fakeApi, answerWith, failWith, lookups, reset } = vi.hoisted(() => {
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
+    // `GET /meta` (TAS-173), answered with no dictionaries: every reader then
+    // uses the build's own words and sets, which is what these tests are about.
+    getMeta: async () => ({ issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null }),
     getIssueByKey: async (issueKey: string) => {
       state.lookups.push(issueKey);
       if (state.failure) throw state.failure;

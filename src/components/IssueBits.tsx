@@ -1,35 +1,63 @@
 import { X } from "lucide-react";
-import type { IssuePriority, IssueType, Label } from "../domain/types";
-import { labelChipStyle, priorityMeta, typeMeta } from "../lib/format";
+import type { Label } from "../domain/types";
+import { useMeta } from "../hooks/useMeta";
+import { issueTypeLabel, issueTypeVisual, labelChipStyle, priorityLabel, priorityVisual } from "../lib/format";
 
-export function TypeChip({ type }: { type: IssueType }) {
-  const meta = typeMeta[type];
+/**
+ * §4.6. Takes any code the server sent (TAS-173): a type this build has no
+ * colour for is the same 14px square in `--fg-3` — no shift in the row, and
+ * neutral rather than a hollow box that reads as a checkbox — named in `title`
+ * by the one label rule (`issueTypeLabel`).
+ */
+export function TypeChip({ type }: { type: string }) {
+  const served = useMeta()?.issueTypes;
+  const visual = issueTypeVisual(type);
   return (
     <span
-      className="type-chip"
+      className={`type-chip ${visual.known ? "" : "is-unknown"}`}
       style={{
-        backgroundColor: meta.color,
-        borderRadius: meta.radius,
+        backgroundColor: visual.color,
+        borderRadius: visual.radius,
       }}
-      title={meta.label}
+      title={issueTypeLabel(type, served)}
     />
   );
 }
 
-export function PriorityBars({ priority }: { priority: IssuePriority }) {
-  const meta = priorityMeta[priority];
-  return (
-    <span className="priority-bars" title={`${meta.label} priority`}>
+/**
+ * §4.7. A priority this build cannot rank fills none of the bars and is named
+ * in words before them (art-director, TAS-173): three empty bars alone would
+ * read as lower than Low, and nothing in the app may place an unknown value
+ * among the known ones. `nameClassName` is the one difference a host may ask
+ * for — the global search draws the name as its row note.
+ */
+export function PriorityBars({ priority, nameClassName = "priority-name" }: { priority: string; nameClassName?: string }) {
+  const served = useMeta()?.priorities;
+  const visual = priorityVisual(priority);
+  const label = priorityLabel(priority, served);
+  // "URGENT priority", but "No priority" rather than "No priority priority".
+  const title = typeof priority === "string" && priority.trim() ? `${label} priority` : label;
+  const bars = (
+    <span className="priority-bars" title={title}>
       {[5, 8, 11].map((height, index) => (
         <span
           key={height}
           style={{
             height,
-            backgroundColor: index < meta.level ? meta.color : "var(--border-strong)",
+            backgroundColor: index < visual.level ? visual.color : "var(--border-strong)",
           }}
         />
       ))}
     </span>
+  );
+  if (visual.known) return bars;
+  return (
+    <>
+      <span className={nameClassName} title={label}>
+        {label}
+      </span>
+      {bars}
+    </>
   );
 }
 

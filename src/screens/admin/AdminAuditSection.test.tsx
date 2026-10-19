@@ -26,6 +26,7 @@ const { fakeApi, useMock, setFailure, setAnswer, queries } = vi.hoisted(() => {
     hasSession: () => true,
     onSessionExpired: () => () => {},
     getCurrentUser: () => state.mock!.getCurrentUser(),
+    getMeta: () => state.mock!.getMeta(),
     listAuditEntries: async (query: AuditEntriesQuery) => {
       state.queries.push(query);
       if (state.failure) throw state.failure;

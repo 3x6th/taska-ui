@@ -55,6 +55,7 @@ import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { IssueShare } from "../components/IssueShare";
 import { IssueWorklogSection } from "../components/IssueWorklogSection";
@@ -67,26 +68,28 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { useMeta } from "../hooks/useMeta";
 import { closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
 import { personFor, type NamedBy } from "../lib/people";
-import { ALL_ISSUE_TYPES, allowedIssueTypes, projectContextKey } from "../lib/projectContext";
+import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
+  DictionaryEntry,
   Issue,
   IssueAttachment,
   IssueComment,
   IssueDetailsWithHistory,
   IssueHistoryEvent,
   IssueLink,
-  IssueLinkType,
+  IssueLinkTypeCode,
   IssueSearchHit,
   IssueWatcher,
   IssueWatchers,
   Label,
   Page,
-  IssuePriority,
-  IssueStatus,
-  IssueType,
+  IssuePriorityCode,
+  IssueStatusKey,
+  IssueTypeCode,
   ProjectContext,
   ProjectMember,
   ProjectWorkflow,
@@ -99,16 +102,21 @@ import {
   formatDateTime,
   formatDay,
   formatFileSize,
+  isKnownIssueType,
+  isKnownPriority,
   isLabelColor,
   issueLinkTypeLabel,
   issueLinkTypes,
+  issuePriorities,
+  issueTypeInSentence,
+  issueTypeLabel,
   keyBadgeStyle,
   labelColorChoices,
-  priorityMeta,
-  statusColors,
-  statusLabels,
-  typeMeta,
+  priorityLabel,
+  statusColor,
+  statusLabel,
 } from "../lib/format";
+import { selectableCodes } from "../lib/enumLabel";
 import {
   PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE,
   PLANNING_EMPTY_PLACEHOLDER,
@@ -132,7 +140,12 @@ import { shortKey } from "./admin/columns";
 import type { ScreenProps } from "./App";
 import { NotFoundScreen } from "./NotFoundScreen";
 
-type IssueTypeFilter = IssueType | "ALL";
+/**
+ * One issue type, or `null` for every type. Not an `"ALL"` sentinel any more
+ * (TAS-173): the types are codes the server sends, and one spelled `ALL` would
+ * have been the filter that shows everything.
+ */
+type IssueTypeFilter = IssueTypeCode | null;
 type AssigneeFilter = string | "ALL";
 /** A project label's id, or every issue whatever it carries. */
 type LabelFilter = string | "ALL";
@@ -147,7 +160,6 @@ type WorkflowsByIssueType = ProjectContext["workflows"];
 // this signature, and `unknown` here would make every `query.error` unknown.
 const retryUnlessMissing = (failureCount: number, error: Error) =>
   !isMissingOrForbidden(error) && failureCount < 1;
-const priorities: IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
 // The gateway caps `pageSize` for comments at 50.
 const commentsPageSize = 50;
 // DESIGN.md §4.14. The box itself is instant; only the request waits.
@@ -367,7 +379,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState<IssueTypeFilter>("ALL");
+  const [typeFilter, setTypeFilter] = useState<IssueTypeFilter>(null);
   const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>("ALL");
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("ALL");
   const [managingLabels, setManagingLabels] = useState(false);
@@ -533,12 +545,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const workflowUnknown = workflowUnread.unanswered;
 
   const userById = useMemo(() => toUserMap(members), [members]);
-  const statuses = useMemo(() => mergeWorkflowStatuses(workflows), [workflows]);
+  const statuses = useMemo(() => mergeWorkflowStatuses(workflows, offeredIssueTypes), [workflows, offeredIssueTypes]);
+  // Names for codes this build does not know (TAS-173). `undefined` while
+  // `GET /meta` is on the way or after it failed, and every reader then falls
+  // back to the build's own words — nothing waits for it.
+  const meta = useMeta();
 
   const filteredIssues = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return issues.filter((issue) => {
-      if (typeFilter !== "ALL" && issue.issueType !== typeFilter) return false;
+      if (typeFilter !== null && issue.issueType !== typeFilter) return false;
       if (assigneeFilter !== "ALL" && issue.assigneeId !== assigneeFilter) return false;
       if (!normalized) return true;
       // Three fields, the same three `GET /issues/search` matches on. The
@@ -580,7 +596,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         query: debouncedQuery,
         // The two filters the bar shares with the endpoint, so its answer is
         // about the same set the columns are showing rather than a wider one.
-        issueType: typeFilter === "ALL" ? undefined : typeFilter,
+        issueType: typeFilter ?? undefined,
         assigneeId: assigneeFilter === "ALL" ? undefined : assigneeFilter,
         pageSize: boardSearchPageSize,
       }),
@@ -602,9 +618,17 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     const shown = new Set(filteredIssues.map((issue) => issue.id));
     return (searchQuery.data?.items ?? []).filter((hit) => !shown.has(hit.id));
   }, [filteredIssues, searchQuery.data, serverSearchEnabled]);
+  // The issues no column holds (TAS-173): a status no workflow of this project
+  // lists, no status at all, or — while the columns are the fallback three — a
+  // status other than those. Drawn in one trailing group rather than dropped,
+  // so every issue counted in "X of Y" is an issue on screen.
+  const orphanIssues = useMemo(() => {
+    const columnKeys = new Set(statuses.map((status) => status.statusKey));
+    return filteredIssues.filter((issue) => !columnKeys.has(issue.status));
+  }, [filteredIssues, statuses]);
 
   const transitionIssue = useMutation({
-    mutationFn: ({ movedIssueId, transitionId }: { movedIssueId: string; nextStatus: IssueStatus; transitionId: string }) =>
+    mutationFn: ({ movedIssueId, transitionId }: { movedIssueId: string; nextStatus: IssueStatusKey; transitionId: string }) =>
       taskaApi.transitionIssue(projectId, movedIssueId, transitionId),
     onMutate: async ({ nextStatus, movedIssueId }) => {
       // Captured, not read again in `onError`. Since TAS-169 `issuesKey`
@@ -650,7 +674,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     },
   });
 
-  const hasFilters = Boolean(query || typeFilter !== "ALL" || assigneeFilter !== "ALL" || labelFilter !== "ALL");
+  const hasFilters = Boolean(query || typeFilter !== null || assigneeFilter !== "ALL" || labelFilter !== "ALL");
   const activeIssue = activeIssueId ? issues.find((item) => item.id === activeIssueId) : undefined;
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -670,13 +694,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       setActiveIssueId(null);
       return;
     }
-    const nextStatus = String(overId) as IssueStatus;
+    const nextStatus: IssueStatusKey = String(overId);
     const issue = issues.find((item) => item.id === activeId);
     if (!issue || issue.status === nextStatus) {
       setActiveIssueId(null);
       return;
     }
-    const workflow = workflows?.[issue.issueType];
+    const workflow = workflowFor(workflows, issue.issueType);
+    // In running text the build's own word is lowercased and anything else is
+    // printed as it came: "bug issues", "EPIC issues" (TAS-173).
+    const typeWord = issueTypeInSentence(issue.issueType, meta?.issueTypes);
     // No fallback on this path, ever. The only transition ids this repository
     // owns are the mock's seed, and posting one to a gateway that never
     // described it invents a transition — the drop is refused instead, whether
@@ -687,7 +714,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       // a type taken away — and "could not be loaded" would be false there.
       setDragNotice(
         workflows
-          ? `${issue.issueKey} was not moved: this project has no workflow for ${typeMeta[issue.issueType].label.toLowerCase()} issues.`
+          ? `${issue.issueKey} was not moved: this project has no workflow for ${typeWord} issues.`
           : `${issue.issueKey} was not moved: this project's workflow could not be loaded.`,
       );
       setActiveIssueId(null);
@@ -699,7 +726,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     // be resolved from.
     if (sentWithoutStatuses(workflow)) {
       setDragNotice(
-        `${issue.issueKey} was not moved: the server sent this project's ${typeMeta[issue.issueType].label.toLowerCase()} workflow without statuses.`,
+        `${issue.issueKey} was not moved: the server sent this project's ${typeWord} workflow without statuses.`,
       );
       setActiveIssueId(null);
       return;
@@ -708,8 +735,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     if (transition) {
       transitionIssue.mutate({ movedIssueId: issue.id, nextStatus, transitionId: transition.id });
     } else {
+      // Named by the issue's own workflow first, then by the columns on screen
+      // — the target may be a column another type's workflow put there.
+      const named = [...workflow.statuses, ...statuses];
       setDragNotice(
-        `${issue.issueKey}: no transition from ${statusLabels[issue.status]} to ${statusLabels[nextStatus]} in this workflow`,
+        `${issue.issueKey}: no transition from ${statusLabel(issue.status, named)} to ${statusLabel(nextStatus, named)} in this workflow`,
       );
     }
     setActiveIssueId(null);
@@ -793,9 +823,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
       <section className="filterbar">
         <div className="segmented compact">
-          {(["ALL", ...offeredIssueTypes] as IssueTypeFilter[]).map((type) => (
+          <button className={typeFilter === null ? "is-active" : ""} onClick={() => setTypeFilter(null)} type="button">
+            All
+          </button>
+          {offeredIssueTypes.map((type) => (
             <button key={type} className={typeFilter === type ? "is-active" : ""} onClick={() => setTypeFilter(type)} type="button">
-              {type === "ALL" ? "All" : typeMeta[type].label}
+              {issueTypeLabel(type, meta?.issueTypes)}
             </button>
           ))}
         </div>
@@ -895,7 +928,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             className="clear-button"
             onClick={() => {
               setQuery("");
-              setTypeFilter("ALL");
+              setTypeFilter(null);
               setAssigneeFilter("ALL");
               setLabelFilter("ALL");
             }}
@@ -1025,6 +1058,17 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
                 />
               ))}
+          {/* Only once the issues are in and only when something is in it:
+              not while the columns are skeletons, and not on a failed read,
+              where every column already says it does not know. */}
+          {!issuesUnknown && !contextQuery.isLoading && !issuesQuery.isLoading && orphanIssues.length > 0 ? (
+            <OtherStatusesGroup
+              issues={orphanIssues}
+              onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
+              userById={userById}
+              workflows={workflows}
+            />
+          ) : null}
         </section>
         <DragOverlay dropAnimation={null} zIndex={1000}>
           {activeIssue ? (
@@ -1047,30 +1091,46 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       ) : null}
 
       {issueId ? (
-        <IssuePanel
-          // Remount when the panel changes issue. Since TAS-157 a link row can
-          // swap `issueId` while this instance stays mounted, and without the
-          // key every piece of per-issue state — the comment draft above all,
-          // which would be posted onto the issue it was not written for —
-          // survives the navigation. This is not the reseed the drafts inside
-          // the panel avoid: those must not remount on a *refetch*, and
-          // `issueId` cannot change mid-edit.
+        // The panel's own boundary (TAS-173): an issue the panel cannot draw
+        // leaves the board behind it standing, with a head that can be closed.
+        // Keyed with the panel, so the next issue starts clean.
+        <ErrorBoundary
+          fallback={(error) => (
+            <IssuePanelFailure
+              error={error}
+              issueKey={issues.find((item) => item.id === issueId)?.issueKey}
+              issueId={issueId}
+              onClose={() => navigate(`/projects/${projectId}/board`)}
+              projectId={projectId}
+            />
+          )}
           key={issueId}
-          issueId={issueId}
-          projectId={projectId}
-          members={members}
-          membersAnswered={context !== undefined}
-          membersUnknown={membersUnread.unanswered}
-          userById={userById}
-          canEdit={canEdit}
-          isProjectAdmin={isProjectAdmin}
-          canWatch={canWatch}
-          isProjectViewer={isProjectViewer}
-          currentUserId={meQuery.data?.id}
-          workflows={workflows}
-          workflowUnknown={workflowUnknown}
-          onClose={() => navigate(`/projects/${projectId}/board`)}
-        />
+        >
+          <IssuePanel
+            // Remount when the panel changes issue. Since TAS-157 a link row can
+            // swap `issueId` while this instance stays mounted, and without the
+            // key every piece of per-issue state — the comment draft above all,
+            // which would be posted onto the issue it was not written for —
+            // survives the navigation. This is not the reseed the drafts inside
+            // the panel avoid: those must not remount on a *refetch*, and
+            // `issueId` cannot change mid-edit.
+            key={issueId}
+            issueId={issueId}
+            projectId={projectId}
+            members={members}
+            membersAnswered={context !== undefined}
+            membersUnknown={membersUnread.unanswered}
+            userById={userById}
+            canEdit={canEdit}
+            isProjectAdmin={isProjectAdmin}
+            canWatch={canWatch}
+            isProjectViewer={isProjectViewer}
+            currentUserId={meQuery.data?.id}
+            workflows={workflows}
+            workflowUnknown={workflowUnknown}
+            onClose={() => navigate(`/projects/${projectId}/board`)}
+          />
+        </ErrorBoundary>
       ) : null}
 
       {managingLabels ? (
@@ -1128,8 +1188,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 /**
  * The columns to draw before the workflow has been read, and after a read that
  * failed. These are safe to invent because they are not inventions: the three
- * keys are `IssueStatus` from the contract, the issues already carry one each,
- * and a board has to put them somewhere. Only the labels and the order are
+ * keys are `IssueStatus` from the contract, and most issues carry one of them.
+ * One that carries anything else goes to the "Other statuses" group rather
+ * than into a column it is not in (TAS-173). Only the labels and the order are
  * ours.
  *
  * There is deliberately no matching `fallbackTransitions` any more. It used to
@@ -1168,14 +1229,15 @@ function BoardColumn({
   onOpenIssue: (issueId: string) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: status.statusKey, disabled: !canEdit });
+  const name = statusLabel(status.statusKey, [status]);
 
   // A named section rather than a bare div: each column is a landmark a screen
   // reader can jump between, and the drop target stops being anonymous.
   return (
-    <section aria-label={`${status.name} column`} className={`board-column ${isOver ? "is-over" : ""}`} ref={setNodeRef}>
+    <section aria-label={`${name} column`} className={`board-column ${isOver ? "is-over" : ""}`} ref={setNodeRef}>
       <div className="column-head">
-        <span className="status-dot" style={{ background: statusColors[status.statusKey] }} />
-        <strong>{status.name}</strong>
+        <StatusDot status={status} />
+        <strong>{name}</strong>
         <span className="count-pill">{issuesUnknown ? <Unknown /> : issues.length}</span>
         <button className="icon-button mini" disabled={!canCreate} onClick={onAdd} title="Create issue" type="button">
           <Plus size={13} />
@@ -1183,13 +1245,18 @@ function BoardColumn({
       </div>
       <div className="issue-list">
         {issues.map((issue) => (
-          <IssueCard
+          <ErrorBoundary
+            fallback={() => <IssueCardFailure issue={issue} onOpen={onOpenIssue} />}
             key={issue.id}
-            issue={issue}
-            user={issue.assigneeId ? userById.get(issue.assigneeId) : null}
-            canEdit={canEdit}
-            onOpen={onOpenIssue}
-          />
+            resetKey={issue}
+          >
+            <IssueCard
+              issue={issue}
+              user={issue.assigneeId ? userById.get(issue.assigneeId) : null}
+              canEdit={canEdit}
+              onOpen={onOpenIssue}
+            />
+          </ErrorBoundary>
         ))}
         {/* Three different empty columns. A column whose contents are unknown
             must not invite a card, and the dashed frame §5.6 gives the empty
@@ -1206,16 +1273,98 @@ function BoardColumn({
   );
 }
 
+/**
+ * A column's dot (§4.9). Coloured by the key when this build knows it, by the
+ * workflow's `category` when that is one of the three, and otherwise a hollow
+ * ring in `--fg-2` (art-director, TAS-173) — distinct from To Do's filled grey,
+ * and not a colour nobody chose.
+ */
+function StatusDot({ status }: { status: Pick<WorkflowStatus, "statusKey" | "category"> }) {
+  const color = statusColor(status.statusKey, status.category);
+  return color ? (
+    <span className="status-dot" style={{ background: color }} />
+  ) : (
+    <span className="status-dot is-unknown" />
+  );
+}
+
+/**
+ * The issues no column holds (TAS-173, art-director's ruling 3): one trailing
+ * group after the last column, never a column per status — a status that is in
+ * no workflow is not a place an issue can be moved to, so this is the §9
+ * `plain` variant with no dot and no "+", and it is not a drop target. Its
+ * cards do not lift for anyone; they open the issue, whose panel says why no
+ * move is offered. Each card names its status in the footer, since the group
+ * heading cannot.
+ */
+function OtherStatusesGroup({
+  issues,
+  userById,
+  workflows,
+  onOpenIssue,
+}: {
+  issues: Issue[];
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  workflows?: WorkflowsByIssueType;
+  onOpenIssue: (issueId: string) => void;
+}) {
+  return (
+    <section aria-label="Other statuses" className="board-column is-plain other-statuses">
+      <div className="column-head">
+        <strong>Other statuses</strong>
+        <span className="count-pill">{issues.length}</span>
+      </div>
+      <div className="issue-list">
+        {issues.map((issue) => (
+          <ErrorBoundary
+            fallback={() => <IssueCardFailure issue={issue} onOpen={onOpenIssue} />}
+            key={issue.id}
+            resetKey={issue}
+          >
+            <IssueCard
+              canEdit={false}
+              issue={issue}
+              onOpen={onOpenIssue}
+              statusNote={statusLabel(issue.status, workflowFor(workflows, issue.issueType)?.statuses)}
+              user={issue.assigneeId ? userById.get(issue.assigneeId) : null}
+            />
+          </ErrorBoundary>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * A card whose issue could not be drawn (TAS-173): the §4.8 box, its key and
+ * one sentence, and nothing else read from the issue — whatever threw is in
+ * there. Still the button that opens the issue, and still counted in its
+ * column's pill and in "X of Y": the issue exists, only its card failed. It
+ * does not lift; the boundary tries the real card again when the issue's data
+ * changes.
+ */
+function IssueCardFailure({ issue, onOpen }: { issue: Pick<Issue, "id" | "issueKey">; onOpen: (issueId: string) => void }) {
+  return (
+    <button className="issue-card is-static issue-card-failure" onClick={() => onOpen(issue.id)} type="button">
+      {typeof issue.issueKey === "string" && issue.issueKey ? <span className="issue-key">{issue.issueKey}</span> : null}
+      <span className="issue-card-failure-text">This card could not be shown.</span>
+    </button>
+  );
+}
+
 function IssueCard({
   issue,
   user,
   canEdit,
   onOpen,
+  statusNote,
 }: {
   issue: Issue;
   user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
   canEdit: boolean;
   onOpen: (issueId: string) => void;
+  /** The status in words, beside the date — for a card that sits in no column of its status. */
+  statusNote?: string;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: issue.id, disabled: !canEdit });
 
@@ -1235,18 +1384,30 @@ function IssueCard({
       {...(canEdit ? listeners : null)}
       {...(canEdit ? attributes : null)}
     >
-      <IssueCardContent issue={issue} user={user} />
+      <IssueCardContent issue={issue} statusNote={statusNote} user={user} />
     </button>
   );
 }
 
-function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null }) {
+function IssueCardContent({
+  issue,
+  user,
+  statusNote,
+}: {
+  issue: Issue;
+  user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
+  statusNote?: string;
+}) {
+  const served = useMeta()?.issueTypes;
+  const typeName = issueTypeLabel(issue.issueType, served);
   return (
     <>
       <span className="issue-card-meta">
         <TypeChip type={issue.issueType} />
         <span className="issue-key">{issue.issueKey}</span>
-        <span>{typeMeta[issue.issueType].label}</span>
+        <span className="issue-type-label" title={typeName}>
+          {typeName}
+        </span>
         <PriorityBars priority={issue.priority} />
       </span>
       <strong>{issue.summary}</strong>
@@ -1259,7 +1420,13 @@ function IssueCardContent({ issue, user }: { issue: Issue; user?: Pick<User, "id
         </span>
       ) : null}
       <span className="issue-card-foot">
-        <span>{formatDay(issue.createdAt)}</span>
+        {statusNote === undefined ? (
+          <span>{formatDay(issue.createdAt)}</span>
+        ) : (
+          <span className="issue-card-when" title={statusNote}>
+            {formatDay(issue.createdAt)} · <span className="issue-card-status">{statusNote}</span>
+          </span>
+        )}
         <Avatar user={user} size="sm" />
       </span>
     </>
@@ -1337,25 +1504,39 @@ function SearchHitsGroup({
         <ul className="search-hits-list">
           {hits.map((hit) => {
             const assignee = hit.assigneeId ? userById.get(hit.assigneeId) : null;
+            const to = `/projects/${projectId}/issues/${hit.id}`;
             return (
               <li key={hit.id}>
-                {/* A link, not a button: it navigates and nothing about it
-                    drags, so it has to be middle-clickable and copyable like
-                    every other address in this app. */}
-                <Link className="search-hit" to={`/projects/${projectId}/issues/${hit.id}`}>
-                  <span className="search-hit-meta">
-                    <TypeChip type={hit.issueType} />
-                    <span className="issue-key">{hit.issueKey}</span>
-                    <span>{typeMeta[hit.issueType].label}</span>
-                    <PriorityBars priority={hit.priority} />
-                  </span>
-                  <strong>{hit.summary}</strong>
-                  {/* Nothing a hit does not carry — no labels, no dates, because
-                      the server sent none of them. */}
-                  <span className="search-hit-foot">
-                    <Avatar user={assignee} size="sm" />
-                  </span>
-                </Link>
+                {/* One hit that cannot be drawn costs that card (TAS-173). */}
+                <ErrorBoundary
+                  fallback={() => (
+                    <Link className="search-hit search-hit-failure" to={to}>
+                      {typeof hit.issueKey === "string" && hit.issueKey ? (
+                        <span className="issue-key">{hit.issueKey}</span>
+                      ) : null}
+                      <span className="issue-card-failure-text">This card could not be shown.</span>
+                    </Link>
+                  )}
+                  resetKey={hit}
+                >
+                  {/* A link, not a button: it navigates and nothing about it
+                      drags, so it has to be middle-clickable and copyable like
+                      every other address in this app. */}
+                  <Link className="search-hit" to={to}>
+                    <span className="search-hit-meta">
+                      <TypeChip type={hit.issueType} />
+                      <span className="issue-key">{hit.issueKey}</span>
+                      <SearchHitTypeLabel type={hit.issueType} />
+                      <PriorityBars priority={hit.priority} />
+                    </span>
+                    <strong>{hit.summary}</strong>
+                    {/* Nothing a hit does not carry — no labels, no dates, because
+                        the server sent none of them. */}
+                    <span className="search-hit-foot">
+                      <Avatar user={assignee} size="sm" />
+                    </span>
+                  </Link>
+                </ErrorBoundary>
               </li>
             );
           })}
@@ -1365,12 +1546,23 @@ function SearchHitsGroup({
   );
 }
 
+/** A hit's type in words, by the one label rule. Its own component so it can read the dictionaries. */
+function SearchHitTypeLabel({ type }: { type: string }) {
+  const served = useMeta()?.issueTypes;
+  const name = issueTypeLabel(type, served);
+  return (
+    <span className="issue-type-label" title={name}>
+      {name}
+    </span>
+  );
+}
+
 function ColumnSkeleton({ status }: { status: WorkflowStatus }) {
   return (
     <div className="board-column">
       <div className="column-head">
-        <span className="status-dot" style={{ background: statusColors[status.statusKey] }} />
-        <strong>{status.name}</strong>
+        <StatusDot status={status} />
+        <strong>{statusLabel(status.statusKey, [status])}</strong>
       </div>
       <div className="issue-list">
         <div className="issue-card skeleton-card" />
@@ -1456,6 +1648,53 @@ function IssuePanelSkeleton() {
   );
 }
 
+/**
+ * The panel when the issue it holds could not be drawn (TAS-173, art-director's
+ * ruling 4). The same `aside` and the same 52px head as the loaded panel, with
+ * only what is safe to read — the key, when the board's page or the panel's
+ * cache already holds it — and Close, because a panel with no way out but the
+ * scrim strip is a trap on a phone. The sentence sits where §4.10's read
+ * failure sits, with the error's message as its detail. Polite rather than an
+ * alert: the reader asked to open something, nothing they did was refused.
+ */
+function IssuePanelFailure({
+  error,
+  issueId,
+  issueKey,
+  projectId,
+  onClose,
+}: {
+  error: Error;
+  issueId: string;
+  /** The key off the board's page, if it holds this issue. */
+  issueKey?: string;
+  projectId: string;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const cachedKey = queryClient.getQueryData(issueDetailsOptions(projectId, issueId).queryKey)?.issue?.issueKey;
+  const key = [cachedKey, issueKey].find((value): value is string => typeof value === "string" && value !== "");
+  return (
+    <div className="panel-layer">
+      <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" type="button" />
+      <aside aria-label={key ? `${key} issue` : "Issue"} className="issue-panel">
+        <header className="issue-panel-head">
+          {key ? <span className="issue-key">{key}</span> : null}
+          <div className="topbar-spacer" />
+          <button className="icon-button" onClick={onClose} title="Close" type="button">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="panel-loading">
+          <ApiNotice error={error} live="polite">
+            This issue could not be shown.
+          </ApiNotice>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 function IssuePanel({
   projectId,
   issueId,
@@ -1516,6 +1755,7 @@ function IssuePanel({
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const meta = useMeta();
   const issueQuery = useQuery({
     ...issueDetailsOptions(projectId, issueId),
     // A cached answer that came without one of its parts is a success to
@@ -1681,12 +1921,15 @@ function IssuePanel({
     setPlanning((current) => reseedPlanningDrafts(current, previous?.planning ?? null, serverPlanning));
   }
 
-  const workflow = issue ? workflows?.[issue.issueType] : undefined;
+  const workflow = issue ? workflowFor(workflows, issue.issueType) : undefined;
   // These buttons are the drag's keyboard equivalent (§5.3), so they answer to
   // the same rule as the drop: only the server's own transitions, never the
   // fallback's. Offering a move built from an invented id would post that id.
   const availableTransitions =
     issue && workflow ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
+  // The issue's status as its own workflow describes it, when it does: the name
+  // the project chose and the category its colour comes from (TAS-173).
+  const workflowStatus = issue ? workflow?.statuses.find((status) => status.statusKey === issue.status) : undefined;
 
   /**
    * Every write that starts drops the date line and what a conflict line says
@@ -1914,6 +2157,17 @@ function IssuePanel({
   // Named by the issue read itself since TAS-246; the member list is the
   // fallback for a summary the server could not fill (`personFor`).
   const reporter = personFor(issue.reporterId, issue.reporter, userById);
+  // Every word the panel says about a code, by the one label rule (TAS-173).
+  const typeName = issueTypeLabel(issue.issueType, meta?.issueTypes);
+  const typeWord = issueTypeInSentence(issue.issueType, meta?.issueTypes);
+  const statusName = statusLabel(issue.status, workflow?.statuses);
+  // What `GET /meta` lists, or the contract's three while it has not answered
+  // (art-director's ruling 5) — and the issue's own value always: a priority
+  // the list does not carry is still this issue's, so it is appended last and
+  // drawn active rather than leaving the control with nothing selected.
+  const offeredPriorities = selectableCodes(meta?.priorities, issuePriorities);
+  const priorityChoices: IssuePriorityCode[] =
+    issue.priority && !offeredPriorities.includes(issue.priority) ? [...offeredPriorities, issue.priority] : offeredPriorities;
 
   /**
    * Put a draft back the way the server has it. Used by Escape — abandoning an
@@ -2121,7 +2375,9 @@ function IssuePanel({
         <header className="issue-panel-head">
           <TypeChip type={issue.issueType} />
           <span className="issue-key">{issue.issueKey}</span>
-          <span>{typeMeta[issue.issueType].label}</span>
+          <span className="issue-type-label" title={typeName}>
+            {typeName}
+          </span>
           <div className="topbar-spacer" />
           {/* Read-only, so not gated by role (TAS-248). Only in the loaded head:
               the skeleton's has no key to share yet. */}
@@ -2149,8 +2405,14 @@ function IssuePanel({
           />
 
           <div className="transition-row">
-            <span className="status-pill" style={{ color: statusColors[issue.status] }}>
-              {statusLabels[issue.status]}
+            {/* §4.5's pill. A status this build cannot colour — an unknown key
+                in an unknown category — takes the neutral `--fg-2` rather than
+                a colour nobody chose (art-director, TAS-173). */}
+            <span
+              className="status-pill"
+              style={{ color: statusColor(issue.status, workflowStatus?.category) ?? "var(--fg-2)" }}
+            >
+              {statusName}
             </span>
             {availableTransitions.length ? <span className="arrow">→</span> : null}
             {/* Said here as well as on the board behind this panel: the panel
@@ -2163,15 +2425,23 @@ function IssuePanel({
               // The context answered without this issue's type: the project no
               // longer allows it (TAS-251). Not a failure, and not "nowhere to go".
               <span className="transition-note">
-                This project has no workflow for {typeMeta[issue.issueType].label.toLowerCase()} issues, so no move is
-                offered.
+                This project has no workflow for {typeWord} issues, so no move is offered.
               </span>
             ) : workflow && sentWithoutStatuses(workflow) ? (
               // A workflow arrived with nothing in it (TAS-261) — the drop's
               // third refusal, read off the same predicate.
               <span className="transition-note">
-                The server sent this project&rsquo;s {typeMeta[issue.issueType].label.toLowerCase()} workflow without
-                statuses, so no move is offered.
+                The server sent this project&rsquo;s {typeWord} workflow without statuses, so no move is offered.
+              </span>
+            ) : workflow && !issue.status ? (
+              // The issue arrived with no status (TAS-173): there is nothing to
+              // move it from.
+              <span className="transition-note">This issue has no status, so no move is offered.</span>
+            ) : workflow && !workflowStatus ? (
+              // A status the issue's own workflow does not list — the card sits
+              // in "Other statuses" — so no transition can start from it.
+              <span className="transition-note">
+                {statusName} is not in this project&rsquo;s {typeWord} workflow, so no move is offered.
               </span>
             ) : null}
             {availableTransitions.map((transition) => (
@@ -2253,7 +2523,7 @@ function IssuePanel({
             </div>
             <span>Priority</span>
             <div className="segmented compact fit">
-              {priorities.map((priority) => (
+              {priorityChoices.map((priority) => (
                 <button
                   className={issue.priority === priority ? "is-active" : ""}
                   disabled={!canEdit}
@@ -2261,7 +2531,7 @@ function IssuePanel({
                   onClick={() => editIssue({ priority })}
                   type="button"
                 >
-                  {priorityMeta[priority].label}
+                  {priorityLabel(priority, meta?.priorities)}
                 </button>
               ))}
             </div>
@@ -2496,7 +2766,12 @@ function IssuePanel({
             prefetched={commentsPrefetched}
           />
 
-          <ActivitySection history={history} userById={userById} />
+          <ActivitySection
+            history={history}
+            priorities={meta?.priorities}
+            statuses={workflow?.statuses}
+            userById={userById}
+          />
         </div>
       </aside>
     </div>
@@ -3594,7 +3869,15 @@ function IssueLinksSection({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const relationLabelId = useId();
-  const [linkType, setLinkType] = useState<IssueLinkType>("BLOCKS");
+  const meta = useMeta();
+  // The relations `GET /meta` lists, or the contract's three until it answers
+  // (TAS-173): a relation the backend adds is offered the day it is served.
+  // The choice is derived rather than stored as the first value, so a list
+  // that arrives after the panel opened still settles on a relation it offers.
+  const offeredLinkTypes = selectableCodes(meta?.linkTypes, issueLinkTypes);
+  const [pickedLinkType, setLinkType] = useState<IssueLinkTypeCode | null>(null);
+  const linkType =
+    pickedLinkType !== null && offeredLinkTypes.includes(pickedLinkType) ? pickedLinkType : offeredLinkTypes[0];
   const [targetIssueId, setTargetIssueId] = useState("");
   // Refused before the request goes out; the server stays the authority.
   const [localError, setLocalError] = useState<string | null>(null);
@@ -3721,7 +4004,7 @@ function IssueLinksSection({
           <div className="issue-link-field">
             <span id={relationLabelId}>Relation</span>
             <div aria-labelledby={relationLabelId} className="segmented compact fit" role="group">
-              {issueLinkTypes.map((type) => (
+              {offeredLinkTypes.map((type) => (
                 <button
                   aria-pressed={linkType === type}
                   className={linkType === type ? "is-active" : ""}
@@ -3729,7 +4012,7 @@ function IssueLinksSection({
                   onClick={() => setLinkType(type)}
                   type="button"
                 >
-                  {issueLinkTypeLabel(type)}
+                  {issueLinkTypeLabel(type, meta?.linkTypes)}
                 </button>
               ))}
             </div>
@@ -3786,7 +4069,7 @@ function IssueLinksSection({
                   onClick={() => navigate(`/projects/${otherProjectId}/issues/${otherId}`)}
                   type="button"
                 >
-                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType)}</span>
+                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType, meta?.linkTypes)}</span>
                   {/* The key is what a person recognises; an issue outside the
                       loaded page has none, and its raw id is still truer than a
                       blank row — it just has to be allowed to ellipsize. */}
@@ -3801,7 +4084,7 @@ function IssueLinksSection({
                 // the row says what it knows rather than offering a click that
                 // resolves to no issue.
                 <span className="issue-link-open is-inert">
-                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType)}</span>
+                  <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType, meta?.linkTypes)}</span>
                   <span className="issue-link-summary">Unknown issue</span>
                 </span>
               )}
@@ -4887,9 +5170,15 @@ function writeActivityCollapsed(collapsed: boolean) {
 function ActivitySection({
   history,
   userById,
+  statuses,
+  priorities,
 }: {
   history: IssueHistoryEvent[];
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  /** The issue's workflow statuses, which name a status the build has no word for. */
+  statuses?: readonly WorkflowStatus[];
+  /** `GET /meta`'s priorities, which name a priority the build has no word for. */
+  priorities?: readonly DictionaryEntry[] | null;
 }) {
   const [expanded, setExpanded] = useState(() => !readActivityCollapsed());
   const listId = useId();
@@ -4923,6 +5212,7 @@ function ActivitySection({
                 event={event}
                 key={event.id}
                 isLast={index === history.length - 1}
+                names={{ statuses, priorities }}
                 user={userById.get(event.actorUserId)}
                 userById={userById}
               />
@@ -4937,11 +5227,13 @@ function ActivityItem({
   event,
   user,
   userById,
+  names,
   isLast,
 }: {
   event: IssueHistoryEvent;
   user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl">;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  names: HistoryNames;
   isLast: boolean;
 }) {
   return (
@@ -4950,7 +5242,7 @@ function ActivityItem({
       <Avatar user={user} size="sm" />
       <div>
         <p>
-          <strong>{user?.displayName ?? "Someone"}</strong> {historyText(event, userById)}
+          <strong>{user?.displayName ?? "Someone"}</strong> {historyText(event, userById, names)}
         </p>
         <time>{formatDateTime(event.occurredAt)}</time>
       </div>
@@ -5284,12 +5576,13 @@ function CreateIssueModal({
   onCreated,
 }: {
   /**
-   * The types this project allows (`allowedIssueTypes`), in the board's order.
-   * Only these are offered, and the first is the default. Empty means nothing
-   * can be created, and the form says so rather than offering a type the
-   * server did not list (TAS-251).
+   * The types this project allows (`allowedIssueTypes`), in the board's order —
+   * a type this build has no name for included, after the ones it knows
+   * (TAS-173). Only these are offered, and the first is the default. Empty
+   * means nothing can be created, and the form says so rather than offering a
+   * type the server did not list (TAS-251).
    */
-  issueTypes: IssueType[];
+  issueTypes: IssueTypeCode[];
   projectId: string;
   projectKey: string;
   /** Same reason as `ProjectLabelsModal`: one key, one colour, on every surface. */
@@ -5300,8 +5593,26 @@ function CreateIssueModal({
   const queryClient = useQueryClient();
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
-  const [issueType, setIssueType] = useState<IssueType | null>(issueTypes[0] ?? null);
-  const [priority, setPriority] = useState<IssuePriority>("MEDIUM");
+  const meta = useMeta();
+  const [issueType, setIssueType] = useState<IssueTypeCode | null>(issueTypes[0] ?? null);
+  // The priorities `GET /meta` lists, or the contract's three until it has
+  // answered (TAS-173, art-director's ruling 5). Medium by default when it is
+  // offered, the first otherwise; the reader's pick is kept for as long as the
+  // set still offers it, so a list that lands after the form opened moves only
+  // a default nobody chose.
+  const offeredPriorities = selectableCodes(meta?.priorities, issuePriorities);
+  const [pickedPriority, setPriority] = useState<IssuePriorityCode | null>(null);
+  const priority =
+    pickedPriority !== null && offeredPriorities.includes(pickedPriority)
+      ? pickedPriority
+      : offeredPriorities.includes("MEDIUM")
+        ? "MEDIUM"
+        : offeredPriorities[0];
+  // Stacked rather than side by side once either picker holds a value this
+  // build has no word for: its label is the code, and two such columns of
+  // half width run out of room (art-director's ruling 5).
+  const stackPickers =
+    issueTypes.some((type) => !isKnownIssueType(type)) || offeredPriorities.some((code) => !isKnownPriority(code));
   // The five planning fields, all optional (TAS-189). Held as drafts for the
   // same reason the panel holds them that way — the boxes are typed into — and
   // reduced to a request body by `planningInput`, which omits what was left
@@ -5378,7 +5689,7 @@ function CreateIssueModal({
     setPlanning((current) => ({ ...current, [field]: value }));
 
   const createIssue = useMutation({
-    mutationFn: (type: IssueType) =>
+    mutationFn: (type: IssueTypeCode) =>
       taskaApi.createIssue(projectId, { issueType: type, priority, summary, description, ...planningInput(planning) }),
     // The panel's rule, on this form's one write: the slot holds a single line,
     // so a date refusal must not caption the answer to a create, and a create
@@ -5626,14 +5937,14 @@ function CreateIssueModal({
           <span>Description</span>
           <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} />
         </label>
-        <div className="form-two">
+        <div className={`form-two ${stackPickers ? "is-stacked" : ""}`}>
           <label>
             <span>Type</span>
             {issueTypes.length ? (
               <div className="segmented compact">
                 {issueTypes.map((type) => (
                   <button className={issueType === type ? "is-active" : ""} key={type} onClick={() => setIssueType(type)} type="button">
-                    {typeMeta[type].label}
+                    {issueTypeLabel(type, meta?.issueTypes)}
                   </button>
                 ))}
               </div>
@@ -5644,9 +5955,9 @@ function CreateIssueModal({
           <label>
             <span>Priority</span>
             <div className="segmented compact">
-              {priorities.map((item) => (
+              {offeredPriorities.map((item) => (
                 <button className={priority === item ? "is-active" : ""} key={item} onClick={() => setPriority(item)} type="button">
-                  {priorityMeta[item].label}
+                  {priorityLabel(item, meta?.priorities)}
                 </button>
               ))}
             </div>
@@ -5828,13 +6139,25 @@ function toUserMap(members: ProjectMember[]) {
   );
 }
 
-function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>) {
+/** What names a code in the activity feed beyond the build's own words (TAS-173). */
+interface HistoryNames {
+  statuses?: readonly WorkflowStatus[];
+  priorities?: readonly DictionaryEntry[] | null;
+}
+
+function historyText(
+  event: IssueHistoryEvent,
+  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>,
+  names: HistoryNames = {},
+) {
   if (event.eventType === "CREATED") return "created this issue";
   if (event.eventType === "TRANSITIONED") {
     const fromStatus = event.payload.from ?? event.payload.fromStatus;
     const toStatus = event.payload.to ?? event.payload.toStatus;
-    const from = fromStatus ? statusLabels[fromStatus] : "another status";
-    const to = toStatus && isIssueStatus(toStatus) ? statusLabels[toStatus] : toStatus;
+    // A key this build has no word for is printed as it came — "moved
+    // BLOCKED_BY_QA to Done" — never dropped and never indexed (TAS-173).
+    const from = typeof fromStatus === "string" && fromStatus ? statusLabel(fromStatus, names.statuses) : "another status";
+    const to = typeof toStatus === "string" && toStatus ? statusLabel(toStatus, names.statuses) : "another status";
     return `moved ${from} to ${to}`;
   }
   if (event.eventType === "ASSIGNED") {
@@ -5843,11 +6166,11 @@ function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, 
     return `assigned ${userById.get(assigneeId)?.displayName ?? "someone"}`;
   }
   if (event.eventType === "PRIORITY") {
-    const priority = event.payload.to && isPriority(event.payload.to) ? priorityMeta[event.payload.to].label : "priority";
-    return `set priority to ${priority}`;
+    const to = event.payload.to;
+    return typeof to === "string" && to ? `set priority to ${priorityLabel(to, names.priorities)}` : "changed the priority";
   }
-  if (event.eventType === "UPDATED" && event.payload.newPriority && isPriority(event.payload.newPriority)) {
-    return `set priority to ${priorityMeta[event.payload.newPriority].label}`;
+  if (event.eventType === "UPDATED" && typeof event.payload.newPriority === "string" && event.payload.newPriority) {
+    return `set priority to ${priorityLabel(event.payload.newPriority, names.priorities)}`;
   }
   if (event.eventType === "DELETED") return "deleted this issue";
   if (event.eventType === "COMMENT_CREATED") return "commented on this issue";
@@ -5879,16 +6202,8 @@ function historyText(event: IssueHistoryEvent, userById: Map<string, Pick<User, 
   return "updated this issue";
 }
 
-function isIssueStatus(value: string): value is IssueStatus {
-  return value === "TODO" || value === "IN_PROGRESS" || value === "DONE";
-}
-
-function isPriority(value: string): value is IssuePriority {
-  return value === "LOW" || value === "MEDIUM" || value === "HIGH";
-}
-
 function resolveTransitions(
-  fromStatus: IssueStatus,
+  fromStatus: IssueStatusKey,
   statuses: WorkflowStatus[],
   transitions: WorkflowTransition[],
 ) {
@@ -5904,8 +6219,8 @@ function resolveTransitions(
 }
 
 function findTransition(
-  fromStatus: IssueStatus,
-  toStatus: IssueStatus,
+  fromStatus: IssueStatusKey,
+  toStatus: IssueStatusKey,
   statuses: WorkflowStatus[],
   transitions: WorkflowTransition[],
 ) {
@@ -5931,12 +6246,19 @@ function sentWithoutStatuses(workflow: ProjectWorkflow) {
   return workflow.statuses.length === 0;
 }
 
-function mergeWorkflowStatuses(workflows?: WorkflowsByIssueType) {
+/**
+ * The board's columns: every status of every workflow the context sent, once
+ * each, in `sortOrder`. Walks the types the project allows in the order the
+ * board offers them (`allowedIssueTypes`), which includes a type this build has
+ * no name for (TAS-173) — walking only the three it knows is how an unknown
+ * type's workflow never became columns.
+ */
+function mergeWorkflowStatuses(workflows: WorkflowsByIssueType | undefined, issueTypes: readonly IssueTypeCode[]) {
   if (!workflows) return fallbackStatuses;
 
-  const statusByKey = new Map<IssueStatus, WorkflowStatus>();
-  ALL_ISSUE_TYPES.forEach((issueType) => {
-    workflows[issueType]?.statuses.forEach((status) => {
+  const statusByKey = new Map<string, WorkflowStatus>();
+  issueTypes.forEach((issueType) => {
+    workflowFor(workflows, issueType)?.statuses.forEach((status) => {
       const current = statusByKey.get(status.statusKey);
       if (!current || status.sortOrder < current.sortOrder) {
         statusByKey.set(status.statusKey, status);

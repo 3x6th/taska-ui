@@ -51,6 +51,26 @@ export function appUrl(route: string): string {
   });
 }
 
+/** The two browser objects `reloadAt` uses, so a test can stand in for both. */
+export interface PageLoader {
+  history: Pick<History, "pushState">;
+  location: Pick<Location, "reload">;
+}
+
+/**
+ * Load one of the app's own pages from scratch: put its address in the bar,
+ * then reload the document (TAS-173, the app error screen's way out). A plain
+ * link is not enough under hash routing — the Pages build — where following
+ * `…/#/projects` is a same-document hash change: the router moves inside the
+ * React tree that just failed, and on `/projects` itself nothing happens at
+ * all. `pushState` then `reload` is a full load of that address in both
+ * schemes, with the failed page left behind in the history.
+ */
+export function reloadAt(url: string, browser: PageLoader = window): void {
+  browser.history.pushState(null, "", url);
+  browser.location.reload();
+}
+
 /** The short address of an issue, resolved by `IssueKeyScreen` (TAS-246). */
 export function issueKeyRoute(issueKey: string): string {
   return `/browse/${encodeURIComponent(issueKey)}`;

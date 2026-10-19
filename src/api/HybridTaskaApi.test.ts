@@ -32,6 +32,18 @@ describe("HybridTaskaApi", () => {
     expect(listIssues).toHaveBeenCalledWith(project.id, undefined);
   });
 
+  it("delegates the dictionaries to live, answer and rejection alike (TAS-173)", async () => {
+    const live = liveApi();
+    const getMeta = vi.spyOn(live, "getMeta");
+    const hybrid = new HybridTaskaApi(live);
+
+    await expect(hybrid.getMeta()).resolves.toEqual(await live.getMeta());
+    expect(getMeta).toHaveBeenCalled();
+
+    getMeta.mockRejectedValueOnce(new Error("Internal error"));
+    await expect(hybrid.getMeta()).rejects.toThrow("Internal error");
+  });
+
   it("delegates the board's context read to live, and asks nothing else", async () => {
     const live = liveApi();
     const getProjectContext = vi.spyOn(live, "getProjectContext");

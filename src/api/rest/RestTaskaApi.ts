@@ -72,13 +72,15 @@ import type {
   Board,
   BoardIssue,
   DateOnly,
+  DictionaryEntry,
+  EnumDictionaries,
   GlobalRole,
   Issue,
   IssueAttachment,
   IssueComment,
   IssueLink,
   IssueSearchHit,
-  IssueType,
+  IssueTypeCode,
   IssueWatcher,
   IssueWatchers,
   IssueWorklog,
@@ -98,6 +100,7 @@ import type {
   ProjectContext,
   ProjectLabel,
   ProjectMember,
+  ProjectWorkflow,
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
@@ -134,7 +137,10 @@ interface RestUser {
   login: string;
   email: string;
   displayName: string;
-  status: UserStatus;
+  // Read as `unknown`: the contract types it as a bare string and the
+  // gateway's `AuthMapper` can write `null` (TAS-173). `toUser` keeps a string
+  // as it came and turns anything else into `null`.
+  status?: unknown;
   color?: string;
   globalRole?: unknown;
   /**
@@ -433,7 +439,7 @@ interface RestIssueShortItem {
   id: string;
   issueKey: string;
   summary: string;
-  issueType: IssueType;
+  issueType: IssueTypeCode;
   priority: Issue["priority"];
   assigneeId?: string | null;
   // The only planning field `IssueShortResponseDto` states (merged PR #148).
@@ -537,7 +543,7 @@ interface RestBoardColumn {
  */
 interface RestBoardResponse {
   projectId: string;
-  issueType: IssueType;
+  issueType: IssueTypeCode;
   columns: RestBoardColumn[];
 }
 
@@ -856,6 +862,26 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
+   * `GET /meta` (backend TAS-217, deployed 2026-10-19) — see `TaskaApi.getMeta`.
+   *
+   * A plain `request`, with no `cache:` option and no `If-None-Match`: the
+   * route's `ETag` is the browser's to use, and it revalidates a stored answer
+   * by itself (`useMeta`). Sent by hand, the header would make a 304 reach this
+   * code as a failed request.
+   */
+  async getMeta(): Promise<EnumDictionaries> {
+    const response = await this.request<unknown>("/meta");
+    const body = typeof response === "object" && response !== null ? (response as Record<string, unknown>) : {};
+    return {
+      issueTypes: toDictionary(body.issueTypes),
+      priorities: toDictionary(body.priorities),
+      linkTypes: toDictionary(body.linkTypes),
+      notificationTypes: toDictionary(body.notificationTypes),
+      userStatuses: toDictionary(body.userStatuses),
+    };
+  }
+
+  /**
    * An empty collection is `200 { items: [] }` since TAS-207 — project-service
    * used to answer it with NOT_FOUND, and this method used to turn every 404
    * into `[]`. That catch is gone: a 404 here now means something is actually
@@ -921,24 +947,33 @@ export class RestTaskaApi implements TaskaApi {
    * Each part goes through the mapper its own route uses, so the board draws a
    * context member exactly as it drew a `/members` row: blank names become an
    * unnamed row, idless rows are dropped, and `compareMembers` decides the
-   * order. Workflows are keyed by issue type; an entry whose type this build
-   * does not recognise — `null` on the wire (TAS-173) — is dropped rather than
-   * guessed, and so is one with no workflow in it.
+   * order. Workflows are keyed by issue type as the server sent it, a type
+   * this build has no name for included (TAS-173) — that is how an issue of a
+   * new type keeps its columns. Only an entry with no type at all — `null` on
+   * the wire — is dropped rather than guessed, and so is one with no workflow
+   * in it.
    */
   async getProjectContext(projectId: string): Promise<ProjectContext> {
     const response = await this.request<RestProjectContext>(`/projects/${this.segment(projectId)}/context`);
-    const workflows: ProjectContext["workflows"] = {};
+    // Collected as pairs and built with `Object.fromEntries`, which defines
+    // every key as an own property: an assignment would treat a type the
+    // server spelled `__proto__` as a prototype rather than as a key.
+    const entries: [IssueTypeCode, ProjectWorkflow][] = [];
     for (const entry of response.workflows ?? []) {
       const issueType = toIssueType(entry.issueType);
-      if (!issueType || !entry.workflow) continue;
-      workflows[issueType] = {
-        id: entry.workflow.id ?? "",
-        name: entry.workflow.name ?? "",
-        version: entry.workflow.version ?? 0,
-        statuses: entry.workflow.statuses ?? [],
-        transitions: entry.workflow.transitions ?? [],
-      };
+      if (!issueType || !entry.workflow || entries.some(([seen]) => seen === issueType)) continue;
+      entries.push([
+        issueType,
+        {
+          id: entry.workflow.id ?? "",
+          name: entry.workflow.name ?? "",
+          version: entry.workflow.version ?? 0,
+          statuses: entry.workflow.statuses ?? [],
+          transitions: entry.workflow.transitions ?? [],
+        },
+      ]);
     }
+    const workflows: ProjectContext["workflows"] = Object.fromEntries(entries);
     return {
       project: response.project,
       role: toProjectRole(response.project.currentUserRole),
@@ -2192,7 +2227,7 @@ export class RestTaskaApi implements TaskaApi {
       login: user.login,
       email: user.email,
       displayName: user.displayName,
-      status: user.status,
+      status: toUserStatus(user.status),
       color: user.color,
       globalRole: toGlobalRole(user.globalRole),
       ...(avatar === undefined
@@ -2643,9 +2678,46 @@ function toProjectRole(value: unknown): ProjectRole | null {
   return value === "ADMIN" || value === "MEMBER" || value === "VIEWER" ? value : null;
 }
 
-/** One of the three issue types, or `null` for anything else — the wire's own `null` included. */
-function toIssueType(value: unknown): IssueType | null {
-  return value === "TASK" || value === "BUG" || value === "STORY" ? value : null;
+/**
+ * The account status as the server sent it, or `null` when it stated none: not
+ * a string (the gateway's `AuthMapper` can write `null`), or `UNSPECIFIED`, the
+ * contract's zero value — which backend PR #200 adds to `UserStatusDto` — read
+ * as absent exactly as `toGlobalRole` reads its own. Anything else is kept as
+ * it came and printed by `userStatusLabel` (TAS-173).
+ */
+function toUserStatus(value: unknown): string | null {
+  return typeof value === "string" && value !== "UNSPECIFIED" ? value : null;
+}
+
+/**
+ * An issue type code as the server sent it, or `null` when there is none — the
+ * wire's own `null`, a blank, anything that is not a string. Not narrowed to
+ * the three this build knows (TAS-173): a project's workflow for a type added
+ * after this build still carries that type's issues.
+ */
+function toIssueType(value: unknown): IssueTypeCode | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+/**
+ * One `GET /meta` dictionary. Not an array → `null` (the answer did not carry
+ * it); a row without a non-blank string `code` is dropped; a missing or
+ * non-string `name` is `""`, which every reader prints the code for. A
+ * duplicated code keeps its first row. Codes are not checked against this
+ * build's unions — the values it does not know are the reason to ask.
+ */
+function toDictionary(value: unknown): DictionaryEntry[] | null {
+  if (!Array.isArray(value)) return null;
+  const seen = new Set<string>();
+  const entries: DictionaryEntry[] = [];
+  for (const row of value) {
+    if (typeof row !== "object" || row === null) continue;
+    const { code, name } = row as { code?: unknown; name?: unknown };
+    if (typeof code !== "string" || code.trim() === "" || seen.has(code)) continue;
+    seen.add(code);
+    entries.push({ code, name: typeof name === "string" ? name : "" });
+  }
+  return entries;
 }
 
 /**

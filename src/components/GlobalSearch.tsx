@@ -8,9 +8,11 @@ import { taskaApi } from "../api/client";
 import type { IssueSearchHit } from "../domain/types";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
+import { useMeta } from "../hooks/useMeta";
 import { useUnanswered } from "../hooks/useUnanswered";
-import { statusLabels, typeMeta } from "../lib/format";
+import { issueTypeLabel, priorityInSentence, statusLabel } from "../lib/format";
 import { ApiNotice } from "./ApiNotice";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { PriorityBars, TypeChip } from "./IssueBits";
 
 /** DESIGN.md §4.14. The field is instant; only the request waits. */
@@ -289,15 +291,31 @@ export function GlobalSearch() {
             <>
               <ul aria-label="Issue search results" className="global-search-list" id={listId} ref={listRef} role="listbox">
                 {hits.map((hit, index) => (
-                  <GlobalSearchOption
-                    active={index === activeIndex}
-                    hit={hit}
-                    id={optionId(index)}
+                  // One row that cannot be drawn costs that row, not the top
+                  // bar on every screen (TAS-173). The stand-in is still an
+                  // option the arrows reach and Enter opens.
+                  <ErrorBoundary
+                    fallback={() => (
+                      <GlobalSearchOptionFailure
+                        active={index === activeIndex}
+                        id={optionId(index)}
+                        issueKey={hit.issueKey}
+                        onChoose={() => select(index)}
+                        onHover={() => setActiveIndex(index)}
+                      />
+                    )}
                     key={hit.id}
-                    unlinkableNote={routes[index] !== null ? null : "No issue key"}
-                    onChoose={() => select(index)}
-                    onHover={() => setActiveIndex(index)}
-                  />
+                    resetKey={hit}
+                  >
+                    <GlobalSearchOption
+                      active={index === activeIndex}
+                      hit={hit}
+                      id={optionId(index)}
+                      unlinkableNote={routes[index] !== null ? null : "No issue key"}
+                      onChoose={() => select(index)}
+                      onHover={() => setActiveIndex(index)}
+                    />
+                  </ErrorBoundary>
                 ))}
               </ul>
               {/* The one number the dropdown could not otherwise state: how
@@ -325,10 +343,11 @@ export function GlobalSearch() {
  * row does not blur the input and close the panel out from under the click.
  *
  * Everything drawn here is a field the hit actually carries — the status
- * among them since TAS-218, printed by its name where this build knows the key
- * and verbatim where it does not (TAS-173). The assignee is a bare id with no
- * member list to resolve it against outside a project, so it is left out
- * rather than printed as a UUID.
+ * among them since TAS-218. The type, the priority and the status are printed
+ * by the one label rule (TAS-173): the build's word, a served English name, or
+ * the code as received. The assignee is a bare id with no member list to
+ * resolve it against outside a project, so it is left out rather than printed
+ * as a UUID.
  */
 function GlobalSearchOption({
   active,
@@ -346,11 +365,8 @@ function GlobalSearchOption({
   onChoose: () => void;
   onHover: () => void;
 }) {
-  const status = hit.statusKey
-    ? Object.hasOwn(statusLabels, hit.statusKey)
-      ? statusLabels[hit.statusKey as keyof typeof statusLabels]
-      : hit.statusKey
-    : null;
+  const meta = useMeta();
+  const status = hit.statusKey ? statusLabel(hit.statusKey) : null;
   return (
     <li
       aria-disabled={unlinkableNote ? true : undefined}
@@ -366,11 +382,48 @@ function GlobalSearchOption({
       <span className="global-search-key">{hit.issueKey}</span>
       <span className="global-search-summary">{hit.summary}</span>
       <span className="visually-hidden">
-        {typeMeta[hit.issueType].label}, {hit.priority.toLowerCase()} priority
+        {issueTypeLabel(hit.issueType, meta?.issueTypes)},{" "}
+        {hit.priority ? `${priorityInSentence(hit.priority, meta?.priorities)} priority` : "no priority"}
       </span>
       {status ? <span className="global-search-note">{status}</span> : null}
       {unlinkableNote ? <span className="global-search-note">{unlinkableNote}</span> : null}
-      <PriorityBars priority={hit.priority} />
+      <PriorityBars nameClassName="global-search-note" priority={hit.priority} />
+    </li>
+  );
+}
+
+/**
+ * A row whose hit could not be drawn: its key, if it has one, and one sentence.
+ * Still an option with its id, so `aria-activedescendant`, the arrows and Enter
+ * reach it and it opens the issue like any other row.
+ */
+function GlobalSearchOptionFailure({
+  active,
+  id,
+  issueKey,
+  onChoose,
+  onHover,
+}: {
+  active: boolean;
+  id: string;
+  issueKey: unknown;
+  onChoose: () => void;
+  onHover: () => void;
+}) {
+  return (
+    <li
+      aria-selected={active}
+      className={`global-search-option ${active ? "is-active" : ""}`}
+      id={id}
+      onClick={onChoose}
+      onMouseDown={(event) => event.preventDefault()}
+      onMouseEnter={onHover}
+      role="option"
+    >
+      {/* The chip's slot, empty, so the key stays in line with the rows around it. */}
+      <span aria-hidden="true" className="type-chip is-placeholder" />
+      {typeof issueKey === "string" && issueKey ? <span className="global-search-key">{issueKey}</span> : null}
+      <span className="global-search-summary is-failed">This result could not be shown.</span>
     </li>
   );
 }

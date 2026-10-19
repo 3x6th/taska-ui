@@ -722,9 +722,18 @@ textarea:disabled {
   outline-offset: 4px;
 }
 
+/* The sets in a segmented control come from the server now (TAS-173): the
+   issue types a project's context sends and the priorities `GET /meta` lists.
+   So the control may meet a fourth or fifth segment, and a label that is a code
+   rather than a word. It wraps onto a second row instead of squeezing a label
+   past its own width (art-director's ruling 5: four priorities in the create
+   modal's half column left "CRITICAL" 50.7px of text in 28.5px of button). */
 .segmented {
   display: flex;
+  flex-wrap: wrap;
   gap: 3px;
+  row-gap: 3px;
+  max-width: 100%;
   padding: 3px;
   border-radius: 9px;
   background: var(--surface-2);
@@ -734,7 +743,7 @@ textarea:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 0;
+  min-width: max-content;
   height: 30px;
   flex: 1;
   padding: 0 11px;
@@ -3946,6 +3955,11 @@ p.user-profile-photo-note:not(.is-error) {
   white-space: nowrap;
 }
 
+/* A result that could not be drawn (TAS-173) says so in the summary's place. */
+.global-search-summary.is-failed {
+  color: var(--fg-2);
+}
+
 .global-search-note {
   flex: none;
   color: var(--fg-3);
@@ -4570,6 +4584,59 @@ p.user-profile-photo-note:not(.is-error) {
   border-radius: 50%;
 }
 
+/* A status whose key and category are both unknown to this build (TAS-173): a
+   ring rather than a colour nobody chose, and unlike To Do's filled grey. --fg-2
+   because --fg-3 measures 2.76:1 on --surface-2 in light (art-director). */
+.status-dot.is-unknown {
+  border: 1.5px solid var(--fg-2);
+  background: transparent;
+}
+
+/* "Other statuses" (TAS-173, art-director's ruling 3): §9's `plain` column
+   after the last workflow column, holding the issues no column does. No dot
+   and no "+", so the head keeps the 35px a column head gets from its button
+   (2 + 22 + 11), and the transparent plane with a hairline says it is not a
+   place a card can be dropped. */
+.board-column.is-plain {
+  border: 1px solid var(--border);
+  /* A column's padding less the hairline, so the head and the cards line up
+     with the columns beside it (cards 290 wide), as art-director measured. */
+  padding: 10px 8px 3px;
+  background: transparent;
+}
+
+.other-statuses .column-head {
+  min-height: 35px;
+}
+
+/* The date and, in that group, the status in words. One line that gives way
+   before the avatar does. */
+.issue-card-when {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-card-status {
+  color: var(--fg-2);
+}
+
+/* A card whose issue could not be drawn (TAS-173): the same §4.8 box, its key,
+   and one plain sentence — no --danger and no live region, because one card is
+   not a failure of the board. */
+.issue-card-failure-text {
+  margin-top: 6px;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.search-hit-failure .issue-card-failure-text {
+  display: block;
+}
+
 .count-pill {
   border-radius: 20px;
   padding: 1px 7px;
@@ -4684,6 +4751,55 @@ p.user-profile-photo-note:not(.is-error) {
   width: 14px;
   height: 14px;
   flex: none;
+}
+
+/* The chip's slot with nothing in it, where a row could not be drawn: the key
+   keeps its column without a grey square claiming a type (art-director N2). */
+.type-chip.is-placeholder {
+  visibility: hidden;
+}
+
+/* The type's name beside its chip, and the key before it. A name this build
+   does not know is the code as the server sent it, and may be long: it gives
+   way with an ellipsis and its full text in `title`, and the key never does
+   (art-director's ruling 1, TAS-173). */
+.issue-card-meta .issue-key,
+.search-hit-meta .issue-key,
+.issue-panel-head .issue-key {
+  flex: none;
+}
+
+.issue-type-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A priority this build cannot rank, named before its three empty bars (§4.7,
+   art-director's ruling 2): the overline's own size and case, `--fg-3` set
+   here rather than inherited, and capped so a long code cannot push the row. */
+.priority-name {
+  min-width: 0;
+  max-width: 96px;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.issue-card-meta .priority-name,
+.search-hit-meta .priority-name {
+  margin-left: auto;
+}
+
+.issue-card-meta .priority-name + .priority-bars,
+.search-hit-meta .priority-name + .priority-bars {
+  margin-left: 0;
 }
 
 .issue-key {
@@ -6672,6 +6788,13 @@ button.attachment-open:hover:not(:disabled) {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+}
+
+/* Type over Priority, as at 820 and below, once either picker holds a code
+   this build has no word for (art-director's ruling 5, TAS-173): such a label
+   is the code itself and a half column runs out of room for it. */
+.form-two.is-stacked {
+  grid-template-columns: 1fr;
 }
 
 .skeleton-card {

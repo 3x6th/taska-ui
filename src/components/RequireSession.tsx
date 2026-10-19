@@ -1,6 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { taskaApi } from "../api/client";
+import { metaQueryOptions } from "../hooks/useMeta";
 
 /** What the login screen is told about the navigation that sent the user there. */
 export interface LoginRedirectState {
@@ -25,8 +27,14 @@ export const DEFAULT_SIGNED_IN_ROUTE = "/projects";
  */
 export function RequireSession({ children }: { children: ReactNode }) {
   const location = useLocation();
+  const signedIn = taskaApi.hasSession();
+  // `GET /meta`, started here so it leaves in the same round as the page's own
+  // first reads and nothing waits on it (TAS-173). Never without a session: a
+  // 401 from it would end one. Above the early return, because hooks may not
+  // be conditional.
+  useQuery({ ...metaQueryOptions, enabled: signedIn });
 
-  if (!taskaApi.hasSession()) {
+  if (!signedIn) {
     // A bare visit to "/" lands here too, as the /projects it redirects into,
     // and needs no special case: /projects is where a visitor with nothing
     // specific in mind goes anyway, so returning them there is the same

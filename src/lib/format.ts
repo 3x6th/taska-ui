@@ -1,31 +1,170 @@
-import type { IssueComment, IssueLinkType, IssuePriority, IssueStatus, IssueType } from "../domain/types";
+import type {
+  DictionaryEntry,
+  IssueComment,
+  IssueLinkType,
+  IssuePriority,
+  IssueStatus,
+  IssueType,
+  UserStatus,
+} from "../domain/types";
+import { enumLabel, enumLabelInSentence, isEnglishName, type KnownLabels } from "./enumLabel";
 
-export const statusLabels: Record<IssueStatus, string> = {
+/*
+ * The build's own words and colours for the codes it knows — DESIGN.md §2.2
+ * and §6. Not exported since TAS-173: indexing one of these with a value off
+ * the wire is what threw on a code they did not list and blanked the board, so
+ * every reader goes through a helper below, which answers for any string.
+ */
+const statusLabels: Record<IssueStatus, string> = {
   TODO: "To Do",
   IN_PROGRESS: "In Progress",
   DONE: "Done",
 };
 
-export const statusColors: Record<IssueStatus, string> = {
+const statusColors: Record<IssueStatus, string> = {
   TODO: "#9aa0aa",
   IN_PROGRESS: "var(--accent)",
   DONE: "#3fa863",
 };
 
-export const typeMeta: Record<IssueType, { label: string; color: string; radius: string }> = {
+const typeMeta: Record<IssueType, { label: string; color: string; radius: string }> = {
   TASK: { label: "Task", color: "#4f7cf0", radius: "4px" },
   STORY: { label: "Story", color: "#3fa863", radius: "4px" },
   BUG: { label: "Bug", color: "#e5544b", radius: "50%" },
 };
 
-export const priorityMeta: Record<IssuePriority, { label: string; color: string; level: number }> = {
+const priorityMeta: Record<IssuePriority, { label: string; color: string; level: number }> = {
   LOW: { label: "Low", color: "#9aa0aa", level: 1 },
   MEDIUM: { label: "Medium", color: "#e3a008", level: 2 },
   HIGH: { label: "High", color: "#e5544b", level: 3 },
 };
 
-/** The three relations a *request* may ask for, in the order the picker shows them. */
-export const issueLinkTypes: IssueLinkType[] = ["BLOCKS", "RELATES_TO", "DUPLICATES"];
+/**
+ * One table for the account status, where there used to be two that agreed by
+ * coincidence (the profile menu's and the admin Users section's).
+ */
+const userStatusLabels: Record<UserStatus, string> = {
+  ACTIVE: "Active",
+  BLOCKED: "Blocked",
+  INVITED: "Invited",
+  // Not an administrative state (TAS-188): auth-service puts an account here
+  // after `maxFailedAttempts` failed sign-ins and takes it out again on the next
+  // successful one, so this word names something no administrator decided.
+  LOCKED: "Locked",
+};
+
+const labelsOf = <T extends string>(table: Record<T, { label: string }>): KnownLabels =>
+  Object.fromEntries(Object.entries<{ label: string }>(table).map(([code, meta]) => [code, meta.label]));
+const issueTypeLabels = labelsOf(typeMeta);
+const priorityLabels = labelsOf(priorityMeta);
+
+/**
+ * The three priorities a request may ask for, in the order a picker shows them
+ * — the contract's `IssuePriorityDto`, and what the pickers offer when `GET
+ * /meta` has not answered with a list of its own (`selectableCodes`).
+ */
+export const issuePriorities: readonly IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
+
+/**
+ * "Task", a served English name, or the code as received (`enumLabel`). An issue
+ * with no type at all reads "No type", as one with no status reads "No status"
+ * (DESIGN.md §6, TAS-173).
+ */
+export const issueTypeLabel = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
+  enumLabel(code, issueTypeLabels, served, "No type");
+
+/**
+ * `issueTypeLabel` for running text: "no workflow for bug issues", "no workflow
+ * for EPIC issues". "No type" is the build's own words, so it is lowercased here
+ * like the build's other words.
+ */
+export const issueTypeInSentence = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
+  enumLabelInSentence(code, issueTypeLabels, served, "no type");
+
+export const isKnownIssueType = (code: string | null | undefined): code is IssueType =>
+  typeof code === "string" && Object.hasOwn(typeMeta, code);
+
+/**
+ * How a type chip is drawn (§4.6). A type this build has no colour for is a
+ * square filled `--fg-3` (art-director, TAS-173): the same 14px slot, so nothing
+ * moves, and neutral rather than a hollow box that would read as an unchecked
+ * checkbox. Its name is carried beside it as text, as every type's is.
+ */
+export const issueTypeVisual = (code: string | null | undefined) =>
+  isKnownIssueType(code)
+    ? { color: typeMeta[code].color, radius: typeMeta[code].radius, known: true }
+    : { color: "var(--fg-3)", radius: "4px", known: false };
+
+/** "High", a served English name, or the code as received; "No priority" for none (DESIGN.md §6). */
+export const priorityLabel = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
+  enumLabel(code, priorityLabels, served, "No priority");
+
+/** `priorityLabel` for running text: "high priority", "URGENT priority"; "no priority" for none. */
+export const priorityInSentence = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
+  enumLabelInSentence(code, priorityLabels, served, "no priority");
+
+export const isKnownPriority = (code: string | null | undefined): code is IssuePriority =>
+  typeof code === "string" && Object.hasOwn(priorityMeta, code);
+
+/**
+ * How the three bars are drawn (§4.7). A priority this build cannot rank fills
+ * none of them — level 0 — and is never placed among the known ones: its name
+ * is printed beside the bars instead (`PriorityBars`), because three empty bars
+ * alone would read as lower than Low.
+ */
+export const priorityVisual = (code: string | null | undefined) =>
+  isKnownPriority(code)
+    ? { color: priorityMeta[code].color, level: priorityMeta[code].level, known: true }
+    : { color: "var(--border-strong)", level: 0, known: false };
+
+/** A workflow status as a label source: the key and what the project calls it. */
+type NamedStatus = { statusKey: string; name: string };
+
+/**
+ * What a status is called. A status is project configuration rather than a
+ * dictionary, so the workflow's own `name` comes first when it has no Cyrillic
+ * in it (art-director, TAS-173): it is what the project chose to call the
+ * column. Then the build's English label for a key it knows, then the key
+ * verbatim. A missing status reads "No status".
+ */
+export const statusLabel = (key: string | null | undefined, statuses?: readonly NamedStatus[] | null) => {
+  if (typeof key !== "string" || key.trim() === "") return "No status";
+  const named = statuses?.find((status) => status.statusKey === key);
+  // Stays when TAS-264 lands: a workflow name is project configuration, not a
+  // `/meta` name, and the UI is English (DESIGN.md §6).
+  if (named && typeof named.name === "string" && isEnglishName(named.name)) return named.name.trim();
+  return enumLabel(key, statusLabels, null, "No status");
+};
+
+const isKnownStatusKey = (key: string | null | undefined): key is IssueStatus =>
+  typeof key === "string" && Object.hasOwn(statusLabels, key);
+
+/**
+ * The colour a status is drawn in, or `null` for "this build cannot say".
+ * By the key when the build knows it, else by the workflow's `category` when
+ * that is one of the three, else nothing — the caller draws its neutral form
+ * (a hollow dot on a column, `--fg-2` on the panel's pill).
+ */
+export const statusColor = (key: string | null | undefined, category?: string | null): string | null => {
+  if (isKnownStatusKey(key)) return statusColors[key];
+  if (isKnownStatusKey(category)) return statusColors[category];
+  return null;
+};
+
+/** "Active", a served English name, or the value as received. */
+export const userStatusLabel = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
+  enumLabel(code, userStatusLabels, served);
+
+/** `userStatusLabel` for running text: "is now blocked", "is now SUSPENDED". */
+export const userStatusInSentence = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
+  enumLabelInSentence(code, userStatusLabels, served);
+
+/**
+ * The three relations a *request* may ask for, in the order the picker shows
+ * them — the contract's `IssueLinkTypeDto`, and the picker's set whenever
+ * `GET /meta` has not answered with one (`selectableCodes`).
+ */
+export const issueLinkTypes: readonly IssueLinkType[] = ["BLOCKS", "RELATES_TO", "DUPLICATES"];
 
 /**
  * Written labels for the values we know. The response field (`viewLinkType`) is
@@ -43,18 +182,19 @@ const issueLinkTypeLabels: Record<string, string> = {
 
 /**
  * A relation the UI can print, whatever the server said. A known value gets its
- * written label; anything else is humanised verbatim (`SUPERSEDES` →
- * "Supersedes") rather than dropped or coerced into a relation it is not — the
- * link is real either way, and a row with no label would hide it. An unstated
+ * written label, matched without regard to case as it always was; anything else
+ * follows the one rule of `enumLabel` — the `/meta` name for exactly that code
+ * when it is English, the code verbatim otherwise (TAS-173: `SUPERSEDES` stays
+ * `SUPERSEDES`, where it used to be humanised to "Supersedes" — a word the
+ * server never sent). `/meta` lists only the request codes, so an inverse view
+ * (`IS_SUPERSEDED_BY`) never borrows the name of the outward one. An unstated
  * relation reads "Linked", which claims only what the response proves.
  */
-export const issueLinkTypeLabel = (viewLinkType: string) => {
+export const issueLinkTypeLabel = (viewLinkType: string, served?: readonly DictionaryEntry[] | null) => {
   const value = viewLinkType.trim();
   if (!value) return "Linked";
-  const known = issueLinkTypeLabels[value.toUpperCase()];
-  if (known) return known;
-  const words = value.replace(/[_-]+/g, " ").trim().toLowerCase();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Linked";
+  if (Object.hasOwn(issueLinkTypeLabels, value.toUpperCase())) return issueLinkTypeLabels[value.toUpperCase()];
+  return enumLabel(value, {}, served, "Linked");
 };
 
 export const initials = (name = "") =>
