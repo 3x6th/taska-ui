@@ -3712,3 +3712,15 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   the mock's ids are random, so a tiebreak would sort equal timestamps
   randomly, and insertion order stands in. Harmless while seeds never share a
   timestamp.
+
+### Left by TAS-236, TAS-259, TAS-192 (VIEWER controls, comment delete, error contrast, 2026-10-19)
+
+- **The issue panel's Delete still deletes the issue on one click**
+  (`frontend-builder`). The same hazard TAS-259 fixed for comments, worse in
+  scope; a candidate story: the §4.22 strip on the panel's Delete.
+- **`.filter-error` is still `--danger` text, 3.68:1 light** (4.99 dark): the
+  filter bar's "Labels could not be loaded". Not a `.form-error` site, so
+  TAS-192 left it; other `--danger`-as-text selectors (`.user-status.is-blocked`,
+  `.admin-key.is-failed`) are not audited either. A design call for art-director.
+- **Comment writes are not optimistic**: after confirming a delete the row stays
+  until the thread is re-read.

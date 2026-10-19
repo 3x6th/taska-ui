@@ -610,10 +610,10 @@ describe("saving a project edit", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
 
     expect(await within(dialog).findByText(/not on this gateway yet/)).toBeVisible();
-    // Never the gateway's own sentence, and never the alarmed red box every
-    // other refusal in this dialog gets.
+    // Never the gateway's own sentence, and never the error box every other
+    // refusal in this dialog gets.
     expect(within(dialog).queryByText(/Request method/)).not.toBeInTheDocument();
-    expect(document.querySelector(".form-error")).not.toBeInTheDocument();
+    expect(document.querySelector(".error-note")).not.toBeInTheDocument();
   });
 
   it("spends no request on a dialog nothing was changed in", async () => {

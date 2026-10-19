@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
-import type { IssueHistoryEvent, Notification } from "../domain/types";
+import type { IssueComment, IssueHistoryEvent, Notification } from "../domain/types";
 import { BoardScreen } from "./BoardScreen";
 import { ATTACHMENT_MAX_SIZE_BYTES } from "../api/attachments";
 import { ObjectStoreError } from "../api/objectStore";
@@ -36,6 +36,8 @@ const {
   confirmCalls,
   listedAttachments,
   deletedAttachments,
+  seedComments,
+  deletedComments,
   failDelete,
   failIssueDelete,
   holdDelete,
@@ -350,6 +352,10 @@ const {
     links: unknown[];
     /** The issue read's history, oldest first, as the server sends it. Empty unless a test is about the feed. */
     history: IssueHistoryEvent[];
+    /** The thread `listComments` answers with — empty unless a test is about comments (TAS-259). */
+    comments: IssueComment[];
+    /** Every comment `deleteComment` was asked to remove, in order. */
+    deletedComments: string[];
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -409,6 +415,8 @@ const {
     watcherNames: {},
     links: [],
     history: [],
+    comments: [],
+    deletedComments: [],
   };
 
   /** The held half of an issue update — same shape as the watcher writes below. */
@@ -856,7 +864,11 @@ const {
     listComments: async () => {
       state.sectionReads.comments += 1;
       if (state.commentsFailure) throw state.commentsFailure;
-      return { items: [], page: 0, pageSize: 50, totalCount: 0 };
+      return { items: state.comments, page: 0, pageSize: 50, totalCount: state.comments.length };
+    },
+    deleteComment: async (_projectId: string, _issueId: string, commentId: string) => {
+      state.deletedComments.push(commentId);
+      state.comments = state.comments.filter((comment) => comment.id !== commentId);
     },
   };
 
@@ -1094,6 +1106,10 @@ const {
     seedHistory: (history: IssueHistoryEvent[]) => {
       state.history = history;
     },
+    seedComments: (comments: IssueComment[]) => {
+      state.comments = comments;
+    },
+    deletedComments: () => [...state.deletedComments],
     seedMeta: (meta: typeof state.meta) => {
       state.meta = meta;
     },
@@ -1188,6 +1204,8 @@ const {
       state.watcherNames = {};
       state.links = [];
       state.history = [];
+      state.comments = [];
+      state.deletedComments = [];
     },
   };
 });
@@ -1320,11 +1338,11 @@ describe("board failures the user can see", () => {
     setMembership("VIEWER");
     renderBoard();
 
-    // Read-only is a permission, not a fault, and gets no banner. Waiting for
-    // the board to settle first, so this is the answered state and not the
-    // in-flight one that happens to look the same.
-    await screen.findByText("To Do");
-    expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+    // Read-only is a permission, not a fault, and gets no banner. New is drawn,
+    // disabled, while the role is on the way and hidden once it says VIEWER
+    // (§5.7, TAS-236) — so its going is what says this is the answered state
+    // and not the in-flight one.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -2277,6 +2295,18 @@ describe("values this build does not know", () => {
     );
   });
 
+  it("says the same to a VIEWER, whose own transition buttons are hidden besides", async () => {
+    // TAS-236 hides a VIEWER's moves; this note is about the issue, not about
+    // the reader, so it stays for every role.
+    setMembership("VIEWER");
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-orphan`);
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-151 issue" });
+    expect(
+      await within(panel).findByText("BLOCKED_BY_QA is not in this project’s task workflow, so no move is offered."),
+    ).toBeVisible();
+  });
+
   it("says an issue with no status at all offers no move", async () => {
     seedExtraIssues([{ ...orphan, status: "" }]);
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-orphan`);
@@ -2568,6 +2598,174 @@ describe("a card on a board that cannot be written to", () => {
 
     const card = await screen.findByRole("button", { name: /TAS-102/ });
     await waitFor(() => expect(card).toHaveAttribute("aria-roledescription", "draggable"));
+  });
+});
+
+/**
+ * TAS-236, §5.7: a VIEWER's write controls are not on the page — New, each
+ * column's "+", the panel's transition buttons and its Delete — the way the
+ * comment composer already was not. Hidden, not disabled: a disabled control
+ * is an offer the reader cannot take. A role nobody stated is not a VIEWER
+ * (TAS-226): there the controls stay, switched off, under the board's banner.
+ */
+describe("the write controls a role is shown", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  // A To Do issue with one move out of it, so a transition button exists to be
+  // hidden or shown.
+  const workflowWithAMove = {
+    statuses: [
+      { id: "s-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+      { id: "s-progress", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
+    ],
+    transitions: [{ id: "t-start", fromStatusId: "s-todo", toStatusId: "s-progress", name: "Start Progress", sortOrder: 10 }],
+  };
+  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+  const columnHeads = () => screen.getAllByRole("region", { name: / column$/ });
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    seedContextWorkflowParts(workflowWithAMove);
+  });
+
+  it("puts none of them on the page for a VIEWER", async () => {
+    setMembership("VIEWER");
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    // The workflow's two columns are drawn, so the context — and the role in
+    // it — has answered; every absence below is about that answer.
+    expect(await screen.findByRole("region", { name: "In Progress column" })).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument());
+    for (const column of columnHeads()) {
+      expect(within(column).queryByRole("button", { name: "Create issue" })).not.toBeInTheDocument();
+    }
+    expect(panel.queryByRole("button", { name: "Start Progress" })).not.toBeInTheDocument();
+    expect(panel.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    // No arrow pointing at moves that are not there, and no note either: the
+    // issue has somewhere to go, this reader just cannot send it.
+    expect(document.querySelector(".transition-row .arrow")).toBeNull();
+    expect(document.querySelector(".transition-row .transition-note")).toBeNull();
+    // What a VIEWER keeps: reading, sharing and closing.
+    expect(panel.getByRole("button", { name: "Share issue TAS-102" })).toBeEnabled();
+    expect(panel.getByRole("button", { name: "Close" })).toBeEnabled();
+  });
+
+  for (const role of ["ADMIN", "MEMBER"] as const) {
+    it(`keeps every one of them working for ${role === "ADMIN" ? "an" : "a"} ${role}`, async () => {
+      setMembership(role);
+      renderBoard(ISSUE_PATH);
+      const panel = await openPanel();
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+      for (const column of columnHeads()) {
+        expect(within(column).getByRole("button", { name: "Create issue" })).toBeEnabled();
+      }
+      expect(await panel.findByRole("button", { name: "Start Progress" })).toBeEnabled();
+      expect(panel.getByRole("button", { name: "Delete" })).toBeEnabled();
+      expect(document.querySelector(".transition-row .arrow")).not.toBeNull();
+    });
+  }
+
+  it("keeps them on the page, switched off, when the role came back as nothing it recognises", async () => {
+    setMembership(null);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/came back empty or unrecognised/i);
+    expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
+    for (const column of columnHeads()) {
+      expect(within(column).getByRole("button", { name: "Create issue" })).toBeDisabled();
+    }
+    expect(await panel.findByRole("button", { name: "Start Progress" })).toBeDisabled();
+    expect(panel.getByRole("button", { name: "Delete" })).toBeDisabled();
+  });
+});
+
+/**
+ * TAS-259: a comment's Delete asks first, in §4.22's strip, the way the work
+ * log's does. One press used to delete — and since the Activity feed folds
+ * (TAS-257), folding it near the foot of the panel moves the thread under the
+ * pointer, so a second press could land on Delete. The e2e twin is in
+ * e2e/comments.spec.ts.
+ */
+describe("deleting a comment from the issue panel", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const anna: IssueComment = {
+    id: "comment-1",
+    issueId: "issue-1",
+    projectId: PROJECT_ID,
+    authorUserId: "user-anna",
+    author: null,
+    body: "Retry guard is in review.",
+    createdAt: "2026-08-01T09:30:00Z",
+    updatedAt: "2026-08-01T09:30:00Z",
+    version: 1,
+  };
+  const openRow = async () => {
+    const panel = within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+    const row = (await panel.findByText(anna.body)).closest(".comment-item") as HTMLElement;
+    return { panel, row: within(row) };
+  };
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    seedComments([anna]);
+  });
+
+  it("deletes nothing on the first press, and closes its question on Cancel and on Esc", async () => {
+    renderBoard(ISSUE_PATH);
+    const { row } = await openRow();
+    const remove = await row.findByRole("button", { name: "Delete" });
+    expect(remove).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(remove);
+    expect(remove).toHaveAttribute("aria-expanded", "true");
+    const cancel = row.getByRole("button", { name: "Cancel" });
+    // The strip is what `aria-controls` names, and Cancel is where focus goes.
+    expect(document.getElementById(remove.getAttribute("aria-controls") ?? "")).toContainElement(cancel);
+    expect(cancel).toHaveFocus();
+    expect(row.getByText(/will be removed from this issue for everyone/)).toBeVisible();
+    expect(deletedComments()).toEqual([]);
+
+    fireEvent.keyDown(cancel, { key: "Escape" });
+    expect(row.queryByRole("button", { name: "Delete comment" })).not.toBeInTheDocument();
+    expect(remove).toHaveAttribute("aria-expanded", "false");
+    expect(remove).not.toHaveAttribute("aria-controls");
+    expect(remove).toHaveFocus();
+
+    fireEvent.click(remove);
+    fireEvent.click(row.getByRole("button", { name: "Cancel" }));
+    expect(row.queryByRole("button", { name: "Delete comment" })).not.toBeInTheDocument();
+    expect(remove).toHaveFocus();
+
+    expect(deletedComments()).toEqual([]);
+    expect(row.getByText(anna.body)).toBeVisible();
+  });
+
+  it("deletes from the strip's answer, and gives focus to the heading the row leaves under", async () => {
+    renderBoard(ISSUE_PATH);
+    const { panel, row } = await openRow();
+
+    fireEvent.click(await row.findByRole("button", { name: "Delete" }));
+    fireEvent.click(row.getByRole("button", { name: "Delete comment" }));
+
+    expect(panel.getByRole("heading", { name: /^Comments/ })).toHaveFocus();
+    await waitFor(() => expect(deletedComments()).toEqual(["comment-1"]));
+    expect(await panel.findByText("No comments yet")).toBeVisible();
+  });
+
+  it("closes the question when the reader turns to editing instead", async () => {
+    renderBoard(ISSUE_PATH);
+    const { panel, row } = await openRow();
+
+    fireEvent.click(await row.findByRole("button", { name: "Delete" }));
+    fireEvent.click(row.getByRole("button", { name: "Edit" }));
+
+    expect(panel.queryByRole("button", { name: "Delete comment" })).not.toBeInTheDocument();
+    expect(panel.getByRole("button", { name: "Save" })).toBeVisible();
+    expect(deletedComments()).toEqual([]);
   });
 });
 
@@ -4753,9 +4951,9 @@ describe("people and link targets from the issue read", () => {
 
 /**
  * TAS-248: Share sits in the loaded panel's head beside Delete and Close. It
- * only reads, so it is not gated by role — a VIEWER, whose Delete is shut, gets
- * it live — and it needs the issue's key, so the skeleton's head has none.
- * The popover itself is pinned in `src/components/IssueShare.test.tsx`.
+ * only reads, so it is not gated by role — a VIEWER, who has no Delete since
+ * TAS-236, gets it live — and it needs the issue's key, so the skeleton's head
+ * has none. The popover itself is pinned in `src/components/IssueShare.test.tsx`.
  */
 describe("sharing an issue from its panel", () => {
   const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
@@ -4765,19 +4963,18 @@ describe("sharing an issue from its panel", () => {
     window.localStorage.clear();
   });
 
-  it("offers a VIEWER the share links, with Delete shut beside them", async () => {
+  it("offers a VIEWER the share links, with no Delete beside them", async () => {
     setMembership("VIEWER");
     renderBoard(ISSUE_PATH);
     const panel = within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
 
     const share = panel.getByRole("button", { name: "Share issue TAS-102" });
-    await waitFor(() => expect(panel.getByRole("button", { name: "Delete" })).toBeDisabled());
+    await waitFor(() => expect(panel.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument());
     expect(share).toBeEnabled();
-    // In the head, before Delete and Close.
+    // In the head, before Close — and Delete, for a reader who has one.
     const head = share.closest(".issue-panel-head") as HTMLElement;
     expect(within(head).getAllByRole("button").map((button) => button.getAttribute("title"))).toEqual([
       "Share",
-      "Delete",
       "Close",
     ]);
 

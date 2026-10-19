@@ -8,8 +8,8 @@ import type { Project, ProjectContext } from "../domain/types";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import { projectContextKey } from "../lib/projectContext";
 import { ColorSwatches, type ColorChoice } from "./ColorSwatches";
+import { ErrorNote } from "./ErrorNote";
 import { Modal } from "./Modal";
-import { RequestId } from "./RequestId";
 
 /**
  * The project's own three editable fields — `PATCH /projects/{projectId}`,
@@ -265,15 +265,12 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
               Project edits are not on this gateway yet, so this change was not saved.
             </p>
           ) : (
-            <div className="form-error">
-              <span>{message ?? "The gateway refused this change."}</span>
-              {/* The two refusals this dialog can actually receive are a 409
-                  telling the reader to retry and a 403, and for both the
-                  gateway log is the only place to learn what happened — so the
-                  id travels with the sentence, as it does in every other
-                  failure block in this product. */}
-              {requestId ? <RequestId value={requestId} /> : null}
-            </div>
+            // The two refusals this dialog can actually receive are a 409
+            // telling the reader to retry and a 403, and for both the gateway
+            // log is the only place to learn what happened — so the id travels
+            // with the sentence, as it does in every other failure block in
+            // this product.
+            <ErrorNote requestId={requestId}>{message ?? "The gateway refused this change."}</ErrorNote>
           )
         ) : null}
 

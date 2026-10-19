@@ -98,6 +98,20 @@ describe("the work log section", () => {
     expect(screen.queryByRole("form", { name: "Log work" })).toBeNull();
   });
 
+  it("says a failed read in the panel's one error box, with the server's words and the request id", async () => {
+    // A refusal, so the read is not asked twice (`issueWorklogsOptions`).
+    state.listFailure = refusal("Not allowed role", 403, "PERMISSION_DENIED");
+    renderSection();
+
+    // `ErrorNote` since TAS-192 — the box every write refusal in the panel
+    // uses — rather than the screen-level banner, so the panel has one look.
+    const sentence = await screen.findByText("The work log could not be loaded. Not allowed role");
+    expect(sentence).toHaveAttribute("role", "status");
+    expect(sentence.closest(".error-note")).not.toBeNull();
+    expect(document.querySelector(".api-notice")).toBeNull();
+    expect(screen.getByText("req-251").closest("[role='status']")).toBeNull();
+  });
+
   it("takes a refused add back off the list and puts the entry back in the boxes", async () => {
     state.writeFailure = refusal("Not allowed role", 403, "PERMISSION_DENIED");
     renderSection();

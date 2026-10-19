@@ -23,8 +23,8 @@ import {
   type WorklogDraftField,
   type WorklogDraftProblems,
 } from "../lib/worklog";
-import { ApiNotice } from "./ApiNotice";
 import { Avatar } from "./Avatar";
+import { ErrorNote } from "./ErrorNote";
 import { issueWorklogsKey, issueWorklogsOptions } from "./issueWorklogsQuery";
 import { RequestId } from "./RequestId";
 
@@ -121,10 +121,11 @@ export function IssueWorklogSection({
     (key === "heading" ? headingRef.current : focusables.current.get(key))?.focus();
   });
 
-  const failed = (sentence: string, error: unknown) => {
+  const noticeOf = (sentence: string, error: unknown): WorklogNotice => {
     const { message, requestId } = apiErrorFacts(error);
-    setNotice({ text: message ? `${sentence} ${message}` : sentence, requestId });
+    return { text: message ? `${sentence} ${message}` : sentence, requestId };
   };
+  const failed = (sentence: string, error: unknown) => setNotice(noticeOf(sentence, error));
 
   const setList = (update: (current: IssueWorklog[]) => IssueWorklog[]) =>
     queryClient.setQueryData<IssueWorklog[]>(issueWorklogsKey(projectId, issueId), (current) =>
@@ -290,6 +291,9 @@ export function IssueWorklogSection({
   };
 
   const showForm = canLog && !undeployed;
+  // The panel's one error box (TAS-192), worded the way this section's write
+  // refusals are: its sentence, then the server's.
+  const readFailure = worklogsQuery.isError ? noticeOf("The work log could not be loaded.", worklogsQuery.error) : null;
 
   return (
     <section aria-labelledby={`${formId}-heading`} className="issue-worklogs">
@@ -341,7 +345,11 @@ export function IssueWorklogSection({
         <p aria-live="polite" className="worklog-note-sentence">
           {notice?.text ?? ""}
         </p>
-        {notice?.requestId ? <RequestId value={notice.requestId} /> : null}
+        {notice?.requestId ? (
+          <p className="worklog-note-detail">
+            <RequestId value={notice.requestId} />
+          </p>
+        ) : null}
       </div>
 
       {undeployed ? (
@@ -349,10 +357,10 @@ export function IssueWorklogSection({
         // yet (backend PR #178), and neither "could not be loaded" nor "No work
         // logged yet" would be true.
         <p className="issue-links-empty is-unavailable">This gateway does not serve work logs yet.</p>
-      ) : worklogsQuery.isError ? (
-        <ApiNotice error={worklogsQuery.error} live="polite">
-          The work log could not be loaded.
-        </ApiNotice>
+      ) : readFailure ? (
+        <ErrorNote live="polite" requestId={readFailure.requestId}>
+          {readFailure.text}
+        </ErrorNote>
       ) : null}
 
       {worklogsQuery.isPending ? <p className="issue-links-empty">Loading work log</p> : null}

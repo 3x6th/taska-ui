@@ -119,3 +119,57 @@ test("a seeded thread nobody has touched carries no badge on either comment", as
   await expect(comments.locator(".comment-item")).toHaveCount(2);
   await expect(comments.locator(".comment-item em")).toHaveCount(0);
 });
+
+// TAS-259: one press on a comment's Delete used to delete it. It now asks in
+// §4.22's strip, as the work log's Delete does, and only the strip's answer
+// sends anything. Each "kept" below is read back from the store through a
+// remount, not taken from the screen.
+test("Delete asks first: Esc and Cancel keep the comment, and only the answer removes it", async ({ page }) => {
+  await signIn(page);
+  let comments = await openComments(page, "TAS-102");
+
+  await comments.getByPlaceholder("Leave a comment").fill("Retry guard is in review.");
+  await comments.getByRole("button", { name: "Comment", exact: true }).click();
+  let row = onlyRow(comments);
+  await expect(row).toContainText("Retry guard is in review.");
+
+  const remove = row.getByRole("button", { name: "Delete", exact: true });
+  const strip = row.locator(".comment-confirm");
+  await expect(remove).toHaveAttribute("aria-expanded", "false");
+
+  // The first press asks, and Cancel takes focus.
+  await remove.click();
+  await expect(strip).toBeVisible();
+  await expect(strip).toContainText("will be removed from this issue for everyone");
+  await expect(remove).toHaveAttribute("aria-expanded", "true");
+  await expect(strip.getByRole("button", { name: "Cancel" })).toBeFocused();
+
+  // Esc closes the question and hands focus back to the Delete that asked.
+  await page.keyboard.press("Escape");
+  await expect(strip).toHaveCount(0);
+  await expect(remove).toHaveAttribute("aria-expanded", "false");
+  await expect(remove).toBeFocused();
+  // And the panel is still open: Esc answered the question, nothing else.
+  await expect(page.getByRole("complementary", { name: "TAS-102 issue" })).toBeVisible();
+
+  // So does Cancel.
+  await remove.click();
+  await strip.getByRole("button", { name: "Cancel" }).click();
+  await expect(strip).toHaveCount(0);
+  await expect(remove).toBeFocused();
+
+  comments = await reopenComments(page, "TAS-102");
+  row = onlyRow(comments);
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("Retry guard is in review.");
+
+  // The answer is what deletes, and focus goes to the heading the row leaves under.
+  await row.getByRole("button", { name: "Delete", exact: true }).click();
+  await row.locator(".comment-confirm").getByRole("button", { name: "Delete comment" }).click();
+  await expect(row).toHaveCount(0);
+  await expect(comments.getByText("No comments yet")).toBeVisible();
+  await expect(comments.getByRole("heading", { name: /^Comments/ })).toBeFocused();
+
+  comments = await reopenComments(page, "TAS-102");
+  await expect(onlyRow(comments)).toHaveCount(0);
+});
