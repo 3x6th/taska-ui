@@ -9,9 +9,10 @@ import { RequestId } from "./RequestId";
  * `--surface` ground, a `--border` edge, the `--danger` stripe on the left, and
  * the sentence in `--fg` — 17.88:1 light / 15.73:1 dark. It replaces
  * `.form-error`, which set the sentence itself in `--danger` on a 12% `--danger`
- * tint and measured 3.17:1 light / 4.38:1 dark, under §7's 4.5:1 for anything
- * that is not meta. The CSS is the same selector group as the attachments,
- * watchers, members and work log boxes, so the panel has one error look.
+ * tint and measured 3.17:1 light / 4.43:1 dark on `--surface`, under §7's 4.5:1
+ * for anything that is not meta. The CSS is the same selector group as the
+ * attachments, watchers, members and work log boxes, so the panel has one error
+ * look.
  *
  * Not `ApiNotice`, which is the screen-level banner on the danger tint and takes
  * an `error` to print the server's words beside its own sentence. The callers
@@ -20,9 +21,11 @@ import { RequestId } from "./RequestId";
  *
  * `live` goes on the sentence and never on the box — `ApiNotice`'s rule — so an
  * announcement never reads out the uuid under it. Whether there is one is the
- * caller's: moving to this box changed no caller's answer, and the one caller
- * that has gained a region since — the comment thread's write refusal — gained
- * it with TAS-259, which moves focus away from the row a delete is about.
+ * caller's, and moving to this box changed no caller's answer. The box mounts
+ * together with its text, so a caller that has to be announced reliably does
+ * not use it: the comment thread's write refusal (TAS-259) keeps one polite
+ * sentence mounted and draws `.error-note`'s box around it, as the work log
+ * does with its own.
  */
 export function ErrorNote({
   children,

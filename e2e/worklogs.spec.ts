@@ -121,6 +121,15 @@ test("an ADMIN edits an entry in place and deletes somebody else's after confirm
   await mark.getByRole("button", { name: "Cancel" }).click();
   await expect(mark.getByRole("button", { name: /^Delete 2h logged/ })).toBeFocused();
 
+  // Esc closes the question from the Delete that asked too, which is where
+  // Shift+Tab from Cancel lands.
+  await mark.getByRole("button", { name: /^Delete 2h logged/ }).click();
+  await page.keyboard.press("Shift+Tab");
+  await expect(mark.getByRole("button", { name: /^Delete 2h logged/ })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(mark.getByRole("button", { name: "Delete entry" })).toHaveCount(0);
+  await expect(mark.getByRole("button", { name: /^Delete 2h logged/ })).toHaveAttribute("aria-expanded", "false");
+
   await mark.getByRole("button", { name: /^Delete 2h logged/ }).click();
   await mark.getByRole("button", { name: "Delete entry" }).click();
   await expect(rowBy(section, "Mark Lee")).toHaveCount(0);

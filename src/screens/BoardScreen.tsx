@@ -5019,9 +5019,19 @@ function CommentsSection({
       ) : null}
 
       {commentsQuery.isError ? <ErrorNote>{commentsQuery.error.message}</ErrorNote> : null}
-      {/* Polite since TAS-259: a confirmed delete moves focus to the heading,
-          so a refusal of it would otherwise appear without a word. */}
-      {mutationError ? <ErrorNote live="polite">{mutationError.message}</ErrorNote> : null}
+      {/* A write's refusal, announced since TAS-259: a confirmed delete moves
+          focus to the heading, so without a word a refusal would just appear.
+          One polite region that stays mounted and changes its text — the work
+          log's recipe, the shape §7 records as reliable — rather than
+          `ErrorNote`, which mounts together with its text. `.error-note`'s box
+          is drawn around it only while it has something to say; empty, the
+          wrapper has no class and the sentence no margin, so it takes no
+          space. */}
+      <div className={mutationError ? "error-note" : undefined}>
+        <p aria-live="polite" className="error-note-sentence">
+          {mutationError?.message ?? ""}
+        </p>
+      </div>
 
       {commentsQuery.isPending ? <p className="comments-empty">Loading comments</p> : null}
       {!commentsQuery.isPending && comments.length === 0 ? <p className="comments-empty">No comments yet</p> : null}
@@ -5106,11 +5116,24 @@ function CommentItem({
     onCancelConfirm();
   };
   const when = formatDateTime(comment.createdAt);
+  const asking = canManage && confirming && !editing;
 
   return (
     <article className="comment-item">
       <Avatar user={author} size="sm" />
-      <div className="comment-main">
+      {/* Esc closes an open question from anywhere in the comment's text
+          column — the strip's two answers, and the Delete that asked, which
+          Shift+Tab from Cancel lands on (§4.22). On the strip alone it did
+          nothing there. */}
+      <div
+        className="comment-main"
+        onKeyDown={(event) => {
+          if (asking && event.key === "Escape") {
+            event.stopPropagation();
+            cancelConfirm();
+          }
+        }}
+      >
         <p className="comment-head">
           <strong>{author?.displayName ?? "Unknown"}</strong>
           <time>{when}</time>
@@ -5161,20 +5184,11 @@ function CommentItem({
           </>
         )}
 
-        {canManage && confirming && !editing ? (
+        {asking ? (
           // §4.22's inline confirmation, as the work log draws it: the
           // sentence, Cancel first and focused, and the answer that destroys
           // something edged in `--danger`. Nothing is sent until that answer.
-          <div
-            className="member-confirm comment-confirm"
-            id={confirmId}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                cancelConfirm();
-              }
-            }}
-          >
+          <div className="member-confirm comment-confirm" id={confirmId}>
             <p className="member-confirm-sentence" id={`${confirmId}-sentence`}>
               Your comment from {when} will be removed from this issue for everyone.
             </p>

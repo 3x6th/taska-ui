@@ -158,6 +158,16 @@ test("Delete asks first: Esc and Cancel keep the comment, and only the answer re
   await expect(strip).toHaveCount(0);
   await expect(remove).toBeFocused();
 
+  // And Esc from the Delete that asked, which is where Shift+Tab from Cancel
+  // lands — the strip is still open there.
+  await remove.click();
+  await page.keyboard.press("Shift+Tab");
+  await expect(remove).toBeFocused();
+  await expect(strip).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(strip).toHaveCount(0);
+  await expect(remove).toHaveAttribute("aria-expanded", "false");
+
   comments = await reopenComments(page, "TAS-102");
   row = onlyRow(comments);
   await expect(row).toHaveCount(1);

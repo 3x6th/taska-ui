@@ -5683,9 +5683,10 @@ button.issue-link-open:hover {
 
    The error tone used to borrow `.form-error`, which is 12px/600 in `--danger`
    on a 12% `--danger` tint — drawn for a one-line validation string, measuring
-   3.17:1 light / 4.38:1 dark, and asked here to carry four wrapped lines about
-   a blocked cross-origin PUT. §7 wants ≥4.5:1 for anything but non-critical
-   meta and §5.6's error recipe says the same thing from the other end:
+   3.17:1 light / 4.43:1 dark on `--surface`, and asked here to carry four
+   wrapped lines about a blocked cross-origin PUT. §7 wants ≥4.5:1 for anything
+   but non-critical meta and §5.6's error recipe says the same thing from the
+   other end:
    `--surface` ground, `--border`, and `--danger` in the stripe only, precisely
    so the sentence itself is not danger-coloured. It also carried `margin: 0`,
    which put a failure about one file flush against the row of another.
@@ -5699,8 +5700,10 @@ button.issue-link-open:hover {
    `.error-note` (TAS-192) is the same box as a component, `ErrorNote`, for
    every refusal that used to print through `.form-error` — the issue panel's
    writes, its labels, links and comments, the issue, label and project dialogs,
-   and sign-in. With it the panel has one error look rather than two, and
-   `.form-error` is gone: its sentence measured 3.17:1 light / 4.38:1 dark. */
+   and sign-in. The comment thread's write refusal draws the same box around a
+   sentence that stays mounted (TAS-259), as the work log's note does. With it
+   the panel has one error look rather than two, and `.form-error` is gone: its
+   sentence measured 3.17:1 light / 4.43:1 dark on `--surface`. */
 .attachment-note,
 .watcher-note,
 .member-note,

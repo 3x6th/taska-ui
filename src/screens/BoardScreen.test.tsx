@@ -38,6 +38,7 @@ const {
   deletedAttachments,
   seedComments,
   deletedComments,
+  failCommentDelete,
   failDelete,
   failIssueDelete,
   holdDelete,
@@ -356,6 +357,8 @@ const {
     comments: IssueComment[];
     /** Every comment `deleteComment` was asked to remove, in order. */
     deletedComments: string[];
+    /** What `deleteComment` refuses with, before it removes anything. */
+    commentDeleteFailure?: Error;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
     membershipHeld: false,
@@ -867,6 +870,7 @@ const {
       return { items: state.comments, page: 0, pageSize: 50, totalCount: state.comments.length };
     },
     deleteComment: async (_projectId: string, _issueId: string, commentId: string) => {
+      if (state.commentDeleteFailure) throw state.commentDeleteFailure;
       state.deletedComments.push(commentId);
       state.comments = state.comments.filter((comment) => comment.id !== commentId);
     },
@@ -1110,6 +1114,9 @@ const {
       state.comments = comments;
     },
     deletedComments: () => [...state.deletedComments],
+    failCommentDelete: (error: Error | undefined) => {
+      state.commentDeleteFailure = error;
+    },
     seedMeta: (meta: typeof state.meta) => {
       state.meta = meta;
     },
@@ -1206,6 +1213,7 @@ const {
       state.history = [];
       state.comments = [];
       state.deletedComments = [];
+      state.commentDeleteFailure = undefined;
     },
   };
 });
@@ -2756,7 +2764,23 @@ describe("deleting a comment from the issue panel", () => {
     expect(await panel.findByText("No comments yet")).toBeVisible();
   });
 
-  it("closes the question when the reader turns to editing instead", async () => {
+  it("closes its question on Esc from the Delete that asked, where Shift+Tab from Cancel lands", async () => {
+    renderBoard(ISSUE_PATH);
+    const { row } = await openRow();
+    const remove = await row.findByRole("button", { name: "Delete" });
+
+    fireEvent.click(remove);
+    expect(row.getByRole("button", { name: "Delete comment" })).toBeVisible();
+    remove.focus();
+    fireEvent.keyDown(remove, { key: "Escape" });
+
+    expect(row.queryByRole("button", { name: "Delete comment" })).not.toBeInTheDocument();
+    expect(remove).toHaveAttribute("aria-expanded", "false");
+    expect(remove).toHaveFocus();
+    expect(deletedComments()).toEqual([]);
+  });
+
+  it("closes the question when the reader turns to editing instead, and it stays closed after", async () => {
     renderBoard(ISSUE_PATH);
     const { panel, row } = await openRow();
 
@@ -2764,8 +2788,36 @@ describe("deleting a comment from the issue panel", () => {
     fireEvent.click(row.getByRole("button", { name: "Edit" }));
 
     expect(panel.queryByRole("button", { name: "Delete comment" })).not.toBeInTheDocument();
-    expect(panel.getByRole("button", { name: "Save" })).toBeVisible();
+    const save = panel.getByRole("button", { name: "Save" });
+    expect(save).toBeVisible();
+
+    // Leaving the editor must not bring the question back: opening it dropped
+    // the question rather than hiding it behind the editor.
+    const editor = save.closest(".comment-item") as HTMLElement;
+    fireEvent.click(within(editor).getByRole("button", { name: "Cancel" }));
+    expect(panel.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete comment" })).not.toBeInTheDocument();
     expect(deletedComments()).toEqual([]);
+  });
+
+  it("says a refused delete through one polite region that was there before it", async () => {
+    failCommentDelete(Object.assign(new Error("Comment not found or already deleted"), { status: 404, code: "NOT_FOUND" }));
+    renderBoard(ISSUE_PATH);
+    const { row } = await openRow();
+    // Mounted and empty before anything happens, with no box around it.
+    const region = document.querySelector(".comments [aria-live='polite']") as HTMLElement;
+    expect(region).toBeEmptyDOMElement();
+    expect(region.closest(".error-note")).toBeNull();
+
+    fireEvent.click(await row.findByRole("button", { name: "Delete" }));
+    fireEvent.click(row.getByRole("button", { name: "Delete comment" }));
+
+    // The same node takes the text — a change a screen reader announces — and
+    // the box is drawn around it.
+    await waitFor(() => expect(region).toHaveTextContent("Comment not found or already deleted"));
+    expect(document.querySelector(".comments [aria-live='polite']")).toBe(region);
+    expect(region.closest(".error-note")).not.toBeNull();
+    expect(row.getByText(anna.body)).toBeVisible();
   });
 });
 
