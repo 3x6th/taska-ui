@@ -36,7 +36,7 @@
 # - **A concurrent edit is `ABORTED`, which the gateway maps to 409**, with the message
 #   "Project was concurrently modified by another request, please retry". `isConflict` in
 #   src/api/errors.ts already matches both the status and the `ABORTED` code.
-# - **[Superseded at 28f5fe1: an explicit null now clears both — see "What moved" above]** **Neither `description` nor `color` can be cleared.** Both are `Optional<String>` and an
+# - **[Superseded at 28f5fe1: an explicit null now clears both — see "What moved" below]** **Neither `description` nor `color` can be cleared.** Both are `Optional<String>` and an
 #   absent value means "keep"; the schema says so for `color` in as many words. There is no
 #   way through this route to put a project's colour back to null so the client computes it
 #   again, which matters because that computed colour (TAS-171) is what every project badge

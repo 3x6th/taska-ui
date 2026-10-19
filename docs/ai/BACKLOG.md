@@ -3744,9 +3744,12 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
 
 Candidate backend asks recorded as "not filed" in `API-DIVERGENCE.md` (the #204
 entry), kept here so they are not lost (`api-contract-guard` F6):
-- **Password refusals with a field pointer and a served policy** — `details
-  {field, rule, min, max}` on the six accept 400s, and the policy in `/meta`;
-  removes the prose-keyed `aria-invalid` and the hard-coded hint.
+- **Password refusals with a field pointer and a policy readable without a
+  session** — `details {field, rule, min, max}` on the accept 400s with blank
+  judged by `PasswordValidator`, and the policy behind a PUBLIC route or an
+  invitation preview `GET /auth/invitations/{token}` (not `/meta`: it needs a
+  session the invitee does not have); removes the prose-keyed `aria-invalid`
+  and the hard-coded hint.
 - **`Retry-After` readable by the browser** — expose it in CORS, or name
   `details.retryAfterSeconds` in the contract.
 - **One check for the `/users` query** — the edge (raw) and auth-service
@@ -3766,3 +3769,11 @@ Frontend notes:
   the next sign-in change.
 - **The mock draws one person in two avatar colours** in the members dialog
   (search row vs member row) (`art-director` N2) — mock seed only.
+- **A blank New password reaches the wire, and the mock answers it differently**
+  (`api-contract-guard` re-verdict N1). The stand's gRPC transport refuses it
+  as "body.newPassword must not be blank" (no `aria-invalid`, since the marker
+  keys on "Password"); the mock says the service's "Password is required" and
+  marks the field. Fix: mock uses the transport's words for blank token and
+  password, `isPasswordRefusal` also matches `body.newPassword`, and the
+  LoginScreen comment's count ("the policy's four … the token's two") is
+  corrected — or the form refuses a blank password before sending.

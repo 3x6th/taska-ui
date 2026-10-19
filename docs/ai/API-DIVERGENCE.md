@@ -1032,18 +1032,31 @@ Same rule as above: "Closed by" is settled, the rest is live.
   over the same tokens and mail queue. Not filed — the owner's call.
 - **The six password refusals of accept differ only in their text, and the
   policy is configurable but not served** (`api-contract-guard`, TAS-297 F1).
-  All six are `400 INVALID_ARGUMENT` with no field pointer (`PasswordValidator`,
-  `AuthServiceImpl.setPasswordByToken`, develop `e8a8d316`); the policy (minimum
+  All are `400 INVALID_ARGUMENT` with no field pointer (develop `e8a8d316`): five
+  policy sentences from `PasswordValidator`, "Invite token is too long", and —
+  for a blank token or password — the gRPC transport's own "body.token must not
+  be blank" / "body.newPassword must not be blank" (`AuthGrpcService.java:96-105`),
+  which runs before the service, so the service's "Token required" and
+  "Password is required" never reach the wire; the policy (minimum
   length and character classes) comes from auth-service env with no route that
   serves it. **Compensations, both on the invite form:** `isPasswordRefusal`
   marks New password `aria-invalid` when the message starts with "Password" — a
   branch chosen by prose, against this file's own rule, accepted because the
   only thing lost on a reword is the field marker (the sentence itself always
-  prints verbatim); and `PASSWORD_HINT` copies auth-service's default policy
+  prints verbatim) — and a blank password already loses it today, since the
+  transport's sentence starts with "body."; the mock still answers the service's
+  "Password is required" there (`api-contract-guard` re-verdict N1, BACKLOG); and `PASSWORD_HINT` copies auth-service's default policy
   (8 characters, an upper-case letter, a digit, a symbol). **Removal:** candidate
   ask — `PasswordValidator` raises `details {field: "newPassword", rule, min,
-  max}` through the existing `taska-error-details` transport (#199), and the
-  policy is served (e.g. in `/meta`). Not filed; in BACKLOG "Left by TAS-297".
+  max}` (strings — `details` is a string map; precedent
+  `AdminInviteUserServiceImpl.java:77`) through the existing
+  `taska-error-details` transport (#199), with blank judged by the validator;
+  and the policy readable **without a session** — not `/meta`, which is
+  PROTECTED and built once in the gateway, while the invitee has no session:
+  a PUBLIC route, or an invitation preview `GET /auth/invitations/{token}` →
+  `{email, expiresAt, passwordPolicy}` that would also report a dead link before
+  the person types a password (today the password is checked before the
+  token). Not filed; in BACKLOG "Left by TAS-297".
 
 ### Closed by contract (TAS-297): accepting an invitation does not produce a session
 
