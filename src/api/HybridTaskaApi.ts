@@ -11,12 +11,14 @@ import type {
   CreateIssueLinkInput,
   CreateProjectInput,
   CreateProjectLabelInput,
+  InviteUserInput,
   ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
   LoginInput,
   RetryableOutboxService,
   SearchIssuesParams,
+  SearchUsersParams,
   TaskaApi,
   IssueWriteAnswer,
   UpdateIssueInput,
@@ -36,6 +38,7 @@ import type {
   AttachmentUploadTicket,
   AvatarUploadTicket,
   Board,
+  DirectoryPage,
   EnumDictionaries,
   Issue,
   IssueAttachment,
@@ -45,6 +48,7 @@ import type {
   IssueWatchers,
   IssueWorklog,
   IssueDetailsWithHistory,
+  InvitationResult,
   Label,
   Notification,
   NotificationPage,
@@ -156,6 +160,14 @@ export class HybridTaskaApi implements TaskaApi {
 
   removeProjectMember(projectId: string, userId: string): Promise<void> {
     return this.live.removeProjectMember(projectId, userId);
+  }
+
+  searchUsers(params: SearchUsersParams): Promise<DirectoryPage> {
+    return this.live.searchUsers(params);
+  }
+
+  inviteUser(input: InviteUserInput): Promise<InvitationResult> {
+    return this.live.inviteUser(input);
   }
 
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {

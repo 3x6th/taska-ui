@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MEMBER_USER_ID_REFUSAL_MESSAGE, PROJECT_ROLES, isUserId, normalizeUserId } from "./members";
+import { MEMBER_USER_ID_REFUSAL_MESSAGE, PROJECT_ROLES, isUserId } from "./members";
 import { apiErrorFacts, isConflict } from "./errors";
 import { MockTaskaApi } from "./mock/MockTaskaApi";
 import { ApiError, RestTaskaApi } from "./rest/RestTaskaApi";
@@ -51,10 +51,6 @@ describe("the member id rule", () => {
     ["a name somebody typed hoping for search", "Priya Nair"],
   ])("refuses %s", (_case, value) => {
     expect(isUserId(value)).toBe(false);
-  });
-
-  it("normalises a pasted id into the form the member list compares against", () => {
-    expect(normalizeUserId(`  ${PRIYA.toUpperCase()}\n`)).toBe(PRIYA);
   });
 
   it("lists the roles in the contract's own order", () => {

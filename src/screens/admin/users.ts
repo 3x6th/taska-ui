@@ -1,5 +1,5 @@
 import { apiErrorFacts, isConflict, isMissingOrForbidden } from "../../api/errors";
-import type { AdminRow, GlobalRole, UserStatus } from "../../domain/types";
+import type { AdminRow, GlobalRole, InvitationResult, UserStatus } from "../../domain/types";
 
 /**
  * Where the Users section reads its people from (DESIGN.md §5.8). The section
@@ -133,10 +133,12 @@ export function hasKey(user: AdminUserRow): user is AdminUserTarget {
 export type UserAction = "block" | "unblock" | "reset";
 
 /**
- * The one action a row offers, decided by the server's own transition rules
- * (`AdminUserManagementServiceImpl`, backend TAS-107 and TAS-108): block is
- * legal from `ACTIVE` and `INVITED`, unblock only from `BLOCKED`, and
- * reset-lockout only from `LOCKED`.
+ * The one status write a row offers, decided by the server's own transition
+ * rules (`AdminUserManagementServiceImpl`, backend TAS-107 and TAS-108): block
+ * is legal from `ACTIVE` and `INVITED`, unblock only from `BLOCKED`, and
+ * reset-lockout only from `LOCKED`. An `INVITED` row carries a second button
+ * beside it since TAS-204 — Resend invite — which is an invitation rather than
+ * a status write and is decided in the section (§5.8).
  *
  * `LOCKED` used to fall through to `null` here, which was right while the row
  * had nothing to offer and became wrong the moment reset-lockout existed. It is
@@ -244,4 +246,98 @@ export function userWriteFailure(error: unknown): UserWriteFailure {
   if (status !== null && status >= 500) return "server";
   if ((status !== null && status >= 400 && status < 500) || code === "INVALID_ARGUMENT") return "rejected";
   return "unreachable";
+}
+
+/**
+ * An invitation's deadline as §5.8 prints it — `MMM d, HH:mm`, in **UTC**, so
+ * the sentence's own " UTC" is true — or `null` for a value that is not an
+ * instant. `en-US` and `h23` for the same reason `formatDateTime` names its
+ * locale: "Oct 26, 14:05" on every machine.
+ */
+const inviteDeadlineFormat = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: "UTC",
+});
+
+export function inviteDeadline(expiresAt: string): string | null {
+  const moment = new Date(expiresAt);
+  return Number.isNaN(moment.getTime()) ? null : inviteDeadlineFormat.format(moment);
+}
+
+/** " it works until Oct 26, 14:05 UTC", or nothing when the server stated no readable deadline. */
+function untilClause(expiresAt: string, lead: string): string {
+  const deadline = inviteDeadline(expiresAt);
+  return deadline ? `${lead} ${deadline} UTC` : "";
+}
+
+/**
+ * What the status line says after an invitation that queued an email (§5.8):
+ * a new account, or an invited one with no working link. Always "queued" —
+ * `deliveryQueued` is a durable queue write, not a delivery, and nothing here
+ * may say "sent" or "delivered".
+ *
+ * The second case is worded for what the answer proves and no more: auth-service
+ * queues a new link without `resend` both when the last one expired and when
+ * the account has none at all (`AdminInviteUserServiceImpl.inviteExisting`), and
+ * the 200 does not say which.
+ */
+export function invitedStatusText(result: InvitationResult, email: string): string {
+  if (result.created) {
+    return `${email} is invited. The email is queued for sending${untilClause(result.expiresAt, "; the link works until")}.`;
+  }
+  return `${email} was already invited but did not have a working link, so a new one is queued${untilClause(result.expiresAt, "; it works until")}.`;
+}
+
+/** The one 200 that keeps the dialog open: already invited, link still live, nothing sent. */
+export function stillInvitedText(expiresAt: string, email: string): string {
+  const deadline = inviteDeadline(expiresAt);
+  const live = deadline ? `their link still works until ${deadline} UTC` : "their link still works";
+  return `${email} is already invited and ${live}, so no email was sent. If they lost it, send a new link — the old one will stop working.`;
+}
+
+/** The status line after "Send new link" from a row (§5.8). */
+export function resentStatusText(result: InvitationResult, name: string): string {
+  return `A new invitation link for ${name} is queued${untilClause(result.expiresAt, "; it works until")}.`;
+}
+
+/**
+ * How an invitation was refused, in §5.8's terms. `tooSoon` and `exists` are
+ * this route's own (429 and 409); the rest is the Users section's taxonomy.
+ * Read by code as well as status, because the mock carries only the code.
+ */
+export type InviteFailure = "tooSoon" | "exists" | "rejected" | "refused" | "server" | "unreachable";
+
+export function inviteFailure(error: unknown): InviteFailure {
+  const { status, code } = apiErrorFacts(error);
+  if (status === 429 || code === "RESOURCE_EXHAUSTED") return "tooSoon";
+  if (status === 409 || code === "ALREADY_EXISTS") return "exists";
+  if (isMissingOrForbidden(error)) return "refused";
+  if (status !== null && status >= 500) return "server";
+  if ((status !== null && status >= 400 && status < 500) || code === "INVALID_ARGUMENT") return "rejected";
+  return "unreachable";
+}
+
+/**
+ * The wait a 429 states, from `details.retryAfterSeconds` — a **string** on the
+ * wire, and the only source: the gateway sets `Retry-After` as well, but CORS
+ * exposes only `X-Request-Id` and `ETag`, so no browser can read it. A whole
+ * positive number, or `null`.
+ */
+export function retryAfterSeconds(error: unknown): number | null {
+  const { details } = apiErrorFacts(error);
+  const raw = details && Object.hasOwn(details, "retryAfterSeconds") ? details.retryAfterSeconds : null;
+  if (raw === null || !/^[1-9][0-9]*$/.test(raw)) return null;
+  return Number(raw);
+}
+
+/** The 429's sentence (§5.8). No countdown: the number is the server's, at the moment it answered. */
+export function tooSoonText(error: unknown, email: string): string {
+  const seconds = retryAfterSeconds(error);
+  const wait =
+    seconds === null ? "Try again in a minute." : `Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  return `An invitation to ${email} was sent less than a minute ago. ${wait}`;
 }

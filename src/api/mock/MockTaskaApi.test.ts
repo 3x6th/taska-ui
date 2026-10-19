@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MOCK_ATTACHMENT_TRIGGERS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
+import { MOCK_ATTACHMENT_TRIGGERS, MOCK_INVITE_TOKENS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
 import type { BoardParams, UpdateIssueInput } from "../TaskaApi";
+import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../TaskaApi";
 import type { Board, Issue, NotificationType, Project, Workflow } from "../../domain/types";
 import {
   ATTACHMENT_MAX_SIZE_BYTES,
@@ -120,10 +121,9 @@ describe("MockTaskaApi", () => {
 
     it("does not open a session for an accepted invitation", async () => {
       // `POST /auth/invitations/accept` answers 204 with no tokens, so `rest`
-      // cannot produce a session here and neither may the mock — otherwise an
-      // empty token and an empty password would walk straight past the route
-      // guard in mock mode. The gap is recorded in docs/ai/API-DIVERGENCE.md.
-      await api.acceptInvitation({ token: "", newPassword: "" });
+      // cannot produce a session here and neither may the mock; the contract
+      // says the client signs in afterwards (backend #204).
+      await api.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1" });
 
       expect(api.hasSession()).toBe(false);
     });
@@ -401,29 +401,50 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * `GET /meta` as the stand answers it (backend TAS-217, with backend PR
-   * #200's enums, probed 2026-10-19): Russian names for every contract code —
-   * twenty-three notification types and five user statuses, each list ending
-   * in its placeholder — plus `EPIC` named in English and `URGENT` named in
-   * Russian, the two codes TAS-173's states are seen through.
+   * `GET /meta` as the stand answers it since backend #201 (develop
+   * `e8a8d316b326`): English names for every contract code, `selectable` on
+   * every pair and `false` on the four placeholders, and `linkViewTypes` —
+   * plus `EPIC` named in English and `URGENT` still named in Russian, the two
+   * codes TAS-173's states are seen through, the second now the witness of
+   * the Cyrillic check DESIGN.md §6 keeps.
    */
   describe("the dictionaries", () => {
     it("answers the stand's body with the two codes this build does not know", async () => {
       const meta = await api.getMeta();
 
       expect(meta.issueTypes?.map((entry) => entry.code)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
-      expect(meta.issueTypes?.find((entry) => entry.code === "EPIC")?.name).toBe("Epic");
+      expect(meta.issueTypes?.map((entry) => entry.name)).toEqual(["Task", "Bug", "Story", "Epic"]);
       expect(meta.priorities?.map((entry) => entry.code)).toEqual(["LOW", "MEDIUM", "HIGH", "URGENT"]);
       expect(meta.priorities?.find((entry) => entry.code === "URGENT")?.name).toBe("Срочный");
-      expect(meta.linkTypes?.map((entry) => entry.code)).toEqual(["BLOCKS", "RELATES_TO", "DUPLICATES"]);
+      expect(meta.linkTypes).toEqual([
+        { code: "BLOCKS", name: "Blocks", selectable: true },
+        { code: "RELATES_TO", name: "Relates to", selectable: true },
+        { code: "DUPLICATES", name: "Duplicates", selectable: true },
+      ]);
       expect(meta.notificationTypes).toHaveLength(23);
-      expect(meta.notificationTypes?.at(-1)).toEqual({ code: "UNKNOWN", name: "Неизвестный тип" });
-      expect(meta.userStatuses?.map((entry) => entry.code)).toEqual([
-        "INVITED",
-        "ACTIVE",
-        "BLOCKED",
-        "LOCKED",
-        "UNSPECIFIED",
+      expect(meta.notificationTypes?.at(-1)).toEqual({ code: "UNKNOWN", name: "Unknown", selectable: false });
+      expect(meta.userStatuses).toEqual([
+        { code: "INVITED", name: "Invited", selectable: true },
+        { code: "ACTIVE", name: "Active", selectable: true },
+        { code: "BLOCKED", name: "Blocked", selectable: true },
+        { code: "LOCKED", name: "Locked", selectable: true },
+        { code: "UNSPECIFIED", name: "Unspecified", selectable: false },
+      ]);
+    });
+
+    it("hands the link view types over as the rest leg reads them: prefix off, placeholders out", async () => {
+      // The wire spells them `ISSUE_LINK_VIEW_TYPE_BLOCKS` and lists
+      // `ISSUE_LINK_VIEW_TYPE_UNSPECIFIED` and `UNRECOGNIZED` beside them; a
+      // link row's `viewLinkType` is read through the same function, so
+      // stripped codes are what the two are compared as.
+      const meta = await api.getMeta();
+
+      expect(meta.linkViewTypes).toEqual([
+        { code: "RELATES_TO", name: "Relates to", selectable: true },
+        { code: "BLOCKS", name: "Blocks", selectable: true },
+        { code: "IS_BLOCKED_BY", name: "Is blocked by", selectable: true },
+        { code: "DUPLICATES", name: "Duplicates", selectable: true },
+        { code: "IS_DUPLICATED_BY", name: "Is duplicated by", selectable: true },
       ]);
     });
 
@@ -1252,37 +1273,60 @@ describe("MockTaskaApi", () => {
       expect(cards.every((issue) => issue.storyPoints === null)).toBe(true);
     });
 
-    it("keys includeDone on the status key rather than on the column's category", async () => {
+    it("keys includeDone on the workflow's DONE category, whatever the status is called (backend #202)", async () => {
       const { items } = await api.listIssues(project.id, { pageSize: 100 });
       const done = items.find((issue) => issue.status === "DONE");
       if (!done) throw new Error("the seed has no DONE issue");
+      const resolved: Issue = { ...done, id: "55555555-5555-4555-8555-555555555555", status: "RESOLVED" };
 
-      // A column keyed `DONE` and categorised as something else — the two
-      // coincide on the seeded workflow and on the project probed, which is why
-      // only the source can tell them apart. It is
-      // `IssueRepositoryImpl.boardFilterConditions`: a literal
-      // `status_key <> 'DONE'`, so the key decides and the category does not.
-      const miscategorised: Workflow = {
+      // Two columns that split the old rule from the new one: `DONE` filed
+      // under IN_PROGRESS, and `RESOLVED` filed under DONE. Since #202 the
+      // gateway reads the workflow and excludes the DONE-category keys, so the
+      // category decides and the key does not — the opposite of the literal
+      // `status_key <> 'DONE'` before it.
+      const workflow: Workflow = {
         id: "33333333-3333-3333-3333-333333333333",
-        name: "Workflow whose DONE column is filed elsewhere",
+        name: "Workflow whose done column is called something else",
         version: 1,
         createdAt: "2026-06-08T09:10:00Z",
         updatedAt: "2026-06-08T09:10:00Z",
         statuses: [
           { id: "44444444-4444-4444-4444-444444444444", statusKey: "DONE", name: "Done", category: "IN_PROGRESS", sortOrder: 10 },
+          { id: "45454545-4545-4545-4545-454545454545", statusKey: "RESOLVED", name: "Resolved", category: "DONE", sortOrder: 20 },
         ],
         transitions: [],
       };
 
-      const hidden = buildMockBoard(project.id, miscategorised, [done], { issueType: done.issueType });
-      expect(hidden.columns.map((column) => column.statusKey)).toEqual(["DONE"]);
-      expect(hidden.columns[0].issues).toEqual([]);
+      const hidden = buildMockBoard(project.id, workflow, [done, resolved], { issueType: done.issueType });
+      expect(hidden.columns.map((column) => column.statusKey)).toEqual(["DONE", "RESOLVED"]);
+      expect(hidden.columns[0].issues.map((issue) => issue.issueKey)).toEqual([done.issueKey]);
+      expect(hidden.columns[1].issues).toEqual([]);
 
-      const shown = buildMockBoard(project.id, miscategorised, [done], {
+      const shown = buildMockBoard(project.id, workflow, [done, resolved], {
         issueType: done.issueType,
         includeDone: true,
       });
-      expect(shown.columns[0].issues.map((issue) => issue.issueKey)).toEqual([done.issueKey]);
+      expect(shown.columns.map((column) => column.issues.length)).toEqual([1, 1]);
+    });
+
+    it("excludes nothing for a workflow with no DONE-category status", async () => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const done = items.find((issue) => issue.status === "DONE");
+      if (!done) throw new Error("the seed has no DONE issue");
+      const workflow: Workflow = {
+        id: "33333333-3333-3333-3333-333333333333",
+        name: "Workflow with nothing done",
+        version: 1,
+        createdAt: "2026-06-08T09:10:00Z",
+        updatedAt: "2026-06-08T09:10:00Z",
+        statuses: [
+          { id: "44444444-4444-4444-4444-444444444444", statusKey: "DONE", name: "Done", category: "TODO", sortOrder: 10 },
+        ],
+        transitions: [],
+      };
+
+      const board = buildMockBoard(project.id, workflow, [done], { issueType: done.issueType });
+      expect(board.columns[0].issues.map((issue) => issue.issueKey)).toEqual([done.issueKey]);
     });
 
     it("refuses a project that does not exist", async () => {
@@ -1301,11 +1345,12 @@ describe("MockTaskaApi", () => {
      * `IssueStatus` narrows both sides to the same three values. A workflow
      * that has lost `DONE` is the same inconsistency from the other end.
      *
-     * Which is also why `includeDone` decides whether it fails at all. The flag
-     * is a `status_key <> 'DONE'` in issue-service
-     * (`IssueRepositoryImpl.boardFilterConditions`), so with it off this stray
-     * never reaches the gateway's leftover-status check and the read succeeds
-     * on both sides; with it on, both sides fail.
+     * `includeDone` no longer decides whether it fails. Until backend #202 the
+     * flag was a literal `status_key <> 'DONE'`, so with it off a stray keyed
+     * `DONE` never reached the gateway's leftover-status check and the read
+     * answered 200. Since #202 it excludes only the keys the workflow files
+     * under `DONE`, and a key the workflow does not list is never one of them —
+     * so the stray reaches the check and fails the read, flag or no flag.
      */
     it("fails a read that keeps an issue whose status the workflow does not list", async () => {
       const { items } = await api.listIssues(project.id, { pageSize: 100 });
@@ -1339,17 +1384,17 @@ describe("MockTaskaApi", () => {
         message: "Inconsistent state: issues found with statuses not present in workflow",
       });
 
-      // And with the flag off — including its default, absent — the filter has
-      // already removed the stray in issue-service, so the board is assembled
-      // without it and answers `200`: the workflow's one column, empty.
+      // And with the flag off — including its default, absent — the same 500:
+      // the workflow names no DONE-category key, so nothing is excluded, and
+      // the stray arrives at the check like any other row.
       for (const params of [
         { issueType: stray.issueType },
         { issueType: stray.issueType, includeDone: false },
       ]) {
-        expect(failure(params)).toBeNull();
-        const board = buildMockBoard(project.id, shortWorkflow, [stray], params);
-        expect(board.columns.map((column) => column.statusKey)).toEqual(["TODO"]);
-        expect(board.columns.flatMap((column) => column.issues)).toEqual([]);
+        expect(failure(params)).toMatchObject({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Inconsistent state: issues found with statuses not present in workflow",
+        });
       }
     });
   });
@@ -2408,11 +2453,11 @@ describe("MockTaskaApi", () => {
       });
 
       // As text, "5" >= "10" — so the row with 5 came back from a filter that
-      // asked for 10 and up. The list runs to 35 since TAS-186 seeded a sixth
-      // and seventh account and TAS-188 an eighth (`failed_logins` is
-      // `index * 5`), which is what makes the two-digit half of this assertion
-      // several values rather than one.
-      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20, 25, 30, 35]);
+      // asked for 10 and up. The list runs to 40 since TAS-186 seeded a sixth
+      // and seventh account, TAS-188 an eighth and TAS-297 a ninth
+      // (`failed_logins` is `index * 5`), which is what makes the two-digit
+      // half of this assertion several values rather than one.
+      expect(from.rows.map((row) => row.failed_logins)).toEqual([10, 15, 20, 25, 30, 35, 40]);
 
       const to = await api.listAdminRows({
         service: "auth",
@@ -2462,7 +2507,7 @@ describe("MockTaskaApi", () => {
 
       // `localeCompare` put 10 before 5 here, and did it differently depending
       // on the machine's locale.
-      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20, 25, 30, 35]);
+      expect(asc.rows.map((row) => row.failed_logins)).toEqual([0, 5, 10, 15, 20, 25, 30, 35, 40]);
 
       const desc = await api.listAdminRows({
         service: "auth",
@@ -2472,7 +2517,7 @@ describe("MockTaskaApi", () => {
         order: "desc",
       });
 
-      expect(desc.rows.map((row) => row.failed_logins)).toEqual([35, 30, 25, 20, 15, 10, 5, 0]);
+      expect(desc.rows.map((row) => row.failed_logins)).toEqual([40, 35, 30, 25, 20, 15, 10, 5, 0]);
     });
 
     /**
@@ -3061,6 +3106,218 @@ describe("MockTaskaApi", () => {
    * and it has to answer exactly what the gateway does
    * (docs/ai/API-DIVERGENCE.md).
    */
+  /**
+   * Accepting an invitation (backend #204): `AuthServiceImpl.setPasswordByToken`'s
+   * checks in its order and its words, the one 401 for every dead link, and
+   * a link spent only by a success. Leo's seeded link works; Ivy's expired.
+   */
+  describe("accepting an invitation", () => {
+    const accept = (token: string, newPassword = "Correct-horse-1") => api.acceptInvitation({ token, newPassword });
+    const statusOf = async (email: string) =>
+      (await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 })).rows.find((row) => row.email === email)
+        ?.status;
+
+    it("refuses in the server's order: token present, then the password, then the token's length", async () => {
+      await expect(accept("  ", "weak")).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Token required" });
+      await expect(accept("x".repeat(300), "weak")).rejects.toMatchObject({
+        message: "Password must be at least 8 characters and not exceed 128 characters",
+      });
+      await expect(accept("x".repeat(300))).rejects.toMatchObject({ message: "Invite token is too long" });
+    });
+
+    it.each([
+      ["", "Password is required"],
+      ["Sh0rt!", "Password must be at least 8 characters and not exceed 128 characters"],
+      [`Aa1!${"ж".repeat(40)}`, "Password exceeds the BCrypt limit of 72 UTF-8 bytes"],
+      ["lowercase1!", "Password must have at least 1 upper character"],
+      ["NoDigitsHere!", "Password must have at least 1 digit character"],
+      ["NoSymbol123", "Password must have at least 1 special character"],
+    ])("refuses %j with the policy's own sentence, and the link survives it", async (password, message) => {
+      await expect(accept(MOCK_INVITE_TOKENS.leo, password)).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message });
+      await expect(accept(MOCK_INVITE_TOKENS.leo)).resolves.toBeUndefined();
+    });
+
+    it("activates the account once: the link is single-use, and every dead link is the same 401", async () => {
+      await accept(MOCK_INVITE_TOKENS.leo);
+      expect(await statusOf("leo@example.com")).toBe("ACTIVE");
+
+      const dead = { code: "UNAUTHENTICATED", message: "Invalid or expired token" };
+      await expect(accept(MOCK_INVITE_TOKENS.leo)).rejects.toMatchObject(dead);
+      await expect(accept(MOCK_INVITE_TOKENS.ivy)).rejects.toMatchObject(dead);
+      await expect(accept("nobody-holds-this-token")).rejects.toMatchObject(dead);
+      expect(await statusOf("ivy@example.com")).toBe("INVITED");
+    });
+
+    it("lets the activated account sign in, and leaves whoever was signed in alone", async () => {
+      await api.login({ email: "anna@example.com", password: "x" });
+      await accept(MOCK_INVITE_TOKENS.leo);
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ email: "anna@example.com" });
+
+      await api.logout();
+      await expect(api.login({ email: "leo@example.com", password: "x" })).resolves.toBeDefined();
+    });
+
+    it("refuses a link a newer invitation replaced", async () => {
+      await api.login({ email: "mark@example.com", password: "x" });
+      await expect(api.inviteUser({ email: "leo@example.com", resend: true })).resolves.toMatchObject({
+        deliveryQueued: true,
+      });
+
+      await expect(accept(MOCK_INVITE_TOKENS.leo)).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    });
+  });
+
+  /**
+   * The people directory (backend #204): the gateway's binding first, before
+   * sign-in, then auth-service's own measure of the trimmed query; then
+   * `searchDirectory`'s set, order and page.
+   */
+  describe("people search", () => {
+    it("refuses a raw query out of range at the gateway, and a trimmed one in auth-service's words", async () => {
+      for (const params of [
+        { query: "ab" },
+        { query: "x".repeat(101) },
+        { query: "anna", page: -1 },
+        { query: "anna", page: 1001 },
+        { query: "anna", pageSize: 0 },
+        { query: "anna", pageSize: 51 },
+      ]) {
+        await expect(api.searchUsers(params)).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: "Invalid request parameters",
+        });
+      }
+      // Three characters on the wire, two once trimmed: the second refusal.
+      await expect(api.searchUsers({ query: " ab " })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: DIRECTORY_QUERY_REFUSAL_MESSAGE,
+      });
+    });
+
+    it("matches name or email case-insensitively, leaves BLOCKED out, and keeps INVITED and LOCKED in", async () => {
+      const page = await api.searchUsers({ query: "EXAMPLE.COM" });
+      const emails = page.items.map((person) => person.email);
+
+      expect(emails).toContain("leo@example.com");
+      expect(emails).toContain("omar@example.com");
+      expect(emails).not.toContain("nina@example.com");
+      await expect(api.searchUsers({ query: "fisch" })).resolves.toMatchObject({
+        items: [{ email: "leo@example.com", displayName: "Leo Fischer" }],
+        hasMore: false,
+      });
+      // Exactly the four wire fields, and no status, login or role.
+      expect(Object.keys(page.items[0]).sort()).toEqual(["avatarUrl", "displayName", "email", "id"]);
+    });
+
+    it("orders by lower(displayName), lower(email), then id, and pages with hasMore from one extra row", async () => {
+      const first = await api.searchUsers({ query: "example", pageSize: 3 });
+      const second = await api.searchUsers({ query: "example", page: 1, pageSize: 3 });
+      const all = await api.searchUsers({ query: "example", pageSize: 50 });
+
+      expect(all.items.map((person) => person.displayName)).toEqual(
+        [...all.items.map((person) => person.displayName)].sort((a, b) =>
+          a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0,
+        ),
+      );
+      expect(first.hasMore).toBe(true);
+      expect([...first.items, ...second.items]).toEqual(all.items.slice(0, 6));
+      const last = await api.searchUsers({ query: "example", page: 2, pageSize: 3 });
+      expect(last.hasMore).toBe(all.items.length > 9);
+    });
+
+    it("carries an avatar link for a person with a picture and null for one without", async () => {
+      const sofia = (await api.searchUsers({ query: "sofia" })).items[0];
+      const tom = (await api.searchUsers({ query: "tom@" })).items[0];
+
+      expect(sofia.avatarUrl).toEqual(expect.any(String));
+      expect(tom.avatarUrl).toBeNull();
+    });
+  });
+
+  /**
+   * Inviting (backend #204), as `AdminInviteUserServiceImpl` answers: by what
+   * the address already belongs to, with the 60-second floor between links.
+   */
+  describe("inviting a user", () => {
+    beforeEach(async () => {
+      await api.login({ email: "mark@example.com", password: "x" });
+    });
+
+    it("refuses anybody who is not a global admin, first", async () => {
+      await api.logout();
+      await api.login({ email: "anna@example.com", password: "x" });
+      await expect(api.inviteUser({ email: "" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+        message: "User doesn't have permission",
+      });
+    });
+
+    it("refuses an address or a name the server cannot take, in its own sentences", async () => {
+      for (const email of ["", "   ", "not-an-address", "a@", "@b.c", "two@@at.com"]) {
+        await expect(api.inviteUser({ email })).rejects.toMatchObject({
+          code: "INVALID_ARGUMENT",
+          message: "A valid email address is required (maximum 320 characters)",
+        });
+      }
+      await expect(api.inviteUser({ email: `${"a".repeat(321)}@x.io` })).rejects.toMatchObject({
+        message: "Invalid request parameters",
+      });
+      await expect(api.inviteUser({ email: "new@example.com", displayName: "Bad\u0007name" })).rejects.toMatchObject({
+        message: "Display name must contain at most 128 characters and no control characters",
+      });
+    });
+
+    it("creates an INVITED account for a new address — 201 — named by the local part when no name is given", async () => {
+      const result = await api.inviteUser({ email: "  New.Person@Example.com " });
+
+      expect(result).toMatchObject({ created: true, deliveryQueued: true, status: "INVITED" });
+      const week = Date.parse(result.expiresAt) - Date.now();
+      expect(week).toBeGreaterThan(6.9 * 24 * 3_600_000);
+      await expect(api.searchUsers({ query: "new.person" })).resolves.toMatchObject({
+        items: [{ id: result.userId, email: "new.person@example.com", displayName: "new.person" }],
+      });
+    });
+
+    it("answers 200 with nothing sent while the link works, and queues a new one on resend or expiry", async () => {
+      await expect(api.inviteUser({ email: "leo@example.com" })).resolves.toMatchObject({
+        created: false,
+        deliveryQueued: false,
+      });
+      await expect(api.inviteUser({ email: "ivy@example.com" })).resolves.toMatchObject({
+        created: false,
+        deliveryQueued: true,
+      });
+      await expect(api.inviteUser({ email: "leo@example.com", resend: true })).resolves.toMatchObject({
+        created: false,
+        deliveryQueued: true,
+      });
+    });
+
+    it("refuses another link within a minute of the last one, with the wait as a string in details", async () => {
+      const first = await api.inviteUser({ email: "fresh@example.com" });
+      expect(first.created).toBe(true);
+
+      const refusal = await api.inviteUser({ email: "fresh@example.com", resend: true }).catch((error: unknown) => error);
+
+      expect(refusal).toMatchObject({ code: "RESOURCE_EXHAUSTED", message: "Invitation was sent recently; try again later" });
+      const { details } = apiErrorFacts(refusal);
+      expect(details?.retryAfterSeconds).toMatch(/^[1-9][0-9]*$/);
+      expect(Number(details?.retryAfterSeconds)).toBeLessThanOrEqual(61);
+      // Without `resend` the live link is simply reported, not refused.
+      await expect(api.inviteUser({ email: "fresh@example.com" })).resolves.toMatchObject({ deliveryQueued: false });
+    });
+
+    it.each([["anna@example.com"], ["omar@example.com"], ["nina@example.com"]])(
+      "refuses %s — an account that exists — with a 409, and changes nothing",
+      async (email) => {
+        await expect(api.inviteUser({ email: email.toUpperCase() })).rejects.toMatchObject({
+          code: "ALREADY_EXISTS",
+          message: "An account with this email already exists",
+        });
+      },
+    );
+  });
+
   describe("admin user block and unblock", () => {
     /** Whoever the seed gave this status, found through the same table the section reads. */
     const findByStatus = async (status: string) => {

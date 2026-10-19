@@ -11,6 +11,7 @@ import type {
   CreateIssueLinkInput,
   CreateProjectInput,
   CreateProjectLabelInput,
+  InviteUserInput,
   ListCommentsParams,
   ListIssuesParams,
   ListNotificationsParams,
@@ -18,6 +19,7 @@ import type {
   RetryableOutboxService,
   IssueWriteAnswer,
   SearchIssuesParams,
+  SearchUsersParams,
   TaskaApi,
   UpdateIssueInput,
   UpdateIssueWorklogInput,
@@ -28,6 +30,9 @@ import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
   ADMIN_WRITE_REASON_REQUIRED_MESSAGE,
   ADMIN_WRITE_REASON_TOO_LONG_MESSAGE,
+  DIRECTORY_QUERY_REFUSAL_MESSAGE,
+  INVITE_DISPLAY_NAME_MAX_LENGTH,
+  INVITE_EMAIL_MAX_LENGTH,
   OUTBOX_RETRY_REASON_MAX_LENGTH,
   OUTBOX_RETRY_REASON_TOO_LONG_MESSAGE,
   PROJECT_COLOR_PATTERN,
@@ -43,6 +48,7 @@ import {
   attachmentRefusal,
   attachmentSizeRefusalMessage,
 } from "../attachments";
+import { toViewLinkType } from "../linkViewTypes";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import {
   AVATAR_BUCKET,
@@ -81,7 +87,9 @@ import type {
   Board,
   BoardColumn,
   DictionaryEntry,
+  DirectoryPage,
   EnumDictionaries,
+  InvitationResult,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -152,6 +160,12 @@ const NINA_ID = "c47a9b21-6d5e-4f0b-8c72-9e13a4f8d602";
 // `LOCKED` is the one state nobody here put an account into: it is where
 // auth-service leaves a person who mistyped their password too many times.
 const OMAR_ID = "d58f0e73-4b2c-4c9d-8e15-3f6a70b2c9d4";
+// A second INVITED account, added by TAS-297 on the same rule: Leo's link still
+// works, Ivy's has expired, and those are the two states an invitation answers
+// differently (`inviteUser`) — 200 with nothing sent for Leo, 200 with a new
+// link queued for Ivy. Neither can be reached by clicking, because a link only
+// expires with a week of real time.
+const IVY_ID = "e3a7c915-08b2-4d6e-9f41-7c2b5a0d8e63";
 
 const TASKA_PROJECT_ID = "2e74e49f-0f29-4e03-b4ec-adc4dbf2382e";
 /** TAS-100, which the seed never holds: the one notification about a deleted issue names it. */
@@ -163,6 +177,64 @@ const OPS_PROJECT_ID = "64d70a2b-72b0-4866-bdbf-4f71a416f9e4";
 // Mirrors how RestTaskaApi keeps its tokens in localStorage, so a reload behaves
 // the same in both modes: the id of the signed-in user, nothing secret.
 const SESSION_KEY = "taska.mockSession";
+
+/**
+ * The raw invitation tokens this store seeds, by whose they are — what an
+ * emailed link would carry after `?token=` (auth-service mints 32 random bytes
+ * as unpadded base64url, 43 characters, and stores only their hash). Exported
+ * for the tests and the e2e suite, which have no inbox to read them from: the
+ * server never returns a token, and neither does this store's `inviteUser`.
+ *
+ * Leo's works until a week after it was made; Ivy's ran out two days ago, so
+ * accepting it is the 401 "Invalid or expired token".
+ */
+export const MOCK_INVITE_TOKENS = {
+  leo: "Lk3vQ9xW2mTz8RbN4cYp7HfJ1sDg6EaU5oKiVwXqZrM",
+  ivy: "Iv7yPq2Wd9Lm4Xs8Tb1Nc6Hf3Rg5Ja0Ku2Ze7Oy9Qvw",
+} as const;
+
+/**
+ * `jwt.invite-token-ttl` and `invitation.resend-cooldown`, both at auth-service's
+ * defaults (7d and 1m, develop `e8a8d316b326`). Copied rather than chosen: the
+ * deadline is the whole content of the sentence an invitation is confirmed
+ * with, and the minute is what a 429 counts down from.
+ */
+const INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const INVITE_RESEND_COOLDOWN_MS = 60 * 1000;
+
+/**
+ * One invitation link as auth-service's `invite_tokens` row holds it, with the
+ * raw token where the server keeps a hash. `usedAt` is set both by a
+ * successful activation and by a newer invitation revoking it
+ * (`revokeUnusedForUser` writes the same column), which is why the server — and
+ * this store — cannot tell "used" from "replaced" afterwards, and the 401 says
+ * neither.
+ */
+interface MockInviteToken {
+  token: string;
+  userId: string;
+  createdAt: number;
+  expiresAt: number;
+  usedAt: number | null;
+}
+
+/** `Character.isISOControl` — C0, DEL and C1 — which both directory checks refuse. */
+const hasIsoControl = (value: string): boolean =>
+  [...value].some((char) => {
+    const code = char.codePointAt(0) ?? 0;
+    return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+  });
+
+/**
+ * A rough reading of Hibernate Validator's `@Email`, which auth-service's
+ * `DirectoryInput.email` applies to the trimmed, lower-cased address: dotted
+ * atoms, one `@`, dotted domain labels — a domain without a dot passes, as it
+ * does there. **Read off the validator's documented grammar, not measured**;
+ * an address it and the server judge differently is possible, and the server
+ * is the judge.
+ */
+const MOCK_EMAIL_PATTERN =
+  /^[a-z0-9!#$%&'*+/=?^_`{|}~\u0080-\uffff-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~\u0080-\uffff-]+)*@[a-z0-9\u0080-\uffff](?:[a-z0-9\u0080-\uffff-]*[a-z0-9\u0080-\uffff])?(?:\.[a-z0-9\u0080-\uffff](?:[a-z0-9\u0080-\uffff-]*[a-z0-9\u0080-\uffff])?)*$/u;
 
 /**
  * What this store says when a project write states a colour the contract's
@@ -204,70 +276,76 @@ const IN_REVIEW_STATUS_ID = "45454545-4545-4545-4545-454545454545";
 const EPIC_WORKFLOW_ID = "12121212-1212-1212-1212-121212121212";
 
 /**
- * `GET /meta` as the stand answers it (backend `MetaServiceImpl`, TAS-217, with
- * backend PR #200's enums; probed 2026-10-19 at develop `398285cde074`): every
- * code of the contract's five enums in the contract's order, each named in
- * Russian — twenty-three notification types ending in the `UNKNOWN`
- * placeholder, and five user statuses ending in `UNSPECIFIED` — plus two codes
- * this build does not know, so the frontend's answer to a value the backend
- * adds before the frontend ships can be clicked through (TAS-173): `EPIC`,
- * named in English, which the UI prints as "Epic", and `URGENT`, named in
- * Russian, which it prints as the code. Both are real values in this store —
- * WEB allows epics, and a listed priority is accepted — which is what a
- * backend that served them would do.
+ * One `GET /meta` pair as the gateway serialises it: `selectable` is on every
+ * pair, `true` by the generated DTO's default and `false` only where
+ * `MetaServiceImpl` says so.
+ */
+const pair = (code: string, name: string, selectable = true): DictionaryEntry => ({ code, name, selectable });
+
+/**
+ * `GET /meta` as the stand answers it since backend #201 (TAS-264, develop
+ * `e8a8d316b326`, `MetaServiceImpl`): every code of the contract's enums in the
+ * contract's order, each named in English, each with `selectable` — `false` for
+ * the four placeholders, `UNKNOWN`, `UNSPECIFIED`,
+ * `ISSUE_LINK_VIEW_TYPE_UNSPECIFIED` and `UNRECOGNIZED`. Plus two codes this
+ * build does not know, so the frontend's answer to a value the backend adds
+ * before the frontend ships can be clicked through (TAS-173): `EPIC`, named in
+ * English, which the UI prints as "Epic", and `URGENT`, named in Russian, which
+ * it prints as the code. That one is the e2e witness of the Cyrillic check
+ * DESIGN.md §6 keeps for good: the stand no longer sends a Russian name, and
+ * the guard is only seen working if something here still does. Both are real
+ * values in this store — WEB allows epics, and a listed priority is accepted —
+ * which is what a backend that served them would do.
  *
- * The two placeholders are listed as ordinary entries because the stand lists
- * them so; no picker offers one (`selectableCodes` in src/lib/enumLabel.ts).
+ * `linkViewTypes` is spelled as the wire spells it, prefix and placeholders
+ * included, and `getMeta` reads it back through the rest leg's own reading
+ * (`toViewLinkType`, src/api/linkViewTypes.ts) — so the mock and the rest leg
+ * hand the client the same stripped codes for the same answer.
  */
 const META: EnumDictionaries = {
-  issueTypes: [
-    { code: "TASK", name: "Задача" },
-    { code: "BUG", name: "Ошибка" },
-    { code: "STORY", name: "История" },
-    { code: "EPIC", name: "Epic" },
-  ],
-  priorities: [
-    { code: "LOW", name: "Низкий" },
-    { code: "MEDIUM", name: "Средний" },
-    { code: "HIGH", name: "Высокий" },
-    { code: "URGENT", name: "Срочный" },
-  ],
-  linkTypes: [
-    { code: "BLOCKS", name: "Блокирует" },
-    { code: "RELATES_TO", name: "Связана с" },
-    { code: "DUPLICATES", name: "Дублирует" },
+  issueTypes: [pair("TASK", "Task"), pair("BUG", "Bug"), pair("STORY", "Story"), pair("EPIC", "Epic")],
+  priorities: [pair("LOW", "Low"), pair("MEDIUM", "Medium"), pair("HIGH", "High"), pair("URGENT", "Срочный")],
+  linkTypes: [pair("BLOCKS", "Blocks"), pair("RELATES_TO", "Relates to"), pair("DUPLICATES", "Duplicates")],
+  linkViewTypes: [
+    pair("ISSUE_LINK_VIEW_TYPE_UNSPECIFIED", "Unspecified", false),
+    pair("ISSUE_LINK_VIEW_TYPE_RELATES_TO", "Relates to"),
+    pair("ISSUE_LINK_VIEW_TYPE_BLOCKS", "Blocks"),
+    pair("ISSUE_LINK_VIEW_TYPE_IS_BLOCKED_BY", "Is blocked by"),
+    pair("ISSUE_LINK_VIEW_TYPE_DUPLICATES", "Duplicates"),
+    pair("ISSUE_LINK_VIEW_TYPE_IS_DUPLICATED_BY", "Is duplicated by"),
+    pair("UNRECOGNIZED", "Unrecognized", false),
   ],
   notificationTypes: [
-    { code: "ISSUE_ASSIGNED", name: "Назначена задача" },
-    { code: "ISSUE_TRANSITIONED", name: "Сменился статус" },
-    { code: "ISSUE_CREATED", name: "Создана задача" },
-    { code: "ISSUE_UPDATED", name: "Изменена задача" },
-    { code: "ISSUE_DELETED", name: "Удалена задача" },
-    { code: "USER_INVITED", name: "Приглашён пользователь" },
-    { code: "USER_ACTIVATED", name: "Активирован пользователь" },
-    { code: "PROJECT_CREATED", name: "Создан проект" },
-    { code: "MEMBER_ADDED", name: "Добавлен участник" },
-    { code: "MEMBER_UPDATED", name: "Изменена роль участника" },
-    { code: "MEMBER_REMOVED", name: "Удалён участник" },
-    { code: "ISSUE_LINK_CREATED", name: "Создана связь задач" },
-    { code: "ISSUE_LINK_DELETED", name: "Удалена связь задач" },
-    { code: "LABEL_ADDED", name: "Добавлена метка" },
-    { code: "LABEL_REMOVED", name: "Удалена метка" },
-    { code: "USER_BLOCKED", name: "Заблокирован пользователь" },
-    { code: "USER_UNBLOCKED", name: "Разблокирован пользователь" },
-    { code: "ISSUE_COMMENT_CREATED", name: "Добавлен комментарий" },
-    { code: "ISSUE_COMMENT_UPDATED", name: "Изменён комментарий" },
-    { code: "ISSUE_COMMENT_DELETED", name: "Удалён комментарий" },
-    { code: "ISSUE_ATTACHMENT_ADDED", name: "Добавлено вложение" },
-    { code: "ISSUE_ATTACHMENT_DELETED", name: "Удалено вложение" },
-    { code: "UNKNOWN", name: "Неизвестный тип" },
+    pair("ISSUE_ASSIGNED", "Issue assigned"),
+    pair("ISSUE_TRANSITIONED", "Issue status changed"),
+    pair("ISSUE_CREATED", "Issue created"),
+    pair("ISSUE_UPDATED", "Issue updated"),
+    pair("ISSUE_DELETED", "Issue deleted"),
+    pair("USER_INVITED", "User invited"),
+    pair("USER_ACTIVATED", "User activated"),
+    pair("PROJECT_CREATED", "Project created"),
+    pair("MEMBER_ADDED", "Member added"),
+    pair("MEMBER_UPDATED", "Member role changed"),
+    pair("MEMBER_REMOVED", "Member removed"),
+    pair("ISSUE_LINK_CREATED", "Issue link created"),
+    pair("ISSUE_LINK_DELETED", "Issue link deleted"),
+    pair("LABEL_ADDED", "Label added"),
+    pair("LABEL_REMOVED", "Label removed"),
+    pair("USER_BLOCKED", "User blocked"),
+    pair("USER_UNBLOCKED", "User unblocked"),
+    pair("ISSUE_COMMENT_CREATED", "Issue comment created"),
+    pair("ISSUE_COMMENT_UPDATED", "Issue comment updated"),
+    pair("ISSUE_COMMENT_DELETED", "Issue comment deleted"),
+    pair("ISSUE_ATTACHMENT_ADDED", "Issue attachment added"),
+    pair("ISSUE_ATTACHMENT_DELETED", "Issue attachment deleted"),
+    pair("UNKNOWN", "Unknown", false),
   ],
   userStatuses: [
-    { code: "INVITED", name: "Приглашён" },
-    { code: "ACTIVE", name: "Активен" },
-    { code: "BLOCKED", name: "Заблокирован" },
-    { code: "LOCKED", name: "Залочен" },
-    { code: "UNSPECIFIED", name: "Не указан" },
+    pair("INVITED", "Invited"),
+    pair("ACTIVE", "Active"),
+    pair("BLOCKED", "Blocked"),
+    pair("LOCKED", "Locked"),
+    pair("UNSPECIFIED", "Unspecified", false),
   ],
 };
 
@@ -561,6 +639,35 @@ const makeId = (prefix: string) => {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
+/** The accounts `GET /users` lists (`UserRepository.searchDirectory`): never a `BLOCKED` one. */
+const DIRECTORY_STATUSES: ReadonlySet<string> = new Set(["ACTIVE", "INVITED", "LOCKED"]);
+
+/** A fresh link token in the shape auth-service mints: 32 random bytes, unpadded base64url. */
+const mockInviteToken = (): string => {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+/**
+ * auth-service's `PasswordValidator` at its default policy (min 8 and max 128
+ * code points, at most 72 UTF-8 bytes, an upper-case letter, a digit and a
+ * character that is neither a letter, a digit nor whitespace), in its order and
+ * its words — or `null` for a password it accepts. `\p{Lu}` and `\p{Nd}` stand
+ * in for Java's `isUpperCase` and `isDigit`; they agree on every character a
+ * person types.
+ */
+function passwordPolicyRefusal(password: unknown): string | null {
+  if (typeof password !== "string" || password.trim() === "") return "Password is required";
+  const length = [...password].length;
+  if (length < 8 || length > 128) return "Password must be at least 8 characters and not exceed 128 characters";
+  if (new TextEncoder().encode(password).length > 72) return "Password exceeds the BCrypt limit of 72 UTF-8 bytes";
+  if (!/\p{Lu}/u.test(password)) return "Password must have at least 1 upper character";
+  if (!/\p{Nd}/u.test(password)) return "Password must have at least 1 digit character";
+  if (![...password].some((char) => !/[\p{L}\p{Nd}\s]/u.test(char))) return "Password must have at least 1 special character";
+  return null;
+}
+
 /**
  * A canonical lowercase UUID **always** — what Java's `UUID.randomUUID()`
  * prints — for the one place a check reads the shape back: an avatar key
@@ -732,14 +839,17 @@ const BOARD_INCONSISTENT_STATE_CODE = "INTERNAL_SERVER_ERROR";
 const BOARD_INCONSISTENT_STATE_MESSAGE = "Inconsistent state: issues found with statuses not present in workflow";
 
 /**
- * The status key `includeDone` excludes, verbatim from
- * `IssueRepositoryImpl.boardFilterConditions`, which adds
- * `new BoardFilterCondition("status_key", "excludedStatusKey", NOT_EQUALS,
- * "DONE")` when the flag is off. The server keys this on the status key and
- * never on the column's `category`, so a workflow with a `DONE`-category column
- * keyed `RESOLVED` keeps its cards.
+ * The category whose statuses `includeDone` off excludes — compared exactly, as
+ * `BoardServiceImpl` does (`"DONE".equals(status.getCategory())`, backend #202,
+ * TAS-241, develop `e8a8d316b326`). The gateway reads the workflow first,
+ * collects the keys of its `DONE`-category statuses and hands them to
+ * issue-service, which leaves out `status_key IN (…)`; a workflow with no such
+ * status leaves out nothing. Before #202 this was the literal key `DONE`,
+ * whatever its category — so a `DONE`-category column keyed `RESOLVED` kept its
+ * cards, and one keyed `DONE` filed elsewhere lost them. Both are now the other
+ * way round.
  */
-const BOARD_EXCLUDED_STATUS_KEY = "DONE";
+const BOARD_DONE_CATEGORY = "DONE";
 
 /**
  * The board, built the way the gateway builds it: the workflow's statuses
@@ -756,18 +866,19 @@ const BOARD_EXCLUDED_STATUS_KEY = "DONE";
  * decided here is the part the *board* owns, and the order of the two rules is
  * the backend's own, read off the source rather than inferred from a probe:
  *
- * - `includeDone` off drops every issue whose status key is the literal `DONE`
- *   (`BOARD_EXCLUDED_STATUS_KEY` above) while **keeping the column**, because
- *   the columns come from the workflow and the filter only ever sees issues.
- *   The DONE column therefore arrives either way, empty without the flag and
- *   populated with it, which is also what the deployed gateway answered on
- *   2026-09-09;
- * - **then** an issue whose status no column holds fails the whole read. That
- *   order is not this repository's choice: the exclusion is a `WHERE` clause in
- *   issue-service (`IssueRepositoryImpl.boardFilterConditions`), so a stray
- *   `DONE` issue never reaches the gateway's leftover-status check while
- *   `includeDone` is off and the gateway answers `200`. With the flag on, the
- *   issue arrives, no column holds it, and both implementations fail.
+ * - `includeDone` off drops every issue whose status key the workflow files
+ *   under the `DONE` category (`BOARD_DONE_CATEGORY` above) while **keeping
+ *   the column**, because the columns come from the workflow and the filter
+ *   only ever sees issues. A done column therefore arrives either way, empty
+ *   without the flag and populated with it, which is also what the deployed
+ *   gateway answered on 2026-09-09;
+ * - **then** an issue whose status no column holds fails the whole read. The
+ *   exclusion is a `WHERE` clause in issue-service built from the workflow's
+ *   own keys, so a stray issue in a status the workflow does not list is never
+ *   among the excluded — whatever its key is called, `DONE` included — and it
+ *   reaches the gateway's leftover-status check with the flag on or off. Until
+ *   backend #202 a stray keyed `DONE` slipped past with the flag off; it no
+ *   longer does.
  */
 export function buildMockBoard(
   projectId: string,
@@ -785,13 +896,16 @@ export function buildMockBoard(
       issues: [],
     }));
   const byStatusKey = new Map(columns.map((column) => [column.statusKey, column]));
+  const doneStatusKeys = new Set(
+    workflow.statuses.filter((status) => status.category === BOARD_DONE_CATEGORY).map((status) => status.statusKey),
+  );
 
   for (const issue of issues) {
     // Before the lookup, and on the issue's own status key, because that is
-    // where the server does it: `includeDone` is a `status_key <> 'DONE'` in
-    // issue-service, applied to the rows the board is built from rather than to
-    // the columns it is built into.
-    if (!params.includeDone && issue.status === BOARD_EXCLUDED_STATUS_KEY) continue;
+    // where the server does it: `includeDone` is a `status_key NOT IN (the
+    // workflow's DONE-category keys)` in issue-service, applied to the rows the
+    // board is built from rather than to the columns it is built into.
+    if (!params.includeDone && doneStatusKeys.has(issue.status)) continue;
     const column = byStatusKey.get(issue.status);
     if (!column) {
       throw new MockApiError(BOARD_INCONSISTENT_STATE_CODE, BOARD_INCONSISTENT_STATE_MESSAGE);
@@ -1449,6 +1563,8 @@ export class MockTaskaStore {
    * that is reading them.
    */
   private outboxEvents: Record<string, AdminRow[]> | null = null;
+  /** Every invitation link ever made, newest last — auth-service's `invite_tokens`. */
+  private inviteTokens: MockInviteToken[];
   private currentUserId = ANNA_ID;
 
   constructor() {
@@ -1584,6 +1700,23 @@ export class MockTaskaStore {
         status: "LOCKED",
         globalRole: "USER",
       },
+      // Invited and never activated, whose link has expired (TAS-297). The
+      // login is the shape auth-service gives an invited account
+      // (`"invited_" + UUID.randomUUID()`), which Leo predates.
+      {
+        id: IVY_ID,
+        login: "invited_5b2e8d14-7a03-4c69-b1f5-2e9d0a7c4f38",
+        email: "ivy@example.com",
+        displayName: "Ivy Chen",
+        status: "INVITED",
+        globalRole: "USER",
+      },
+    ];
+    const seededAt = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    this.inviteTokens = [
+      { token: MOCK_INVITE_TOKENS.leo, userId: LEO_ID, createdAt: seededAt - 2 * day, expiresAt: seededAt - 2 * day + INVITE_TOKEN_TTL_MS, usedAt: null },
+      { token: MOCK_INVITE_TOKENS.ivy, userId: IVY_ID, createdAt: seededAt - 9 * day, expiresAt: seededAt - 9 * day + INVITE_TOKEN_TTL_MS, usedAt: null },
     ];
 
     /**
@@ -2320,8 +2453,188 @@ export class MockTaskaStore {
     };
   }
 
-  acceptInvitation(_input: AcceptInvitationInput): void {
-    this.currentUserId = ANNA_ID;
+  /**
+   * `POST /auth/invitations/accept`, in `AuthServiceImpl.setPasswordByToken`'s
+   * order (develop `e8a8d316b326`): the token present, the password policy, the
+   * token's length, then one 401 for every way the link can fail to be live.
+   * The password is checked before the token is looked up, which is why a weak
+   * one does not spend the link.
+   *
+   * No session is opened, and the signed-in reader — if any — is not touched:
+   * the route answers 204 with no tokens, and the client signs in afterwards.
+   * This store never checks a password at sign-in, so the activated account
+   * then signs in with any.
+   */
+  acceptInvitation(input: AcceptInvitationInput): void {
+    const { token, newPassword } = input;
+    if (typeof token !== "string" || token.trim() === "") {
+      throw new MockApiError("INVALID_ARGUMENT", "Token required");
+    }
+    const policy = passwordPolicyRefusal(newPassword);
+    if (policy) throw new MockApiError("INVALID_ARGUMENT", policy);
+    if (token.length > 256) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invite token is too long");
+    }
+    const found = this.inviteTokens.find((item) => item.token === token);
+    const user = found ? this.users.find((item) => item.id === found.userId) : undefined;
+    if (!found || user?.status !== "INVITED" || found.usedAt !== null || found.expiresAt <= Date.now()) {
+      throw new MockApiError("UNAUTHENTICATED", "Invalid or expired token");
+    }
+    found.usedAt = Date.now();
+    user.status = "ACTIVE";
+  }
+
+  /**
+   * `GET /users` (backend #204), checked in the order the request meets the
+   * checks: the gateway binds the raw parameters against the contract first,
+   * before authentication — "Invalid request parameters" for a query under 3
+   * or over 100 UTF-16 characters and a page or size out of range — and then
+   * auth-service measures the *trimmed* query in code points and refuses it
+   * in its own sentence. "  ab " passes the first and fails the second.
+   *
+   * The rest is `UserRepository.searchDirectory`: `ACTIVE`, `INVITED` and
+   * `LOCKED` accounts, a substring of the lower-cased display name or email,
+   * ordered `lower(display_name), lower(email), id` — compared here with `<`
+   * on the lower-cased strings rather than `localeCompare`, because the
+   * database's collation is not stated anywhere this build can read — and
+   * `pageSize + 1` rows, so `hasMore` is whether the extra one came back.
+   * `%`, `_` and `!` are escaped there and literal here by construction.
+   */
+  searchUsers(params: SearchUsersParams): DirectoryPage {
+    const { query, page = 0, pageSize = 20 } = params;
+    if (
+      typeof query !== "string" ||
+      query.length < 3 ||
+      query.length > 100 ||
+      !Number.isInteger(page) ||
+      page < 0 ||
+      page > 1000 ||
+      !Number.isInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 50
+    ) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    const needle = query.trim().toLowerCase();
+    const length = [...needle].length;
+    if (length < 3 || length > 100 || hasIsoControl(needle)) {
+      throw new MockApiError("INVALID_ARGUMENT", DIRECTORY_QUERY_REFUSAL_MESSAGE);
+    }
+    const rows = this.users
+      .filter(
+        (user) =>
+          DIRECTORY_STATUSES.has(user.status) &&
+          (user.displayName.toLowerCase().includes(needle) || user.email.toLowerCase().includes(needle)),
+      )
+      .sort(
+        (left, right) =>
+          byText(left.displayName.toLowerCase(), right.displayName.toLowerCase()) ||
+          byText(left.email.toLowerCase(), right.email.toLowerCase()) ||
+          byText(left.id, right.id),
+      )
+      .slice(page * pageSize, page * pageSize + pageSize + 1);
+    return {
+      items: rows.slice(0, pageSize).map((user) => {
+        const avatar = this.avatars.get(user.id);
+        return {
+          id: user.id,
+          displayName: user.displayName,
+          email: user.email,
+          avatarUrl: avatar && this.avatarObjects.has(avatar.objectKey) ? avatar.downloadUrl : null,
+        };
+      }),
+      hasMore: rows.length > pageSize,
+    };
+  }
+
+  /**
+   * `POST /auth/invitations` (backend #204), in the order the request meets the
+   * checks: the gateway's `GLOBAL_ADMIN_REQUIRED` (403 "User doesn't have
+   * permission"), then its binding of the body against the contract (400
+   * "Invalid request parameters" for a missing email, one over 320 characters
+   * or a name over 128), then `AdminInviteUserServiceImpl` — the address
+   * trimmed and lower-cased and refused in its own sentence, the name likewise,
+   * and then what the address already belongs to. Every branch and sentence is
+   * that service's; see `TaskaApi.inviteUser` for the table.
+   *
+   * The new link is never returned, as the server never returns it: the only
+   * tokens anybody can accept here are the seeded ones (`MOCK_INVITE_TOKENS`).
+   */
+  inviteUser(input: InviteUserInput): InvitationResult {
+    if (this.currentUser().globalRole !== "GLOBAL_ADMIN") {
+      throw new MockApiError("PERMISSION_DENIED", "User doesn't have permission");
+    }
+    const { email: rawEmail, displayName: rawName, resend = false } = input;
+    if (
+      typeof rawEmail !== "string" ||
+      rawEmail.length > INVITE_EMAIL_MAX_LENGTH ||
+      (typeof rawName === "string" && rawName.length > INVITE_DISPLAY_NAME_MAX_LENGTH)
+    ) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    const email = rawEmail.trim().toLowerCase();
+    if (email === "" || email.length > INVITE_EMAIL_MAX_LENGTH || !MOCK_EMAIL_PATTERN.test(email)) {
+      throw new MockApiError("INVALID_ARGUMENT", "A valid email address is required (maximum 320 characters)");
+    }
+    const name = typeof rawName !== "string" || rawName.trim() === "" ? email.slice(0, email.indexOf("@")) : rawName.trim();
+    if ([...name].length > INVITE_DISPLAY_NAME_MAX_LENGTH || hasIsoControl(name)) {
+      throw new MockApiError(
+        "INVALID_ARGUMENT",
+        "Display name must contain at most 128 characters and no control characters",
+      );
+    }
+
+    const existing = this.users.find((user) => user.email.trim().toLowerCase() === email);
+    if (!existing) {
+      const user: StoredUser = {
+        id: mockUuid(),
+        login: `invited_${mockUuid()}`,
+        email,
+        displayName: name,
+        status: "INVITED",
+        globalRole: "USER",
+      };
+      this.users.push(user);
+      return this.queueInvitation(user, true);
+    }
+    if (existing.status !== "INVITED") {
+      // Whatever the status — ACTIVE, LOCKED or BLOCKED — and nothing about the
+      // account changes: an invitation is not a password reset.
+      throw new MockApiError("ALREADY_EXISTS", "An account with this email already exists");
+    }
+    const latest = this.inviteTokens.filter((item) => item.userId === existing.id).at(-1);
+    if (latest) {
+      const valid = latest.usedAt === null && latest.expiresAt > Date.now();
+      if (!resend && valid) {
+        return this.invitationResult(existing, false, false, latest.expiresAt);
+      }
+      // From the last link's *making*, whatever became of it since: a resend a
+      // moment after a resend is refused even though the first is now dead.
+      const allowedAt = latest.createdAt + INVITE_RESEND_COOLDOWN_MS;
+      if (Date.now() < allowedAt) {
+        const seconds = Math.max(1, Math.floor((allowedAt - Date.now()) / 1000) + 1);
+        throw new MockApiError("RESOURCE_EXHAUSTED", "Invitation was sent recently; try again later", {
+          retryAfterSeconds: String(seconds),
+        });
+      }
+    }
+    return this.queueInvitation(existing, false);
+  }
+
+  /** Revoke every live link of this account, make a new one, and say it is queued. */
+  private queueInvitation(user: StoredUser, created: boolean): InvitationResult {
+    const madeAt = Date.now();
+    for (const item of this.inviteTokens) {
+      if (item.userId === user.id && item.usedAt === null) item.usedAt = madeAt;
+    }
+    const token = { token: mockInviteToken(), userId: user.id, createdAt: madeAt, expiresAt: madeAt + INVITE_TOKEN_TTL_MS, usedAt: null };
+    this.inviteTokens.push(token);
+    return this.invitationResult(user, created, true, token.expiresAt);
+  }
+
+  private invitationResult(user: StoredUser, created: boolean, deliveryQueued: boolean, expiresAt: number): InvitationResult {
+    // `INVITED` whatever the account is — the gateway's client hard-codes it.
+    return { userId: user.id, status: "INVITED", deliveryQueued, expiresAt: new Date(expiresAt).toISOString(), created };
   }
 
   /**
@@ -2696,6 +3009,11 @@ export class MockTaskaStore {
       issueTypes: copy(META.issueTypes),
       priorities: copy(META.priorities),
       linkTypes: copy(META.linkTypes),
+      // Read the way the rest leg reads the wire: prefix off, placeholders out.
+      linkViewTypes:
+        META.linkViewTypes
+          ?.map((entry) => ({ ...entry, code: toViewLinkType(entry.code) }))
+          .filter((entry) => entry.code !== "") ?? null,
       notificationTypes: copy(META.notificationTypes),
       userStatuses: copy(META.userStatuses),
     };
@@ -5262,7 +5580,9 @@ export class MockTaskaStore {
         // against a real database.
         failed_logins: index * 5,
         email_verified: index % 2 === 0,
-        created_at: `2026-06-0${index + 1}T09:00:00Z`,
+        // Two digits, so an account the invitation flow appends past the
+        // ninth row still reads as a date.
+        created_at: `2026-06-${String(index + 1).padStart(2, "0")}T09:00:00Z`,
       }));
     }
 
@@ -5888,13 +6208,20 @@ export class MockTaskaApi implements TaskaApi {
   }
 
   // No session is opened here, on purpose: `POST /auth/invitations/accept`
-  // answers 204 with no tokens, so `rest` cannot produce one either and the two
-  // modes would disagree about whether an activated user is signed in. How an
-  // activated user *does* get a session is a hole in the contract — recorded in
-  // docs/ai/API-DIVERGENCE.md.
+  // answers 204 with no tokens, so `rest` cannot produce one either. The
+  // contract says how an activated user gets one since backend #204 — an
+  // ordinary sign-in afterwards — and the login screen does exactly that.
   async acceptInvitation(input: AcceptInvitationInput): Promise<void> {
     this.store.acceptInvitation(input);
     await wait(null);
+  }
+
+  async searchUsers(params: SearchUsersParams): Promise<DirectoryPage> {
+    return wait(this.store.searchUsers(params));
+  }
+
+  async inviteUser(input: InviteUserInput): Promise<InvitationResult> {
+    return wait(this.store.inviteUser(input));
   }
 
   async refresh(_refreshToken: string): Promise<AuthTokens> {

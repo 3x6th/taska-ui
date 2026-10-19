@@ -71,8 +71,20 @@ export type UserStatusCode = UserStatus | (string & {});
 /** One `code`/`name` pair of a `GET /meta` dictionary (`MetaResponseDto`, backend TAS-217). */
 export interface DictionaryEntry {
   code: string;
-  /** What the server calls the value. Russian on the stand today, so not printed as-is (`isEnglishName`). */
+  /**
+   * What the server calls the value — in English since backend #201 (TAS-264,
+   * develop `e8a8d316b326`). Still printed only through `isEnglishName`
+   * (src/lib/enumLabel.ts), whose Cyrillic check stays for good (DESIGN.md §6).
+   */
   name: string;
+  /**
+   * Whether a picker may offer it (backend #201). The server sends `false` for
+   * its placeholders — `UNKNOWN`, `UNSPECIFIED`, `ISSUE_LINK_VIEW_TYPE_UNSPECIFIED`
+   * and `UNRECOGNIZED` — and the contract's default is `true`, so anything but
+   * an explicit `false` reads as `true`. A rule about pickers, not about how a
+   * value is read: an `UNSPECIFIED` status is still read as no status.
+   */
+  selectable: boolean;
 }
 
 /**
@@ -86,7 +98,16 @@ export interface DictionaryEntry {
 export interface EnumDictionaries {
   issueTypes: DictionaryEntry[] | null;
   priorities: DictionaryEntry[] | null;
+  /** The relations a *request* may ask for — what the link picker offers. */
   linkTypes: DictionaryEntry[] | null;
+  /**
+   * The relations a link *row* can show, inverses included (backend #201). Keyed
+   * by the stripped code `IssueLink.viewLinkType` carries (`BLOCKS`,
+   * `IS_BLOCKED_BY`), not by the wire's prefixed one: the rest leg strips the
+   * prefix from both and drops the two placeholders, so stripped meets
+   * stripped. Not in the contract's `required`, so `null` is a real answer.
+   */
+  linkViewTypes: DictionaryEntry[] | null;
   notificationTypes: DictionaryEntry[] | null;
   userStatuses: DictionaryEntry[] | null;
 }
@@ -283,6 +304,55 @@ export interface UserStatusChange {
   previousStatus: UserStatus;
   currentStatus: UserStatus;
   changedAt: string;
+}
+
+/**
+ * One person as the people directory names them — `DirectoryUserDto`, the row
+ * of `GET /users` (backend #204, TAS-204). Not a `User`: there is no status,
+ * no login and no role on the wire, by the route's own description ("Поиск не
+ * предоставляет доступа к проектам, ролям, токенам и credentials").
+ *
+ * `avatarUrl` is a presigned link, or `null` both when there is no avatar and
+ * when auth-service could not sign one within its 250 ms budget — the route
+ * says the two apart nowhere, so neither does this.
+ */
+export interface DirectoryUser {
+  id: string;
+  displayName: string;
+  email: string;
+  avatarUrl: string | null;
+}
+
+/**
+ * One page of the directory — `UserDirectoryResponseDto`. Deliberately not a
+ * `Page<T>`: the server sends no total and no page echo, only whether another
+ * page exists (it reads one row past the page to know), so a total here would
+ * be invented.
+ */
+export interface DirectoryPage {
+  items: DirectoryUser[];
+  hasMore: boolean;
+}
+
+/**
+ * What `POST /auth/invitations` answers — `InvitationResponseDto` plus the one
+ * fact the body does not carry: whether the account was made by this call,
+ * which the gateway states only as the HTTP status (201 new, 200 already
+ * invited).
+ *
+ * `deliveryQueued` is a durable queue write, not a delivery — the contract says
+ * so ("а не подтверждение доставки SMTP") — and `false` means nothing was
+ * queued because the current link is still valid. `expiresAt` is that link's
+ * deadline; the token itself never leaves the server. `status` is hard-coded
+ * `INVITED` by the gateway's client, read through the same rule as every other
+ * status.
+ */
+export interface InvitationResult {
+  userId: string;
+  status: UserStatusCode | null;
+  deliveryQueued: boolean;
+  expiresAt: string;
+  created: boolean;
 }
 
 /**
@@ -851,8 +921,10 @@ export interface BoardColumn {
  * `issueType` is the echo of what the caller asked for: the route requires the
  * parameter, so a board is always about exactly one type and there is no "all".
  *
- * The `includeDone` filter drops *issues*, never columns: without it the DONE
- * column still arrives, carrying an empty `issues` array.
+ * The `includeDone` filter drops *issues*, never columns: without it every
+ * column of the workflow's `DONE` category still arrives, carrying an empty
+ * `issues` array. Which statuses count as done is the workflow's `category`
+ * since backend #202 (TAS-241), not the literal key `DONE`.
  */
 export interface Board {
   projectId: string;

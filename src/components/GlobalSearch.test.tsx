@@ -64,8 +64,10 @@ const { fakeApi, seedHits, failSearch, holdSearch, projectReads, reset } = vi.ho
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
-    // `GET /meta` (TAS-173): the stand's Russian names, plus an English one for
-    // a type this build does not know — what a hit of that type is called.
+    // `GET /meta` (TAS-173): Russian names, as the stand answered before
+    // backend #201 and as the permanent Cyrillic check still has to handle,
+    // plus an English one for a type this build does not know — what a hit of
+    // that type is called.
     getMeta: async () => ({
       issueTypes: [
         { code: "TASK", name: "Задача" },

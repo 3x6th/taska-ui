@@ -834,10 +834,13 @@ time.
   does work, so this is a wrong instruction rather than a dead end — but it is
   worse than silence. Either register a `KeyboardSensor` or supply
   `screenReaderInstructions` that describe the transition buttons instead.
-- **§5.7 says a `VIEWER` gets `readOnly` fields; the code gives them
-  `disabled` ones.** A viewer therefore cannot select or copy an issue's
-  summary or description — `disabled` removes the text from reach entirely,
-  which is not what read-only means.
+- **A `VIEWER`'s summary and description are `disabled`, not `readOnly`**
+  (`art-director`, re-measured 2026-10-19 in the TAS-236 re-verdict). §5.7 now
+  records `disabled` as what ships, so the doc and code agree; the defect is the
+  choice itself. `textarea:disabled { opacity: .58 }` puts the summary at
+  4.38:1 light (5.92 dark) and the description at 4.07:1 light (6.06 dark),
+  under §7's 4.5:1 for content, and the text cannot be selected or copied. The
+  fix is `readOnly` for a VIEWER — its own story with a §5.7 change.
 - ~~**The filter bar's "X of Y" counter clips at 390px** — measured 10.2px wide
   by 50px tall inside a 46px bar.~~ **Graduated 2026-08-23**, handed over by the
   owner from an iPhone 17 Pro Max, and fixed on
@@ -2657,13 +2660,14 @@ is what recurs.
 
 ### Left by TAS-158 (project members dialog, 2026-09-17)
 
-- **Nobody can see their own user ID anywhere in the product** (`builder`,
+- ~~**Nobody can see their own user ID anywhere in the product** (`builder`,
   TAS-158). Adding a member takes an exact ID until TAS-204 brings search, and
   today only a `GLOBAL_ADMIN` can find an ID (Administration → Data →
   auth → users). A project ADMIN who is not a global admin has to be handed the
   ID by somebody. Cheap fix: "User ID" with a copy button in the profile menu
   (§4.16). It is outside TAS-158's scope, and it matters for exactly as long as
-  the ID field does.
+  the ID field does.~~ Closed by TAS-297 (2026-10-19): the members dialog adds
+  people by searching name or email (`GET /users`); there is no ID field.
 - **Removing a member leaves their assignments and watcher subscriptions**
   (`builder`, `api-contract-guard`, TAS-158). project-service writes
   `MemberRemoved`, and only notification-service consumes it. The board then
@@ -3735,3 +3739,41 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   past the end" flaked once** (expected 2, got 999) in a full `npm run check`
   during TAS-236/259/192, with nothing under `src/screens/admin` or `src/api`
   changed; 3 of 3 alone. Watch for a repeat before chasing it.
+
+### Left by TAS-297 and TAS-208 (people search, invitations, the invitation link, 2026-10-19)
+
+Candidate backend asks recorded as "not filed" in `API-DIVERGENCE.md` (the #204
+entry), kept here so they are not lost (`api-contract-guard` F6):
+- **Password refusals with a field pointer and a policy readable without a
+  session** — `details {field, rule, min, max}` on the accept 400s with blank
+  judged by `PasswordValidator`, and the policy behind a PUBLIC route or an
+  invitation preview `GET /auth/invitations/{token}` (not `/meta`: it needs a
+  session the invitee does not have); removes the prose-keyed `aria-invalid`
+  and the hard-coded hint.
+- **`Retry-After` readable by the browser** — expose it in CORS, or name
+  `details.retryAfterSeconds` in the contract.
+- **One check for the `/users` query** — the edge (raw) and auth-service
+  (trimmed code points) answer a short query with two different sentences.
+- **The directory row's avatar shape** — `AvatarDto` or an unavailable flag
+  instead of a flat nullable `avatarUrl`.
+- **The invitation token in a fragment** — keeps it out of the static host's
+  logs; the gateway refuses a fragment in the accept URL today.
+- **A password reset** — the owner's call; tokens and the mail queue exist.
+- **A 409 on invite that names the account's status** (`details.status`) — the
+  client words it neutrally meanwhile (`api-contract-guard` F2).
+
+Frontend notes:
+- **The sign-in tab's submit is `disabled`, not `aria-disabled`, and its
+  password field has no show-password toggle** (`art-director` N4, pre-build
+  note) — focus drops to `<body>` while signing in. Outside TAS-208; take with
+  the next sign-in change.
+- **The mock draws one person in two avatar colours** in the members dialog
+  (search row vs member row) (`art-director` N2) — mock seed only.
+- **A blank New password reaches the wire, and the mock answers it differently**
+  (`api-contract-guard` re-verdict N1). The stand's gRPC transport refuses it
+  as "body.newPassword must not be blank" (no `aria-invalid`, since the marker
+  keys on "Password"); the mock says the service's "Password is required" and
+  marks the field. Fix: mock uses the transport's words for blank token and
+  password, `isPasswordRefusal` also matches `body.newPassword`, and the
+  LoginScreen comment's count ("the policy's four … the token's two") is
+  corrected — or the form refuses a blank password before sending.

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, RestTaskaApi } from "./RestTaskaApi";
-import { UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
+import { DIRECTORY_QUERY_REFUSAL_MESSAGE, UNDEPLOYED_ROUTE_MESSAGE } from "../TaskaApi";
 import { ATTACHMENT_MAX_SIZE_BYTES, attachmentSizeRefusalMessage } from "../attachments";
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES } from "../avatars";
 import { ObjectStoreError } from "../objectStore";
@@ -427,21 +427,60 @@ describe("RestTaskaApi dictionaries", () => {
 
   it("maps every dictionary and keeps codes this build does not know", async () => {
     const { result, fetchStub } = await getMetaWith(200, {
-      issueTypes: [{ code: "TASK", name: "Задача" }, { code: "EPIC", name: "Epic" }],
+      issueTypes: [{ code: "TASK", name: "Task", selectable: true }, { code: "EPIC", name: "Epic" }],
       priorities: [{ code: "URGENT", name: "Срочный" }],
-      linkTypes: [{ code: "BLOCKS", name: "Блокирует" }],
-      notificationTypes: [{ code: "ISSUE_CREATED", name: "Создана задача" }],
-      userStatuses: [{ code: "ACTIVE", name: "Активен" }],
+      linkTypes: [{ code: "BLOCKS", name: "Blocks", selectable: true }],
+      notificationTypes: [{ code: "ISSUE_CREATED", name: "Issue created", selectable: true }],
+      userStatuses: [{ code: "ACTIVE", name: "Active", selectable: true }],
     });
 
     await expect(result).resolves.toEqual({
-      issueTypes: [{ code: "TASK", name: "Задача" }, { code: "EPIC", name: "Epic" }],
-      priorities: [{ code: "URGENT", name: "Срочный" }],
-      linkTypes: [{ code: "BLOCKS", name: "Блокирует" }],
-      notificationTypes: [{ code: "ISSUE_CREATED", name: "Создана задача" }],
-      userStatuses: [{ code: "ACTIVE", name: "Активен" }],
+      issueTypes: [
+        { code: "TASK", name: "Task", selectable: true },
+        { code: "EPIC", name: "Epic", selectable: true },
+      ],
+      priorities: [{ code: "URGENT", name: "Срочный", selectable: true }],
+      linkTypes: [{ code: "BLOCKS", name: "Blocks", selectable: true }],
+      linkViewTypes: null,
+      notificationTypes: [{ code: "ISSUE_CREATED", name: "Issue created", selectable: true }],
+      userStatuses: [{ code: "ACTIVE", name: "Active", selectable: true }],
     });
     expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/meta");
+  });
+
+  /**
+   * Backend #201 (develop `e8a8d316b326`): `selectable` on every pair, `false`
+   * for the placeholders and `true` by default — so its absence, on a gateway
+   * older than the PR, is `true` — and `linkViewTypes`, spelled with the
+   * gRPC prefix and its two placeholders, read the way a link row is.
+   */
+  it("reads selectable as true unless the row says false, and strips the link view types as a row's are", async () => {
+    const { result } = await getMetaWith(200, {
+      notificationTypes: [
+        { code: "ISSUE_CREATED", name: "Issue created" },
+        { code: "UNKNOWN", name: "Unknown", selectable: false },
+        { code: "MEMBER_ADDED", name: "Member added", selectable: "no" },
+      ],
+      linkViewTypes: [
+        { code: "ISSUE_LINK_VIEW_TYPE_UNSPECIFIED", name: "Unspecified", selectable: false },
+        { code: "ISSUE_LINK_VIEW_TYPE_BLOCKS", name: "Blocks", selectable: true },
+        { code: "ISSUE_LINK_VIEW_TYPE_IS_BLOCKED_BY", name: "Is blocked by", selectable: true },
+        { code: "UNRECOGNIZED", name: "Unrecognized", selectable: false },
+        { code: "SUPERSEDES", name: "Supersedes" },
+      ],
+    });
+
+    const meta = await result;
+    expect(meta.notificationTypes).toEqual([
+      { code: "ISSUE_CREATED", name: "Issue created", selectable: true },
+      { code: "UNKNOWN", name: "Unknown", selectable: false },
+      { code: "MEMBER_ADDED", name: "Member added", selectable: true },
+    ]);
+    expect(meta.linkViewTypes).toEqual([
+      { code: "BLOCKS", name: "Blocks", selectable: true },
+      { code: "IS_BLOCKED_BY", name: "Is blocked by", selectable: true },
+      { code: "SUPERSEDES", name: "Supersedes", selectable: true },
+    ]);
   });
 
   it("sends no cache mode and no conditional header of its own", async () => {
@@ -475,11 +514,12 @@ describe("RestTaskaApi dictionaries", () => {
     await expect(result).resolves.toEqual({
       issueTypes: null,
       priorities: [
-        { code: "LOW", name: "Низкий" },
-        { code: "URGENT", name: "" },
-        { code: "TRIVIAL", name: "" },
+        { code: "LOW", name: "Низкий", selectable: true },
+        { code: "URGENT", name: "", selectable: true },
+        { code: "TRIVIAL", name: "", selectable: true },
       ],
       linkTypes: null,
+      linkViewTypes: null,
       notificationTypes: null,
       userStatuses: null,
     });
@@ -491,6 +531,7 @@ describe("RestTaskaApi dictionaries", () => {
       issueTypes: null,
       priorities: null,
       linkTypes: null,
+      linkViewTypes: null,
       notificationTypes: null,
       userStatuses: null,
     });
@@ -508,6 +549,141 @@ describe("RestTaskaApi dictionaries", () => {
 
     await expect(api.getMeta()).rejects.toThrow("Access token expired");
     expect(expired).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The people directory and invitations (backend #204, TAS-204, develop
+ * `e8a8d316b326`): the query trimmed and never sent short, the page read
+ * defensively, and the one write whose HTTP status is part of the answer.
+ */
+describe("RestTaskaApi people directory and invitations", () => {
+  const answer = (status: number, body: unknown, requestId: string | null = null) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (name: string) => (name === "X-Request-Id" ? requestId : null) },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const apiAnswering = (status: number, body: unknown, requestId: string | null = null) => {
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+    const fetchStub = vi.fn(async (_input: string, _init?: RequestInit) => answer(status, body, requestId));
+    vi.stubGlobal("fetch", fetchStub);
+    return { api: new RestTaskaApi(), fetchStub };
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("searches with the trimmed query and the page it was given", async () => {
+    const { api, fetchStub } = apiAnswering(200, {
+      items: [{ id: "u-1", displayName: "Anna Ivanova", email: "anna@example.com", avatarUrl: null }],
+      hasMore: true,
+    });
+
+    await expect(api.searchUsers({ query: "  anna ", page: 1, pageSize: 20 })).resolves.toEqual({
+      items: [{ id: "u-1", displayName: "Anna Ivanova", email: "anna@example.com", avatarUrl: null }],
+      hasMore: true,
+    });
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/users?query=anna&page=1&pageSize=20");
+  });
+
+  it.each([["ab"], ["  ab  "], [""], ["👍👍"]])(
+    "never sends a query under three code points once trimmed (%j), in auth-service's own words",
+    async (query) => {
+      const { api, fetchStub } = apiAnswering(200, { items: [], hasMore: false });
+
+      await expect(api.searchUsers({ query })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        status: 400,
+        message: DIRECTORY_QUERY_REFUSAL_MESSAGE,
+      });
+      expect(fetchStub).not.toHaveBeenCalled();
+    },
+  );
+
+  it("counts code points, not UTF-16 units: three emoji are a query", async () => {
+    const { api, fetchStub } = apiAnswering(200, { items: [], hasMore: false });
+    await api.searchUsers({ query: "👍👍👍" });
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a page defensively: rows without an id dropped, a blank avatar is none, hasMore only when said", async () => {
+    const { api } = apiAnswering(200, {
+      items: [
+        { id: "u-1", displayName: "Anna", email: "anna@example.com", avatarUrl: "https://store/a.png" },
+        { displayName: "No id", email: "x@example.com" },
+        { id: "u-2", email: "bare@example.com", avatarUrl: "" },
+        null,
+      ],
+      hasMore: "yes",
+    });
+
+    await expect(api.searchUsers({ query: "example" })).resolves.toEqual({
+      items: [
+        { id: "u-1", displayName: "Anna", email: "anna@example.com", avatarUrl: "https://store/a.png" },
+        { id: "u-2", displayName: "", email: "bare@example.com", avatarUrl: null },
+      ],
+      hasMore: false,
+    });
+  });
+
+  it("reads created from the HTTP status: 201 is a new account, 200 an existing invitation", async () => {
+    const body = {
+      userId: "u-9",
+      status: "INVITED",
+      deliveryQueued: true,
+      expiresAt: "2026-10-26T19:00:00Z",
+    };
+    const created = apiAnswering(201, body);
+    await expect(created.api.inviteUser({ email: "new@example.com" })).resolves.toEqual({
+      ...body,
+      created: true,
+    });
+    const init = created.fetchStub.mock.calls[0][1];
+    expect(created.fetchStub.mock.calls[0][0]).toBe("/api/v1/auth/invitations");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ email: "new@example.com" });
+
+    const again = apiAnswering(200, { ...body, deliveryQueued: false });
+    await expect(again.api.inviteUser({ email: "new@example.com", displayName: "  ", resend: false })).resolves.toEqual({
+      ...body,
+      deliveryQueued: false,
+      created: false,
+    });
+    expect(JSON.parse(String(again.fetchStub.mock.calls[0][1]?.body))).toEqual({ email: "new@example.com" });
+  });
+
+  it("sends a name and resend only when they say something", async () => {
+    const { api, fetchStub } = apiAnswering(200, { userId: "u", status: "INVITED", deliveryQueued: true, expiresAt: "" });
+    await api.inviteUser({ email: "a@b.io", displayName: "Ann", resend: true });
+    expect(JSON.parse(String(fetchStub.mock.calls[0][1]?.body))).toEqual({ email: "a@b.io", displayName: "Ann", resend: true });
+  });
+
+  it("hands a 429's wait over from details, where a browser can read it", async () => {
+    const { api } = apiAnswering(
+      429,
+      {
+        code: "RESOURCE_EXHAUSTED",
+        message: "Invitation was sent recently; try again later",
+        details: { retryAfterSeconds: "42" },
+      },
+      "req-429",
+    );
+
+    const refusal = await api.inviteUser({ email: "a@b.io", resend: true }).catch((error: unknown) => error);
+    expect(refusal).toMatchObject({
+      status: 429,
+      code: "RESOURCE_EXHAUSTED",
+      requestId: "req-429",
+      details: { retryAfterSeconds: "42" },
+    });
   });
 });
 

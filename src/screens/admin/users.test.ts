@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../api/rest/RestTaskaApi";
+import type { InvitationResult } from "../../domain/types";
 import {
   actionAccessibleName,
   actionFor,
   actionLabels,
   globalRoleLabel,
+  inviteDeadline,
+  inviteFailure,
+  invitedStatusText,
   personLabel,
   readUserRow,
+  resentStatusText,
+  retryAfterSeconds,
+  stillInvitedText,
   targetStatus,
+  tooSoonText,
   userStatusInSentence,
   userStatusLabel,
   userWriteFailure,
@@ -94,9 +102,9 @@ describe("admin users, statuses and roles", () => {
     // profile menu: the build's word, then a served name with no Cyrillic in
     // it, then the value as it came.
     const served = [
-      { code: "QUARANTINED", name: "Quarantined" },
-      { code: "ACTIVE", name: "Активен" },
-      { code: "ARCHIVED", name: "В архиве" },
+      { code: "QUARANTINED", name: "Quarantined", selectable: true },
+      { code: "ACTIVE", name: "Активен", selectable: true },
+      { code: "ARCHIVED", name: "В архиве", selectable: true },
     ];
     expect(userStatusLabel("QUARANTINED", served)).toBe("Quarantined");
     expect(userStatusLabel("ACTIVE", served)).toBe("Active");
@@ -254,5 +262,78 @@ describe("admin users, telling one failure from another", () => {
 
     const mockRejected = Object.assign(new Error("A reason is required"), { code: "INVALID_ARGUMENT" });
     expect(userWriteFailure(mockRejected)).toBe("rejected");
+  });
+});
+
+/**
+ * The invitation's words (§5.8): the deadline in UTC, "queued" and never
+ * "sent", the 429's wait from `details` — a string on the wire — and the two
+ * refusals that are this route's own before the section's taxonomy.
+ */
+describe("invitation helpers", () => {
+  const result = (overrides: Partial<InvitationResult> = {}): InvitationResult => ({
+    userId: "u-1",
+    status: "INVITED",
+    deliveryQueued: true,
+    expiresAt: "2026-10-26T23:59:00Z",
+    created: true,
+    ...overrides,
+  });
+
+  it("prints the deadline in UTC whatever the reader's zone, and nothing for a value that is not an instant", () => {
+    expect(inviteDeadline("2026-10-26T23:59:00Z")).toBe("Oct 26, 23:59");
+    expect(inviteDeadline("2026-10-27T00:05:00+03:00")).toBe("Oct 26, 21:05");
+    expect(inviteDeadline("soon")).toBeNull();
+  });
+
+  it("says queued for a new account and for a re-issued link, and drops the clause it cannot fill", () => {
+    expect(invitedStatusText(result(), "a@b.io")).toBe(
+      "a@b.io is invited. The email is queued for sending; the link works until Oct 26, 23:59 UTC.",
+    );
+    expect(invitedStatusText(result({ created: false }), "a@b.io")).toBe(
+      "a@b.io was already invited but did not have a working link, so a new one is queued; it works until Oct 26, 23:59 UTC.",
+    );
+    expect(invitedStatusText(result({ expiresAt: "" }), "a@b.io")).toBe("a@b.io is invited. The email is queued for sending.");
+    expect(resentStatusText(result(), "Leo Fischer")).toBe(
+      "A new invitation link for Leo Fischer is queued; it works until Oct 26, 23:59 UTC.",
+    );
+    expect(stillInvitedText("2026-10-26T23:59:00Z", "a@b.io")).toBe(
+      "a@b.io is already invited and their link still works until Oct 26, 23:59 UTC, so no email was sent. If they lost it, send a new link — the old one will stop working.",
+    );
+  });
+
+  it("reads the 429's wait from details as a whole positive number, and only from there", () => {
+    const refusal = (details: Record<string, string> | null) =>
+      new ApiError("Invitation was sent recently; try again later", "RESOURCE_EXHAUSTED", 429, "req", undefined, details);
+
+    expect(retryAfterSeconds(refusal({ retryAfterSeconds: "42" }))).toBe(42);
+    const unreadable: (Record<string, string> | null)[] = [
+      null,
+      {},
+      { retryAfterSeconds: "0" },
+      { retryAfterSeconds: "4.5" },
+      { retryAfterSeconds: "soon" },
+    ];
+    for (const details of unreadable) {
+      expect(retryAfterSeconds(refusal(details))).toBeNull();
+    }
+    expect(tooSoonText(refusal({ retryAfterSeconds: "1" }), "a@b.io")).toBe(
+      "An invitation to a@b.io was sent less than a minute ago. Try again in 1 second.",
+    );
+    expect(tooSoonText(refusal(null), "a@b.io")).toBe(
+      "An invitation to a@b.io was sent less than a minute ago. Try again in a minute.",
+    );
+  });
+
+  it("classifies the route's own refusals before the section's taxonomy, from either implementation", () => {
+    const fromMock = (code: string) => Object.assign(new Error("x"), { code });
+    expect(inviteFailure(fromMock("RESOURCE_EXHAUSTED"))).toBe("tooSoon");
+    expect(inviteFailure(new ApiError("x", "RESOURCE_EXHAUSTED", 429))).toBe("tooSoon");
+    expect(inviteFailure(fromMock("ALREADY_EXISTS"))).toBe("exists");
+    expect(inviteFailure(new ApiError("x", "ALREADY_EXISTS", 409))).toBe("exists");
+    expect(inviteFailure(fromMock("PERMISSION_DENIED"))).toBe("refused");
+    expect(inviteFailure(fromMock("INVALID_ARGUMENT"))).toBe("rejected");
+    expect(inviteFailure(new ApiError("x", "INTERNAL", 500))).toBe("server");
+    expect(inviteFailure(new TypeError("Failed to fetch"))).toBe("unreachable");
   });
 });

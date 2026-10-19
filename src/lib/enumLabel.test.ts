@@ -12,11 +12,11 @@ const known = { LOW: "Low", MEDIUM: "Medium", HIGH: "High" };
  */
 describe("enumLabel", () => {
   it("answers a known code with the build's word, whatever is served for it", () => {
-    expect(enumLabel("LOW", known, [{ code: "LOW", name: "Low-ish" }])).toBe("Low");
+    expect(enumLabel("LOW", known, [{ code: "LOW", name: "Low-ish", selectable: true }])).toBe("Low");
   });
 
   it("takes an English served name for a code the build does not know", () => {
-    expect(enumLabel("URGENT", known, [{ code: "URGENT", name: "  Urgent " }])).toBe("Urgent");
+    expect(enumLabel("URGENT", known, [{ code: "URGENT", name: "  Urgent ", selectable: true }])).toBe("Urgent");
   });
 
   it.each([
@@ -25,11 +25,11 @@ describe("enumLabel", () => {
     ["blank", "   "],
     ["empty", ""],
   ])("prints the code itself when the served name is %s", (_case, name) => {
-    expect(enumLabel("URGENT", known, [{ code: "URGENT", name }])).toBe("URGENT");
+    expect(enumLabel("URGENT", known, [{ code: "URGENT", name, selectable: true }])).toBe("URGENT");
   });
 
   it("prints a code the dictionary does not list, and matches codes exactly", () => {
-    const served: DictionaryEntry[] = [{ code: "urgent", name: "Urgent" }];
+    const served: DictionaryEntry[] = [{ code: "urgent", name: "Urgent", selectable: true }];
     expect(enumLabel("URGENT", known, served)).toBe("URGENT");
     expect(enumLabel("URGENT", known, null)).toBe("URGENT");
     expect(enumLabel("URGENT", known)).toBe("URGENT");
@@ -49,7 +49,7 @@ describe("enumLabel", () => {
     "treats %s as a code, not as a member of Object.prototype",
     (code) => {
       expect(enumLabel(code, known)).toBe(code);
-      expect(enumLabel(code, known, [{ code, name: "Named" }])).toBe("Named");
+      expect(enumLabel(code, known, [{ code, name: "Named", selectable: true }])).toBe("Named");
     },
   );
 });
@@ -57,7 +57,7 @@ describe("enumLabel", () => {
 describe("enumLabelInSentence", () => {
   it("lowercases the build's word and nothing else", () => {
     expect(enumLabelInSentence("HIGH", known)).toBe("high");
-    expect(enumLabelInSentence("URGENT", known, [{ code: "URGENT", name: "Urgent" }])).toBe("Urgent");
+    expect(enumLabelInSentence("URGENT", known, [{ code: "URGENT", name: "Urgent", selectable: true }])).toBe("Urgent");
     expect(enumLabelInSentence("URGENT", known)).toBe("URGENT");
   });
 });
@@ -88,29 +88,40 @@ describe("selectableCodes", () => {
 
   it("keeps known codes in the build's order and appends unknown ones as served", () => {
     const served: DictionaryEntry[] = [
-      { code: "URGENT", name: "Срочный" },
-      { code: "HIGH", name: "Высокий" },
-      { code: "LOW", name: "Низкий" },
-      { code: "TRIVIAL", name: "Trivial" },
-      { code: "MEDIUM", name: "Средний" },
+      { code: "URGENT", name: "Срочный", selectable: true },
+      { code: "HIGH", name: "Высокий", selectable: true },
+      { code: "LOW", name: "Низкий", selectable: true },
+      { code: "TRIVIAL", name: "Trivial", selectable: true },
+      { code: "MEDIUM", name: "Средний", selectable: true },
     ];
     expect(selectableCodes(served, buildOrder)).toEqual(["LOW", "MEDIUM", "HIGH", "URGENT", "TRIVIAL"]);
   });
 
   it("drops a known code the served list leaves out", () => {
-    expect(selectableCodes([{ code: "HIGH", name: "" }, { code: "LOW", name: "" }], buildOrder)).toEqual(["LOW", "HIGH"]);
+    expect(selectableCodes([{ code: "HIGH", name: "", selectable: true }, { code: "LOW", name: "", selectable: true }], buildOrder)).toEqual(["LOW", "HIGH"]);
   });
 
-  it("never offers a placeholder, which backend PR #200 lists as an ordinary entry", () => {
+  it("never offers an entry the server marks `selectable: false` (backend #201)", () => {
+    // The four placeholders `MetaServiceImpl` marks — and the mark, not the
+    // code, is what decides: the list of codes this used to keep is gone.
     const served: DictionaryEntry[] = [
-      { code: "UNSPECIFIED", name: "Не указан" },
-      { code: "LOW", name: "Низкий" },
-      { code: "UNKNOWN", name: "Unknown" },
-      { code: "HIGH", name: "Высокий" },
-      { code: "UNRECOGNIZED", name: "" },
+      { code: "UNSPECIFIED", name: "Unspecified", selectable: false },
+      { code: "LOW", name: "Low", selectable: true },
+      { code: "UNKNOWN", name: "Unknown", selectable: false },
+      { code: "HIGH", name: "High", selectable: true },
+      { code: "UNRECOGNIZED", name: "Unrecognized", selectable: false },
+      { code: "RETIRED", name: "Retired", selectable: false },
     ];
     expect(selectableCodes(served, buildOrder)).toEqual(["LOW", "HIGH"]);
-    // A list of nothing but placeholders offers nothing of its own.
-    expect(selectableCodes([{ code: "UNSPECIFIED", name: "" }], buildOrder)).toEqual(buildOrder);
+    // A list of nothing but unselectable entries offers nothing of its own.
+    expect(selectableCodes([{ code: "UNSPECIFIED", name: "", selectable: false }], buildOrder)).toEqual(buildOrder);
+  });
+
+  it("offers whatever the server marks selectable, whatever its code is called", () => {
+    const served: DictionaryEntry[] = [
+      { code: "LOW", name: "Low", selectable: true },
+      { code: "UNKNOWN", name: "Unknown", selectable: true },
+    ];
+    expect(selectableCodes(served, buildOrder)).toEqual(["LOW", "UNKNOWN"]);
   });
 });

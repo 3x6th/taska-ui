@@ -291,8 +291,13 @@ Credentials for any of these are covered by *Safety* at the end of this file.
   three projects mirror the viewport matrix above. A green suite proves the
   flows it exercises, not visual or content correctness — browser
   verification through the preview tools still applies to UI work. It runs the
-  dev server with browser routing at base `/`, so it cannot catch the
-  hash-routing and base-path regressions specific to the Pages build.
+  dev server with browser routing at base `/`, so most specs cannot catch the
+  hash-routing and base-path regressions specific to the Pages build. Since
+  TAS-297 a second mock server runs on the next port, hash-routed under base
+  `/taska-ui/`, for the specs that need the Pages shape (the invitation link
+  landing in `e2e/invite.spec.ts`). The suite therefore binds `PORT` and `PORT+1`: a
+  parallel run in a worktree must pick a `TASKA_E2E_PORT` at least 2 away from
+  any other run's.
 - Never commit secrets, build output, or IDE state.
 
 ### Skills rank below the design system

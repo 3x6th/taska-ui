@@ -2,8 +2,9 @@
 # Editing a project: name, description, colour — and the two of them on create
 #
 # Source: https://github.com/VladislavYurin/taska-backend/pull/155
-# Head commit: c4b8c2c4dd246e00a9da433d4b6d47e94b4ae2c3
-# PR state on 2026-09-12: open, MERGEABLE, base develop
+# Head commit: 28f5fe1af0023c688c0145a4783db847182b95fb
+# PR state on 2026-10-19: open, REVIEW_REQUIRED, behind develop (its base is still 21a0d9d and it conflicts)
+# Re-extracted 2026-10-19 in TAS-297 (first pinned at c4b8c2c on 2026-09-12)
 # Base for this extract: develop @ 21a0d9d177a1b4be3ae303381f453c05bbd98e13
 #
 # One new method on an existing path, and `description` and `color` appearing on three
@@ -35,16 +36,48 @@
 # - **A concurrent edit is `ABORTED`, which the gateway maps to 409**, with the message
 #   "Project was concurrently modified by another request, please retry". `isConflict` in
 #   src/api/errors.ts already matches both the status and the `ABORTED` code.
-# - **Neither `description` nor `color` can be cleared.** Both are `Optional<String>` and an
+# - **[Superseded at 28f5fe1: an explicit null now clears both — see "What moved" below]** **Neither `description` nor `color` can be cleared.** Both are `Optional<String>` and an
 #   absent value means "keep"; the schema says so for `color` in as many words. There is no
 #   way through this route to put a project's colour back to null so the client computes it
 #   again, which matters because that computed colour (TAS-171) is what every project badge
 #   draws today.
+#
+# **What moved between c4b8c2c and 28f5fe1** (api-contract-guard, read at the new head,
+# 2026-10-19): an explicit `null` now clears `description` and `color` (proto
+# `clear_description` = 7, `clear_color` = 6; the gateway reads the raw JSON in
+# `ProjectController.updateProject` to tell null from absent); `name: null` is a 400
+# "Invalid request parameters"; the body is parsed before authentication. The four blocks
+# below are re-extracted mechanically against the merge-base 21a0d9d. The notes after this
+# paragraph were read at c4b8c2c and may lag the head; the PR will move again on rebase.
 
 paths:
-
   /api/v1/projects/{projectId}:
-    # GET on this path is unchanged by the PR and lives in the snapshot.
+    get:
+      summary: Возвращает проект по идентификатору
+      operationId: getProject
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Проект успешно найден
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
     patch:
       summary: Обновляет проект (имя, описание, цвет)
       description: >
@@ -90,9 +123,6 @@ paths:
 
 components:
   schemas:
-
-    # Changed: `description` and `color` are new; `name` gained maxLength and the
-    # descriptions are new throughout.
     CreateProjectRequestDto:
       type: object
       required: [projectKey,name]
@@ -120,29 +150,34 @@ components:
     UpdateProjectRequestDto:
       type: object
       description: >
-        Все поля опциональны (PATCH-семантика) — отсутствующее поле в запросе не изменяет
-        текущее значение. project_key через этот эндпоинт изменить нельзя.
+        Все поля опциональны (PATCH-семантика). Отсутствие поля в теле запроса означает «не менять»
+        текущее значение. Явная передача поля как null означает явный сброс значения в null
+        для description/color — но не для name (см. описание поля name). project_key через этот
+        эндпоинт изменить нельзя.
       properties:
         name:
           type: string
-          description: Новое имя проекта
+          description: >
+            Новое имя проекта. Отсутствие поля в теле запроса — «не менять» текущее значение.
+            В отличие от description/color, null для этого поля не поддерживается и приводит
+            к ошибке 400 — имя проекта не может быть пустым.
           minLength: 1
           maxLength: 255
         description:
           type: string
-          description: Новое описание проекта
+          description: >
+            Новое описание проекта. Отсутствие поля в теле запроса — «не менять» текущее значение.
+            Явная передача null — явный сброс описания в null.
           maxLength: 2000
         color:
           type: string
           description: >
-            Новый цвет проекта в HEX формате. Отсутствие поля в теле запроса и его явная передача
-            как null в этой версии API неразличимы (оба означают «не менять») — явный сброс цвета
-            обратно в null (чтобы клиент снова вычислял цвет сам) через PATCH сейчас не поддерживается.
+            Новый цвет проекта в HEX формате. Отсутствие поля в теле запроса — «не менять» текущее
+            значение. Явная передача null — явный сброс цвета в null (чтобы клиент снова вычислял
+            цвет сам, см. TAS-171).
           pattern: '^#[0-9A-Fa-f]{6}$'
           example: "#0052CC"
 
-    # Changed: `description` and `color` are new. `currentUserRole` is NOT here because it
-    # belongs to PR #152 — see the header.
     ProjectResponseDto:
       type: object
       properties:

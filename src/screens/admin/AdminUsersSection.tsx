@@ -1,9 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { UserPlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
 import { taskaApi } from "../../api/client";
 import type { UserStatus } from "../../domain/types";
 import { AdminError } from "./AdminError";
+import { AdminInviteUserModal, AdminResendInviteModal } from "./AdminInviteModals";
 import { AdminPager } from "./AdminPager";
 import { AdminUserActionModal } from "./AdminUserActionModal";
 import { readViewState } from "./urlState";
@@ -13,8 +15,10 @@ import {
   actionLabels,
   globalRoleLabel,
   hasKey,
+  invitedStatusText,
   personLabel,
   readUserRow,
+  resentStatusText,
   USERS_SERVICE,
   USERS_TABLE,
   userStatusInSentence,
@@ -72,6 +76,19 @@ export function AdminUsersSection() {
   });
 
   const [pending, setPending] = useState<{ user: AdminUserTarget; action: UserAction } | null>(null);
+  /** The two invitation dialogs (TAS-204): a new invitation, or a new link for one row. */
+  const [inviting, setInviting] = useState(false);
+  const [resending, setResending] = useState<(AdminUserTarget & { email: string }) | null>(null);
+  /**
+   * The last invitation's outcome, in words, until the next one or until the
+   * reader leaves the section (§5.8) — a line on the page rather than a toast,
+   * which this product does not have (§5.6).
+   */
+  const [inviteStatus, setInviteStatus] = useState("");
+  // Inviting is offered to a global admin only. The whole area is gated on the
+  // same read already, so this hides nothing anybody here could otherwise see;
+  // it states the rule where the button is. The server stays the authority.
+  const canInvite = meQuery.data?.globalRole === "GLOBAL_ADMIN";
   /**
    * What the server said the last change was, and the age of the rows it was
    * said about. It is not an optimistic update: it is applied *after* a 200 and
@@ -144,7 +161,19 @@ export function AdminUsersSection() {
 
   const closeDialog = () => {
     setPending(null);
+    setInviting(false);
+    setResending(null);
     focusTrigger(false);
+  };
+
+  /** After an invitation the server accepted: the line says it, the row says it, the list is read again. */
+  const afterInvitation = (userId: string, status: string) => {
+    setInviting(false);
+    setResending(null);
+    setInviteStatus(status);
+    setFlashed(userId);
+    focusTrigger(true);
+    void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
   };
 
   /** The same close, after the server has answered — see `focusTrigger`. */
@@ -204,7 +233,32 @@ export function AdminUsersSection() {
             {rows.pagination.totalRows} {rows.pagination.totalRows === 1 ? "account" : "accounts"}
           </p>
         ) : null}
+        {canInvite ? (
+          <>
+            <span className="admin-plane-spacer" />
+            {/* The section's one accent (§1), over the table's right edge: the
+                row it sits on is capped at the table's 860 (§5.8). */}
+            <button
+              className="primary-button compact-button admin-users-invite"
+              onClick={(event) => {
+                trigger.current = event.currentTarget;
+                setInviting(true);
+              }}
+              type="button"
+            >
+              <UserPlus aria-hidden="true" size={13} />
+              Invite user
+            </button>
+          </>
+        ) : null}
       </div>
+
+      {/* The last invitation's outcome (§5.8). One region, mounted with the
+          section and empty until there is something to say, so the change is
+          what is announced; heightless while empty. */}
+      <p className={inviteStatus ? "admin-users-status has-text" : "admin-users-status"} role="status">
+        {inviteStatus}
+      </p>
 
       {/* There is no toast in this product (§5.6 records the gap), so a change
           is confirmed by the row itself: the pill takes the status the server
@@ -257,6 +311,12 @@ export function AdminUsersSection() {
               const user = withChange(row);
               const action = actionFor(user);
               const name = personLabel(user);
+              // An invitation can be sent again only to a row with a key and an
+              // address, and only while it is still INVITED (§5.8).
+              const resendTarget =
+                canInvite && user.status === "INVITED" && hasKey(user) && user.email !== null
+                  ? { ...user, email: user.email }
+                  : null;
               // `flashed !== null` first, and it is not redundant: a row the
               // table gave no key for has `id === null`, and `null === null`
               // would mark every one of them the moment nothing is marked.
@@ -287,36 +347,53 @@ export function AdminUsersSection() {
                     {user.status === null ? "—" : <StatusPill status={user.status} />}
                   </td>
                   <td className="admin-users-action-cell">
-                    {/* One button or none. A status this build does not
-                        recognise prints verbatim and offers nothing (TAS-173):
-                        the server decides which transitions are legal, and a
-                        button that is certain to be refused is worse than no
-                        button. Hiding it is not the permission — the server is
-                        (§5.7). */}
-                    {action && hasKey(user) ? (
-                      <button
-                        // "Block Nina Kowal", not "Block": seven buttons in a
-                        // list all called Block are seven buttons a screen
-                        // reader cannot tell apart. Built from a per-action
-                        // template rather than by concatenation, because
-                        // "Reset lockout Omar Haddad" is not a phrase — see
-                        // `actionAccessibleName`.
-                        aria-label={actionAccessibleName(action, name)}
-                        // The product's secondary button (§4.1), sized down for
-                        // this table rather than rebuilt: border, surface,
-                        // radius and hover all come from `.secondary-button`,
-                        // and `.admin-row-action` only changes the three
-                        // things the row's density decides.
-                        className="secondary-button admin-row-action"
-                        onClick={(event) => {
-                          trigger.current = event.currentTarget;
-                          setPending({ user, action });
-                        }}
-                        type="button"
-                      >
-                        {actionLabels[action]}
-                      </button>
-                    ) : null}
+                    {/* A button for each operation the server allows from the
+                        status (§5.8): one, or two for INVITED — Resend invite,
+                        then Block, rightmost in every row so the column's edge
+                        lines up. A status this build does not recognise prints
+                        verbatim and offers nothing (TAS-173): the server decides
+                        which transitions are legal, and a button that is certain
+                        to be refused is worse than no button. Hiding it is not
+                        the permission — the server is (§5.7). */}
+                    <span className="admin-row-actions">
+                      {resendTarget ? (
+                        <button
+                          aria-label={`Resend invite to ${name}`}
+                          className="secondary-button admin-row-action"
+                          onClick={(event) => {
+                            trigger.current = event.currentTarget;
+                            setResending(resendTarget);
+                          }}
+                          type="button"
+                        >
+                          Resend invite
+                        </button>
+                      ) : null}
+                      {action && hasKey(user) ? (
+                        <button
+                          // "Block Nina Kowal", not "Block": seven buttons in a
+                          // list all called Block are seven buttons a screen
+                          // reader cannot tell apart. Built from a per-action
+                          // template rather than by concatenation, because
+                          // "Reset lockout Omar Haddad" is not a phrase — see
+                          // `actionAccessibleName`.
+                          aria-label={actionAccessibleName(action, name)}
+                          // The product's secondary button (§4.1), sized down for
+                          // this table rather than rebuilt: border, surface,
+                          // radius and hover all come from `.secondary-button`,
+                          // and `.admin-row-action` only changes the three
+                          // things the row's density decides.
+                          className="secondary-button admin-row-action"
+                          onClick={(event) => {
+                            trigger.current = event.currentTarget;
+                            setPending({ user, action });
+                          }}
+                          type="button"
+                        >
+                          {actionLabels[action]}
+                        </button>
+                      ) : null}
+                    </span>
                   </td>
                 </tr>
               );
@@ -325,6 +402,24 @@ export function AdminUsersSection() {
         </table>
         {rows ? <AdminPager onPage={setPage} pagination={rows.pagination} /> : null}
       </div>
+
+      {inviting ? (
+        <AdminInviteUserModal
+          onClose={closeDialog}
+          onDone={(result, email, resent) =>
+            afterInvitation(result.userId, resent ? resentStatusText(result, email) : invitedStatusText(result, email))
+          }
+        />
+      ) : null}
+
+      {resending ? (
+        <AdminResendInviteModal
+          onClose={closeDialog}
+          onDone={(result) => afterInvitation(resending.id, resentStatusText(result, personLabel(resending)))}
+          onStale={() => void queryClient.invalidateQueries({ queryKey: ["admin", "users"] })}
+          user={resending}
+        />
+      ) : null}
 
       {pending ? (
         <AdminUserActionModal

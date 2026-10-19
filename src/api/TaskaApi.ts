@@ -11,6 +11,7 @@ import type {
   AvatarUploadTicket,
   Board,
   DateOnly,
+  DirectoryPage,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -24,6 +25,7 @@ import type {
   IssueWatchers,
   IssueWorklog,
   IssueDetailsWithHistory,
+  InvitationResult,
   Label,
   Notification,
   NotificationPage,
@@ -59,6 +61,69 @@ export interface AcceptInvitationInput {
   token: string;
   newPassword: string;
 }
+
+/**
+ * `GET /users` — the people directory (backend #204, TAS-204). `page` is
+ * zero-based, 0–1000; `pageSize` 1–50, the server's default 20.
+ */
+export interface SearchUsersParams {
+  /**
+   * Callers trim it and never pass fewer than `DIRECTORY_QUERY_MIN_CODE_POINTS`
+   * code points. Rest also refuses one on the client, after trimming, without
+   * a request; the mock answers as the server would — the gateway's binding on
+   * the raw value, then auth-service on the trimmed one.
+   */
+  query: string;
+  page?: number;
+  pageSize?: number;
+}
+
+/**
+ * `POST /auth/invitations` — `InvitationRequestDto`. The server trims and
+ * lower-cases `email`; `displayName` is used only when the call creates the
+ * account, and a blank one becomes the part of the email before `@`. `resend`
+ * asks for a new link even while the current one still works, which revokes
+ * the current one.
+ */
+export interface InviteUserInput {
+  email: string;
+  displayName?: string;
+  resend?: boolean;
+}
+
+/**
+ * The shortest people-directory query, in **code points** after trimming —
+ * auth-service's own rule (`UserDirectoryService.search`: `strip()`, then
+ * `codePointCount`), and the contract's `minLength: 3`. The two are not one
+ * check: the gateway binds the raw query and refuses one under three UTF-16
+ * characters before sign-in, "Invalid request parameters"; auth-service then
+ * refuses a trimmed one under three code points in its own sentence
+ * (`DIRECTORY_QUERY_REFUSAL_MESSAGE`). So "  ab " passes the first and fails
+ * the second. The rest leg trims and counts code points before the request,
+ * which spends neither.
+ */
+export const DIRECTORY_QUERY_MIN_CODE_POINTS = 3;
+
+/** `maxLength: 100` on the query — the field's own cap, so the gateway's is never met. */
+export const DIRECTORY_QUERY_MAX_LENGTH = 100;
+
+/**
+ * auth-service's refusal of a directory query out of range (backend #204,
+ * `UserDirectoryService.search`), and what the rest leg throws for a query it
+ * will not send. Reproduced rather than reworded because, unlike issue search's
+ * `SEARCH_QUERY_TOO_SHORT_MESSAGE`, the server really does answer it — for a
+ * query whose raw length passes the gateway and whose trimmed one does not.
+ */
+export const DIRECTORY_QUERY_REFUSAL_MESSAGE = "Query must contain 3-100 characters, page 0-1000 and pageSize 1-50";
+
+/** A query's length the way auth-service measures it: trimmed, in code points. */
+export function directoryQueryLength(query: string): number {
+  return [...query.trim()].length;
+}
+
+/** `maxLength` of `InvitationRequestDto.email` and `.displayName` — the form's caps. */
+export const INVITE_EMAIL_MAX_LENGTH = 320;
+export const INVITE_DISPLAY_NAME_MAX_LENGTH = 128;
 
 /**
  * `CreateProjectRequestDto`. `description` and `color` are new in backend
@@ -135,10 +200,13 @@ export interface ListIssuesParams {
  * `assigneeId` and `labelId` filter server-side, and an id nobody holds is a
  * `200` with every column empty rather than an error.
  *
- * `includeDone` filters **issues, not columns**: omitted or `false`, the DONE
- * column still arrives with an empty `issues` array. `false` and `undefined`
- * are the same request, which is why the implementations send the parameter
- * only when it is `true`.
+ * `includeDone` filters **issues, not columns**: omitted or `false`, every
+ * column of the workflow's `DONE` category still arrives with an empty
+ * `issues` array. Since backend #202 (TAS-241, develop `e8a8d316b326`) the
+ * gateway reads the workflow first and excludes the status keys whose
+ * `category` is `DONE` — whatever they are called — and a workflow with no
+ * such status excludes nothing. `false` and `undefined` are the same request,
+ * which is why the implementations send the parameter only when it is `true`.
  */
 export interface BoardParams {
   issueType: IssueTypeCode;
@@ -597,6 +665,24 @@ export interface ListNotificationsParams {
 
 export interface TaskaApi {
   login(input: LoginInput): Promise<AuthTokens>;
+  /**
+   * `POST /auth/invitations/accept` — sets the invited account's password and
+   * makes it `ACTIVE`. **204 with no tokens**: the contract says the client then
+   * signs in with `POST /auth/login` like anybody else (backend #204), so this
+   * opens no session in any implementation, and nothing reads `/users/me` after
+   * it — there is nobody signed in to read.
+   *
+   * What the server checks, in order (`AuthServiceImpl.setPasswordByToken`,
+   * develop `e8a8d316b326`): a blank token, 400 "Token required"; the password
+   * policy, 400 in the validator's own sentences (minimum 8 code points and at
+   * most 128, at most 72 UTF-8 bytes, an upper-case letter, a digit and a
+   * symbol — the defaults, each configurable on the stand); a token over 256
+   * characters, 400 "Invite token is too long"; then one **401
+   * `UNAUTHENTICATED` "Invalid or expired token"** for a token nobody holds,
+   * one already used or revoked by a newer invitation, one past its deadline,
+   * and an account that is no longer `INVITED`. A weak password does not spend
+   * the link; a success does.
+   */
   acceptInvitation(input: AcceptInvitationInput): Promise<void>;
   refresh(refreshToken: string): Promise<AuthTokens>;
   logout(): Promise<void>;
@@ -880,6 +966,52 @@ export interface TaskaApi {
    */
   removeProjectMember(projectId: string, userId: string): Promise<void>;
 
+  /**
+   * `GET /users` — the people directory, for anybody signed in (backend #204,
+   * TAS-204, merged and deployed at develop `e8a8d316b326`). What the members
+   * dialog looks people up by, in place of the user id it used to take.
+   *
+   * Case-insensitive substring over display name **or** email, `%`, `_` and
+   * `!` matched literally; `ACTIVE`, `INVITED` and `LOCKED` accounts, never a
+   * `BLOCKED` one; ordered by `lower(displayName)`, then `lower(email)`, then
+   * `id`. `hasMore` comes from reading one row past the page.
+   *
+   * The query is refused before the request when it is shorter than
+   * `DIRECTORY_QUERY_MIN_CODE_POINTS` once trimmed — see that constant for the
+   * two different refusals the server has for it. Out of range, the gateway
+   * answers 400 "Invalid request parameters" before authentication.
+   */
+  searchUsers(params: SearchUsersParams): Promise<DirectoryPage>;
+
+  /**
+   * `POST /auth/invitations` — creates an `INVITED` account and queues an email
+   * carrying a link to set a password (backend #204). `GLOBAL_ADMIN` only: the
+   * gateway refuses anybody else with 403 "User doesn't have permission", and
+   * hiding the button is presentation. It adds nobody to any project.
+   *
+   * What the server does, in order (`AdminInviteUserServiceImpl`, develop
+   * `e8a8d316b326`): the email trimmed and lower-cased, and refused 400 "A
+   * valid email address is required (maximum 320 characters)"; the name
+   * refused 400 "Display name must contain at most 128 characters and no
+   * control characters"; then, by the account that email already has —
+   *
+   * - none: the account is created, **201**, `created: true`, queued;
+   * - `INVITED` with a link that still works and no `resend`: **200**,
+   *   `deliveryQueued: false`, nothing sent, the current deadline;
+   * - `INVITED` otherwise (`resend`, or the link expired): a new link revokes
+   *   the old one, **200**, queued — unless the last one was made less than a
+   *   minute ago, **429** "Invitation was sent recently; try again later" with
+   *   `details.retryAfterSeconds` as a *string*. The `Retry-After` header is
+   *   set too, and no browser can read it: CORS exposes only `X-Request-Id`
+   *   and `ETag`;
+   * - `ACTIVE`, `LOCKED` or `BLOCKED`: **409** `ALREADY_EXISTS` "An account
+   *   with this email already exists", and nothing changes.
+   *
+   * `created` is the HTTP status, which the rest leg reads; nothing in the body
+   * says it. Nothing here is optimistic — the outcome is the server's to name.
+   */
+  inviteUser(input: InviteUserInput): Promise<InvitationResult>;
+
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>>;
   /**
    * `GET /projects/{projectId}/board` — the server's own grouping of one issue
@@ -899,9 +1031,10 @@ export interface TaskaApi {
    * throws "Inconsistent state: issues found with statuses not present in
    * workflow" — and the mock reproduces it rather than dropping the card,
    * because a silently missing issue is the one failure a board cannot show.
-   * When the offending status is the literal `DONE`, though, `includeDone` off
-   * excludes the issue in issue-service before the check ever sees it, and both
-   * implementations answer `200`.
+   * There is no exception for a stray issue in a status keyed `DONE` since
+   * backend #202: `includeDone` off excludes only the keys the workflow files
+   * under the `DONE` category, so a key the workflow does not list is never
+   * among them and reaches the check whatever the flag says.
    */
   getBoard(projectId: string, params: BoardParams): Promise<Board>;
   /**

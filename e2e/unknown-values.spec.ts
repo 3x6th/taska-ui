@@ -4,8 +4,10 @@ import { expect, test, type Page } from "@playwright/test";
 // without this frontend: it allows EPIC, a type the build has no name or colour
 // for, whose workflow adds IN_REVIEW; WEB-15 is an epic in review with the
 // URGENT priority, and WEB-16 is a task in BLOCKED_BY_QA, a status no workflow
-// of the project lists. `GET /meta` names EPIC in English ("Epic") and URGENT
-// in Russian, so the one is printed by its name and the other as its code.
+// of the project lists. The mock's `GET /meta` names EPIC in English ("Epic")
+// and URGENT in Russian, so the one is printed by its name and the other as its
+// code — URGENT being the witness, since backend #201 named everything in
+// English, that the Cyrillic check DESIGN.md §6 keeps for good still works.
 // Nothing here may blank the board, and nothing may vanish from it.
 
 async function openWebBoard(page: Page) {

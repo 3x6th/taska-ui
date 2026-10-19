@@ -3,7 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../api/TaskaApi";
-import type { Project, ProjectMember, ProjectRole } from "../domain/types";
+import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../api/TaskaApi";
+import type { GlobalRole, Project, ProjectMember, ProjectRole } from "../domain/types";
 import { ProjectMembersModal } from "./ProjectMembersModal";
 
 /**
@@ -64,6 +65,11 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
     adds: [] as [string, string, ProjectRole][],
     roleChanges: [] as [string, string, ProjectRole][],
     removals: [] as [string, string][],
+    /** People the directory knows beyond the four above, for a search long enough to page. */
+    extraPeople: [] as { id: string; displayName: string; email: string }[],
+    searchFailure: undefined as Error | undefined,
+    /** Every directory request, as `[query, page]`. */
+    searches: [] as [string, number][],
   };
 
   const hold = async () => {
@@ -79,6 +85,22 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
       state.meReads += 1;
       if (state.meFailure) throw state.meFailure;
       return { ...state.me, login: "reader", email: "reader@example.com", displayName: "Reader", status: "ACTIVE" };
+    },
+    // `GET /users` (backend #204), as the mock answers it: name or email, case
+    // folded, ordered by name, one row read past the page for `hasMore`.
+    searchUsers: async ({ query, page = 0, pageSize = 20 }: { query: string; page?: number; pageSize?: number }) => {
+      state.searches.push([query, page]);
+      if (state.searchFailure) throw state.searchFailure;
+      const needle = query.trim().toLowerCase();
+      const rows = [
+        ...Object.entries(state.directory).map(([id, known]) => ({ id, ...known })),
+        ...state.extraPeople,
+      ]
+        .filter((row) => row.displayName.toLowerCase().includes(needle) || row.email.toLowerCase().includes(needle))
+        .sort((left, right) => (left.displayName.toLowerCase() < right.displayName.toLowerCase() ? -1 : 1))
+        .map((row) => ({ ...row, avatarUrl: null }))
+        .slice(page * pageSize, page * pageSize + pageSize + 1);
+      return { items: rows.slice(0, pageSize), hasMore: rows.length > pageSize };
     },
     listMembers: async () => {
       if (state.listHeld) await new Promise<void>((resolve) => state.listReleases.push(resolve));
@@ -127,6 +149,9 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
     state.adds = [];
     state.roleChanges = [];
     state.removals = [];
+    state.extraPeople = [];
+    state.searchFailure = undefined;
+    state.searches = [];
   };
 
   const release = () => {
@@ -157,7 +182,7 @@ const refusal = (code: string, status: number, message: string, requestId = "req
  * `GET /users/me` for the first, the board's membership read for the second —
  * which is a state of its own and not a default.
  */
-type PanelProps = { readerRole?: ProjectRole | null; currentUserId?: string };
+type PanelProps = { readerRole?: ProjectRole | null; currentUserId?: string; globalRole?: GlobalRole };
 
 function renderPanel(props: PanelProps = {}) {
   const queryClient = new QueryClient({
@@ -172,6 +197,7 @@ function renderPanel(props: PanelProps = {}) {
   const panel = (next: PanelProps) => (
     <ProjectMembersModal
       currentUserId={"currentUserId" in next ? next.currentUserId : ANNA}
+      globalRole={next.globalRole}
       onClose={onClose}
       projectId={PROJECT}
       projectKey="TAS"
@@ -193,6 +219,16 @@ function renderPanel(props: PanelProps = {}) {
 }
 
 const dialog = () => screen.getByRole("dialog", { name: "Members" });
+/** The people search's field — a combobox, named by its label (§4.22). */
+const searchField = () => within(dialog()).getByRole("combobox", { name: "Add people" });
+/** The results, as the listbox — not the role selects, whose `<option>`s share the role. */
+const resultRows = () => within(within(dialog()).getByRole("listbox", { name: "People" })).getAllByRole("option");
+/** Types into the search and waits out the debounce until the person's row is offered. */
+const searchFor = async (text: string, expectRow: string) => {
+  fireEvent.change(searchField(), { target: { value: text } });
+  const list = await within(dialog()).findByRole("listbox", { name: "People" });
+  return within(list).findByRole("option", { name: new RegExp(expectRow) });
+};
 const rowOf = (text: string) => {
   const row = within(dialog()).getByText(text).closest("li");
   if (!row) throw new Error(`no row for ${text}`);
@@ -261,68 +297,216 @@ describe("ProjectMembersModal", () => {
     expect(within(dialog()).queryByText(/Your role on this project is unknown/)).toBeNull();
   });
 
-  it("adds by user ID: refuses a malformed one, draws the pending row, then the member the server names", async () => {
+  it("finds a person by name, takes the choice in the field's place, draws the pending row, then the member the server names", async () => {
     renderPanel();
     await within(dialog()).findByText("Mark Lee");
 
-    const field = within(dialog()).getByLabelText("Add by user ID");
     const add = within(dialog()).getByRole("button", { name: "Add" });
-    expect(field).toHaveFocus();
+    expect(searchField()).toHaveFocus();
+    expect(searchField()).toHaveAttribute("placeholder", "Name or email");
     expect(add).toHaveAttribute("aria-disabled", "true");
-
-    fireEvent.change(field, { target: { value: "Priya Nair" } });
-    expect(within(dialog()).getByText(/This is not a user ID yet/)).toBeVisible();
-    expect(add).toHaveAttribute("aria-disabled", "true");
+    expect(add).toHaveAccessibleDescription("Search by name or email, then choose a person from the results.");
     fireEvent.click(add);
     expect(state.adds).toHaveLength(0);
 
-    // Pasted the way ids usually arrive: padded and in the wrong case.
-    fireEvent.change(field, { target: { value: `  ${PRIYA.toUpperCase()} ` } });
+    const priya = await searchFor("PRI", "Priya Nair");
+    expect(searchField()).toHaveAttribute("aria-expanded", "true");
+    expect(state.searches).toEqual([["PRI", 0]]);
+    fireEvent.click(priya);
+
+    // The choice replaces the field; focus goes to Add, which now says who.
+    expect(within(dialog()).queryByRole("combobox", { name: "Add people" })).toBeNull();
+    const chosen = within(dialog()).getByRole("group", { name: "Add people" });
+    expect(within(chosen).getByText("priya@example.com")).toBeVisible();
+    expect(add).toHaveFocus();
     fireEvent.change(within(dialog()).getByLabelText("Role"), { target: { value: "VIEWER" } });
     expect(add).not.toHaveAttribute("aria-disabled");
+    expect(add).toHaveAccessibleDescription("Priya Nair will be added as Viewer.");
 
     state.held = true;
     fireEvent.click(add);
 
-    // Cleared in the handler, not when the answer lands.
-    expect(field).toHaveValue("");
-    // Sent normalised: the id the server will store, not the one pasted.
+    // Cleared in the handler, not when the answer lands — and focus back in
+    // an empty field.
+    await waitFor(() => expect(searchField()).toHaveFocus());
+    expect(searchField()).toHaveValue("");
     await waitFor(() => expect(state.adds).toEqual([[PROJECT, PRIYA, "VIEWER"]]));
-    const pending = (await within(dialog()).findByText(PRIYA)).closest("li");
+    const pending = within(dialog()).getByText("Adding as Viewer").closest("li");
     expect(pending).toHaveClass("is-pending");
-    expect(within(pending as HTMLElement).getByText("Adding as Viewer…")).toBeVisible();
-    // Nobody is named until the server has named them.
-    expect(within(dialog()).queryByText("Priya Nair")).toBeNull();
+    // Named from the search row until the member read names them.
+    expect(within(pending as HTMLElement).getByText("Priya Nair")).toBeVisible();
+    expect(within(pending as HTMLElement).getByText("priya@example.com")).toBeVisible();
 
-    // The add answers, and the re-read that names the person is still out: the
-    // pending row has to stay until that read lands, or the list has a gap
-    // where neither row is drawn.
+    // The add answers, and the re-read is still out: the pending row stays
+    // until that read lands, or the list has a gap where neither row is drawn.
     state.listHeld = true;
     release();
     await waitFor(() => expect(state.listReleases).toHaveLength(1));
-    expect(within(dialog()).getByText("Adding as Viewer…")).toBeVisible();
+    expect(within(dialog()).getByText("Adding as Viewer")).toBeVisible();
 
     releaseList();
 
-    expect(await within(dialog()).findByText("Priya Nair")).toBeVisible();
-    expect(within(rowOf("Priya Nair")).getByRole("combobox", { name: "Role of Priya Nair" })).toHaveValue("VIEWER");
-    await waitFor(() => expect(within(dialog()).queryByText("Adding as Viewer…")).toBeNull());
+    await waitFor(() => expect(within(dialog()).queryByText("Adding as Viewer")).toBeNull());
+    expect(within(rowOf("priya@example.com")).getByRole("combobox", { name: "Role of Priya Nair" })).toHaveValue("VIEWER");
   });
 
-  it("says an ID is already a member, and does not send it", async () => {
+  it("marks people already on the project in words, lets the arrows pass them, and will not choose them", async () => {
     renderPanel();
     await within(dialog()).findByText("Mark Lee");
 
-    const field = within(dialog()).getByLabelText("Add by user ID");
-    fireEvent.change(field, { target: { value: MARK.toUpperCase() } });
+    const mark = await searchFor("example.com", "Mark Lee");
+    expect(mark).toHaveAttribute("aria-disabled", "true");
+    expect(within(mark).getByText("Already a member")).toBeVisible();
+    // Words, not a fade.
+    expect(mark.getAttribute("style") ?? "").not.toMatch(/opacity/);
 
-    expect(within(dialog()).getByText("Mark Lee is already a member of this project.")).toBeVisible();
-    expect(within(dialog()).getByRole("button", { name: "Add" })).toHaveAttribute("aria-disabled", "true");
-    fireEvent.submit(field.closest("form") as HTMLFormElement);
-    expect(state.adds).toHaveLength(0);
+    // Anna, Mark, Priya, Sofia: arrows go through every row, members included.
+    fireEvent.keyDown(searchField(), { key: "ArrowDown" });
+    fireEvent.keyDown(searchField(), { key: "ArrowDown" });
+    expect(searchField()).toHaveAttribute("aria-activedescendant", mark.id);
+    expect(mark).toHaveAttribute("aria-selected", "true");
+    expect(searchField()).toHaveAccessibleDescription("Mark Lee is already a member of this project.");
+
+    fireEvent.keyDown(searchField(), { key: "Enter" });
+    fireEvent.click(mark);
+    expect(within(dialog()).getByRole("combobox", { name: "Add people" })).toBeVisible();
+
+    // Up from the first row wraps to the last, which can be chosen.
+    fireEvent.keyDown(searchField(), { key: "ArrowUp" });
+    fireEvent.keyDown(searchField(), { key: "ArrowUp" });
+    fireEvent.keyDown(searchField(), { key: "ArrowUp" });
+    expect(searchField()).toHaveAccessibleDescription(
+      "Search by name or email, then choose a person from the results.",
+    );
+    fireEvent.keyDown(searchField(), { key: "Enter" });
+    expect(within(dialog()).getByRole("group", { name: "Add people" })).toHaveTextContent("Priya Nair");
   });
 
-  it("reads a 409 as somebody already on the project, and does not put the ID back to be sent again", async () => {
+  it("brings the search back with its results when the choice is undone", async () => {
+    renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+    fireEvent.click(await searchFor("priya", "Priya Nair"));
+
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Choose someone else" }));
+
+    await waitFor(() => expect(searchField()).toHaveFocus());
+    expect(searchField()).toHaveValue("priya");
+    expect(within(within(dialog()).getByRole("listbox")).getByRole("option", { name: /Priya Nair/ })).toBeVisible();
+  });
+
+  it("asks for three characters before searching, and sends nothing shorter", async () => {
+    renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+
+    fireEvent.change(searchField(), { target: { value: " pr " } });
+    expect(within(dialog()).getByText("Type at least 3 characters to search.")).toBeVisible();
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    expect(state.searches).toEqual([]);
+  });
+
+  it("words an empty answer by who is reading: a global admin is sent to Administration › Users", async () => {
+    renderPanel({ globalRole: "GLOBAL_ADMIN" });
+    await within(dialog()).findByText("Mark Lee");
+
+    fireEvent.change(searchField(), { target: { value: "zoe" } });
+
+    expect(await within(dialog()).findByText("No one matches “zoe”.")).toBeVisible();
+    expect(within(dialog()).getByRole("link", { name: "Administration › Users" })).toHaveAttribute("href", "/admin/users");
+    expect(searchField()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("words an empty answer for everybody else, and for a reader whose global role is not stated", async () => {
+    renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+
+    fireEvent.change(searchField(), { target: { value: "zoe" } });
+
+    expect(
+      await within(dialog()).findByText("People need a Taska account first — a global admin can invite them."),
+    ).toBeVisible();
+    expect(within(dialog()).queryByRole("link")).toBeNull();
+  });
+
+  it("never reads a failed search as nobody found: the refusal, the server's words and the request id", async () => {
+    state.searchFailure = refusal("INVALID_ARGUMENT", 400, DIRECTORY_QUERY_REFUSAL_MESSAGE, "req-users");
+    renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+
+    fireEvent.change(searchField(), { target: { value: "anna" } });
+
+    expect(await within(dialog()).findByText("People search could not be run.")).toBeVisible();
+    expect(within(dialog()).getByText(DIRECTORY_QUERY_REFUSAL_MESSAGE)).toBeVisible();
+    expect(within(dialog()).getByRole("button", { name: "Copy request id req-users" })).toBeVisible();
+    expect(within(dialog()).queryByText(/No one matches/)).toBeNull();
+  });
+
+  it("pages with Show more while hasMore holds, makes the first new row active, and hands focus back at the end", async () => {
+    state.extraPeople = Array.from({ length: 21 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      displayName: `Tester ${String(index).padStart(2, "0")}`,
+      email: `tester${index}@example.com`,
+    }));
+    renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+
+    await searchFor("tester", "Tester 00");
+    expect(resultRows()).toHaveLength(20);
+    expect(within(dialog()).getByText("Showing the first 20.")).toHaveClass("visually-hidden");
+    const more = within(dialog()).getByRole("button", { name: "Show more" });
+    more.focus();
+    fireEvent.click(more);
+
+    await waitFor(() => expect(resultRows()).toHaveLength(21));
+    expect(state.searches.at(-1)).toEqual(["tester", 1]);
+    expect(searchField()).toHaveAttribute("aria-activedescendant", resultRows()[20].id);
+    expect(within(dialog()).queryByRole("button", { name: "Show more" })).toBeNull();
+    expect(searchField()).toHaveFocus();
+    expect(within(dialog()).getByText("21 people.")).toBeVisible();
+  });
+
+  it("keeps the results box out of the Tab order: field, Show more, Role, Add", async () => {
+    state.extraPeople = Array.from({ length: 21 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      displayName: `Tester ${String(index).padStart(2, "0")}`,
+      email: `tester${index}@example.com`,
+    }));
+    renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+    await searchFor("tester", "Tester 00");
+
+    // A scrolling box is keyboard-focusable in Chromium by itself once its rows
+    // overflow; -1 keeps it a box, and focus in the field (e2e/members.spec.ts
+    // measures the overflow itself).
+    const box = within(dialog()).getByRole("listbox", { name: "People" }).parentElement as HTMLElement;
+    expect(box).toHaveClass("member-search", "is-open");
+    expect(box).toHaveAttribute("tabindex", "-1");
+    // The add form's Tab stops, in document order.
+    const tabbable = Array.from(
+      dialog().querySelector("form")!.querySelectorAll<HTMLElement>("input, select, button, [tabindex]"),
+    ).filter((element) => element.tabIndex >= 0);
+    expect(tabbable).toEqual([
+      searchField(),
+      within(dialog()).getByRole("button", { name: "Show more" }),
+      within(dialog()).getByLabelText("Role"),
+      within(dialog()).getByRole("button", { name: "Add" }),
+    ]);
+  });
+
+  it("closes the results on the first Esc and keeps the text; the next Esc closes the dialog", async () => {
+    const { onClose } = renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+    await searchFor("priya", "Priya Nair");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(within(dialog()).queryByRole("listbox")).toBeNull();
+    expect(searchField()).toHaveValue("priya");
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("reads a 409 as somebody already on the project, and does not offer them back to be sent again", async () => {
     state.addFailure = refusal(
       "ALREADY_EXISTS",
       409,
@@ -332,14 +516,25 @@ describe("ProjectMembersModal", () => {
     renderPanel();
     await within(dialog()).findByText("Mark Lee");
 
-    const field = within(dialog()).getByLabelText("Add by user ID");
-    fireEvent.change(field, { target: { value: PRIYA } });
+    fireEvent.click(await searchFor("priya", "Priya Nair"));
     fireEvent.click(within(dialog()).getByRole("button", { name: "Add" }));
 
-    expect(await within(dialog()).findByText("This user ID is already a member of this project.")).toBeVisible();
+    expect(await within(dialog()).findByText("Priya Nair is already a member of this project.")).toBeVisible();
     expect(within(dialog()).getByRole("button", { name: "Copy request id req-409" })).toBeVisible();
-    expect(field).toHaveValue("");
-    expect(within(dialog()).queryByText(PRIYA)).toBeNull();
+    expect(searchField()).toHaveValue("");
+    expect(within(dialog()).queryByRole("group", { name: "Add people" })).toBeNull();
+  });
+
+  it("puts the person back as the choice when the add fails for another reason", async () => {
+    state.addFailure = refusal("INTERNAL", 500, "Internal error", "req-500");
+    renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+
+    fireEvent.click(await searchFor("priya", "Priya Nair"));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Add" }));
+
+    expect(await within(dialog()).findByText("Priya Nair was not added to this project.")).toBeVisible();
+    expect(within(dialog()).getByRole("group", { name: "Add people" })).toHaveTextContent("Priya Nair");
   });
 
   it("draws a member nobody could name as the ID and a sentence, and still lets an admin remove it (TAS-227)", async () => {
@@ -803,8 +998,8 @@ describe("ProjectMembersModal", () => {
         () => {
           state.addFailure = refusal("PERMISSION_DENIED", 403, `Actor ${ANNA} is not an admin of project: ${PROJECT}`, "req-403");
         },
-        () => {
-          fireEvent.change(within(dialog()).getByLabelText("Add by user ID"), { target: { value: PRIYA } });
+        async () => {
+          fireEvent.click(await searchFor("priya", "Priya Nair"));
           fireEvent.click(within(dialog()).getByRole("button", { name: "Add" }));
         },
       ],
@@ -833,7 +1028,7 @@ describe("ProjectMembersModal", () => {
       queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
       await within(dialog()).findByText("Mark Lee");
 
-      act403();
+      await act403();
 
       expect(await within(dialog()).findByText(REFUSED)).toBeVisible();
       expect(within(dialog()).getByText(/is not an admin of project:/)).toBeVisible();
@@ -849,10 +1044,10 @@ describe("ProjectMembersModal", () => {
       renderPanel();
       await within(dialog()).findByText("Mark Lee");
 
-      fireEvent.change(within(dialog()).getByLabelText("Add by user ID"), { target: { value: PRIYA } });
+      fireEvent.click(await searchFor("priya", "Priya Nair"));
       fireEvent.click(within(dialog()).getByRole("button", { name: "Add" }));
 
-      expect(await within(dialog()).findByText("This project could not be found, so nobody was added.")).toBeVisible();
+      expect(await within(dialog()).findByText("This project could not be found, so Priya Nair was not added.")).toBeVisible();
       expect(within(dialog()).getByText(`Project: ${PROJECT} doesn't exist`)).toBeVisible();
       expect(within(dialog()).getByRole("button", { name: "Copy request id req-404-add" })).toBeVisible();
     });

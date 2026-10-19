@@ -30,12 +30,19 @@ import { RequestId } from "./RequestId";
 export function ErrorNote({
   children,
   requestId,
+  serverWords,
   live,
   id,
 }: {
   children: ReactNode;
   /** The gateway's `X-Request-Id`, on its own line under the sentence. Mock mode never carries one. */
   requestId?: string | null;
+  /**
+   * The server's own words, for a caller whose sentence is its own (the
+   * invitation refusals, §5.8): on the detail line, before the id, and outside
+   * the live region with it — what is announced is the caller's sentence.
+   */
+  serverWords?: string | null;
   live?: "alert" | "polite";
   /** On the sentence, for a field that is described by it (`aria-describedby`). */
   id?: string;
@@ -45,9 +52,10 @@ export function ErrorNote({
       <p className="error-note-sentence" id={id} role={live === "alert" ? "alert" : live === "polite" ? "status" : undefined}>
         {children}
       </p>
-      {requestId ? (
+      {requestId || serverWords ? (
         <p className="error-note-detail">
-          <RequestId value={requestId} />
+          {serverWords ? <span>{serverWords}</span> : null}
+          {requestId ? <RequestId value={requestId} /> : null}
         </p>
       ) : null}
     </div>

@@ -8,6 +8,7 @@ import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE, RequireSession } from "../components/RequireSession";
 import type { Theme } from "../hooks/useTheme";
 import { useTheme } from "../hooks/useTheme";
+import { holdInviteToken, inviteTokenIn } from "../lib/inviteLink";
 import { AdminAuditSection } from "./admin/AdminAuditSection";
 import { AdminDataSection } from "./admin/AdminDataSection";
 import { AdminEventsProblems } from "./admin/AdminEventsProblems";
@@ -52,6 +53,19 @@ export function App() {
 
   const from = location.pathname + location.search;
   const onAuthRoute = location.pathname === "/login" || location.pathname === "/invite";
+  // An invitation link that reached a running app (DESIGN.md §4.27): on the
+  // hash build, `#/invite?token=…` typed or pasted into this tab is a hash
+  // change, not a page load, so `captureInviteLink` in main.tsx never sees it
+  // and the router does. Held and taken out of the address the same way, on
+  // any path. The first render under it does no harm: every route reads it as
+  // an unknown parameter, and the replace lands before anything is asked.
+  const routedInviteToken = inviteTokenIn({ search: location.search, hash: "" });
+
+  useEffect(() => {
+    if (routedInviteToken === null) return;
+    holdInviteToken(routedInviteToken);
+    navigate("/invite", { replace: true });
+  }, [routedInviteToken, navigate]);
 
   useEffect(() => {
     // A session dies in one place — a 401 the refresh could not repair — so it
@@ -82,8 +96,9 @@ export function App() {
             </RedirectSignedIn>
           }
         />
-        {/* Public on purpose: accepting an invitation has to work while signed in
-            as somebody else. */}
+        {/* Public on purpose: the link may be opened under somebody else's
+            session. Activating signs out of it first and opens none of its own
+            (DESIGN.md §4.27). */}
         <Route path="/invite" element={<LoginScreen {...screenProps} initialMode="invite" />} />
         <Route
           path="/projects"

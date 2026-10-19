@@ -223,7 +223,7 @@ The entry as it stood:
   context (TAS-212) is their source.
 - **Compensation:** none — this is reading an open field as open.
 
-### `GET /meta` names its values in Russian, and the UI is English
+### Closed by measurement: `GET /meta` named its values in Russian, and the UI is English
 
 - **Endpoint:** `GET /api/v1/meta` (backend TAS-217, PR #196, `f453171`,
   merged and deployed 2026-10-19).
@@ -242,17 +242,16 @@ The entry as it stood:
   the code verbatim. Codes this build knows keep its own English labels
   whatever `/meta` says (owner, 2026-10-19). Today every name fails the check,
   so an unknown code reads as itself (`EPIC`).
-- **Switched off by:** removing the `isEnglishName` check in `servedName`
-  (`src/lib/enumLabel.ts`), so any non-blank `/meta` name is used. The other
-  caller, the workflow-name check in `statusLabel` (`src/lib/format.ts`),
-  stays: workflow names are project configuration under DESIGN.md §6's
-  English-UI rule, and TAS-264 does not touch them.
-- **Removal:** [TAS-264](https://jira.ozero.dev/browse/TAS-264) (`/meta` names
-  in English, filed 2026-10-19; backend PR #201, head `9dc0a4a`, open). Once
-  deployed and probed, a new backend value shows under its English name with
-  no frontend release, and the check comes out.
+- **Closed 2026-10-19 by measurement.** Backend PR #201
+  ([TAS-264](https://jira.ozero.dev/browse/TAS-264), merge `9aea7e3`, deployed
+  17:47 UTC): every `name` is English, every pair carries `selectable`, and
+  `linkViewTypes` lists the inverse directions — probed with a token the same
+  day (`b8cc7a79-8bfe-46d1-892d-5e51f098b666`), no Cyrillic anywhere.
+- **The check stays** (owner, 2026-10-19: «логику с кириллицей не правь»):
+  `isEnglishName` is no longer a compensation but DESIGN.md §6's standing rule
+  that the UI stays English — with English names it simply passes them.
 
-### `GET /meta` lists placeholder values as ordinary rows, and the contract says nothing about which values may be chosen
+### Closed by contract (TAS-297): `GET /meta` lists placeholder values as ordinary rows, and the contract says nothing about which values may be chosen
 
 - **Endpoint:** `GET /api/v1/meta` (`userStatuses`, `notificationTypes`), and
   the `status` field of `GET /api/v1/users/me`.
@@ -276,6 +275,15 @@ The entry as it stood:
   #201 (head `9dc0a4a`, open), which adds `selectable` to every pair. Then
   pickers filter on `selectable === false` instead of the hard-coded list,
   and the `UNSPECIFIED` special case goes, so the served English name prints.
+- **Closed in TAS-297 (2026-10-19)**, after #201 merged as `9aea7e3` and was
+  probed (`b8cc7a79-8bfe-46d1-892d-5e51f098b666`): every pair carries
+  `selectable`, false on `UNKNOWN`, `UNSPECIFIED`,
+  `ISSUE_LINK_VIEW_TYPE_UNSPECIFIED` and `UNRECOGNIZED`. `selectableCodes`
+  filters on `selectable !== false`; `PLACEHOLDER_CODES` is gone. **The
+  `toUserStatus` half stays, reclassified:** mapping `UNSPECIFIED` to `null` is
+  not a compensation but the client's reading of a proto zero value as "not
+  stated", the same as `toGlobalRole` and `toViewLinkType`; `selectable` is a
+  rule about pickers, not about how a value is read (`api-contract-guard`).
 
 ### Closed by measurement: `GET /meta` lists eleven notification types; `GET /notifications` sends twenty-two
 
@@ -297,7 +305,7 @@ The entry as it stood:
   `f2739711-8300-4418-938c-146716a67cf8`). `UNKNOWN` arriving as an ordinary
   row is the entry above.
 
-### `GET /meta` names link types in one direction only
+### Closed by TAS-264 / TAS-297: `GET /meta` named link types in one direction only
 
 - **Endpoint:** `GET /api/v1/meta`, `linkTypes`.
 - **Contract:** silent on the inverse direction.
@@ -310,6 +318,12 @@ The entry as it stood:
   inward view code can never borrow an outward request name.
 - **Removal:** [TAS-264](https://jira.ozero.dev/browse/TAS-264), its
   `linkViewTypes` item.
+- **Closed in TAS-297 (2026-10-19):** #201 added `linkViewTypes` (seven rows,
+  prefixed codes, two of them placeholders; probed `b8cc7a79`). `getMeta`
+  passes each code through `toViewLinkType` and drops blanks, so stripped
+  compares with stripped; link rows label `viewLinkType` from `linkViewTypes`
+  and never fall back to `linkTypes`, so "Is blocked by" can never borrow
+  "Blocks". The picker keeps `linkTypes`.
 
 ### Closed by measurement (TAS-195 pass): `GET /issues/{issueId}` no longer 500s on a commented issue
 
@@ -977,7 +991,74 @@ Same rule as above: "Closed by" is settled, the rest is live.
   probe the routes and drop the undeployed branch. The author join
   and the client total stay until the backend sends what they stand in for.
 
-### Accepting an invitation does not produce a session
+### Backend PR #204 (TAS-204), merged: invitations and the people directory — what the yml does not say
+
+- **Endpoints:** `POST /api/v1/auth/invitations` (GLOBAL_ADMIN), `GET /api/v1/users`
+  (any signed-in user), `POST /api/v1/auth/invitations/accept` (public). Merged
+  as `0f7a937` and deployed 2026-10-19; `GET /users?query=adm` probed 200
+  (`4745a06f-ccad-487f-869f-1976f9656ce7`), tokenless `?query=ab` 400 at the
+  edge and `?query=abcd` 401. Built in TAS-297 / TAS-208.
+- **The email link is a query, the Pages build routes by fragment.** The link
+  is `NOTIFICATION_INVITATION_ACCEPT_URL` + `?token=` (a fragment in the URL is
+  refused at startup, `InvitationEmailQueue.java:39`), and the default URL is
+  `http://localhost:3001/login`. **Compensation:** the client captures `token`
+  from `location.search` on any path the app is served on, and from the query
+  inside the hash, before the router mounts, strips it with `replaceState` and
+  lands on `/invite` (`src/lib/inviteLink.ts`, DESIGN.md §4.27). **On GitHub
+  Pages only the root serves `index.html`** — any other path is a static 404 and
+  no client code runs — so the accept URL must be exactly the Pages root
+  (`release-reviewer`, measured). **Removal:** the stand's accept URL set to
+  `https://taska.ozero.dev/` (config; comment on TAS-204) —
+  the capture stays, since a query link is the contract. A fragment link
+  (`#/invite?token=`) would keep the token out of the static host's logs: a
+  candidate ask, not filed.
+- **`Retry-After` is set but not readable.** The gateway sets it on the 429,
+  but CORS exposes only `X-Request-Id` and `ETag`. **Compensation:** the client
+  reads `details.retryAfterSeconds` (a string) instead, and says "Try again in a
+  minute." when that does not parse. Candidate ask: expose `Retry-After`, or
+  name `details` in the contract as the source. Not filed.
+- **Two sentences for a short query.** The edge refuses a raw query under 3
+  characters with "Invalid request parameters" before sign-in; auth-service
+  refuses a trimmed one under 3 code points with its own sentence. The client
+  trims and never sends fewer than 3 code points, and prints auth-service's
+  sentence for its own refusal; the mock answers both in the server's order.
+- **A directory row's `avatarUrl` is `null` both for "no avatar" and for
+  "storage failed"** (a flat string, unlike `/users/me`'s
+  `avatar` + `avatarUnavailable`). The search row draws initials either way.
+  Candidate ask: `AvatarDto` or an unavailable flag. Not filed.
+- **No password reset, and re-inviting an ACTIVE account is 409** "An account
+  with this email already exists" (`AdminInviteUserServiceImpl.java:65`). The
+  sign-in hint says so honestly (DESIGN.md §4.27). Candidate ask: a reset link
+  over the same tokens and mail queue. Not filed — the owner's call.
+- **The six password refusals of accept differ only in their text, and the
+  policy is configurable but not served** (`api-contract-guard`, TAS-297 F1).
+  All are `400 INVALID_ARGUMENT` with no field pointer (develop `e8a8d316`): five
+  policy sentences from `PasswordValidator`, "Invite token is too long", and —
+  for a blank token or password — the gRPC transport's own "body.token must not
+  be blank" / "body.newPassword must not be blank" (`AuthGrpcService.java:96-105`),
+  which runs before the service, so the service's "Token required" and
+  "Password is required" never reach the wire; the policy (minimum
+  length and character classes) comes from auth-service env with no route that
+  serves it. **Compensations, both on the invite form:** `isPasswordRefusal`
+  marks New password `aria-invalid` when the message starts with "Password" — a
+  branch chosen by prose, against this file's own rule, accepted because the
+  only thing lost on a reword is the field marker (the sentence itself always
+  prints verbatim) — and a blank password already loses it today, since the
+  transport's sentence starts with "body."; the mock still answers the service's
+  "Password is required" there (`api-contract-guard` re-verdict N1, BACKLOG); and `PASSWORD_HINT` copies auth-service's default policy
+  (8 characters, an upper-case letter, a digit, a symbol). **Removal:** candidate
+  ask — `PasswordValidator` raises `details {field: "newPassword", rule, min,
+  max}` (strings — `details` is a string map; precedent
+  `AdminInviteUserServiceImpl.java:77`) through the existing
+  `taska-error-details` transport (#199), with blank judged by the validator;
+  and the policy readable **without a session** — not `/meta`, which is
+  PROTECTED and built once in the gateway, while the invitee has no session:
+  a PUBLIC route, or an invitation preview `GET /auth/invitations/{token}` →
+  `{email, expiresAt, passwordPolicy}` that would also report a dead link before
+  the person types a password (today the password is checked before the
+  token). Not filed; in BACKLOG "Left by TAS-297".
+
+### Closed by contract (TAS-297): accepting an invitation does not produce a session
 
 - **Endpoint:** `POST /api/v1/auth/invitations/accept` (`setPasswordByToken`).
 - **Contract:** `204 No Content` — no body, no tokens. Nothing anywhere states
@@ -1000,6 +1081,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
   [TAS-208](https://jira.ozero.dev/browse/TAS-208) — either return
   tokens from the accept call, or state in the contract that the client must
   sign in afterwards (in which case the UI should collect the email and do it).
+- **Closed by contract:** backend PR #204 (TAS-204, merge `0f7a937`, deployed
+  2026-10-19) keeps the 204 and states that the client signs in afterwards
+  (`openapi.yml`, the accept route). The UI half is TAS-208, built in TAS-297:
+  no profile read after the 204; the form switches to sign-in with "Password
+  set. Sign in with your email and new password." and does not collect the
+  email (DESIGN.md §4.27).
 
 ### The mock has a session flag but no session enforcement
 
@@ -5064,8 +5151,9 @@ the contract leaves open:
 
 **Dead: the review was open on an access-control gap.** PR #118 merged, and the
 gap it was held for is closed one level below the gateway rather than in it. The
-gateway still checks nothing itself — `BoardServiceImpl` zips workflow and
-issues — but `IssueServiceImpl.listIssueBoard` opens with
+gateway still checks nothing itself — `BoardServiceImpl` reads the workflow,
+then the issues filtered by its DONE-category keys (sequential since #202, one
+more round trip) — but `IssueServiceImpl.listIssueBoard` opens with
 `projectRoleChecker.checkProjectRole(requestId, nodeId, projectId, actorUserId,
 listIssueRoles)`, the same call `listIssues` makes, and `workflow-service`
 carries its own `ProjectRoleChecker`. **What a non-member sees is read, not
@@ -5116,12 +5204,15 @@ The bucket a one-read board would need to say the same — e.g.
 [TAS-213](https://jira.ozero.dev/browse/TAS-213), which already lists "no 500
 on a status outside the workflow".
 
-There is one exception, and it is worth stating because the mock reproduces it:
-a stray issue whose status key is the literal `DONE` never reaches that check
-while `includeDone` is off, because `issue-service` excludes it in SQL
-(`boardFilterConditions`) before the gateway builds columns. That one case
-answers `200` with an empty column. Every other unknown status, and every
-unknown status at all once `includeDone` is on, blanks the board.
+There was one exception, and the mock reproduced it: a stray issue whose
+status key is the literal `DONE` never reached that check while `includeDone`
+was off, because `issue-service` excluded it in SQL (`boardFilterConditions`)
+before the gateway built columns. **Gone with backend PR #202** (TAS-241, merge
+`a864b50`, deployed 2026-10-19, not probed): the board reads the workflow first
+and excludes the keys of every DONE-*category* status (`NOT IN (doneStatusKeys)`),
+so a literal `DONE` filed under another category is now an ordinary status, and a
+stray one gets the 500 with the flag off too. A workflow with no DONE-category
+status excludes nothing. The mock follows since TAS-297 (`BOARD_DONE_CATEGORY`).
 
 **And the arithmetic does not favour the route even when the fields arrive.**
 `issueType` is a **required** query parameter, so the board's own `ALL` filter
