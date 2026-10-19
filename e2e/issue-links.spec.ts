@@ -17,7 +17,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   // Addressed by class, not by role and name: since TAS-148 an ADMIN's card
@@ -144,7 +144,7 @@ test("a viewer reads the links and is offered no way to change them", async ({ p
   // a UI courtesy and the server stays the authority.
   await page.goto("/login");
   await page.getByLabel("Email").fill("tom@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 

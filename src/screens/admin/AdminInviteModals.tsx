@@ -240,7 +240,11 @@ export function AdminInviteUserModal({
  *
  * A 409 here means the account stopped being INVITED between the list and the
  * press — activated, locked or blocked; the list is read again (`onStale`) so
- * the row stops offering this.
+ * the row stops offering this. "Send new link" stays where it is, steadily
+ * `aria-disabled` (TAS-299): it is the button the reader just pressed, so
+ * removing it would drop focus, and moving focus would compete with the alert;
+ * a press and `Cmd/Ctrl+Enter` send nothing more, because the answer could
+ * only be the same 409.
  */
 export function AdminResendInviteModal({
   user,
@@ -263,8 +267,11 @@ export function AdminResendInviteModal({
     },
   });
 
+  /** The 409: nothing is waiting for a link any more, and nothing can be resent. */
+  const spent = run.isError && inviteFailure(run.error) === "exists";
+
   const submit = () => {
-    if (run.isPending) return;
+    if (run.isPending || spent) return;
     run.mutate();
   };
   useDialogKeys(submit, onClose);
@@ -292,7 +299,7 @@ export function AdminResendInviteModal({
             error={run.error}
             // A 409 is any account that is not INVITED — ACTIVE, LOCKED or
             // BLOCKED — so it says what that means, not which of them it is.
-            existsText={`${name} can no longer be invited — the account is no longer waiting for activation.`}
+            existsText={`${name}’s account is no longer waiting for activation, so there is nothing to resend.`}
           />
         ) : null}
 
@@ -303,7 +310,11 @@ export function AdminResendInviteModal({
           <button autoFocus className="secondary-button" onClick={onClose} type="button">
             Cancel
           </button>
-          <button aria-disabled={run.isPending || undefined} className="primary-button" type="submit">
+          <button
+            aria-disabled={run.isPending || spent || undefined}
+            className={spent ? "primary-button admin-resend-submit is-spent" : "primary-button admin-resend-submit"}
+            type="submit"
+          >
             Send new link
           </button>
         </div>

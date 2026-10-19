@@ -8,7 +8,7 @@ test("signs in and reaches the project list", async ({ page }) => {
   await page.goto("/login");
 
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   await expect(page).toHaveURL(/\/projects$/);
@@ -27,7 +27,7 @@ test("signs in and reaches the project list", async ({ page }) => {
 test("opens a project board with its seeded issues", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   await page.locator(".project-card", { hasText: "Taska Platform" }).click();
@@ -40,7 +40,7 @@ test("rejects an unknown account with a visible error", async ({ page }) => {
   await page.goto("/login");
 
   await page.getByLabel("Email").fill("nobody@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   await expect(page.getByText("Invalid credentials")).toBeVisible();

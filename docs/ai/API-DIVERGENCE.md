@@ -1535,6 +1535,28 @@ Everything below is the entry as it stood, in the past tense.
   words beneath it. The "Unknown" rendering stays for rows written before the
   fix.
 
+### `DELETE /issues/{issueId}` deletes before it checks the caller's role
+
+- **Endpoint:** `DELETE /api/v1/issues/{issueId}`.
+- **Contract:** the route is for project ADMIN and MEMBER (`delete-issue-roles`);
+  a refused caller gets 403.
+- **Runtime (read at develop `e8a8d316`, not probed — a probe would delete a real
+  issue):** `IssueServiceImpl.deleteIssue` (issue-service, lines 318–350) runs
+  `softDeleteAndReturn` (`UPDATE … RETURNING`) first and only then
+  `projectRoleChecker.checkProjectRole`; the method is not `@Transactional`, and
+  the gateway passes the call through. So any signed-in user — a VIEWER, a
+  non-member — who knows an issue id soft-deletes it and still receives 403; the
+  history row and outbox event are never written, so nothing records it.
+- **UI:** cannot reach it — a VIEWER has no Delete (TAS-236), and since TAS-299 the
+  panel asks first and **re-reads the board after a refusal**, so a refused
+  delete that the server performed anyway shows as gone rather than as still
+  there.
+- **Compensation:** none (a client cannot make a server check its permissions).
+- **Removal:** [TAS-300](https://jira.ozero.dev/browse/TAS-300) (High, filed
+  2026-10-20 from `art-director`'s TAS-299 ruling, verified by the
+  orchestrator): read the issue, check the role, then delete, in one
+  transaction with the history and outbox writes.
+
 ### A deleted comment's text stays in the issue's history payload
 
 - **Endpoint:** `GET /api/v1/issues/{issueId}` (history), any reader of the

@@ -37,9 +37,34 @@ interface CopyOutcome {
  * leaves it where the press put it. Tabbing past the last control closes the
  * popover as well, so it never stays open over the panel body that focus has
  * moved into.
+ *
+ * Open by itself, or held by the caller through `open` and `onOpenChange`: the
+ * issue panel holds it, because opening Share closes the panel's delete
+ * question and opening the question closes Share (§4.10, TAS-299).
  */
-export function IssueShare({ issueKey, projectId, issueId }: { issueKey: string; projectId: string; issueId: string }) {
-  const [open, setOpen] = useState(false);
+export function IssueShare({
+  issueKey,
+  projectId,
+  issueId,
+  open: heldOpen,
+  onOpenChange,
+}: {
+  issueKey: string;
+  projectId: string;
+  issueId: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = heldOpen ?? ownOpen;
+  const onOpenChangeRef = useRef(onOpenChange);
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  });
+  const setOpen = useCallback((next: boolean) => {
+    setOwnOpen(next);
+    onOpenChangeRef.current?.(next);
+  }, []);
   // Around the trigger as well as the popover, as in every caller of the hook:
   // a press on the trigger of an open popover is inside, so the hook leaves it
   // to the trigger's own toggle.
@@ -47,10 +72,13 @@ export function IssueShare({ issueKey, projectId, issueId }: { issueKey: string;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
 
-  const dismiss = useCallback((how: DismissedBy) => {
-    setOpen(false);
-    if (how === "escape") triggerRef.current?.focus();
-  }, []);
+  const dismiss = useCallback(
+    (how: DismissedBy) => {
+      setOpen(false);
+      if (how === "escape") triggerRef.current?.focus();
+    },
+    [setOpen],
+  );
   useDismissOnOutside(open, wrapRef, dismiss);
 
   // Only a move to a known element outside closes it. `relatedTarget` is null
@@ -70,7 +98,7 @@ export function IssueShare({ issueKey, projectId, issueId }: { issueKey: string;
         aria-haspopup="dialog"
         aria-label={`Share issue ${issueKey}`}
         className="icon-button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!open)}
         ref={triggerRef}
         title="Share"
         type="button"

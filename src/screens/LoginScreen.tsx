@@ -68,6 +68,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const [password, setPassword] = useState("");
   const [typedToken, setTypedToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   // Read once: a session held when the form opened is the one the notice is
   // about, and the press that signs out of it is what retires the notice —
@@ -81,6 +82,7 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const tokenHintId = useId();
   const passwordHintId = useId();
   const newPasswordId = useId();
+  const passwordId = useId();
   const typedTokenId = useId();
 
   // A link that arrives while the card is already up — a hash change on the
@@ -155,6 +157,9 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
   const switchTo = (next: AuthMode) => {
     setMode(next);
     setActivated(false);
+    // A shown password does not follow the reader to the other tab (§4.27).
+    setShowPassword(false);
+    setShowNewPassword(false);
     submit.reset();
   };
 
@@ -218,11 +223,23 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
               {notice}
             </p>
           ) : null}
+          {/* `aria-pressed`, as on the link-type control: which segment is the
+              current one is otherwise said only by its fill (§7, TAS-299). */}
           <div className="segmented">
-            <button className={mode === "signin" ? "is-active" : ""} onClick={() => switchTo("signin")} type="button">
+            <button
+              aria-pressed={mode === "signin"}
+              className={mode === "signin" ? "is-active" : ""}
+              onClick={() => switchTo("signin")}
+              type="button"
+            >
               Sign in
             </button>
-            <button className={mode === "invite" ? "is-active" : ""} onClick={() => switchTo("invite")} type="button">
+            <button
+              aria-pressed={mode === "invite"}
+              className={mode === "invite" ? "is-active" : ""}
+              onClick={() => switchTo("invite")}
+              type="button"
+            >
               Accept invite
             </button>
           </div>
@@ -231,8 +248,8 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
             className="form-stack"
             onSubmit={(event) => {
               event.preventDefault();
-              // The guard `aria-disabled` on the invite button does not
-              // enforce by itself.
+              // The guard `aria-disabled` on either submit does not enforce by
+              // itself: Enter in a field while the request is out sends nothing.
               if (submit.isPending) return;
               submit.mutate();
             }}
@@ -251,17 +268,37 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                     placeholder="you@company.com"
                   />
                 </label>
-                <label className="field">
-                  <span>Password</span>
-                  <input
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    type="password"
-                    autoComplete="current-password"
-                    placeholder="••••••••••"
-                  />
-                </label>
-                <button className="primary-button auth-submit" disabled={submit.isPending} type="submit">
+                {/* New password's layout (§4.27, TAS-299): the label is `for`
+                    the field and wraps nothing, because a wrapping label around
+                    the toggle would name the field "Password Show password".
+                    The toggle is required for the invite's reason — there is no
+                    reset, and failed sign-ins lock the account. */}
+                <div className="field">
+                  <label htmlFor={passwordId}>Password</label>
+                  <div className="password-field">
+                    <input
+                      autoComplete="current-password"
+                      id={passwordId}
+                      onChange={(event) => setPassword(event.target.value)}
+                      placeholder="••••••••••"
+                      type={showPassword ? "text" : "password"}
+                      value={password}
+                    />
+                    <button
+                      aria-label="Show password"
+                      aria-pressed={showPassword}
+                      className="icon-button password-toggle"
+                      onClick={() => setShowPassword((shown) => !shown)}
+                      type="button"
+                    >
+                      {showPassword ? <EyeOff aria-hidden="true" size={14} /> : <Eye aria-hidden="true" size={14} />}
+                    </button>
+                  </div>
+                </div>
+                {/* `aria-disabled`, not `disabled` (§4.21, §4.27): a submit
+                    that disabled itself dropped the keyboard reader's focus to
+                    <body> for the length of the request. */}
+                <button aria-disabled={submit.isPending || undefined} className="primary-button auth-submit" type="submit">
                   {submit.isPending ? "Signing in" : "Sign in"}
                 </button>
                 {submit.isError ? <LoginFailure error={submit.error} mode={mode} /> : null}
@@ -349,15 +386,25 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
  * the one refusal whose field can be pointed at (`aria-invalid`, §4.27).
  *
  * **Keyed on the sentence**, which this file otherwise avoids, and the reason
- * is that nothing else carries it: all six 400s of the route share
- * `INVALID_ARGUMENT`, and the policy's four begin "Password" where the token's
- * two begin "Token" and "Invite token" (`PasswordValidator`,
- * `AuthServiceImpl.setPasswordByToken`, develop `e8a8d316b326`). A reworded
- * sentence costs only the field marker: the sentence itself is still printed.
+ * is that nothing else carries it: every 400 of the route shares
+ * `INVALID_ARGUMENT`. Two of them come from auth-service's gRPC transport,
+ * before the service sees the request — a blank token, "body.token must not be
+ * blank", and a blank password, "body.newPassword must not be blank"
+ * (`AuthGrpcService.setPasswordByToken`, `GrpcRequestValidators`). Behind them
+ * the service's own: the token's "Token required" and "Invite token is too
+ * long", and the password policy's sentences, all beginning "Password"
+ * (`PasswordValidator`, `AuthServiceImpl.setPasswordByToken`, develop
+ * `e8a8d316b326`). So a password refusal begins "Password" or
+ * "body.newPassword", and a token refusal begins neither. A reworded sentence
+ * costs only the field marker: the sentence itself is still printed.
  */
 function isPasswordRefusal(error: unknown): boolean {
   const { code, status, message } = apiErrorFacts(error);
-  return (code === "INVALID_ARGUMENT" || status === 400) && message !== null && message.startsWith("Password");
+  return (
+    (code === "INVALID_ARGUMENT" || status === 400) &&
+    message !== null &&
+    (message.startsWith("Password") || message.startsWith("body.newPassword"))
+  );
 }
 
 /**

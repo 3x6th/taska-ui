@@ -492,6 +492,45 @@ describe("ProjectMembersModal", () => {
     ]);
   });
 
+  it("keeps focus in the field when the box is pressed off a row, a link or a button (TAS-299)", async () => {
+    // §4.22: a press on the box's own sentence or its empty space used to move
+    // focus onto the `tabIndex=-1` box. A prevented mousedown is what keeps it
+    // in the field; links, buttons and the server's words take the press.
+    state.searchFailure = refusal("INVALID_ARGUMENT", 400, DIRECTORY_QUERY_REFUSAL_MESSAGE, "req-users");
+    renderPanel({ globalRole: "GLOBAL_ADMIN" });
+    await within(dialog()).findByText("Mark Lee");
+    fireEvent.change(searchField(), { target: { value: "anna" } });
+    const sentence = await within(dialog()).findByText("People search could not be run.");
+    const box = sentence.closest(".member-search") as HTMLElement;
+
+    // `fireEvent` answers false when the event's default was prevented.
+    expect(fireEvent.mouseDown(sentence)).toBe(false);
+    expect(fireEvent.mouseDown(within(dialog()).getByText(DIRECTORY_QUERY_REFUSAL_MESSAGE))).toBe(true);
+    expect(fireEvent.mouseDown(within(dialog()).getByRole("button", { name: "Copy request id req-users" }))).toBe(true);
+    // The box's scrollbar: a press at or past its client width is left alone,
+    // so the gutter still drags.
+    // jsdom lays nothing out, so the width and the press's offset are given.
+    Object.defineProperty(box, "clientWidth", { configurable: true, value: 200 });
+    const pressAt = (offsetX: number) => {
+      const press = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      Object.defineProperty(press, "offsetX", { value: offsetX });
+      box.dispatchEvent(press);
+      return press.defaultPrevented;
+    };
+    expect(pressAt(204)).toBe(false);
+    expect(pressAt(120)).toBe(true);
+  });
+
+  it("lets the way to Administration › Users take a press inside the box", async () => {
+    renderPanel({ globalRole: "GLOBAL_ADMIN" });
+    await within(dialog()).findByText("Mark Lee");
+    fireEvent.change(searchField(), { target: { value: "zoe" } });
+    await within(dialog()).findByText("No one matches “zoe”.");
+
+    expect(fireEvent.mouseDown(within(dialog()).getByRole("link", { name: "Administration › Users" }))).toBe(true);
+    expect(fireEvent.mouseDown(within(dialog()).getByText("No one matches “zoe”."))).toBe(false);
+  });
+
   it("closes the results on the first Esc and keeps the text; the next Esc closes the dialog", async () => {
     const { onClose } = renderPanel();
     await within(dialog()).findByText("Mark Lee");

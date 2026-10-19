@@ -3117,8 +3117,26 @@ describe("MockTaskaApi", () => {
       (await api.listAdminRows({ service: "auth", table: "users", pageSize: 100 })).rows.find((row) => row.email === email)
         ?.status;
 
-    it("refuses in the server's order: token present, then the password, then the token's length", async () => {
-      await expect(accept("  ", "weak")).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Token required" });
+    it("refuses a blank token or password in the gRPC transport's words, the token first, before the service", async () => {
+      // `GrpcRequestValidators.requireNonBlank` in auth-service's transport,
+      // ahead of `AuthServiceImpl`: the stand never says "Token required" or
+      // "Password is required" on this route (TAS-299).
+      await expect(accept("  ", "")).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "body.token must not be blank",
+      });
+      await expect(accept(MOCK_INVITE_TOKENS.leo, "")).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "body.newPassword must not be blank",
+      });
+      await expect(accept(MOCK_INVITE_TOKENS.leo, "   ")).rejects.toMatchObject({
+        message: "body.newPassword must not be blank",
+      });
+      // Spent by neither.
+      await expect(accept(MOCK_INVITE_TOKENS.leo)).resolves.toBeUndefined();
+    });
+
+    it("refuses in the server's order: the password, then the token's length", async () => {
       await expect(accept("x".repeat(300), "weak")).rejects.toMatchObject({
         message: "Password must be at least 8 characters and not exceed 128 characters",
       });
@@ -3126,7 +3144,6 @@ describe("MockTaskaApi", () => {
     });
 
     it.each([
-      ["", "Password is required"],
       ["Sh0rt!", "Password must be at least 8 characters and not exceed 128 characters"],
       [`Aa1!${"ж".repeat(40)}`, "Password exceeds the BCrypt limit of 72 UTF-8 bytes"],
       ["lowercase1!", "Password must have at least 1 upper character"],

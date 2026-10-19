@@ -17,7 +17,7 @@ test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 async function signIn(page: Page) {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 }
@@ -122,7 +122,7 @@ test("opens from the keyboard, keeps a sane Tab order with §7's ring, and close
   await page.keyboard.press(" ");
   await expect(dialog).toBeVisible();
   for (let step = 0; step < 5; step += 1) await page.keyboard.press("Tab");
-  await expect(panel.getByRole("button", { name: "Delete", exact: true })).toBeFocused();
+  await expect(panel.getByRole("button", { name: "Delete issue TAS-101", exact: true })).toBeFocused();
   await expect(dialog).toBeHidden();
 
   // A press outside closes it.

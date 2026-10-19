@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { RequestId } from "./RequestId";
 
 /**
@@ -33,6 +33,7 @@ export function ErrorNote({
   serverWords,
   live,
   id,
+  ref,
 }: {
   children: ReactNode;
   /** The gateway's `X-Request-Id`, on its own line under the sentence. Mock mode never carries one. */
@@ -46,9 +47,11 @@ export function ErrorNote({
   live?: "alert" | "polite";
   /** On the sentence, for a field that is described by it (`aria-describedby`). */
   id?: string;
+  /** The box, for a caller that scrolls it into view when it lands (the issue panel's delete, TAS-299). */
+  ref?: Ref<HTMLDivElement>;
 }) {
   return (
-    <div className="error-note">
+    <div className="error-note" ref={ref}>
       <p className="error-note-sentence" id={id} role={live === "alert" ? "alert" : live === "polite" ? "status" : undefined}>
         {children}
       </p>
