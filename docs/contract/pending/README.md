@@ -110,7 +110,6 @@ was written against it.
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
 | `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
-| `pr-172-TAS-160.yml` | [#172](https://github.com/VladislavYurin/taska-backend/pull/172) | TAS-160 | TAS-251 |
 
 `pr-118-TAS-125.yml` was here for TAS-125 / TAS-191 and was deleted on 2026-09-09
 when backend PR #118 merged and the snapshot was refreshed to develop
@@ -172,3 +171,18 @@ contract text only. Backend PR #172 closed unmerged and was replaced by #197
 (TAS-160), so `pr-172-TAS-160.yml` now pins a closed PR and is left for the
 next pass, which re-extracts #197, rather than deleted under the rule above.
 `pr-155-TAS-145.yml` stays stale, as `docs/ai/BACKLOG.md` records.
+
+`pr-172-TAS-160.yml` (TAS-160 / TAS-251) was deleted on 2026-10-19, in TAS-265.
+#197 never needed an extract of its own: it and #198, #199 and #200 all merged
+the same afternoon, before the next pass began, and the snapshot was refreshed to
+develop `398285cde074` instead. All four PRs branched from `7d4f7395565c`, so
+every path and schema that differs between the two snapshots must come from one
+of their heads, and it does: 32 blocks, each byte-identical to its counterpart
+at `3eafb22` (#197: `/readonly/audit-entries`, `ListAuditEntriesResponseDto`,
+`AuditEntryDto`), `c99ff19` (#199: `RestErrorResponse`) or `7cdcf28` (#200:
+`info`, seven paths, twenty schemas), and nothing else differs. #198 changes no
+contract text. The four were measured deployed the same day with a token:
+`/meta` lists twenty-three notification types and five user statuses
+(`f2739711-8300-4418-938c-146716a67cf8`), the audit read answers 200 with an
+`id` on every entry (`04613bb7-a862-4115-b0b7-0d8118f3bf9f`), and the error
+envelope carries `details: null` (`fe5a4cc1-92cf-45a1-bc48-6fdcc4289d78`).
