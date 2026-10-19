@@ -820,7 +820,7 @@ None of these were caused by that branch; they were seen while two reviewers
 had the board open, and are recorded so they are not re-discovered a third
 time.
 
-- **`.form-error` fails §7 wherever it appears, not just on the board.**
+- ~~**`.form-error` fails §7 wherever it appears, not just on the board.**~~ Closed by TAS-192 (`185ed8a`, PR #90): `.form-error` is deleted, every site uses `ErrorNote`.
   `--danger` on its own 12% danger tint measures **2.96:1 light** / 4.92:1
   dark — under every floor in §7 — and the same class sets the login form's
   errors on `--surface` at 3.17:1. TAS-163 fixes the board's use of it by
@@ -2327,8 +2327,8 @@ is what recurs.
   names for `.search-box` is the same one. And a stored project colour outside
   the eight choices draws the picker with nothing checked *and* the lock note,
   leaving the current colour readable only from the key badge's tint.
-- **TAS-148 made [TAS-192](https://jira.ozero.dev/browse/TAS-192) an eleventh
-  site.** `.form-error`'s own sentence is `--danger` at 3.17:1 in light, and the
+- ~~**TAS-148 made [TAS-192](https://jira.ozero.dev/browse/TAS-192) an eleventh
+  site.**~~ Closed by TAS-192 (`185ed8a`): the edit dialog uses `ErrorNote`. `.form-error`'s own sentence is `--danger` at 3.17:1 in light, and the
   edit dialog now uses it. The request id beside it deliberately does not
   inherit that tone — it is `--fg-2` mono at 6.25:1, because a reader has to
   transcribe it and `.attachment-note` had already recorded 3.17 as the reason
@@ -3047,7 +3047,7 @@ Frontend, recorded rather than taken:
   exit is the 32px scrim strip. Fix: render the header's Close `.icon-button`
   above the notice and the §4.18 action row with a secondary "Try again" calling
   `issueQuery.refetch()`.
-- **The panel's write slot carries the conflict sentence in `.form-error`**
+- ~~**The panel's write slot carries the conflict sentence in `.form-error`**~~ Closed by TAS-192 (`185ed8a`): `ErrorNote`, 20/20.
   (`art-director` r2 N2): 3.17:1 light, the TAS-192 gap. Move the slot to the
   `.api-notice` recipe together with TAS-192, not alone.
 - **No in-flight state on an assignee chip or priority segment** (`art-director`
@@ -3712,3 +3712,26 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   the mock's ids are random, so a tiebreak would sort equal timestamps
   randomly, and insertion order stands in. Harmless while seeds never share a
   timestamp.
+
+### Left by TAS-236, TAS-259, TAS-192 (VIEWER controls, comment delete, error contrast, 2026-10-19)
+
+- **The issue panel's Delete still deletes the issue on one click**
+  (`frontend-builder`). The same hazard TAS-259 fixed for comments, worse in
+  scope; a candidate story: the §4.22 strip on the panel's Delete.
+- **`.filter-error` is still `--danger` text, 3.68:1 light** (4.99 dark): the
+  filter bar's "Labels could not be loaded". Not a `.form-error` site, so
+  TAS-192 left it; other `--danger`-as-text selectors (`.user-status.is-blocked`,
+  `.admin-key.is-failed`) are not audited either. A design call for art-director.
+- **Comment writes are not optimistic**: after confirming a delete the row stays
+  until the thread is re-read.
+- **A VIEWER sees a disabled New while the role is read** (`art-director` N1):
+  the role answers with the context, so on the gateway New can stand disabled
+  over the skeleton and disappear when the role lands. Recorded in DESIGN.md §5.7;
+  confirm the read order on the stand before changing anything.
+- **Pressing Delete (or Edit) on another comment discards an open edit**
+  (`release-reviewer` F3): the row remounts and the draft is gone, the same rule
+  the work log copies. Small loss of typed text with no warning; covers both.
+- **`AdminScreen.test.tsx` › "lands on the last page when the address names one
+  past the end" flaked once** (expected 2, got 999) in a full `npm run check`
+  during TAS-236/259/192, with nothing under `src/screens/admin` or `src/api`
+  changed; 3 of 3 alone. Watch for a repeat before chasing it.

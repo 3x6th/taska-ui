@@ -1448,6 +1448,30 @@ Everything below is the entry as it stood, in the past tense.
   words beneath it. The "Unknown" rendering stays for rows written before the
   fix.
 
+### A deleted comment's text stays in the issue's history payload
+
+- **Endpoint:** `GET /api/v1/issues/{issueId}` (history), any reader of the
+  issue — `get-issue-roles` is ADMIN, MEMBER, VIEWER.
+- **Contract:** history `payload` is free-form; nothing states what a comment
+  event carries.
+- **Runtime (read at develop `9aea7e3`, not probed):** issue-service writes the
+  text into every comment event — `body` on create
+  (`CommentServiceImpl.java:381`), `oldBody`/`newBody` on edit (`:401-402`), the
+  deleted `body` on delete (`:422`) — and the gateway passes `payload` through
+  (`IssueMapper.java:135`). So a deleted comment, and every earlier version of an
+  edited one, stays readable over the API by any project member, a VIEWER
+  included. A watcher's `ISSUE_COMMENT_CREATED` notification preview keeps the
+  text too.
+- **UI:** never renders payload bodies — the feed says "commented on this issue",
+  "edited a comment", "deleted a comment". The delete confirmation (TAS-259)
+  says the comment "will be removed from this issue for everyone", which is true
+  of the thread and of the screen, not of the API. The mock writes only
+  `{commentId}` into these events, so mock and REST payloads differ unseen.
+- **Compensation:** none.
+- **Removal:** [TAS-298](https://jira.ozero.dev/browse/TAS-298) (filed
+  2026-10-19 from `api-contract-guard`'s TAS-259 verdict): comment events carry
+  `commentId` only, and the stored history is cleaned.
+
 ### Closed by contract (TAS-265): comment ordering is unspecified
 
 - **Endpoint:** `GET /projects/{id}/issues/{id}/comments`

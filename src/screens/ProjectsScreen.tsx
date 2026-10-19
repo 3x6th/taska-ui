@@ -7,6 +7,7 @@ import { ApiNotice } from "../components/ApiNotice";
 import { Avatar } from "../components/Avatar";
 import { ColorSwatches, type ColorChoice } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
+import { ErrorNote } from "../components/ErrorNote";
 import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { TopBar } from "../components/TopBar";
@@ -430,7 +431,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
             The first swatch is Automatic: the project takes its colour from its key.
           </p>
         </div>
-        {create.isError ? <div className="form-error">{create.error.message}</div> : null}
+        {create.isError ? <ErrorNote>{create.error.message}</ErrorNote> : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel

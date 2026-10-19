@@ -76,7 +76,7 @@ test.describe("in UTC+3, the zone TAS-237 was reported from", () => {
     // Criterion: two lines, HH:mm, and no ISO anywhere near the reader.
     await expect(lines.first()).toHaveText(/^Account is locked until \d{2}:\d{2}$/);
     await expect(lines.nth(1)).toHaveText("Try again later.");
-    await expect(page.locator(".form-error")).not.toHaveText(ISO_INSTANT);
+    await expect(page.locator(".error-note")).not.toHaveText(ISO_INSTANT);
 
     // The machine-readable instant is still on the page, on the <time> that
     // carries the visible clock — so the two can be compared rather than the
@@ -108,7 +108,7 @@ test.describe("in UTC+3, the zone TAS-237 was reported from", () => {
     // wire — so the id line the REST path now gets is correctly absent here.
     // Pinned so its appearance in mock mode would be noticed rather than
     // welcomed.
-    await expect(page.locator(".form-error .request-id-line")).toHaveCount(0);
+    await expect(page.locator(".error-note .request-id-line")).toHaveCount(0);
   });
 
   test("the second line is centred against the first", async ({ page }) => {
@@ -116,11 +116,11 @@ test.describe("in UTC+3, the zone TAS-237 was reported from", () => {
 
     // The story asks for this by name. Read off the computed style rather than
     // from a screenshot so it survives a stylesheet rewrite, and read off the
-    // block rather than `.form-error`, which is shared with the issue composer
-    // and the project dialog and must stay left-aligned for them.
+    // block rather than `.error-note`, which is shared with the issue panel and
+    // the project dialogs and must stay left-aligned for them.
     await expect(lines.first()).toHaveCSS("text-align", "center");
     await expect(lines.nth(1)).toHaveCSS("text-align", "center");
-    await expect(page.locator(".form-error").first()).not.toHaveCSS("text-align", "center");
+    await expect(page.locator(".error-note").first()).not.toHaveCSS("text-align", "center");
   });
 });
 
@@ -221,7 +221,7 @@ test("a sign-in refused for any other reason still prints the server's own sente
   await page.getByLabel("Password").fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
-  await expect(page.locator(".form-error")).toHaveText("Invalid credentials");
+  await expect(page.locator(".error-note")).toHaveText("Invalid credentials");
   await expect(page.locator(".auth-lock")).toHaveCount(0);
   await expect(page).toHaveURL(/\/login$/);
 });

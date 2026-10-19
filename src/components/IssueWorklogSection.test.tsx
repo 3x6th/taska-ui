@@ -98,6 +98,43 @@ describe("the work log section", () => {
     expect(screen.queryByRole("form", { name: "Log work" })).toBeNull();
   });
 
+  it("says a failed read in the panel's one error box, with the server's words and the request id", async () => {
+    // A refusal, so the read is not asked twice (`issueWorklogsOptions`).
+    state.listFailure = refusal("Not allowed role", 403, "PERMISSION_DENIED");
+    renderSection();
+
+    // `ErrorNote` since TAS-192 — the box every write refusal in the panel
+    // uses — rather than the screen-level banner, so the panel has one look.
+    const sentence = await screen.findByText("The work log could not be loaded. Not allowed role");
+    expect(sentence.closest(".error-note")).not.toBeNull();
+    expect(document.querySelector(".api-notice")).toBeNull();
+    expect(screen.getByText("req-251")).toBeVisible();
+    // State on opening, not an answer to an action: no live region, as the
+    // comments' read failure has none.
+    expect(sentence.closest("[role='status'], [role='alert'], [aria-live]")).toBeNull();
+  });
+
+  it("closes a Delete question on Esc from the Delete that asked, and gives it focus", async () => {
+    renderSection();
+    const remove = await screen.findByRole("button", { name: /^Delete 45m logged/ });
+    fireEvent.click(remove);
+    expect(screen.getByRole("button", { name: "Delete entry" })).toBeVisible();
+
+    // Shift+Tab from Cancel lands on the Delete that opened the strip; Esc there
+    // has to close it as it does from inside the strip.
+    remove.focus();
+    fireEvent.keyDown(remove, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Delete entry" })).toBeNull();
+    expect(remove).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(remove).toHaveFocus());
+
+    // And from inside it, as before.
+    fireEvent.click(remove);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Cancel" }), { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Delete entry" })).toBeNull();
+    await waitFor(() => expect(remove).toHaveFocus());
+  });
+
   it("takes a refused add back off the list and puts the entry back in the boxes", async () => {
     state.writeFailure = refusal("Not allowed role", 403, "PERMISSION_DENIED");
     renderSection();

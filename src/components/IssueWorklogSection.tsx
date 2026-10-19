@@ -23,8 +23,8 @@ import {
   type WorklogDraftField,
   type WorklogDraftProblems,
 } from "../lib/worklog";
-import { ApiNotice } from "./ApiNotice";
 import { Avatar } from "./Avatar";
+import { ErrorNote } from "./ErrorNote";
 import { issueWorklogsKey, issueWorklogsOptions } from "./issueWorklogsQuery";
 import { RequestId } from "./RequestId";
 
@@ -121,10 +121,11 @@ export function IssueWorklogSection({
     (key === "heading" ? headingRef.current : focusables.current.get(key))?.focus();
   });
 
-  const failed = (sentence: string, error: unknown) => {
+  const noticeOf = (sentence: string, error: unknown): WorklogNotice => {
     const { message, requestId } = apiErrorFacts(error);
-    setNotice({ text: message ? `${sentence} ${message}` : sentence, requestId });
+    return { text: message ? `${sentence} ${message}` : sentence, requestId };
   };
+  const failed = (sentence: string, error: unknown) => setNotice(noticeOf(sentence, error));
 
   const setList = (update: (current: IssueWorklog[]) => IssueWorklog[]) =>
     queryClient.setQueryData<IssueWorklog[]>(issueWorklogsKey(projectId, issueId), (current) =>
@@ -290,6 +291,11 @@ export function IssueWorklogSection({
   };
 
   const showForm = canLog && !undeployed;
+  // The panel's one error box (TAS-192), worded the way this section's write
+  // refusals are: its sentence, then the server's. No live region: a failed
+  // read is the section's state on opening, not an answer to something the
+  // reader did — the same as the comments' read failure.
+  const readFailure = worklogsQuery.isError ? noticeOf("The work log could not be loaded.", worklogsQuery.error) : null;
 
   return (
     <section aria-labelledby={`${formId}-heading`} className="issue-worklogs">
@@ -341,7 +347,11 @@ export function IssueWorklogSection({
         <p aria-live="polite" className="worklog-note-sentence">
           {notice?.text ?? ""}
         </p>
-        {notice?.requestId ? <RequestId value={notice.requestId} /> : null}
+        {notice?.requestId ? (
+          <p className="worklog-note-detail">
+            <RequestId value={notice.requestId} />
+          </p>
+        ) : null}
       </div>
 
       {undeployed ? (
@@ -349,10 +359,10 @@ export function IssueWorklogSection({
         // yet (backend PR #178), and neither "could not be loaded" nor "No work
         // logged yet" would be true.
         <p className="issue-links-empty is-unavailable">This gateway does not serve work logs yet.</p>
-      ) : worklogsQuery.isError ? (
-        <ApiNotice error={worklogsQuery.error} live="polite">
-          The work log could not be loaded.
-        </ApiNotice>
+      ) : readFailure ? (
+        <ErrorNote requestId={readFailure.requestId}>
+          {readFailure.text}
+        </ErrorNote>
       ) : null}
 
       {worklogsQuery.isPending ? <p className="issue-links-empty">Loading work log</p> : null}
@@ -444,7 +454,18 @@ function WorklogRow({
   return (
     <li className={`worklog-row${pending ? " is-pending" : ""}`}>
       <Avatar size="sm" user={author} />
-      <div className="worklog-main">
+      {/* Esc closes an open question from anywhere in the row's text column —
+          the strip's two answers, and the Delete that asked, which Shift+Tab
+          from Cancel lands on (§4.22). On the strip alone it did nothing there. */}
+      <div
+        className="worklog-main"
+        onKeyDown={(event) => {
+          if (confirming && event.key === "Escape") {
+            event.stopPropagation();
+            onCancelConfirm();
+          }
+        }}
+      >
         <p className="worklog-head">
           <strong>{name}</strong>
           <span className="worklog-duration">{duration}</span>
@@ -517,16 +538,7 @@ function WorklogRow({
         {confirming ? (
           // §4.22's inline confirmation: the sentence, Cancel first and focused,
           // and the answer that destroys something edged in `--danger`.
-          <div
-            className="member-confirm worklog-confirm"
-            id={confirmId}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                onCancelConfirm();
-              }
-            }}
-          >
+          <div className="member-confirm worklog-confirm" id={confirmId}>
             <p className="member-confirm-sentence" id={`${confirmId}-sentence`}>
               Delete {duration} logged on {day}? The time goes back to the remaining estimate.
             </p>

@@ -5,7 +5,7 @@ import { taskaApi } from "../api/client";
 import { apiErrorFacts, isAccountLocked } from "../api/errors";
 import type { LoginRedirectState } from "../components/RequireSession";
 import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
-import { RequestId } from "../components/RequestId";
+import { ErrorNote } from "../components/ErrorNote";
 import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { formatLockDeadline, lockedUntilOf } from "../lib/accountLock";
@@ -202,26 +202,24 @@ function LoginFailure({ error, mode }: { error: unknown; mode: AuthMode }) {
   // matters.
   const lockedUntil = mode === "signin" && isAccountLocked(error) ? lockedUntilOf(error) : null;
 
+  // The request id is owed on both branches and was missing from this screen
+  // until TAS-237: a refusal here is as likely to need looking up in the
+  // gateway log as one from any dialog, and `EditProjectModal` has paired the
+  // id with the sentence since §5.6 asked for it. Mock mode never carries one.
   return (
-    <div className="form-error">
+    <ErrorNote requestId={requestId}>
       {lockedUntil ? (
         // Two lines, the second centred under the first, per the story. The
-        // centring is `.auth-lock`'s own — `.form-error` is shared with the
-        // issue composer and the project dialog and sets no alignment for
-        // anyone.
+        // centring is `.auth-lock`'s own — `ErrorNote` is shared with the issue
+        // panel and the project dialogs and sets no alignment for anyone.
         <span className="auth-lock">
           <LockDeadline until={lockedUntil} />
           <span>Try again later.</span>
         </span>
       ) : (
-        <span>{message ?? "Sign-in failed."}</span>
+        (message ?? "Sign-in failed.")
       )}
-      {/* Owed on both branches and missing from this screen until TAS-237: a
-          refusal here is as likely to need looking up in the gateway log as one
-          from any dialog, and `EditProjectModal` has paired the id with the
-          sentence since §5.6 asked for it. Mock mode never carries one. */}
-      {requestId ? <RequestId value={requestId} /> : null}
-    </div>
+    </ErrorNote>
   );
 }
 

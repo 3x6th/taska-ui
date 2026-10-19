@@ -919,40 +919,11 @@ h1 {
   gap: 4px 9px;
 }
 
-.form-error {
-  border-radius: 9px;
-  padding: 8px 10px;
-  background: color-mix(in oklab, var(--danger) 12%, transparent);
-  color: var(--danger);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-/* The gateway's request id when a refusal carries one — its own line under the
-   sentence, the way the admin console's failure block already sets it, rather
-   than inheriting this block's tone. `--danger` on its own 12% tint measures
-   3.17:1 in light (the same number `.attachment-note` below records, where the
-   tone was dropped for it), and this is a string the reader has to transcribe
-   into a log query, not a decoration: §7 asks ≥4.5:1 for that, and `--fg-2` on
-   the tint is 6.25:1 light / 5.95:1 dark. Mono and 11.5px because it is a
-   verbatim machine string (§2.3, `.admin-error-detail`). */
-.form-error .request-id-line {
-  display: flex;
-  margin-top: 4px;
-  color: var(--fg-2);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  font-weight: 400;
-  letter-spacing: 0.02em;
-}
-
-.form-error .copied-note { color: var(--fg-2); }
-
 /* The locked-account refusal, and only it (TAS-237): "Account is locked until
    14:55" over "Try again later.", the second centred against the first.
 
-   Scoped to `.auth-lock` rather than added to `.form-error`, which the issue
-   composer and the project dialog share — those carry one left-aligned
+   Scoped to `.auth-lock` rather than added to `.error-note`, which the issue
+   panel and the project dialogs share — those carry one left-aligned
    sentence and centring them all would be a redesign smuggled in on a bug fix.
    Centring both lines about one axis is what puts the second line in the
    middle of the first, and it is the voice this card already speaks in:
@@ -1417,8 +1388,8 @@ p.user-profile-photo-note:not(.is-error) {
 /* "Copied" on the danger tint. `.copied-note`'s own `--fg-3` comes to 2.78:1
    light / 2.76:1 dark on this 10% tint, composited over `--surface` the way §7
    says to measure it — under §7's 3:1 floor for meta. `--fg-2`, which the id
-   beside it already wears, is 6.43:1 / 6.11:1. Same answer
-   `.form-error .copied-note` gives for the same kind of ground. */
+   beside it already wears, is 6.43:1 / 6.11:1. The removed `.form-error` gave
+   the same answer for the same kind of ground. */
 .user-profile-photo-note .copied-note {
   color: var(--fg-2);
 }
@@ -3550,10 +3521,10 @@ p.user-profile-photo-note:not(.is-error) {
 }
 
 /* A failure that keeps the dialog open (§5.8's taxonomy). A tint rather than
-   `.form-error`'s solid danger text, because this block is several lines — a
-   sentence, the server's own words, and the request id — and a whole paragraph
-   set in --danger would be shouting where it should be explaining. --fg on the
-   10% tint measures 15.83:1 light / 14.28:1 dark. */
+   the removed `.form-error`'s solid danger text, because this block is several
+   lines — a sentence, the server's own words, and the request id — and a whole
+   paragraph set in --danger would be shouting where it should be explaining.
+   --fg on the 10% tint measures 15.83:1 light / 14.28:1 dark. */
 .admin-write-failure {
   border-radius: 9px;
   background: color-mix(in oklab, var(--danger) 10%, transparent);
@@ -4430,11 +4401,18 @@ p.user-profile-photo-note:not(.is-error) {
 
    The profile menu's photo band joins it on the same terms (TAS-220). Its box
    is the 10% danger tint rather than `--surface`, where --fg-2 comes to 6.43:1
-   light / 6.11:1 dark, composited over the popover's --surface. */
+   light / 6.11:1 dark, composited over the popover's --surface.
+
+   And `ErrorNote`'s id line and the work log's (TAS-192), on the watchers box's
+   `--surface` ground and at its numbers. The first replaces `.form-error`'s own
+   11.5px copy of this line; the second printed the id at the sentence's 12.5px
+   `--fg`, the only id in the panel that did. */
 .watcher-note-detail,
 .api-notice-detail,
 .user-profile-photo-note-detail,
-.member-note-detail {
+.member-note-detail,
+.error-note-detail,
+.worklog-note-detail {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4560,10 +4538,15 @@ p.user-profile-photo-note:not(.is-error) {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 
+/* 35 is the height the "+" gives a head (2 + 22 + 11), held without it: a
+   VIEWER's columns draw no "+" (§5.7, TAS-236), "Other statuses" never has one,
+   and neither does the loading skeleton's — so every head stands on one line
+   whoever is reading. */
 .column-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 35px;
   padding: 2px 4px 11px;
 }
 
@@ -4594,19 +4577,15 @@ p.user-profile-photo-note:not(.is-error) {
 
 /* "Other statuses" (TAS-173, art-director's ruling 3): §9's `plain` column
    after the last workflow column, holding the issues no column does. No dot
-   and no "+", so the head keeps the 35px a column head gets from its button
-   (2 + 22 + 11), and the transparent plane with a hairline says it is not a
-   place a card can be dropped. */
+   and no "+" — the head keeps its 35px from `.column-head` above — and the
+   transparent plane with a hairline says it is not a place a card can be
+   dropped. */
 .board-column.is-plain {
   border: 1px solid var(--border);
   /* A column's padding less the hairline, so the head and the cards line up
      with the columns beside it (cards 290 wide), as art-director measured. */
   padding: 10px 8px 3px;
   background: transparent;
-}
-
-.other-statuses .column-head {
-  min-height: 35px;
 }
 
 /* The date and, in that group, the status in words. One line that gives way
@@ -5355,8 +5334,8 @@ p.user-profile-photo-note:not(.is-error) {
    modal's `--surface` plane `--fg-3` measures 3.14:1 light / 3.05:1 dark,
    which is §7's floor for non-critical meta and this is not that; `--fg-2` is
    7.26:1 / 6.75:1. That is the argument `.admin-write-hint` above already
-   makes, for the same reason. Still a quiet note rather than `.form-error`'s
-   red box, deliberately: nothing the reader did is wrong. */
+   makes, for the same reason. Still a quiet note rather than `.error-note`'s
+   danger-striped box, deliberately: nothing the reader did is wrong. */
 .save-failed-note {
   color: var(--fg-2);
 }
@@ -5704,9 +5683,10 @@ button.issue-link-open:hover {
 
    The error tone used to borrow `.form-error`, which is 12px/600 in `--danger`
    on a 12% `--danger` tint — drawn for a one-line validation string, measuring
-   3.17:1 light / 4.38:1 dark, and asked here to carry four wrapped lines about
-   a blocked cross-origin PUT. §7 wants ≥4.5:1 for anything but non-critical
-   meta and §5.6's error recipe says the same thing from the other end:
+   3.17:1 light / 4.43:1 dark on `--surface`, and asked here to carry four
+   wrapped lines about a blocked cross-origin PUT. §7 wants ≥4.5:1 for anything
+   but non-critical meta and §5.6's error recipe says the same thing from the
+   other end:
    `--surface` ground, `--border`, and `--danger` in the stripe only, precisely
    so the sentence itself is not danger-coloured. It also carried `margin: 0`,
    which put a failure about one file flush against the row of another.
@@ -5715,11 +5695,20 @@ button.issue-link-open:hover {
    because two structurally identical boxes differing only in stripe colour is
    the quiet version of this (§1); the panel behind it is `--surface` too, so
    the box is defined by its border and its stripe. Padding is on §2.4's scale
-   (7 / 11); the 10 this rule used to carry is not on it. */
+   (7 / 11); the 10 this rule used to carry is not on it.
+
+   `.error-note` (TAS-192) is the same box as a component, `ErrorNote`, for
+   every refusal that used to print through `.form-error` — the issue panel's
+   writes, its labels, links and comments, the issue, label and project dialogs,
+   and sign-in. The comment thread's write refusal draws the same box around a
+   sentence that stays mounted (TAS-259), as the work log's note does. With it
+   the panel has one error look rather than two, and `.form-error` is gone: its
+   sentence measured 3.17:1 light / 4.43:1 dark on `--surface`. */
 .attachment-note,
 .watcher-note,
 .member-note,
-.worklog-note {
+.worklog-note,
+.error-note {
   margin: 0 0 12px;
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
@@ -5738,11 +5727,13 @@ button.issue-link-open:hover {
    for a write that changed nothing, an error line for one that was refused), and
    two copies of §5.6's box are two chances for them to drift apart. Named
    separately rather than renamed to something generic so neither section's
-   markup has to change to say what it already says. */
+   markup has to change to say what it already says. `.error-note` has no info
+   tone, so it carries the stripe without a modifier. */
 .attachment-note.is-error,
 .watcher-note.is-error,
 .member-note.is-error,
-.worklog-note.is-error {
+.worklog-note.is-error,
+.error-note {
   border-left-color: var(--danger);
 }
 
@@ -5751,9 +5742,24 @@ button.issue-link-open:hover {
    the only thing a `<p>` needs taking off it is the margin that would otherwise
    push the box open. It is a `<p>` and not a bare text node because it is the
    live region now (see the section's own comment): the box holds the id line
-   too, and a uuid does not belong in an announcement. */
-.watcher-note-sentence {
+   too, and a uuid does not belong in an announcement. `ErrorNote`'s sentence is
+   the same `<p>` for the same reason. */
+.watcher-note-sentence,
+.error-note-sentence {
   margin: 0;
+}
+
+/* Inside a `.form-stack` the stack's gap spaces the box, as it spaced
+   `.form-error` (§1: groups by `gap`, not margins). */
+.form-stack > .error-note {
+  margin: 0;
+}
+
+/* The panel's own write line sits between Planning and Description, outside
+   any section. It used to sit flush under the date boxes; 20 above matches the
+   20 Description keeps below it, so the line reads as belonging to neither. */
+.issue-panel-body > .error-note {
+  margin-top: 20px;
 }
 
 .attachment-list {
@@ -6313,8 +6319,11 @@ button.attachment-open:hover:not(:disabled) {
 /* §4.22's strip without the member row's avatar indent: here it sits in the
    row's text column already. Two classes, because `.member-confirm` is later
    in this file and its `flex: 0 0 calc(100% - 32px)` — a width in the member
-   row — is a *height* in this column, and drew the strip over the next row. */
-.member-confirm.worklog-confirm {
+   row — is a *height* in this column, and drew the strip over the next row.
+   A comment's Delete asks in the same strip (TAS-259), in the comment's text
+   column for the same reason. */
+.member-confirm.worklog-confirm,
+.member-confirm.comment-confirm {
   flex: none;
   margin: 8px 0 2px;
 }
@@ -6455,6 +6464,26 @@ button.attachment-open:hover:not(:disabled) {
   display: flex;
   gap: 10px;
   margin-top: 6px;
+}
+
+/* §4.1's ring on what the thread focuses (TAS-259): Delete gets focus back
+   from its strip, the strip's two answers take it, and the heading catches it
+   after a confirmed delete. The rest of the section's controls join, as the
+   work log's do — without these Chrome draws `outline: auto` in the reader's
+   system accent (§7, TAS-185). */
+.comments h3:focus-visible,
+.comments .primary-button:focus-visible,
+.comments .secondary-button:focus-visible,
+.comments .link-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* And the heading's ring hugs its words rather than spanning the panel, as the
+   watchers heading's does. */
+.comments h3 {
+  width: fit-content;
+  border-radius: 6px;
 }
 
 .link-button {
@@ -7001,12 +7030,17 @@ button.attachment-open:hover:not(:disabled) {
 }
 
 /* The one thing the filter bar ever says on its own, and it is always a
-   failure — so it is named for that and coloured `--danger` like every other
-   failure in this app. `--fg-3` is the placeholder and disabled colour: a read
-   that failed rendered in it reads as a filter that has nothing to offer,
-   which is the opposite of what happened. Weight 550 rather than the
-   `.form-error` block's 600 because this sits inline in a 46px bar between
-   `--fg-3` labels, not in a tinted box of its own. */
+   failure — so it is named for that and coloured `--danger`. `--fg-3` is the
+   placeholder and disabled colour: a read that failed rendered in it reads as a
+   filter that has nothing to offer, which is the opposite of what happened.
+   Weight 550 because this sits inline in a 46px bar between `--fg-3` labels,
+   not in a box of its own.
+
+   No longer "like every other failure": since TAS-192 the boxed refusals set
+   their sentence in `--fg` beside a `--danger` stripe (`ErrorNote`), and this is
+   the one failure still printed in `--danger` — 3.68:1 on the bar's light
+   `--surface`, 4.99:1 dark, under §7's 4.5:1 in light. Open in
+   docs/ai/BACKLOG.md, not decided here. */
 .filter-error {
   color: var(--danger);
   font-size: 11.5px;

@@ -56,6 +56,7 @@ import { Avatar } from "../components/Avatar";
 import { ColorSwatches } from "../components/ColorSwatches";
 import { EditProjectModal } from "../components/EditProjectModal";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { ErrorNote } from "../components/ErrorNote";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
 import { IssueShare } from "../components/IssueShare";
 import { IssueWorklogSection } from "../components/IssueWorklogSection";
@@ -483,7 +484,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // move without the other.
   const canWatch = role === "ADMIN" || role === "MEMBER";
   // A reader the server *named* a VIEWER, as against one it named nothing. Only
-  // this reader may be told that their role is the reason a control is off.
+  // this reader may be told that their role is the reason a control is off —
+  // and only this reader's write controls are hidden rather than switched off
+  // (§5.7, TAS-236): New, the column "+", the transition buttons and Delete.
+  // A role that is unknown or unstated (TAS-226) is not a VIEWER, so those
+  // stay on screen, disabled, under the board's banner.
   const isProjectViewer = role === "VIEWER";
   // Each of these is the same single fact as the behaviour beside it, never a
   // second opinion about the same query: `canEdit` is "the membership answer
@@ -808,10 +813,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <div className="topbar-actions">
           <NotificationsBell bar={topbarRef} />
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
-          <button className="primary-button board-new" disabled={!canCreate} onClick={() => setCreating(true)} type="button">
-            <Plus size={15} />
-            New
-          </button>
+          {isProjectViewer ? null : (
+            <button className="primary-button board-new" disabled={!canCreate} onClick={() => setCreating(true)} type="button">
+              <Plus size={15} />
+              New
+            </button>
+          )}
           <UserProfileMenu
             user={meQuery.data}
             loading={meQuery.isPending}
@@ -1054,6 +1061,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   userById={userById}
                   canEdit={canEdit}
                   canCreate={canCreate}
+                  offersCreate={!isProjectViewer}
                   onAdd={() => setCreating(true)}
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
                 />
@@ -1214,6 +1222,7 @@ function BoardColumn({
   userById,
   canEdit,
   canCreate,
+  offersCreate,
   onAdd,
   onOpenIssue,
 }: {
@@ -1225,6 +1234,8 @@ function BoardColumn({
   canEdit: boolean;
   /** `canEdit`, and a project that allows at least one issue type. */
   canCreate: boolean;
+  /** Whether the "+" is drawn at all: not for a VIEWER (§5.7), who gets no New either. */
+  offersCreate: boolean;
   onAdd: () => void;
   onOpenIssue: (issueId: string) => void;
 }) {
@@ -1239,9 +1250,11 @@ function BoardColumn({
         <StatusDot status={status} />
         <strong>{name}</strong>
         <span className="count-pill">{issuesUnknown ? <Unknown /> : issues.length}</span>
-        <button className="icon-button mini" disabled={!canCreate} onClick={onAdd} title="Create issue" type="button">
-          <Plus size={13} />
-        </button>
+        {offersCreate ? (
+          <button className="icon-button mini" disabled={!canCreate} onClick={onAdd} title="Create issue" type="button">
+            <Plus size={13} />
+          </button>
+        ) : null}
       </div>
       <div className="issue-list">
         {issues.map((issue) => (
@@ -1925,8 +1938,12 @@ function IssuePanel({
   // These buttons are the drag's keyboard equivalent (§5.3), so they answer to
   // the same rule as the drop: only the server's own transitions, never the
   // fallback's. Offering a move built from an invented id would post that id.
+  //
+  // A VIEWER is offered none (§5.7, TAS-236), so the arrow goes with them; the
+  // notes below about why no move is offered are about the issue, not the
+  // reader, and stay for every role.
   const availableTransitions =
-    issue && workflow ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
+    issue && workflow && !isProjectViewer ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
   // The issue's status as its own workflow describes it, when it does: the name
   // the project chose and the category its colour comes from (TAS-173).
   const workflowStatus = issue ? workflow?.statuses.find((status) => status.statusKey === issue.status) : undefined;
@@ -2382,9 +2399,13 @@ function IssuePanel({
           {/* Read-only, so not gated by role (TAS-248). Only in the loaded head:
               the skeleton's has no key to share yet. */}
           <IssueShare issueId={issue.id} issueKey={issue.issueKey} projectId={issue.projectId} />
-          <button className="icon-button" disabled={!canEdit} onClick={() => deleteIssue.mutate()} title="Delete" type="button">
-            <Trash2 size={15} />
-          </button>
+          {/* Hidden from a VIEWER rather than shut (§5.7, TAS-236); for a role
+              nobody stated it stays, disabled (TAS-226). */}
+          {isProjectViewer ? null : (
+            <button className="icon-button" disabled={!canEdit} onClick={() => deleteIssue.mutate()} title="Delete" type="button">
+              <Trash2 size={15} />
+            </button>
+          )}
           <button className="icon-button" onClick={onClose} title="Close" type="button">
             <X size={16} />
           </button>
@@ -2689,13 +2710,12 @@ function IssuePanel({
 
               The live region is the sentence, not the box: the request id under
               it is plain text, as in `WatcherNoteDetail` and `ApiNotice`, so an
-              assertive announcement never reads a uuid out. The box and its
-              `.request-id-line` are `EditProjectModal`'s. */}
+              assertive announcement never reads a uuid out. The box is
+              `ErrorNote`, the panel's one error look (TAS-192). */}
           {panelNotice ? (
-            <div className="form-error" key={noticeKey}>
-              <span role="alert">{panelNotice}</span>
-              {shownRequestId ? <RequestId value={shownRequestId} /> : null}
-            </div>
+            <ErrorNote key={noticeKey} live="alert" requestId={shownRequestId}>
+              {panelNotice}
+            </ErrorNote>
           ) : null}
 
           <label className="description-field">
@@ -3808,7 +3828,7 @@ function IssueLabelsSection({
         <p className="issue-links-empty">This project has no labels yet.</p>
       ) : null}
 
-      {error ? <div className="form-error">{error}</div> : null}
+      {error ? <ErrorNote>{error}</ErrorNote> : null}
 
       {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("labels")}</p> : null}
       {labelsQuery.data && labels.length === 0 ? <p className="issue-links-empty">No labels yet</p> : null}
@@ -4038,7 +4058,7 @@ function IssueLinksSection({
         </form>
       ) : null}
 
-      {error ? <div className="form-error">{error}</div> : null}
+      {error ? <ErrorNote>{error}</ErrorNote> : null}
 
       {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("links")}</p> : null}
       {/* Only a part the server sent may say this. A part it did not send has
@@ -4906,8 +4926,13 @@ function CommentsSection({
   prefetched: boolean;
 }) {
   const queryClient = useQueryClient();
+  const sectionId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const [draft, setDraft] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  // The comment whose Delete has asked (TAS-259). One at a time, and never
+  // together with an open editor — the work log's rule.
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   // The panel has usually started this read already (`issueCommentsOptions`).
   const commentsRead = issueCommentsOptions(projectId, issueId);
@@ -4944,9 +4969,29 @@ function CommentsSection({
   const totalCount = commentsQuery.data?.pages[0]?.totalCount ?? comments.length;
   const mutationError = addComment.error ?? updateComment.error ?? deleteComment.error;
 
+  /**
+   * Delete asks first (TAS-259), in §4.22's strip under the row, as the work
+   * log's does. One press used to delete — and since the Activity feed folds
+   * (TAS-257), folding it near the foot of the panel shifts the thread by the
+   * feed's height, so a second press could land on a comment's Delete.
+   */
+  const openConfirm = (commentId: string) => {
+    setEditingId(null);
+    setConfirmingId((current) => (current === commentId ? null : commentId));
+  };
+  const acceptConfirm = (commentId: string) => {
+    setConfirmingId(null);
+    // The row leaves with the button that removed it once the thread is read
+    // again, so focus goes to the heading now rather than to a button that is
+    // about to be disabled and then gone.
+    headingRef.current?.focus();
+    deleteComment.mutate(commentId);
+  };
+
   return (
-    <section className="comments">
-      <h3>
+    <section aria-labelledby={`${sectionId}-heading`} className="comments">
+      {/* Focusable only from script: where focus lands after a confirmed delete. */}
+      <h3 id={`${sectionId}-heading`} ref={headingRef} tabIndex={-1}>
         Comments
         {totalCount ? <span className="count-pill">{totalCount}</span> : null}
       </h3>
@@ -4973,8 +5018,20 @@ function CommentsSection({
         </form>
       ) : null}
 
-      {commentsQuery.isError ? <div className="form-error">{commentsQuery.error.message}</div> : null}
-      {mutationError ? <div className="form-error">{mutationError.message}</div> : null}
+      {commentsQuery.isError ? <ErrorNote>{commentsQuery.error.message}</ErrorNote> : null}
+      {/* A write's refusal, announced since TAS-259: a confirmed delete moves
+          focus to the heading, so without a word a refusal would just appear.
+          One polite region that stays mounted and changes its text — the work
+          log's recipe, the shape §7 records as reliable — rather than
+          `ErrorNote`, which mounts together with its text. `.error-note`'s box
+          is drawn around it only while it has something to say; empty, the
+          wrapper has no class and the sentence no margin, so it takes no
+          space. */}
+      <div className={mutationError ? "error-note" : undefined}>
+        <p aria-live="polite" className="error-note-sentence">
+          {mutationError?.message ?? ""}
+        </p>
+      </div>
 
       {commentsQuery.isPending ? <p className="comments-empty">Loading comments</p> : null}
       {!commentsQuery.isPending && comments.length === 0 ? <p className="comments-empty">No comments yet</p> : null}
@@ -4989,11 +5046,18 @@ function CommentsSection({
           author={personFor(comment.authorUserId, comment.author, userById)}
           canManage={canComment && comment.authorUserId === currentUserId}
           editing={editingId === comment.id}
+          confirming={confirmingId === comment.id}
+          confirmId={`${sectionId}-confirm-${comment.id}`}
           pending={updateComment.isPending || deleteComment.isPending}
-          onStartEdit={() => setEditingId(comment.id)}
+          onStartEdit={() => {
+            setConfirmingId(null);
+            setEditingId(comment.id);
+          }}
           onCancelEdit={() => setEditingId(null)}
           onSave={(body) => updateComment.mutate({ commentId: comment.id, body })}
-          onDelete={() => deleteComment.mutate(comment.id)}
+          onOpenConfirm={() => openConfirm(comment.id)}
+          onCancelConfirm={() => setConfirmingId(null)}
+          onAcceptConfirm={() => acceptConfirm(comment.id)}
         />
       ))}
 
@@ -5016,33 +5080,63 @@ function CommentItem({
   author,
   canManage,
   editing,
+  confirming,
+  confirmId,
   pending,
   onStartEdit,
   onCancelEdit,
   onSave,
-  onDelete,
+  onOpenConfirm,
+  onCancelConfirm,
+  onAcceptConfirm,
 }: {
   comment: IssueComment;
   author?: Pick<User, "id" | "displayName" | "color" | "avatarUrl">;
   canManage: boolean;
   editing: boolean;
+  /** This row's Delete has asked, and its strip is open. */
+  confirming: boolean;
+  confirmId: string;
   pending: boolean;
   onStartEdit: () => void;
   onCancelEdit: () => void;
   onSave: (body: string) => void;
-  onDelete: () => void;
+  onOpenConfirm: () => void;
+  onCancelConfirm: () => void;
+  onAcceptConfirm: () => void;
 }) {
   // Seeded once per mount. The parent's key includes the editing flag, so
   // toggling edit mode remounts this row with a fresh draft.
   const [body, setBody] = useState(comment.body);
+  const deleteButton = useRef<HTMLButtonElement>(null);
+  // Cancel and Esc give focus back to the Delete that asked (§4.22). Moved
+  // before the strip unmounts, so it never falls to <body> in between.
+  const cancelConfirm = () => {
+    deleteButton.current?.focus();
+    onCancelConfirm();
+  };
+  const when = formatDateTime(comment.createdAt);
+  const asking = canManage && confirming && !editing;
 
   return (
     <article className="comment-item">
       <Avatar user={author} size="sm" />
-      <div className="comment-main">
+      {/* Esc closes an open question from anywhere in the comment's text
+          column — the strip's two answers, and the Delete that asked, which
+          Shift+Tab from Cancel lands on (§4.22). On the strip alone it did
+          nothing there. */}
+      <div
+        className="comment-main"
+        onKeyDown={(event) => {
+          if (asking && event.key === "Escape") {
+            event.stopPropagation();
+            cancelConfirm();
+          }
+        }}
+      >
         <p className="comment-head">
           <strong>{author?.displayName ?? "Unknown"}</strong>
-          <time>{formatDateTime(comment.createdAt)}</time>
+          <time>{when}</time>
           {/* Not `comment.updatedAt &&`: the server stamps that field on insert
               too, so the presence of a value says only that the row exists
               (TAS-233). `commentWasEdited` is the one rule for this badge. */}
@@ -5074,13 +5168,45 @@ function CommentItem({
                 <button className="link-button" onClick={onStartEdit} type="button">
                   Edit
                 </button>
-                <button className="link-button" disabled={pending} onClick={onDelete} type="button">
+                <button
+                  aria-controls={confirming ? confirmId : undefined}
+                  aria-expanded={confirming}
+                  className="link-button"
+                  disabled={pending}
+                  onClick={onOpenConfirm}
+                  ref={deleteButton}
+                  type="button"
+                >
                   Delete
                 </button>
               </div>
             ) : null}
           </>
         )}
+
+        {asking ? (
+          // §4.22's inline confirmation, as the work log draws it: the
+          // sentence, Cancel first and focused, and the answer that destroys
+          // something edged in `--danger`. Nothing is sent until that answer.
+          <div className="member-confirm comment-confirm" id={confirmId}>
+            <p className="member-confirm-sentence" id={`${confirmId}-sentence`}>
+              Your comment from {when} will be removed from this issue for everyone.
+            </p>
+            <div className="member-confirm-actions">
+              <button autoFocus className="secondary-button compact-button" onClick={cancelConfirm} type="button">
+                Cancel
+              </button>
+              <button
+                aria-describedby={`${confirmId}-sentence`}
+                className="secondary-button compact-button member-confirm-accept"
+                onClick={onAcceptConfirm}
+                type="button"
+              >
+                Delete comment
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </article>
   );
@@ -5452,7 +5578,7 @@ function ProjectLabelsModal({
         </button>
       </form>
 
-      {error ? <div className="form-error">{error}</div> : null}
+      {error ? <ErrorNote>{error}</ErrorNote> : null}
 
       {labelsQuery.isPending ? <p className="issue-links-empty">Loading labels</p> : null}
       {labelsQuery.isSuccess && labels.length === 0 ? (
@@ -6093,11 +6219,11 @@ function CreateIssueModal({
             identical text: a live region that emits no mutation announces
             nothing, and the second refusal would be as silent as the bug this
             story removes. The `id` is what the offending date box describes
-            itself by. */}
+            itself by — the sentence's, so the description is the sentence. */}
         {formNotice ? (
-          <div className="form-error" id={noticeId} key={dateNotice ? dateNotice.seq : "write"} role="alert">
+          <ErrorNote id={noticeId} key={dateNotice ? dateNotice.seq : "write"} live="alert">
             {formNotice}
-          </div>
+          </ErrorNote>
         ) : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">

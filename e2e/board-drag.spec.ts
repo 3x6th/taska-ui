@@ -368,7 +368,8 @@ test.describe("a board this account may only read", () => {
     // Not `aria-disabled` either — the card is a working button that opens the
     // issue, and disabling it would take reading away with writing.
     await expect(card).not.toHaveAttribute("aria-disabled");
-    await expect(page.getByRole("button", { name: "New" })).toBeDisabled();
+    // Not on the page at all for a VIEWER (§5.7, TAS-236; e2e/viewer-controls.spec.ts).
+    await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
     // And the empty column stops asking for a card it would not accept.
     await expect(column(page, "Done").getByText("No issues")).toBeVisible();
     await expect(page.getByText("Drop issues here")).toHaveCount(0);
@@ -404,11 +405,10 @@ test.describe("a board this account may only read", () => {
 
     await page.getByRole("button", { name: VIEWER_CARD }).click();
     await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();
-    // The keyboard path a writer would use is closed to a reader. §5.7 asks for
-    // these to be hidden and the panel disables them instead — a pre-existing
-    // difference this branch does not touch; what is pinned here is that the
-    // button equivalent of the drag is no more available than the drag.
-    await expect(page.getByRole("button", { name: "Start Progress" })).toBeDisabled();
+    // The keyboard path a writer would use is closed to a reader: the button
+    // equivalent of the drag is no more available than the drag, and since
+    // TAS-236 it is not drawn at all (§5.7).
+    await expect(page.getByRole("button", { name: "Start Progress" })).toHaveCount(0);
   });
 });
 

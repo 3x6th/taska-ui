@@ -198,8 +198,8 @@ test("shows the refusal when a start date passes the stored due date, and puts t
   // the reader has to move the due date first, and the server's sentence does
   // not say so. Imported rather than retyped: what is pinned is that the
   // refusal reaches the reader as the advice, not a particular wording.
-  await expect(panel.locator(".form-error")).toContainText(planningDateOrderAdvice("startDate"));
-  await expect(panel.locator(".form-error")).not.toContainText(datesOutOfOrderServerMessage("2026-07-01", "2026-06-26"));
+  await expect(panel.locator(".error-note")).toContainText(planningDateOrderAdvice("startDate"));
+  await expect(panel.locator(".error-note")).not.toContainText(datesOutOfOrderServerMessage("2026-07-01", "2026-06-26"));
   // And the box goes back to the day the issue actually starts on, rather than
   // keeping a date the server never accepted (§5.5).
   await expect(start).toHaveValue("2026-06-15");
@@ -256,7 +256,7 @@ test("a viewer reads the plan and is offered no way to change it", async ({ page
   await page.keyboard.type("9");
   await points.blur();
   await expect(points).toHaveValue(before);
-  await expect(page.locator(".issue-panel .form-error")).toHaveCount(0);
+  await expect(page.locator(".issue-panel .error-note")).toHaveCount(0);
 });
 
 test("says what an estimate box accepts on screen, not in a tooltip", async ({ page }) => {
@@ -295,8 +295,8 @@ test("a half-typed date says so, and leaves the stored one alone", async ({ page
   // other way: two date fields sit side by side and the entry has already been
   // taken out of the one at fault, so a line about "that date" would leave the
   // reader to guess which (art-director, TAS-231).
-  await expect(panel.locator(".form-error")).toHaveText(planningDateIncompleteEditMessage("startDate"));
-  await expect(panel.locator(".form-error")).toContainText("start date");
+  await expect(panel.locator(".error-note")).toHaveText(planningDateIncompleteEditMessage("startDate"));
+  await expect(panel.locator(".error-note")).toContainText("start date");
   await expect(start).toHaveValue("2026-06-15");
   // And the box carries no `aria-invalid`, where the create form's does: the
   // entry has already been taken out of it and what stands there now is the
@@ -306,7 +306,7 @@ test("a half-typed date says so, and leaves the stored one alone", async ({ page
   // One line and not two. The panel keeps a single slot for this and the local
   // refusal takes it, so this pins the slot rather than the absence of a
   // request — the absence of a request is what the reopen below is for.
-  await expect(panel.locator(".form-error")).toHaveCount(1);
+  await expect(panel.locator(".error-note")).toHaveCount(1);
 
   // Reopened, because the assertion that matters is about the store rather than
   // about the draft the input was holding — and it is also what proves nothing
@@ -322,7 +322,7 @@ test("the same refusal twice over is a new line both times", async ({ page }) =>
   const panel = page.locator(".issue-panel");
   const planning = await openIssuePanel(page, "TAS-101");
   const start = planning.getByLabel("Start date");
-  const notice = panel.locator(".form-error");
+  const notice = panel.locator(".error-note");
 
   await halfTypeDate(page, start);
   await expect(notice).toHaveText(planningDateIncompleteEditMessage("startDate"));
@@ -351,7 +351,7 @@ test("a write that succeeds clears the date line rather than captioning itself w
   const planning = await openIssuePanel(page, "TAS-101");
 
   await halfTypeDate(page, planning.getByLabel("Start date"));
-  await expect(panel.locator(".form-error")).toHaveText(planningDateIncompleteEditMessage("startDate"));
+  await expect(panel.locator(".error-note")).toHaveText(planningDateIncompleteEditMessage("startDate"));
 
   // An unrelated write, and a successful one. Until this round only
   // `updateIssue` cleared the line, so the transition below left it standing
@@ -360,7 +360,7 @@ test("a write that succeeds clears the date line rather than captioning itself w
   await panel.getByRole("button", { name: "Complete" }).click();
 
   await expect(panel.locator(".status-pill")).toHaveText("Done");
-  await expect(panel.locator(".form-error")).toHaveCount(0);
+  await expect(panel.locator(".error-note")).toHaveCount(0);
 });
 
 test("a refused write takes the slot from the date line instead of going unsaid", async ({ page }) => {
@@ -369,7 +369,7 @@ test("a refused write takes the slot from the date line instead of going unsaid"
   const planning = await openIssuePanel(page, "TAS-101");
 
   await halfTypeDate(page, planning.getByLabel("Start date"));
-  await expect(panel.locator(".form-error")).toHaveText(planningDateIncompleteEditMessage("startDate"));
+  await expect(panel.locator(".error-note")).toHaveText(planningDateIncompleteEditMessage("startDate"));
 
   // Two clicks in one task, which is what it takes to get a refused transition
   // out of this panel: the first moves TAS-101 out of In Progress, the second
@@ -387,8 +387,8 @@ test("a refused write takes the slot from the date line instead of going unsaid"
   // holding it is not a cosmetic mismatch: before this round the refusal
   // appeared nowhere on screen at all, which is the story's own defect moved
   // one surface over.
-  await expect(panel.locator(".form-error")).toHaveText(TRANSITION_UNAVAILABLE_MESSAGE);
-  await expect(panel.locator(".form-error")).toHaveCount(1);
+  await expect(panel.locator(".error-note")).toHaveText(TRANSITION_UNAVAILABLE_MESSAGE);
+  await expect(panel.locator(".error-note")).toHaveCount(1);
 });
 
 test("a refusal the date line replaced does not come back when the date line clears", async ({ page }) => {
@@ -401,13 +401,13 @@ test("a refusal the date line replaced does not come back when the date line cle
   const start = planning.getByLabel("Start date");
   await start.fill("2026-07-01");
   await start.blur();
-  await expect(panel.locator(".form-error")).toHaveText(planningDateOrderAdvice("startDate"));
+  await expect(panel.locator(".error-note")).toHaveText(planningDateOrderAdvice("startDate"));
 
   // Then a date refusal, which takes the slot — and drops the one it replaced
   // rather than queueing it.
   const due = planning.getByLabel("Due date");
   await halfTypeDate(page, due);
-  await expect(panel.locator(".form-error")).toHaveText(planningDateIncompleteEditMessage("dueDate"));
+  await expect(panel.locator(".error-note")).toHaveText(planningDateIncompleteEditMessage("dueDate"));
 
   // Now the reader simply finishes the date. The day typed is the one the issue
   // already has, so nothing is sent: no attempt stands behind the slot, and the
@@ -417,7 +417,7 @@ test("a refusal the date line replaced does not come back when the date line cle
   // record (art-director, TAS-231).
   await due.fill("2026-06-26");
   await due.blur();
-  await expect(panel.locator(".form-error")).toHaveCount(0);
+  await expect(panel.locator(".error-note")).toHaveCount(0);
 });
 
 test("edits a date on blur and keeps it", async ({ page }) => {
@@ -431,7 +431,7 @@ test("edits a date on blur and keeps it", async ({ page }) => {
   await start.fill("2026-06-20");
   await start.blur();
 
-  await expect(page.locator(".issue-panel .form-error")).toHaveCount(0);
+  await expect(page.locator(".issue-panel .error-note")).toHaveCount(0);
   await closePanel(page);
   const reopened = await openIssuePanel(page, "TAS-101");
   await expect(reopened.getByLabel("Start date")).toHaveValue("2026-06-20");
@@ -462,7 +462,7 @@ test("the create form refuses a half-typed date in its own words, and points at 
   await create.focus();
   await page.keyboard.press("Enter");
 
-  await expect(modal.locator(".form-error")).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(modal.locator(".error-note")).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
   // Nothing was created and the form is still standing, with focus on the box
   // the sentence is about — the part of "which of the two dates" that survives
   // without sight. The box says the same thing in its own right: marked
@@ -511,7 +511,7 @@ test("the press that fixes the date creates the issue, rather than being swallow
   // so `mouseup` lands above it. What the reader gets either way is the
   // sentence that accounts for the press, and no issue made behind their back —
   // which is the state this story set out to deliver.
-  await expect(modal.locator(".form-error")).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
+  await expect(modal.locator(".error-note")).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
   await expect(page.locator(".issue-planning")).toHaveCount(0);
 
   // Now the reader does exactly what the sentence asks. The fix and the press
@@ -526,7 +526,7 @@ test("the press that fixes the date creates the issue, rather than being swallow
   // without it the line would still be standing here, in `--danger`, over a
   // date that is now perfectly fine, and the press below would be what cleared
   // it (art-director, TAS-231).
-  await expect(modal.locator(".form-error")).toHaveCount(0);
+  await expect(modal.locator(".error-note")).toHaveCount(0);
   await expect(start).not.toHaveAttribute("aria-invalid");
   await pressWithoutFollowing(page, create);
 
@@ -550,7 +550,7 @@ test("the create form's refusal is announced once, not on every exit from a date
   await modal.getByLabel("Summary").fill("Plan with one date half typed");
   const start = modal.getByLabel("Start date");
   const due = modal.getByLabel("Due date");
-  const notice = modal.locator(".form-error");
+  const notice = modal.locator(".error-note");
 
   await start.click();
   await page.keyboard.type("12");
@@ -584,7 +584,7 @@ test("the create form's refusal comes down the moment the reader empties the box
   const modal = page.getByRole("dialog");
   await modal.getByLabel("Summary").fill("Plan with the date given up on");
   const start = modal.getByLabel("Start date");
-  const notice = modal.locator(".form-error");
+  const notice = modal.locator(".error-note");
 
   await halfTypeDate(page, start);
   await expect(notice).toHaveText(PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE);
@@ -623,7 +623,7 @@ test("the create form's mark follows the fault, rather than staying on the date 
   await modal.getByLabel("Summary").fill("Plan with each date half typed in turn");
   const start = modal.getByLabel("Start date");
   const due = modal.getByLabel("Due date");
-  const notice = modal.locator(".form-error");
+  const notice = modal.locator(".error-note");
 
   await halfTypeDate(page, start);
   await expect(start).toHaveAttribute("aria-invalid", "true");
@@ -657,7 +657,7 @@ test("the create form answers the second press as loudly as the first", async ({
   const modal = page.getByRole("dialog");
   await modal.getByLabel("Summary").fill("Plan pressed twice");
   const start = modal.getByLabel("Start date");
-  const notice = modal.locator(".form-error");
+  const notice = modal.locator(".error-note");
 
   // Half typed and submitted from inside the box: Enter there is an implicit
   // submit, so no blur runs ahead of it and what answers is the submit path
