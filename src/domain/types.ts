@@ -45,6 +45,48 @@ export type ProjectRole = "ADMIN" | "MEMBER" | "VIEWER";
 export type IssueType = "TASK" | "BUG" | "STORY";
 export type IssuePriority = "LOW" | "MEDIUM" | "HIGH";
 export type IssueStatus = "TODO" | "IN_PROGRESS" | "DONE";
+export type IssueLinkType = "BLOCKS" | "RELATES_TO" | "DUPLICATES";
+
+/**
+ * The fields that carry one of these values *off the wire* (TAS-173). The
+ * unions above stay the contract's members — the values this build has words
+ * and colours for — while a field the server fills accepts any string, the way
+ * `Notification.notificationType` already did: a backend release can add a
+ * type, a priority or a status before this frontend ships, and the type must
+ * not claim that case cannot happen. A named member keeps its autocompletion.
+ *
+ * Every lookup of a label or a colour therefore goes through the helpers in
+ * `src/lib/format.ts`, which answer for a code they do not know instead of
+ * indexing a table with it — the index that threw is what blanked a screen.
+ */
+export type IssueTypeCode = IssueType | (string & {});
+export type IssuePriorityCode = IssuePriority | (string & {});
+export type IssueStatusKey = IssueStatus | (string & {});
+export type IssueLinkTypeCode = IssueLinkType | (string & {});
+export type UserStatusCode = UserStatus | (string & {});
+
+/** One `code`/`name` pair of a `GET /meta` dictionary (`MetaResponseDto`, backend TAS-217). */
+export interface DictionaryEntry {
+  code: string;
+  /** What the server calls the value. Russian on the stand today, so not printed as-is (`isEnglishName`). */
+  name: string;
+}
+
+/**
+ * `GET /meta` — the enum dictionaries, read once per session (TAS-173). The
+ * priorities and the link types it lists are what the pickers offer, so a value
+ * the backend adds becomes selectable without a frontend release; the names
+ * label a code this build has no word for. `null` is a dictionary the answer
+ * did not carry, and every reader falls back to the build's own set. There are
+ * no statuses here: they come from each project's workflows.
+ */
+export interface EnumDictionaries {
+  issueTypes: DictionaryEntry[] | null;
+  priorities: DictionaryEntry[] | null;
+  linkTypes: DictionaryEntry[] | null;
+  notificationTypes: DictionaryEntry[] | null;
+  userStatuses: DictionaryEntry[] | null;
+}
 /**
  * The notification kinds the gateway can emit, read from notification-service
  * and the gateway's mapper at backend `5a8d805a3ac3` (TAS-243) rather than
@@ -96,7 +138,12 @@ export interface User {
   login: string;
   email: string;
   displayName: string;
-  status: UserStatus;
+  /**
+   * `null` when the response carried no string here — the contract types
+   * `status` as a bare string and `AuthMapper` can write `null` (TAS-173).
+   * Printed through `userStatusLabel`, never indexed.
+   */
+  status: UserStatusCode | null;
   // Not in the contract at all — `color` there belongs to a label and to
   // nothing else — so today this arrives only from the mock. It is load-bearing
   // anyway: a value here beats the colour `avatarColor` computes from the id,
@@ -436,11 +483,16 @@ export interface ProjectMemberWriteResult {
   role: ProjectRole | null;
 }
 
+/**
+ * `statusKey` and `category` are open since TAS-173, for the reason
+ * `BoardColumn` gives below: a workflow is project configuration, and a key
+ * this build has never seen is a column to draw rather than a case to deny.
+ */
 export interface WorkflowStatus {
   id: string;
-  statusKey: IssueStatus;
+  statusKey: IssueStatusKey;
   name: string;
-  category: IssueStatus;
+  category: IssueStatusKey;
   sortOrder: number;
 }
 
@@ -509,10 +561,13 @@ export interface ProjectContext {
   /**
    * Keyed by issue type, **and only the types the project allows**: one, two,
    * all three or none. A type that is not here is not a failure; it is a type
-   * this project does not offer. An entry whose `issueType` this build does not
-   * recognise (the wire's `null`, TAS-173) is dropped by the API layer.
+   * this project does not offer. Keyed by the code as sent, a type this build
+   * has no name for included (TAS-173); only an entry with no type at all (the
+   * wire's `null`) is dropped by the API layer. Read through `workflowFor`
+   * (src/lib/projectContext.ts), never by indexing — a code is a string the
+   * server chose, and `"constructor"` is one.
    */
-  workflows: Partial<Record<IssueType, ProjectWorkflow>>;
+  workflows: Partial<Record<string, ProjectWorkflow>>;
 }
 
 /**
@@ -611,11 +666,11 @@ export interface Issue {
   projectId: string;
   issueNumber: number;
   issueKey: string;
-  issueType: IssueType;
+  issueType: IssueTypeCode;
   summary: string;
   description: string;
-  status: IssueStatus;
-  priority: IssuePriority;
+  status: IssueStatusKey;
+  priority: IssuePriorityCode;
   assigneeId: string | null;
   reporterId: string;
   createdAt: string;
@@ -686,9 +741,9 @@ export interface Issue {
 export interface IssueSearchHit {
   id: string;
   issueKey: string;
-  issueType: IssueType;
+  issueType: IssueTypeCode;
   summary: string;
-  priority: IssuePriority;
+  priority: IssuePriorityCode;
   /** `""` on the wire for an unassigned issue; normalised to `null` like `Issue.assigneeId`. */
   assigneeId: string | null;
   /** The issue's project (TAS-218). Optional in the contract, so `null` when absent or blank. */
@@ -771,8 +826,8 @@ export interface BoardIssue {
  * plus the issues sitting in it.
  *
  * **`statusKey` and `category` are plain strings and must stay that way.**
- * `WorkflowStatus` narrows both to `IssueStatus` because this build has only
- * ever been shown three; the board's columns come straight out of whatever
+ * `WorkflowStatus` narrowed both to `IssueStatus` until TAS-173 opened it,
+ * because this build had only ever been shown three; the board's columns come straight out of whatever
  * workflow the project has, and a value outside that union is a project
  * configuration rather than a bug. Narrowing them is how TAS-173 and TAS-199
  * blanked screens — the type would say the case cannot happen and the renderer
@@ -799,7 +854,7 @@ export interface BoardColumn {
  */
 export interface Board {
   projectId: string;
-  issueType: IssueType;
+  issueType: IssueTypeCode;
   columns: BoardColumn[];
 }
 
@@ -853,15 +908,15 @@ export interface IssueHistoryEvent {
   actorUserId: string;
   occurredAt: string;
   payload: {
-    from?: IssueStatus;
-    to?: IssueStatus | IssuePriority | string | null;
+    from?: IssueStatusKey;
+    to?: IssueStatusKey | IssuePriorityCode | null;
     field?: string;
-    fromStatus?: IssueStatus;
-    toStatus?: IssueStatus;
+    fromStatus?: IssueStatusKey;
+    toStatus?: IssueStatusKey;
     assigneeId?: string | null;
     previousAssigneeId?: string | null;
-    oldPriority?: IssuePriority;
-    newPriority?: IssuePriority;
+    oldPriority?: IssuePriorityCode;
+    newPriority?: IssuePriorityCode;
     /**
      * `PayloadSerializer.createAttachmentUploadedPayload` and
      * `createAttachmentDeletedPayload` both put the file name here, and it is
@@ -1044,11 +1099,11 @@ export interface IssueDetailsWithHistory {
   history: IssueHistoryEvent[];
 }
 
-/**
- * The link type a *request* may ask for — the contract's `IssueLinkTypeDto`,
- * a closed enum. Deliberately not reused for the response: see `IssueLink`.
+/*
+ * `IssueLinkType` — the link type a *request* may ask for, the contract's
+ * `IssueLinkTypeDto` — is declared with the other enums at the top of this
+ * file. Deliberately not reused for the response: see `IssueLink`.
  */
-export type IssueLinkType = "BLOCKS" | "RELATES_TO" | "DUPLICATES";
 
 export interface IssueLink {
   id: string;

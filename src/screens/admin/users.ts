@@ -86,32 +86,10 @@ export function personLabel(user: AdminUserRow): string {
   return user.displayName ?? user.login ?? user.id ?? "this account";
 }
 
-const userStatusLabels: Record<UserStatus, string> = {
-  ACTIVE: "Active",
-  BLOCKED: "Blocked",
-  INVITED: "Invited",
-  // Not an administrative state (TAS-188): auth-service puts an account here
-  // after `maxFailedAttempts` failed sign-ins and takes it out again on the next
-  // successful one, so this word names something no administrator decided. Live
-  // since backend PR #146 merged on 2026-09-07 — before that the value was not
-  // on `develop` at all and no row could carry it (src/domain/types.ts).
-  LOCKED: "Locked",
-};
-
 const globalRoleLabels: Record<GlobalRole, string> = {
   USER: "User",
   GLOBAL_ADMIN: "Global admin",
 };
-
-/**
- * Whether the table's raw value is one of the four the domain knows. Not
- * exported: the one caller is the label below, and a second reader of "is this
- * status known" elsewhere would be a screen deciding for itself what to do with
- * a value it has never seen.
- */
-function isKnownUserStatus(status: string | null): status is UserStatus {
-  return status === "ACTIVE" || status === "BLOCKED" || status === "INVITED" || status === "LOCKED";
-}
 
 /**
  * The written status, or the raw value for anything this build has never heard
@@ -125,12 +103,13 @@ function isKnownUserStatus(status: string | null): status is UserStatus {
  * The evidence is the shape of the source: this is a database cell, and a
  * fifth value can appear in it on the day a service grows one, with no contract
  * change and no build of this frontend in between. Naming four values is as far
- * as the union goes; the fallback below is what covers the rest, and it covers
- * exactly as much as it did before the fourth was added.
+ * as the union goes; the fallback is what covers the rest.
+ *
+ * Since TAS-173 this is the app's one account-status rule (`src/lib/format.ts`),
+ * shared with the profile menu, whose table used to be a second copy of this
+ * one. Re-exported here because the section's modules read it from here.
  */
-export function userStatusLabel(status: string | null): string {
-  return isKnownUserStatus(status) ? userStatusLabels[status] : (status ?? "—");
-}
+export { userStatusInSentence, userStatusLabel } from "../../lib/format";
 
 /** The written role, same rule and same reason as the status above. */
 export function globalRoleLabel(role: string | null): string {

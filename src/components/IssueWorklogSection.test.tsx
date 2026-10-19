@@ -22,6 +22,9 @@ const { fakeApi, state } = vi.hoisted(() => {
     updates: [] as unknown[],
   };
   const api = {
+    // `GET /meta` (TAS-173), answered with no dictionaries: every reader then
+    // uses the build's own words and sets, which is what these tests are about.
+    getMeta: async () => ({ issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null }),
     listIssueWorklogs: async () => {
       if (state.listFailure) throw state.listFailure;
       return state.worklogs;

@@ -432,8 +432,12 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   caught the render-path hazard in [TAS-173](https://jira.ozero.dev/browse/TAS-173)
   at compile time instead of leaving it to a reviewer. Its own story, not a line
   in someone else's.
-- **Nothing in `src` is an error boundary, and the gateway declares every issue
-  field nullable** (`release-reviewer`, 2026-09-08, TAS-195 verdict). The
+- ~~**Nothing in `src` is an error boundary, and the gateway declares every issue
+  field nullable**~~ **Built in [TAS-173](https://jira.ozero.dev/browse/TAS-173)
+  (2026-10-19):** error boundaries on the app, the issue panel and every card and
+  search hit (DESIGN.md §5.6); an issue whose status matches no column is drawn
+  in the "Other statuses" group, so "X of Y" counts what is drawn (§4.9, §5.4).
+  The history below stays as written. (`release-reviewer`, 2026-09-08, TAS-195 verdict). The
   deployed gateway's own generated spec — `https://api.taska.ozero.dev/v3/api-docs`,
   public, no token — types every property of `IssueResponseDto` as
   `["string","null"]` with no `required` block. `status` is the one that matters
@@ -563,7 +567,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   of `typeMeta[value].label` with no error boundary anywhere in `src/` to catch
   it. Since TAS-179 that throw reaches the shared top bar, so it takes every
   screen rather than the board, on data from a project the reader never opened.
-  Recorded on TAS-173 rather than re-filed.
+  Recorded on TAS-173 rather than re-filed. **Built in TAS-173 (2026-10-19):**
+  the fields carry open codes, every read goes through one label helper, and
+  an unknown type, priority or status renders neutrally (DESIGN.md §2.2, §6).
 - **The mock filters and sorts already-masked values** where the gateway
   operates on the underlying column. Unreachable from the console, since
   sensitive columns are stripped from both sort and filter — but the mock is the
@@ -2018,8 +2024,8 @@ search endpoint is claimed; the other is not:
   MEMBER_REMOVED etc.`. `src/domain/types.ts` still models `NotificationType`
   as a closed union of twelve, so the UI is now narrower than the contract, and
   a type the gateway invents next lands in a union that does not admit it.
-  Exactly the family of the "status keys are open, and the UI's are closed"
-  entry in `API-DIVERGENCE.md`, and it wants the same answer: narrow at the
+  Exactly the family of the "status keys are open" entry in
+  `API-DIVERGENCE.md` (closed by TAS-173), and it wants the same answer: narrow at the
   mapper rather than at the type. Found on 2026-08-23 while refreshing the
   snapshot for TAS-179; deliberately not fixed there, because a notification
   type has nothing to do with issue search and widening a story at snapshot
@@ -2041,7 +2047,11 @@ search endpoint is claimed; the other is not:
   (measured 2026-09-28). The gateway mapper names thirteen kinds and sends the
   other nine through its `default` branch with a WARN per row
   (`api-contract-guard`, TAS-243) — the mapper cases and the `$ref` were added
-  to TAS-206 as a comment.
+  to TAS-206 as a comment. **Correction, 2026-10-19:** "`$ref`'d by nothing" is
+  no longer true — #196 (TAS-217) `$ref`s `NotificationTypeDto` from
+  `NotificationTypeMetaPairDto`, so `GET /meta` now publishes the eleven while
+  the wire sends twenty-two. Open PR #200 (TAS-206, `7cdcf28`) fixes both
+  halves; `API-DIVERGENCE.md`, "`GET /meta` lists eleven notification types".
 
 The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
 schema change. None was on the four open PRs this refresh was done for — they
@@ -2638,7 +2648,8 @@ is what recurs.
     the `watchersCount` half of this line.
   - `canWatch` on the issue read: proto, service and mapper.
   - The role policy in [TAS-217](https://jira.ozero.dev/browse/TAS-217)'s
-    `GET /meta`: a cross-service rpc.
+    `GET /meta`: a cross-service rpc. #196 shipped without one (2026-10-19), so
+    this would be a new ask.
 
   Worth filing when TAS-214's follow-ups or TAS-217 are next discussed, not
   before.
@@ -3197,10 +3208,12 @@ where it has an entry.
 - **C14 (optional): a `PATCH` without `If-Match` gets the generic 400 "Invalid
   request parameters".** A 428 naming the header would be clearer. The client
   always sends it, so this is for other callers.
-- **C15 (deploy note): `.env.docker.example` carries a commented
+- ~~**C15 (deploy note): `.env.docker.example` carries a commented
   `GATEWAY_CORS_ALLOWED_HEADERS` without `if-match`.** A deploy that sets it from
   the example breaks every `PATCH` from the browser. The preflight allowed
-  `if-match` on 2026-10-07, so the stand is not set that way today.
+  `if-match` on 2026-10-07, so the stand is not set that way today.~~ Closed by
+  backend PR #196 (`f453171`, 2026-10-19): `.env.docker.example` lists
+  `If-Match,If-None-Match` and exposes `ETag`.
 - **C16 (watch, not an ask): the Liquibase changeset `taska:0008` was edited in
   `04546f1`** (TAS-197). If issue routes answer 503 after a deploy, check this
   first.
@@ -3607,3 +3620,20 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
 - **#195 (TAS-200):** the retry route's inline `'400'` drops the `X-Request-Id`
   header declaration that `components.responses.ErrorResponse` carries. Low; a
   comment on #195.
+
+### Left by TAS-173 (unknown enum values and `GET /meta`, 2026-10-19)
+
+- **Candidate ask: a `projectRoles` dictionary in `GET /meta`**
+  (`api-contract-guard`). Gateway only, `ProjectRoleDto.values()`. The role
+  select in `ProjectMembersModal.tsx` hard-codes three roles. Not filed; worth
+  folding into the next `/meta` ask after TAS-264.
+- **The gateway answers 500 for a whole list when one row holds an
+  unmappable proto issue type or priority** (`api-contract-guard`, read at
+  develop `7d4f739`, `IssueMapper.java` `toRestIssueType` /
+  `toRestIssuePriority`). So the client's unknown-value defence covers the
+  frontend lagging a backend release, not a value the gateway itself does not
+  know. Read, not verified. Not filed.
+- **The issue panel's read-failure state (§4.10) has no header and no Close
+  at 390** (`art-director`, 2026-10-19). On touch the only way out is the 31px
+  scrim strip. Older than TAS-173; the panel's render-failure fallback added
+  there does carry Close.

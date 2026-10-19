@@ -36,6 +36,7 @@ const { fakeApi, useMock, setExtraRows, setWriteFailure, setRowsFailure, holdRow
     hasSession: () => true,
     onSessionExpired: () => () => {},
     getCurrentUser: () => state.mock!.getCurrentUser(),
+    getMeta: () => state.mock!.getMeta(),
     listAdminRows: async (query: AdminRowsQuery) => {
       if (state.gate) await state.gate;
       if (state.rowsFailure) throw state.rowsFailure;

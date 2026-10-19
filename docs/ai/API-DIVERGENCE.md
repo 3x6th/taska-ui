@@ -182,39 +182,109 @@ The entry as it stood:
   the fallback columns are also what a project that allows no issue type gets.
   Neither case offers a move.
 
-### The contract's status keys are open, and the UI's are closed
+### Closed by TAS-173: the UI's status keys are open too
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/context`, its
-  `workflows[].workflow.statuses`. Until TAS-251 the board read them from
-  `GET /api/v1/projects/{projectId}/workflow`, which no client code calls
-  since TAS-263 deleted `getWorkflow`. Both answer the same
-  `WorkflowStatusDto`.
+  `workflows[].workflow.statuses`, and every issue's `status`. Until TAS-251
+  the board read the statuses from `GET /api/v1/projects/{projectId}/workflow`,
+  which no client code calls since TAS-263 deleted `getWorkflow`. Both answer
+  the same `WorkflowStatusDto`.
 - **Contract:** `statusKey` and `category` are deliberately unconstrained
   strings — the description says the enum is omitted "для расширяемости".
-- **UI:** both are modelled as the closed `IssueStatus` union, and
-  `statusLabels` / `statusColors` (`src/lib/format.ts`) are keyed off it.
-  `RestTaskaApi.getProjectContext` passes `statuses` through as sent, so
-  nothing narrows a key between the wire and the union. From TAS-251 until
-  backend PR #183 the context sent every list empty (see the TAS-261 bullet
-  under "Backend PR #169"), so no key reached the board. #183 deployed on
-  2026-10-16, and the keys now arrive: probed with a token on 2026-10-19, the
-  context carried three statuses for each of TASK, BUG and STORY (request
-  `00f7c880-d17a-4b44-82f5-ceeffc1c0216`). A fourth key would reach the union
-  un-narrowed.
-- **Consequence:** a fourth status key renders a column with no colour and no
-  label, and its issues appear in no column at all — the board filters cards by
-  `issue.status === status.statusKey`.
-- **Compensation:** none. Recorded so the next person to add a status knows the
-  frontend will not simply follow.
-- **Removal:** narrow at the mapper the way TAS-151 did for `globalRole`, or
-  have the contract state the enum. Filed 2026-09-11: the source is
-  [TAS-217](https://jira.ozero.dev/browse/TAS-217) (`GET /meta`), the mapper
-  defence is [TAS-173](https://jira.ozero.dev/browse/TAS-173), the contract
-  `$ref` is [TAS-206](https://jira.ozero.dev/browse/TAS-206). TAS-217 merged
-  as backend PR #196 (`f453171`) on 2026-10-19, and `GET /meta` answered 200
-  on the stand the same day with `issueTypes`, `priorities`, `linkTypes`,
-  `notificationTypes` and `userStatuses`: no status keys, so it is not yet the
-  source this line asks for.
+  Open backend PR #200 (TAS-206, head `7cdcf28`) keeps that and says so in
+  words: the key is open, not bounded by an enum.
+- **Was:** both were modelled as the closed `IssueStatus` union, and
+  `statusLabels` / `statusColors` (`src/lib/format.ts`) were indexed by the
+  wire value. `RestTaskaApi.getProjectContext` passed `statuses` through as
+  sent, so nothing narrowed a key between the wire and the union. A fourth
+  key's **column** was labelled correctly — the heading prints the server's
+  `status.name` — but its dot had no colour, the panel's status pill was
+  empty, a refused move read "no transition from undefined to undefined", the
+  history read "moved undefined to …", and an issue whose status matched no
+  column was **not drawn but still counted** ("10 of 10" over nine cards).
+  Since backend #183 (deployed 2026-10-16) the keys arrive: probed with a token
+  on 2026-10-19, three statuses for each of TASK, BUG and STORY (request
+  `00f7c880-d17a-4b44-82f5-ceeffc1c0216`). An earlier version of this entry
+  said the column would have no label; that was wrong.
+- **Now (TAS-173):** `statusKey`, `category` and `Issue.status` are open codes
+  (`IssueStatusKey = IssueStatus | (string & {})`). Labels go through
+  `statusLabel`: the workflow status's own `name` when it has no Cyrillic
+  (workflow names are project configuration, and English in workflow-service's
+  seed), else the build's English label, else the key verbatim. Colours go by
+  key, then by `category` when that is one of the three known, then a neutral
+  ring (DESIGN.md §2.2). Columns are built from the workflows the context
+  sent, not from the types this build knows, so an unknown type's workflow
+  draws its columns. An issue that matches no column is drawn in one trailing,
+  non-droppable "Other statuses" group (DESIGN.md §4.9), so the counter equals
+  the cards drawn.
+- **`GET /meta` is not the source here, and is not meant to be.** It carries
+  no status keys: statuses are per-project workflow configuration, so the
+  context (TAS-212) is their source.
+- **Compensation:** none — this is reading an open field as open.
+
+### `GET /meta` names its values in Russian, and the UI is English
+
+- **Endpoint:** `GET /api/v1/meta` (backend TAS-217, PR #196, `f453171`,
+  merged and deployed 2026-10-19).
+- **Contract:** `*MetaPairDto.name` is "Человекочитаемое название значения";
+  no language is stated and `Accept-Language` is not a parameter.
+- **Runtime:** every `name` is Russian — probed 2026-10-19 (request
+  `66c3e9d7-1a3f-422e-bece-b196cd61b60d`): `TASK` «Задача», `LOW` «Низкий»,
+  `BLOCKS` «Блокирует», `LOCKED` «Залочен». They are literals in the five
+  `switch`es of `MetaServiceImpl` (develop `7d4f739`). The same probe saw
+  `ETag` with `Cache-Control: no-cache, private`, a 304 on a matching
+  `If-None-Match` (`8341eb03-e262-4115-b5e6-eb2ccecbd131`) and 401 without a
+  token.
+- **Compensation:** `enumLabel` (`src/lib/enumLabel.ts`) uses the server's
+  `name` for a code this build does not know only when `isEnglishName(name)`
+  holds: non-blank and no `\p{Script=Cyrillic}` letter. Otherwise it prints
+  the code verbatim. Codes this build knows keep its own English labels
+  whatever `/meta` says (owner, 2026-10-19). Today every name fails the check,
+  so an unknown code reads as itself (`EPIC`).
+- **Switched off by:** deleting `isEnglishName` and its call, so any
+  non-blank `name` is used. One line and its tests.
+- **Removal:** [TAS-264](https://jira.ozero.dev/browse/TAS-264) (`/meta` names
+  in English, filed 2026-10-19). Once deployed and probed, a new backend value
+  shows under its English name with no frontend release, and the check comes
+  out.
+
+### `GET /meta` lists eleven notification types; `GET /notifications` sends twenty-two
+
+- **Endpoint:** `GET /api/v1/meta`, `notificationTypes`.
+- **Contract:** the `/meta` description says the codes match what other
+  routes accept and return. `NotificationTypeMetaPairDto.code` `$ref`s
+  `NotificationTypeDto` (eleven members), while
+  `NotificationResponseDto.notificationType` is a bare `string`.
+- **Runtime:** eleven codes, probed 2026-10-19 (same request as above).
+  `MetaServiceImpl` reads `NotificationTypeDto.values()`; the gateway's
+  `NotificationMapper.toRestNotificationType` maps thirteen kinds explicitly
+  and sends the other nine (`ISSUE_LINK_*`, `USER_(UN)BLOCKED`,
+  `ISSUE_COMMENT_*`, `ISSUE_ATTACHMENT_*`) through `default`, which strips the
+  prefix. notification-service's own enum has twenty-two. Read at develop
+  `7d4f739`. This breaks TAS-217's own rule.
+- **Compensation:** none. The client reads `notificationTypes` into the
+  dictionaries and nothing uses it; `Notification.notificationType` stays an
+  open string (TAS-243).
+- **Removal:** backend PR #200 (TAS-206, head `7cdcf28`, open): it widens
+  `NotificationTypeDto` to twenty-two plus `UNKNOWN`, `$ref`s it from
+  `NotificationResponseDto`, replaces `default` with explicit cases, and names
+  every one in `MetaServiceImpl`. Closes once #200 is merged, deployed, and
+  `/meta` is probed with twenty-three entries. Recorded on TAS-206 rather than
+  filed.
+
+### `GET /meta` names link types in one direction only
+
+- **Endpoint:** `GET /api/v1/meta`, `linkTypes`.
+- **Contract:** silent on the inverse direction.
+- **Runtime:** `linkTypes` lists the request codes `BLOCKS`, `RELATES_TO`,
+  `DUPLICATES`. The links read returns `viewLinkType` for the inverse too
+  (`ISSUE_LINK_VIEW_TYPE_IS_BLOCKED_BY`, `…_IS_DUPLICATED_BY`), which has
+  neither a code nor a name in `/meta`.
+- **Compensation:** `issueLinkTypeLabel` matches the five directional values
+  this build knows first, and only then asks `/meta` — by exact code, so an
+  inward view code can never borrow an outward request name.
+- **Removal:** [TAS-264](https://jira.ozero.dev/browse/TAS-264), its
+  `linkViewTypes` item.
 
 ### Closed by measurement (TAS-195 pass): `GET /issues/{issueId}` no longer 500s on a commented issue
 
@@ -2793,8 +2863,11 @@ The entry as it stood:
   values this build has never heard of — and turns an absent or non-string one
   into `""`. Presentation narrows instead of the mapper
   (`issueLinkTypeLabel`, `src/lib/format.ts`): a known value gets a written
-  label, an unknown one is humanised verbatim (`IS_BLOCKED_BY` → "Is blocked
-  by"), and an unstated one reads "Linked". Same shape as the `globalRole`
+  label, an unknown one prints verbatim — or under its `GET /meta` name when
+  that is English (TAS-173; until then it was humanised, `SUPERSEDES` →
+  "Supersedes") — and an unstated one reads "Linked". Since TAS-173 the request
+  set offered in the panel comes from `/meta.linkTypes`, falling back to the
+  three contract values. Same shape as the `globalRole`
   narrowing above, one level later.
   **The scope of that claim, precisely:** no value of `viewLinkType` can drop a
   row, be coerced into another relation, or crash the panel. It says nothing
@@ -2901,7 +2974,10 @@ The entry as it stood:
   `toRestIssueEventType` already does for history events, and omitting the
   field for `UNSPECIFIED` and an unrecognised number; then the contract
   declaring the enum (TAS-206 / TAS-217). Not filed; a candidate ask in
-  `BACKLOG.md`, "Left by TAS-246".
+  `BACKLOG.md`, "Left by TAS-246". Open backend PR #200 (TAS-206, head
+  `7cdcf28`) declares `IssueLinkViewTypeDto` **with** the
+  `ISSUE_LINK_VIEW_TYPE_` prefix plus `UNRECOGNIZED`, so once it merges the
+  strip is the contract's own reading rather than a compensation.
 
 ---
 
@@ -4428,9 +4504,10 @@ moved every issue write onto it:
   contract and stay on the server until the backend removes them.
 - **CORS.** On 2026-10-07 the preflight from `https://taska.ozero.dev` for
   `PATCH` with `authorization, content-type, if-match` answered `200` and
-  allowed `if-match`. A deploy that sets `GATEWAY_CORS_ALLOWED_HEADERS` from the
-  commented line in `.env.docker.example`, which lacks `if-match`, would break
-  every `PATCH` from the browser (`BACKLOG.md`, "Left by TAS-246").
+  allowed `if-match`. The commented line in `.env.docker.example` that lacked
+  `if-match` was fixed by backend PR #196 (`f453171`, merged 2026-10-19): it
+  now lists `If-Match,If-None-Match` and exposes `ETag`, as the `application.yml`
+  default does (develop `7d4f739`).
 - **Known from code only.** No `PATCH` has been sent to the stand with a token.
   The 200 and 409 shapes, the quoted `If-Match` and the null-clear are read at
   develop `60d62ee`. The gateway cannot answer 412 itself, because spring-webflux

@@ -79,6 +79,16 @@ function respond(url: string, init?: RequestInit): unknown {
     issue = { ...issue, status: "IN_PROGRESS", version: Number(issue.version) + 1 };
     return { issue, history: [] };
   }
+  if (path === "/meta") {
+    // The stand's own answer (backend TAS-217): every name in Russian.
+    return {
+      issueTypes: [{ code: "TASK", name: "Задача" }, { code: "BUG", name: "Ошибка" }, { code: "STORY", name: "История" }],
+      priorities: [{ code: "LOW", name: "Низкий" }, { code: "MEDIUM", name: "Средний" }, { code: "HIGH", name: "Высокий" }],
+      linkTypes: [{ code: "BLOCKS", name: "Блокирует" }, { code: "RELATES_TO", name: "Связана с" }, { code: "DUPLICATES", name: "Дублирует" }],
+      notificationTypes: [],
+      userStatuses: [{ code: "ACTIVE", name: "Активен" }],
+    };
+  }
   if (path === "/users/me") {
     return { id: ANNA, login: "anna", email: "anna@example.com", displayName: "Anna Ivanova", status: "ACTIVE", avatar: null };
   }
@@ -249,8 +259,10 @@ describe("the issue panel's request budget against the REST implementation", () 
    * seven — the project, the project again for the role, the members, a
    * workflow per issue type and the labels. Beside it the issue page, the
    * reader's profile — which carries their avatar since TAS-223, so the top
-   * bar's own avatar read is gone — and the notifications, which are not the
-   * board's.
+   * bar's own avatar read is gone — the notifications, which are not the
+   * board's, and `GET /meta`, once per session (TAS-173). In the app the
+   * session guard starts that one; this harness has no guard, so the board's
+   * first type chip does — in the same round either way.
    */
   it("loads the board with one context read, and none of the reads it replaced", async () => {
     const queryClient = renderBoard();
@@ -264,6 +276,7 @@ describe("the issue panel's request budget against the REST implementation", () 
         `/api/v1/projects/${PROJECT}/issues`,
         "/api/v1/users/me",
         "/api/v1/notifications",
+        "/api/v1/meta",
       ].sort(),
     );
     for (const replaced of ["", "/members", "/workflow", "/labels"]) {
@@ -303,6 +316,9 @@ describe("the issue panel's request budget against the REST implementation", () 
     expect(within(panel).getByText("No work logged yet")).toBeVisible();
     const opened = requested.slice(beforeOpen).map((url) => url.split("?")[0]);
     expect(opened.sort()).toEqual(expected);
+    // The panel's chips and pickers read the dictionaries the board already
+    // holds: opening an issue costs no `GET /meta` (TAS-173).
+    expect(opened).not.toContain("/api/v1/meta");
   });
 
   /**

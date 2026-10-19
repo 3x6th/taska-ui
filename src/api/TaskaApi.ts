@@ -14,12 +14,13 @@ import type {
   Issue,
   IssueAttachment,
   IssueComment,
+  EnumDictionaries,
   IssueLink,
-  IssueLinkType,
-  IssuePriority,
+  IssueLinkTypeCode,
+  IssuePriorityCode,
   IssueSearchHit,
-  IssueStatus,
-  IssueType,
+  IssueStatusKey,
+  IssueTypeCode,
   IssueWatchers,
   IssueWorklog,
   IssueDetailsWithHistory,
@@ -111,7 +112,7 @@ export interface UpdateProjectInput {
 }
 
 export interface ListIssuesParams {
-  status?: IssueStatus;
+  status?: IssueStatusKey;
   assigneeId?: string;
   /** `labelId` on the wire: the issues carrying this label, filtered by the server. */
   labelId?: string;
@@ -126,9 +127,10 @@ export interface ListIssuesParams {
  * `issueType` is **required and has no default**, because the route requires it:
  * a board is one issue type's board, and the gateway answers `400` when the
  * parameter is missing. There is deliberately no `ALL` — the contract's enum is
- * `TASK | BUG | STORY`, and `EPIC` and `SUBTASK` are both `400 INVALID_ARGUMENT`
- * (measured 2026-09-09), so inventing a wider value here would only move a
- * server refusal into a client that cannot honour it either.
+ * `TASK | BUG | STORY`, and `EPIC` and `SUBTASK` were both `400 INVALID_ARGUMENT`
+ * (measured 2026-09-09). The type is open anyway (TAS-173): the codes a caller
+ * holds are the ones a project context sent, and the server stays the judge of
+ * them.
  *
  * `assigneeId` and `labelId` filter server-side, and an id nobody holds is a
  * `200` with every column empty rather than an error.
@@ -139,7 +141,7 @@ export interface ListIssuesParams {
  * only when it is `true`.
  */
 export interface BoardParams {
-  issueType: IssueType;
+  issueType: IssueTypeCode;
   assigneeId?: string;
   labelId?: string;
   includeDone?: boolean;
@@ -340,22 +342,28 @@ export interface SearchIssuesParams {
   query?: string;
   /** Absent searches every project the caller can see. Unknown id → `NOT_FOUND`. */
   projectId?: string;
-  statusKey?: IssueStatus;
+  statusKey?: IssueStatusKey;
   assigneeId?: string;
   reporterId?: string;
-  priority?: IssuePriority;
-  issueType?: IssueType;
+  priority?: IssuePriorityCode;
+  issueType?: IssueTypeCode;
   /** Zero-based, like every other paged read here. */
   page?: number;
   /** 1..100 by contract; the gateway's own default is 20. */
   pageSize?: number;
 }
 
+/**
+ * `issueType` and `priority` are open (TAS-173): the form offers the types the
+ * project context sent and the priorities `GET /meta` listed, so a value the
+ * backend added after this build is one a reader can pick. The server stays
+ * authoritative over both.
+ */
 export interface CreateIssueInput {
-  issueType: IssueType;
+  issueType: IssueTypeCode;
   summary: string;
   description: string;
-  priority: IssuePriority;
+  priority: IssuePriorityCode;
   /**
    * The five planning fields, all optional — `CreateIssueRequestDto` in
    * docs/contract/openapi.yml (backend develop `21a0d9d177a1`, where TAS-116
@@ -406,7 +414,7 @@ export interface UpdateIssueInput {
   summary?: string;
   /** `null` clears it. Read back as `""`, which is how the UI spells an empty description. */
   description?: string | null;
-  priority?: IssuePriority;
+  priority?: IssuePriorityCode;
   /** `null` unassigns. */
   assigneeId?: string | null;
   /** `undefined` keeps the stored value; `null` clears it; a number sets it. `0` is a value. */
@@ -433,8 +441,12 @@ export type IssueWriteAnswer = Omit<Issue, "labels">;
 
 export interface CreateIssueLinkInput {
   targetIssueId: string;
-  /** The request half of the contract's asymmetry — closed, unlike the response. */
-  linkType: IssueLinkType;
+  /**
+   * The request half of the contract's asymmetry. Closed in the contract, and
+   * open here since TAS-173 because the picker offers what `GET /meta` lists:
+   * a relation the backend adds is offered the day it is served.
+   */
+  linkType: IssueLinkTypeCode;
 }
 
 /**
@@ -608,6 +620,15 @@ export interface TaskaApi {
    * Returns an unsubscribe.
    */
   onSessionExpired(listener: () => void): () => void;
+
+  /**
+   * `GET /meta` — the enum dictionaries (backend TAS-217), read once per
+   * session through `useMeta`. A dictionary the answer did not carry as a list
+   * is `null`; a row without a usable `code` is dropped; nothing is checked
+   * against this build's unions — the point of the route is the values this
+   * build does not know yet.
+   */
+  getMeta(): Promise<EnumDictionaries>;
 
   listProjects(): Promise<Project[]>;
   createProject(input: CreateProjectInput): Promise<Project>;

@@ -17,11 +17,13 @@ import {
   readUserRow,
   USERS_SERVICE,
   USERS_TABLE,
+  userStatusInSentence,
   userStatusLabel,
   type AdminUserRow,
   type AdminUserTarget,
   type UserAction,
 } from "./users";
+import { useMeta } from "../../hooks/useMeta";
 
 const PAGE_SIZE = 20;
 
@@ -339,7 +341,9 @@ export function AdminUsersSection() {
             });
             setFlashed(pending.user.id);
             setAnnouncement(
-              `${personLabel(pending.user)} is now ${userStatusLabel(change.currentStatus).toLowerCase()}.`,
+              // Lowercased only when it is the build's own word (TAS-173): a
+              // status this build does not know is printed as it came.
+              `${personLabel(pending.user)} is now ${userStatusInSentence(change.currentStatus)}.`,
             );
             closeAfterWrite();
             // The server's answer paints the row; the list is still what the
@@ -377,6 +381,7 @@ export function AdminUsersSection() {
  * value, and the raw string is the whole message.
  */
 function StatusPill({ status }: { status: string }) {
+  const served = useMeta()?.userStatuses;
   // Only the three states that are drawn differently carry a modifier. `ACTIVE`
   // and a value this build does not recognise both wear the quiet pill, so
   // neither needs one.
@@ -388,5 +393,5 @@ function StatusPill({ status }: { status: string }) {
         : status === "LOCKED"
           ? " admin-status-locked"
           : "";
-  return <span className={`admin-pill${modifier}`}>{userStatusLabel(status)}</span>;
+  return <span className={`admin-pill${modifier}`}>{userStatusLabel(status, served)}</span>;
 }

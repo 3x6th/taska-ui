@@ -61,6 +61,8 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     holdDelete: boolean;
     /** Holds the confirm open so the in-flight frame of an upload can be observed. */
     holdConfirm: boolean;
+    /** What `GET /meta` lists as account statuses (TAS-173); `null` for none. */
+    userStatuses: { code: string; name: string }[] | null;
   } = {
     avatarUrl: null,
     avatarUnavailable: false,
@@ -75,6 +77,7 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     lostAfterConfirm: false,
     holdDelete: false,
     holdConfirm: false,
+    userStatuses: null,
   };
 
   let releaseHeld: (() => void) | null = null;
@@ -86,6 +89,13 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
   };
 
   const fakeApi = {
+    getMeta: async () => ({
+      issueTypes: null,
+      priorities: null,
+      linkTypes: null,
+      notificationTypes: null,
+      userStatuses: state.userStatuses,
+    }),
     getCurrentUser: async () => {
       state.reads.push("me");
       if (state.legacyProfile) return { ...anna };
@@ -158,6 +168,7 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     state.lostAfterConfirm = false;
     state.holdDelete = false;
     state.holdConfirm = false;
+    state.userStatuses = null;
     releaseHeld = null;
   };
 
@@ -358,20 +369,45 @@ describe("UserProfileMenu", () => {
   });
 
   it("prints a status it has never heard of instead of an empty badge", () => {
-    // `GET /users/me` answers the gateway's own `GatewayUserStatus`. It has
-    // carried `LOCKED` since backend TAS-197, but `UNSPECIFIED` is still one of
-    // its members and the contract types `status` as a bare string (TAS-173) —
-    // a value the domain union does not carry. A bare lookup put `undefined` in
-    // the badge, which renders as nothing at all.
+    // The contract types `status` as a bare string (TAS-173), so a status the
+    // domain union does not carry can arrive. A bare lookup put `undefined` in
+    // the badge, which renders as nothing at all. (`UNSPECIFIED`, the zero
+    // value, no longer gets this far: the API layer reads it as no status.)
     renderMenu({
-      user: { ...anna, status: "UNSPECIFIED" as User["status"] },
+      user: { ...anna, status: "SUSPENDED" },
       loading: false,
       onLogout: vi.fn(),
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
 
-    expect(screen.getByText("UNSPECIFIED")).toBeVisible();
+    expect(screen.getByText("SUSPENDED")).toBeVisible();
+  });
+
+  it("names an unknown status by its English /meta name, and passes a Russian one over", async () => {
+    state.userStatuses = [
+      { code: "SUSPENDED", name: "Suspended" },
+      { code: "ARCHIVED", name: "В архиве" },
+    ];
+    const { unmount } = renderMenu({ user: { ...anna, status: "SUSPENDED" }, loading: false, onLogout: vi.fn() });
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+    expect(await screen.findByText("Suspended")).toBeVisible();
+    unmount();
+
+    renderMenu({ user: { ...anna, status: "ARCHIVED" }, loading: false, onLogout: vi.fn() });
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+    expect(screen.getByText("ARCHIVED")).toBeVisible();
+  });
+
+  it("draws a missing status as a dash rather than throwing on it", () => {
+    // `toUser` reads a non-string status — the gateway's `null` — as `null`,
+    // and `.toLowerCase()` on it used to take the whole menu down (TAS-173).
+    renderMenu({ user: { ...anna, status: null }, loading: false, onLogout: vi.fn() });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+    expect(screen.getByText("Status")).toBeVisible();
+    expect(screen.getByText("—")).toBeVisible();
   });
 
   it("writes the fourth status out now that the domain carries it", () => {

@@ -13,9 +13,10 @@ import {
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import { objectStoreUploadFailure } from "../api/objectStore";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
-import type { GlobalRole, ProjectMember, User, UserStatus } from "../domain/types";
+import type { GlobalRole, ProjectMember, User } from "../domain/types";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
-import { formatFileSize } from "../lib/format";
+import { useMeta } from "../hooks/useMeta";
+import { formatFileSize, userStatusLabel } from "../lib/format";
 import { ME_QUERY_KEY } from "../lib/ownAvatarLink";
 import { Avatar } from "./Avatar";
 import { RequestId } from "./RequestId";
@@ -25,36 +26,6 @@ interface UserProfileMenuProps {
   loading?: boolean;
   loggingOut?: boolean;
   onLogout: () => void;
-}
-
-const statusLabels: Record<UserStatus, string> = {
-  ACTIVE: "Active",
-  BLOCKED: "Blocked",
-  INVITED: "Invited",
-  LOCKED: "Locked",
-};
-
-/**
- * The written status, or the raw value for anything this build has never heard
- * of — the same rule `userStatusLabel` follows in the admin Users section, for
- * a different reason. There the value is a database cell, so it was never
- * promised to be an enum member. Here it is typed `UserStatus` and can still
- * arrive outside it: `GET /users/me` answers the gateway's own
- * `GatewayUserStatus`. Since backend TAS-197 (`04546f1`, deployed) that enum
- * has `LOCKED`, so a locked account whose pre-lock token still works — it does
- * while TAS-198 (backend PR #174) is open — reads `LOCKED` and gets the label
- * below. The fallback stays for what is still possible: `UNSPECIFIED` is a
- * member of that enum too, and the contract types `status` as a bare string
- * (TAS-173). A value the gateway's mapper does not know at all is no longer one
- * of them — it fails every authenticated request with a 500 instead (read at
- * `60d62ee`).
- *
- * A bare lookup printed an empty badge for an unknown value: `undefined` in a
- * place typed `string`, which renders as nothing and says nothing.
- */
-function statusLabel(status: string): string {
-  const labels: Record<string, string | undefined> = statusLabels;
-  return labels[status] ?? status;
 }
 
 // The account-wide role, not the project one. It is shown, never acted on.
@@ -103,6 +74,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
   const queryClient = useQueryClient();
   const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState<PhotoNotice | null>(null);
+  const meta = useMeta();
   // The entry exists only for an account the server called GLOBAL_ADMIN. A
   // gateway that states no role counts as not an admin, which is lossy in the
   // safe direction (docs/ai/API-DIVERGENCE.md).
@@ -384,9 +356,14 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                   <dd>
                     {/* An unmodelled value keeps the quiet base pill: the
                         modifier simply does not match a rule, which is the
-                        right answer for a status this build cannot interpret. */}
-                    <span className={`user-status is-${person.status.toLowerCase()}`}>
-                      {statusLabel(person.status)}
+                        right answer for a status this build cannot interpret.
+                        The label is the one rule every dictionary follows
+                        (`userStatusLabel`): the build's word, a served English
+                        name, or the value as received — and "—" for the
+                        `null` an absent status arrives as (TAS-173), which
+                        used to throw on `toLowerCase` and take the menu down. */}
+                    <span className={`user-status is-${(person.status ?? "").toLowerCase()}`}>
+                      {userStatusLabel(person.status, meta?.userStatuses)}
                     </span>
                   </dd>
                 </div>

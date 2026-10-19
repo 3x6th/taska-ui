@@ -279,6 +279,84 @@ describe("MockTaskaApi", () => {
       await expect(api.createIssue(ops.id, { ...input, issueType: "BUG" })).resolves.toMatchObject({ issueType: "BUG" });
     });
 
+    // TAS-173: WEB is the project where values this build does not know can be
+    // clicked through — a type, a status and a priority the backend could add
+    // before the frontend ships.
+    it("lets WEB allow EPIC with a workflow of its own, carrying a status key this build does not know", async () => {
+      const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
+      const context = await api.getProjectContext(web.id);
+
+      expect(Object.keys(context.workflows)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
+      expect(context.workflows.EPIC!.statuses.map((status) => status.statusKey)).toEqual([
+        "TODO",
+        "IN_PROGRESS",
+        "DONE",
+        "IN_REVIEW",
+      ]);
+      expect(context.workflows.EPIC!.statuses.find((status) => status.statusKey === "IN_REVIEW")).toMatchObject({
+        name: "In Review",
+        category: "IN_PROGRESS",
+        sortOrder: 25,
+      });
+      expect(context.workflows.TASK!.statuses.map((status) => status.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
+
+      const issues = (await api.listIssues(web.id)).items;
+      expect(issues.find((issue) => issue.issueKey === "WEB-15")).toMatchObject({
+        issueType: "EPIC",
+        status: "IN_REVIEW",
+        priority: "URGENT",
+      });
+      expect(issues.find((issue) => issue.issueKey === "WEB-16")).toMatchObject({
+        issueType: "TASK",
+        status: "BLOCKED_BY_QA",
+      });
+    });
+
+    it("creates an EPIC in WEB, refuses one in OPS, and moves an epic through its own workflow", async () => {
+      const projects = await api.listProjects();
+      const web = projects.find((item) => item.projectKey === "WEB")!;
+      const ops = projects.find((item) => item.projectKey === "OPS")!;
+      const input = { summary: "Quarterly plan", description: "", priority: "MEDIUM", issueType: "EPIC" };
+
+      await expect(api.createIssue(ops.id, input)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Issue type EPIC is not allowed in project OPS",
+      });
+      const epic = await api.createIssue(web.id, input);
+      expect(epic).toMatchObject({ issueType: "EPIC", status: "TODO" });
+
+      const workflow = (await api.getProjectContext(web.id)).workflows.EPIC!;
+      const byName = (name: string) => workflow.transitions.find((transition) => transition.name === name)!.id;
+      await api.transitionIssue(web.id, epic.id, byName("Start Progress"));
+      await expect(api.transitionIssue(web.id, epic.id, byName("Send to review"))).resolves.toMatchObject({
+        status: "IN_REVIEW",
+      });
+    });
+
+    it("accepts a priority /meta lists and refuses one it does not, on create and on edit", async () => {
+      await expect(
+        api.createIssue(project.id, { summary: "Hot fix", description: "", priority: "URGENT", issueType: "TASK" }),
+      ).resolves.toMatchObject({ priority: "URGENT" });
+      await expect(
+        api.createIssue(project.id, { summary: "Hot fix", description: "", priority: "BLOCKER", issueType: "TASK" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Unknown issue priority: BLOCKER" });
+
+      const [issue] = (await api.listIssues(project.id)).items;
+      await expect(api.updateIssue(project.id, issue.id, { priority: "BLOCKER" }, issue.version)).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(api.updateIssue(project.id, issue.id, { priority: "URGENT" }, issue.version)).resolves.toMatchObject({
+        priority: "URGENT",
+      });
+    });
+
+    it("refuses a link type /meta does not list", async () => {
+      const [first, second] = (await api.listIssues(project.id)).items;
+      await expect(
+        api.createIssueLink(project.id, first.id, { targetIssueId: second.id, linkType: "SUPERSEDES" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Unknown issue link type: SUPERSEDES" });
+    });
+
     it("refuses a non-member of any global role with the project-service sentence, and a missing project with 404", async () => {
       // `ProjectServiceImpl.getProjectContext` at backend PR #186 (TAS-255,
       // head `cc03c0d`): no membership row is PERMISSION_DENIED "You don't have
@@ -303,6 +381,35 @@ describe("MockTaskaApi", () => {
         code: "NOT_FOUND",
         message: "Project not found",
       });
+    });
+  });
+
+  /**
+   * `GET /meta` as the stand answers it (backend TAS-217): Russian names for
+   * every contract code — eleven notification types, as deployed, not the
+   * longer list an open backend PR adds — plus `EPIC` named in English and
+   * `URGENT` named in Russian, the two codes TAS-173's states are seen through.
+   */
+  describe("the dictionaries", () => {
+    it("answers the stand's body with the two codes this build does not know", async () => {
+      const meta = await api.getMeta();
+
+      expect(meta.issueTypes?.map((entry) => entry.code)).toEqual(["TASK", "BUG", "STORY", "EPIC"]);
+      expect(meta.issueTypes?.find((entry) => entry.code === "EPIC")?.name).toBe("Epic");
+      expect(meta.priorities?.map((entry) => entry.code)).toEqual(["LOW", "MEDIUM", "HIGH", "URGENT"]);
+      expect(meta.priorities?.find((entry) => entry.code === "URGENT")?.name).toBe("Срочный");
+      expect(meta.linkTypes?.map((entry) => entry.code)).toEqual(["BLOCKS", "RELATES_TO", "DUPLICATES"]);
+      expect(meta.notificationTypes).toHaveLength(11);
+      expect(meta.userStatuses?.map((entry) => entry.code)).toEqual(["INVITED", "ACTIVE", "BLOCKED", "LOCKED"]);
+    });
+
+    it("hands out a copy, so a caller cannot change what the store checks writes against", async () => {
+      const meta = await api.getMeta();
+      meta.priorities!.length = 0;
+      await expect(
+        api.createIssue(project.id, { summary: "Still fine", description: "", priority: "URGENT", issueType: "TASK" }),
+      ).resolves.toMatchObject({ priority: "URGENT" });
+      expect((await api.getMeta()).priorities).toHaveLength(4);
     });
   });
 

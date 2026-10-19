@@ -36,6 +36,7 @@ import type {
   AttachmentUploadTicket,
   AvatarUploadTicket,
   Board,
+  EnumDictionaries,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -111,6 +112,10 @@ export class HybridTaskaApi implements TaskaApi {
 
   onSessionExpired(listener: () => void): () => void {
     return this.live.onSessionExpired(listener);
+  }
+
+  getMeta(): Promise<EnumDictionaries> {
+    return this.live.getMeta();
   }
 
   listProjects(): Promise<Project[]> {
