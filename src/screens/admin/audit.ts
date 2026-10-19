@@ -7,16 +7,16 @@ import { namedFilterKey, type NamedFilterDef } from "./namedFilters";
  * the eight named filters, the URL state they live in, the query they become,
  * and the three readings an entry needs — its time, its key and its documents.
  *
- * The read is `GET /readonly/audit-entries` (backend PR #172, TAS-160); what the
+ * The read is `GET /readonly/audit-entries` (backend PR #197, TAS-160); what the
  * server does with each parameter is on `TaskaApi.listAuditEntries`.
  */
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * `actorUserId` is the one filter the server cannot be trusted to refuse: at
- * the PR #172 head a value that is not a UUID is a **500**, not a 400. So it is
- * checked here and never sent.
+ * `actorUserId` is typed `format: uuid`, and the gateway refuses anything else
+ * with its generic 400 — "Invalid request parameters", which names neither the
+ * filter nor the rule. So it is checked here, in words that do, and never sent.
  */
 export function actorIdProblem(value: string): string | null {
   return UUID_PATTERN.test(value) ? null : "An actor id is a UUID, like 6d774efa-57d8-4ae0-a27e-2984d1dfbbf6.";
@@ -144,23 +144,35 @@ export function auditQueryFor(view: AuditViewState, pageSize: number): AuditEntr
 }
 
 /**
- * The entry's React key. The DTO has **no id**, so a row is named by what it
- * says; two entries that say exactly the same thing — the same actor doing the
- * same thing to the same row in the same second — are told apart by how many
- * came before, which is stable for as long as the page is.
+ * The entry's React key, and what the section remembers an open row by: its
+ * `id`, which stays the same however the page around it moves — a new entry
+ * arriving on top shifts every index, and a key built from the index would
+ * reopen the wrong row.
+ *
+ * The schema marks nothing `required`, so an entry may still arrive without an
+ * id, and that one is named by what it says. Two such entries that say exactly
+ * the same thing — the same actor doing the same thing to the same row in the
+ * same second — are told apart by how many came before, which is stable for as
+ * long as the page is. The same count separates two entries that share an id,
+ * which the server's primary key rules out and a key collision would turn into
+ * one React row drawn twice.
  */
 export function auditEntryKeys(entries: AuditEntry[]): string[] {
   const seen = new Map<string, number>();
   return entries.map((entry) => {
-    const base = [
-      entry.createdAt,
-      entry.actorUserId,
-      entry.action,
-      entry.targetService,
-      entry.targetTable,
-      entry.targetId,
-      entry.requestId,
-    ].join("|");
+    const base =
+      entry.id !== null
+        ? `id:${entry.id}`
+        : [
+            "row",
+            entry.createdAt,
+            entry.actorUserId,
+            entry.action,
+            entry.targetService,
+            entry.targetTable,
+            entry.targetId,
+            entry.requestId,
+          ].join("|");
     const count = seen.get(base) ?? 0;
     seen.set(base, count + 1);
     return count === 0 ? base : `${base}#${count}`;

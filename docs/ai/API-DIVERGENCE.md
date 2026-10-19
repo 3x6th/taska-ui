@@ -869,46 +869,49 @@ Same rule as above: "Closed by" is settled, the rest is live.
   separate decision. There were four: TAS-263 (`aac71ed`)
   deleted `getWorkflow` from `TaskaApi` and from all three implementations.
 
-### Pending backend PR #172 (TAS-160): the audit log, not served, and three things the Java does that the yml does not say
+### Backend PR #197 (TAS-160), merged: the audit log is served; what the yml still does not say
 
 - **Endpoint:** `GET /api/v1/readonly/audit-entries?page&pageSize&actorUserId&action&targetService&targetTable&targetId&requestId&createdAtFrom&createdAtTo`
-  → `{ entries: AuditEntryDto[], pagination }`, `GLOBAL_ADMIN` only, pinned at
-  `docs/contract/pending/pr-172-TAS-160.yml` (head `907fa1e`). **Open,
-  CHANGES_REQUESTED, not merged on 2026-10-10.** TAS-251 built the Audit
-  section (`src/screens/admin/AdminAuditSection.tsx`) on `listAuditEntries`
-  in all three implementations; `hybrid` delegates.
-- **Not served, two ways.** Undeployed, the gateway answers the static-resource
-  404. At the head the REST route is mapped but the admin-service gRPC adapter
-  lacks the override, so a deployment of that head answers **501**
-  (`UNIMPLEMENTED`). `isRouteNotServed` (src/api/errors.ts) reads both, and the
-  section shows a notice naming TAS-160 — not an error, not an empty table.
-  Mock mode cannot reproduce either (no HTTP status).
-- **Backend bug — pagination and sort ignored** (comment on TAS-160): the head
-  answers every matching row whatever `page`/`pageSize` say. **Not
-  compensated**: `rest` maps what arrives and the section draws every row;
-  `pagination` is taken from the wire, so the pager says whatever the server
-  says. The mock pages newest first and pages as the server's `normalizePageSize`
-  does: `pageSize` below 1 falls back to the default 20, a negative `page` to
-  the default first page, and only a value above 100 is clamped to 100. Removal: nothing to remove client-side once fixed.
-- **Dates `yyyy-MM-dd` only**, whole UTC days, both ends inclusive; anything
-  else, and `from` after `to`, is 400. The filter popover takes a date field,
-  sends the value as typed, and refuses `from > to` before sending; a URL with
-  `from > to` drops both bounds. The mock refuses both with
-  `INVALID_ARGUMENT`.
-- **`actorUserId` that is not a UUID answers 500**, not 400. The section
-  validates it as a UUID and never sends anything else. The mock answers
-  `400 INVALID_ARGUMENT` — the answer the server is meant to give, and a
-  documented difference from the head, not a claim that the head does it.
-- **The entry has no id**, and the schema declares nothing `required` (eight
-  fields are `NOT NULL` in the table; `requestId`, `oldValue`, `newValue` are
-  nullable). `rest` maps every field defensively to `string | null`; the
-  section keys rows by their content plus an occurrence count, and opens an
-  entry in place rather than at an address.
-- **`oldValue`/`newValue` are JSON text in a string**, sensitive values already
-  `"***"`. Pretty-printed when they parse, shown as sent when they do not; a
-  document that arrives as an object is stringified back rather than dropped.
-- **Removal:** when #172 merges, delete the pending extract, refresh the
-  snapshot and probe the route (501 vs 401 without a token).
+  → `{ entries: AuditEntryDto[], pagination }`, `GLOBAL_ADMIN` only. Backend PR
+  #172 closed unmerged and was replaced by #197, which **merged as `398285c`
+  (head `3eafb22`) and deployed on 2026-10-19**; in the snapshot since TAS-265
+  (the `pr-172` extract is deleted). TAS-251 built the Audit section
+  (`src/screens/admin/AdminAuditSection.tsx`) on `listAuditEntries` against
+  the #172 extract; the live section rendered the 21 real entries the same
+  evening without a change.
+- **Probed 2026-10-19:** with a `GLOBAL_ADMIN` token, 200 with an `id` on every
+  entry, newest first, honest `pagination` (`04613bb7-a862-4115-b0b7-0d8118f3bf9f`);
+  a non-UUID `actorUserId` 400 `INVALID_ARGUMENT` "Invalid request parameters"
+  with `details: null` (`44bbae42-95ce-4761-ad12-7755ad8ac9a3`). Without a
+  token, `pageSize=101` and `pageSize=0` are refused at the edge before
+  authentication with the same 400 (`c2defbe6-470c-4df0-8bc6-54ef5f5ab1b7`,
+  `725e0ec8-0480-47bd-9114-69b8aea13806`) and `pageSize=100` gets the 401
+  (`ed1bc134-db9e-41f8-b55a-32d9e64b8d01`).
+- **Gone with #197:** the 501 at the head of #172 (`isRouteNotServed` is
+  deleted; a 501 is now an ordinary error with one retry), ignored paging and
+  sort (now `created_at DESC, id DESC`), the 500 on a non-UUID actor (the
+  section still validates it before sending), and the missing `id`: rows are
+  keyed by `id`, with the content key only for an entry that arrives without
+  one (TAS-265). The date rules are in the contract now.
+- **Still true and not in the yml:**
+  - Undeployed, the route answers the static-resource 404; the section reads
+    that through `isUndeployedRoute` and says so rather than drawing an empty
+    table.
+  - `AuditEntryDto` declares nothing `required` although eight columns are
+    `NOT NULL`; `rest` maps every field defensively to `string | null` (review
+    remark on TAS-160, not filed).
+  - `oldValue`/`newValue` are JSON text in a string, sensitive values already
+    `"***"`; pretty-printed when they parse, shown as sent when they do not.
+    Masking turns a document that is not a JSON object into an absent field
+    (`AdminReadonlyServiceImpl`, review remark on TAS-160), so an array or
+    scalar old/new value arrives as `null`.
+- **The mock** pages newest first with `id` as the tiebreak, refuses a
+  non-UUID actor, a bad date and an out-of-range `pageSize` with "Invalid
+  request parameters" before the role check (as the edge does), a non-admin
+  with "User doesn't have permission", and `from` after `to` with
+  "body.createdAtFrom cannot be later than body.createdAtTo".
+- **Removal:** nothing client-side is compensating; the entry stays as the
+  record of what the contract leaves unsaid until `required` lands.
 
 ### Backend PR #178 (TAS-118), merged: the work log, and what the panel makes up for
 
@@ -1435,7 +1438,7 @@ Everything below is the entry as it stood, in the past tense.
   words beneath it. The "Unknown" rendering stays for rows written before the
   fix.
 
-### Comment ordering is unspecified
+### Closed by contract (TAS-265): comment ordering is unspecified
 
 - **Endpoint:** `GET /projects/{id}/issues/{id}/comments`
 - **Contract:** defines pagination (`pageSize` ≤ 50) and a required
@@ -1455,8 +1458,14 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** [TAS-206](https://jira.ozero.dev/browse/TAS-206), re-filed
   2026-09-11 from TAS-141, specifies the
   order in the contract; `RestTaskaApi` should sort explicitly meanwhile.
+- **Removed by** backend PR #200 (TAS-206, `7cdcf28`, merged and deployed with
+  develop `398285c` on 2026-10-19): the comments route now says «Порядок
+  элементов — createdAt desc, id desc (новые сверху)», which is what the server
+  did, the mock does, and the UI assumed. The snapshot carries it since TAS-265.
+  The client never sorted on its own, so nothing comes out of it; the order is
+  now a contract term rather than an assumption.
 
-### `CommentResponseDto.updatedAt` is nullable and is set on every insert, so it cannot mean "was edited"
+### Closed by contract (TAS-265): `CommentResponseDto.updatedAt` is nullable and is set on every insert, so it cannot mean "was edited"
 
 - **Endpoints:** every route answering `CommentResponseDto` —
   `GET`, `POST` and `PUT /api/v1/projects/{projectId}/issues/{issueId}/comments`.
@@ -1535,6 +1544,14 @@ Everything below is the entry as it stood, in the past tense.
   contract work rather than in a story of its own. Asking the backend to stop
   stamping `updatedAt` on insert would be the wrong ask: it is a standard audit
   column and `version` says the same thing a second way.
+- **Removed by** backend PR #200 (TAS-206, `7cdcf28`, merged and deployed with
+  develop `398285c` on 2026-10-19): `updatedAt` is `nullable: false` and reads
+  «Проставляется при создании и равен createdAt, пока комментарий не
+  редактировали; после правки строго больше createdAt». That is the meaning the
+  client already draws the badge from. One caveat survives, and it is the
+  backend's to settle: "strictly greater" rests on two clocks (application
+  auditing for `created_at`, Postgres `NOW()` for the edit), as the bullet above
+  explains — raised on TAS-206 as review remark R3, not taken, not filed.
 
 ### `requestId` lives only in a response header
 
@@ -1842,7 +1859,7 @@ The entry as it stood:
   or service change: `ProfileService.GetUserProfile` already exists and the
   gateway never calls it.
 
-### Avatar confirm trusts any `objectKey`
+### Closed by TAS-221 (merged and deployed, not probed): avatar confirm trusted any `objectKey`
 
 - **Endpoints:** `POST /api/v1/users/me/avatar/confirm`, `DELETE /api/v1/users/me/avatar`.
 - **Contract:** says nothing about whose key may be confirmed.
@@ -1889,6 +1906,18 @@ The entry as it stood:
   defect is visible there rather than papered over.
 - **Removed by:** [TAS-221](https://jira.ozero.dev/browse/TAS-221), filed
   2026-09-14 with priority High and to be fixed before PR #150 deploys.
+  **Merged** as backend PR #198 (head `f7ca7d5`, merge `b3677a0`) and deployed
+  2026-10-19 — the deploy succeeding means migration `0005`'s unique index on
+  `object_key` applied. `upload-url` now mints `avatars/{userId}/{uuid}`;
+  confirm refuses a key that is neither minted for the caller nor their saved
+  legacy key with 404 «An object with this key was not found in the storage.»
+  before touching anything, and a repeat of the saved key returns that row
+  unchanged (read at `398285c`, **not probed**: a write route on a real
+  avatar). The mock follows since TAS-265 and its "mirrors a server defect"
+  branch is gone; the menu still never re-sends a key, because nothing needs it
+  to. Rows already broken before the deploy stay broken until replaced — that
+  is the "permanent for that user" paragraph above, which still holds for them.
+  The contract still says neither rule (review remark on TAS-221, not filed).
 
 ### Closed by TAS-222: `upload-url` declared 200 and answered 201
 
@@ -2941,12 +2970,11 @@ The entry as it stood:
   Three source files and four test files. Not large — but not "nothing in the UI
   has to change", which is what an earlier version of this entry claimed and
   which would have priced the wrong reading at zero.
-- **Order is unspecified, exactly as it is for comments.** `ListIssueLinksResponseDto`
-  says nothing about sorting. `MockTaskaStore` returns links oldest-first by
-  `createdAt`; `RestTaskaApi` passes the gateway's order through untouched. So
-  the two modes can render the same links in different orders with nothing
-  failing — the same gap as the comment-ordering entry above, and it should be
-  closed in the same place ([TAS-141](https://jira.ozero.dev/browse/TAS-141)).
+- ~~**Order is unspecified, exactly as it is for comments.**~~ **Closed by
+  contract** in TAS-265: backend PR #200 (merged and deployed with develop
+  `398285c`, 2026-10-19) states «Порядок элементов — createdAt asc, id asc» on
+  the links route, which is the mock's oldest-first; `RestTaskaApi` passes the
+  order through, as before.
 - **The role gating here is a UI courtesy only.** A `VIEWER` is shown no add
   form and no remove control, but the contract states no permissions for these
   three routes at all — no roles, no error codes. Nothing has confirmed the
@@ -3151,7 +3179,14 @@ The entry as it stood:
     unknown and need not be stable between calls. Both optimistic writes
     append, so a chip can move once the server answers. Nothing sorts, on
     purpose — inventing an order here would hide the fact that the contract has
-    none.
+    none. **Closed by contract in TAS-265:** backend PR #200 (develop
+    `398285c`, 2026-10-19) states «name asc, id asc (сравнение строк по
+    collation БД)» on both list routes and «id asc» for a board issue's label
+    ids. The mock now sorts both lists by name with a pinned `"en"` comparison
+    and then id — an approximation, since the collation is unnamed (review
+    remark R4 on TAS-206, not filed) — and the board's label ids by id.
+    `RestTaskaApi` still passes the order through; an optimistic append can
+    still move once the server answers.
 - **Removed by:** [TAS-172](https://jira.ozero.dev/browse/TAS-172) closing,
   plus one more live pass covering what the list above still marks unverified
   — the `labelId` filter on a project with several labelled issues, list
@@ -3536,7 +3571,8 @@ found"`.
   its filters are equality, and nothing holds the value — and a test now pins
   it. **The length constant stays for good**, as decided on 2026-09-11: the
   minimum is three by configuration, and only the contract's `minLength` still
-  has to catch up (TAS-206).
+  has to catch up (TAS-206). **It has:** backend PR #200 (develop `398285c`,
+  2026-10-19) sets `minLength: 3` on the query, in the snapshot since TAS-265.
 
 ### Closed by TAS-251: the search DTO carried no `status` and no `projectId`
 
@@ -3586,10 +3622,12 @@ the entry as it stood before.
   the route answers, and what the contract leaves out, is in "GET
   /issues/{issueId}: a failed part arrives as [] and an unnamed person as a
   blank or absent displayName" above.
-  - **Ordering was never measured.** `page` and `pageSize` behave, but nothing
-    here establishes that the gateway's order is stable across pages — the
-    mock imposes `createdAt` ascending and the contract promises nothing. Both
-    callers read page 0 only, so this is latent rather than live.
+  - ~~**Ordering was never measured.**~~ **Closed by contract in TAS-265.** The
+    mock imposed `createdAt` ascending while the server already sorted
+    `created_at DESC` at develop `7d4f739` — so mock and stand showed different
+    first pages. Backend PR #200 (develop `398285c`, 2026-10-19) states
+    «createdAt desc, id desc (сначала новые задачи)», and the mock now sorts the
+    same way with an `id` tiebreak.
 - **Why not hydrate.** The owner settled the general question on 2026-08-23
   while deciding TAS-178: fix the backend, do not hydrate on the frontend.
   `listIssues` used to be the standing exception — it paid an N+1 through
@@ -4363,7 +4401,7 @@ Compensating UI behaviour: none; the modal says "conflict" from the code.
 Removed by: the backend fixing either the mapping or the test. Raised on the PR
 and on TAS-108.
 
-### The lock deadline on `POST /auth/login` exists only inside an English sentence
+### The lock deadline on `POST /auth/login` exists only inside an English sentence — `details` read first since TAS-265, the sentence kept until probed
 
 - **Endpoint:** `POST /api/v1/auth/login`, the refusal for an account locked by
   its own failed sign-ins.
@@ -4457,6 +4495,26 @@ and on TAS-108.
   `UNAUTHENTICATED "Invalid credentials"` for every non-`ACTIVE` account, which
   is a wrong claim about the server rather than a documented gap — and it would
   have left this branch unreachable in the only environment the e2e suite has.
+- **Since TAS-265 (2026-10-19): `details` first, the sentence as fallback.**
+  Backend PR #199 (TAS-239, head `c99ff19`, merge `e82ed6b`) merged and deployed
+  with develop `398285c`: `RestErrorResponse` gains `details`
+  (`{string: string}`, nullable), carried from `DomainException` through the
+  gRPC trailer `taska-error-details`, and `AuthServiceImpl.accountLockedError`
+  fills `{"lockedUntil": Instant.toString()}` with the same sentence, code and
+  403. Probed the same day: the envelope carries `details: null` on a 404 and a
+  400 (`fe5a4cc1-92cf-45a1-bc48-6fdcc4289d78`,
+  `44bbae42-95ce-4761-ad12-7755ad8ac9a3`). **The lock refusal itself is not
+  probed** — it needs a throwaway account, because the probe locks the account
+  it uses. So the client reads `details.lockedUntil` first (`lockedUntilOf`,
+  `src/lib/accountLock.ts`: an own string key, an exact ISO instant, still
+  ahead) and falls back to the sentence parse above only when `details` gives
+  nothing; a past instant from `details` is not rescued by the sentence.
+  `isAccountLocked` still decides the branch by code. The mock's lock refusal
+  carries the same `details`.
+- **Removal of the fallback:** one probe of the lock refusal with a throwaway
+  account showing `details.lockedUntil`; then `LOCK_INSTANT_PATTERN` and the
+  prose path in `accountLock.ts` go. Review remarks on TAS-239, not filed:
+  `details.reason: "ACCOUNT_LOCKED"`, and a declared `'403'` on `/auth/login`.
 - **Removed by:** [TAS-239](https://jira.ozero.dev/browse/TAS-239), filed
   2026-09-22 from `api-contract-guard`'s reading of this wire — the backend
   putting the deadline in a machine-readable field. Not filed under epic
@@ -5322,15 +5380,19 @@ holds `VIEWER` at all — the seed assigns `ADMIN` to the first member and
 `MEMBER` to the rest — so the upload gate is exercised against a *non-member
 standing in for* a VIEWER rather than against the role it names.
 
-**Attachment list order is the mock's invention.**
+**Attachment list order was the mock's invention** (closed by contract in
+TAS-265 — see the end of this paragraph).
 `IssueAttachmentRepository.findAllByIssueIdAndDeletedAtIsNull` is a derived query
 with no `ORDER BY` and the contract promises nothing, so the gateway's order is
 physical-row order and can change under a `VACUUM`. The mock sorts by
-`createdAt` ascending. Same shape as the unmeasured search ordering recorded
+`createdAt` ascending. Same shape as the search ordering recorded
 above. **Read again at develop `1cfe4d7`, the order is looser than that.**
 `listAttachments` presigns each row with `flatMap`
 (`AttachmentServiceImpl.java:79-83`), so rows come back in the order their HEAD
-requests complete, and two identical reads can differ. Not recorded until now,
+requests complete, and two identical reads can differ. **Closed by contract
+2026-10-19:** backend PR #200 (develop `398285c`) states «createdAt asc, id asc»
+for attachments and presigns with `flatMapSequential`, so the read keeps the
+repository's order; the mock's ascending `createdAt` is now the contract's. Not recorded until now,
 either: one missing object fails the HEAD, and the **whole list** answers 404.
 That is the same shape as the member read's avatar failure (TAS-225).
 

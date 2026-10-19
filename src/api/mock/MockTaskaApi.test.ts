@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MOCK_ATTACHMENT_TRIGGERS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
 import type { BoardParams, UpdateIssueInput } from "../TaskaApi";
-import type { Board, Issue, Project, Workflow } from "../../domain/types";
+import type { Board, Issue, NotificationType, Project, Workflow } from "../../domain/types";
 import {
   ATTACHMENT_MAX_SIZE_BYTES,
   attachmentSizeRefusalMessage,
@@ -13,12 +13,13 @@ import {
   avatarSizeRefusalMessage,
   avatarTypeRefusalMessage,
 } from "../avatars";
-import { IssueVersionConflictError } from "../errors";
+import { IssueVersionConflictError, apiErrorFacts } from "../errors";
 import { datesOutOfOrderServerMessage } from "../issuePatch";
 import { ObjectStoreError } from "../objectStore";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
-import { accountLockedUntil } from "../../lib/accountLock";
+import { accountLockedUntil, lockedUntilOf } from "../../lib/accountLock";
 import { commentWasEdited } from "../../lib/format";
+import { selectableCodes } from "../../lib/enumLabel";
 
 /**
  * The mock is the reference implementation of the TaskaApi contract: it is what
@@ -71,10 +72,11 @@ describe("MockTaskaApi", () => {
     // state — it takes repeated failed sign-ins against the real auth-service.
     // The shape matters as much as the refusal: the gateway answers a lockout
     // with PERMISSION_DENIED (403 over REST) carrying the deadline in the
-    // message, and every other sign-in failure with UNAUTHENTICATED. A mock
-    // that answered "Invalid credentials" here would leave the login screen's
-    // lock branch unreachable in the only environment the e2e suite has.
-    it("refuses a locked account the way the gateway does, with a readable deadline in the message", async () => {
+    // message and, since backend PR #199, in `details.lockedUntil`, and every
+    // other sign-in failure with UNAUTHENTICATED. A mock that answered
+    // "Invalid credentials" here would leave the login screen's lock branch
+    // unreachable in the only environment the e2e suite has.
+    it("refuses a locked account the way the gateway does, with a readable deadline in the message and the details", async () => {
       const before = Date.now();
       const refusal = await api
         .login({ email: "omar@example.com", password: "anything" })
@@ -92,6 +94,19 @@ describe("MockTaskaApi", () => {
       expect(until).not.toBeNull();
       expect(until!.getTime()).toBeGreaterThanOrEqual(before + 15 * 60 * 1000);
       expect(until!.getTime()).toBeLessThanOrEqual(Date.now() + 15 * 60 * 1000);
+
+      // The same instant, stated once more where a machine reads it — the only
+      // key `details` carries, and the one the login screen reads first.
+      const { details } = apiErrorFacts(refusal);
+      expect(details).toEqual({ lockedUntil: until!.toISOString() });
+      expect(lockedUntilOf(refusal)?.getTime()).toBe(until!.getTime());
+    });
+
+    it("states no details on any other refusal, as the gateway answers `details: null`", async () => {
+      const failure = await api
+        .login({ email: "nina@example.com", password: "anything" })
+        .catch((error: unknown) => error);
+      expect(apiErrorFacts(failure)).toMatchObject({ code: "UNAUTHENTICATED", details: null });
     });
 
     // The other two non-ACTIVE statuses stay where they were: AuthServiceImpl
@@ -386,10 +401,11 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * `GET /meta` as the stand answers it (backend TAS-217): Russian names for
-   * every contract code — eleven notification types, as deployed, not the
-   * longer list an open backend PR adds — plus `EPIC` named in English and
-   * `URGENT` named in Russian, the two codes TAS-173's states are seen through.
+   * `GET /meta` as the stand answers it (backend TAS-217, with backend PR
+   * #200's enums, probed 2026-10-19): Russian names for every contract code —
+   * twenty-three notification types and five user statuses, each list ending
+   * in its placeholder — plus `EPIC` named in English and `URGENT` named in
+   * Russian, the two codes TAS-173's states are seen through.
    */
   describe("the dictionaries", () => {
     it("answers the stand's body with the two codes this build does not know", async () => {
@@ -400,8 +416,58 @@ describe("MockTaskaApi", () => {
       expect(meta.priorities?.map((entry) => entry.code)).toEqual(["LOW", "MEDIUM", "HIGH", "URGENT"]);
       expect(meta.priorities?.find((entry) => entry.code === "URGENT")?.name).toBe("Срочный");
       expect(meta.linkTypes?.map((entry) => entry.code)).toEqual(["BLOCKS", "RELATES_TO", "DUPLICATES"]);
-      expect(meta.notificationTypes).toHaveLength(11);
-      expect(meta.userStatuses?.map((entry) => entry.code)).toEqual(["INVITED", "ACTIVE", "BLOCKED", "LOCKED"]);
+      expect(meta.notificationTypes).toHaveLength(23);
+      expect(meta.notificationTypes?.at(-1)).toEqual({ code: "UNKNOWN", name: "Неизвестный тип" });
+      expect(meta.userStatuses?.map((entry) => entry.code)).toEqual([
+        "INVITED",
+        "ACTIVE",
+        "BLOCKED",
+        "LOCKED",
+        "UNSPECIFIED",
+      ]);
+    });
+
+    it("lists the placeholders as the stand does, and no picker offers one (TAS-173)", async () => {
+      const meta = await api.getMeta();
+      // Exactly the kinds `NotificationType` names: a `Record` over the union
+      // will not compile with one missing or one extra, so the seed, the union
+      // and the contract's `NotificationTypeDto` cannot drift apart unseen.
+      const named: Record<NotificationType, true> = {
+        ISSUE_ASSIGNED: true,
+        ISSUE_TRANSITIONED: true,
+        ISSUE_CREATED: true,
+        ISSUE_UPDATED: true,
+        ISSUE_DELETED: true,
+        ISSUE_LINK_CREATED: true,
+        ISSUE_LINK_DELETED: true,
+        ISSUE_COMMENT_CREATED: true,
+        ISSUE_COMMENT_UPDATED: true,
+        ISSUE_COMMENT_DELETED: true,
+        ISSUE_ATTACHMENT_ADDED: true,
+        ISSUE_ATTACHMENT_DELETED: true,
+        LABEL_ADDED: true,
+        LABEL_REMOVED: true,
+        USER_INVITED: true,
+        USER_ACTIVATED: true,
+        USER_BLOCKED: true,
+        USER_UNBLOCKED: true,
+        PROJECT_CREATED: true,
+        MEMBER_ADDED: true,
+        MEMBER_UPDATED: true,
+        MEMBER_REMOVED: true,
+        UNKNOWN: true,
+      };
+      const notificationCodes = meta.notificationTypes?.map((entry) => entry.code) ?? [];
+      expect([...notificationCodes].sort()).toEqual(Object.keys(named).sort());
+
+      expect(selectableCodes(meta.userStatuses, ["INVITED", "ACTIVE", "BLOCKED", "LOCKED"])).toEqual([
+        "INVITED",
+        "ACTIVE",
+        "BLOCKED",
+        "LOCKED",
+      ]);
+      expect(selectableCodes(meta.notificationTypes, [])).not.toContain("UNKNOWN");
+      expect(selectableCodes(meta.priorities, ["LOW", "MEDIUM", "HIGH"])).toEqual(["LOW", "MEDIUM", "HIGH", "URGENT"]);
     });
 
     it("hands out a copy, so a caller cannot change what the store checks writes against", async () => {
@@ -1590,13 +1656,12 @@ describe("MockTaskaApi", () => {
 
   /**
    * `GET /issues/search` as the deployed gateway was measured behaving on
-   * 2026-08-23, not as the contract describes it. Two of those measurements are
-   * the reason these cases exist at all: the runtime refuses a query below
-   * three characters where the contract permits two, and refuses an empty one
-   * where its own generated spec (`/v3/api-docs`) offers it as the parameter's
-   * default. The e2e suite runs against
-   * this mock, so a mock that quietly accepted either would let the suite pass
-   * a case the gateway answers 400 to.
+   * 2026-08-23 — which the contract has said too since backend PR #200 — and
+   * in the order that PR declares. Two of those measurements are the reason
+   * these cases exist at all: the gateway refuses a query below three
+   * characters, and an empty one. The e2e suite runs against this mock, so a
+   * mock that quietly accepted either would let the suite pass a case the
+   * gateway answers 400 to.
    */
   describe("issue search", () => {
     it("refuses a query below the minimum, and the empty string with it", async () => {
@@ -1609,6 +1674,40 @@ describe("MockTaskaApi", () => {
       // does this, or " a " would be a legal three-character search for one
       // character.
       await expect(api.searchIssues({ query: " a " })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    });
+
+    it("answers newest first, and breaks a tie in time by id, descending", async () => {
+      const { items } = await api.searchIssues({ query: "the", pageSize: 100 });
+      expect(items.length).toBeGreaterThan(2);
+      // A hit carries no time of its own, so each is read back for it.
+      const created = await Promise.all(
+        items.map(async (hit) => Date.parse((await api.getIssue(hit.projectId!, hit.id)).issue.createdAt)),
+      );
+      expect(created.every(Number.isFinite)).toBe(true);
+      expect([...created].sort((a, b) => b - a)).toEqual(created);
+
+      // Three issues in one instant reach the tiebreak: `createdAt desc, id
+      // desc` is the route's declared order, and ids are random, so the order
+      // below is the ids' and nothing else's.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date("2026-10-19T12:00:00Z"));
+        const twins = [];
+        for (const n of [1, 2, 3]) {
+          twins.push(
+            await api.createIssue(project.id, {
+              issueType: "TASK",
+              summary: `Tiebreak twin ${n}`,
+              description: "",
+              priority: "LOW",
+            }),
+          );
+        }
+        const hits = await api.searchIssues({ query: "Tiebreak twin", projectId: project.id, pageSize: 100 });
+        expect(hits.items.map((hit) => hit.id)).toEqual(twins.map((twin) => twin.id).sort().reverse());
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("treats an absent query as no text filter rather than as an empty one", async () => {
@@ -1787,6 +1886,30 @@ describe("MockTaskaApi", () => {
       const projectIds = labels.map((label) => label.id);
       expect(projectIds).toEqual(expect.arrayContaining(carrier.labels.map((label) => label.id)));
       expect(Object.keys(carrier.labels[0]).sort()).toEqual(["color", "id", "name"]);
+    });
+
+    it("lists labels by name, then id — on the project, on the issue — and the board's ids by id", async () => {
+      // The order both label reads declare since backend PR #200. Created
+      // last, named to sort first: insertion order would put it at the end.
+      const first = await api.createProjectLabel(project.id, { name: "a11y", color: "#0052cc" });
+      const labels = await api.listProjectLabels(project.id);
+      expect(labels[0].id).toBe(first.id);
+      const names = labels.map((label) => label.name);
+      expect([...names].sort((a, b) => a.localeCompare(b, "en"))).toEqual(names);
+
+      // Attached in reverse: the issue still answers by name.
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const bare = items.find((issue) => issue.labels.length === 0 && issue.issueType === "TASK")!;
+      for (const label of [...labels].reverse().slice(0, 3)) await api.addIssueLabel(project.id, bare.id, label.id);
+      const onIssue = await api.listIssueLabels(project.id, bare.id);
+      expect(onIssue.map((label) => label.name)).toEqual(
+        [...labels].reverse().slice(0, 3).map((label) => label.name).sort((a, b) => a.localeCompare(b, "en")),
+      );
+
+      // `BoardIssueDto.labels` is ids in id order, not the names' order.
+      const board = await api.getBoard(project.id, { issueType: "TASK", includeDone: true });
+      const card = board.columns.flatMap((column) => column.issues).find((issue) => issue.id === bare.id)!;
+      expect(card.labelIds).toEqual(onIssue.map((label) => label.id).sort());
     });
 
     it("creates a label, trimming the name the caller typed", async () => {
@@ -2072,17 +2195,75 @@ describe("MockTaskaApi", () => {
       expect(types).not.toContain("timestamptz");
     });
 
-    it("seeds both a table whose rows can be opened and one whose rows cannot", async () => {
+    it("keys every seeded table by a uuid, as every table on the stand is", async () => {
       const catalog = await api.getAdminCatalog();
       const keyTypes = catalog.services
         .flatMap((service) => service.tables)
         .map((table) => table.columns.find((column) => column.name === table.primaryKey)?.type);
 
-      // A uuid key is addressable by the gateway; anything else is not, and
-      // §5.8 refuses to link it. Both cases have to exist in mock mode or the
-      // screen's decision is never exercised.
-      expect(keyTypes).toContain("uuid");
-      expect(keyTypes.some((type) => type !== "uuid")).toBe(true);
+      // Read at backend develop `398285cde074`: every table the catalog lists
+      // has a uuid key, so every row the console shows is addressable. §5.8's
+      // other branch — a key the gateway cannot take, not linked — is pinned
+      // in src/screens/admin/AdminScreen.test.tsx on a made-up table rather
+      // than seeded here as though the stand had one.
+      expect(keyTypes.length).toBeGreaterThan(0);
+      expect(keyTypes.every((type) => type === "uuid")).toBe(true);
+    });
+
+    it("lists admin-service's audit table as the stand does, with the Audit section's rows", async () => {
+      const catalog = await api.getAdminCatalog();
+      const admin = catalog.services.find((service) => service.name === "admin");
+      expect(admin?.tables.map((table) => table.name)).toEqual(["admin_audit_log"]);
+      expect(admin?.tables[0].columns.map((column) => `${column.name}:${column.type}`)).toEqual([
+        "id:uuid",
+        "request_id:text",
+        "actor_user_id:uuid",
+        "actor_login:character varying",
+        "actor_roles:jsonb",
+        "action:text",
+        "target_service:text",
+        "target_table:text",
+        "target_id:text",
+        "old_value:jsonb",
+        "new_value:jsonb",
+        "reason:text",
+        "created_at:timestamp with time zone",
+      ]);
+
+      // One log, two views of it: every row here is an entry the audit read
+      // answers with, under the same id. The audit read is GLOBAL_ADMIN only.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const { rows } = await api.listAdminRows({ service: "admin", table: "admin_audit_log", pageSize: 100 });
+      const { entries } = await api.listAuditEntries({ pageSize: 100 });
+      expect(rows.map((row) => row.id).sort()).toEqual(entries.map((entry) => entry.id).sort());
+      const id = String(rows[0].id);
+      await expect(api.getAdminRow({ service: "admin", table: "admin_audit_log", id })).resolves.toMatchObject({
+        id,
+      });
+    });
+
+    it("sends the audit table's jsonb columns as text in PostgreSQL's form, and its times to the second", async () => {
+      // As probed 2026-10-19 (`940a576d-2d14-483d-9377-7e1b71fbf5ad`): a
+      // `jsonb` cell is a string, `": "` and `", "` between the parts, keys in
+      // jsonb's order — shorter first — which is neither the order the seed
+      // wrote them in nor alphabetical.
+      const { rows } = await api.listAdminRows({
+        service: "admin",
+        table: "admin_audit_log",
+        pageSize: 100,
+        filters: [{ column: "action", operator: "equals", value: "RESET_CREDENTIAL_LOCKOUT" }],
+      });
+      expect(rows.length).toBeGreaterThan(0);
+      const [row] = rows;
+      expect(row.old_value).toBe('{"status": "LOCKED", "passwordHash": "***", "failedAttempts": 5}');
+      expect(row.new_value).toBe('{"status": "ACTIVE", "passwordHash": "***", "failedAttempts": 0}');
+      expect(row.actor_roles).toBe('"GLOBAL_ADMIN"');
+      expect(row.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+
+      // A document the log does not hold stays `null`, not the text "null".
+      const { rows: all } = await api.listAdminRows({ service: "admin", table: "admin_audit_log", pageSize: 100 });
+      expect(all.some((item) => item.old_value === null)).toBe(true);
+      expect(all.every((item) => item.old_value === null || typeof item.old_value === "string")).toBe(true);
     });
 
     it("reads one row by its key and refuses a key nobody has", async () => {
@@ -2097,20 +2278,14 @@ describe("MockTaskaApi", () => {
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
 
-    // The gateway types the path parameter as a UUID, so a card for a row keyed
-    // by a code is one the mock could serve and the gateway never can. The
-    // console refuses to link those rows; a hand-typed address has to hit the
-    // same wall in both modes, or mock mode teaches a screen that does not
-    // exist.
+    // The gateway types the path parameter as a UUID, so a hand-typed address
+    // with anything else in it is refused before admin-service sees it. It has
+    // to hit the same wall in both modes, or mock mode teaches a card that does
+    // not exist.
     it("refuses a row id the gateway would not parse", async () => {
-      const rows = await api.listAdminRows({ service: "admin", table: "audit_log" });
-      const id = String(rows.rows[0].id);
-
-      // The row is genuinely there — it is the address that is impossible.
-      expect(id).not.toMatch(/^[0-9a-f-]{36}$/i);
-      await expect(api.getAdminRow({ service: "admin", table: "audit_log", id })).rejects.toMatchObject({
-        code: "INVALID_ARGUMENT",
-      });
+      await expect(
+        api.getAdminRow({ service: "admin", table: "admin_audit_log", id: "audit-001" }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     });
 
     it("marks at least one column sensitive, so masking is reachable without a gateway", async () => {
@@ -2163,7 +2338,7 @@ describe("MockTaskaApi", () => {
     });
 
     it("pages, and reports the totals the pager is drawn from", async () => {
-      const first = await api.listAdminRows({ service: "admin", table: "audit_log", page: 1, pageSize: 20 });
+      const first = await api.listAdminRows({ service: "admin", table: "admin_audit_log", page: 1, pageSize: 20 });
 
       expect(first.rows).toHaveLength(20);
       expect(first.pagination.totalRows).toBeGreaterThan(20);
@@ -2172,7 +2347,7 @@ describe("MockTaskaApi", () => {
 
       const last = await api.listAdminRows({
         service: "admin",
-        table: "audit_log",
+        table: "admin_audit_log",
         page: first.pagination.totalPages,
         pageSize: 20,
       });
@@ -2182,7 +2357,7 @@ describe("MockTaskaApi", () => {
     });
 
     it("sorts both ways", async () => {
-      const query = { service: "admin" as const, table: "audit_log", sort: "id", pageSize: 100 };
+      const query = { service: "admin" as const, table: "admin_audit_log", sort: "id", pageSize: 100 };
       const asc = await api.listAdminRows({ ...query, order: "asc" });
       const desc = await api.listAdminRows({ ...query, order: "desc" });
 
@@ -2227,26 +2402,27 @@ describe("MockTaskaApi", () => {
       // The same moment, spelled with the milliseconds the picker used to emit.
       // As text `"…10:00:00Z" <= "…10:00:00.000Z"` is false, so the boundary row
       // the gateway keeps was the one row the mock dropped.
+      // The oldest of the audit table's thirty rows is stamped without them.
       const to = await api.listAdminRows({
         service: "admin",
-        table: "audit_log",
+        table: "admin_audit_log",
         pageSize: 100,
-        filters: [{ column: "created_at", operator: "to", value: "2026-07-01T10:00:00.000Z" }],
+        filters: [{ column: "created_at", operator: "to", value: "2026-09-19T03:40:00.000Z" }],
       });
 
       expect(to.rows).toHaveLength(1);
-      expect(to.rows[0].created_at).toBe("2026-07-01T10:00:00Z");
+      expect(to.rows[0].created_at).toBe("2026-09-19T03:40:00Z");
 
       const from = await api.listAdminRows({
         service: "admin",
-        table: "audit_log",
+        table: "admin_audit_log",
         pageSize: 100,
-        filters: [{ column: "created_at", operator: "from", value: "2026-07-01T10:00:00.000Z" }],
+        filters: [{ column: "created_at", operator: "from", value: "2026-09-19T03:40:00.000Z" }],
       });
 
       // The boundary belongs to both halves, and nothing else is missing from
-      // this one: 47 rows, one of which is the boundary.
-      expect(from.rows).toHaveLength(47);
+      // this one: all thirty rows, one of which is the boundary.
+      expect(from.rows).toHaveLength(30);
     });
 
     it("sorts a numeric column as numbers, not as locale-collated text", async () => {
@@ -2393,17 +2569,9 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * The Events section (TAS-167). The summary endpoint is deployed — backend
-   * PR #141 (TAS-105) merged 2026-08-27 — and this is the reference
-   * implementation of it: derived from the very rows the Outbox journal reads,
-   * so the two views of the section can never disagree. That derivation is what
-   * these tests are about.
-   */
-  /**
-   * `GET /readonly/audit-entries` (backend PR #172, TAS-160) as the server is
-   * meant to answer it (TAS-251). The head ignores paging and sorting and
-   * answers 500 for a non-UUID actor; neither is reproduced here, both are in
-   * docs/ai/API-DIVERGENCE.md.
+   * `GET /readonly/audit-entries` as backend PR #197 (TAS-160) answers it,
+   * merged and deployed 2026-10-19 (TAS-251, TAS-265): paged and sorted by the
+   * server, an id on every entry, and refusals in the server's own words.
    */
   describe("the audit log", () => {
     beforeEach(async () => {
@@ -2422,9 +2590,33 @@ describe("MockTaskaApi", () => {
       expect(second.pagination).toMatchObject({ currentPage: 2, hasNext: false, hasPrev: true });
     });
 
-    it("clamps pageSize above 100 and falls back to 20 below 1, as the server does", async () => {
-      expect((await api.listAuditEntries({ pageSize: 500 })).pagination.pageSize).toBe(100);
-      expect((await api.listAuditEntries({ pageSize: 0 })).pagination.pageSize).toBe(20);
+    it("gives every entry an id of its own, which a filtered read hands back unchanged", async () => {
+      const { entries } = await api.listAuditEntries({ pageSize: 100 });
+      const ids = entries.map((entry) => entry.id);
+      expect(ids.every((id) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))).toBe(true);
+      expect(new Set(ids).size).toBe(entries.length);
+
+      // The id is the row's, not the page's: the same entry read through a
+      // filter carries the same one.
+      const target = entries[7];
+      const narrowed = await api.listAuditEntries({ requestId: target.requestId ?? undefined, action: target.action! });
+      expect(narrowed.entries.find((entry) => entry.createdAt === target.createdAt)?.id).toBe(target.id);
+    });
+
+    it("refuses a pageSize outside 1–100 with the gateway's 400, as the stand does, and reads a page below 1 as the first", async () => {
+      // Probed tokenless 2026-10-19: 101 and 0 are refused at the edge before
+      // authentication; admin-service's own fallback and clamp are never reached.
+      const binding = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
+      await expect(api.listAuditEntries({ pageSize: 101 })).rejects.toMatchObject(binding);
+      await expect(api.listAuditEntries({ pageSize: 0 })).rejects.toMatchObject(binding);
+      await expect(api.listAuditEntries({ pageSize: 20.5 })).rejects.toMatchObject(binding);
+      await expect(api.listAuditEntries({ page: 1.5 })).rejects.toMatchObject(binding);
+      expect((await api.listAuditEntries({ pageSize: 100 })).pagination.pageSize).toBe(100);
+      expect((await api.listAuditEntries({ pageSize: 1 })).entries).toHaveLength(1);
+      // The rest leg sends `max(0, page - 1)`, so a domain page below 1 is the
+      // wire's page 0 there; it is the first page here too.
+      expect((await api.listAuditEntries({ page: 0 })).pagination.currentPage).toBe(1);
+      expect((await api.listAuditEntries({ page: -3 })).pagination.currentPage).toBe(1);
     });
 
     it("carries null documents, a null request id and masked values, as the log does", async () => {
@@ -2462,23 +2654,48 @@ describe("MockTaskaApi", () => {
       expect(answer.entries).toEqual(sameDay);
     });
 
-    it("refuses a date in any other spelling, a from after to, and a non-UUID actor with 400", async () => {
-      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-01T00:00:00Z" })).rejects.toMatchObject({
-        code: "INVALID_ARGUMENT",
-      });
-      await expect(api.listAuditEntries({ createdAtTo: "2026-02-30" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
-      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-02", createdAtTo: "2026-10-01" })).rejects.toMatchObject({
-        code: "INVALID_ARGUMENT",
-      });
-      await expect(api.listAuditEntries({ actorUserId: "mark" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    it("refuses a date in any other spelling and a non-UUID actor with the gateway's own 400", async () => {
+      // The gateway's parameter binding, in its one fixed sentence: it names
+      // neither the parameter nor the rule.
+      const binding = { code: "INVALID_ARGUMENT", message: "Invalid request parameters" };
+      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-01T00:00:00Z" })).rejects.toMatchObject(binding);
+      await expect(api.listAuditEntries({ createdAtTo: "2026-02-30" })).rejects.toMatchObject(binding);
+      await expect(api.listAuditEntries({ actorUserId: "mark" })).rejects.toMatchObject(binding);
     });
 
-    it("refuses anyone but a GLOBAL_ADMIN with 403", async () => {
+    it("refuses a from after to in admin-service's words", async () => {
+      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-02", createdAtTo: "2026-10-01" })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "body.createdAtFrom cannot be later than body.createdAtTo",
+      });
+    });
+
+    it("refuses anyone but a GLOBAL_ADMIN with 403 — after the binding, before the dates are compared", async () => {
       await api.login({ email: "anna@example.com", password: "anything" });
-      await expect(api.listAuditEntries({})).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      const denied = { code: "PERMISSION_DENIED", message: "User doesn't have permission" };
+      await expect(api.listAuditEntries({})).rejects.toMatchObject(denied);
+      // The binding answers before authentication is even read…
+      await expect(api.listAuditEntries({ actorUserId: "mark" })).rejects.toMatchObject({
+        message: "Invalid request parameters",
+      });
+      await expect(api.listAuditEntries({ pageSize: 101 })).rejects.toMatchObject({
+        message: "Invalid request parameters",
+      });
+      // …and the dates' order is admin-service's question, which a non-admin
+      // never reaches.
+      await expect(api.listAuditEntries({ createdAtFrom: "2026-10-02", createdAtTo: "2026-10-01" })).rejects.toMatchObject(
+        denied,
+      );
     });
   });
 
+  /**
+   * The Events section (TAS-167). The summary endpoint is deployed — backend
+   * PR #141 (TAS-105) merged 2026-08-27 — and this is the reference
+   * implementation of it: derived from the very rows the Outbox journal reads,
+   * so the two views of the section can never disagree. That derivation is what
+   * these tests are about.
+   */
   describe("problematic outbox summary", () => {
     it("gives exactly auth, project and issue an outbox_events table", async () => {
       const catalog = await api.getAdminCatalog();
@@ -3953,8 +4170,9 @@ describe("MockTaskaApi", () => {
    * or otherwise. What is pinned here is the contract's own awkward parts —
    * the enforced ceiling that is not the declared one, the delete that cannot
    * say whether it deleted anything, "no avatar" being a 200 with a null
-   * rather than a 404 — and one of the server's: a confirm sent twice with one
-   * key deletes the picture it confirmed.
+   * rather than a 404 — and the confirm's rules since backend PR #198
+   * (TAS-221): only the caller's own key is accepted, and the key the saved
+   * row already holds changes nothing.
    */
   describe("avatars", () => {
     /** A PNG-shaped file of a size the ceiling accepts. */
@@ -3994,7 +4212,9 @@ describe("MockTaskaApi", () => {
       // content type, which is why leg 2 may not change it.
       expect(ticket.uploadUrl).toContain("http://127.0.0.1:9000/taska-avatars/");
       expect(ticket.uploadUrl).toContain("X-Amz-SignedHeaders=content-type%3Bhost");
-      expect(ticket.objectKey).toBeTruthy();
+      // In the caller's own folder, as the server mints it since PR #198 — the
+      // shape the confirm accepts as theirs.
+      expect(ticket.objectKey).toMatch(new RegExp(`^avatars/${me.id}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`));
       // Fifteen minutes, as the server states it rather than as this client
       // assumes it.
       expect(ticket.expiresIn).toBe(900);
@@ -4083,63 +4303,107 @@ describe("MockTaskaApi", () => {
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
 
-    it("reproduces the server's defect: confirming one key twice deletes the picture it confirmed", async () => {
-      const me = await api.getCurrentUser();
+    it("hands the saved row back unchanged when its own key is confirmed again, and deletes nothing", async () => {
       const file = imageFile("face.png");
       const ticket = await api.createAvatarUploadUrl({ fileName: file.name, contentType: file.type, sizeBytes: file.size });
       await api.putAvatarBytes(ticket.uploadUrl, file, file.type);
-      const confirm = () =>
-        api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
+      const saved = await api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
 
-      const saved = await confirm();
+      // `replaceAvatarInDb` sees the saved row already holds this key: the row
+      // comes back as it is — even under another name in the request — and no
+      // "previous" object is deleted, because there is none.
+      const again = await api.confirmAvatarUpload({
+        objectKey: ticket.objectKey,
+        fileName: "renamed.png",
+        contentType: file.type,
+      });
+      expect(again).toEqual(saved);
+
+      // And the picture is still there to read.
       await expect(api.getCurrentUser()).resolves.toMatchObject({
         avatarUrl: saved.downloadUrl,
-        avatarUnavailable: false,
-      });
-
-      // Mirrors `ProfileServiceImpl.confirmAvatarUpload` at `develop`
-      // `368ae77355bd`: the row is replaced, then the *previous* row's object is
-      // deleted — which here is the object being confirmed — and then the
-      // presign HEADs it and fails. A no-op here instead would tell every
-      // caller that re-sending a confirm is safe.
-      await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
-
-      // The row survives, pointing at nothing, so the gateway's profile read
-      // fails its presign from now on. `GET /users/me` still answers 200 — the
-      // profile is never refused for it — with `avatar: null` *and*
-      // `avatarUnavailable: true`, which is what tells this apart from somebody
-      // with no avatar (backend PR #193, `UserServiceImpl.getMyInfo`)…
-      await expect(api.getCurrentUser()).resolves.toMatchObject({
-        id: me.id,
-        avatarUrl: null,
-        avatarId: null,
-        avatarUnavailable: true,
-      });
-      // …a third attempt at the key finds no object at all…
-      await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
-      // …and no member row draws a face that nothing can serve.
-      const members = await api.listMembers(project.id);
-      expect(members.find((member) => member.userId === me.id)?.user?.avatarUrl).toBeNull();
-
-      // An upload replaces the broken row, and that is the way out the menu
-      // offers.
-      const fresh = await upload(imageFile("again.png", 96));
-      await expect(api.getCurrentUser()).resolves.toMatchObject({
-        avatarUrl: fresh.downloadUrl,
-        avatarId: fresh.id,
+        avatarId: saved.id,
         avatarUnavailable: false,
       });
     });
 
-    it("gets out of that state by a removal too, which answers 204 like any other", async () => {
+    it("refuses a key minted for somebody else as one that does not exist, and changes nothing on either side", async () => {
+      // Mark uploads; Anna then sends his key. Before PR #198 that pointed her
+      // row at his object, which the next replace on either side deleted.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const marks = await upload(imageFile("mark.png"));
+      await api.login({ email: "anna@example.com", password: "anything" });
+      const annaBefore = await api.getCurrentUser();
+
+      await expect(
+        api.confirmAvatarUpload({ objectKey: marks.objectKey, fileName: "mine.png", contentType: "image/png" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", message: "An object with this key was not found in the storage." });
+
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        avatarUrl: annaBefore.avatarUrl,
+        avatarId: annaBefore.avatarId,
+      });
+      await api.login({ email: "mark@example.com", password: "anything" });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        avatarUrl: marks.downloadUrl,
+        avatarId: marks.id,
+        avatarUnavailable: false,
+      });
+    });
+
+    it("answers a key nobody minted, and one of the caller's with nothing behind it, in the same words", async () => {
       const me = await api.getCurrentUser();
-      const file = imageFile("face.png");
-      const ticket = await api.createAvatarUploadUrl({ fileName: file.name, contentType: file.type, sizeBytes: file.size });
-      await api.putAvatarBytes(ticket.uploadUrl, file, file.type);
-      const confirm = () =>
-        api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: file.name, contentType: file.type });
-      await confirm();
-      await expect(confirm()).rejects.toMatchObject({ code: "NOT_FOUND" });
+      const notFound = { code: "NOT_FOUND", message: "An object with this key was not found in the storage." };
+      // Not in the caller's folder at all…
+      await expect(
+        api.confirmAvatarUpload({ objectKey: "avatar-object-1", fileName: "x.png", contentType: "image/png" }),
+      ).rejects.toMatchObject(notFound);
+      // …in it, but spelt the way leg 1 never spells a UUID…
+      await expect(
+        api.confirmAvatarUpload({
+          objectKey: `avatars/${me.id}/0A1B2C3D-0000-4000-8000-000000000000`,
+          fileName: "x.png",
+          contentType: "image/png",
+        }),
+      ).rejects.toMatchObject(notFound);
+      // …and minted for the caller, with no upload behind it.
+      const ticket = await api.createAvatarUploadUrl({ fileName: "x.png", contentType: "image/png", sizeBytes: 64 });
+      await expect(
+        api.confirmAvatarUpload({ objectKey: ticket.objectKey, fileName: "x.png", contentType: "image/png" }),
+      ).rejects.toMatchObject(notFound);
+      await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: null, avatarUnavailable: false });
+    });
+
+    it("still accepts a saved key from before the folders, for its owner and nobody else", async () => {
+      // Sofia's seeded row holds `seeded-avatar-sofia`, a key no leg 1 mints
+      // any more — what every row saved before PR #198 holds. Its owner may
+      // confirm it again; that changes nothing.
+      await api.login({ email: "sofia@example.com", password: "anything" });
+      const before = await api.getCurrentUser();
+      const again = await api.confirmAvatarUpload({
+        objectKey: "seeded-avatar-sofia",
+        fileName: "sofia.png",
+        contentType: "image/png",
+      });
+      expect(again.id).toBe(before.avatarId);
+      expect(again.downloadUrl).toBe(before.avatarUrl);
+
+      // Anybody else is told it does not exist, and her face survives it.
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(
+        api.confirmAvatarUpload({ objectKey: "seeded-avatar-sofia", fileName: "s.png", contentType: "image/png" }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND", message: "An object with this key was not found in the storage." });
+      await api.login({ email: "sofia@example.com", password: "anything" });
+      await expect(api.getCurrentUser()).resolves.toMatchObject({
+        avatarId: before.avatarId,
+        avatarUrl: before.avatarUrl,
+        avatarUnavailable: false,
+      });
+    });
+
+    it("gets out of a lost object by a removal, which answers 204 like any other", async () => {
+      const me = await api.getCurrentUser();
+      await upload(imageFile(`${MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost}.png`));
       await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUrl: null, avatarUnavailable: true });
 
       // The row goes, and deleting an object that is already gone is not an
@@ -4155,9 +4419,9 @@ describe("MockTaskaApi", () => {
     });
 
     it("answers the confirm with its link and then loses the object, for a file named object-lost", async () => {
-      // `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: TAS-221's cross-user path
-      // ends with this reader's row pointing at an object somebody else's
-      // replace deleted. The confirm itself succeeded and said so.
+      // `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: storage loses the object
+      // behind this reader's saved row — the one way left to that state since
+      // PR #198. The confirm itself succeeded and said so.
       const saved = await upload(imageFile(`${MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost}.png`));
       expect(saved.downloadUrl).toBeTruthy();
 
@@ -4165,6 +4429,9 @@ describe("MockTaskaApi", () => {
       const after = await api.getCurrentUser();
       expect(after).toMatchObject({ avatarUrl: null, avatarId: null, avatarUnavailable: true });
       await expect(api.getCurrentUser()).resolves.toMatchObject({ avatarUnavailable: true });
+      // …and no member row draws a face that nothing can serve.
+      const members = await api.listMembers(project.id);
+      expect(members.find((member) => member.userId === after.id)?.user?.avatarUrl).toBeNull();
 
       // An upload replaces the row and the next read is whole again.
       const fresh = await upload(imageFile("face.png"));

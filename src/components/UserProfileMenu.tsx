@@ -97,7 +97,7 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
    * in the `X-Request-Id` response header, and `RestTaskaApi.request` reads
    * that header on a failure, never on a success — so this client does not
    * hold one to show. And no retry control: the gateway answers the next read
-   * on its own, and for a row whose object is gone (TAS-221) only an upload or
+   * on its own, and for a row whose object storage has lost only an upload or
    * a removal changes the answer at all. A gateway older than that PR sends no
    * flag, and no flag is no line. The `["me"]` query keeps a link it already
    * holds while the avatar's id is unchanged (`keepSignedAvatarLink`), so a
@@ -254,13 +254,11 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
 
     let saved;
     try {
-      // Leg 3, sent once per ticket and never again with the same key — not
-      // even after it fails. The server does not check that a key was minted
-      // for this reader, and a second confirm of the key the saved row already
-      // holds deletes that very object before presigning a link to it (see
-      // `confirmAvatarUpload` on TaskaApi). Nothing retries here: the person
-      // choosing the file again is the retry, and that mints a new ticket and a
-      // new key.
+      // Leg 3, sent once per ticket. Since backend PR #198 a repeat of the key
+      // the saved row holds is harmless — the server hands that row back
+      // unchanged (see `confirmAvatarUpload` on TaskaApi) — but nothing retries
+      // here all the same: the person choosing the file again is the retry,
+      // and that mints a new ticket and a new key.
       saved = await taskaApi.confirmAvatarUpload({
         objectKey: ticket.objectKey,
         fileName: file.name,

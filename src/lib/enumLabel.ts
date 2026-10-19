@@ -77,8 +77,8 @@ export function enumLabelInSentence(
 
 /**
  * The proto-style placeholders a dictionary may list as ordinary entries —
- * backend PR #200 adds `UNSPECIFIED` to the user statuses and `UNKNOWN` to the
- * notification types. They are names for "not stated" and "not recognised",
+ * backend PR #200 added `UNSPECIFIED` to the user statuses and `UNKNOWN` to the
+ * notification types, and the stand lists both (probed 2026-10-19). They are names for "not stated" and "not recognised",
  * never a value anybody may choose, so no picker offers one.
  */
 const PLACEHOLDER_CODES: readonly string[] = ["UNSPECIFIED", "UNKNOWN", "UNRECOGNIZED"];

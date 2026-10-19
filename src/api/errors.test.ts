@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   IssueVersionConflictError,
   apiErrorFacts,
+  errorDetails,
   isAccountLocked,
   isConflict,
   isIssueVersionConflict,
   isMissingOrForbidden,
-  isRouteNotServed,
   isUndeployedRoute,
 } from "./errors";
 import type { IssueWriteAnswer } from "./TaskaApi";
@@ -56,23 +56,65 @@ describe("isMissingOrForbidden", () => {
   });
 });
 
-describe("isRouteNotServed", () => {
-  const staticResource = "No static resource api/v1/readonly/audit-entries.";
-
-  it("reads a 501 and both undeployed signatures as a route this gateway does not serve", () => {
-    expect(isRouteNotServed(new ApiError("Not implemented", "UNIMPLEMENTED", 501), UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
-    expect(isRouteNotServed(new ApiError(staticResource, "NOT_FOUND", 404), UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
-    expect(
-      isRouteNotServed(new ApiError("Method not allowed", "METHOD_NOT_ALLOWED", 405), UNDEPLOYED_ROUTE_MESSAGE),
-    ).toBe(true);
+/**
+ * `RestErrorResponse.details` (backend PR #199): `{string: string}`, nullable.
+ * Only a plain object of strings is details; everything else is `null`, so a
+ * caller reading one key never meets a value it did not expect.
+ */
+describe("errorDetails", () => {
+  it("keeps a plain object of strings, as a frozen copy", () => {
+    const wire = { lockedUntil: "2026-09-22T11:55:50.398486Z" };
+    const details = errorDetails(wire);
+    expect(details).toEqual(wire);
+    expect(details).not.toBe(wire);
+    expect(Object.isFrozen(details)).toBe(true);
+    expect(errorDetails({})).toEqual({});
   });
 
-  it("does not read a refusal, a fault or a mock error as one", () => {
-    expect(isRouteNotServed(new ApiError("Access denied", "PERMISSION_DENIED", 403), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
-    expect(isRouteNotServed(new ApiError("Internal error", "INTERNAL", 500), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
-    expect(isRouteNotServed(new ApiError("Not implemented", "UNKNOWN", 501), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
-    expect(isRouteNotServed(new ApiError("Bad gateway", "UNKNOWN", 502), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
-    expect(isRouteNotServed(new MockLikeError("UNIMPLEMENTED", "Not implemented"), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
+  it("reads absent, null and every shape that is not an object of strings as none", () => {
+    expect(errorDetails(undefined)).toBeNull();
+    expect(errorDetails(null)).toBeNull();
+    expect(errorDetails("lockedUntil")).toBeNull();
+    expect(errorDetails(["2026-09-22T11:55:50Z"])).toBeNull();
+    expect(errorDetails({ lockedUntil: 1758541950 })).toBeNull();
+    expect(errorDetails({ lockedUntil: "2026-09-22T11:55:50Z", attempts: 5 })).toBeNull();
+    expect(errorDetails({ lockedUntil: { at: "2026-09-22T11:55:50Z" } })).toBeNull();
+    expect(errorDetails({ lockedUntil: null })).toBeNull();
+    expect(errorDetails(new Date())).toBeNull();
+  });
+
+  it("does not let __proto__ or an inherited key pass for a stated one", () => {
+    // `JSON.parse` makes `__proto__` an ordinary own key, and the copy keeps it
+    // one: the answer's prototype is not replaced, and a string there is data.
+    const parsed = errorDetails(JSON.parse('{"__proto__":"x","lockedUntil":"2026-09-22T11:55:50Z"}'));
+    expect(parsed).not.toBeNull();
+    expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
+    expect(Object.hasOwn(parsed!, "__proto__")).toBe(true);
+    expect(parsed!.lockedUntil).toBe("2026-09-22T11:55:50Z");
+    // An object under `__proto__` is not a string, so the whole answer is none.
+    expect(errorDetails(JSON.parse('{"__proto__":{"lockedUntil":"2026-09-22T11:55:50Z"}}'))).toBeNull();
+    // And a key that is only inherited is not a stated one: an object whose
+    // prototype is anything but `Object.prototype` (or nothing) is not details.
+    expect(errorDetails(Object.create({ lockedUntil: "2026-09-22T11:55:50Z" }))).toBeNull();
+    const bare = errorDetails(Object.assign(Object.create(null), { lockedUntil: "2026-09-22T11:55:50Z" }));
+    expect(bare).toEqual({ lockedUntil: "2026-09-22T11:55:50Z" });
+  });
+
+  it("is what apiErrorFacts reports for both implementations' errors", () => {
+    const fromRest = new ApiError("Account is locked", "PERMISSION_DENIED", 403, "req-1", undefined, {
+      lockedUntil: "2026-09-22T11:55:50Z",
+    });
+    const fromMock = Object.assign(new MockLikeError("PERMISSION_DENIED", "Account is locked"), {
+      details: { lockedUntil: "2026-09-22T11:55:50Z" },
+    });
+    expect(apiErrorFacts(fromRest).details).toEqual({ lockedUntil: "2026-09-22T11:55:50Z" });
+    expect(apiErrorFacts(fromMock).details).toEqual({ lockedUntil: "2026-09-22T11:55:50Z" });
+    // Every other error — the gateway's `details: null`, an error with no such
+    // field, something that is not an error — reports none.
+    expect(apiErrorFacts(new ApiError("Project not found", "NOT_FOUND", 404)).details).toBeNull();
+    expect(apiErrorFacts(new Error("Failed to fetch")).details).toBeNull();
+    expect(apiErrorFacts(Object.assign(new Error("odd"), { details: ["x"] })).details).toBeNull();
+    expect(apiErrorFacts("PERMISSION_DENIED").details).toBeNull();
   });
 });
 
@@ -235,6 +277,7 @@ describe("IssueVersionConflictError", () => {
       requestId: "req-409",
       status: 409,
       code: null,
+      details: null,
     });
     expect(apiErrorFacts(fromMock)).toEqual({ ...apiErrorFacts(fromRest), requestId: null });
     expect(isMissingOrForbidden(fromRest)).toBe(false);

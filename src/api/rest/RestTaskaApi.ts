@@ -36,7 +36,7 @@ import {
 import { attachmentRefusal } from "../attachments";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES, avatarRefusal } from "../avatars";
-import { IssueVersionConflictError } from "../errors";
+import { IssueVersionConflictError, errorDetails, type ErrorDetails } from "../errors";
 import { blankSummaryRefusal, ifMatch, issuePatchBody, issueVersionRefusal } from "../issuePatch";
 import {
   OBJECT_STORE_REJECTED_CODE,
@@ -115,11 +115,14 @@ import type {
   IssueHistoryEvent,
 } from "../../domain/types";
 
-// Gateway contract: RestErrorResponse is a flat { code, message };
-// the nested `error` shape is kept for older service responses.
+// Gateway contract: RestErrorResponse is a flat { code, message, details };
+// the nested `error` shape is kept for older service responses. `details` is
+// read as `unknown` and narrowed by `errorDetails` (src/api/errors.ts): the
+// schema says `{string: string}` or null, and a body is not trusted to keep to it.
 interface ApiErrorBody {
   code?: string;
   message?: string;
+  details?: unknown;
   error?: {
     code: string;
     message: string;
@@ -137,9 +140,10 @@ interface RestUser {
   login: string;
   email: string;
   displayName: string;
-  // Read as `unknown`: the contract types it as a bare string and the
-  // gateway's `AuthMapper` can write `null` (TAS-173). `toUser` keeps a string
-  // as it came and turns anything else into `null`.
+  // Read as `unknown`: the contract types it as `UserStatusDto` since backend
+  // PR #200, but the gateway's `AuthMapper` can write `null` and a newer
+  // backend can add a value (TAS-173). `toUserStatus` keeps a string as it
+  // came, reads `UNSPECIFIED` as none, and turns anything else into `null`.
   status?: unknown;
   color?: string;
   globalRole?: unknown;
@@ -176,15 +180,14 @@ interface RestUser {
  *
  * `avatar` is declared and **is read** since TAS-220: `AvatarDto` carries a
  * presigned `downloadUrl`, which is the whole reason a board of faces costs one
- * request instead of one per person. **The deployed read fills it for nobody
- * yet**: auth-service's `UserRepository.findUsersWithAvatars` selects no avatar
- * id and `ProfileMapper` attaches an avatar only when that id is present (read
- * at `develop` `1cfe4d79f074`), so every row arrives without one. It is read
- * anyway, because it is the contract's field and starts working the day
- * auth-service selects the id. Only that field of it is modelled — the
- * other six say nothing a member row draws, and `createdAt` among them is
- * declared and never populated (`AvatarResponse` in project-service.proto has no
- * `created_at`, and `ProjectMapper.toAvatarDto` sets six fields, not seven).
+ * request instead of one per person. The server fills it since TAS-225:
+ * auth-service's `UserRepository.findUsersWithAvatars` selects the avatar row
+ * with its id, and a presign that fails leaves that one row `avatar: null`
+ * (read at backend develop `398285cde074`). Only `downloadUrl` is modelled —
+ * the other six fields say nothing a member row draws, and `createdAt` among
+ * them is declared and never populated (`AvatarResponse` in
+ * project-service.proto has no `created_at`, and `ProjectMapper.toAvatarDto`
+ * sets six fields, not seven).
  */
 interface RestProjectMember {
   userId?: string;
@@ -225,12 +228,6 @@ interface RestProjectMembers {
   members?: RestProjectMember[];
 }
 
-/**
- * `GET /readonly/{service}/{table}` — `data` on the wire, `rows` in the domain.
- * Every field is optional because the contract marks none of them required, and
- * this is the one endpoint family in the codebase that has never returned a
- * byte to us: typing it as guaranteed would be a claim, not a fact.
- */
 /** `AuditEntryDto` as the wire may carry it: nothing in the schema is `required`. */
 type RestAuditEntry = Partial<Record<keyof AuditEntry, unknown>>;
 
@@ -239,6 +236,13 @@ interface RestAuditEntries {
   pagination?: Partial<AdminPagination>;
 }
 
+/**
+ * `GET /readonly/{service}/{table}` — `data` on the wire, `rows` in the domain.
+ * Every field is optional because the contract marks none of them required:
+ * the Data section has read the live gateway through this since the read-only
+ * routes deployed, but a schema with no `required` block promises nothing, and
+ * typing it as guaranteed would be a claim, not a fact.
+ */
 interface RestAdminRows {
   data?: AdminRow[];
   pagination?: Partial<AdminPagination>;
@@ -550,10 +554,11 @@ interface RestBoardResponse {
 /**
  * `IssueLinkResponseDto`. Every field is read as optional because the schema
  * declares no `required` block, and `viewLinkType` is read as `unknown` for the
- * same reason `globalRole` is: the contract types it as a bare string with no
- * enum, so this build cannot know the value set. Unlike `globalRole` it is not
- * narrowed to a domain enum — see `IssueLink` in src/domain/types.ts — only
- * proved to be a string before it reaches a component.
+ * same reason `globalRole` is: the contract types it as `IssueLinkViewTypeDto`
+ * since backend PR #200, and a backend newer than this build can add a value
+ * to it. Unlike `globalRole` it is not narrowed to a domain enum — see
+ * `IssueLink` in src/domain/types.ts — only proved to be a string before it
+ * reaches a component.
  */
 interface RestIssueLink {
   id?: string;
@@ -756,6 +761,12 @@ export class ApiError extends Error {
      * `{code, message}`.
      */
     public readonly body?: unknown,
+    /**
+     * `RestErrorResponse.details` (backend PR #199) as `errorDetails` reads
+     * it: a plain object of strings, or `null` — which is what every refusal
+     * but the account lock carries.
+     */
+    public readonly details: ErrorDetails | null = null,
   ) {
     super(message);
     this.name = "ApiError";
@@ -768,15 +779,20 @@ export class ApiError extends Error {
  * whatever it was — the section prints a dash for it, and never a `[object
  * Object]`. `oldValue` and `newValue` stay text: they are JSON documents *as
  * strings* on the wire, and parsing them is the screen's job.
+ *
+ * `id` is the one field read more narrowly than "a string": an empty one names
+ * nothing, and a row keyed by `""` would collide with every other such row, so
+ * it is `null` and the row falls back to being named by what it says.
  */
 function toAuditEntry(wire: RestAuditEntry): AuditEntry {
   const text = (value: unknown) => (typeof value === "string" ? value : null);
-  // The yml once typed these as objects ("changed from object to string" is
-  // still written beside them), so a document that arrives unstringified is
-  // turned back into the text the head sends rather than dropped.
+  // An earlier draft of the contract typed these as objects, so a document that
+  // arrives unstringified is turned back into text rather than dropped. The
+  // merged contract says string, and so does the stand.
   const documentText = (value: unknown) =>
     typeof value === "string" ? value : value !== null && typeof value === "object" ? JSON.stringify(value) : null;
   return {
+    id: text(wire.id) || null,
     actorUserId: text(wire.actorUserId),
     actorLogin: text(wire.actorLogin),
     action: text(wire.action),
@@ -1050,19 +1066,17 @@ export class RestTaskaApi implements TaskaApi {
    * each here, and this is that story). Reading it here is the whole reason a
    * board full of faces is one request: the avatar is declared inline on the
    * row, so nothing in this product ever calls `GET /users/{userId}/avatar` per
-   * person. On `develop` `1cfe4d79f074` no row carries one yet — see
-   * `RestProjectMember` — so the board draws initials for everyone.
+   * person. Rows carry one since TAS-225 — see `RestProjectMember`.
    *
-   * **One unreadable avatar object fails this whole read.** `enrichWithAvatarUrl`
-   * HEADs and presigns every avatar owner's object with no per-row fallback, so
-   * a missing object answers **404**, a storage refusal **403** and MinIO being
-   * down **503** (read at `develop` `1cfe4d79f074`) — the first two the very
-   * statuses this route gives a missing project and a reader with no access.
-   * The board's `retryUnlessMissing` does not retry a 404 or a 403, and the
-   * failure is mostly silent: only the watcher section of an open issue says the
-   * members could not be read, and only to an ADMIN. Everywhere else there are
-   * simply no assignee chips and no people in the assignee filter, and the
-   * reporter reads "Unknown".
+   * **An unreadable avatar object costs that row's avatar, not this read.**
+   * `enrichWithAvatarUrl` falls back per row since TAS-225 (read at backend
+   * develop `398285cde074`); until then a missing object failed the whole read
+   * with **404**, the status this route gives a missing project. A read that
+   * fails for its own reasons is still mostly silent: the board's
+   * `retryUnlessMissing` does not retry a 404 or a 403, only the watcher
+   * section of an open issue says the members could not be read, and only to
+   * an ADMIN. Everywhere else there are simply no assignee chips and no people
+   * in the assignee filter, and the reporter reads "Unknown".
    *
    * The other six fields of `AvatarDto` stay dropped, and one of them is worth
    * recording so the next reader does not re-derive it: `createdAt` is declared
@@ -1945,9 +1959,10 @@ export class RestTaskaApi implements TaskaApi {
     }
     return this.request<RestAuditEntries>(`/readonly/audit-entries${this.query(search)}`).then((response) => {
       const entries = (response.entries ?? []).map(toAuditEntry);
-      // Mapped as it arrives. At PR #172's head the server ignores `page` and
-      // `pageSize` and answers every matching row; nothing here slices the
-      // answer down to the page that was asked for (docs/ai/API-DIVERGENCE.md).
+      // Mapped as it arrives, in the server's order (`createdAt` desc, `id`
+      // desc). Nothing here re-sorts it or slices it down to the page that was
+      // asked for: the server pages, and a page that came back longer is the
+      // server's statement, not this leg's to correct.
       return { entries, pagination: this.toPagination(response.pagination, query, entries.length) };
     });
   }
@@ -2444,19 +2459,18 @@ export class RestTaskaApi implements TaskaApi {
   /**
    * Passes `viewLinkType` through as an open string — values this build has
    * never heard of included, which is the point of the field — with one
-   * repair: the gateway writes the proto enum's own name
-   * (`IssueMapper.toRestIssueLinkResponse` calls `.name()`, and its own test
-   * asserts `"ISSUE_LINK_VIEW_TYPE_BLOCKS"`, read at backend `60d62ee`), so the
+   * normalisation: the contract's `IssueLinkViewTypeDto` (backend PR #200)
+   * spells every value with the proto enum's prefix, as the gateway always sent
+   * it (`IssueMapper.toRestIssueLinkResponse` calls `.name()`), so the
    * `ISSUE_LINK_VIEW_TYPE_` prefix is stripped here and `BLOCKS` reaches the
    * label helper as `BLOCKS`.
    *
-   * Two names mean "no relation stated" rather than a relation, and become the
-   * empty string the label helper reads as "Linked": `UNSPECIFIED`, the proto
-   * zero value once its prefix is gone, and `UNRECOGNIZED`, which protobuf's
-   * `.name()` returns for a number the gateway's generated enum does not know
-   * and which carries no prefix at all. A non-string (or absent) value is the
-   * same nothing. docs/ai/API-DIVERGENCE.md: "`viewLinkType` arrives with the
-   * protobuf prefix".
+   * Two of the contract's values mean "no relation stated" rather than a
+   * relation, and become the empty string the label helper reads as "Linked":
+   * `ISSUE_LINK_VIEW_TYPE_UNSPECIFIED`, the proto zero value, and
+   * `UNRECOGNIZED`, which protobuf's `.name()` returns for a number the
+   * gateway's generated enum does not know and which carries no prefix at all.
+   * A non-string (or absent) value is the same nothing.
    */
   private toIssueLink(link: RestIssueLink): IssueLink {
     return {
@@ -2630,7 +2644,7 @@ export class RestTaskaApi implements TaskaApi {
       const message = body?.message ?? body?.error?.message ?? `Request failed with ${response.status}`;
       const code = body?.code ?? body?.error?.code ?? "UNKNOWN";
       const requestId = response.headers.get("X-Request-Id") ?? body?.error?.requestId;
-      throw new ApiError(message, code, response.status, requestId ?? undefined, data);
+      throw new ApiError(message, code, response.status, requestId ?? undefined, data, errorDetails(body?.details));
     }
     return data as T;
   }
@@ -2681,7 +2695,7 @@ function toProjectRole(value: unknown): ProjectRole | null {
 /**
  * The account status as the server sent it, or `null` when it stated none: not
  * a string (the gateway's `AuthMapper` can write `null`), or `UNSPECIFIED`, the
- * contract's zero value — which backend PR #200 adds to `UserStatusDto` — read
+ * contract's zero value — which backend PR #200 added to `UserStatusDto` — read
  * as absent exactly as `toGlobalRole` reads its own. Anything else is kept as
  * it came and printed by `userStatusLabel` (TAS-173).
  */
@@ -2949,11 +2963,10 @@ function toWatchersCount(value: number | undefined): number | null {
 /**
  * The search query as the gateway would accept it, or `null` for "no text
  * filter". The same rule the mock applies, and it lives on this side of the
- * wire so that the `400` the runtime would answer with is never spent: the
- * minimum is 3 in the runtime against `minLength: 2` in the contract, and the
- * empty string — which the gateway's own generated spec (`/v3/api-docs`) offers
- * as the parameter's *default*, though the vendored contract states no default
- * at all — is refused.
+ * wire so that the `400` the gateway would answer with is never spent: the
+ * minimum is 3 (`minLength: 3`, and the contract's own words since backend PR
+ * #200, which also say an empty string is a 400), so a cleared field becomes
+ * an absent parameter rather than an empty one.
  *
  * The error is the gateway's own answer reproduced locally, `INVALID_ARGUMENT`
  * with `400` and its wording, so a caller cannot tell a query stopped here from

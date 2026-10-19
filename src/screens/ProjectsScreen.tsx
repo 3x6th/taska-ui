@@ -290,8 +290,8 @@ function ProjectCard({
                         color: member.user.color,
                         // Declared inline on the member row (backend TAS-137),
                         // so a card showing four faces still costs one member
-                        // read. The deployed read fills it for nobody yet (see
-                        // `User.avatarUrl`), so the stack draws initials.
+                        // read. The server fills it since TAS-225 (see
+                        // `User.avatarUrl`); a member without one draws initials.
                         avatarUrl: member.user.avatarUrl,
                       }
                     : null

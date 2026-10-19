@@ -21,14 +21,17 @@
  * what stops it. `GET /users/me` answers the gateway's own `GatewayUserStatus`,
  * which since backend TAS-197 (`04546f1`, deployed) has a `LOCKED` member — so a
  * locked account whose token was issued before the lock now reads `LOCKED`, and
- * that token keeps working while TAS-198 (backend PR #174) is open. But
- * `UNSPECIFIED` is still a member of that enum, and the contract types `status`
- * as a bare `string` (TAS-173). So every reader still prints an unrecognised
- * status verbatim rather than trusting the type (`userStatusLabel` in
- * src/screens/admin/users.ts). A status the gateway's mapper does not know at
- * all no longer arrives as anything: `AuthMapper.toGatewayUserStatus` throws a
- * plain `DomainException`, which `GatewayErrorHandler` turns into a 500 on every
- * authenticated request (read at `60d62ee`).
+ * that token keeps working while TAS-198 (backend PR #174) is open. And
+ * `UNSPECIFIED` is still a member of that enum: since backend PR #200 the
+ * contract types `status` as `UserStatusDto`, whose fifth value it is, and the
+ * API layer reads it as no status at all (`toUserStatus` in RestTaskaApi). A
+ * value the contract does not list can still arrive from a backend newer than
+ * this build, so every reader prints an unrecognised status verbatim rather
+ * than trusting the type (`userStatusLabel` in src/screens/admin/users.ts). A
+ * status the gateway's mapper does not know at all no longer arrives as
+ * anything: `AuthMapper.toGatewayUserStatus` throws a plain `DomainException`,
+ * which `GatewayErrorHandler` turns into a 500 on every authenticated request
+ * (read at `60d62ee`).
  */
 export type UserStatus = "INVITED" | "ACTIVE" | "BLOCKED" | "LOCKED";
 /**
@@ -88,25 +91,23 @@ export interface EnumDictionaries {
   userStatuses: DictionaryEntry[] | null;
 }
 /**
- * The notification kinds the gateway can emit, read from notification-service
- * and the gateway's mapper at backend `5a8d805a3ac3` (TAS-243) rather than
- * from the contract. The contract types
- * `NotificationResponseDto.notificationType` as a bare string; its
- * `NotificationTypeDto` lists eleven of these and is referenced by nothing, so
- * it describes neither the field nor the wire. `UNKNOWN` is the gateway's own
- * fallback for a kind it does not recognise.
+ * The notification kinds the gateway can emit — exactly the contract's
+ * `NotificationTypeDto`, which since backend PR #200 lists all twenty-three and
+ * is what `NotificationResponseDto.notificationType` refers to (develop
+ * `398285cde074`). `UNKNOWN` is the gateway's own fallback for a kind it does
+ * not recognise, and `/meta` lists it as an ordinary entry.
  *
  * Two of these are named without being live: `ISSUE_COMMENT_UPDATED` and
  * `ISSUE_COMMENT_DELETED` have no case in notification-service's
- * `NotificationFactory` and are never produced today. They stay in the union
- * anyway — the wire types the field as a bare string, and the day
- * `NotificationFactory` grows a case for either, the type should already have
- * a name ready rather than be the thing that lags it.
+ * `NotificationFactory` (read at `398285cde074`) and are never produced today.
+ * They stay in the union because the contract lists them, and the day
+ * `NotificationFactory` grows a case for either, the type already has a name
+ * ready rather than being the thing that lags it.
  *
  * This is a list of names to build and compare against — the mock seeds from
  * it, and a comparison written against it cannot misspell one. It is **not**
- * the type of `Notification.notificationType`, which accepts any string: the
- * next kind notification-service learns will arrive before this list does.
+ * the type of `Notification.notificationType`, which accepts any string: a
+ * gateway newer than this build can list a kind this union has not learnt yet.
  */
 export type NotificationType =
   | "ISSUE_ASSIGNED"
@@ -139,8 +140,9 @@ export interface User {
   email: string;
   displayName: string;
   /**
-   * `null` when the response carried no string here — the contract types
-   * `status` as a bare string and `AuthMapper` can write `null` (TAS-173).
+   * `null` when the response stated no status: not a string — `AuthMapper` can
+   * write `null`, and the schema marks nothing required — or `UNSPECIFIED`, the
+   * placeholder `UserStatusDto` lists since backend PR #200 (TAS-173).
    * Printed through `userStatusLabel`, never indexed.
    */
   status: UserStatusCode | null;
@@ -165,12 +167,11 @@ export interface User {
    * says "no picture to draw", and either way the face falls to initials. A
    * caller that needs to know *why* reads the flag. A *member row*
    * declares the avatar inline (`ProjectMemberDetailsDto.avatar.downloadUrl`,
-   * backend TAS-137). **The deployed member read never fills it yet**:
-   * auth-service's `UserRepository.findUsersWithAvatars` selects no avatar id,
-   * and `ProfileMapper` attaches an avatar only when that id is present (read at
-   * `develop` `1cfe4d79f074`), so every row arrives without one and the board
-   * draws initials. The field is read anyway — it is the contract's, and it
-   * starts working once auth-service selects the id.
+   * backend TAS-137), and fills it since TAS-225: auth-service's
+   * `UserRepository.findUsersWithAvatars` selects the avatar row with its id,
+   * and a presign that fails leaves only that member's row without one (read at
+   * backend develop `398285cde074`). `null` there is "no picture to draw" in the
+   * same sense as above.
    *
    * Every read of `/users/me` re-signs the link — the same picture under a new
    * query string, which the browser's cache never recognises — so the `["me"]`
@@ -200,9 +201,10 @@ export interface User {
    *
    * - `true`: the gateway's `GetUserProfile` read failed, so `avatarUrl: null`
    *   means *unknown*, not *none*. The gateway sets it on any gRPC error. One
-   *   of those is permanent rather than transient: a row whose storage object
-   *   is gone (TAS-221) fails the presign every time, until an upload replaces
-   *   the row or `DELETE /users/me/avatar` removes it.
+   *   of those is permanent rather than transient: a row whose object storage
+   *   has lost fails the presign every time, until an upload replaces
+   *   the row or `DELETE /users/me/avatar` removes it. Since backend PR #198
+   *   (TAS-221) no confirm can leave a row so.
    * - `false`: the profile was read — the avatar came with it, or there is none.
    * - absent: a gateway older than that merge answered, or the `User` came from
    *   anywhere else. Member rows never carry it. Absent is not coerced to
@@ -453,9 +455,9 @@ export interface ProjectMember {
    * avatar **inline**, with its own `downloadUrl` (backend TAS-137). That is
    * what makes a board of faces one read rather than one request per person,
    * and it is why nothing in this product ever calls
-   * `GET /users/{userId}/avatar` in a loop. The deployed read fills it for
-   * nobody yet (see `User.avatarUrl`), so every named row reads `null` and
-   * draws initials until auth-service is fixed.
+   * `GET /users/{userId}/avatar` in a loop. The server fills it since TAS-225
+   * (see `User.avatarUrl`); a named row reads `null` for a member with no
+   * picture, or one whose picture could not be signed.
    */
   user?: Pick<User, "displayName" | "email" | "color" | "avatarUrl">;
 }
@@ -1112,20 +1114,21 @@ export interface IssueLink {
   targetIssueId: string;
   /**
    * Open on purpose. The contract asks for `linkType` (the closed enum above)
-   * and answers with `viewLinkType`, typed as a bare `string` with no enum —
-   * the asymmetry is the contract's, not a typo to be corrected here. Read
-   * literally, "view" means the relation *as seen from the issue that was
-   * asked about*, so the response may legitimately carry the inverse of a
-   * request value (`IS_BLOCKED_BY` for a `BLOCKS` link) which the request enum
-   * has no name for. Narrowing this to `IssueLinkType` would therefore drop
-   * exactly the values that make the field worth having.
+   * and answers with `viewLinkType`, an enum of its own — `IssueLinkViewTypeDto`
+   * since backend PR #200 — and the asymmetry is the contract's, not a typo to
+   * be corrected here. "View" means the relation *as seen from the issue that
+   * was asked about*, so the response carries the inverse of a request value
+   * (`IS_BLOCKED_BY` for a `BLOCKS` link) which the request enum has no name
+   * for. Narrowing this to `IssueLinkType` would therefore drop exactly the
+   * values that make the field worth having.
    *
    * Presentation narrows it instead (`issueLinkTypeLabel`): a known value gets
-   * a written label, anything else is humanised verbatim. The gateway sends the
-   * proto enum's own name (`ISSUE_LINK_VIEW_TYPE_BLOCKS`), so `RestTaskaApi`
-   * strips that prefix and reads `UNSPECIFIED` and `UNRECOGNIZED` as no
-   * relation (`""`) before the value gets here — docs/ai/API-DIVERGENCE.md,
-   * "`viewLinkType` arrives with the protobuf prefix".
+   * a written label, anything else is humanised verbatim. The contract spells
+   * every value with the proto enum's prefix (`ISSUE_LINK_VIEW_TYPE_BLOCKS`) and
+   * lists `ISSUE_LINK_VIEW_TYPE_UNSPECIFIED` and `UNRECOGNIZED` beside them, so
+   * `RestTaskaApi` strips that prefix and reads those two as no relation (`""`)
+   * before the value gets here. Since that PR the prefix is the contract's own
+   * reading rather than a divergence from it (docs/ai/API-DIVERGENCE.md).
    */
   viewLinkType: string;
   createdBy: string;
@@ -1421,15 +1424,16 @@ export interface AdminRows {
 }
 
 /**
- * `GET /readonly/audit-entries` (backend PR #172, TAS-160) — what the Audit
+ * `GET /readonly/audit-entries` (backend PR #197, TAS-160) — what the Audit
  * section asks. `page` is **1-based** here, like every other admin page in the
  * domain; the rest leg converts it to the wire's 0-based one.
  *
  * Every filter is an exact match and an absent one is no filter. The two dates
  * are `yyyy-MM-dd`, read by the server as whole UTC days with both ends
  * inclusive; nothing else is accepted for them, and a `from` after `to` is a
- * 400. `actorUserId` must be a UUID — the server at the PR head answers 500 for
- * anything else rather than 400, so the section checks it before asking.
+ * 400. `actorUserId` must be a UUID (`format: uuid`): anything else is the
+ * gateway's own 400, which the section never spends — it checks the value
+ * before asking.
  */
 export interface AuditEntriesQuery {
   page?: number;
@@ -1445,14 +1449,18 @@ export interface AuditEntriesQuery {
 }
 
 /**
- * One row of the admin audit log (`AuditEntryDto`). **There is no id**: the
- * DTO carries none, so a row is identified only by what it says.
+ * One row of the admin audit log (`AuditEntryDto`).
  *
- * Every field is nullable here although the table behind it declares eight of
- * them `NOT NULL` (actor id and login, action, the three target fields, reason
- * and the time): the schema has no `required` block, so the wire promises
- * nothing and the mapping takes nothing on trust. `requestId`, `oldValue` and
- * `newValue` are nullable in the database as well.
+ * Every field is nullable here although the table behind it declares nine of
+ * them `NOT NULL` (the id, actor id and login, action, the three target
+ * fields, reason and the time): the schema has no `required` block, so the
+ * wire promises nothing and the mapping takes nothing on trust. `requestId`,
+ * `oldValue` and `newValue` are nullable in the database as well.
+ *
+ * `id` is the row's primary key (`format: uuid`, backend PR #197) and what the
+ * section keys a row by. It is still `string | null` for the reason above, and
+ * a row without one falls back to being named by what it says
+ * (`auditEntryKeys` in src/screens/admin/audit.ts).
  *
  * `oldValue` and `newValue` are JSON documents **as text**, with sensitive
  * values already masked by the server (`"***"`). They are carried exactly as
@@ -1460,6 +1468,7 @@ export interface AuditEntriesQuery {
  * text when they do not parse.
  */
 export interface AuditEntry {
+  id: string | null;
   actorUserId: string | null;
   actorLogin: string | null;
   action: string | null;

@@ -371,10 +371,21 @@ test.describe("the top bar's panels stay reachable at narrow and short viewports
         measured.scrollHeight,
         `${width}px: ${measured.rowHeight}px rows overflow the list by ${measured.scrollHeight - measured.clientHeight}px`,
       ).toBeLessThanOrEqual(measured.clientHeight);
-      expect(measured.clippedBy, `${width}px: the last option is clipped by ${measured.clippedBy}px`).toBeLessThanOrEqual(0);
+      // Both bounds below are held to within a sixty-fourth of a pixel —
+      // Chromium's layout unit — rather than exactly: `getBoundingClientRect`
+      // is float arithmetic over those units, and its noise failed this test
+      // about one run in four with nothing wrong on screen (an overshoot of
+      // 0.0000153px, a 44px row read as 43.999996px; `--repeat-each=20`,
+      // TAS-265). Anything a reader could see is a whole unit or more off.
+      const layoutUnit = 1 / 64;
+      expect(measured.clippedBy, `${width}px: the last option is clipped by ${measured.clippedBy}px`).toBeLessThanOrEqual(
+        layoutUnit,
+      );
       // Guards the guard: if the rows ever stop meeting §7's touch floor the
       // assertion above goes quiet by getting easier.
-      if (width <= 820) expect(measured.rowHeight, `${width}px: rows are under §7's 44`).toBeGreaterThanOrEqual(44);
+      if (width <= 820) {
+        expect(measured.rowHeight, `${width}px: rows are under §7's 44`).toBeGreaterThanOrEqual(44 - layoutUnit);
+      }
 
       await field.press("Escape");
       await field.fill("");

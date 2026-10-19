@@ -8,7 +8,7 @@ import { DEFAULT_SIGNED_IN_ROUTE } from "../components/RequireSession";
 import { RequestId } from "../components/RequestId";
 import { TaskaLogo } from "../components/TaskaLogo";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { accountLockedUntil, formatLockDeadline } from "../lib/accountLock";
+import { formatLockDeadline, lockedUntilOf } from "../lib/accountLock";
 import type { ScreenProps } from "./App";
 
 type AuthMode = "signin" | "invite";
@@ -162,14 +162,15 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
  * What a refused sign-in says.
  *
  * Two branches and one rule between them: the branch is chosen by the response
- * code (`isAccountLocked`, src/api/errors.ts) and never by the wording, so the
- * prose is only ever used to pull the number out of — never to decide what the
- * reader is told.
+ * code (`isAccountLocked`, src/api/errors.ts) and never by the wording. The
+ * deadline comes from `details.lockedUntil` since backend PR #199, and from the
+ * prose only when that is missing (`lockedUntilOf`, src/lib/accountLock.ts) —
+ * either way, never to decide what the reader is told.
  *
  * **The fallback is the server's own sentence, verbatim.** When the deadline
- * cannot be read — a reworded message, or one naming a moment that has already
- * passed — this prints `Account is locked until 2026-09-22T11:55:50.398486Z.
- * Try again later.` exactly as it arrived. That is the ugliness TAS-237 was
+ * cannot be read — no usable `details` and a reworded message, or a moment
+ * that has already passed — this prints `Account is locked until
+ * 2026-09-22T11:55:50.398486Z. Try again later.` exactly as it arrived. That is the ugliness TAS-237 was
  * filed about, and it is still the right answer: a hand-written "your account
  * is locked" would throw away information the server did send, and would make a
  * parser that quietly stopped matching indistinguishable from one that works.
@@ -189,17 +190,17 @@ function LoginFailure({ error, mode }: { error: unknown; mode: AuthMode }) {
   // `validateUserStatus` for every authenticated call, and that raises
   // `PERMISSION_DENIED "User is blocked"` (AuthServiceImpl.java:205-213, read
   // at backend head `63f7ea5`). It reaches here, and what keeps it right is
-  // the parser rather than the predicate — there is no future instant in that
-  // sentence, so `accountLockedUntil` answers `null` and the server's own
-  // wording is printed verbatim. Correct, and correct for a reason one layer
-  // below the one this branch claims.
+  // the reader rather than the predicate — that refusal carries no
+  // `details` and no future instant in its sentence, so `lockedUntilOf`
+  // answers `null` and the server's own wording is printed verbatim. Correct,
+  // and correct for a reason one layer below the one this branch claims.
   //
   // Read at render rather than held in state, so a lock that expires while the
   // form is still open falls back to the raw sentence on the next paint
   // instead of going on promising a moment that has gone. No timer wakes it —
   // the reader retrying is what re-renders this, and that is the moment it
   // matters.
-  const lockedUntil = mode === "signin" && isAccountLocked(error) ? accountLockedUntil(message) : null;
+  const lockedUntil = mode === "signin" && isAccountLocked(error) ? lockedUntilOf(error) : null;
 
   return (
     <div className="form-error">

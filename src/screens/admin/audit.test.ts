@@ -13,6 +13,7 @@ import {
 } from "./audit";
 
 const entry = (overrides: Partial<AuditEntry> = {}): AuditEntry => ({
+  id: "5e7a0700-2c4b-4d1e-9f3a-6b8c0d2e4f1a",
   actorUserId: "e65186a2-b807-42ae-a66f-711be116a93b",
   actorLogin: "mark",
   action: "BLOCK_USER",
@@ -91,8 +92,25 @@ describe("audit checks", () => {
 });
 
 describe("audit entry readings", () => {
-  it("keys entries with no id apart, even two that say the same thing", () => {
-    const keys = auditEntryKeys([entry(), entry(), entry({ action: "UNBLOCK_USER" })]);
+  it("keys an entry by its id, wherever it stands on the page", () => {
+    const a = entry({ id: "0000000a-0000-4000-8000-000000000000" });
+    const b = entry({ id: "0000000b-0000-4000-8000-000000000000" });
+    const [keyOfB] = auditEntryKeys([b, a]);
+    // Two entries that say the same thing, told apart by id; and the key of
+    // one does not move when another lands in front of it.
+    expect(auditEntryKeys([a, b])).toEqual([auditEntryKeys([a])[0], keyOfB]);
+    expect(new Set(auditEntryKeys([a, b])).size).toBe(2);
+  });
+
+  it("falls back to what an entry says when it has no id, and keeps even two identical ones apart", () => {
+    const keys = auditEntryKeys([entry({ id: null }), entry({ id: null }), entry({ id: null, action: "UNBLOCK_USER" })]);
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  it("never lets a row without an id take the key of one with it, nor two rows share one", () => {
+    // The server's primary key rules the second out; a key collision would
+    // still draw one React row twice, so it is not left to the server.
+    const keys = auditEntryKeys([entry(), entry({ id: null }), entry()]);
     expect(new Set(keys).size).toBe(3);
   });
 

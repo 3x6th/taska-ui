@@ -244,11 +244,13 @@ export const formatDateTime = (iso: string) =>
  * to disagree (the same reason the planning inputs state no bounds of their
  * own).
  *
- * `null` means "never updated" and is a real answer — `CommentResponseDto.updatedAt`
- * is `nullable: true`, even though today's gateway never sends one
- * (docs/ai/API-DIVERGENCE.md). A date neither side can parse answers `false`
- * for a related reason: the badge states a fact about the comment, so an edit
- * that cannot be dated is not one it may claim.
+ * Since backend PR #200 the contract says exactly this: `updatedAt` is
+ * `nullable: false`, equal to `createdAt` until the comment is edited and
+ * strictly greater after. It is still not `required`, so an answer without it
+ * reaches here as `null`, which reads as "no edit stated" rather than as a
+ * failure. A date neither side can parse answers `false` for a related reason:
+ * the badge states a fact about the comment, so an edit that cannot be dated
+ * is not one it may claim.
  */
 export const commentWasEdited = ({ createdAt, updatedAt }: Pick<IssueComment, "createdAt" | "updatedAt">) => {
   if (!updatedAt) return false;

@@ -84,7 +84,7 @@ describe("outbox services from the catalog", () => {
       outboxServices(
         catalog([
           { name: "auth", tables: ["users", "outbox_events"] },
-          { name: "admin", tables: ["audit_log"] },
+          { name: "admin", tables: ["admin_audit_log"] },
           { name: "issue", tables: ["issues", "outbox_events"] },
         ]),
       ),

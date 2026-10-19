@@ -294,8 +294,8 @@ test("returns focus to the upload button after a plain upload, so Tab continues 
 /**
  * Backend PR #193 (head `3bd33cac`): `GET /users/me` answers 200 with
  * `avatar: null, avatarUnavailable: true` when the gateway's profile read
- * failed. The way the mock reaches that state is TAS-221's end state — a row
- * whose storage object is gone — which a file named `object-lost` produces:
+ * failed. The way the mock reaches that state is a row whose storage object
+ * is gone — storage losing it — which a file named `object-lost` produces:
  * the confirm succeeds and answers with its link, then the object is dropped.
  * Nothing is wrong until the profile is read again, so the case reads it again
  * the way the app does on its own: past the twenty-second stale time, on the

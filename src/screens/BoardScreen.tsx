@@ -498,11 +498,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // read's answer, kept apart only for what each one switches off.
   const contextUnread = useUnanswered(contextQuery);
   // A 404 or 403 from the context is the server saying the project is not
-  // there or not ours, and §4.18 says so. The context enriches its members as
-  // `GET /members` does, so one unreadable avatar object fails the whole read
-  // with the same pair; that is a backend bug asked on TAS-212 and recorded in
-  // docs/ai/API-DIVERGENCE.md with no compensation (AGENTS.md, "No
-  // compensations for the backend"): the board does not second-guess it.
+  // there or not ours, and §4.18 says so. It no longer stands in for an
+  // unreadable avatar: the context names its members through auth-service as
+  // `GET /members` does, and since TAS-225 a presign that fails drops that one
+  // member's avatar rather than the whole read (read at backend develop
+  // `398285cde074`). The board does not second-guess either answer.
   const projectGone = contextUnread.unanswered && isMissingOrForbidden(contextUnread.error);
   const roleUnread = contextUnread;
   const issuesUnread = useUnanswered(issuesQuery);
@@ -6127,10 +6127,10 @@ function toUserMap(members: ProjectMember[]) {
           // Straight off the member row, which declares it inline
           // (`ProjectMemberDetailsDto.avatar`, docs/contract/openapi.yml) — so
           // every face this map draws costs nothing beyond the one member read
-          // the board already makes. The deployed read fills it for nobody yet
-          // (see `User.avatarUrl`), so the board draws initials, and the
-          // reader's own face shows only through the profile menu's cache write
-          // until the next member refetch. Nothing here ever asks
+          // the board already makes. The server fills it since TAS-225 (see
+          // `User.avatarUrl`), and the reader's own new face shows through the
+          // profile menu's cache write before the next member refetch brings
+          // it. Nothing here ever asks
           // `GET /users/{userId}/avatar`, which would be one request per person
           // on the board.
           avatarUrl: member.user!.avatarUrl,

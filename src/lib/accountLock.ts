@@ -1,33 +1,43 @@
+import { apiErrorFacts } from "../api/errors";
+
 /**
  * Reading the deadline out of the gateway's account-lock refusal.
  *
  * `POST /api/v1/auth/login` answers an account locked by failed sign-ins with
  *
  * ```
- * 403 {"code":"PERMISSION_DENIED","message":"Account is locked until 2026-09-22T11:55:50.398486Z. Try again later."}
+ * 403 {"code":"PERMISSION_DENIED",
+ *      "message":"Account is locked until 2026-09-22T11:55:50.398486Z. Try again later.",
+ *      "details":{"lockedUntil":"2026-09-22T11:55:50.398486Z"}}
  * ```
  *
- * and the deadline exists **only** in that English prose. There is nothing
- * structured to read anywhere in the envelope: every gRPC refusal in the
- * backend monorepo is `Status.withDescription(String)` — no `withDetails`, no
- * `com.google.rpc.ErrorInfo`, no `Metadata.Key` in any service — and
- * `RestErrorResponse` is `{code, message}` with no `details` field, in the
- * handwritten contract and in the gateway's own `/v3/api-docs` alike. So
- * parsing the sentence is the only route to a readable time, and the whole of
- * that parsing lives here rather than inside the screen, where it could be
- * neither tested nor found again (docs/ai/API-DIVERGENCE.md).
+ * `details` is backend PR #199 (TAS-239, merged and deployed 2026-10-19): the
+ * gateway decodes a gRPC trailer into `RestErrorResponse.details`, and
+ * `AuthServiceImpl.accountLockedError` is the only refusal that fills it. Until
+ * then the deadline existed **only** in the English prose, and parsing the
+ * sentence was the only route to a readable time.
+ *
+ * So there are two readers here, in order. `lockedUntilOf` takes the
+ * structured `details.lockedUntil` first and falls back to the sentence
+ * (`accountLockedUntil`) when the error carries none — a gateway older than
+ * the PR, or a body that broke its own schema. The prose path stays **until
+ * the lock refusal itself has been measured on the stand**, which takes a
+ * throwaway account locked by failed sign-ins: every other error envelope was
+ * probed carrying `details: null` on 2026-10-19, this one has not been seen.
+ * The day it is, `LOCK_INSTANT_PATTERN`, `accountLockedUntil` and the pinned
+ * sentence's parsing role go (docs/ai/API-DIVERGENCE.md).
  *
  * Two rules hold everything below together. The **branch** is chosen by the
  * response code and never by the wording — `isAccountLocked` in
- * src/api/errors.ts — so a reworded sentence loses the pretty time and keeps
- * the right refusal. The **number** is then keyed off the shape of an ISO
- * instant and never off the words around it, so the same rewording usually
- * does not even cost the time.
+ * src/api/errors.ts — so a reworded sentence loses nothing while `details`
+ * arrives, and keeps the right refusal even when it does not. The **number** is
+ * keyed off the shape of an ISO instant and never off the words around it, so
+ * the same rewording usually does not even cost the time on the prose path.
  */
 
 /**
  * The gateway's sentence, verbatim, measured at backend head `63f7ea5` on
- * 2026-09-22.
+ * 2026-09-22, and unchanged at develop `398285cde074`.
  *
  * Pinned for the reason `UNDEPLOYED_ROUTE_MESSAGE` (src/api/TaskaApi.ts) is: a
  * server string this build reads is a measurement, and it belongs where the
@@ -40,25 +50,34 @@
  * edits one copy of the shape and not the other, which is the loud break a
  * silent fall back to raw UTC would not be.
  *
- * Built by string concatenation in `AuthServiceImpl.java:235-238`. The `Instant`
- * it interpolates carries microseconds, which no JavaScript `Date` can hold —
- * hence six fractional digits here and three from `accountLockedMessage`.
+ * Built by string concatenation in `AuthServiceImpl.accountLockedError`, which
+ * puts the same `Instant` into `details.lockedUntil` through `toString()`. It
+ * carries microseconds, which no JavaScript `Date` can hold — hence six
+ * fractional digits here and three from `accountLockedMessage`.
  */
 export const ACCOUNT_LOCKED_MESSAGE = "Account is locked until 2026-09-22T11:55:50.398486Z. Try again later.";
 
 /**
- * An ISO-8601 UTC instant, anywhere in a sentence.
+ * The instant's shape, once, for both readers: an ISO-8601 UTC instant.
  *
  * The fractional part is optional and of free length on purpose:
  * `Instant.toString()` emits 0, 3, 6 or 9 fractional digits depending on the
  * value, so a lock that lands on a whole second serialises as
  * `2026-09-22T11:55:50Z`. A pattern copied from the six-digit sample above
  * would miss roughly one lock in a million and be untraceable when it did.
+ */
+const ISO_INSTANT = String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z`;
+
+/**
+ * An ISO-8601 UTC instant, anywhere in a sentence — the prose path's pattern.
  *
  * No `g` flag: a global regex carries `lastIndex` between calls, and this one
  * is shared by a parser, a test and an end-to-end assertion.
  */
-export const LOCK_INSTANT_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/;
+export const LOCK_INSTANT_PATTERN = new RegExp(ISO_INSTANT);
+
+/** The same instant as the *whole* of a value: `details.lockedUntil` is the instant and nothing else. */
+const WHOLE_INSTANT_PATTERN = new RegExp(`^${ISO_INSTANT}$`);
 
 /**
  * The same sentence for a given deadline — what `MockTaskaApi` throws, so that
@@ -70,9 +89,15 @@ export const LOCK_INSTANT_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+
 export const accountLockedMessage = (until: Date) =>
   `Account is locked until ${until.toISOString()}. Try again later.`;
 
+/** A parsed instant still ahead of `now`, or `null` — the guard both readers share. */
+function stillAhead(instant: number, now: number): Date | null {
+  return Number.isFinite(instant) && instant > now ? new Date(instant) : null;
+}
+
 /**
- * The instant a locked account frees up, or `null` when the sentence does not
- * yield a usable one. The caller shows the server's own message in that case:
+ * The instant a locked account frees up, read out of the *sentence* — the
+ * prose path, and `lockedUntilOf`'s fallback. `null` when the sentence does not
+ * yield a usable one; the caller shows the server's own message in that case:
  * unreadable and accurate beats readable and invented.
  *
  * `null` for three different reasons, and the third is the one worth stating:
@@ -91,9 +116,33 @@ export function accountLockedUntil(message: string | null, now = Date.now()): Da
   if (!message) return null;
   const found = LOCK_INSTANT_PATTERN.exec(message);
   if (!found) return null;
-  const instant = Date.parse(found[0]);
-  if (!Number.isFinite(instant) || instant <= now) return null;
-  return new Date(instant);
+  return stillAhead(Date.parse(found[0]), now);
+}
+
+/**
+ * The deadline of a lock refusal, from the error itself: `details.lockedUntil`
+ * when the error carries a readable one, and the sentence otherwise. What the
+ * login screen reads.
+ *
+ * The structured value wins whenever it is an instant at all, **past or
+ * not** — a past one answers `null` without asking the sentence, which states
+ * the same moment and would only be stale in the same way. It is read with
+ * `Object.hasOwn`, as every `details` key is (`errorDetails` in
+ * src/api/errors.ts), and only an exact ISO instant counts: `Date.parse` alone
+ * would take "Sep 22, 2026" in one engine and not in another. A value that is
+ * not one is treated as no value, and the sentence is asked instead.
+ *
+ * Mock and rest read alike: `MockTaskaApi` refuses a locked account with the
+ * same `details` and the same sentence.
+ */
+export function lockedUntilOf(error: unknown, now = Date.now()): Date | null {
+  const { details, message } = apiErrorFacts(error);
+  const stated = details && Object.hasOwn(details, "lockedUntil") ? details.lockedUntil : null;
+  if (stated !== null && WHOLE_INSTANT_PATTERN.test(stated)) {
+    const instant = Date.parse(stated);
+    if (Number.isFinite(instant)) return stillAhead(instant, now);
+  }
+  return accountLockedUntil(message, now);
 }
 
 /**
