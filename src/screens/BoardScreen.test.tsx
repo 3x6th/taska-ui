@@ -1554,7 +1554,8 @@ describe("the board's search and the server's", () => {
     renderBoard();
     await screen.findByRole("region", { name: "To Do column" });
 
-    // Two characters is what the contract permits and the runtime refuses.
+    // Two characters is below the contract's `minLength: 3`, which the gateway
+    // refuses with a 400 before sign-in.
     await search("zz");
 
     await waitFor(() => expect(screen.getByText("0 of 1")).toBeVisible());

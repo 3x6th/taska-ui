@@ -898,8 +898,8 @@ Same rule as above: "Closed by" is settled, the rest is live.
     that through `isUndeployedRoute` and says so rather than drawing an empty
     table.
   - `AuditEntryDto` declares nothing `required` although nine of its fields
-    come from `NOT NULL` columns (eight plus `id`); `rest` maps every field defensively to `string | null` (review
-    remark on TAS-160, not filed).
+    come from `NOT NULL` columns (eight plus `id`); `rest` maps every field
+    defensively to `string | null` (review remark on TAS-160, not filed).
   - `oldValue`/`newValue` are JSON text in a string, sensitive values already
     `"***"`; pretty-printed when they parse, shown as sent when they do not.
     Masking turns a document that is not a JSON object into an absent field
@@ -3475,7 +3475,9 @@ found"`.
 
 **Three divergences, one of them a defect.**
 
-- **The minimum query length is 2 in the contract and 3 in the runtime.** A
+- **The minimum query length was 2 in the contract and 3 in the runtime** (until
+  TAS-265's snapshot: #200 set `minLength: 3` — see "Since backend PR #200
+  deployed" below). A
   two-character `query` answers `400 INVALID_ARGUMENT` with
   `"Search query must be at least 3 characters"`, while the contract declares
   `minLength: 2`. They differ by exactly one character, so a client written
@@ -3515,8 +3517,9 @@ found"`.
   turning "show me everything" into a `400`.
   - **Which spec says what, because the two do not agree and the difference is
     the whole point of this bullet.** The handwritten contract vendored at
-    `docs/contract/openapi.yml` gives the parameter `type: string` and
-    `minLength: 2` and no default at all. The gateway's *generated* spec at
+    `docs/contract/openapi.yml` gave the parameter `type: string` and
+    `minLength: 2` and no default at all (`minLength: 3` since TAS-265's
+    snapshot; #200 also made `/v3/api-docs` serve the YAML itself). The gateway's *generated* spec at
     `https://api.taska.ozero.dev/v3/api-docs` gives it
     `{"type":"string","default":"","minLength":2}` — so the springdoc
     description of the running service documents as its default precisely the

@@ -154,8 +154,9 @@ describe("the top bar's global search", () => {
 
     fireEvent.change(box, { target: { value: "bo" } });
 
-    // Two characters is what the contract permits and the runtime refuses, so
-    // the field says so rather than sending a request that would 400.
+    // Two characters is below the contract's `minLength: 3`, which the gateway
+    // refuses with a 400 before sign-in, so the field says so rather than
+    // sending a request that would 400.
     expect(await screen.findByText(/at least 3 characters/i)).toBeVisible();
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   });
