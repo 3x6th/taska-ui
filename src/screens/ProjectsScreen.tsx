@@ -395,7 +395,15 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       >
         <label className="field">
           <span>Key</span>
-          <input className="mono-input" value={projectKey} onChange={(event) => setProjectKey(event.target.value.toUpperCase())} maxLength={6} />
+          {/* The first field takes focus, as in every form dialog (§7): `Modal`'s
+              fallback to Close is for content with nothing to fill in. */}
+          <input
+            autoFocus
+            className="mono-input"
+            value={projectKey}
+            onChange={(event) => setProjectKey(event.target.value.toUpperCase())}
+            maxLength={6}
+          />
         </label>
         <label className="field">
           <span>Name</span>

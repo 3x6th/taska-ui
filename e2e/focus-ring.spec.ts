@@ -74,6 +74,26 @@ async function pressOpen(page: Page, trigger: Locator) {
   await page.keyboard.press("Enter");
 }
 
+/** Tab, inside a dialog that keeps it, until `target` has focus — keyboard focus, as a reader gets there. */
+async function tabTo(page: Page, target: Locator, max = 40) {
+  for (let step = 0; step < max && !(await target.evaluate((element) => element === document.activeElement)); step += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(target).toBeFocused();
+}
+
+/**
+ * The way back from a dialog (§7): focus on the control that opened it, and
+ * the ring drawn on it when the dialog was closed from the keyboard — not
+ * after a pointer press, the browser's own rule (TAS-193).
+ */
+async function expectFocusBack(page: Page, trigger: Locator, { ring }: { ring: boolean }) {
+  await expect(trigger).toBeFocused();
+  const stop = await inspect(page, null);
+  expect(stop?.focusVisible, `${stop?.label}: ${ring ? "focus back without the ring" : "the ring after a pointer close"}`).toBe(ring);
+  if (ring) expect(stop?.problem ?? null, stop?.label).toBeNull();
+}
+
 /**
  * The stop focus is on, judged against §7 in the page. `scope` is the part of
  * the screen under test, or `null` for the whole page.
@@ -318,21 +338,32 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await signIn(page, "anna@example.com");
       await walkBoth(page, "/projects");
 
-      // Nothing in it asks for focus, so `Modal` puts it on the first stop:
-      // without that the trap below had nothing to hold (release-reviewer).
-      await pressOpen(page, page.getByRole("button", { name: "New project" }));
+      // The first field takes focus, as in every form dialog; `Modal`'s own
+      // fallback to Close is for content with nothing to fill in.
+      const newProject = page.getByRole("button", { name: "New project" });
+      await pressOpen(page, newProject);
       const created = page.getByRole("dialog", { name: "New project" });
       await expect(created).toBeVisible();
-      await expect(created.getByRole("button", { name: "Close", exact: true })).toBeFocused();
+      await expect(created.getByRole("textbox", { name: "Key" })).toBeFocused();
       await walkBoth(page, "New project dialog", {
         scope: ".modal",
         first: () => firstIn(page, ".modal"),
         last: () => lastIn(page, ".modal"),
         trapped: true,
       });
-      await page.keyboard.press("Escape");
-      if (await created.isVisible()) await created.getByRole("button", { name: "Close", exact: true }).click();
-      await expect(created).toBeHidden();
+
+      // Closed from the keyboard, by Cancel and by Close: focus back on "New
+      // project", drawn. (Esc does not close this dialog — §7's open item.)
+      for (const way of ["Cancel", "Close"]) {
+        if (!(await created.isVisible())) {
+          await page.keyboard.press("Enter");
+          await expect(created.getByRole("textbox", { name: "Key" })).toBeFocused();
+        }
+        await tabTo(page, created.getByRole("button", { name: way, exact: true }));
+        await page.keyboard.press("Enter");
+        await expect(created).toBeHidden();
+        await expectFocusBack(page, newProject, { ring: true });
+      }
 
       await pressOpen(page, page.locator(".user-profile-trigger"));
       await expect(page.locator(".user-profile-popover")).toBeVisible();
@@ -369,11 +400,14 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await openBoard(page);
       await walkBoth(page, "board, ADMIN");
 
-      for (const [name, trigger] of [
-        ["New issue", page.locator(".board-new")],
-        ["Manage labels", page.getByRole("button", { name: "Manage labels" })],
-        ["Members", page.getByRole("button", { name: "Members", exact: true })],
-        ["Edit project", page.getByRole("button", { name: "Edit project" })],
+      // Each closed the way the keyboard closes it, and focus back on its
+      // trigger with the ring (§7): Cancel where there is one, Esc where the
+      // dialog takes it (Members), Close for Labels, which has neither.
+      for (const [name, trigger, way] of [
+        ["New issue", page.locator(".board-new"), "Cancel"],
+        ["Manage labels", page.getByRole("button", { name: "Manage labels" }), "Close"],
+        ["Members", page.getByRole("button", { name: "Members", exact: true }), "Escape"],
+        ["Edit project", page.getByRole("button", { name: "Edit project" }), "Cancel"],
       ] as const) {
         await pressOpen(page, trigger);
         const dialog = page.getByRole("dialog");
@@ -387,9 +421,18 @@ for (const theme of ["light", "dark"] as Theme[]) {
           last: () => lastIn(page, ".modal"),
           trapped: true,
         });
-        await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+        if (way !== "Escape") await tabTo(page, dialog.getByRole("button", { name: way, exact: true }));
+        await page.keyboard.press(way === "Escape" ? "Escape" : "Enter");
         await expect(dialog).toBeHidden();
+        await expectFocusBack(page, trigger, { ring: true });
       }
+
+      // A pointer close hands focus back too, without drawing it.
+      const labels = page.getByRole("button", { name: "Manage labels" });
+      await pressOpen(page, labels);
+      await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+      await expect(page.getByRole("dialog")).toBeHidden();
+      await expectFocusBack(page, labels, { ring: false });
     });
 
     test("the board as a VIEWER", async ({ page }) => {
@@ -485,6 +528,7 @@ for (const theme of ["light", "dark"] as Theme[]) {
         });
         await page.keyboard.press("Escape");
         await expect(dialog).toBeHidden();
+        await expectFocusBack(page, trigger, { ring: true });
       }
     });
 

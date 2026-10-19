@@ -253,13 +253,8 @@ export function ProjectMembersModal({
   const hintId = useId();
   const listId = useId();
 
-  /**
-   * Where focus came from, read during the first render — before anything in
-   * this dialog has taken it — so closing can hand it back (§7). Read here and
-   * not in an effect: by the time an effect runs, `autoFocus` has already moved
-   * focus to the id field.
-   */
-  const [opener] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+  // Closing hands focus back to the Members button through `Modal`, which does
+  // it for every dialog since TAS-299; this one used to do it itself.
   const heading = useRef<HTMLHeadingElement | null>(null);
   const field = useRef<HTMLInputElement | null>(null);
   const addButton = useRef<HTMLButtonElement | null>(null);
@@ -310,11 +305,6 @@ export function ProjectMembersModal({
     if (notice === null) setNotice({ tone: "info", text: isProjectAdmin ? LIST_CHANGED_TEXT : ROLE_CHANGED_TEXT });
   }
   const confirm = confirmOffered ? pendingConfirm : null;
-
-  const close = () => {
-    onClose();
-    if (opener?.isConnected) opener.focus();
-  };
 
   /**
    * Everything that draws members goes stale with a write: this dialog reads
@@ -823,7 +813,7 @@ export function ProjectMembersModal({
   useEffect(() => {
     // The nearer thing first: a question, then the open results (their text
     // stays), then the dialog (§4.22).
-    onEscape.current = () => (confirm ? cancelConfirm() : boxOpen ? setListOpen(false) : close());
+    onEscape.current = () => (confirm ? cancelConfirm() : boxOpen ? setListOpen(false) : onClose());
   });
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -877,7 +867,7 @@ export function ProjectMembersModal({
           </span>
         ) : undefined
       }
-      onClose={close}
+      onClose={onClose}
     >
       <div className="members-panel">
         {isProjectAdmin ? (

@@ -3818,3 +3818,10 @@ Frontend notes:
   recipe dims fill, border and label with `color-mix(in oklab, <token> 58%,
   var(--surface))` instead of `opacity`, so the ring stays at full `--accent`;
   apply to all four steady `aria-disabled` controls at once.
+- **`Esc` closes only some modals** (`frontend-builder`, TAS-299 follow-up):
+  `Modal` has no Esc handler, so New project, New issue, Manage labels and Edit
+  project ignore it (§7's open item); Members and the admin dialogs bind it
+  themselves. A shared Esc in `Modal` needs an opt-out for Members' layered Esc
+  (confirmation, then the open list, then the dialog).
+- **The "Manage labels" icon button has only a `title`, no `aria-label`** — the
+  same §7 gap TAS-299 closed on the panel's Close.
