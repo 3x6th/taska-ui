@@ -186,3 +186,14 @@ contract text. The four were measured deployed the same day with a token:
 (`f2739711-8300-4418-938c-146716a67cf8`), the audit read answers 200 with an
 `id` on every entry (`04613bb7-a862-4115-b0b7-0d8118f3bf9f`), and the error
 envelope carries `details: null` (`fe5a4cc1-92cf-45a1-bc48-6fdcc4289d78`).
+
+The snapshot was refreshed again on 2026-10-19, in TAS-297, to develop
+`e8a8d316b326`, after backend PRs #204 (TAS-204, merge `0f7a937`), #201 (TAS-264,
+merge `9aea7e3`), #202 (TAS-241, merge `a864b50`) and #203 (TAS-266, CI only)
+merged that evening. No extract had been written for them: each merged before
+a frontend pass began. The same check as above holds: 15 blocks differ from
+`398285cde074`, each byte-identical to its counterpart at a merged head — 7 at
+`a01e10d` (#204: `/auth/invitations`, `/users`, four new schemas and the accept
+route's text), 7 at `9dc0a4a` (#201: the `/meta` pair schemas, `selectable`,
+`linkViewTypes`), 1 at `cbdd726` (#202: the board's `includeDone` text) — and
+nothing else differs.

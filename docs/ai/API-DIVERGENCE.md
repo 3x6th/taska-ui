@@ -223,7 +223,7 @@ The entry as it stood:
   context (TAS-212) is their source.
 - **Compensation:** none — this is reading an open field as open.
 
-### `GET /meta` names its values in Russian, and the UI is English
+### Closed by measurement: `GET /meta` named its values in Russian, and the UI is English
 
 - **Endpoint:** `GET /api/v1/meta` (backend TAS-217, PR #196, `f453171`,
   merged and deployed 2026-10-19).
@@ -242,15 +242,14 @@ The entry as it stood:
   the code verbatim. Codes this build knows keep its own English labels
   whatever `/meta` says (owner, 2026-10-19). Today every name fails the check,
   so an unknown code reads as itself (`EPIC`).
-- **Switched off by:** removing the `isEnglishName` check in `servedName`
-  (`src/lib/enumLabel.ts`), so any non-blank `/meta` name is used. The other
-  caller, the workflow-name check in `statusLabel` (`src/lib/format.ts`),
-  stays: workflow names are project configuration under DESIGN.md §6's
-  English-UI rule, and TAS-264 does not touch them.
-- **Removal:** [TAS-264](https://jira.ozero.dev/browse/TAS-264) (`/meta` names
-  in English, filed 2026-10-19; backend PR #201, head `9dc0a4a`, open). Once
-  deployed and probed, a new backend value shows under its English name with
-  no frontend release, and the check comes out.
+- **Closed 2026-10-19 by measurement.** Backend PR #201
+  ([TAS-264](https://jira.ozero.dev/browse/TAS-264), merge `9aea7e3`, deployed
+  17:47 UTC): every `name` is English, every pair carries `selectable`, and
+  `linkViewTypes` lists the inverse directions — probed with a token the same
+  day (`b8cc7a79-8bfe-46d1-892d-5e51f098b666`), no Cyrillic anywhere.
+- **The check stays** (owner, 2026-10-19: «логику с кириллицей не правь»):
+  `isEnglishName` is no longer a compensation but DESIGN.md §6's standing rule
+  that the UI stays English — with English names it simply passes them.
 
 ### `GET /meta` lists placeholder values as ordinary rows, and the contract says nothing about which values may be chosen
 
@@ -977,7 +976,7 @@ Same rule as above: "Closed by" is settled, the rest is live.
   probe the routes and drop the undeployed branch. The author join
   and the client total stay until the backend sends what they stand in for.
 
-### Accepting an invitation does not produce a session
+### Closed by contract (TAS-297): accepting an invitation does not produce a session
 
 - **Endpoint:** `POST /api/v1/auth/invitations/accept` (`setPasswordByToken`).
 - **Contract:** `204 No Content` — no body, no tokens. Nothing anywhere states
@@ -1000,6 +999,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
   [TAS-208](https://jira.ozero.dev/browse/TAS-208) — either return
   tokens from the accept call, or state in the contract that the client must
   sign in afterwards (in which case the UI should collect the email and do it).
+- **Closed by contract:** backend PR #204 (TAS-204, merge `0f7a937`, deployed
+  2026-10-19) keeps the 204 and states that the client signs in afterwards
+  (`openapi.yml`, the accept route). The UI half is TAS-208, built in TAS-297:
+  no profile read after the 204; the form switches to sign-in with "Password
+  set. Sign in with your email and new password." and does not collect the
+  email (DESIGN.md §4.27).
 
 ### The mock has a session flag but no session enforcement
 

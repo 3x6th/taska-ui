@@ -834,10 +834,13 @@ time.
   does work, so this is a wrong instruction rather than a dead end — but it is
   worse than silence. Either register a `KeyboardSensor` or supply
   `screenReaderInstructions` that describe the transition buttons instead.
-- **§5.7 says a `VIEWER` gets `readOnly` fields; the code gives them
-  `disabled` ones.** A viewer therefore cannot select or copy an issue's
-  summary or description — `disabled` removes the text from reach entirely,
-  which is not what read-only means.
+- **A `VIEWER`'s summary and description are `disabled`, not `readOnly`**
+  (`art-director`, re-measured 2026-10-19 in the TAS-236 re-verdict). §5.7 now
+  records `disabled` as what ships, so the doc and code agree; the defect is the
+  choice itself. `textarea:disabled { opacity: .58 }` puts the summary at
+  4.38:1 light (5.92 dark) and the description at 4.07:1 light (6.06 dark),
+  under §7's 4.5:1 for content, and the text cannot be selected or copied. The
+  fix is `readOnly` for a VIEWER — its own story with a §5.7 change.
 - ~~**The filter bar's "X of Y" counter clips at 390px** — measured 10.2px wide
   by 50px tall inside a 46px bar.~~ **Graduated 2026-08-23**, handed over by the
   owner from an iPhone 17 Pro Max, and fixed on
