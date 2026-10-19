@@ -23,8 +23,9 @@ describe("where a notification goes when it is pressed", () => {
   });
 
   it("takes a kind this build has never heard of at its ids", () => {
-    // `notificationType` is a bare string on the wire, and notification-service
-    // learns new kinds before this frontend does. The ids are the statement.
+    // A gateway newer than this build can list a kind this build has never
+    // heard of — `NotificationTypeDto` grows with notification-service. The ids
+    // are the statement.
     expect(notificationRoute(about("ISSUE_WORKLOG_ADDED", ISSUE_ID, PROJECT_ID))).toBe(
       `/projects/${PROJECT_ID}/issues/${ISSUE_ID}`,
     );

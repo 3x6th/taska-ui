@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 // The Audit section (TAS-251) against MockTaskaApi, which seeds thirty audit
 // entries at fixed instants (newest 2026-10-09T16:40:00Z, about seventeen hours
-// apart) and answers `GET /readonly/audit-entries` as the server is meant to:
+// apart) and answers `GET /readonly/audit-entries` as backend PR #197 does:
 // paged newest first, exact filters, whole-UTC-day bounds, GLOBAL_ADMIN only.
 // Mark is the seed's only GLOBAL_ADMIN.
 

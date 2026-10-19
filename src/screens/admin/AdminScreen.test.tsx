@@ -81,7 +81,11 @@ const {
   // The types are spelled the way `information_schema` spells them, because
   // that is what the gateway forwards and what the console classifies columns
   // by — and the two primary keys differ on purpose: `auth.users` is keyed by a
-  // uuid, which the gateway can address, and `admin.audit_log` is not.
+  // uuid, which the gateway can address, and `admin.legacy_codes` is not.
+  // `legacy_codes` is made up: every table on the stand is keyed by a uuid
+  // (backend develop `398285cde074`), but the catalog does not promise that,
+  // so the branch that refuses to link a row is pinned here on a table that
+  // exists only in this file.
   const catalog = {
     services: [
       {
@@ -124,7 +128,7 @@ const {
         databaseAlias: "taska_admin",
         tables: [
           {
-            name: "audit_log",
+            name: "legacy_codes",
             primaryKey: "id",
             columns: [
               // A readable code, not a uuid: the gateway parses the row id in
@@ -169,7 +173,7 @@ const {
     // page — the tests about paging and about a page past the end both need one
     // that exists.
     "issue.empty_table": { columns: ["id"], rows: [] },
-    "admin.audit_log": {
+    "admin.legacy_codes": {
       columns: ["id", "action"],
       rows: [
         { id: "a1", action: "TABLE_READ" },
@@ -726,9 +730,9 @@ describe("/admin sections under construction", () => {
     window.localStorage.clear();
   });
 
-  // Audit left this list with TAS-251, the last of the four: the section is
-  // built against backend PR #172 and says for itself when the gateway does
-  // not serve it, so the placeholder has to be gone rather than unreachable.
+  // Audit left this list with TAS-251, the last of the four: the section reads
+  // backend PR #197's route and says for itself when a gateway does not serve
+  // it, so the placeholder has to be gone rather than unreachable.
   it("no longer stands in for Audit", async () => {
     renderAdmin("/admin/audit");
 
@@ -933,7 +937,7 @@ describe("/admin console", () => {
     expect(screen.getAllByText("hidden").length).toBeGreaterThan(0);
 
     holdRows();
-    fireEvent.click(screen.getByRole("link", { name: "audit_log" }));
+    fireEvent.click(screen.getByRole("link", { name: "legacy_codes" }));
 
     await act(async () => {
       await Promise.resolve();
@@ -950,7 +954,7 @@ describe("/admin console", () => {
       releaseRows();
     });
 
-    expect(await screen.findByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "admin.legacy_codes" })).toBeVisible();
     expect(document.body.textContent).not.toContain(SECRET);
   });
 
@@ -983,13 +987,13 @@ describe("/admin console selection in the URL", () => {
   });
 
   it("opens the table, page and filter a copied link names", async () => {
-    renderAdmin("/admin/data/admin/audit_log?page=2&sort=id&order=desc&filter=action:contains:TABLE");
+    renderAdmin("/admin/data/admin/legacy_codes?page=2&sort=id&order=desc&filter=action:contains:TABLE");
 
-    expect(await screen.findByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "admin.legacy_codes" })).toBeVisible();
     // Not just on screen: the query the server was asked carries all of it.
     expect(lastRowsQuery()).toMatchObject({
       service: "admin",
-      table: "audit_log",
+      table: "legacy_codes",
       page: 2,
       sort: "id",
       order: "desc",
@@ -1034,16 +1038,16 @@ describe("/admin console selection in the URL", () => {
     // The link the reader was sent carries a page that exists in the table it
     // names, and nothing about the table they happened to be on.
     fireEvent.change(screen.getByLabelText("jump target"), {
-      target: { value: "/admin/data/admin/audit_log?page=2" },
+      target: { value: "/admin/data/admin/legacy_codes?page=2" },
     });
     fireEvent.click(screen.getByRole("button", { name: "jump" }));
 
-    expect(await screen.findByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "admin.legacy_codes" })).toBeVisible();
     // The address is left exactly as it was pasted — page 2 exists in this
     // table — and the request went to that table's second page, not back to
     // the single-page table the reader was on.
-    expect(screen.getByTestId("location").textContent).toBe("/admin/data/admin/audit_log?page=2");
-    expect(lastRowsQuery()).toMatchObject({ service: "admin", table: "audit_log", page: 2 });
+    expect(screen.getByTestId("location").textContent).toBe("/admin/data/admin/legacy_codes?page=2");
+    expect(lastRowsQuery()).toMatchObject({ service: "admin", table: "legacy_codes", page: 2 });
   });
 
   it("says so when the rows fail after another table has already loaded", async () => {
@@ -1053,7 +1057,7 @@ describe("/admin console selection in the URL", () => {
     // `placeholderData` keeps the loaded rows, so this is the state where the
     // screen used to leave the previous table on screen and say nothing.
     failRows(new Error("the gateway refused this table"));
-    fireEvent.click(screen.getByRole("link", { name: "audit_log" }));
+    fireEvent.click(screen.getByRole("link", { name: "legacy_codes" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reached|refused/i);
     expect(screen.queryByRole("cell", { name: "u1" })).toBeNull();
@@ -1076,9 +1080,9 @@ describe("/admin console selection in the URL", () => {
   });
 
   it("lands on the last page when the address names one past the end", async () => {
-    renderAdmin("/admin/data/admin/audit_log?page=999");
+    renderAdmin("/admin/data/admin/legacy_codes?page=999");
 
-    expect(await screen.findByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "admin.legacy_codes" })).toBeVisible();
     // The rows are the last page's, and the pager is still there to move with —
     // not "This table is empty" and no way back.
     expect(lastRowsQuery()?.page).toBe(2);
@@ -1089,13 +1093,13 @@ describe("/admin console selection in the URL", () => {
     renderAdmin("/admin/data/auth/users?page=3&filter=email:contains:anna");
     expect(await screen.findByRole("heading", { name: "auth.users" })).toBeVisible();
 
-    fireEvent.click(screen.getByRole("link", { name: "audit_log" }));
+    fireEvent.click(screen.getByRole("link", { name: "legacy_codes" }));
 
-    expect(currentLocation()).toBe("/admin/data/admin/audit_log");
+    expect(currentLocation()).toBe("/admin/data/admin/legacy_codes");
   });
 
   it("writes an applied filter into the address", async () => {
-    renderAdmin("/admin/data/admin/audit_log");
+    renderAdmin("/admin/data/admin/legacy_codes");
     expect(await screen.findByRole("cell", { name: "a1" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
@@ -1104,18 +1108,18 @@ describe("/admin console selection in the URL", () => {
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "TABLE_READ" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
-    expect(currentLocation()).toBe("/admin/data/admin/audit_log?filter=action%3Acontains%3ATABLE_READ");
+    expect(currentLocation()).toBe("/admin/data/admin/legacy_codes?filter=action%3Acontains%3ATABLE_READ");
   });
 
   // Removing the filter unmounts the cross that was clicked; without the
   // hand-off the keyboard would be dropped on <body> (§7).
   it("keeps the keyboard on the filter control after the filter is removed", async () => {
-    renderAdmin("/admin/data/admin/audit_log?filter=action:contains:TABLE_READ");
+    renderAdmin("/admin/data/admin/legacy_codes?filter=action:contains:TABLE_READ");
     const remove = await screen.findByRole("button", { name: "Remove filter on action" });
 
     fireEvent.click(remove);
 
-    expect(currentLocation()).toBe("/admin/data/admin/audit_log");
+    expect(currentLocation()).toBe("/admin/data/admin/legacy_codes");
     expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
   });
 
@@ -1380,7 +1384,7 @@ describe("/admin console, opening one row", () => {
   });
 
   it("does not link a row the gateway could not address", async () => {
-    renderAdmin("/admin/data/admin/audit_log");
+    renderAdmin("/admin/data/admin/legacy_codes");
     expect(await screen.findByRole("cell", { name: "a1" })).toBeVisible();
 
     // Not styled-as-disabled, not a link that 400s: no link at all.

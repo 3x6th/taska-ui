@@ -71,9 +71,10 @@ test("says the query is too short instead of asking a question the gateway refus
   await signIn(page);
 
   const field = searchField(page);
-  // Two characters is what the contract permits and the runtime refuses with a
-  // 400. The mock refuses it identically, so this case would fail loudly if the
-  // UI ever sent it.
+  // Two characters is below the contract's `minLength: 3`, which the gateway
+  // refuses with a 400 ("Invalid request parameters"). The mock refuses it
+  // too, so this case would fail loudly if the UI ever sent it; the sentence
+  // on screen is the field's own.
   await field.fill("bo");
 
   await expect(page.getByText(/at least 3 characters/i)).toBeVisible();

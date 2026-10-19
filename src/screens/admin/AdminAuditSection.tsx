@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useState } from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
 import { taskaApi } from "../../api/client";
-import { isMissingOrForbidden, isRouteNotServed } from "../../api/errors";
+import { isMissingOrForbidden, isUndeployedRoute } from "../../api/errors";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../../api/TaskaApi";
 import { RequestId } from "../../components/RequestId";
 import type { AuditEntry } from "../../domain/types";
@@ -29,19 +29,21 @@ const COLUMNS = 7;
 
 /**
  * The Audit section (DESIGN.md §5.8, TAS-251) — who changed what through the
- * admin area, and why, from `GET /readonly/audit-entries` (backend PR #172,
- * TAS-160). It only reads.
+ * admin area, and why, from `GET /readonly/audit-entries` (backend PR #197,
+ * TAS-160, merged and deployed 2026-10-19). It only reads.
  *
  * Built from the area's parts: the named-filter chips the Outbox journal uses,
  * the Users table's named columns, the shared pager, and the URL as the home of
  * the page and every filter. What it adds is the detail under a row — the old
- * and the new value side by side — because an entry has **no id** to give an
- * address to, so it opens in place rather than as a card of its own.
+ * and the new value side by side — which opens in place rather than as a card
+ * of its own: an entry has an id, but no route reads one entry by it, so there
+ * is no address for a card to live at.
  *
- * Two server facts decide what is drawn, both on `TaskaApi.listAuditEntries`:
- * the route is not served yet (a static-resource 404 or a 501), which is said
- * as a notice rather than as a failure or an empty log; and at the PR head the
- * server ignores paging, so a page may hold every row — drawn as it came.
+ * One server fact decides what is drawn beyond the rows themselves: a gateway
+ * without the route answers the static-resource 404 (`isUndeployedRoute`),
+ * which is said as a notice rather than as a failure or an empty log. The rows
+ * are drawn as they came — nothing here slices an answer down to the page that
+ * was asked for.
  */
 export function AdminAuditSection() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -55,9 +57,13 @@ export function AdminAuditSection() {
     placeholderData: (previous) => previous,
     // Neither a route that is not there nor a refusal changes on a second ask.
     retry: (failureCount, error) =>
-      !isRouteNotServed(error, UNDEPLOYED_ROUTE_MESSAGE) && !isMissingOrForbidden(error) && failureCount < 1,
+      !isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE) && !isMissingOrForbidden(error) && failureCount < 1,
   });
-  /** The entry whose detail is open — by its composite key, since it has no id. */
+  /**
+   * The entry whose detail is open, by its key from `auditEntryKeys` — its id,
+   * so a refetch that puts a newer entry on top leaves the same entry open
+   * rather than whichever one now sits at its old index.
+   */
   const [open, setOpen] = useState<string | null>(null);
   const detailIdBase = useId();
 
@@ -69,7 +75,7 @@ export function AdminAuditSection() {
   };
 
   const data = entriesQuery.data;
-  const notServed = entriesQuery.isError && isRouteNotServed(entriesQuery.error, UNDEPLOYED_ROUTE_MESSAGE);
+  const notServed = entriesQuery.isError && isUndeployedRoute(entriesQuery.error, UNDEPLOYED_ROUTE_MESSAGE);
 
   // A page past the end — a stale link, a narrower filter since. `totalPages
   // >= 1` for the reason the Users section records: an empty answer can say

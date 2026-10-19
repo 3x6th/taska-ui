@@ -370,9 +370,9 @@ describe("RestTaskaApi current user", () => {
   });
 
   /**
-   * TAS-173. The contract types `status` as a bare string, the gateway's
-   * `AuthMapper` can write `null`, and backend PR #200 adds the zero value
-   * `UNSPECIFIED` to `UserStatusDto`. A string the build does not know is kept
+   * TAS-173. The contract types `status` as `UserStatusDto` since backend PR
+   * #200, which added the zero value `UNSPECIFIED` to it, and the gateway's
+   * `AuthMapper` can write `null`. A string the build does not know is kept
    * — it is printed as it came — while "no status stated" in any spelling is
    * `null`, which the profile menu draws as "—" instead of throwing on it.
    */
@@ -848,11 +848,10 @@ describe("RestTaskaApi project members", () => {
     // TAS-220 picks up what TAS-219 deliberately left: `AvatarDto` is declared
     // on the row with a presigned `downloadUrl`, and reading it here is what
     // makes a board of faces one request rather than one per person. The
-    // deployed read fills it for nobody yet (see `RestProjectMember`), so this
-    // body is the contract's shape rather than one the stand sends today. The
-    // other six fields stay dropped — none of them is drawn, and `createdAt`
-    // among them is declared and never populated. The two timestamps are not
-    // on `ProjectMemberDetailsDto` at all.
+    // server fills it since TAS-225 (see `RestProjectMember`). The other six
+    // fields stay dropped — none of them is drawn, and `createdAt` among them
+    // is declared and never populated. The two timestamps are not on
+    // `ProjectMemberDetailsDto` at all.
     const { result } = await call(
       {
         members: [
@@ -1147,10 +1146,11 @@ describe("RestTaskaApi project writes", () => {
 
 /**
  * Issue links (TAS-157). The contract asks for `linkType` (a closed enum) and
- * answers with `viewLinkType` (a bare string, no enum). These cases pin that
- * asymmetry in place — the request must not drift to the response's spelling,
- * and the response must survive a value this build has never heard of, because
- * the inverse of a `BLOCKS` seen from the other end is exactly such a value.
+ * answers with `viewLinkType` (another enum, prefixed, since backend PR #200).
+ * These cases pin that asymmetry in place — the request must not drift to the
+ * response's spelling, and the response must survive a value this build has
+ * never heard of, because the inverse of a `BLOCKS` seen from the other end is
+ * exactly such a value.
  */
 describe("RestTaskaApi issue links", () => {
   const answer = (status: number, body: unknown) =>
@@ -1494,7 +1494,7 @@ describe("RestTaskaApi read-only admin", () => {
     // `page.equals` is not `page`, so no rename is needed and none happens.
     const url = await urlFor({
       service: "admin",
-      table: "audit_log",
+      table: "admin_audit_log",
       page: 3,
       sort: "created_at",
       filters: [
@@ -1779,11 +1779,12 @@ describe("RestTaskaApi read-only admin", () => {
     expect(summary.events.map((event) => event.id)).toEqual(["older", "newer", "oldest"]);
   });
 
-  /** `GET /readonly/audit-entries` (backend PR #172, TAS-160; TAS-251). */
+  /** `GET /readonly/audit-entries` (backend PR #197, TAS-160; TAS-251, TAS-265). */
   describe("the audit log", () => {
     const auditBody = {
       entries: [
         {
+          id: "5e7a0700-2c4b-4d1e-9f3a-6b8c0d2e4f1a",
           actorUserId: "e65186a2-b807-42ae-a66f-711be116a93b",
           actorLogin: "mark",
           action: "BLOCK_USER",
@@ -1828,9 +1829,10 @@ describe("RestTaskaApi read-only admin", () => {
     });
 
     it("maps what arrives — every row of it, and nothing that is not a string", async () => {
-      // The head ignores `pageSize` and answers every row; nothing slices it.
+      // A page longer than the one asked for is the server's statement, and
+      // nothing here slices it.
       const many = Array.from({ length: 25 }, () => auditBody.entries[0]);
-      const odd = { actorLogin: 7, oldValue: { status: "ACTIVE" }, newValue: null };
+      const odd = { id: 42, actorLogin: 7, oldValue: { status: "ACTIVE" }, newValue: null };
       const fetchStub = vi.fn(async () => answer({ entries: [...many, odd] }));
       vi.stubGlobal("fetch", fetchStub);
 
@@ -1838,6 +1840,7 @@ describe("RestTaskaApi read-only admin", () => {
 
       expect(result.entries).toHaveLength(26);
       expect(result.entries[25]).toEqual({
+        id: null,
         actorUserId: null,
         actorLogin: null,
         action: null,
@@ -1854,19 +1857,41 @@ describe("RestTaskaApi read-only admin", () => {
       expect(result.pagination).toMatchObject({ currentPage: 1, pageSize: 20, totalRows: 26, totalPages: 1 });
     });
 
-    it("passes a 501 up with its status, so the section can say the route is not served", async () => {
+    it("carries the entry's id, and reads an absent or empty one as none", async () => {
+      // Nothing in the schema is `required`, the id included, and `""` names
+      // nothing — keyed by it, every such row would be one React row.
+      const { id: _id, ...withoutId } = auditBody.entries[0];
+      const fetchStub = vi.fn(async () =>
+        answer({ entries: [auditBody.entries[0], withoutId, { ...withoutId, id: "" }, { ...withoutId, id: null }] }),
+      );
+      vi.stubGlobal("fetch", fetchStub);
+
+      const result = await new RestTaskaApi().listAuditEntries({});
+
+      expect(result.entries.map((entry) => entry.id)).toEqual(["5e7a0700-2c4b-4d1e-9f3a-6b8c0d2e4f1a", null, null, null]);
+    });
+
+    it("passes the gateway's binding refusal up with its status, its sentence and no details", async () => {
+      // What a non-UUID actor id is answered with, before authentication — the
+      // section never sends one, and this pins what it would meet if it did.
       const fetchStub = vi.fn(
         async () =>
           ({
-            status: 501,
+            status: 400,
             ok: false,
-            headers: { get: () => "req-501" },
-            json: async () => ({ code: "UNIMPLEMENTED", message: "Method not implemented" }),
+            headers: { get: (name: string) => (name === "X-Request-Id" ? "req-400" : null) },
+            json: async () => ({ code: "INVALID_ARGUMENT", message: "Invalid request parameters", details: null }),
           }) as unknown as Response,
       );
       vi.stubGlobal("fetch", fetchStub);
 
-      await expect(new RestTaskaApi().listAuditEntries({})).rejects.toMatchObject({ status: 501 });
+      await expect(new RestTaskaApi().listAuditEntries({ actorUserId: "mark" })).rejects.toMatchObject({
+        status: 400,
+        code: "INVALID_ARGUMENT",
+        message: "Invalid request parameters",
+        requestId: "req-400",
+        details: null,
+      });
     });
   });
 });
@@ -1880,11 +1905,10 @@ describe("RestTaskaApi read-only admin", () => {
  */
 /**
  * `GET /issues/search`, and mostly about the two things that must never reach
- * the wire: a query the runtime would refuse, and an empty one. The gateway
- * answers `400` for both, and its own generated spec (`/v3/api-docs`) gives the
- * parameter a *default* of the empty string — the vendored contract states no
- * default — so the obvious implementation, which sets `query` on every
- * keystroke, turns a cleared field into an error (docs/ai/API-DIVERGENCE.md).
+ * the wire: a query below the minimum, and an empty one. The gateway answers
+ * `400` for both — the contract says so too since backend PR #200 — so the
+ * obvious implementation, which sets `query` on every keystroke, turns a
+ * cleared field into an error.
  */
 describe("RestTaskaApi issue search", () => {
   const answer = (status: number, body: unknown) =>
@@ -1914,9 +1938,10 @@ describe("RestTaskaApi issue search", () => {
     const fetchStub = stubFetch({ items: [], totalCount: 0 });
     const api = new RestTaskaApi();
 
-    // Two characters is what the contract permits and the runtime refuses; the
-    // empty string is what the gateway's generated spec (`/v3/api-docs`) offers
-    // as the default.
+    // Two characters is below the contract's `minLength: 3`, and so is the
+    // empty string; the gateway would answer both with its binding 400. The
+    // sentence is the client's own (`SEARCH_QUERY_TOO_SHORT_MESSAGE`), not the
+    // gateway's "Invalid request parameters", because nothing was asked.
     await expect(api.searchIssues({ query: "bo" })).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
       status: 400,
@@ -4606,5 +4631,74 @@ describe("RestTaskaApi worklogs", () => {
     const failure = await new RestTaskaApi().listIssueWorklogs(PROJECT, ISSUE).catch((error: unknown) => error);
 
     expect(isUndeployedRoute(failure, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+  });
+});
+
+/**
+ * `RestErrorResponse` since backend PR #199 (TAS-239): `{code, message,
+ * details}`, `details` a `{string: string}` or `null`. The account lock is the
+ * one refusal that fills it; every other error body carries `details: null`,
+ * which is what the stand answered on 2026-10-19.
+ */
+describe("RestTaskaApi error envelope", () => {
+  const refuse = (status: number, body: unknown) =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          ({
+            status,
+            ok: false,
+            headers: { get: (name: string) => (name === "X-Request-Id" ? "req-lock" : null) },
+            json: async () => body,
+          }) as unknown as Response,
+      ),
+    );
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("carries the lock's details beside its code, status and sentence", async () => {
+    refuse(403, {
+      code: "PERMISSION_DENIED",
+      message: "Account is locked until 2026-09-22T11:55:50.398486Z. Try again later.",
+      details: { lockedUntil: "2026-09-22T11:55:50.398486Z" },
+    });
+
+    const failure = await new RestTaskaApi()
+      .login({ email: "omar@example.com", password: "wrong" })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(apiErrorFacts(failure)).toEqual({
+      code: "PERMISSION_DENIED",
+      status: 403,
+      requestId: "req-lock",
+      message: "Account is locked until 2026-09-22T11:55:50.398486Z. Try again later.",
+      details: { lockedUntil: "2026-09-22T11:55:50.398486Z" },
+    });
+  });
+
+  it("reads null, an absent field and a body that broke its schema as no details", async () => {
+    for (const details of [null, undefined, ["x"], { lockedUntil: 1758541950 }, "lockedUntil"]) {
+      refuse(400, { code: "INVALID_ARGUMENT", message: "Invalid request parameters", details });
+      const failure = await new RestTaskaApi()
+        .login({ email: "anna@example.com", password: "x" })
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: "INVALID_ARGUMENT", status: 400, details: null });
+    }
+  });
+
+  it("states no details for a body that is not an envelope at all", async () => {
+    refuse(502, undefined);
+    const failure = await new RestTaskaApi()
+      .login({ email: "anna@example.com", password: "x" })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "UNKNOWN", status: 502, details: null });
   });
 });

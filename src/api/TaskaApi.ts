@@ -148,21 +148,33 @@ export interface BoardParams {
 }
 
 /**
- * The shortest `query` `GET /issues/search` will answer — **three**, measured
- * against the deployed gateway on 2026-08-23, where the contract declares
- * `minLength: 2`. The runtime wins (AGENTS.md), and it is exported so the mock,
- * the REST mapper and every field in the UI read the same number: a UI that
+ * The shortest `query` `GET /issues/search` will answer — **three**, the
+ * contract's `minLength: 3` since backend PR #200. The gateway generates its
+ * controller from that contract, so it refuses a raw `query` under three
+ * characters, the empty one included, while binding the request — before
+ * sign-in, as 400 `INVALID_ARGUMENT` "Invalid request parameters",
+ * `details: null`. Probed without a token 2026-10-19: `?query=ab` 400
+ * (`f4857c3e-98fa-4450-a193-9146767cea70`), `?query=` 400
+ * (`69e851a1-9e3f-4762-b8a5-2bac1de81ee0`), `?query=abc` 401
+ * (`ae6f1390-aa64-4828-9fd2-133470cdc8f1`). It is exported so the mock, the
+ * REST mapper and every field in the UI read the same number: a UI that
  * searched from two characters would meet a `400` at the boundary and nowhere
  * else, which is the worst place to find a gap.
  *
- * The empty string is a `400` too, while omitting the parameter is a `200` with
- * everything — so an absent query means "no text filter" and an *empty* one is
- * a rejected query, never a silent "show me everything". Both divergences are
- * recorded in docs/ai/API-DIVERGENCE.md and removed by TAS-180.
+ * Omitting the parameter is a `200` with everything. So an absent query means
+ * "no text filter" and an *empty* one is a rejected query, never a silent
+ * "show me everything".
  */
 export const SEARCH_QUERY_MIN_LENGTH = 3;
 
-/** The gateway's own wording for a query below that minimum, reproduced verbatim. */
+/**
+ * The client's own refusal of a query below that minimum — what `RestTaskaApi`
+ * throws instead of spending the request. The words are issue-service's
+ * (`IssueServiceImpl.searchIssues`), but issue-service never gets to say them
+ * at its default configuration: the gateway's binding refuses the same query
+ * first, in its own sentence (see `SEARCH_QUERY_MIN_LENGTH`). So this is not
+ * an answer the server gives, and nothing should read it as one.
+ */
 export const SEARCH_QUERY_TOO_SHORT_MESSAGE = `Search query must be at least ${SEARCH_QUERY_MIN_LENGTH} characters`;
 
 /**
@@ -201,9 +213,8 @@ export const ADMIN_WRITE_REASON_MAX_LENGTH = 550;
 
 /**
  * What every implementation says when the reason is longer than that, worded
- * once here for the same reason `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: two copies
- * of a sentence are two chances to drift, and the whole point of this pair of
- * guards is that a caller cannot tell mock from rest.
+ * once here: two copies of a sentence are two chances to drift, and the whole
+ * point of this pair of guards is that a caller cannot tell mock from rest.
  *
  * Not the server's own wording, because the server has none to reproduce. The
  * 550 is stated in exactly one place on the backend — `maxLength` in the
@@ -336,8 +347,8 @@ export function isRetryableOutboxService(service: string): service is RetryableO
 export interface SearchIssuesParams {
   /**
    * Absent means "no text filter". Present means it is searched, so anything
-   * shorter than `SEARCH_QUERY_MIN_LENGTH` is rejected by the implementation
-   * before it reaches the wire rather than sent and refused.
+   * shorter than `SEARCH_QUERY_MIN_LENGTH` is refused: the rest leg refuses it
+   * before it reaches the wire, and the mock as the gateway would.
    */
   query?: string;
   /** Absent searches every project the caller can see. Unknown id → `NOT_FOUND`. */
@@ -765,15 +776,17 @@ export interface TaskaApi {
    * was written against the PR before it merged, and since TAS-224 `hybrid`
    * delegates to it, so this is the read the stand makes.
    *
-   * **One unreadable avatar object fails the whole read.** The server HEADs and
-   * presigns every avatar owner's object with no per-row fallback, so a missing
-   * object answers 404, a storage refusal 403 and a store that is down 503 —
-   * the first two the same statuses this route gives a missing project and a
-   * reader with no access (read at `develop` `1cfe4d79f074`). The board does not
-   * retry a 404 or a 403, and says almost nothing about the failure: only the
-   * watcher section of an open issue says the members could not be read, and
-   * only to an ADMIN. Everywhere else it is silent — the assignee filter and
-   * the assignee chips offer nobody, and the reporter reads "Unknown".
+   * **An unreadable avatar object costs that member's avatar, not the read.**
+   * auth-service presigns each avatar owner's object and, since TAS-225, falls
+   * back per row (`enrichWithAvatarUrl` ends in `onErrorResume(…
+   * withoutAvatar(user))`, read at backend develop `398285cde074`), so the row
+   * arrives with `avatar: null` and the rest of the answer stands. Before that
+   * commit one missing object failed the whole read with a 404. A read that
+   * fails for its own reasons is still said almost nowhere: the board does not
+   * retry a 404 or a 403, only the watcher section of an open issue says the
+   * members could not be read, and only to an ADMIN. Everywhere else it is
+   * silent — the assignee filter and the assignee chips offer nobody, and the
+   * reporter reads "Unknown".
    *
    * `addedAt` and `addedBy` are not on the wire: `ProjectMemberDetailsDto` is
    * `userId`, `role`, `displayName`, `email` and an avatar, and nothing else. A
@@ -901,10 +914,15 @@ export interface TaskaApi {
    * total this frontend has been able to print.
    *
    * A `query` shorter than `SEARCH_QUERY_MIN_LENGTH` — the empty string
-   * included — rejects with `INVALID_ARGUMENT` in every implementation, without
-   * a request. That is not politeness: the gateway answers `400` for exactly
-   * these, so a mock that quietly accepted them would hide the failure from the
-   * e2e suite.
+   * included — rejects with `INVALID_ARGUMENT` in every implementation. The
+   * rest leg refuses it without a request, in the client's own words
+   * (`SEARCH_QUERY_TOO_SHORT_MESSAGE`); the mock answers what the gateway
+   * answers when such a query does reach it, "Invalid request parameters". That
+   * is not politeness: the gateway refuses exactly these, so a mock that quietly
+   * accepted them would hide the failure from the e2e suite.
+   *
+   * Newest first: `createdAt` descending, then `id` descending, as the route
+   * declares since backend PR #200. The mock sorts the same way.
    */
   searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>>;
   /**
@@ -1285,9 +1303,12 @@ export interface TaskaApi {
    * because the two look interchangeable: this one is **replace**, not append —
    * a user has one avatar, and a confirm takes the place of the one before —
    * and `DELETE` is declared idempotent, 204 whether or not there was anything
-   * to delete. **Neither makes the confirm safe to send twice.** See
-   * `confirmAvatarUpload` below: repeating it is not a duplicate row, as it is
-   * for an attachment, but a deleted picture.
+   * to delete. Since backend PR #198 the confirm is idempotent too, for the
+   * key the saved row holds — see `confirmAvatarUpload` below — where an
+   * attachment confirm sent twice is still two rows.
+   *
+   * The key leg 1 mints is `avatars/{userId}/{uuid}` since that PR: the
+   * caller's own folder, which is what the confirm checks a key against.
    */
   createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): Promise<AvatarUploadTicket>;
 
@@ -1320,32 +1341,30 @@ export interface TaskaApi {
   putAvatarBytes(uploadUrl: string, body: Blob, contentType: string): Promise<void>;
 
   /**
-   * Leg 3: auth-service heads the object in the bucket, re-measures it against
-   * its own 2 MB ceiling — deleting an object over it and answering 400
-   * `OUT_OF_RANGE`, a 500 until backend PR #147 gave `RestErrorMapper` the row
-   * — replaces the user's row, deletes the *previous* row's
-   * object, and answers with the avatar, `downloadUrl` and `createdAt`
-   * included. So a freshly uploaded face needs no follow-up read: the link to
-   * draw is in the answer.
+   * Leg 3: auth-service checks that the key is the caller's, heads the object
+   * in the bucket, re-measures it against its own 2 MB ceiling — deleting an
+   * object over it and answering 400 `OUT_OF_RANGE`, a 500 until backend PR
+   * #147 gave `RestErrorMapper` the row — replaces the user's row, deletes the
+   * *previous* row's object, and answers with the avatar, `downloadUrl` and
+   * `createdAt` included. So a freshly uploaded face needs no follow-up read:
+   * the link to draw is in the answer.
    *
-   * **Never send one `objectKey` here twice**, not even after a failure. Read
-   * at `develop` `368ae77355bd` (`ProfileServiceImpl.confirmAvatarUpload`), and
-   * a defect of the server's rather than a rule of the contract's:
+   * What backend PR #198 (TAS-221) made of it, read at develop `398285cde074`
+   * (`ProfileServiceImpl.confirmAvatarUpload`) and deployed 2026-10-19:
    *
-   * - nothing checks that the key was minted for the caller, so a confirm can
-   *   point the caller's row at somebody else's object — which the next replace
-   *   or removal on either side then deletes;
-   * - the row is replaced first and the old row's object deleted after, before
-   *   the new link is presigned. A second confirm of the key the saved row
-   *   already holds therefore deletes that very object as the "old" one, and the
-   *   presign's HEAD then fails with a 404. The confirm answers the 404, the row
-   *   stays pointing at nothing, and every `GET /users/{userId}/avatar` for that
-   *   user answers 404 from then on — and `GET /users/me` carries
-   *   `avatar: null, avatarUnavailable: true`, its profile read failing the
-   *   same way — until an upload replaces the row or a removal deletes it.
+   * - **only the caller's key is accepted** — one leg 1 minted for them, or
+   *   the key their saved row already holds (a row from before the PR keeps a
+   *   key without the folder). Any other key, and one of theirs with no object
+   *   behind it, is 404 `NOT_FOUND` "An object with this key was not found in
+   *   the storage." — one answer for both, before anything changes;
+   * - **the key the saved row holds changes nothing**: that row comes back as
+   *   it is, with a freshly signed link, and nothing is deleted.
    *
-   * A retry is a new ticket: the person chooses the file again, and leg 1 mints
-   * a new key. `MockTaskaApi` reproduces the defect rather than hiding it.
+   * Before the PR neither held: a confirm could point the caller's row at
+   * somebody else's object, and a second confirm of the saved key deleted the
+   * very object it confirmed. Repeating a confirm is safe now; this client
+   * still does not — a retry is a new ticket, the person choosing the file
+   * again and leg 1 minting a new key, and there is no retry-confirm control.
    */
   confirmAvatarUpload(input: ConfirmAvatarUploadInput): Promise<UserAvatar>;
 
@@ -1457,34 +1476,51 @@ export interface TaskaApi {
 
   /**
    * `GET /readonly/audit-entries` — the admin audit log, `GLOBAL_ADMIN` only
-   * (backend PR #172, TAS-160, pinned at `docs/contract/pending/pr-172-TAS-160.yml`).
-   * The Audit section's one read (DESIGN.md §5.8). `page` is 1-based on both
-   * sides of this interface; the rest leg converts it.
-   *
-   * **Open, CHANGES_REQUESTED and not served on 2026-10-10**, in two ways that
-   * read alike: undeployed, the gateway answers the static-resource 404; at the
-   * PR head `907fa1e` the REST route is mapped but the admin-service gRPC
-   * adapter lacks the override, so a deployment of that head answers **501**.
-   * `isRouteNotServed` in src/api/errors.ts reads both, and the section states
-   * them as "not served yet" rather than as a failure. `HybridTaskaApi`
+   * (backend PR #197, TAS-160), in docs/contract/openapi.yml since develop
+   * `398285cde074`. **Merged and deployed 2026-10-19**: probed that day with a
+   * token, `200` with `{entries, pagination}`, newest first, an `id` on every
+   * entry. The Audit section's one read (DESIGN.md §5.8). `page` is 1-based on
+   * both sides of this interface; the rest leg converts it. `HybridTaskaApi`
    * delegates straight to the gateway.
    *
-   * What the Java at the head does that the yml does not say (read by
-   * `api-contract-guard`; the Java wins), and what each implementation does:
+   * A gateway without the route answers the static-resource 404, which
+   * `isUndeployedRoute` in src/api/errors.ts reads and the section states as
+   * "not served yet" rather than as a failure.
    *
-   * - **Pagination and sort are ignored**: every matching row comes back,
-   *   whatever `page` and `pageSize` say. Nothing here compensates — the rest
-   *   leg maps what arrives and the section draws it; the mock pages and sorts
-   *   newest first as the server is meant to. A backend bug, commented on
-   *   TAS-160 (docs/ai/API-DIVERGENCE.md).
-   * - **Dates are `yyyy-MM-dd` only**, whole UTC days, both ends inclusive; any
-   *   other spelling, and a `from` after `to`, is a 400.
-   * - **`actorUserId` that is not a UUID is a 500**, not a 400. The section
-   *   validates it before sending; the mock answers 400 `INVALID_ARGUMENT`, the
-   *   answer the server is meant to give.
+   * What the server does with the request, read at the merged head
+   * (`AdminReadOnlyController`, `GrpcAdminReadonlyService`,
+   * `AdminReadonlyServiceImpl`), and what each implementation does:
+   *
+   * - **Paged and sorted**: `createdAt` descending, then `id` descending. The
+   *   rest leg maps what arrives and slices nothing; the mock pages and sorts
+   *   the same way. A `pageSize` outside 1–100 never reaches admin-service's
+   *   own fallback and clamp: the gateway validates the parameter as the
+   *   contract declares it and answers 400 `INVALID_ARGUMENT` "Invalid request
+   *   parameters", `details: null`, before authentication — probed tokenless
+   *   2026-10-19, `pageSize=101` (`c2defbe6-470c-4df0-8bc6-54ef5f5ab1b7`) and
+   *   `pageSize=0` (`725e0ec8-0480-47bd-9114-69b8aea13806`) both 400, while
+   *   `pageSize=100` reached authentication and answered 401
+   *   (`ed1bc134-db9e-41f8-b55a-32d9e64b8d01`). The mock refuses the same way;
+   *   the section always asks for 20. The wire's `page` has `minimum: 0`,
+   *   which the rest leg cannot break: it sends `max(0, page - 1)`. Its other
+   *   bound is `int32`: `page=2147483647` reaches sign-in (401,
+   *   `36256d82-dcb4-40e3-b861-38be1f590e3e`), `page=2147483648` is the same
+   *   binding 400 (`7f84f3a1-aa67-4c52-b970-a2947433bfe9`).
+   * - **Dates are `yyyy-MM-dd` only**, whole UTC days, both ends inclusive. Any
+   *   other spelling — and an `actorUserId` that is not a UUID — is refused
+   *   by the gateway's own parameter binding before authentication: 400
+   *   `INVALID_ARGUMENT` "Invalid request parameters", `details: null`. The
+   *   section validates both before sending, so neither is spent.
+   * - A `from` after `to` is admin-service's 400 `INVALID_ARGUMENT`,
+   *   "body.createdAtFrom cannot be later than body.createdAtTo" — after the
+   *   role check, so a non-admin is told 403 first.
+   * - Not `GLOBAL_ADMIN`: 403 `PERMISSION_DENIED` "User doesn't have
+   *   permission".
    * - Every filter is an exact match; an empty one is not sent.
-   * - The entry has no id, and the DTO declares nothing `required`; see
-   *   `AuditEntry` for the defensive mapping.
+   * - The DTO declares nothing `required`; see `AuditEntry` for the defensive
+   *   mapping. `oldValue` and `newValue` are JSON text, masked; a document
+   *   that is not a JSON object is logged as nothing (masking reads objects
+   *   only), so a `null` there is not proof the operation had no value.
    */
   listAuditEntries(query: AuditEntriesQuery): Promise<AuditEntries>;
 
@@ -1655,9 +1691,9 @@ export interface TaskaApi {
    * backend TAS-197 (`04546f1`, deployed) the gateway's `GatewayUserStatus` has
    * a `LOCKED` member, so a locked account whose token was issued before the
    * lock reads `LOCKED` — and that token still works while TAS-198 (backend PR
-   * #174) is open. `ValidateAccessTokenResponseDto.status` is still an
-   * unconstrained string the contract makes no promise about (TAS-173), and
-   * `UNSPECIFIED` is still a member of the gateway's enum.
+   * #174) is open. `ValidateAccessTokenResponseDto.status` is `UserStatusDto`
+   * since backend PR #200, and `UNSPECIFIED` is a member of it as it is of the
+   * gateway's enum — read as no status (TAS-173).
    */
   resetCredentialLockout(userId: string, reason: string): Promise<UserStatusChange>;
 }
@@ -1689,9 +1725,9 @@ export interface TaskaApi {
  * deployed, the list route answered `401` without a token on 2026-09-16, and
  * TAS-224 took that branch out.
  *
- * Pinned here rather than inline in a component for the reason
- * `SEARCH_QUERY_TOO_SHORT_MESSAGE` is: a gateway string the UI branches on is a
- * measurement, and it belongs where the measurement can be read.
+ * Pinned here rather than inline in a component: a gateway string the UI
+ * branches on is a measurement, and it belongs where the measurement can be
+ * read.
  *
  * The *signature* removes itself; the *code* does not, and this build has now
  * shipped the worked example three times — the attachments branch above is the

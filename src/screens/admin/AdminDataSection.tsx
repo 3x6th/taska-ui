@@ -200,10 +200,10 @@ export function AdminDataSection() {
   //
   // Only while the rows on screen belong to the table being asked about. During
   // a switch `placeholderData` still holds the *previous* table's pagination,
-  // and comparing against it sent `/admin/data/admin/audit_log?page=2` — a page
-  // that exists — back to the single-page table the reader was leaving, named
-  // from the wrong `meta`. A pasted link silently discarded, which is the one
-  // thing the URL state exists to prevent.
+  // and comparing against it sent `/admin/data/admin/admin_audit_log?page=2` —
+  // a page that exists — back to the single-page table the reader was leaving,
+  // named from the wrong `meta`. A pasted link silently discarded, which is the
+  // one thing the URL state exists to prevent.
   if (rows && !switchingTable && rows.pagination.totalPages >= 1 && view.page > rows.pagination.totalPages) {
     const query = writeViewState({ ...view, page: rows.pagination.totalPages }).toString();
     const path = `/admin/data/${current!.service}/${current!.table}`;

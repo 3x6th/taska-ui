@@ -32,10 +32,10 @@ test("walks the catalog from a service down to a table's rows", async ({ page })
   await expect(page.getByRole("heading", { name: "auth.users" })).toBeVisible();
   await expect(page.getByRole("cell", { name: "anna@example.com" })).toBeVisible();
 
-  await page.getByRole("link", { name: "audit_log", exact: true }).click();
+  await page.getByRole("link", { name: "admin_audit_log", exact: true }).click();
 
-  await expect(page).toHaveURL(/\/admin\/data\/admin\/audit_log$/);
-  await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+  await expect(page).toHaveURL(/\/admin\/data\/admin\/admin_audit_log$/);
+  await expect(page.getByRole("heading", { name: "admin.admin_audit_log" })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: /action/i })).toBeVisible();
 });
 
@@ -72,16 +72,16 @@ test("never renders the value of a column the catalog marked sensitive", async (
   // render passes trivially. That case is pinned in
   // src/screens/admin/AdminScreen.test.tsx, which can hold the request open and
   // look at the frame in between. Do not treat this assertion as covering it.
-  await page.getByRole("link", { name: "audit_log", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+  await page.getByRole("link", { name: "admin_audit_log", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "admin.admin_audit_log" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText("$2b$10$");
 });
 
 test("pages through a table and says where it is", async ({ page }) => {
   await openConsole(page);
 
-  await page.getByRole("link", { name: "audit_log", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+  await page.getByRole("link", { name: "admin_audit_log", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "admin.admin_audit_log" })).toBeVisible();
 
   const firstCell = page.locator(".admin-table tbody tr td").first();
   const onPageOne = await firstCell.innerText();
@@ -102,8 +102,8 @@ test("pages through a table and says where it is", async ({ page }) => {
 test("sorts by a column and reverses on a second press", async ({ page }) => {
   await openConsole(page);
 
-  await page.getByRole("link", { name: "audit_log", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
+  await page.getByRole("link", { name: "admin_audit_log", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "admin.admin_audit_log" })).toBeVisible();
 
   const firstCell = page.locator(".admin-table tbody tr td").first();
   const sortById = page.getByRole("button", { name: /^id/i });
@@ -111,14 +111,15 @@ test("sorts by a column and reverses on a second press", async ({ page }) => {
   // Concrete ids rather than "the value changed": the header's aria-sort flips
   // from the address the instant it is clicked, while the rows come back from
   // the server a moment later, so comparing before/after can pass on stale
-  // rows. The seed's audit_log runs audit-001..audit-047.
+  // rows. The audit table's thirty ids run 5e7a0000-… to 5e7a9200-…, and the
+  // key cell shows their first eight characters.
   await sortById.click();
   await expect(page.locator("th", { has: sortById })).toHaveAttribute("aria-sort", "ascending");
-  await expect(firstCell).toHaveText("audit-001");
+  await expect(firstCell).toHaveText(/^5e7a0000…/);
 
   await sortById.click();
   await expect(page.locator("th", { has: sortById })).toHaveAttribute("aria-sort", "descending");
-  await expect(firstCell).toHaveText("audit-047");
+  await expect(firstCell).toHaveText(/^5e7a9200…/);
 });
 
 test("filters a table down and back", async ({ page }) => {
@@ -373,25 +374,17 @@ test("opens one row and comes back to the page and filter it was opened from", a
   await expect(page.locator(".admin-table tbody tr td").first()).toHaveText(key);
 });
 
-test("does not offer a row link where the gateway could not take one", async ({ page }) => {
-  await openConsole(page);
+// No case here for a table whose rows cannot be linked: every table on the
+// stand is keyed by a uuid, so the mock seeds none, and that branch is pinned on
+// a made-up table in src/screens/admin/AdminScreen.test.tsx.
 
-  // audit_log is keyed by a code rather than a uuid, and the gateway parses the
-  // row id as a UUID — so those rows have no address, and the console says so
-  // by not linking them.
-  await page.getByRole("link", { name: "audit_log", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "admin.audit_log" })).toBeVisible();
-
-  await expect(page.getByRole("link", { name: /^Open row / })).toHaveCount(0);
-});
-
-// The gateway parses the row id in the path as a UUID, so this address is a 400
-// there whatever the row behind it. The mock refuses it the same way, or mock
-// mode would teach a card the deployed console can never open.
+// The gateway parses the row id in the path as a UUID, so this hand-typed
+// address is a 400 there whatever the table. The mock refuses it the same way,
+// or mock mode would teach a card the deployed console can never open.
 test("refuses a row address the gateway could not parse, instead of serving a card", async ({ page }) => {
   await openConsole(page);
 
-  await page.goto("/admin/data/admin/audit_log/audit-001");
+  await page.goto("/admin/data/admin/admin_audit_log/audit-001");
 
   await expect(page.getByRole("alert")).toContainText("would not accept this request");
   // Not "could not be reached": nothing is down, the request was read and
@@ -410,7 +403,7 @@ test("refuses a row address the gateway could not parse, instead of serving a ca
 test("keeps every line of a gateway failure above the meta colour", async ({ page }) => {
   await openConsole(page);
 
-  await page.goto("/admin/data/admin/audit_log/audit-001");
+  await page.goto("/admin/data/admin/admin_audit_log/audit-001");
 
   const alert = page.getByRole("alert");
   await expect(alert).toContainText("would not accept this request");
@@ -471,7 +464,7 @@ test("keeps a hover visible on whichever plane it lands on", async ({ page }) =>
   // in the right direction on one plane, and this rule serves three.
   expect(keyHover).not.toMatch(/^rgb\(/);
 
-  await page.goto("/admin/data/admin/audit_log/audit-001");
+  await page.goto("/admin/data/admin/admin_audit_log/audit-001");
   const alert = page.getByRole("alert");
   await expect(alert).toContainText("would not accept this request");
   // Mock mode cannot produce a request id (see the test above), so the line is
@@ -549,7 +542,7 @@ test("finds a table through the catalog search", async ({ page }) => {
   const catalog = page.getByRole("navigation", { name: "Tables" });
   await page.getByLabel("Search tables").fill("audit");
 
-  await expect(catalog.getByRole("link", { name: "audit_log", exact: true })).toBeVisible();
+  await expect(catalog.getByRole("link", { name: "admin_audit_log", exact: true })).toBeVisible();
   await expect(catalog.getByRole("link", { name: "users", exact: true })).toHaveCount(0);
 
   await page.getByLabel("Search tables").fill("nothing like this");

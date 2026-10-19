@@ -3203,9 +3203,11 @@ where it has an entry.
   - Dependency: none. Epic child: none — new.
   - Removes: the auto-watch entry of `API-DIVERGENCE.md` ("Assigning an issue
     subscribes the assignee …").
-- **C13: extend [TAS-206](https://jira.ozero.dev/browse/TAS-206):
+- ~~**C13: extend [TAS-206](https://jira.ozero.dev/browse/TAS-206):
   `ValidateAccessTokenResponseDto.status` should `$ref` an enum that includes
-  `UNSPECIFIED`.** It is a bare `string` today.
+  `UNSPECIFIED`.** It is a bare `string` today.~~ Closed by backend PR #200
+  (develop `398285c`, 2026-10-19): it `$ref`s `UserStatusDto`, which now carries
+  `UNSPECIFIED`; in the snapshot since TAS-265.
 - **C14 (optional): a `PATCH` without `If-Match` gets the generic 400 "Invalid
   request parameters".** A 428 naming the header would be clearer. The client
   always sends it, so this is for other callers.
@@ -3539,7 +3541,10 @@ Backend, no ask:
 
   The UI refetches `["me"]` on window focus once 20 s have passed, and no metric
   counts degraded answers. This is a comment on TAS-221, not a story, because
-  TAS-221 removes the cause.
+  TAS-221 removes the cause. **TAS-221 merged and deployed 2026-10-19** (backend
+  PR #198): no new orphan can be made through confirm any more, but rows already
+  orphaned on the stand keep logging until their owner uploads a new photo or
+  removes the old one. Not probed.
 - **The context reads a workflow `NOT_FOUND` as a missing project** (medium
   confidence; #186 keeps it but did not cause it). workflow-service can answer
   `NOT_FOUND` for an allowed type ("Default Workflow not found", "No active
@@ -3662,3 +3667,48 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   `398285c`). When TAS-213's board replaces client composition it needs an
   explicit trailing bucket (e.g. `unplacedIssues: BoardIssueDto[]`) to keep the
   X-of-Y invariant; added to TAS-213 as a comment.
+
+### Left by TAS-265 (the frontend for merged backend #197–#200, 2026-10-19)
+
+- ~~**The mock's attachment confirm still answers "Object not found in storage"**
+  (`frontend-builder`).~~ It matches: `AttachmentServiceImpl.checkObjectExistsInStorage`
+  raises `NOT_FOUND "Object not found in storage"` at develop `398285c`
+  (`api-contract-guard`, `release-reviewer`, TAS-265 verdicts).
+- **The lock refusal's `details.lockedUntil` has never been seen on the wire.**
+  The client reads it first and keeps the sentence parse as a fallback
+  (`API-DIVERGENCE.md`, the lock-deadline entry). Probing needs a throwaway
+  account, because the probe locks the account it uses; until then the fallback
+  stays.
+- **The mock's audit actions are not the server's** (`frontend-builder`). The
+  seed uses `BLOCK_USER`, `UNBLOCK_USER`, `CREATE_INVITATION`,
+  `REVOKE_SESSIONS`; admin-service writes `USER_BLOCKED`, `USER_UNBLOCKED`,
+  `RESET_CREDENTIAL_LOCKOUT` and `RETRY_OUTBOX_EVENT` (its `AuditAction` plus the
+  outbox retry), and the contract's own example says `USER_BLOCKED`; the stand
+  shows exactly those (`04613bb7-a862-4115-b0b7-0d8118f3bf9f`). Fixing it moves the
+  audit seed, its unit tests and the e2e filters together.
+- **A composite-key table links by its first key column** (`frontend-builder`,
+  read, not probed). `project.project_members` has a composite primary key; the
+  gateway's `AdminDataMapper` names the first flagged column (`project_id`) as the
+  table's key, so the console would link member rows by project, and a by-id read
+  would match the project rather than the member. A backend question first.
+- ~~**`admin_audit_log` through the Data section is not masked by the audit
+  route's rules** — a backend question.~~ Answered by `api-contract-guard` from
+  the write path and filed as [TAS-296](https://jira.ozero.dev/browse/TAS-296)
+  (High): an outbox retry writes the event snapshot with its payload, so a
+  retried `USER_INVITED` puts `rawInviteToken` and the email into the log, and
+  Data returns them in clear. Not on the stand yet (no such row, probe
+  `940a576d-2d14-483d-9377-7e1b71fbf5ad`). TAS-296 also carries the two shapes
+  of `actor_roles` (a string for user operations, an array for outbox retry).
+- **`topbar-popovers` › "a full page of results is never clipped" is flaky**
+  (`frontend-builder`, measured 3 of 12 on main's order, 1 of 12 after TAS-265):
+  the last option overshoots by `1.5e-5` px against an exact `<= 0`. Older than
+  TAS-265. **Fixed in TAS-265:** both float comparisons in that test take a
+  layout-unit (1/64 px) tolerance; 40 of 40 with `--repeat-each=40`.
+- **"1 issues" on a project card** (`art-director`, TAS-265 verdict AD-3, older
+  than TAS-265): the count is not pluralised (`ProjectsScreen.tsx`). One-line
+  copy fix; take it with the next projects-screen story.
+- **The mock's comment, link and attachment lists carry no `id` tiebreak**
+  (`api-contract-guard`, TAS-265 F3). The contract now declares one for each;
+  the mock's ids are random, so a tiebreak would sort equal timestamps
+  randomly, and insertion order stands in. Harmless while seeds never share a
+  timestamp.

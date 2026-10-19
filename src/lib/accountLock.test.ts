@@ -8,7 +8,9 @@ import {
   formatLockDeadline,
   formatLockMoment,
   formatLockTime,
+  lockedUntilOf,
 } from "./accountLock";
+import { ApiError } from "../api/rest/RestTaskaApi";
 
 // The measured sentence names 2026-09-22T11:55:50.398486Z, so every test that
 // wants that lock to be live has to stand before it. Named rather than inlined
@@ -110,6 +112,68 @@ describe("accountLockedUntil", () => {
     const second = accountLockedUntil(ACCOUNT_LOCKED_MESSAGE, BEFORE_PINNED_LOCK);
 
     expect(first?.toISOString()).toBe(second?.toISOString());
+  });
+});
+
+/**
+ * The reader the login screen calls (backend PR #199): `details.lockedUntil`
+ * first, the sentence only when the error carries no usable one. Built on the
+ * REST error class because it is the one that carries both; the mock's carries
+ * the same pair, which `MockTaskaApi.test.ts` pins.
+ */
+describe("lockedUntilOf", () => {
+  const refusal = (message: string, details: Record<string, string> | null) =>
+    new ApiError(message, "PERMISSION_DENIED", 403, "req-lock", undefined, details);
+  const LATER = "2026-09-22T11:58:00.123456Z";
+
+  it("takes the deadline from details when it is there, whatever the sentence says", () => {
+    const until = lockedUntilOf(refusal(ACCOUNT_LOCKED_MESSAGE, { lockedUntil: LATER }), BEFORE_PINNED_LOCK);
+    expect(until?.toISOString()).toBe("2026-09-22T11:58:00.123Z");
+    // A sentence reworded past what the pattern finds costs nothing while
+    // details arrive.
+    expect(lockedUntilOf(refusal("Locked.", { lockedUntil: LATER }), BEFORE_PINNED_LOCK)?.toISOString()).toBe(
+      "2026-09-22T11:58:00.123Z",
+    );
+  });
+
+  it("falls back to the sentence when details carry no deadline", () => {
+    for (const details of [null, {}, { reason: "ACCOUNT_LOCKED" }] as (Record<string, string> | null)[]) {
+      expect(lockedUntilOf(refusal(ACCOUNT_LOCKED_MESSAGE, details), BEFORE_PINNED_LOCK)?.toISOString()).toBe(
+        "2026-09-22T11:55:50.398Z",
+      );
+    }
+  });
+
+  it("falls back to the sentence when the stated deadline is not an instant", () => {
+    for (const lockedUntil of ["soon", "Sep 22, 2026 11:58", "2026-09-22T11:58:00", "2026-13-45T11:58:00Z", ` ${LATER}`]) {
+      expect(lockedUntilOf(refusal(ACCOUNT_LOCKED_MESSAGE, { lockedUntil }), BEFORE_PINNED_LOCK)?.toISOString()).toBe(
+        "2026-09-22T11:55:50.398Z",
+      );
+    }
+  });
+
+  it("refuses a past deadline on either path, and does not ask the sentence about a past one in details", () => {
+    const afterBoth = Date.parse("2026-09-22T12:10:00Z");
+    expect(lockedUntilOf(refusal(ACCOUNT_LOCKED_MESSAGE, { lockedUntil: LATER }), afterBoth)).toBeNull();
+    expect(lockedUntilOf(refusal(ACCOUNT_LOCKED_MESSAGE, null), afterBoth)).toBeNull();
+    // Details that have run out are the answer: a later instant in the prose
+    // does not resurrect the lock.
+    const betweenThem = Date.parse("2026-09-22T11:57:00Z");
+    const stale = refusal("Account is locked until 2026-09-22T11:58:00Z.", { lockedUntil: "2026-09-22T11:55:50.398486Z" });
+    expect(lockedUntilOf(stale, betweenThem)).toBeNull();
+  });
+
+  it("reads the mock's status-less error the same way", () => {
+    const mockLike = Object.assign(new Error(ACCOUNT_LOCKED_MESSAGE), {
+      code: "PERMISSION_DENIED",
+      details: { lockedUntil: LATER },
+    });
+    expect(lockedUntilOf(mockLike, BEFORE_PINNED_LOCK)?.toISOString()).toBe("2026-09-22T11:58:00.123Z");
+  });
+
+  it("answers null for anything that is not an error", () => {
+    expect(lockedUntilOf(undefined, BEFORE_PINNED_LOCK)).toBeNull();
+    expect(lockedUntilOf(ACCOUNT_LOCKED_MESSAGE, BEFORE_PINNED_LOCK)).toBeNull();
   });
 });
 

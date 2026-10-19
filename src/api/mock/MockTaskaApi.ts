@@ -53,7 +53,7 @@ import {
   avatarRefusal,
   avatarSizeRefusalMessage,
 } from "../avatars";
-import { IssueVersionConflictError } from "../errors";
+import { IssueVersionConflictError, type ErrorDetails } from "../errors";
 import { blankSummaryRefusal, datesOutOfOrderServerMessage, issueVersionRefusal } from "../issuePatch";
 import {
   OBJECT_STORE_REJECTED_CODE,
@@ -204,14 +204,20 @@ const IN_REVIEW_STATUS_ID = "45454545-4545-4545-4545-454545454545";
 const EPIC_WORKFLOW_ID = "12121212-1212-1212-1212-121212121212";
 
 /**
- * `GET /meta` as the stand answers it (backend `MetaServiceImpl`, TAS-217,
- * deployed 2026-10-19): every code of the contract's five enums, each named in
- * Russian — plus two codes this build does not know, so the frontend's answer
- * to a value the backend adds before the frontend ships can be clicked through
- * (TAS-173): `EPIC`, named in English, which the UI prints as "Epic", and
- * `URGENT`, named in Russian, which it prints as the code. Both are real
- * values in this store — WEB allows epics, and a listed priority is accepted —
- * which is what a backend that served them would do.
+ * `GET /meta` as the stand answers it (backend `MetaServiceImpl`, TAS-217, with
+ * backend PR #200's enums; probed 2026-10-19 at develop `398285cde074`): every
+ * code of the contract's five enums in the contract's order, each named in
+ * Russian — twenty-three notification types ending in the `UNKNOWN`
+ * placeholder, and five user statuses ending in `UNSPECIFIED` — plus two codes
+ * this build does not know, so the frontend's answer to a value the backend
+ * adds before the frontend ships can be clicked through (TAS-173): `EPIC`,
+ * named in English, which the UI prints as "Epic", and `URGENT`, named in
+ * Russian, which it prints as the code. Both are real values in this store —
+ * WEB allows epics, and a listed priority is accepted — which is what a
+ * backend that served them would do.
+ *
+ * The two placeholders are listed as ordinary entries because the stand lists
+ * them so; no picker offers one (`selectableCodes` in src/lib/enumLabel.ts).
  */
 const META: EnumDictionaries = {
   issueTypes: [
@@ -243,12 +249,25 @@ const META: EnumDictionaries = {
     { code: "MEMBER_ADDED", name: "Добавлен участник" },
     { code: "MEMBER_UPDATED", name: "Изменена роль участника" },
     { code: "MEMBER_REMOVED", name: "Удалён участник" },
+    { code: "ISSUE_LINK_CREATED", name: "Создана связь задач" },
+    { code: "ISSUE_LINK_DELETED", name: "Удалена связь задач" },
+    { code: "LABEL_ADDED", name: "Добавлена метка" },
+    { code: "LABEL_REMOVED", name: "Удалена метка" },
+    { code: "USER_BLOCKED", name: "Заблокирован пользователь" },
+    { code: "USER_UNBLOCKED", name: "Разблокирован пользователь" },
+    { code: "ISSUE_COMMENT_CREATED", name: "Добавлен комментарий" },
+    { code: "ISSUE_COMMENT_UPDATED", name: "Изменён комментарий" },
+    { code: "ISSUE_COMMENT_DELETED", name: "Удалён комментарий" },
+    { code: "ISSUE_ATTACHMENT_ADDED", name: "Добавлено вложение" },
+    { code: "ISSUE_ATTACHMENT_DELETED", name: "Удалено вложение" },
+    { code: "UNKNOWN", name: "Неизвестный тип" },
   ],
   userStatuses: [
     { code: "INVITED", name: "Приглашён" },
     { code: "ACTIVE", name: "Активен" },
     { code: "BLOCKED", name: "Заблокирован" },
     { code: "LOCKED", name: "Залочен" },
+    { code: "UNSPECIFIED", name: "Не указан" },
   ],
 };
 
@@ -305,11 +324,14 @@ export const MOCK_ATTACHMENT_TRIGGERS = {
   /**
    * **Avatar only.** All three legs succeed and the confirm answers with its
    * link as the server does; then the object is dropped from the bucket, so
-   * the saved row points at nothing. That is the end state TAS-221's
-   * cross-user path leaves on the server, and from then on `GET /users/me`
-   * answers `avatar: null, avatarUnavailable: true` until an upload replaces
-   * the row or a removal deletes it (backend PR #193). No new answer shape:
-   * it is the state `currentUserProfile` already reads for a lost object.
+   * the saved row points at nothing — storage losing the object behind a
+   * saved row: a bucket restored without it, an operator's delete. No confirm
+   * can leave a row that way any more (backend PR #198, TAS-221, which closed
+   * the cross-user and same-key paths that used to), so this trigger is the
+   * only way to see the state. From then on `GET /users/me` answers
+   * `avatar: null, avatarUnavailable: true` until an upload replaces the row
+   * or a removal deletes it (backend PR #193). No new answer shape: it is the
+   * state `currentUserProfile` already reads for a lost object.
    */
   avatarObjectLost: "object-lost",
 } as const;
@@ -382,6 +404,28 @@ interface MockAvatarTicket {
   behaviour: MockUploadBehaviour;
   /** `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: the confirm succeeds, then the object is dropped. */
   objectLost: boolean;
+}
+
+/**
+ * The sentence `ProfileServiceImpl.confirmAvatarUpload` refuses a key with, at
+ * backend develop `398285cde074` (PR #198, TAS-221): one sentence, and one
+ * `NOT_FOUND`, for a key that is not the caller's and for one of theirs with
+ * no object behind it — so the answer does not say whose a key is.
+ */
+const AVATAR_KEY_NOT_FOUND_MESSAGE = "An object with this key was not found in the storage.";
+
+/** A UUID as Java's `UUID.toString()` prints one: lowercase, canonical, nothing around it. */
+const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Whether leg 1 minted `objectKey` for `userId`: `avatars/{userId}/{uuid}`.
+ * `verifyAvatarKeyOwner` parses the suffix and compares its `toString()` back
+ * to it, so only the canonical spelling counts — an upper-case or otherwise
+ * re-spelt UUID names the same value and is still not a key it handed out.
+ */
+function avatarKeyMintedFor(userId: string, objectKey: string): boolean {
+  const prefix = `avatars/${userId}/`;
+  return objectKey.startsWith(prefix) && CANONICAL_UUID_PATTERN.test(objectKey.slice(prefix.length));
 }
 
 /**
@@ -479,6 +523,11 @@ class MockApiError extends Error {
   constructor(
     public readonly code: string,
     message: string,
+    /**
+     * `RestErrorResponse.details` (backend PR #199): `null` on every refusal
+     * but the one the server fills it for — the account lock's `lockedUntil`.
+     */
+    public readonly details: ErrorDetails | null = null,
   ) {
     super(message);
   }
@@ -502,6 +551,9 @@ const wait = async <T>(value: T, ms = 140): Promise<T> =>
     window.setTimeout(() => resolve(clone(value)), ms);
   });
 
+/** The largest `format: int32` value — what the gateway's parameter binding can hold. */
+const INT32_MAX = 2147483647;
+
 const makeId = (prefix: string) => {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -509,8 +561,42 @@ const makeId = (prefix: string) => {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
+/**
+ * A canonical lowercase UUID **always** — what Java's `UUID.randomUUID()`
+ * prints — for the one place a check reads the shape back: an avatar key
+ * (`avatarKeyMintedFor`). `makeId` falls back to a prefixed string where
+ * `crypto.randomUUID` is missing, which is any page served over plain HTTP
+ * from somewhere other than localhost; a key in that shape would be refused by
+ * the very check it was minted for.
+ */
+const mockUuid = (): string => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16));
+  hex[12] = "4";
+  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const text = hex.join("");
+  return `${text.slice(0, 8)}-${text.slice(8, 12)}-${text.slice(12, 16)}-${text.slice(16, 20)}-${text.slice(20)}`;
+};
+
 const byCreatedAt = <T extends { createdAt: string }>(a: T, b: T) =>
   new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+
+/**
+ * Code-unit order, for a tiebreak on ids: how PostgreSQL orders a `uuid`
+ * column — by its bytes — comes out the same as comparing lowercase hex text.
+ */
+const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * `name asc, id asc` — the order both label reads declare since backend PR
+ * #200, names compared "by the database's collation". The contract does not
+ * name the collation, so this only approximates it: `localeCompare` with the
+ * locale pinned to `"en"`, which orders case and accents the way a typical
+ * `en_US.UTF-8` database does and — pinned — the same way in every browser
+ * this mock runs in, where the runtime's default locale would not.
+ */
+const byLabelName = <T extends { name: string; id: string }>(a: T, b: T) =>
+  a.name.localeCompare(b.name, "en") || byText(a.id, b.id);
 
 /**
  * The search query as the gateway would accept it, or `null` for "the caller
@@ -521,13 +607,21 @@ const byCreatedAt = <T extends { createdAt: string }>(a: T, b: T) =>
  * empty string is a rejected query rather than a quiet "everything" — the trap
  * that catches an implementation which sets the parameter on every keystroke.
  *
- * Measured on the trimmed value, and the trimmed value is what gets searched:
- * the gateway counts raw characters, so `"ab "` is three to it and finds
- * nothing, where refusing it says what actually happened. RestTaskaApi applies
- * exactly the same rule.
+ * Two refusals, in two voices. A **raw** value under the minimum, the empty
+ * one included, is the gateway's: it binds `minLength: 3` from the contract and
+ * answers "Invalid request parameters" before sign-in (probed 2026-10-19, see
+ * `SEARCH_QUERY_MIN_LENGTH`); issue-service's own check counts the same raw
+ * characters and is never reached. Then a value that is long enough raw but
+ * not once trimmed — `"ab "` — is refused in the **client's** words
+ * (`SEARCH_QUERY_TOO_SHORT_MESSAGE`), because that is what `RestTaskaApi`
+ * does before sending; the server itself would search the padded text and
+ * find nothing. The trimmed value is what gets searched.
  */
 const requireSearchQuery = (raw: string | undefined): string | null => {
   if (raw === undefined) return null;
+  if (raw.length < SEARCH_QUERY_MIN_LENGTH) {
+    throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+  }
   const query = raw.trim();
   if (query.length < SEARCH_QUERY_MIN_LENGTH) {
     throw new MockApiError("INVALID_ARGUMENT", SEARCH_QUERY_TOO_SHORT_MESSAGE);
@@ -728,7 +822,9 @@ export function buildMockBoard(
       // implementations that a screen would notice only in production.
       assignee: issue.assigneeId ? { id: issue.assigneeId, displayName: null } : null,
       // Ids, not names — `labels` on the wire carries uuids. See `BoardIssue`.
-      labelIds: issue.labels.map((label) => label.id),
+      // In id order, which `BoardIssueDto.labels` declares since backend PR
+      // #200, rather than the name order the issue's own labels come in.
+      labelIds: issue.labels.map((label) => label.id).sort(byText),
     });
   }
 
@@ -967,13 +1063,19 @@ const OUTBOX_TABLE = "outbox_events";
  * The admin audit log's seed (TAS-251): thirty entries across three actors,
  * five actions and four target tables, at fixed instants so a date filter in
  * a test means the same rows every day. Newest first, which is the order the
- * server is meant to answer in.
+ * server answers in.
  *
  * `vera` is a former admin and `migrator` a service account: the log keeps a
  * denormalised login, so neither has to be a user the rest of the seed knows.
  * Some rows have no request id, some no old value (an invitation creates
  * something) and some no new value (a session revoked is gone); secrets inside
- * the documents are already `"***"`, as the server masks them.
+ * the documents are already `"***"`, as the server masks them. The documents
+ * are spelt as the audit route spells them, compact and in jsonb's key order
+ * (`jsonbCompact`).
+ *
+ * Every row has an id, as every row on the stand does (backend PR #197): a
+ * lowercase UUID, fixed per row so a test can name one, and in no particular
+ * relation to the row's time — the server's tiebreak is the id's own order.
  */
 function seedAuditEntries(): AuditEntry[] {
   const actors = [
@@ -982,47 +1084,47 @@ function seedAuditEntries(): AuditEntry[] {
     { id: "5a1c7e93-2d4b-4f60-9b8e-0c3d7a6f1e28", login: "migrator" },
   ];
   const userIds = [NINA_ID, OMAR_ID, LEO_ID, PRIYA_ID, TOM_ID];
-  type Template = Omit<AuditEntry, "actorUserId" | "actorLogin" | "createdAt" | "requestId" | "targetId">;
+  type Template = Omit<AuditEntry, "id" | "actorUserId" | "actorLogin" | "createdAt" | "requestId" | "targetId">;
   const templates: Template[] = [
     {
       action: "BLOCK_USER",
       targetService: "auth",
       targetTable: "users",
       reason: "Left the company",
-      oldValue: JSON.stringify({ status: "ACTIVE" }),
-      newValue: JSON.stringify({ status: "BLOCKED" }),
+      oldValue: jsonbCompact({ status: "ACTIVE" }),
+      newValue: jsonbCompact({ status: "BLOCKED" }),
     },
     {
       action: "UNBLOCK_USER",
       targetService: "auth",
       targetTable: "users",
       reason: "Came back from leave",
-      oldValue: JSON.stringify({ status: "BLOCKED" }),
-      newValue: JSON.stringify({ status: "ACTIVE" }),
+      oldValue: jsonbCompact({ status: "BLOCKED" }),
+      newValue: jsonbCompact({ status: "ACTIVE" }),
     },
     {
       action: "RESET_CREDENTIAL_LOCKOUT",
       targetService: "auth",
       targetTable: "credentials",
       reason: "Identity confirmed by phone",
-      oldValue: JSON.stringify({ status: "LOCKED", failedAttempts: 5, passwordHash: "***" }),
-      newValue: JSON.stringify({ status: "ACTIVE", failedAttempts: 0, passwordHash: "***" }),
+      oldValue: jsonbCompact({ status: "LOCKED", failedAttempts: 5, passwordHash: "***" }),
+      newValue: jsonbCompact({ status: "ACTIVE", failedAttempts: 0, passwordHash: "***" }),
     },
     {
       action: "RETRY_OUTBOX_EVENT",
       targetService: "project",
       targetTable: "outbox_events",
       reason: "Kafka producer is back",
-      oldValue: JSON.stringify({ status: "FAILED", attempts: 5, lastErrorMessage: "Failed to construct kafka producer" }),
-      newValue: JSON.stringify({ status: "NEW", attempts: 0, lastErrorMessage: null }),
+      oldValue: jsonbCompact({ status: "FAILED", attempts: 5, lastErrorMessage: "Failed to construct kafka producer" }),
+      newValue: jsonbCompact({ status: "NEW", attempts: 0, lastErrorMessage: null }),
     },
     {
       action: "RETRY_OUTBOX_EVENT",
       targetService: "issue",
       targetTable: "outbox_events",
       reason: "Stuck in PROCESSING after the deploy",
-      oldValue: JSON.stringify({ status: "PROCESSING", attempts: 2 }),
-      newValue: JSON.stringify({ status: "NEW", attempts: 0 }),
+      oldValue: jsonbCompact({ status: "PROCESSING", attempts: 2 }),
+      newValue: jsonbCompact({ status: "NEW", attempts: 0 }),
     },
     {
       action: "CREATE_INVITATION",
@@ -1030,14 +1132,14 @@ function seedAuditEntries(): AuditEntry[] {
       targetTable: "invitations",
       reason: "New contractor",
       oldValue: null,
-      newValue: JSON.stringify({ email: "c****r@example.com", token: "***", expiresAt: "2026-10-16T00:00:00Z" }),
+      newValue: jsonbCompact({ email: "c****r@example.com", token: "***", expiresAt: "2026-10-16T00:00:00Z" }),
     },
     {
       action: "REVOKE_SESSIONS",
       targetService: "auth",
       targetTable: "sessions",
       reason: "Laptop reported stolen",
-      oldValue: JSON.stringify({ activeSessions: 3, refreshToken: "***" }),
+      oldValue: jsonbCompact({ activeSessions: 3, refreshToken: "***" }),
       newValue: null,
     },
   ];
@@ -1054,6 +1156,8 @@ function seedAuditEntries(): AuditEntry[] {
         : userIds[index % userIds.length];
     return {
       ...template,
+      // Reversed digits, so the ids do not sort the way the times do.
+      id: `5e7a${String(index).padStart(4, "0").split("").reverse().join("")}-2c4b-4d1e-9f3a-6b8c0d2e4f1a`,
       actorUserId: actor.id,
       actorLogin: actor.login,
       targetId,
@@ -1064,6 +1168,53 @@ function seedAuditEntries(): AuditEntry[] {
       createdAt: new Date(start - index * 17 * 3_600_000).toISOString().replace(/\.\d{3}Z$/, "Z"),
     };
   });
+}
+
+/**
+ * A JSON value with its objects' keys in jsonb's own storage order — shorter
+ * keys first, equal lengths by their bytes — which is the order every reader
+ * of a `jsonb` column gets them back in, whoever wrote them in what order.
+ * `keyGap` and `itemGap` are what goes after a key and between members; the
+ * two spellings this store needs are `jsonbText` and `jsonbCompact` below.
+ */
+function jsonbOrdered(value: unknown, keyGap: string, itemGap: string): string {
+  if (Array.isArray(value)) return `[${value.map((item) => jsonbOrdered(item, keyGap, itemGap)).join(itemGap)}]`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).sort((a, b) => a.length - b.length || byText(a, b));
+    const members = keys.map(
+      (key) => `${JSON.stringify(key)}${keyGap}${jsonbOrdered((value as Record<string, unknown>)[key], keyGap, itemGap)}`,
+    );
+    return `{${members.join(itemGap)}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * A JSON value as PostgreSQL prints a `jsonb` column — which is how the
+ * read-only table API hands one over: as **text in a string**, not as a JSON
+ * value (probed 2026-10-19 on `admin.admin_audit_log`, request id
+ * `940a576d-2d14-483d-9377-7e1b71fbf5ad`).
+ *
+ * An approximation of `jsonb_out`, close enough to read as the stand does:
+ * `": "` after a key and `", "` between members, in jsonb's key order — which
+ * is why the probed `{"status": …, "lockedUntil": …, "lastFailedAt": …,
+ * "failedAttempts": …}` is not in the order anybody wrote it. Numbers are
+ * printed as JavaScript prints them, where PostgreSQL keeps a `numeric`'s own
+ * digits; nothing in this seed tells the two apart.
+ */
+function jsonbText(value: unknown): string {
+  return jsonbOrdered(value, ": ", ", ");
+}
+
+/**
+ * The same document as the audit route sends it: admin-service reads the
+ * `jsonb` back into a `JsonNode`, masks it, and prints it with Jackson's
+ * `toString()` — compact, but in the key order the column handed over. So the
+ * Audit section's detail and the Data section's row card show one entry's keys
+ * in one order, as they do on the stand.
+ */
+function jsonbCompact(value: unknown): string {
+  return jsonbOrdered(value, ":", ",");
 }
 
 /** `yyyy-MM-dd` and a real day of the calendar — the only date spelling the audit read accepts. */
@@ -2140,11 +2291,13 @@ export class MockTaskaStore {
     const user = this.users.find((item) => item.email === input.email);
     // A credential lockout is the one refusal this route does not answer with
     // "Invalid credentials". The gateway raises `PERMISSION_DENIED` — 403 over
-    // REST — and puts the deadline in the message and nowhere else
-    // (src/lib/accountLock.ts, docs/ai/API-DIVERGENCE.md); every other refusal
-    // `AuthServiceImpl.login` can reach is `UNAUTHENTICATED` or, for blank
-    // input, `FAILED_PRECONDITION`. So `BLOCKED` and `INVITED` keep the branch
-    // below, and only `LOCKED` takes this one.
+    // REST — with the deadline twice: in the message, as it always has, and
+    // since backend PR #199 as `details.lockedUntil`, the one refusal that
+    // fills `details` at all (`AuthServiceImpl.accountLockedError`; read by
+    // src/lib/accountLock.ts). Every other refusal `AuthServiceImpl.login` can
+    // reach is `UNAUTHENTICATED` or, for blank input, `FAILED_PRECONDITION`. So
+    // `BLOCKED` and `INVITED` keep the branch below, and only `LOCKED` takes
+    // this one.
     //
     // Reproduced here because nothing else can reproduce it: reaching `LOCKED`
     // takes repeated failed sign-ins against the real auth-service, so without
@@ -2152,7 +2305,9 @@ export class MockTaskaStore {
     // `npm run check` and nothing having run it. Omar is the seeded row.
     if (user?.status === "LOCKED") {
       const until = new Date(Date.now() + CREDENTIAL_LOCK_DURATION_MS);
-      throw new MockApiError("PERMISSION_DENIED", accountLockedMessage(until));
+      // `Instant.toString()` on the server, microseconds and all; three digits
+      // here, the most a `Date` holds — the same loss the message carries.
+      throw new MockApiError("PERMISSION_DENIED", accountLockedMessage(until), { lockedUntil: until.toISOString() });
     }
     if (!user || user.status !== "ACTIVE") {
       throw new MockApiError("UNAUTHENTICATED", "Invalid credentials");
@@ -2629,17 +2784,21 @@ export class MockTaskaStore {
   }
 
   /**
-   * `GET /issues/search`, reproduced from the gateway probe of 2026-08-23
-   * rather than from the contract where the two differ.
+   * `GET /issues/search`, as the gateway answers it since backend PR #200 put
+   * the minimum of three into the contract it generates its controller from,
+   * and in the order that PR declares.
    *
    * The semantics that matter, because the e2e suite runs against this and
    * would otherwise pass cases the deployed gateway refuses: a query below
    * `SEARCH_QUERY_MIN_LENGTH` (the empty string included) is an
-   * `INVALID_ARGUMENT`, an *absent* query is "no text filter"; the match is a
-   * case-insensitive substring over `issueKey` OR `summary` OR `description`;
-   * every other parameter ANDs onto it; `totalCount` counts the whole matching
-   * set and the page is sliced after; and with no `projectId` the search covers
-   * the projects this user can see — not every project in the store.
+   * `INVALID_ARGUMENT` — the gateway's "Invalid request parameters" for a raw
+   * value under three, see `requireSearchQuery` — an *absent* query is "no
+   * text filter"; the match is a case-insensitive substring over `issueKey` OR
+   * `summary` OR `description`; every other parameter ANDs onto it; the answer
+   * is newest first, `id`
+   * descending among equal instants; `totalCount` counts the whole matching set
+   * and the page is sliced after; and with no `projectId` the search covers the
+   * projects this user can see — not every project in the store.
    */
   searchIssues(params: SearchIssuesParams = {}): Page<IssueSearchHit> {
     const query = requireSearchQuery(params.query);
@@ -2672,7 +2831,8 @@ export class MockTaskaStore {
       .filter((item) => !params.priority || item.priority === params.priority)
       .filter((item) => !params.issueType || item.issueType === params.issueType)
       .filter((item) => matchesSearchQuery(item, query))
-      .sort(byCreatedAt);
+      // `createdAt desc, id desc`, as the route declares since backend PR #200.
+      .sort((a, b) => byCreatedAt(b, a) || byText(b.id, a.id));
 
     const items = matched.slice(page * pageSize, page * pageSize + pageSize).map((item) => this.searchHit(item));
     return {
@@ -3025,7 +3185,9 @@ export class MockTaskaStore {
 
   listProjectLabels(projectId: string): ProjectLabel[] {
     this.getProject(projectId);
-    return this.projectLabels.filter((label) => label.projectId === projectId && label.deletedAt === null);
+    return this.projectLabels
+      .filter((label) => label.projectId === projectId && label.deletedAt === null)
+      .sort(byLabelName);
   }
 
   createProjectLabel(projectId: string, input: CreateProjectLabelInput): ProjectLabel {
@@ -3122,8 +3284,11 @@ export class MockTaskaStore {
 
   /**
    * One issue's subscriptions in the order both server routes answer with,
-   * `ORDER BY created_at DESC` (`IssueWatcherRepository`, read at `60d62ee`).
-   * Equal timestamps keep the later subscription first.
+   * `ORDER BY created_at DESC` (`IssueWatcherRepository`, read at `60d62ee`),
+   * which the contract states as `createdAt desc, id desc` since backend PR
+   * #200. Equal timestamps keep the later subscription first here rather than
+   * the larger id — an approximation only two subscriptions in one millisecond
+   * could tell apart.
    */
   private watchersNewestFirst(issueId: string): StoredIssueWatcher[] {
     return this.watchers
@@ -3625,6 +3790,10 @@ export class MockTaskaStore {
    * **There is no role to check here.** The route is scoped to `me`, so the
    * only questions the server can ask are whether the request carries a valid
    * session and whether its user exists.
+   *
+   * The key it mints is `avatars/{userId}/{uuid}` (`ProfileServiceImpl`,
+   * backend PR #198): the caller's own folder, which is how the confirm tells
+   * a key handed to this caller from anybody else's.
    */
   createAvatarUploadUrl(input: CreateAvatarUploadUrlInput): AvatarUploadTicket {
     if (input.sizeBytes > AVATAR_MAX_SIZE_BYTES) {
@@ -3635,7 +3804,9 @@ export class MockTaskaStore {
     const refusal = avatarRefusal(input);
     if (refusal) throw new MockApiError("INVALID_ARGUMENT", refusal);
 
-    const objectKey = makeId("avatar-object");
+    // The server's spelling since backend PR #198: the caller's own folder and a
+    // fresh UUID, which is what the confirm checks a key against.
+    const objectKey = `avatars/${user.id}/${mockUuid()}`;
     const signedAt = new Date();
     const behaviour = uploadBehaviourFor(input.fileName);
     const query = new URLSearchParams({
@@ -3713,33 +3884,36 @@ export class MockTaskaStore {
   }
 
   /**
-   * Leg 3, in `ProfileServiceImpl.confirmAvatarUpload`'s order at `develop`
-   * `368ae77355bd`: the object has to exist, it is re-measured against the
-   * ceiling, the row is written — **replacing** whatever the user had before,
-   * because `user_id` is what identifies an avatar and there is only ever one —
-   * then the *previous* row's object is deleted, and only then is the download
-   * link presigned, through a HEAD of the object the new row points at.
+   * Leg 3, in `ProfileServiceImpl.confirmAvatarUpload`'s order at backend
+   * develop `398285cde074` (PR #198, TAS-221, deployed 2026-10-19):
    *
-   * **That order is a server defect, and this reproduces it** rather than
-   * quietly doing the sensible thing — the attachment DELETE's precedent
-   * (`deleteAttachment` above): reproduce the implementation, and flag it. The
-   * server does not check that the key was minted for the caller (neither does
-   * this: the ticket is consulted only for its file-name triggers), and it does
-   * not notice when the "previous" object *is* the one being confirmed. So a
-   * second confirm of the key the saved row already holds deletes that object,
-   * fails its presign's HEAD with a 404, and leaves the row pointing at
-   * nothing; every read of that user's avatar answers 404 from then on — and
-   * `GET /users/me` answers `avatarUnavailable: true` — until an upload
-   * replaces the row or a removal deletes it. A mock that treated the
-   * repeat as a harmless no-op would teach its callers that retrying a confirm
-   * is safe, which on the server it is exactly not. The profile menu never sends
-   * a key twice, and its tests pin that.
+   * - **the key has to be the caller's** — minted for them by leg 1
+   *   (`avatars/{userId}/{uuid}`, `avatarKeyMintedFor`), or exactly the key
+   *   their saved row already holds, which is how a row from before PR #198
+   *   (Sofia's seeded `seeded-avatar-sofia`) can still be confirmed. Any other
+   *   key is `NOT_FOUND`, before anything is read or changed;
+   * - the object has to exist — the same `NOT_FOUND` and the same sentence, so
+   *   the answer never says whether a key is somebody else's or nobody's;
+   * - it is re-measured against the ceiling, an object over it deleted and
+   *   refused with `OUT_OF_RANGE`;
+   * - **a key the saved row already holds changes nothing**: that row comes
+   *   back as it is — same id, same name, a freshly signed link — and nothing
+   *   is deleted. So a repeated confirm is safe, which it was not before PR
+   *   #198, when the "previous" object deleted was the one being confirmed;
+   * - otherwise the row is written — **replacing** whatever the user had
+   *   before, because `user_id` is what identifies an avatar and there is only
+   *   ever one — then the previous row's object is deleted, and the download
+   *   link is presigned last.
    *
-   * The 404's text on the server is the storage SDK's own, which nothing here
-   * can reproduce; the code is the part that is.
+   * The profile menu still sends each key once: a failed confirm is retried by
+   * choosing the file again, which mints a new key (`UserProfileMenu`).
    */
   confirmAvatarUpload(input: ConfirmAvatarUploadInput): UserAvatar {
     const user = this.currentUser();
+    const saved = this.avatars.get(user.id);
+    if (!avatarKeyMintedFor(user.id, input.objectKey) && saved?.objectKey !== input.objectKey) {
+      throw new MockApiError("NOT_FOUND", AVATAR_KEY_NOT_FOUND_MESSAGE);
+    }
     const ticket = [...this.avatarTickets.values()].find((item) => item.objectKey === input.objectKey);
     if (ticket?.behaviour === "confirmFails") {
       // The object stays in the bucket with no row pointing at it. Nothing
@@ -3749,7 +3923,7 @@ export class MockTaskaStore {
 
     const stored = this.avatarObjects.get(input.objectKey);
     if (!stored) {
-      throw new MockApiError("NOT_FOUND", "Object not found in storage");
+      throw new MockApiError("NOT_FOUND", AVATAR_KEY_NOT_FOUND_MESSAGE);
     }
     if (stored.sizeBytes > AVATAR_MAX_SIZE_BYTES) {
       // The server deletes the oversized object before refusing, so the key
@@ -3758,7 +3932,13 @@ export class MockTaskaStore {
       throw new MockApiError("OUT_OF_RANGE", avatarSizeRefusalMessage(stored.sizeBytes));
     }
 
-    const previous = this.avatars.get(user.id);
+    if (saved?.objectKey === input.objectKey) {
+      // `replaceAvatarInDb` hands the saved row back untouched and names no old
+      // object to delete. The link is signed again on the server; here it is
+      // the same `data:` URL, because the bytes are the same.
+      return { ...saved, downloadUrl: stored.dataUrl };
+    }
+
     const avatar: MockAvatar = {
       id: makeId("avatar"),
       userId: user.id,
@@ -3771,20 +3951,14 @@ export class MockTaskaStore {
       createdAt: now(),
       downloadUrl: stored.dataUrl,
     };
-    // Row first, old object second, presign last — the server's order, and the
-    // whole of the defect described above.
+    // Row first, old object second, presign last — the server's order.
     this.avatars.set(user.id, avatar);
-    if (previous) this.avatarObjects.delete(previous.objectKey);
-    if (!this.avatarObjects.has(avatar.objectKey)) {
-      // Mirrors a server defect: the key confirmed was the saved row's own, so
-      // the delete above just removed the object this row points at.
-      throw new MockApiError("NOT_FOUND", "Object not found in storage");
-    }
+    if (saved) this.avatarObjects.delete(saved.objectKey);
     if (ticket?.objectLost) {
       // `MOCK_ATTACHMENT_TRIGGERS.avatarObjectLost`: the answer below is what
-      // the server sent, link and all, and *afterwards* the object goes — the
-      // way TAS-221's cross-user path deletes it from under this row. Every
-      // later profile read then finds a row with nothing behind it.
+      // the server sent, link and all, and *afterwards* storage loses the
+      // object. Every later profile read then finds a row with nothing behind
+      // it.
       this.avatarObjects.delete(avatar.objectKey);
     }
     return { ...avatar };
@@ -3821,11 +3995,11 @@ export class MockTaskaStore {
    *   implementation hands the caller an id for it.
    *
    * The only failure this store can make is a row whose object is gone — the
-   * same-key re-confirm defect in `confirmAvatarUpload` above, or the
-   * `avatarObjectLost` trigger standing in for TAS-221's cross-user path —
-   * which on the server fails the presign's HEAD on every read until an upload
-   * replaces the row or a removal deletes it. A transient failure (auth-service
-   * down, a deadline) has no counterpart in one synchronous store.
+   * `avatarObjectLost` trigger, standing in for storage losing it, since no
+   * confirm can leave a row that way after backend PR #198 — which on the
+   * server fails the presign's HEAD on every read until an upload replaces the
+   * row or a removal deletes it. A transient failure (auth-service down, a
+   * deadline) has no counterpart in one synchronous store.
    */
   currentUserProfile(): User {
     const user = this.currentUser();
@@ -4066,10 +4240,13 @@ export class MockTaskaStore {
    * offer operators the real gateway then answers 400 for, and no test could
    * see it.
    *
-   * The seed deliberately covers what the screen branches on: `auth.users` has
-   * a `uuid` primary key (its rows open a card) and a column of every class,
-   * while `admin.audit_log` is keyed by text (the gateway takes a `UUID` in the
-   * path, so those rows are not addressable and must not pretend to be).
+   * The seed covers what the screen branches on where the stand does:
+   * `auth.users` has a `uuid` primary key (its rows open a card) and a column of
+   * every class. Every key here is a `uuid` because every table on the stand is
+   * keyed by one (read at backend develop `398285cde074`); the console's other
+   * branch — a key the gateway's `UUID` path parameter cannot take, whose rows
+   * are not linked — has no real table to stand on, and is pinned against a
+   * made-up one in src/screens/admin/AdminScreen.test.tsx instead.
    */
   adminCatalog(): AdminCatalog {
     return {
@@ -4161,18 +4338,28 @@ export class MockTaskaStore {
           databaseAlias: "taska_admin",
           tables: [
             {
-              // Keyed by a readable code rather than a uuid, which is the case
-              // the gateway cannot address: `GET /readonly/{s}/{t}/{id}` parses
-              // `id` as a UUID and refuses everything else before admin-service
-              // ever sees it. The console must not offer those rows a link.
-              name: "audit_log",
+              // admin-service's one table, `taska.admin_audit_log`
+              // (`0001-admin-audit-log.sql`), in its column order and with no
+              // column marked sensitive — the catalog's `admin` entry names
+              // none. Its rows are the Audit section's seed, so the two views
+              // of the log agree: the same ids, and each document's keys in
+              // jsonb's one order, spaced as each route spaces them (see
+              // `jsonbCompact` and the rows in `adminRowsFor`).
+              name: "admin_audit_log",
               primaryKey: "id",
               columns: [
-                { name: "id", type: "character varying", sensitive: false },
-                { name: "actor_id", type: "uuid", sensitive: false },
-                { name: "action", type: "character varying", sensitive: false },
-                { name: "target", type: "character varying", sensitive: false },
-                { name: "duration_ms", type: "integer", sensitive: false },
+                { name: "id", type: "uuid", sensitive: false },
+                { name: "request_id", type: "text", sensitive: false },
+                { name: "actor_user_id", type: "uuid", sensitive: false },
+                { name: "actor_login", type: "character varying", sensitive: false },
+                { name: "actor_roles", type: "jsonb", sensitive: false },
+                { name: "action", type: "text", sensitive: false },
+                { name: "target_service", type: "text", sensitive: false },
+                { name: "target_table", type: "text", sensitive: false },
+                { name: "target_id", type: "text", sensitive: false },
+                { name: "old_value", type: "jsonb", sensitive: false },
+                { name: "new_value", type: "jsonb", sensitive: false },
+                { name: "reason", type: "text", sensitive: false },
                 { name: "created_at", type: "timestamp with time zone", sensitive: false },
               ],
             },
@@ -4284,11 +4471,11 @@ export class MockTaskaStore {
    * in mock mode — that state is otherwise unreachable without a database.
    *
    * A key that is not a UUID is refused outright, because that is where the
-   * gateway refuses it: the path parameter is typed `UUID`, so
-   * `/admin/data/admin/audit_log/AUD-0001` is a 400 there however honest the
-   * row behind it. Serving a card the gateway never could made the mock the
-   * more permissive of the two, which is the direction that hides bugs — the
-   * console refuses to link those rows, and a hand-typed address has to hit the
+   * gateway refuses it: the path parameter is typed `UUID`, so a hand-typed
+   * `/admin/data/admin/admin_audit_log/audit-001` is a 400 there whatever the
+   * table. Serving a card the gateway never could made the mock the more
+   * permissive of the two, which is the direction that hides bugs — the
+   * console never links such a key, and a hand-typed address has to hit the
    * same wall in both modes.
    *
    * Past that, the id is compared as text, which is what admin-service does
@@ -4539,6 +4726,109 @@ export class MockTaskaStore {
   }
 
   /**
+   * `GET /readonly/audit-entries` as the merged backend PR #197 answers it
+   * (TAS-160, deployed 2026-10-19) — see `TaskaApi.listAuditEntries` — in the
+   * order the request meets each check:
+   *
+   * - a date in any spelling but `yyyy-MM-dd`, an `actorUserId` that is not a
+   *   UUID, a `pageSize` outside 1–100, a page past `int32` and a page or size
+   *   that is not a whole number are refused by the gateway's parameter
+   *   validation before anything else, the role included: `INVALID_ARGUMENT`
+   *   (400), "Invalid request parameters" — probed tokenless for `pageSize` and
+   *   `page` on 2026-10-19, see `TaskaApi.listAuditEntries`;
+   * - then `GLOBAL_ADMIN` only, `PERMISSION_DENIED` (403), "User doesn't have
+   *   permission";
+   * - then a `from` after `to`, admin-service's `INVALID_ARGUMENT` (400) in its
+   *   own words;
+   * - every other filter an exact match, a blank one no filter; dates are whole
+   *   UTC days, both inclusive;
+   * - newest first, `id` descending among equal instants, paged. A `page`
+   *   below 1 here is the first page, because that is what the rest leg makes
+   *   of it — it sends `max(0, page - 1)`, so the wire's `minimum: 0` is never
+   *   reached from this interface and neither implementation can refuse it.
+   */
+  listAuditEntries(query: AuditEntriesQuery): AuditEntries {
+    const given = (value: string | undefined) => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    };
+    const from = given(query.createdAtFrom);
+    const to = given(query.createdAtTo);
+    const actorUserId = given(query.actorUserId);
+    const pageSize = query.pageSize ?? 20;
+    const requestedPage = query.page ?? 1;
+    if (
+      (from !== undefined && !isAuditDate(from)) ||
+      (to !== undefined && !isAuditDate(to)) ||
+      (actorUserId !== undefined && !UUID_PATTERN.test(actorUserId)) ||
+      // `minimum: 1`, `maximum: 100`, `format: int32` — the gateway validates
+      // the parameter as the contract declares it, and admin-service's own
+      // fallback and clamp are never reached through it.
+      !Number.isInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100 ||
+      !Number.isInteger(requestedPage) ||
+      // `page` is `format: int32` on the wire, where it is this page less one:
+      // probed 2026-10-19, `page=2147483647` reaches sign-in (401,
+      // `36256d82-dcb4-40e3-b861-38be1f590e3e`) and `page=2147483648` does not
+      // bind (400, `7f84f3a1-aa67-4c52-b970-a2947433bfe9`).
+      requestedPage - 1 > INT32_MAX
+    ) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    if (this.currentUser().globalRole !== "GLOBAL_ADMIN") {
+      throw new MockApiError("PERMISSION_DENIED", "User doesn't have permission");
+    }
+    if (from !== undefined && to !== undefined && from > to) {
+      throw new MockApiError("INVALID_ARGUMENT", "body.createdAtFrom cannot be later than body.createdAtTo");
+    }
+    const exact = {
+      actorUserId,
+      action: given(query.action),
+      targetService: given(query.targetService),
+      targetTable: given(query.targetTable),
+      targetId: given(query.targetId),
+      requestId: given(query.requestId),
+    };
+    const matching = this.auditEntries
+      .filter((entry) =>
+        (Object.keys(exact) as (keyof typeof exact)[]).every(
+          (key) => exact[key] === undefined || entry[key] === exact[key],
+        ),
+      )
+      .filter((entry) => {
+        // Whole UTC days: the instant's own date, compared as text, which is
+        // exact for `yyyy-MM-dd` and needs no clock.
+        const day = entry.createdAt?.slice(0, 10) ?? "";
+        return (from === undefined || day >= from) && (to === undefined || day <= to);
+      })
+      // `created_at DESC, id DESC` (`AdminRepositoryCustomImpl.findByFilter`).
+      // Ids are lowercase UUIDs, so comparing them as text is the database's
+      // byte order.
+      .sort(
+        (a, b) =>
+          Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? "") ||
+          ((b.id ?? "") < (a.id ?? "") ? -1 : (b.id ?? "") > (a.id ?? "") ? 1 : 0),
+      );
+
+    const currentPage = requestedPage < 1 ? 1 : requestedPage;
+    const totalRows = matching.length;
+    const totalPages = Math.ceil(totalRows / pageSize);
+    const start = (currentPage - 1) * pageSize;
+    return {
+      entries: matching.slice(start, start + pageSize).map((entry) => ({ ...entry })),
+      pagination: {
+        currentPage,
+        pageSize,
+        totalRows,
+        totalPages,
+        hasNext: currentPage < totalPages,
+        hasPrev: currentPage > 1,
+      },
+    };
+  }
+
+  /**
    * `POST /admin/outbox/{service}/{eventId}/retry`, checked and applied the way
    * admin-service checks and applies it (`OutboxRetryServiceImpl` and
    * `OutboxRetryRepositoryImpl`, backend `develop` 2026-09-08).
@@ -4579,89 +4869,6 @@ export class MockTaskaStore {
    * `FAILED_PRECONDITION` in the server's own words, including the `NEW` rows
    * this section's own list is full of.
    */
-  /**
-   * `GET /readonly/audit-entries` as the server is *meant* to answer it — see
-   * `TaskaApi.listAuditEntries` for where the head at PR #172 does not:
-   *
-   * - `GLOBAL_ADMIN` only, refused with `PERMISSION_DENIED` (403);
-   * - dates `yyyy-MM-dd` only, whole UTC days, both inclusive; any other
-   *   spelling and a `from` after `to` are `INVALID_ARGUMENT` (400);
-   * - an `actorUserId` that is not a UUID is `INVALID_ARGUMENT` here. The head
-   *   answers **500** for it; this is the answer it is meant to give, and the
-   *   section never sends one either way;
-   * - every other filter an exact match, a blank one no filter;
-   * - newest first, paged; as the server's `normalizePageSize`: a `pageSize`
-   *   below 1 falls back to the default 20 (a negative `page`, to the default
-   *   first page), only a value above 100 is clamped. The head ignores both
-   *   and answers every row — recorded, not reproduced.
-   */
-  listAuditEntries(query: AuditEntriesQuery): AuditEntries {
-    if (this.currentUser().globalRole !== "GLOBAL_ADMIN") {
-      throw new MockApiError("PERMISSION_DENIED", "Global admin role required");
-    }
-    const given = (value: string | undefined) => {
-      const trimmed = value?.trim();
-      return trimmed ? trimmed : undefined;
-    };
-    const from = given(query.createdAtFrom);
-    const to = given(query.createdAtTo);
-    for (const [name, value] of [
-      ["createdAtFrom", from],
-      ["createdAtTo", to],
-    ] as const) {
-      if (value !== undefined && !isAuditDate(value)) {
-        throw new MockApiError("INVALID_ARGUMENT", `${name} must be a date in the format yyyy-MM-dd`);
-      }
-    }
-    if (from !== undefined && to !== undefined && from > to) {
-      throw new MockApiError("INVALID_ARGUMENT", "createdAtFrom must not be after createdAtTo");
-    }
-    const actorUserId = given(query.actorUserId);
-    if (actorUserId !== undefined && !UUID_PATTERN.test(actorUserId)) {
-      throw new MockApiError("INVALID_ARGUMENT", "actorUserId must be a UUID");
-    }
-    const exact = {
-      actorUserId,
-      action: given(query.action),
-      targetService: given(query.targetService),
-      targetTable: given(query.targetTable),
-      targetId: given(query.targetId),
-      requestId: given(query.requestId),
-    };
-    const matching = this.auditEntries
-      .filter((entry) =>
-        (Object.keys(exact) as (keyof typeof exact)[]).every(
-          (key) => exact[key] === undefined || entry[key] === exact[key],
-        ),
-      )
-      .filter((entry) => {
-        // Whole UTC days: the instant's own date, compared as text, which is
-        // exact for `yyyy-MM-dd` and needs no clock.
-        const day = entry.createdAt?.slice(0, 10) ?? "";
-        return (from === undefined || day >= from) && (to === undefined || day <= to);
-      })
-      .sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""));
-
-    const requestedSize = Math.trunc(query.pageSize ?? 20);
-    const pageSize = requestedSize < 1 ? 20 : Math.min(100, requestedSize);
-    const requestedPage = Math.trunc(query.page ?? 1);
-    const currentPage = requestedPage < 1 ? 1 : requestedPage;
-    const totalRows = matching.length;
-    const totalPages = Math.ceil(totalRows / pageSize);
-    const start = (currentPage - 1) * pageSize;
-    return {
-      entries: matching.slice(start, start + pageSize).map((entry) => ({ ...entry })),
-      pagination: {
-        currentPage,
-        pageSize,
-        totalRows,
-        totalPages,
-        hasNext: currentPage < totalPages,
-        hasPrev: currentPage > 1,
-      },
-    };
-  }
-
   retryOutboxEvent(service: string, eventId: string, reason: string): OutboxRetryResult {
     requireOutboxRetryReason(reason);
     if (!UUID_PATTERN.test(eventId)) {
@@ -5103,15 +5310,46 @@ export class MockTaskaStore {
       }));
     }
 
-    if (service === "admin" && table === "audit_log") {
-      // Enough rows that paging is a real control rather than a decoration.
-      return Array.from({ length: 47 }, (_, index) => ({
-        id: `audit-${String(index + 1).padStart(3, "0")}`,
-        actor_id: index % 2 === 0 ? ANNA_ID : MARK_ID,
-        action: ["TABLE_READ", "CATALOG_READ", "LOGIN", "ROLE_CHANGED"][index % 4],
-        target: ["auth.users", "project.projects", "issue.issues", "admin.audit_log"][index % 4],
-        duration_ms: (index % 7) * 11,
-        created_at: `2026-07-${String((index % 28) + 1).padStart(2, "0")}T10:${String(index % 60).padStart(2, "0")}:00Z`,
+    if (service === "admin" && table === "admin_audit_log") {
+      // The Audit section's own entries, column for column — thirty of them,
+      // so paging is a real control here too. The three `jsonb` columns arrive
+      // as text, the way the stand sends them (`jsonbText`).
+      //
+      // `actor_roles` is what admin-service wrote, and it writes two shapes
+      // (read at backend develop `398285cde074`): the user operations store the
+      // actor's one global role, `valueToTree(role)` — a JSON string, so
+      // `"\"GLOBAL_ADMIN\""` on the wire — while the outbox retry stores the
+      // whole list, `valueToTree(getActorRolesList())`
+      // (`GrpcAdminReadonlyService`) — a JSON array, `"[\"GLOBAL_ADMIN\"]"`.
+      //
+      // The two documents are the audit route's own, re-read: the seed holds
+      // them in jsonb's key order already (`jsonbCompact`), so only the spacing
+      // changes between the two views and the keys run in one order in both. A
+      // document that does not parse is passed on as it is. `created_at` is the
+      // seed's own spelling, to the second with `Z`, which is what the probe
+      // showed for this column.
+      const document = (text: string | null): string | null => {
+        if (text === null) return null;
+        try {
+          return jsonbText(JSON.parse(text));
+        } catch {
+          return text;
+        }
+      };
+      return this.auditEntries.map((entry) => ({
+        id: entry.id,
+        request_id: entry.requestId,
+        actor_user_id: entry.actorUserId,
+        actor_login: entry.actorLogin,
+        actor_roles: entry.action === "RETRY_OUTBOX_EVENT" ? jsonbText(["GLOBAL_ADMIN"]) : jsonbText("GLOBAL_ADMIN"),
+        action: entry.action,
+        target_service: entry.targetService,
+        target_table: entry.targetTable,
+        target_id: entry.targetId,
+        old_value: document(entry.oldValue),
+        new_value: document(entry.newValue),
+        reason: entry.reason,
+        created_at: entry.createdAt,
       }));
     }
 
@@ -5206,27 +5444,21 @@ export class MockTaskaStore {
    * `null` and not `undefined` for a person with no avatar: this row *asked*,
    * inline, and got an answer. See `User.avatarUrl`.
    *
-   * Also `null` for a row whose object is gone — the state the same-key
-   * re-confirm defect in `confirmAvatarUpload` leaves — rather than the bytes
-   * this store still happens to hold: there is no object left to presign, and a
-   * face the server cannot serve should not be drawn. That is this store's
-   * choice and not a reading of the gateway.
+   * Also `null` for a row whose object is gone — the state the
+   * `avatarObjectLost` trigger leaves — rather than the bytes this store still
+   * happens to hold: there is no object left to presign, and a face the server
+   * cannot serve should not be drawn.
    *
-   * **Two known parity gaps with the deployed member read**, both deliberate,
-   * both where this store is the kinder of the two, and neither predicted by
-   * mock-backed evidence. The read is backend TAS-137 (PR #152, merged and
-   * deployed), and at `develop` `1cfe4d79f074`:
-   *
-   * - it fills no row's avatar at all — auth-service's `findUsersWithAvatars`
-   *   selects no avatar id and `ProfileMapper` attaches an avatar only when the
-   *   id is present — where this store draws the faces the contract declares;
-   * - one unreadable avatar object fails the **whole** read, because
-   *   `enrichWithAvatarUrl` HEADs and presigns every avatar owner's object with
-   *   no per-row fallback: 404 for a missing object, 403 for a storage refusal,
-   *   503 with the store down. This store drops that one face and answers the
-   *   rest.
-   *
-   * docs/ai/API-DIVERGENCE.md records the pair.
+   * Both halves are the server's reading too, at backend develop
+   * `398285cde074` (TAS-225, `3379696d`). The member read and the project
+   * context both name their members through auth-service's
+   * `getUserDetailsByIds`: `findUsersWithAvatars` selects the avatar row with
+   * its id, so a member with a picture arrives with one, and
+   * `enrichWithAvatarUrl` ends in `onErrorResume(… withoutAvatar(user))`, so a
+   * presign that fails drops that one member's avatar and the rest of the read
+   * stands. Until that commit the read filled no avatar at all and one
+   * unreadable object failed the whole answer; this store did neither then
+   * either.
    */
   private userSummary(userId: string): ProjectMember["user"] {
     const user = this.getUser(userId);
@@ -5271,15 +5503,17 @@ export class MockTaskaStore {
   }
 
   /**
-   * Resolved through `projectLabels` on every read, in the project's own label
-   * order rather than in the order they were attached — the picker below the
-   * chips lists them the same way, and two orders for one set of labels reads
-   * as a bug even when both are arbitrary.
+   * Resolved through `projectLabels` on every read, by name and then id — the
+   * order the issue's label route and every issue DTO's `labels` declare since
+   * backend PR #200, and the order the project's own list declares too, so
+   * the picker below the chips lists them the same way. Never the order they
+   * were attached in.
    */
   private labelsForIssue(issueId: string): Label[] {
     const attached = this.labelIdsByIssue[issueId] ?? [];
     return this.projectLabels
       .filter((label) => label.deletedAt === null && attached.includes(label.id))
+      .sort(byLabelName)
       .map(({ id, name, color }) => ({ id, name, color }));
   }
 

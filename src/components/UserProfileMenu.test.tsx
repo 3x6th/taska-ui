@@ -49,8 +49,8 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
     /** Fails the next confirm only, so the retry after it can be watched. */
     confirmFailure?: Error;
     /**
-     * The confirm succeeds and the object is gone right after — TAS-221's
-     * cross-user path — so every later profile read is a failed one.
+     * The confirm succeeds and the object is gone right after — storage losing
+     * it — so every later profile read is a failed one.
      */
     lostAfterConfirm: boolean;
     deleteFailure?: Error;
@@ -369,8 +369,8 @@ describe("UserProfileMenu", () => {
   });
 
   it("prints a status it has never heard of instead of an empty badge", () => {
-    // The contract types `status` as a bare string (TAS-173), so a status the
-    // domain union does not carry can arrive. A bare lookup put `undefined` in
+    // A backend newer than this build can add to `UserStatusDto` (TAS-173), so
+    // a status the domain union does not carry can arrive. A bare lookup put `undefined` in
     // the badge, which renders as nothing at all. (`UNSPECIFIED`, the zero
     // value, no longer gets this far: the API layer reads it as no status.)
     renderMenu({
@@ -935,10 +935,9 @@ describe("UserProfileMenu", () => {
     });
 
     it("never confirms one object key twice: choosing the photo again after a failed confirm starts a new ticket", async () => {
-      // The server does not check that a key was minted for the caller, and a
-      // second confirm of the key the saved row already holds deletes that very
-      // object. So the retry is the person choosing the file again — never this
-      // menu sending the old key.
+      // A repeat is harmless on the server since backend PR #198, and still not
+      // this menu's to send: the retry is the person choosing the file again,
+      // which mints a new key — there is no retry-confirm control.
       state.confirmFailure = Object.assign(new Error("The avatar could not be recorded. Please try again."), {
         code: "UNAVAILABLE",
         status: 503,

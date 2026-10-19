@@ -1,10 +1,10 @@
 import type { IssueWriteAnswer } from "./TaskaApi";
 
 // Deliberate duck typing: the error classes this has to read are not related.
-// MockApiError (mock/MockTaskaApi.ts) carries only `code`; ApiError
-// (rest/RestTaskaApi.ts) carries `code`, the HTTP `status` and the gateway's
-// `requestId`. These helpers only read what every shape may carry, in one
-// place, so a screen never has to know which implementation answered it.
+// MockApiError (mock/MockTaskaApi.ts) carries `code` and `details`; ApiError
+// (rest/RestTaskaApi.ts) carries `code`, `details`, the HTTP `status` and the
+// gateway's `requestId`. These helpers only read what every shape may carry,
+// in one place, so a screen never has to know which implementation answered it.
 //
 // `IssueVersionConflictError` below is the first error class both
 // implementations throw (TAS-246, for `PATCH /issues/{issueId}`). It is shared
@@ -68,16 +68,57 @@ export interface ApiErrorFacts {
   status: number | null;
   /** Domain code. Both implementations carry one — except `IssueVersionConflictError`, which carries none. */
   code: string | null;
+  /**
+   * `RestErrorResponse.details`, the refusal's machine-readable parameters
+   * (backend PR #199) — read through `errorDetails`, so only a plain object of
+   * strings, and `null` for anything else. Read one key with `Object.hasOwn`.
+   */
+  details: ErrorDetails | null;
+}
+
+/**
+ * `RestErrorResponse.details` (backend PR #199, TAS-239, merged and deployed
+ * 2026-10-19): `{string: string}`, nullable, filled by exactly one refusal
+ * today — the account lock's `lockedUntil` (`src/lib/accountLock.ts`) — and
+ * `null` on every other error the gateway answers.
+ */
+export type ErrorDetails = Readonly<Record<string, string>>;
+
+/**
+ * The details a body carried, or `null` — and **only** a plain object whose
+ * every value is a string counts, because that is all the schema promises and
+ * everything else is a value nobody can read a key out of safely: `null`, an
+ * array, a number, an object holding an object, a class instance.
+ *
+ * The answer is a fresh frozen copy, built with `Object.fromEntries`, so a key
+ * spelt `__proto__` arrives as the ordinary own property `JSON.parse` made it
+ * rather than becoming a prototype. It still inherits from `Object.prototype`
+ * like any object, so a caller reads one key with `Object.hasOwn` — never with
+ * `in` or a bare index, which would find `constructor` on every answer.
+ */
+export function errorDetails(value: unknown): ErrorDetails | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const entries = Object.entries(value);
+  if (!entries.every(([, item]) => typeof item === "string")) return null;
+  return Object.freeze(Object.fromEntries(entries) as Record<string, string>);
 }
 
 export function apiErrorFacts(error: unknown): ApiErrorFacts {
-  if (!(error instanceof Error)) return { message: null, requestId: null, status: null, code: null };
-  const { code, status, requestId } = error as Partial<{ code: unknown; status: unknown; requestId: unknown }>;
+  if (!(error instanceof Error)) return { message: null, requestId: null, status: null, code: null, details: null };
+  const { code, status, requestId, details } = error as Partial<{
+    code: unknown;
+    status: unknown;
+    requestId: unknown;
+    details: unknown;
+  }>;
   return {
     message: error.message || null,
     requestId: typeof requestId === "string" && requestId ? requestId : null,
     status: typeof status === "number" ? status : null,
     code: typeof code === "string" ? code : null,
+    details: errorDetails(details),
   };
 }
 
@@ -119,8 +160,11 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * merged with backend PR #147 and are deployed — their list route answered
  * `401` without a token on 2026-09-16 — and TAS-224 removed the panel's
  * branch. `UserProfileMenu` still reads this arm
- * for the avatar routes. This is the predicate working as designed rather than
- * a reason to distrust it.
+ * for the avatar routes, and `AdminAuditSection` for a gateway older than
+ * backend PR #197 — the 501 a mapped-but-empty audit route would have answered
+ * at that PR's predecessor (#172) never shipped, and the sibling predicate that
+ * read it went with it in TAS-265. This is the predicate working as designed
+ * rather than a reason to distrust it.
  *
  * Matched as a substring rather than by equality because the tail of the
  * message is the request path, which differs per call — and by the same token
@@ -182,39 +226,6 @@ export function isUndeployedRoute(error: unknown, undeployedMessage: string): bo
   return unmappedPath || mappedForOtherMethods;
 }
 
-function isNotImplemented(error: unknown): boolean {
-  const { code, status } = apiErrorFacts(error);
-  return status === 501 && code === "UNIMPLEMENTED";
-}
-
-/**
- * Whether the gateway does not serve this route — either arm of
- * `isUndeployedRoute`, or a **501**.
- *
- * The 501 is the signature of a route that is *mapped* on the gateway but whose
- * gRPC adapter has no implementation behind it: the generated base method
- * answers `UNIMPLEMENTED`, which the gateway maps to 501. The audit log met it
- * first (TAS-251): at backend PR #172's head `907fa1e` the REST route exists and
- * the admin-service gRPC adapter lacks the override, so a deployed head would
- * answer 501 where an undeployed one answers the static-resource 404. Both mean
- * "this gateway does not have it yet" and neither says anything about what was
- * asked for, so a screen states them in one sentence.
- *
- * Matched on the status *and* the code `UNIMPLEMENTED`. The gateway's own 501
- * always carries it (`GatewayErrorHandler` uses the gRPC status name,
- * `RestErrorMapper` maps `UNIMPLEMENTED` to 501). A 501 from something in front
- * of the gateway is not a statement about what the gateway shipped — the same
- * reasoning as the 405 arm of `isUndeployedRoute`.
- *
- * A sibling of `isUndeployedRoute` rather than a third arm of it: that one's
- * callers ask about a route that is not *deployed*, and a 501 is a route that is
- * deployed and empty. A caller that can meet both asks this one. Never true
- * against the mock, which carries no HTTP status.
- */
-export function isRouteNotServed(error: unknown, undeployedMessage: string): boolean {
-  return isUndeployedRoute(error, undeployedMessage) || isNotImplemented(error);
-}
-
 /**
  * Whether the server read the request, understood it, and refused it because
  * the *state* does not allow it — a business conflict rather than a bad
@@ -259,7 +270,8 @@ export function isConflict(error: unknown): boolean {
 
 /**
  * Whether `POST /auth/login` refused because the account is locked out by its
- * own failed sign-ins — the refusal TAS-237 is about, and the one whose message
+ * own failed sign-ins — the refusal TAS-237 is about, and the one whose
+ * `details.lockedUntil` (backend PR #199), or failing that whose message,
  * `src/lib/accountLock.ts` reads a deadline out of.
  *
  * **On this route the signature means nothing else**, which is what makes a

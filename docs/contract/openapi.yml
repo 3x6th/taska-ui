@@ -1,6 +1,6 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: 7d4f7395565c (develop, 2026-10-19)
+# Backend commit: 398285cde074 (develop, 2026-10-19)
 # Fetched: 2026-10-19
 #
 # The backend repository is the single source of truth for this contract.
@@ -15,6 +15,10 @@ openapi: 3.0.3
 info:
   title: Taska API Gateway Contract
   version: 1.0.0
+  description: |
+    Авторитетный контракт API — этот документ /openapi.yml.
+    /v3/api-docs публикует тот же контракт в JSON; совпадение проверяется в CI.
+    /v3/api-docs/generated — справочная модель springdoc из Java-аннотаций.
 
 servers:
   - url: /
@@ -641,6 +645,7 @@ paths:
   /api/v1/issues/{issueId}/links:
     get:
       summary: Возвращает список связей для задачи
+      description: Порядок элементов — createdAt asc, id asc.
       operationId: listIssueLinks
       tags:
         - issue
@@ -1008,6 +1013,7 @@ paths:
   /api/v1/issues/search:
     get:
       summary: Поиск задач по ключу, summary и description с фильтрами (Все параметры применяются через логическое "AND")
+      description: Порядок элементов — createdAt desc, id desc (сначала новые задачи).
       operationId: searchIssues
       tags:
         - issue
@@ -1017,10 +1023,10 @@ paths:
         - name: query
           in: query
           required: false
-          description: Строка для поиска (поиск по issue_key, summary, description через логическое "OR")
+          description: Строка для поиска по issue_key, summary и description (OR). Минимум 3 символа по умолчанию; настраивается в issue-service. Пустая строка возвращает 400.
           schema:
             type: string
-            minLength: 2
+            minLength: 3
         - name: projectId
           in: query
           required: false
@@ -1031,7 +1037,7 @@ paths:
         - name: statusKey
           in: query
           required: false
-          description: Фильтр по статусу задачи
+          description: Фильтр по открытому ключу статуса workflow проекта
           schema:
             type: string
         - name: assigneeId
@@ -1278,6 +1284,7 @@ paths:
   /api/v1/projects/{projectId}/issues/{issueId}/attachments:
     get:
       summary: Получение списка вложений к задаче
+      description: Порядок элементов — createdAt asc, id asc.
       operationId: listAttachments
       tags:
         - attachments
@@ -1546,6 +1553,7 @@ paths:
   /api/v1/projects/{projectId}/issues/{issueId}/comments:
     get:
       summary: Получение списка комментариев к задаче
+      description: Порядок элементов — createdAt desc, id desc (новые сверху).
       operationId: listComments
       tags:
         - comments
@@ -1761,6 +1769,7 @@ paths:
   /api/v1/projects/{projectId}/labels:
     get:
       summary: Получение списка меток проекта
+      description: Порядок элементов — name asc, id asc (сравнение строк по collation БД).
       operationId: listProjectLabels
       tags:
         - labels
@@ -1923,6 +1932,7 @@ paths:
   /api/v1/projects/{projectId}/issues/{issueId}/labels:
     get:
       summary: Получение списка меток задачи
+      description: Порядок элементов — name asc, id asc (сравнение строк по collation БД).
       operationId: listIssueLabels
       tags:
         - labels
@@ -2059,6 +2069,7 @@ paths:
   /api/v1/projects/{projectId}/issues/{issueId}/watchers:
     get:
       summary: Получение списка подписчиков задачи
+      description: Порядок элементов — createdAt desc, id desc.
       operationId: listIssueWatchers
       tags:
         - watchers
@@ -2387,6 +2398,112 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadOnlyTableRowsResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/readonly/audit-entries:
+    get:
+      summary: Получение списка записей журнала аудита (только для GLOBAL_ADMIN)
+      description: >-
+        Постраничное чтение admin_audit_log с фильтрами. Записи отсортированы по createdAt по убыванию.
+        Sensitive-значения в oldValue/newValue замаскированы по тем же правилам, что и read-only API таблиц.
+        Журнал read-only: записи нельзя изменить или удалить через API.
+      operationId: listAuditEntries
+      tags:
+        - admin
+      security:
+        - bearerAuth: [ ]
+      parameters:
+        - name: page
+          in: query
+          description: Page number (0-based)
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: pageSize
+          in: query
+          description: Page size (1-100)
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: actorUserId
+          in: query
+          description: Фильтр по ID пользователя, выполнившего операцию (UUID)
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Фильтр по типу операции (например, USER_BLOCKED, RETRY_OUTBOX_EVENT)
+        - name: targetService
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Фильтр по целевому сервису — ключ каталога read-only API (auth, project, issue, workflow, notification, admin)
+        - name: targetTable
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Фильтр по целевой таблице
+        - name: targetId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Фильтр по ID целевого объекта
+        - name: requestId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Фильтр по requestId исходной операции — находит все записи одного запроса
+        - name: createdAtFrom
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+            example: "2026-10-01"
+          description: Начало периода (дата в формате yyyy-MM-dd, UTC, включительно — с начала дня)
+        - name: createdAtTo
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+            example: "2026-10-31"
+          description: Конец периода (дата в формате yyyy-MM-dd, UTC, включительно — до конца дня). Не может быть раньше createdAtFrom
+      responses:
+        '200':
+          description: Данные успешно получены
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAuditEntriesResponseDto'
         '400':
           $ref: '#/components/responses/ErrorResponse'
         '401':
@@ -2878,7 +2995,7 @@ components:
         displayName:
           type: string
         status:
-          type: string
+          $ref: '#/components/schemas/UserStatusDto'
         globalRole:
           $ref: '#/components/schemas/GlobalRoleTypeDto'
         avatar:
@@ -2898,13 +3015,13 @@ components:
       required: [issueType, summary, description, priority]
       properties:
         issueType:
-          type: string
+          $ref: '#/components/schemas/IssueTypeDto'
         summary:
           type: string
         description:
           type: string
         priority:
-          type: string
+          $ref: '#/components/schemas/IssuePriorityDto'
         storyPoints:
           type: number
           format: double
@@ -2943,15 +3060,16 @@ components:
         issueKey:
           type: string
         issueType:
-          type: string
+          $ref: '#/components/schemas/IssueTypeDto'
         summary:
           type: string
         description:
           type: string
         status:
           type: string
+          description: Открытый ключ статуса workflow проекта.
         priority:
-          type: string
+          $ref: '#/components/schemas/IssuePriorityDto'
         assigneeId:
           type: string
         reporterId:
@@ -2989,7 +3107,7 @@ components:
           minimum: 0
         labels:
           type: array
-          description: Метки задачи (краткая информация)
+          description: Порядок — name asc, id asc (сравнение строк по collation БД).
           items:
             $ref: '#/components/schemas/IssueLabelResponseDto'
 
@@ -3046,6 +3164,7 @@ components:
           nullable: true
         status:
           type: string
+          description: Открытый ключ статуса workflow проекта.
           example: "IN_PROGRESS"
         priority:
           $ref: '#/components/schemas/IssuePriorityDto'
@@ -3093,20 +3212,24 @@ components:
           minimum: 0
         labels:
           type: array
+          description: Порядок — name asc, id asc (сравнение строк по collation БД).
           items:
             $ref: '#/components/schemas/IssueLabelResponseDto'
         watchers:
           type: array
+          description: Порядок — createdAt desc, id desc.
           items:
             $ref: '#/components/schemas/IssueWatcherResponseDto'
         isWatching:
           type: boolean
         links:
           type: array
+          description: Порядок — createdAt asc, id asc.
           items:
             $ref: '#/components/schemas/IssueLinkResponseDto'
         attachments:
           type: array
+          description: Порядок — createdAt asc, id asc.
           items:
             $ref: '#/components/schemas/IssueAttachmentDto'
         commentCount:
@@ -3152,6 +3275,7 @@ components:
           format: uuid
         statusKey:
           type: string
+          description: Открытый ключ статуса из workflow проекта; набор не ограничен enum.
 
     IssueWithHistoryResponseDto:
       type: object
@@ -3174,9 +3298,9 @@ components:
         summary:
           type: string
         issueType:
-          type: string
+          $ref: '#/components/schemas/IssueTypeDto'
         priority:
-          type: string
+          $ref: '#/components/schemas/IssuePriorityDto'
         assigneeId:
           type: string
         storyPoints:
@@ -3190,6 +3314,7 @@ components:
           type: string
         statusKey:
           type: string
+          description: Открытый ключ статуса из workflow проекта; набор не ограничен enum.
 
 
     ListIssuesResponseDto:
@@ -3211,7 +3336,7 @@ components:
         description:
           type: string
         priority:
-          type: string
+          $ref: '#/components/schemas/IssuePriorityDto'
         storyPoints:
           type: number
           format: double
@@ -3298,7 +3423,7 @@ components:
         description:
           type: string
         priority:
-          type: string
+          $ref: '#/components/schemas/IssuePriorityDto'
         storyPoints:
           type: number
           format: double
@@ -3365,7 +3490,7 @@ components:
         targetIssueId:
           type: string
         viewLinkType:
-          type: string
+          $ref: '#/components/schemas/IssueLinkViewTypeDto'
         createdBy:
           type: string
         createdAt:
@@ -3514,6 +3639,7 @@ components:
       properties:
         watchers:
           type: array
+          description: Порядок — createdAt desc, id desc.
           items:
             $ref: '#/components/schemas/IssueWatcherResponseDto'
         totalCount:
@@ -3624,9 +3750,7 @@ components:
           type: string
           format: uuid
         notificationType:
-          type: string
-          description: Тип уведомления.
-          example: ISSUE_ASSIGNED,MEMBER_REMOVED etc.
+          $ref: '#/components/schemas/NotificationTypeDto'
         title:
           type: string
         body:
@@ -3655,6 +3779,7 @@ components:
 
     NotificationTypeDto:
       type: string
+      description: Все типы уведомлений; UNKNOWN — отсутствующий или неизвестный тип из сервиса.
       enum:
         - ISSUE_ASSIGNED
         - ISSUE_TRANSITIONED
@@ -3667,6 +3792,18 @@ components:
         - MEMBER_ADDED
         - MEMBER_UPDATED
         - MEMBER_REMOVED
+        - ISSUE_LINK_CREATED
+        - ISSUE_LINK_DELETED
+        - LABEL_ADDED
+        - LABEL_REMOVED
+        - USER_BLOCKED
+        - USER_UNBLOCKED
+        - ISSUE_COMMENT_CREATED
+        - ISSUE_COMMENT_UPDATED
+        - ISSUE_COMMENT_DELETED
+        - ISSUE_ATTACHMENT_ADDED
+        - ISSUE_ATTACHMENT_DELETED
+        - UNKNOWN
 
     SortOrderDto:
       type: string
@@ -3697,6 +3834,50 @@ components:
           type: object
           additionalProperties: true
           description: Строка таблицы
+
+    ListAuditEntriesResponseDto:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntryDto'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfoDto'
+
+    AuditEntryDto:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Идентификатор записи журнала
+        actorUserId:
+          type: string
+          format: uuid
+        actorLogin:
+          type: string
+        action:
+          type: string
+        targetService:
+          type: string
+        targetTable:
+          type: string
+        targetId:
+          type: string
+        oldValue:
+          type: string
+          description: Состояние объекта до операции — JSON-строка с замаскированными sensitive-значениями
+        newValue:
+          type: string
+          description: Состояние объекта после операции — JSON-строка с замаскированными sensitive-значениями
+        reason:
+          type: string
+        requestId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
 
     PaginationInfoDto:
       type: object
@@ -3920,6 +4101,7 @@ components:
             $ref: '#/components/schemas/ProjectMemberDetailsDto'
         labels:
           type: array
+          description: Порядок — name asc, id asc (сравнение строк по collation БД).
           items:
             $ref: '#/components/schemas/ProjectLabelResponseDto'
         workflows:
@@ -3938,6 +4120,7 @@ components:
           $ref: '#/components/schemas/WorkflowResponseDto'
 
     RestErrorResponse:
+      description: Ошибка API; details содержит необязательные машиночитаемые параметры ошибки.
       type: object
       required: [code, message]
       properties:
@@ -3945,6 +4128,14 @@ components:
           type: string
         message:
           type: string
+        details:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: string
+          description: Параметры ошибки. Для временной блокировки lockedUntil — время разблокировки в ISO 8601 UTC.
+          example:
+            lockedUntil: '2026-09-22T11:55:50.398486Z'
 
     IssueTypeDto:
       type: string
@@ -3967,16 +4158,29 @@ components:
         - RELATES_TO
         - DUPLICATES
 
+    IssueLinkViewTypeDto:
+      type: string
+      description: Направление связи относительно текущей задачи; значения существующего REST-ответа с gRPC-префиксом.
+      enum:
+        - ISSUE_LINK_VIEW_TYPE_UNSPECIFIED
+        - ISSUE_LINK_VIEW_TYPE_RELATES_TO
+        - ISSUE_LINK_VIEW_TYPE_BLOCKS
+        - ISSUE_LINK_VIEW_TYPE_IS_BLOCKED_BY
+        - ISSUE_LINK_VIEW_TYPE_DUPLICATES
+        - ISSUE_LINK_VIEW_TYPE_IS_DUPLICATED_BY
+        - UNRECOGNIZED
+
     SearchIssuesRequestDto:
       type: object
       properties:
         query:
           type: string
-          minLength: 2
+          minLength: 3
         projectId:
           type: string
         statusKey:
           type: string
+          description: Открытый ключ статуса из workflow проекта; набор не ограничен enum.
         assigneeId:
           type: string
         reporterId:
@@ -4055,11 +4259,11 @@ components:
         updatedAt:
           type: string
           format: date-time
-          nullable: true
-          description: Дата и время последнего обновления
+          nullable: false
+          description: Проставляется при создании и равен createdAt, пока комментарий не редактировали; после правки строго больше createdAt.
         version:
           type: integer
-          description: Версия комментария (для оптимистической блокировки)
+          description: Версия для оптимистической блокировки — 1 при создании, увеличивается на 1 при каждом изменении, включая мягкое удаление.
 
     CommentsListResponseDto:
       type: object
@@ -4114,13 +4318,13 @@ components:
           format: uuid
         statusKey:
           type: string
-          description: Уникальный строковый ключ статуса (например, TODO, IN_PROGRESS)
+          description: Открытый ключ статуса из workflow проекта; набор не ограничен enum.
         name:
           type: string
           description: Отображаемое имя статуса для UI
         category:
           type: string
-          description: Категория жизненного цикла статуса (без жесткого ограничения enum в схеме для расширяемости)
+          description: Открытая категория workflow; набор намеренно не ограничен enum.
         sortOrder:
           type: integer
           format: int32
@@ -4602,6 +4806,7 @@ components:
         - ACTIVE
         - BLOCKED
         - LOCKED
+        - UNSPECIFIED
 
     MetaResponseDto:
       type: object
@@ -4704,10 +4909,12 @@ components:
       properties:
         statusKey:
           type: string
+          description: Открытый ключ статуса из workflow проекта; набор не ограничен enum.
         name:
           type: string
         category:
           type: string
+          description: Открытая категория workflow; набор намеренно не ограничен enum.
         sortOrder:
           type: integer
           format: int32
@@ -4734,6 +4941,7 @@ components:
           $ref: '#/components/schemas/BoardUserDto'
         labels:
           type: array
+          description: Идентификаторы меток в порядке id asc.
           items:
             type: string
 

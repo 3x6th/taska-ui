@@ -55,10 +55,10 @@ export const adminSections: AdminSection[] = [
   // 2026-09-08, TAS-196), so the writes now reach the service instead of
   // falling through to a 404.
   { id: "users", label: "Users", path: "/admin/users", icon: Users, stories: [], readOnly: false },
-  // Built in TAS-251 against backend PR #172 (TAS-160), which is not served by
-  // the gateway yet: the section says so itself (`AdminAuditSection`) rather
-  // than standing behind the placeholder, so the day the route answers nothing
-  // here has to change. It only reads, and carries the marker.
+  // Built in TAS-251 against backend PR #172 (TAS-160), and served since its
+  // successor, PR #197, deployed on 2026-10-19. A gateway without the route is
+  // still said by the section itself (`AdminAuditSection`) rather than by a
+  // placeholder. It only reads, and carries the marker.
   { id: "audit", label: "Audit", path: "/admin/audit", icon: ScrollText, stories: [], readOnly: true },
 ];
 

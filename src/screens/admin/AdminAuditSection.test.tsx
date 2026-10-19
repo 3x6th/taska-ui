@@ -11,9 +11,9 @@ import { AdminAuditSection } from "./AdminAuditSection";
 /**
  * The Audit section (TAS-251). The log is read from a **real `MockTaskaApi`**
  * signed in as its GLOBAL_ADMIN, so filters, date bounds and paging are the
- * mock's reproduction of what the server is meant to do; only the answers the
- * mock cannot give — a gateway that does not serve the route, a head that
- * ignores paging — are put on top.
+ * mock's reproduction of what the server does (backend PR #197); only the
+ * answers the mock cannot give — a gateway that does not serve the route, a
+ * page of the caller's own making — are put on top.
  */
 const { fakeApi, useMock, setFailure, setAnswer, queries } = vi.hoisted(() => {
   const state: {
@@ -80,6 +80,7 @@ function renderAudit(path = "/admin/audit") {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 const table = () => screen.findByRole("table", { name: "Audit entries" });
@@ -197,9 +198,11 @@ describe("the Audit section", () => {
     const detail = document.getElementById(toggle.getAttribute("aria-controls")!)!;
     const old = within(detail).getByRole("figure", { name: "Old value" });
     const next = within(detail).getByRole("figure", { name: "New value" });
-    // Pretty-printed, and the masked value printed as the server sent it.
+    // Pretty-printed, and the masked value printed as the server sent it — in
+    // the order the server sent the keys, which is jsonb's (shorter first),
+    // not the order they were written in.
     expect(old.querySelector("pre")!.textContent).toBe(
-      JSON.stringify({ status: "LOCKED", failedAttempts: 5, passwordHash: "***" }, null, 2),
+      JSON.stringify({ status: "LOCKED", passwordHash: "***", failedAttempts: 5 }, null, 2),
     );
     expect(next.querySelector("pre")!.textContent).toContain('"status": "ACTIVE"');
     expect(within(detail).getByRole("button", { name: /Copy request id/ })).toBeVisible();
@@ -212,6 +215,7 @@ describe("the Audit section", () => {
     setAnswer({
       entries: [
         {
+          id: null,
           actorUserId: null,
           actorLogin: "mark",
           action: "CREATE_INVITATION",
@@ -238,7 +242,43 @@ describe("the Audit section", () => {
     expect(next.querySelector("pre")!.textContent).toBe("JsonByteArrayInput{token=***}");
   });
 
-  it("draws every row the server sends, when it ignores the page size", async () => {
+  it("keeps the same entry open when a refetch puts a newer one on top, even among entries that say the same thing", async () => {
+    // Entries identical but for their ids: named by what they say, they could
+    // only be told apart by position, and a new entry on top moves every
+    // position by one — the open row would silently become its neighbour.
+    const { entries } = await (async () => {
+      const mock = new MockTaskaApi();
+      await mock.login({ email: "mark@example.com", password: "anything" });
+      return mock.listAuditEntries({ action: "BLOCK_USER", pageSize: 1 });
+    })();
+    const same = (id: string) => ({ ...entries[0], id });
+    const page = (ids: string[]) => ({
+      entries: ids.map(same),
+      pagination: { currentPage: 1, pageSize: 20, totalRows: ids.length, totalPages: 1, hasNext: false, hasPrev: false },
+    });
+    const ids = ["0000000a-0000-4000-8000-000000000000", "0000000b-0000-4000-8000-000000000000"];
+    setAnswer(page(ids));
+    const client = renderAudit();
+    const grid = await table();
+
+    // The second of the two.
+    fireEvent.click(within(bodyRows(grid)[1]).getByRole("button", { name: /^Changes of BLOCK_USER/ }));
+    expect(within(bodyRows(grid)[1]).getByRole("button", { name: /^Changes of BLOCK_USER/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+
+    setAnswer(page(["0000000c-0000-4000-8000-000000000000", ...ids]));
+    await client.invalidateQueries();
+
+    // Two entry rows and an open detail became three entry rows and the
+    // detail — still under the second of the two, now third on the page.
+    await waitFor(() => expect(bodyRows(screen.getByRole("table", { name: "Audit entries" }))).toHaveLength(4));
+    const toggles = screen.getAllByRole("button", { name: /^Changes of BLOCK_USER/ });
+    expect(toggles.map((toggle) => toggle.getAttribute("aria-expanded"))).toEqual(["false", "false", "true"]);
+  });
+
+  it("draws every row the server sends, whatever the page size said", async () => {
     const mock = new MockTaskaApi();
     await mock.login({ email: "mark@example.com", password: "anything" });
     const { entries } = await mock.listAuditEntries({ pageSize: 26 });
@@ -251,22 +291,30 @@ describe("the Audit section", () => {
     expect(bodyRows(await table())).toHaveLength(26);
   });
 
-  for (const [what, failure] of [
-    ["a 501", new ApiError("Method not implemented", "UNIMPLEMENTED", 501)],
-    ["the static-resource 404", new ApiError("No static resource api/v1/readonly/audit-entries.", "NOT_FOUND", 404)],
-  ] as const) {
-    it(`says the gateway does not serve the log yet on ${what}, not that it failed or is empty`, async () => {
-      setFailure(failure);
-      renderAudit();
+  it("says a gateway without the route does not serve the log yet, not that it failed or is empty", async () => {
+    // What a gateway older than backend PR #197 answers: Spring's
+    // static-resource 404, which `isUndeployedRoute` reads.
+    setFailure(new ApiError("No static resource api/v1/readonly/audit-entries.", "NOT_FOUND", 404));
+    renderAudit();
 
-      const notice = await screen.findByText(/does not serve the audit log yet/);
-      expect(notice.closest("[role=status]")).not.toBeNull();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-      expect(screen.queryByRole("table")).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Filter" })).not.toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "TAS-160" })).toBeVisible();
-    });
-  }
+    const notice = await screen.findByText(/does not serve the audit log yet/);
+    expect(notice.closest("[role=status]")).not.toBeNull();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Filter" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "TAS-160" })).toBeVisible();
+  });
+
+  it("states a 501 as the failure it is now, not as a route that is not served", async () => {
+    // The mapped-but-empty route a pre-merge draft would have answered with
+    // never shipped; a 501 today is an error like any other, with its retry.
+    setFailure(new ApiError("Method not implemented", "UNIMPLEMENTED", 501));
+    renderAudit();
+
+    // After the one retry a fault gets, which is what the longer wait is for.
+    expect(await screen.findByRole("alert", undefined, { timeout: 4000 })).toBeVisible();
+    expect(screen.queryByText(/does not serve the audit log yet/)).not.toBeInTheDocument();
+  });
 
   it("states a refusal for an account the server does not take as a global admin", async () => {
     const mock = new MockTaskaApi();

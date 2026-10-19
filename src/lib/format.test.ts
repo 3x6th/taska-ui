@@ -469,8 +469,9 @@ describe("commentWasEdited", () => {
   });
 
   it("does not call a comment edited when the server stated no update at all", () => {
-    // `CommentResponseDto.updatedAt` is `nullable: true`. Today's gateway never
-    // sends it, and the domain type carries the case regardless.
+    // `CommentResponseDto.updatedAt` is `nullable: false` since backend PR #200
+    // but not `required`, so an answer may still lack it; the domain type
+    // carries that case as `null`.
     expect(commentWasEdited({ createdAt, updatedAt: null })).toBe(false);
   });
 

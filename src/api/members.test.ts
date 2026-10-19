@@ -400,6 +400,7 @@ describe("RestTaskaApi member writes", () => {
       status: 409,
       requestId: "req-409",
       message: `User with id: ${MARK} already exists in project: ${TASKA}`,
+      details: null,
     });
   });
 
