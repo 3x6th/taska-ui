@@ -328,9 +328,12 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   none of it. TAS-200 covers the threshold half of that exposure; this half is
   covered by nothing. A backend change to that ordering would silently make the
   dialog's wording wrong, and nothing here would notice. **Still open after
-  TAS-263:** backend PR #195 (TAS-200, head `45c22ee`, open) delivers the
-  threshold half — a required `retryable` on each problem row and the rule
-  stated on the retry route — and says nothing about the ordering.
+  TAS-263:** backend PR #195 (TAS-200) delivers the threshold half — a required
+  `retryable` on each problem row and the rule stated on the retry route — and
+  says nothing about the ordering. It merged as `447a7ed` and deployed
+  2026-10-19; the problematic summary carries `retryable` on every event
+  (probed, `c28ef6d3-83df-48fb-a4af-821cdc731ea9`). The ordering half is
+  unchanged.
 - **`userWriteFailure` now serves two sections and is named for one**
   (`frontend-builder`, 2026-09-08, TAS-194). The outbox retry dialog imports it
   from `src/screens/admin/users.ts` rather than copying it, which is right — its
@@ -2591,8 +2594,10 @@ is what recurs.
   **Closed by [TAS-263](https://jira.ozero.dev/browse/TAS-263) (`aac71ed`):**
   `requireWatcherRoleFor` follows `checkMutationRole`, so the mock lets a MEMBER
   act on themselves as issue-service does. The backend chose to describe its
-  code: once backend PR #194 (TAS-228, head `a33ed5d`, open) merges, the
-  contract says the same. Until then develop's text still says ADMIN-only.
+  code: backend PR #194 (TAS-228) merged as `95b1f35` on 2026-10-19, and the
+  snapshot refreshed to develop `7d4f7395565c` says the same — a caller's own
+  `userId` is checked against `watch-issue-roles`, another's against
+  `manage-watchers-roles`. Contract text only, so there is nothing to probe.
 - **The mock checks no caller role on create, update, transition, delete,
   links, comments, or the actor half of assign** (`builder`, `release-reviewer`,
   TAS-226). It does check attachment uploads (`requireUploadRole`) and watcher
@@ -2970,12 +2975,15 @@ Frontend, recorded rather than taken:
   `@Modifying` on the `DELETE`) and the missing `ISSUE_UNWATCHED` event were added
   as a comment the same night. The panel's neutral notice is therefore wrong on
   every real unwatch until TAS-234 lands; no client compensation, by design.
-  **Fixed at backend PR #188 head `8fe3478` (TAS-234, open; read, not
-  probed):** `@Modifying` on `deleteByIssueIdAndUserId`, `removed=true` on a
-  real unwatch, and the `ISSUE_UNWATCHED` outbox event is written
-  (notification-service ignores it). No frontend change. Strike this line once
-  #188 merges and one real unwatch on the stand no longer draws "You were not
-  watching this issue".
+  **Fixed by backend PR #188 (TAS-234): merged as `0330028` and deployed
+  2026-10-19; read in code, not probed** (the probe is a real unwatch, which
+  changes state, and the 2026-10-19 pass sent only reads). The fix, read at
+  head `8fe3478`: `@Modifying` on `deleteByIssueIdAndUserId`, `removed=true` on
+  a real unwatch, and the `ISSUE_UNWATCHED` outbox event is written
+  (notification-service ignores it). No frontend change: the panel draws the
+  sentence only on `removed: false` (`BoardScreen.tsx` ~2789). Strike this line
+  once one real unwatch on the stand no longer draws "You were not watching
+  this issue".
 - **Deleting an issue leaves stale link rows elsewhere for up to `staleTime`**
   (found fixing the double re-read, 2026-10-08, pre-existing): `deleteIssue`
   skips the project-wide `["issue", projectId]` invalidation so the closing
@@ -3142,12 +3150,13 @@ where it has an entry.
   and add `ORDER BY created_at`. Low.
 - ~~**C12: extend [TAS-228](https://jira.ozero.dev/browse/TAS-228) to `PATCH`.**~~
   **Now an ask of its own, ready to file** (`api-contract-guard`, TAS-263):
-  TAS-228 was not extended, and backend PR #194 (head `a33ed5d`, open)
-  documents the four watcher routes, `PUT …/assignee` and `PUT /issues/{issueId}`
-  but not `PATCH` — the only issue write the client sends
+  TAS-228 was not extended, and backend PR #194 (merged as `95b1f35` on
+  2026-10-19) documents the four watcher routes, `PUT …/assignee` and `PUT
+  /issues/{issueId}` but not `PATCH` — the only issue write the client sends
   (`RestTaskaApi.ts` ~1292). Title: "openapi: state the roles on `PATCH
   /api/v1/issues/{issueId}`".
-  - As-is: the description (`openapi.yml` ~817-827 at `a33ed5d`) names no role.
+  - As-is: the description (`openapi.yml` ~817-827 at `a33ed5d`; ~830-840 in
+    the snapshot at develop `7d4f7395565c`) names no role.
     The service (`IssuePatchServiceImpl.java:48-51, 54-58, 87-101`, unchanged at
     develop `4277199`) checks `update-issue-roles` for the caller on every
     `PATCH` before the `If-Match` compare, so 403 comes before 409; when
@@ -3156,8 +3165,8 @@ where it has an entry.
   - To-be: the description says those three things, with the two 403 texts —
     "Access denied" (not a member) and "Not allowed role".
   - Layer: openapi, doc only. Precedent: #194's `assignIssue` text.
-  - Dependency: none; file it after #194 merges, so the two do not conflict in
-    one file.
+  - Dependency: none. It was held until #194 merged, so the two would not
+    conflict in one file; #194 has merged, so it can be filed.
   - Epic child: none — new, or reopen TAS-228's scope.
   - Removes: the missing `PATCH` removal key in the TAS-226 watcher/assignee
     entry of `API-DIVERGENCE.md`, so the compensation on the assignee chips
@@ -3334,9 +3343,12 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
 
 From `api-contract-guard`'s verdicts on the PR heads — the first pass on
 2026-10-16, then #186, #193 and #194 re-read at their new heads with the
-skeptics' and the critic's corrections taken. None of #184–#195 is merged, and
-backend develop is `4277199`. Everything below was read from code. None of it
-was probed on the stand.
+skeptics' and the critic's corrections taken, at backend develop `4277199`.
+Everything below was read from code at those heads. All of #184–#195 merged on
+2026-10-19, each at the head read here (#189's moved to `29d8a49`, a merge of
+develop, infra only), and the stand deployed develop `7d4f7395565c` the same
+day. An entry says what has since been probed, with the request id; whatever
+does not say so was not probed.
 
 From the role verdicts on the branch (2026-10-17), not taken in this PR:
 
@@ -3430,7 +3442,11 @@ Frontend, recorded rather than taken:
   way the context does, and no screen calls three of them (see the top of this
   file). From the #186 skeptic.
 - **A degraded `/users/me` 200 carries its request id only in `X-Request-Id`,
-  and the client reads that header only on errors** (#193). After #193 deploys,
+  and the client reads that header only on errors** (#193). #193 merged as
+  `b88150f` and deployed 2026-10-19; a healthy read carries `avatar` and
+  `avatarUnavailable: false` (probed,
+  `0f9c038b-d0d5-458f-98b0-adb3af15d13f`), and a degraded one has not been seen
+  on the wire. When it comes,
   `avatarUnavailable: true` arrives on a 200 whose id is in the exposed header
   (`GatewayRequestExecutor.java:44`, `application.yml:74`). `RestTaskaApi.request`
   (~2581) ignores the header on a success, so the only way to match "Your photo
@@ -3495,9 +3511,10 @@ Backend, no ask:
   - To-be: a `.timeout(...)` well under that deadline on the enrichment `Mono`,
     placed before the existing `onErrorResume` (:43), so that slowness degrades
     to `avatarUnavailable: true` instead of delaying first paint.
-  - Layer: gateway service. Dependency: #193 merged. Epic child: a TAS-223
-    follow-up, or new under TAS-210.
-  - Measure after #193 deploys, before filing.
+  - Layer: gateway service. Dependency: #193, merged as `b88150f` and deployed
+    2026-10-19. Epic child: a TAS-223 follow-up, or new under TAS-210.
+  - Measure before filing. #193 is deployed now; the 2026-10-19 probe checked
+    the fields, not the latency.
 - **The orphan-avatar state logs a stack trace on every `/users/me`** (low;
   log volume, not correctness). For a user in the
   [TAS-221](https://jira.ozero.dev/browse/TAS-221) state (an avatar row whose
@@ -3549,16 +3566,27 @@ Backend, no ask:
     three routes, plus an explicit "404: проект не найден". The precedent is
     `openapi.yml:465`, "Доступ запрещен (требуется роль GLOBAL_ADMIN)".
   - Layer: openapi, doc only.
-  - Dependency: #186 for `/context` and `/projects/{id}`; #190 for `/workflow`.
+  - Dependency: none left. It waited on #186 for `/context` and
+    `/projects/{id}` and on #190 for `/workflow`; #186 merged as `055d01b` and
+    #190 as `f34e504` on 2026-10-19, both deployed, and the three texts are
+    unchanged in the snapshot at develop `7d4f7395565c`. The non-member 403
+    itself is read in code, not probed (the probing account is a member of all
+    12 projects); `/workflow` on an unknown project answers 404 `NOT_FOUND`
+    "Project not found" (probed, `a4f42dc3-9166-4a09-a3b0-31d5f105bfa7`).
   - Epic child: a TAS-212 follow-up.
 
-**Contract-text comments for the open PRs.** These are doc only, and none needs
-a story.
+**Contract-text comments on #184, #193, #194 and #195.** These are doc only,
+and none needs a story. All four PRs merged on 2026-10-19 with these texts as
+read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
 
 - **#184 (TAS-232):** the column filter's description says nothing about the
   uuid rule. A uuid column takes only equals, and a value outside the canonical
   8-4-4-4-12 form (matched case-insensitively) is 400 `INVALID_ARGUMENT`
   "Invalid UUID value for column '<c>': expected UUID in 8-4-4-4-12 format".
+  The rule is on the wire as read, in the mock's exact sentences (probed
+  2026-10-19: an uppercase id matches, `aa900e4a-a05e-4ab3-b758-fda74f99625e`;
+  a malformed one is refused, `9d5d2fea-a176-42d9-b528-865612de2b82`;
+  `contains` on the column is refused, `3bff2518-2679-44ee-a105-f69be4b34a63`).
   Low; a comment on TAS-232.
 - **#193 (TAS-223):**
   - `openapi.yml:2792` calls the profile "временно недоступен". The TAS-221

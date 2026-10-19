@@ -111,9 +111,6 @@ was written against it.
 | --- | --- | --- | --- |
 | `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
 | `pr-172-TAS-160.yml` | [#172](https://github.com/VladislavYurin/taska-backend/pull/172) | TAS-160 | TAS-251 |
-| `pr-193-TAS-223.yml` | [#193](https://github.com/VladislavYurin/taska-backend/pull/193) | TAS-223 | TAS-263 |
-| `pr-194-TAS-228.yml` | [#194](https://github.com/VladislavYurin/taska-backend/pull/194) | TAS-228 | TAS-263 |
-| `pr-195-TAS-200.yml` | [#195](https://github.com/VladislavYurin/taska-backend/pull/195) | TAS-200 | TAS-263 |
 
 `pr-118-TAS-125.yml` was here for TAS-125 / TAS-191 and was deleted on 2026-09-09
 when backend PR #118 merged and the snapshot was refreshed to develop
@@ -157,3 +154,21 @@ five attachment paths and six schemas from #147, and from #152 the members `GET`
 without a token: `GET …/members` and `GET …/attachments` answered 401, with
 `GET /users/me` answering 401 as the control. Before the deploy they answered 405
 and the static-resource 404.
+
+`pr-193-TAS-223.yml` (TAS-223 / TAS-263), `pr-194-TAS-228.yml` (TAS-228 /
+TAS-263) and `pr-195-TAS-200.yml` (TAS-200 / TAS-263) were deleted together on
+2026-10-19, in TAS-263, when backend PRs #193, #194 and #195 merged as merge
+commits `b88150f`, `95b1f35` and `447a7ed` and the snapshot was refreshed to
+develop `7d4f7395565c`. Every block of the three extracts is byte-identical on
+develop, checked block by block against the pinned heads `3bd33ca`, `a33ed5d`
+and `45c22ee`. The refreshed snapshot also
+gained `GET /api/v1/meta` and its six `MetaResponseDto` / `*MetaPairDto`
+schemas from #196 (TAS-217), which no extract pinned and no screen calls yet.
+Two of the three were measured deployed the same day with a token: `GET
+/users/me` carries `avatar` and `avatarUnavailable`
+(`0f9c038b-d0d5-458f-98b0-adb3af15d13f`), and the problematic summary carries
+`retryable` on every event (`c28ef6d3-83df-48fb-a4af-821cdc731ea9`); #194 is
+contract text only. Backend PR #172 closed unmerged and was replaced by #197
+(TAS-160), so `pr-172-TAS-160.yml` now pins a closed PR and is left for the
+next pass, which re-extracts #197, rather than deleted under the rule above.
+`pr-155-TAS-145.yml` stays stale, as `docs/ai/BACKLOG.md` records.
