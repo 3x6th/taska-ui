@@ -557,6 +557,13 @@ textarea:disabled {
   text-wrap: pretty;
 }
 
+/* The invitation's email hint empties on the first keystroke ("Enter an email
+   address." is only said while there is none); one line's height stays, so the
+   name field and the footer under it do not jump by it. */
+.admin-field-hint {
+  min-height: calc(11.5px * 1.4);
+}
+
 /* New password with its show-password toggle inside the box (§4.27): the
    input keeps 40 on the right for the 28 button, which sits 5 in from each
    edge it touches — (38 − 28) / 2 vertically. Ghost, hover and ring are
@@ -3453,6 +3460,16 @@ p.user-profile-photo-note:not(.is-error) {
   font-size: 12.5px;
   line-height: 1.55;
   text-wrap: pretty;
+}
+
+/* "Send invitation" is `aria-disabled` rather than `disabled` while the address
+   is empty or the request is out (§4.21: focus stays), and takes
+   `button:disabled`'s look back by hand, as the members dialog's Add does —
+   at full accent it read as ready. The Resend confirmation has no field to be
+   empty and keeps its primary as it is. */
+.admin-invite-form .modal-actions .primary-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 /* §4.1's secondary button, sized for §5.8's density — *not* a second one built

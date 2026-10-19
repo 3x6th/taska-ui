@@ -464,6 +464,34 @@ describe("ProjectMembersModal", () => {
     expect(within(dialog()).getByText("21 people.")).toBeVisible();
   });
 
+  it("keeps the results box out of the Tab order: field, Show more, Role, Add", async () => {
+    state.extraPeople = Array.from({ length: 21 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      displayName: `Tester ${String(index).padStart(2, "0")}`,
+      email: `tester${index}@example.com`,
+    }));
+    renderPanel();
+    await within(dialog()).findByText("Mark Lee");
+    await searchFor("tester", "Tester 00");
+
+    // A scrolling box is keyboard-focusable in Chromium by itself once its rows
+    // overflow; -1 keeps it a box, and focus in the field (e2e/members.spec.ts
+    // measures the overflow itself).
+    const box = within(dialog()).getByRole("listbox", { name: "People" }).parentElement as HTMLElement;
+    expect(box).toHaveClass("member-search", "is-open");
+    expect(box).toHaveAttribute("tabindex", "-1");
+    // The add form's Tab stops, in document order.
+    const tabbable = Array.from(
+      dialog().querySelector("form")!.querySelectorAll<HTMLElement>("input, select, button, [tabindex]"),
+    ).filter((element) => element.tabIndex >= 0);
+    expect(tabbable).toEqual([
+      searchField(),
+      within(dialog()).getByRole("button", { name: "Show more" }),
+      within(dialog()).getByLabelText("Role"),
+      within(dialog()).getByRole("button", { name: "Add" }),
+    ]);
+  });
+
   it("closes the results on the first Esc and keeps the text; the next Esc closes the dialog", async () => {
     const { onClose } = renderPanel();
     await within(dialog()).findByText("Mark Lee");

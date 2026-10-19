@@ -965,9 +965,18 @@ export function ProjectMembersModal({
                   a second elevation inside the modal's, and would cover the
                   list its "Already a member" marks are about. Always mounted,
                   and empty and heightless while closed, so its one live region
-                  is never mounted together with its words. */}
+                  is never mounted together with its words.
+
+                  `tabIndex={-1}`: Chromium makes a scrolling box keyboard-
+                  focusable on its own once its rows overflow the 242, which put
+                  a Tab stop between the field and Show more, drawn with the
+                  system's `outline: auto`, and let the arrows scroll the box
+                  instead of moving the active row. Focus belongs in the field
+                  for the life of the combobox; the box scrolls through
+                  `scrollIntoView` on the active row. */}
               <div
                 className={`member-search${boxOpen ? " is-open" : ""}${boxOpen && searchFailed ? " is-error" : ""}`}
+                tabIndex={-1}
               >
                 <p
                   aria-live="polite"

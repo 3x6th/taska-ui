@@ -1002,10 +1002,13 @@ Same rule as above: "Closed by" is settled, the rest is live.
   is `NOTIFICATION_INVITATION_ACCEPT_URL` + `?token=` (a fragment in the URL is
   refused at startup, `InvitationEmailQueue.java:39`), and the default URL is
   `http://localhost:3001/login`. **Compensation:** the client captures `token`
-  from `location.search` on any path, and from the query inside the hash,
-  before the router mounts, strips it with `replaceState` and lands on
-  `/invite` (`src/lib/inviteLink.ts`, DESIGN.md §4.27). **Removal:** the stand's
-  accept URL set to `https://taska.ozero.dev/` (config; comment on TAS-204) —
+  from `location.search` on any path the app is served on, and from the query
+  inside the hash, before the router mounts, strips it with `replaceState` and
+  lands on `/invite` (`src/lib/inviteLink.ts`, DESIGN.md §4.27). **On GitHub
+  Pages only the root serves `index.html`** — any other path is a static 404 and
+  no client code runs — so the accept URL must be exactly the Pages root
+  (`release-reviewer`, measured). **Removal:** the stand's accept URL set to
+  `https://taska.ozero.dev/` (config; comment on TAS-204) —
   the capture stays, since a query link is the contract. A fragment link
   (`#/invite?token=`) would keep the token out of the static host's logs: a
   candidate ask, not filed.
@@ -1027,6 +1030,20 @@ Same rule as above: "Closed by" is settled, the rest is live.
   with this email already exists" (`AdminInviteUserServiceImpl.java:65`). The
   sign-in hint says so honestly (DESIGN.md §4.27). Candidate ask: a reset link
   over the same tokens and mail queue. Not filed — the owner's call.
+- **The six password refusals of accept differ only in their text, and the
+  policy is configurable but not served** (`api-contract-guard`, TAS-297 F1).
+  All six are `400 INVALID_ARGUMENT` with no field pointer (`PasswordValidator`,
+  `AuthServiceImpl.setPasswordByToken`, develop `e8a8d316`); the policy (minimum
+  length and character classes) comes from auth-service env with no route that
+  serves it. **Compensations, both on the invite form:** `isPasswordRefusal`
+  marks New password `aria-invalid` when the message starts with "Password" — a
+  branch chosen by prose, against this file's own rule, accepted because the
+  only thing lost on a reword is the field marker (the sentence itself always
+  prints verbatim); and `PASSWORD_HINT` copies auth-service's default policy
+  (8 characters, an upper-case letter, a digit, a symbol). **Removal:** candidate
+  ask — `PasswordValidator` raises `details {field: "newPassword", rule, min,
+  max}` through the existing `taska-error-details` transport (#199), and the
+  policy is served (e.g. in `/meta`). Not filed; in BACKLOG "Left by TAS-297".
 
 ### Closed by contract (TAS-297): accepting an invitation does not produce a session
 
@@ -5121,8 +5138,9 @@ the contract leaves open:
 
 **Dead: the review was open on an access-control gap.** PR #118 merged, and the
 gap it was held for is closed one level below the gateway rather than in it. The
-gateway still checks nothing itself — `BoardServiceImpl` zips workflow and
-issues — but `IssueServiceImpl.listIssueBoard` opens with
+gateway still checks nothing itself — `BoardServiceImpl` reads the workflow,
+then the issues filtered by its DONE-category keys (sequential since #202, one
+more round trip) — but `IssueServiceImpl.listIssueBoard` opens with
 `projectRoleChecker.checkProjectRole(requestId, nodeId, projectId, actorUserId,
 listIssueRoles)`, the same call `listIssues` makes, and `workflow-service`
 carries its own `ProjectRoleChecker`. **What a non-member sees is read, not

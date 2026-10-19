@@ -61,8 +61,12 @@ function InviteRefusal({ error, email, existsText }: { error: unknown; email: st
             : failure === "server"
               ? "The gateway failed while inviting. Nothing is wrong with what was asked for — this is a fault on the server, and the request id below is what identifies it in the gateway log."
               : "The admin API could not be reached, so the invitation may or may not have been made. The list behind this dialog says which, once it can be read again.";
+  // The server's words only when a server answered: on the 400 they already
+  // are the sentence, and with nothing reached the "message" is the browser's
+  // own ("Failed to fetch"), which is not the gateway's to be quoted as.
+  const serverWords = failure === "rejected" || failure === "unreachable" ? null : message;
   return (
-    <ErrorNote live="alert" requestId={requestId} serverWords={failure === "rejected" ? null : message}>
+    <ErrorNote live="alert" requestId={requestId} serverWords={serverWords}>
       {sentence}
     </ErrorNote>
   );
@@ -91,7 +95,7 @@ export function AdminInviteUserModal({
   /**
    * An invitation that queued an email, the address it was made for as the
    * server holds it, and whether it was the "Send new link" that followed a
-   * live link — whose outcome is not "their link had expired".
+   * live link — whose outcome is not "did not have a working link".
    */
   onDone: (result: InvitationResult, email: string, resent: boolean) => void;
 }) {
@@ -145,7 +149,7 @@ export function AdminInviteUserModal({
   return (
     <Modal onClose={onClose} title="Invite user">
       <form
-        className="form-stack"
+        className="form-stack admin-invite-form"
         // The server judges the address, in its own sentence (§5.8); the
         // browser's bubble would answer first and in other words.
         noValidate
@@ -234,8 +238,9 @@ export function AdminInviteUserModal({
  * one sent earlier — that cannot be undone, hence the question. The Users
  * confirmation recipe without the reason field: the route takes none.
  *
- * A 409 here means the person set a password between the list and the press;
- * the list is read again (`onStale`) so the row stops offering this.
+ * A 409 here means the account stopped being INVITED between the list and the
+ * press — activated, locked or blocked; the list is read again (`onStale`) so
+ * the row stops offering this.
  */
 export function AdminResendInviteModal({
   user,
@@ -285,7 +290,9 @@ export function AdminResendInviteModal({
           <InviteRefusal
             email={user.email}
             error={run.error}
-            existsText={`${name} has already set a password, so there is nothing to resend.`}
+            // A 409 is any account that is not INVITED — ACTIVE, LOCKED or
+            // BLOCKED — so it says what that means, not which of them it is.
+            existsText={`${name} can no longer be invited — the account is no longer waiting for activation.`}
           />
         ) : null}
 

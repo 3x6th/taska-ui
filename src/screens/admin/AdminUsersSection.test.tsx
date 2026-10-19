@@ -551,7 +551,7 @@ describe("the admin Users section, inviting", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(statusLine()).toHaveTextContent(/^ivy@example\.com was already invited\. Their link had expired, so a new one is queued;/);
+    expect(statusLine()).toHaveTextContent(/^ivy@example\.com was already invited but did not have a working link, so a new one is queued;/);
   });
 
   it("refuses an address that already has an account, with the server's words under the sentence", async () => {
@@ -611,7 +611,7 @@ describe("the admin Users section, inviting", () => {
     expect(rowFor("Leo Fischer")).toHaveClass("is-changed");
   });
 
-  it("says there is nothing to resend to somebody who has set a password since, and reads the list again", async () => {
+  it("says an account that stopped waiting for activation can no longer be invited, and reads the list again", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: "Resend invite to Leo Fischer" }));
     const dialog = await screen.findByRole("dialog", { name: "Resend invitation" });
@@ -621,7 +621,7 @@ describe("the admin Users section, inviting", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Send new link" }));
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "Leo Fischer has already set a password, so there is nothing to resend.",
+      "Leo Fischer can no longer be invited — the account is no longer waiting for activation.",
     );
     await waitFor(() =>
       expect(within(rowFor("Leo Fischer")).queryByRole("button", { name: "Resend invite to Leo Fischer" })).toBeNull(),
@@ -635,5 +635,8 @@ describe("the admin Users section, inviting", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Send invitation" }));
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(/^The admin API could not be reached/);
+    // Nothing answered, so nothing is quoted as the server's: "Failed to
+    // fetch" is the browser's.
+    expect(within(dialog).queryByText("Failed to fetch")).not.toBeInTheDocument();
   });
 });

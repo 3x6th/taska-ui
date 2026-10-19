@@ -113,7 +113,12 @@ const TOKEN = "Lk3vQ9xW2mTz8RbN4cYp7HfJ1sDg6EaU5oKiVwXqZrM";
 
 function Where() {
   const location = useLocation();
-  return <output data-testid="where">{location.pathname}</output>;
+  return (
+    <>
+      <output data-testid="where">{location.pathname}</output>
+      <output data-testid="where-state">{JSON.stringify(location.state)}</output>
+    </>
+  );
 }
 
 /** Both auth routes, as `App` mounts them, so an activation can be followed onto `/login`. */
@@ -187,6 +192,12 @@ describe("LoginScreen, accepting an invitation", () => {
     );
     expect(screen.getByText("Forgot your password? Taska has no password reset yet.")).toBeVisible();
 
+    // Read once and taken out of the history entry, so a reload of `/login`
+    // does not say "Password set" again — while the notice stays up here.
+    await waitFor(() => expect(screen.getByTestId("where-state")).toHaveTextContent("null"));
+    expect(screen.getByText("Password set. Sign in with your email and new password.")).toBeVisible();
+    expect(screen.getByLabelText("Email")).toHaveFocus();
+
     // The notice goes with the next tab change.
     fireEvent.click(screen.getByRole("button", { name: "Accept invite" }));
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
@@ -223,6 +234,29 @@ describe("LoginScreen, accepting an invitation", () => {
     expect(screen.queryByText("Invalid or expired token")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy request id req-401" })).toBeVisible();
     expect(screen.getByTestId("where")).toHaveTextContent("/invite");
+    // The alert already says to ask for a new invitation; the hint under it
+    // would say it again.
+    expect(screen.queryByText("Link expired? Ask the person who invited you to send a new one.")).not.toBeInTheDocument();
+  });
+
+  it("drops the state of an activation it arrived with on mount too, keeping the notice", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const screenProps = { logoutPending: false, onLogout: () => {}, theme: "light" as const, toggleTheme: () => {} };
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[{ pathname: "/login", state: { activated: true } }]}>
+          <Routes>
+            <Route path="/login" element={<LoginScreen {...screenProps} initialMode="signin" />} />
+          </Routes>
+          <Where />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("Password set. Sign in with your email and new password.")).toBeVisible();
+    await waitFor(() => expect(screen.getByTestId("where-state")).toHaveTextContent("null"));
+    expect(screen.getByText("Password set. Sign in with your email and new password.")).toBeVisible();
+    expect(screen.getByLabelText("Email")).toHaveFocus();
   });
 
   it("prints a password refusal verbatim, marks the field and keeps what was typed", async () => {
@@ -235,6 +269,8 @@ describe("LoginScreen, accepting an invitation", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Password must have at least 1 special character");
     expect(screen.getByLabelText("New password")).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByLabelText("New password")).toHaveValue("Correcthorse1");
+    // Any refusal but the dead link keeps the hint under the button.
+    expect(screen.getByText("Link expired? Ask the person who invited you to send a new one.")).toBeVisible();
   });
 
   it("keeps the button focusable while the request is out — aria-disabled, labelled Activating", async () => {

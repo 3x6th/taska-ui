@@ -276,15 +276,20 @@ function untilClause(expiresAt: string, lead: string): string {
 
 /**
  * What the status line says after an invitation that queued an email (§5.8):
- * a new account, or an invited one whose link had expired. Always "queued" —
+ * a new account, or an invited one with no working link. Always "queued" —
  * `deliveryQueued` is a durable queue write, not a delivery, and nothing here
  * may say "sent" or "delivered".
+ *
+ * The second case is worded for what the answer proves and no more: auth-service
+ * queues a new link without `resend` both when the last one expired and when
+ * the account has none at all (`AdminInviteUserServiceImpl.inviteExisting`), and
+ * the 200 does not say which.
  */
 export function invitedStatusText(result: InvitationResult, email: string): string {
   if (result.created) {
     return `${email} is invited. The email is queued for sending${untilClause(result.expiresAt, "; the link works until")}.`;
   }
-  return `${email} was already invited. Their link had expired, so a new one is queued${untilClause(result.expiresAt, "; it works until")}.`;
+  return `${email} was already invited but did not have a working link, so a new one is queued${untilClause(result.expiresAt, "; it works until")}.`;
 }
 
 /** The one 200 that keeps the dialog open: already invited, link still live, nothing sent. */

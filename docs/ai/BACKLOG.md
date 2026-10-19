@@ -3739,3 +3739,30 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   past the end" flaked once** (expected 2, got 999) in a full `npm run check`
   during TAS-236/259/192, with nothing under `src/screens/admin` or `src/api`
   changed; 3 of 3 alone. Watch for a repeat before chasing it.
+
+### Left by TAS-297 and TAS-208 (people search, invitations, the invitation link, 2026-10-19)
+
+Candidate backend asks recorded as "not filed" in `API-DIVERGENCE.md` (the #204
+entry), kept here so they are not lost (`api-contract-guard` F6):
+- **Password refusals with a field pointer and a served policy** — `details
+  {field, rule, min, max}` on the six accept 400s, and the policy in `/meta`;
+  removes the prose-keyed `aria-invalid` and the hard-coded hint.
+- **`Retry-After` readable by the browser** — expose it in CORS, or name
+  `details.retryAfterSeconds` in the contract.
+- **One check for the `/users` query** — the edge (raw) and auth-service
+  (trimmed code points) answer a short query with two different sentences.
+- **The directory row's avatar shape** — `AvatarDto` or an unavailable flag
+  instead of a flat nullable `avatarUrl`.
+- **The invitation token in a fragment** — keeps it out of the static host's
+  logs; the gateway refuses a fragment in the accept URL today.
+- **A password reset** — the owner's call; tokens and the mail queue exist.
+- **A 409 on invite that names the account's status** (`details.status`) — the
+  client words it neutrally meanwhile (`api-contract-guard` F2).
+
+Frontend notes:
+- **The sign-in tab's submit is `disabled`, not `aria-disabled`, and its
+  password field has no show-password toggle** (`art-director` N4, pre-build
+  note) — focus drops to `<body>` while signing in. Outside TAS-208; take with
+  the next sign-in change.
+- **The mock draws one person in two avatar colours** in the members dialog
+  (search row vs member row) (`art-director` N2) — mock seed only.

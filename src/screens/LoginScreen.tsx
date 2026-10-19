@@ -142,6 +142,16 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
     else if (focusRequest?.target === "newPassword") newPasswordRef.current?.focus();
   }, [focusRequest]);
 
+  // Read once, then taken out of the history entry: router state outlives a
+  // reload, and a reload of `/login` would otherwise say "Password set" again
+  // and take focus to Email a second time, for an activation long past. The
+  // notice itself is this screen's state from here on, and goes the way §4.27
+  // says it goes.
+  const activatedArrival = Boolean(redirect?.activated);
+  useEffect(() => {
+    if (activatedArrival) navigate(location.pathname, { replace: true, state: null });
+  }, [activatedArrival, location.pathname, navigate]);
+
   const switchTo = (next: AuthMode) => {
     setMode(next);
     setActivated(false);
@@ -315,7 +325,12 @@ export function LoginScreen({ theme, toggleTheme, initialMode }: LoginScreenProp
                   {submit.isPending ? "Activating" : "Activate account"}
                 </button>
                 {submit.isError ? <InviteFailure error={submit.error} /> : null}
-                <p className="auth-hint">Link expired? Ask the person who invited you to send a new one.</p>
+                {/* Not under the dead-link alert, which already says to ask
+                    for a new invitation — twice in a row would be the same
+                    advice in two voices. */}
+                {submit.isError && isDeadLink(submit.error) ? null : (
+                  <p className="auth-hint">Link expired? Ask the person who invited you to send a new one.</p>
+                )}
               </>
             )}
           </form>
@@ -352,13 +367,18 @@ function isPasswordRefusal(error: unknown): boolean {
  * "Activating" and the answer is not where focus is.
  */
 function InviteFailure({ error }: { error: unknown }) {
-  const { message, requestId, status, code } = apiErrorFacts(error);
-  const dead = status === 401 || code === "UNAUTHENTICATED";
+  const { message, requestId } = apiErrorFacts(error);
   return (
     <ErrorNote live="alert" requestId={requestId}>
-      {dead ? INVITE_LINK_DEAD : (message ?? "The invitation could not be activated.")}
+      {isDeadLink(error) ? INVITE_LINK_DEAD : (message ?? "The invitation could not be activated.")}
     </ErrorNote>
   );
+}
+
+/** The activation's one 401 — the link is dead, whichever of the four ways (§4.27). */
+function isDeadLink(error: unknown): boolean {
+  const { status, code } = apiErrorFacts(error);
+  return status === 401 || code === "UNAUTHENTICATED";
 }
 
 /**

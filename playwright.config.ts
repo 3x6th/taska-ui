@@ -7,7 +7,10 @@ import { defineConfig } from "@playwright/test";
 // `TASKA_E2E_PORT` moves it, for a second worktree running the gate while
 // another checkout runs its own: with `strictPort` and no server reuse, two
 // suites on one port do not share a server, the second one simply fails to
-// start. Moving the port keeps both properties.
+// start. Moving the port keeps both properties. The suite takes **two** ports,
+// `TASKA_E2E_PORT` and the one above it (the hash-routed server below), so a
+// second run has to sit at least two away from the first — 5185 beside the
+// default 5183, not 5184.
 const PORT = Number(process.env.TASKA_E2E_PORT) || 5183;
 // A second server one port up, built the way the Pages build routes: by the
 // hash, under a base path. It exists for the specs that are *about* that — the

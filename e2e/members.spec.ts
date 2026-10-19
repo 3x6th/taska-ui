@@ -98,6 +98,32 @@ test("an admin finds a person by name, adds them, changes their role, then remov
   await expect(filterAvatars).toHaveCount(4);
 });
 
+test("results that overflow their box are not a Tab stop, and the arrows move the active row, not the box", async ({
+  page,
+}) => {
+  const dialog = await openMembers(page);
+  // Eight people match — Nina is BLOCKED and never found — at 44 a row, more
+  // than the box's 242 holds.
+  await search(dialog).fill("example");
+  await expect(result(dialog, "Ivy Chen")).toBeVisible();
+  const box = dialog.locator(".member-search.is-open");
+  expect(await box.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+
+  // Field, then Role, then Add: no stop on the box between them.
+  await expect(search(dialog)).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByLabel("Role", { exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Add", exact: true })).toBeFocused();
+
+  // Back in the field, ArrowDown names a row rather than scrolling the box.
+  await search(dialog).focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(search(dialog)).toBeFocused();
+  await expect(search(dialog)).toHaveAttribute("aria-activedescendant", /option-0$/);
+  expect(await box.evaluate((element) => element.scrollTop)).toBe(0);
+});
+
 test("a search that finds nobody tells a global admin where to invite them, and anybody else who can", async ({
   page,
 }) => {

@@ -67,7 +67,12 @@ export interface AcceptInvitationInput {
  * zero-based, 0–1000; `pageSize` 1–50, the server's default 20.
  */
 export interface SearchUsersParams {
-  /** Trimmed by every implementation, and never sent shorter than `DIRECTORY_QUERY_MIN_CODE_POINTS`. */
+  /**
+   * Callers trim it and never pass fewer than `DIRECTORY_QUERY_MIN_CODE_POINTS`
+   * code points. Rest also refuses one on the client, after trimming, without
+   * a request; the mock answers as the server would — the gateway's binding on
+   * the raw value, then auth-service on the trimmed one.
+   */
   query: string;
   page?: number;
   pageSize?: number;

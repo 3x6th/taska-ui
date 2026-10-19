@@ -291,7 +291,7 @@ describe("invitation helpers", () => {
       "a@b.io is invited. The email is queued for sending; the link works until Oct 26, 23:59 UTC.",
     );
     expect(invitedStatusText(result({ created: false }), "a@b.io")).toBe(
-      "a@b.io was already invited. Their link had expired, so a new one is queued; it works until Oct 26, 23:59 UTC.",
+      "a@b.io was already invited but did not have a working link, so a new one is queued; it works until Oct 26, 23:59 UTC.",
     );
     expect(invitedStatusText(result({ expiresAt: "" }), "a@b.io")).toBe("a@b.io is invited. The email is queued for sending.");
     expect(resentStatusText(result(), "Leo Fischer")).toBe(

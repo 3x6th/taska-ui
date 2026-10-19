@@ -2593,15 +2593,16 @@ history: прямая ссылка и перезагрузка обязаны д
   `maxLength 128`, под ним 11.5 `--fg-2`: «Used only for a new account. Left empty, the part
   of the email before @ is used.» Футер: Cancel и «Send invitation». Пустая почта до
   провода не доходит: primary `aria-disabled`, под полем «Enter an email address.»
-  (`aria-describedby` поля и кнопки); строка уходит, как только в поле что-то есть. `Esc` — отмена, `Cmd/Ctrl+Enter` — отправка, слушатели
+  (`aria-describedby` поля и кнопки); строка пустеет, как только в поле что-то есть; её место остаётся (`min-height` в одну строку — модалка не прыгает). `Esc` — отмена, `Cmd/Ctrl+Enter` — отправка, слушатели
   в самой модалке. Без оптимизма: подписи не меняются, в полёте — `aria-disabled`.
 - **Исходы.** Слово — «queued», никогда «sent» или «delivered»: `deliveryQueued` — запись в
   надёжную очередь, не подтверждение SMTP. Срок — `expiresAt` как `MMM d, HH:mm` + « UTC».
   - 201 — модалка закрывается, фокус на триггер, список перечитывается, новая строка мигает
     рецептом успеха; статус: «{email} is invited. The email is queued for sending; the link
     works until {expiresAt} UTC.»
-  - 200, `deliveryQueued: true` — так же; «{email} was already invited. Their link had
-    expired, so a new one is queued; it works until {expiresAt} UTC.»
+  - 200, `deliveryQueued: true` — так же; «{email} was already invited but did not have a
+    working link, so a new one is queued; it works until {expiresAt} UTC.» (ссылка могла
+    истечь или отсутствовать — сервер их не различает).
   - 200, `deliveryQueued: false` — модалка остаётся; в теле 12.5 `--fg` без
     `--danger`-полосы (не отказ): «{email} is already invited and their link still works
     until {expiresAt} UTC, so no email was sent. If they lost it, send a new link — the old
@@ -2626,8 +2627,9 @@ history: прямая ссылка и перезагрузка обязаны д
   (`resend: true`, почта строки). Подтверждение — потому что старая ссылка умирает
   безвозвратно. Успех: закрытие, фокус на кнопку строки, строка мигает, статус: «A new
   invitation link for {name} is queued; it works until {expiresAt} UTC.» 429 — как выше;
-  409 — «{name} has already set a password, so there is nothing to resend.» + слова сервера
-  + id, список перечитывается.
+  409 — «{name} can no longer be invited — the account is no longer waiting for activation.»
+  + слова сервера + id, список перечитывается (409 — это `ACTIVE`, `LOCKED` или `BLOCKED`, не
+  только «пароль задан»).
 - **Клавиатура и 390.** Закрытие возвращает фокус тому, что открыло модалку. Модалка 92vw
   (358.8). Ячейка `INVITED` шире (≈151 против 96) и на 390 уезжает за край, как сейчас, —
   затухание §5.8 это уже говорит.

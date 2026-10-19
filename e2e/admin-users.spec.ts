@@ -138,6 +138,29 @@ test("invites a new address: queued, with the link's deadline in UTC, and the ne
   await expect(row.getByRole("button", { name: "Resend invite to zoe" })).toBeVisible();
 });
 
+test("an empty address looks as off as it is, and typing one moves nothing under it", async ({ page }) => {
+  await openUsers(page);
+  await page.getByRole("button", { name: "Invite user" }).click();
+  const dialog = page.getByRole("dialog", { name: "Invite user" });
+  const send = dialog.getByRole("button", { name: "Send invitation" });
+
+  await expect(send).toHaveAttribute("aria-disabled", "true");
+  await expect(send).toHaveCSS("opacity", "0.58");
+  // Measured once the dialog's own entrance (`tk-pop`, a 7px rise) has ended,
+  // so the only thing that could move the field is the hint above it.
+  await dialog.evaluate((element) =>
+    Promise.all(element.closest(".modal-layer")!.getAnimations({ subtree: true }).map((animation) => animation.finished)),
+  );
+  const before = await dialog.getByLabel("Display name (optional)").boundingBox();
+
+  await dialog.getByLabel("Email").fill("z");
+
+  await expect(send).not.toHaveAttribute("aria-disabled");
+  await expect(send).toHaveCSS("opacity", "1");
+  await expect(dialog.getByText("Enter an email address.")).toHaveCount(0);
+  expect((await dialog.getByLabel("Display name (optional)").boundingBox())?.y).toBe(before?.y);
+});
+
 test("an invitation whose link still works sends nothing until a new link is asked for", async ({ page }) => {
   await openUsers(page);
 
@@ -157,7 +180,7 @@ test("an expired invitation is re-issued; an account is refused with 409; a seco
   await openUsers(page);
 
   await invite(page, "ivy@example.com");
-  await expect(statusLine(page)).toHaveText(/^ivy@example\.com was already invited\. Their link had expired, so a new one is queued;/);
+  await expect(statusLine(page)).toHaveText(/^ivy@example\.com was already invited but did not have a working link, so a new one is queued;/);
 
   const taken = await invite(page, "anna@example.com");
   await expect(taken.getByRole("alert")).toHaveText(
