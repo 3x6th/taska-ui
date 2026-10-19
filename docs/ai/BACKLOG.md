@@ -25,12 +25,14 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
-- **Four `TaskaApi` reads no screen calls after TAS-251** — `getMembership`,
-  `getWorkflow`, `listProjectLabels` and `getProject` (the board's confirming
+- **Three `TaskaApi` reads no screen calls after TAS-251** — `getMembership`,
+  `listProjectLabels` and `getProject` (the board's confirming
   read on a context 403/404 was removed as a compensation, 2026-10-12). Kept in
   mock, rest and hybrid so the switch to `/context` (backend #169, merged and
   deployed 2026-10-12) stays reversible; delete once the context has run there for a while (`release-reviewer`,
-  2026-10-10).
+  2026-10-10). Was four: [TAS-263](https://jira.ozero.dev/browse/TAS-263)
+  (`aac71ed`) deleted `getWorkflow` from `TaskaApi`, mock, rest and hybrid, and
+  `src/` has no caller left.
 - **`AdminSectionPlaceholder` and its generic route are unused** since TAS-251
   replaced the Audit stand-in. Delete, or keep for the next section — a call
   for whoever adds one.
@@ -325,7 +327,13 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   operations in `completeRetry` on a moving `develop`, and the contract states
   none of it. TAS-200 covers the threshold half of that exposure; this half is
   covered by nothing. A backend change to that ordering would silently make the
-  dialog's wording wrong, and nothing here would notice.
+  dialog's wording wrong, and nothing here would notice. **Still open after
+  TAS-263:** backend PR #195 (TAS-200) delivers the threshold half — a required
+  `retryable` on each problem row and the rule stated on the retry route — and
+  says nothing about the ordering. It merged as `447a7ed` and deployed
+  2026-10-19; the problematic summary carries `retryable` on every event
+  (probed, `c28ef6d3-83df-48fb-a4af-821cdc731ea9`). The ordering half is
+  unchanged.
 - **`userWriteFailure` now serves two sections and is named for one**
   (`frontend-builder`, 2026-09-08, TAS-194). The outbox retry dialog imports it
   from `src/screens/admin/users.ts` rather than copying it, which is right — its
@@ -614,16 +622,20 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   branches on `error.status` behaves differently per mode.
 - **`getMembership` disagreement:** mock returns `projectExists: false`
   shapes, hybrid hardcodes healthy, rest propagates 404 — pick one contract.
-- **Mock seed lacks a project where the viewer is a *member* with a read-only
-  role.** ~~so `canEdit === false` has never been observed~~ — corrected
-  2026-08-12: `canEdit === false` **is** reachable and now has e2e coverage.
-  Anna is not in `MOB`'s member list, and `getMembership` falls back to
-  `role: "VIEWER"` for a non-member, so her Mobile board is a genuine viewer
-  board. What the seed still cannot produce is `isMember: true` with a
-  `VIEWER` or explicitly read-only role — `project()` assigns `ADMIN` to the
-  first member and `MEMBER` to the rest, and nothing is ever seeded `VIEWER`.
-  So "not a member" and "a member who may not write" remain the same picture
-  in every test, and only the first one exists.
+- ~~**Mock seed lacks a project where the viewer is a *member* with a read-only
+  role.**~~ **Closed by [TAS-226](https://jira.ozero.dev/browse/TAS-226) and
+  [TAS-251](https://jira.ozero.dev/browse/TAS-251)** (re-checked 2026-10-17 on
+  TAS-263). The seed makes Tom a `VIEWER` member of Taska Platform (TAS-226)
+  and of Mobile (TAS-251) (`MockTaskaApi.ts` seed, ~1379-1411), so "a member who
+  may not write" now exists. The read-only board is reached by signing in as
+  `tom@example.com` (`board-drag.spec.ts`, `attachments.spec.ts`,
+  `issue-links.spec.ts`). The old route through Anna is gone. She is not in
+  `MOB`'s member list, and the board reads its frame from `/context`, which
+  refuses a non-member with 403 as the gateway does. Her Mobile board is
+  therefore the not-found screen, not a viewer board. `getMembership` still
+  floors a non-member to `VIEWER`; *Left by TAS-263* records that looseness.
+  Was: `canEdit === false` was reached only through that floor, and no member
+  was ever seeded `VIEWER`.
   > **This one stopped being hypothetical on 2026-08-12.** `canEdit === false`
   > reached the deployed stand — not through a role, but through a failed
   > membership read (TAS-162) — and took drag-and-drop with it on every project,
@@ -651,8 +663,10 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   server-side issue lookup, not a bigger number.
 - **Comment row polish:** caret lands at position 0 when entering edit;
   a shared `isPending` disables Save/Delete on every row at once.
-- **`getWorkflow` silently defaults `issueType` to `TASK`**; `listNotifications`
-  returns a `Page` without `totalCount`. Minor contract-silence items.
+- ~~**`getWorkflow` silently defaults `issueType` to `TASK`**~~ — moot:
+  [TAS-263](https://jira.ozero.dev/browse/TAS-263) (`aac71ed`) deleted
+  `getWorkflow`. `listNotifications` returns a `Page` without `totalCount`.
+  Minor contract-silence item.
 - **Union members the contract does not back** (found by `api-contract-guard`,
   2026-08-05). ~~`NotificationType` in `src/domain/types.ts` declares
   `MEMBER_ROLE_CHANGED`, which `NotificationTypeDto` does not have; nothing
@@ -844,6 +858,9 @@ time.
   false: Anna is not a member of `MOB`, and a non-member gets `VIEWER`. TAS-163
   covers that board in e2e. The narrower gap that *is* real is recorded on the
   seed item above — a member who may not write has still never been seen.
+  **It has since TAS-226 and TAS-251:** the drag test signs in as Tom, a seeded
+  `VIEWER` member of Mobile (`board-drag.spec.ts` ~333-397). Anna's MOB board
+  is now the not-found screen.
 - **`MouseSensor` accepts a middle-click press** where `PointerSensor`
   required button 0. Harmless in practice; noted so it is a known trade.
 
@@ -2314,10 +2331,17 @@ is what recurs.
   - The "15 minutes" in both expired-link sentences is a literal, not derived
     from the TTL constant — which is itself only an environment default.
 
-  Two were closed in TAS-220's second pass on 2026-09-14. The avatar read no
-  longer refetches on focus, or on a mount within 10 minutes of the last good
-  read, and an undeployed signature is asked once per page load. `API-DIVERGENCE.md` now says the failed-image fallback is
-  covered end to end.
+  Two were closed in TAS-220's second pass on 2026-09-14. Both concerned the
+  menu's separate avatar read, which no longer refetched on focus or on a mount
+  within 10 minutes of the last good read, and asked an undeployed signature
+  once per page load. That read is gone since
+  [TAS-263](https://jira.ozero.dev/browse/TAS-263) (`aac71ed`). The face now
+  rides on `GET /users/me`, and `keepSignedAvatarLink` holds its link across
+  re-reads. The three open items are unchanged by TAS-263: the always-mounted
+  region still sits in the 7px column gap (`styles.css` ~1291-1297), nothing
+  checks `fileName` length, and the "15 minutes" is still a literal
+  (`UserProfileMenu.tsx` ~687). `API-DIVERGENCE.md` now says the failed-image
+  fallback is covered end to end.
 - **TAS-220's cache write has three edges `frontend-builder` named rather than
   closed** (2026-09-14).
   - **The face flip-flops wherever member rows carry no avatar.** In hybrid once
@@ -2379,10 +2403,14 @@ is what recurs.
   request holds by construction, but no test holds it.
 - **Four from TAS-220's `art-director` verdict, recorded rather than taken**
   (2026-09-14).
-  - The trigger and menu header show initials for one avatar read on every cold
+  - ~~The trigger and menu header show initials for one avatar read on every cold
     load: 148–164 ms on the mock. Drawing the bare fill while the read is pending
     would avoid it; widening `loading` instead would disable the trigger and Log
-    out with it.
+    out with it.~~ **Gone with [TAS-263](https://jira.ozero.dev/browse/TAS-263)**:
+    there is no separate read any more. The face arrives in the same
+    `/users/me` answer as the name, so the trigger goes from its loading circle
+    straight to the photo. It shows initials only when there is no photo or
+    when the server reports `avatarUnavailable`.
   - The store-unreachable and expired-link sentences, shared with attachments,
     run to four lines in a 276px menu and explain infrastructure. One sentence
     plus "choose the photo again" would do (§1, §5.4).
@@ -2394,15 +2422,24 @@ is what recurs.
     against the hybrid dev server, with every `/api` request answered inside the
     page and every external request aborted. The e2e suite is mock-only by
     design, so that would be a new kind of spec rather than one more case.
+    Since TAS-263 that state is only the write refusal ("Profile photos are not
+    on this gateway yet, so nothing was saved."). The band a reader met on load
+    is gone with the read.
 - **Member reads re-sign every face on each refetch** (`api-contract-guard`,
   2026-09-14, TAS-220 re-verdict). Past the 20-second stale time, every refetch of
-  a member list downloads every full-size face again. The menu's own read is
-  fixed, but member rows are not. TAS-202's interim focus-off shrinks it, and
+  a member list downloads every full-size face again. The menu's own face is
+  fixed: since TAS-263 it rides on `GET /users/me`, and `keepSignedAvatarLink`
+  holds the link while the avatar id is unchanged. Member rows are not. TAS-202's interim focus-off shrinks it, and
   removing it needs a backend ask nobody has filed: stable links or a thumbnail.
 - **A missing avatar object would put auth-service's raw S3 SDK text in the
   menu**, because `S3ExceptionHandler` passes `e.getMessage()` through and the
   photo sentence quotes the server's message (`api-contract-guard`, 2026-09-14).
-  The exact text is not verified.
+  The exact text is not verified. **The read half is gone with
+  [TAS-263](https://jira.ozero.dev/browse/TAS-263)**: the separate avatar read
+  and its quoting "Your photo could not be loaded. {message}" were deleted.
+  A degraded `/users/me` carries no message, and the menu's line is fixed text.
+  The write sentences (`writeFailureText`) still quote the server, so this
+  stays open for a confirm that meets a missing object.
 - **`MockTaskaApi.ts` around 2640 says the over-5 MB check comes "before anything
   else"**, but the gateway checks the token first, while the mock checks the size
   before `currentUser()`. The UI cannot reach the difference
@@ -2425,18 +2462,28 @@ is what recurs.
   dark** (`art-director`, 2026-09-14, from its own recipe). It is the same gap as
   Log out's resting `--danger` at 3.68:1 (§4.16, TAS-142 note), so the two should
   be decided together.
-- **A failed re-read can leave a stale photo beside "could not be loaded"**
+- ~~**A failed re-read can leave a stale photo beside "could not be loaded"**
   (`art-director`, 2026-09-14, from code, not reproduced). When the read past the
   10-minute stale time fails while an older link is still cached, the header
   keeps drawing that photo next to "Upload a photo" and "Your photo could not be
-  loaded." (`UserProfileMenu.tsx` around 219, 239 and 540).
-- **`refetchQueries({ type: 'all' })` or `invalidateQueries({ refetchType: 'all' })`
+  loaded." (`UserProfileMenu.tsx` around 219, 239 and 540).~~ **Closed by
+  [TAS-263](https://jira.ozero.dev/browse/TAS-263)**:
+  - The line now appears only when `GET /users/me` says `avatarUnavailable:
+    true`, and that answer's avatar is `null`.
+  - `keepSignedAvatarLink` drops a held link when the avatar id changes, and a
+    degraded answer's id is `null`, so no photo can stand beside the line.
+  - A `/users/me` read that fails outright keeps the last good profile and
+    draws no line.
+- ~~**`refetchQueries({ type: 'all' })` or `invalidateQueries({ refetchType: 'all' })`
   would bypass the `enabled` guard** on an avatar query nobody is observing
-  (`release-reviewer`, 2026-09-14). Nothing calls either today.
-- **If the undeployed avatar read lands while keyboard focus is on "Upload a
+  (`release-reviewer`, 2026-09-14). Nothing calls either today.~~ Moot since
+  [TAS-263](https://jira.ozero.dev/browse/TAS-263) (`aac71ed`): the avatar query
+  and its `enabled` guard are gone.
+- ~~**If the undeployed avatar read lands while keyboard focus is on "Upload a
   photo", focus drops to `<body>`**, because the band removes the button
   (`release-reviewer`, 2026-09-14). This is moot for any page loaded after the
-  routes deployed.
+  routes deployed.~~ Moot since [TAS-263](https://jira.ozero.dev/browse/TAS-263)
+  (`aac71ed`): there is no avatar read and no band left to remove the button.
 
 ### Left by TAS-224 (members and role from the gateway, 2026-09-16)
 
@@ -2536,20 +2583,36 @@ is what recurs.
   `aria-pressed`. TAS-226's demoted assignee is one of those chips, kept active so
   the issue does not read as unassigned. The Relation control (~2963) already
   does it right. §7: colour is never the only signal.
-- **The mock refuses a MEMBER who adds or removes themselves through the ADMIN
+- ~~**The mock refuses a MEMBER who adds or removes themselves through the ADMIN
   watcher routes, and issue-service allows it** (`release-reviewer`, TAS-226).
   `checkMutationRole` applies `watch-issue-roles` whenever the target is the
   caller, while the contract calls both routes ADMIN-only, so the mock follows
   the contract. The UI never makes that call. Recorded in the TAS-226 entry of
   `API-DIVERGENCE.md`. **Waits on [TAS-228](https://jira.ozero.dev/browse/TAS-228)**:
   if the backend describes what its code does, `requireWatcherAdmin` starts
-  checking the target; if it changes the code, the mock is already right.
+  checking the target; if it changes the code, the mock is already right.~~
+  **Closed by [TAS-263](https://jira.ozero.dev/browse/TAS-263) (`aac71ed`):**
+  `requireWatcherRoleFor` follows `checkMutationRole`, so the mock lets a MEMBER
+  act on themselves as issue-service does. The backend chose to describe its
+  code: backend PR #194 (TAS-228) merged as `95b1f35` on 2026-10-19, and the
+  snapshot refreshed to develop `7d4f7395565c` says the same — a caller's own
+  `userId` is checked against `watch-issue-roles`, another's against
+  `manage-watchers-roles`. Contract text only, so there is nothing to probe.
 - **The mock checks no caller role on create, update, transition, delete,
   links, comments, or the actor half of assign** (`builder`, `release-reviewer`,
   TAS-226). It does check attachment uploads (`requireUploadRole`) and watcher
   writes, and since TAS-226 the assignee half of `assign-issue-roles`. The UI
   gates the unchecked writes on `canEdit`, so no mock-backed screen reaches the
-  gap.
+  gap. On `PATCH` that means a VIEWER's write reaches the mock's version compare
+  (409 or 200), where issue-service answers 403 first
+  (`IssuePatchServiceImpl.java:48-51` runs before the `If-Match` compare at
+  :54). **Two more `PATCH` gaps, both unreachable from the UI**
+  (`api-contract-guard`, TAS-263, read at backend develop `4277199`): the mock
+  refuses an assignee with the store's own sentence where the server sends
+  "Access denied" for a non-member and "Not allowed role" for a VIEWER
+  (`ProjectRoleChecker.java:66-83` via `IssuePatchServiceImpl.java:96-98`); and
+  an unknown assignee id is 404 in the mock but 403 "Access denied" on the
+  server.
 - ~~**A git worktree inside the repository can reload the e2e dev server mid-run**
   (`builder`, TAS-226). At 23:43 on 2026-09-16 another session checked out
   `.claude/worktrees/tas-158-members/` and five desktop specs failed seconds
@@ -2912,6 +2975,15 @@ Frontend, recorded rather than taken:
   `@Modifying` on the `DELETE`) and the missing `ISSUE_UNWATCHED` event were added
   as a comment the same night. The panel's neutral notice is therefore wrong on
   every real unwatch until TAS-234 lands; no client compensation, by design.
+  **Fixed by backend PR #188 (TAS-234): merged as `0330028` and deployed
+  2026-10-19; read in code, not probed** (the probe is a real unwatch, which
+  changes state, and the 2026-10-19 pass sent only reads). The fix, read at
+  head `8fe3478`: `@Modifying` on `deleteByIssueIdAndUserId`, `removed=true` on
+  a real unwatch, and the `ISSUE_UNWATCHED` outbox event is written
+  (notification-service ignores it). No frontend change: the panel draws the
+  sentence only on `removed: false` (`BoardScreen.tsx` ~2789). Strike this line
+  once one real unwatch on the stand no longer draws "You were not watching
+  this issue".
 - **Deleting an issue leaves stale link rows elsewhere for up to `staleTime`**
   (found fixing the double re-read, 2026-10-08, pre-existing): `deleteIssue`
   skips the project-wide `["issue", projectId]` invalidation so the closing
@@ -3076,15 +3148,49 @@ where it has an entry.
 - **C11: the embedded links omit links to soft-deleted issues, while
   `GET …/links` lists them, and neither is ordered.** Pick one rule for both
   and add `ORDER BY created_at`. Low.
-- **C12: extend [TAS-228](https://jira.ozero.dev/browse/TAS-228) to `PATCH`.**
-  The contract states no role for `PATCH /issues/{issueId}`: `update-issue-roles`
-  for the actor, plus `assign-issue-roles` for the actor and the new assignee
-  when the assignee changes. Entry: "Five watcher and assignee writes are
-  role-gated by issue-service …".
-- **Extend TAS-228, documentation only: the contract does not say that `PATCH`
+- ~~**C12: extend [TAS-228](https://jira.ozero.dev/browse/TAS-228) to `PATCH`.**~~
+  **Now an ask of its own, ready to file** (`api-contract-guard`, TAS-263):
+  TAS-228 was not extended, and backend PR #194 (merged as `95b1f35` on
+  2026-10-19) documents the four watcher routes, `PUT …/assignee` and `PUT
+  /issues/{issueId}` but not `PATCH` — the only issue write the client sends
+  (`RestTaskaApi.ts` ~1292). Title: "openapi: state the roles on `PATCH
+  /api/v1/issues/{issueId}`".
+  - As-is: the description (`openapi.yml` ~817-827 at `a33ed5d`; ~830-840 in
+    the snapshot at develop `7d4f7395565c`) names no role.
+    The service (`IssuePatchServiceImpl.java:48-51, 54-58, 87-101`, unchanged at
+    develop `4277199`) checks `update-issue-roles` for the caller on every
+    `PATCH` before the `If-Match` compare, so 403 comes before 409; when
+    `assigneeId` changes it also checks `assign-issue-roles` for the caller and
+    for the new assignee, unless the new value is `null` or the caller.
+  - To-be: the description says those three things, with the two 403 texts —
+    "Access denied" (not a member) and "Not allowed role".
+  - Layer: openapi, doc only. Precedent: #194's `assignIssue` text.
+  - Dependency: none. It was held until #194 merged, so the two would not
+    conflict in one file; #194 has merged, so it can be filed.
+  - Epic child: none — new, or reopen TAS-228's scope.
+  - Removes: the missing `PATCH` removal key in the TAS-226 watcher/assignee
+    entry of `API-DIVERGENCE.md`, so the compensation on the assignee chips
+    gets a key that names the route the client calls.
+- ~~**Extend TAS-228, documentation only: the contract does not say that `PATCH`
   and assign subscribe the new assignee as a watcher, or that create subscribes
-  the reporter** (TAS-246 critique). openapi only; no dependency. Entry:
-  "Assigning an issue subscribes the assignee …".
+  the reporter** (TAS-246 critique).~~ **Now an ask of its own, ready to file**
+  (`api-contract-guard`, TAS-263): #194 did not cover it. Title: "openapi: state
+  auto-watch on create, `PUT …/assignee` and `PATCH`".
+  - As-is: silent on all three routes. Create subscribes the reporter
+    (`IssueServiceImpl.java:153`, flag `ISSUE_AUTO_WATCH_ON_CREATE_REPORTER`),
+    and every real assignee change subscribes the new assignee (`PUT
+    …/assignee` at :221-222, `PATCH` at `IssuePatchExecutor.java:149`, flag
+    `ISSUE_AUTO_WATCH_ON_ASSIGN_ASSIGNEE`), both on by default (issue-service
+    `application.yml:41-42`). Neither path checks `watch-issue-roles`
+    (`IssueAutoWatchService.java:31-88`): the default role lists coincide, but a
+    stand that widens `ISSUE_CREATE_ROLES` or `ISSUE_ASSIGN_ROLES` beyond
+    `ISSUE_WATCH_ROLES` subscribes people who cannot unwatch themselves.
+  - To-be: one sentence per route naming the subscription and its flag.
+    Optional service half: check `watch-issue-roles` in `autoWatchIfEnabled`.
+  - Layer: openapi, doc only; the optional half is issue-service.
+  - Dependency: none. Epic child: none — new.
+  - Removes: the auto-watch entry of `API-DIVERGENCE.md` ("Assigning an issue
+    subscribes the assignee …").
 - **C13: extend [TAS-206](https://jira.ozero.dev/browse/TAS-206):
   `ValidateAccessTokenResponseDto.status` should `$ref` an enum that includes
   `UNSPECIFIED`.** It is a bare `string` today.
@@ -3232,3 +3338,272 @@ From `release-reviewer`'s narrow-scope verdict, recorded rather than taken:
   the TAS-262 refusal also matches; pin the exact sentence ("was not moved:
   this project has no workflow for task issues."). The panel test beside it
   already pins its own.
+
+### Left by TAS-263 (the frontend for backend PRs #184–#195, 2026-10-17)
+
+From `api-contract-guard`'s verdicts on the PR heads — the first pass on
+2026-10-16, then #186, #193 and #194 re-read at their new heads with the
+skeptics' and the critic's corrections taken, at backend develop `4277199`.
+Everything below was read from code at those heads. All of #184–#195 merged on
+2026-10-19, each at the head read here (#189's moved to `29d8a49`, a merge of
+develop, infra only), and the stand deployed develop `7d4f7395565c` the same
+day. An entry says what has since been probed, with the request id; whatever
+does not say so was not probed.
+
+From the role verdicts on the branch (2026-10-17), not taken in this PR:
+
+- **A refused Data filter replaces the whole plane, hiding the chip that
+  caused it** (`art-director`, AD-6, pre-existing). A typo in a UUID filter
+  value answers 400 and the refusal takes the table's place; the chip with the
+  bad value is not visible beside the sentence that names it.
+- **Retry refusal re-read can still drop focus to `<body>`** (`frontend-builder`,
+  third pass). On the not-eligible refusal the Problems list is re-read; if the
+  operator dismisses before that read lands and the read removes the row's
+  Retry button, focus falls to `<body>`. `focusTrigger` falls back to the list
+  region only when the button is already gone at dismissal; the
+  `rescueFrom`/`armedAt` mechanism is armed on the success path only.
+- **The mock's admin filter validation skips two gateway passes**
+  (`frontend-builder`, third pass). It does not model `FilterParser`'s blank
+  refusal ("Filter value must not be empty for key"), so a whitespace-only
+  value filters to an empty result where the gateway answers 400, and it does
+  not model `validateColumn` for an unknown column. Both are reachable only by
+  a hand-edited URL.
+- **Backend ask, ready to file: the avatar link states its lifetime, or the
+  link is stable** (`api-contract-guard`, F2, re-priced on `6fe81ac`). As-is:
+  `downloadUrl` with no expiry on both `AvatarResponse` protos —
+  `auth-service/profile.proto` `AvatarResponse` (:227 @`3bd33ca`, behind
+  `/users/me` through #193's `UserServiceImpl` and user details) and
+  `project-service.proto` `AvatarResponse` (:341, behind member and context
+  rows) — and both gateway `AvatarDto` mappers (the `AuthMapper`/`UserServiceImpl`
+  path, `ProjectMapper.toAvatarDto:141`). The TTL is `STORAGE_PRESIGNED_URL_TTL`
+  (15m default, overridable); every read re-signs. Precedent already on the
+  wire: `CreateAvatarUploadUrlResponse.expires_in` (profile.proto:150) →
+  `CreateAvatarUploadUrlResponseDto.expiresIn`. To-be: an absolute
+  `downloadUrlExpiresAt` (suits a link the client keeps across refetches — no
+  receipt time needed) or `downloadUrlExpiresIn` after the precedent; or a stable
+  redirecting link with a cache validator. Layer: two protos, auth-service and
+  project-service, two gateway mappers, openapi. Removes the `API-DIVERGENCE.md`
+  entry "The avatar link's lifetime is not on the wire". Epic: TAS-210 or new.
+- **Backend ask, ready to file: the read-only catalog states each column's
+  filter operators** (`api-contract-guard`, F4, re-priced on `6fe81ac`). As-is:
+  proto `ColumnMetadata` (admin-service.proto:118 @`bac0080`) is
+  `{name, type, primary_key, sensitive}` and `ColumnMetadataDto` is
+  `{name, type, sensitive}`, so nothing on the wire carries a class or an
+  operator list; the client and the mock copy `DbColumnType.PG_TYPE_MAP`
+  (TAS-263 added `UUID` to the copy). To-be: `repeated string filter_operators`
+  on `ColumnMetadata`, surfaced as `filterOperators` on `ColumnMetadataDto`,
+  computed by admin-service's `MetadataService` from
+  `DbColumnType.fromPgType(...).supportsContains()/supportsRange()` plus
+  `equals`, mapped in `AdminDataMapper.toRestColumnMetadataDto:107`. An operator
+  list, not a `columnClass` enum the client would have to narrow; per column, not
+  `TableCapabilitiesDto`, because the catalog is already the one read. Layer:
+  proto, admin-service, gateway mapper, openapi. Removes the copied map
+  (`src/lib/adminColumnTypes.ts`) and is the removal of the classifier entry in
+  `API-DIVERGENCE.md`.
+- **Filter chip halves draw rectangular focus rings on a pill, and the ×
+  half's ring touches the label's last glyph** (`art-director`, AD-7 re-verdict,
+  meets §7, not blocking). Fix: `.admin-filter-chip-open { padding: 0 6px 0 11px;
+  border-radius: 20px; }` and `.admin-filter-chip-remove { border-radius: 50%; }`
+  (the `+ Filter` and `.label-chip-remove` precedents; the UUID chip grows 263 →
+  265 and still fits 292 at 320); then extend the §5.8 sentence to «…и повторяет
+  форму половины: пилюля у подписи, круг у «×»…».
+- **A Data head with no filter can wrap its zero-width spacer onto a 10px
+  empty line** (`release-reviewer`, AD-7 re-verdict). The Data per-plane wrap
+  fallback always wraps; measured at 320 on a table outside the mock catalog
+  (head 27.84 → 37.84, its heading already overflowed by 6px). Possible fix: drop
+  the spacer where the filter's `margin-left: auto` already does its job. Take
+  it if it shows on the live catalog.
+- **Every `<select>` renders in Arial, not Hanken Grotesk** (`art-director`,
+  2026-10-17, pre-existing, app-wide: 15 select sites across BoardScreen,
+  AdminFilterControl, AdminNamedFilterControl and ProjectMembersModal). The
+  global `button, input, textarea { … font: inherit; letter-spacing: inherit }`
+  (`src/styles.css` ~77-87) omits `select`. Fix as a separate rule,
+  `select { font: inherit; letter-spacing: inherit; }` — not by adding `select`
+  to that group, which also sets `border: 0; margin: 0; color: inherit` — then
+  re-measure `.filter-select select { max-width: 148px }` truncation and the
+  29px role selects.
+- **A write refusal in the profile menu survives closing and reopening, and
+  then hides "Your photo could not be loaded."** (`art-director`, 2026-10-17,
+  pre-existing since TAS-220). Under §4.16's yield rule the stale refusal
+  suppresses a line that describes the menu on opening. Fix: `setNotice(null)`
+  wherever the popover closes (outside click, Esc, item choice) unless an upload
+  is in flight; the region stays mounted, so nothing is announced on reopen.
+
+Frontend, recorded rather than taken:
+
+- **The mock's sibling project reads still answer a non-member, while the
+  server answers 403.** `MockTaskaStore.getProject`, `listMembers`, `listIssues`
+  and `listProjectLabels` check only that the project exists, and
+  `getMembership` answers `VIEWER`. The server refuses a non-member on all of
+  them (`ProjectServiceImpl.java:114-116`, `ProjectRoleChecker.java:66-74`,
+  `ProjectMemberServiceImpl.java:142-146`). Only `getProjectContext` refuses the
+  way the server does. This is documented in `API-DIVERGENCE.md`'s mock-parity
+  bullets. Under "the mock follows the server" these reads should refuse the
+  way the context does, and no screen calls three of them (see the top of this
+  file). From the #186 skeptic.
+- **A degraded `/users/me` 200 carries its request id only in `X-Request-Id`,
+  and the client reads that header only on errors** (#193). #193 merged as
+  `b88150f` and deployed 2026-10-19; a healthy read carries `avatar` and
+  `avatarUnavailable: false` (probed,
+  `0f9c038b-d0d5-458f-98b0-adb3af15d13f`), and a degraded one has not been seen
+  on the wire. When it comes,
+  `avatarUnavailable: true` arrives on a 200 whose id is in the exposed header
+  (`GatewayRequestExecutor.java:44`, `application.yml:74`). `RestTaskaApi.request`
+  (~2581) ignores the header on a success, so the only way to match "Your photo
+  could not be loaded." to the gateway WARN at `UserServiceImpl.java:44` is
+  devtools. Accepted for now on the §5.6 TAS-246 precedent: a part that a read
+  did not bring shows no id.
+- **Comments still say that one unreadable avatar fails the whole member read,
+  and the code no longer does that** (#186 verdict). Since backend #181
+  (TAS-225, merged as `aef3b68`), a row whose presign fails gets no avatar
+  (`ProfileServiceImpl.java:174-184`, `onErrorResume → withoutAvatar`). One
+  missing object therefore no longer fails the members read or the context.
+  Re-probe on stage, then sweep the comments, which changes no behaviour:
+  `BoardScreen.tsx` ~488-493 and ~3144, `BoardScreen.test.tsx` ~2108-2113,
+  `TaskaApi.ts` ~686-687 and ~742-750, `RestTaskaApi.ts` ~1013-1022,
+  `MockTaskaApi.ts` ~4985, `ProjectsScreen.tsx` ~39, `API-DIVERGENCE.md` ~383
+  and its "one unreadable avatar" bullets, and the member-writes ask under
+  *Left by TAS-158* above. `/users/me` has no such fallback; #193's
+  `avatarUnavailable` is its answer there.
+
+Backend, no ask:
+
+- **One refusal has three wordings** (low, #186). A non-member reads one of
+  three messages:
+  - "You don't have access to this project" from the context and
+    `GET /projects/{id}` (`ProjectServiceImpl.java:148`);
+  - "User has no access to project" from the members leg and `/members`
+    (`ProjectMemberServiceImpl.java:145`);
+  - "Access denied" from issue-service: the labels leg, `/issues`, `/board` and
+    `/labels` (`ProjectRoleChecker.java:72`).
+
+  For a member removed mid-read, the wording the context sends depends on which
+  `Mono.zip` leg fails first. The code and the status do not change, and the UI
+  keys only on `code` (`errors.ts:88-91`), so the user sees nothing different.
+  No story.
+
+**Candidate backend asks, not filed.**
+
+- **A database outage on the context is 500 `INTERNAL`, not 503** (low,
+  `grpc-common-lib`). `GrpcExceptionHandler.java:36` maps only `R2dbcException`
+  and `TransactionException` to `UNAVAILABLE`. Spring's `DatabaseClient` has
+  already wrapped the driver error as a `DataAccessException` (read in the
+  spring-r2dbc 7.0.5 bytecode), so on the non-transactional legs (project-service's
+  own reads and issue-service's labels) an outage reaches the client as 500
+  "Internal error". The exception is a connection-acquisition failure in the
+  workflows leg. workflow-service's `getWorkflow` is `@Transactional(readOnly =
+  true)`, so that failure raises `CannotCreateTransactionException`, a
+  `TransactionException`, and the client gets 503. That is the critic's reading;
+  medium confidence, and the bytecode was not read for it.
+  - To-be: also map `DataAccessResourceFailureException` and
+    `TransientDataAccessException` to `UNAVAILABLE` "Database unavailable", or
+    any `DataAccessException` whose root cause is an `R2dbcException`. The
+    branch at :36 is the precedent.
+  - Layer: shared library; no proto or gateway change. Dependency: none. Epic
+    child: none.
+  - The board does not change: it shows the same banner for 500 and 503. A
+    client that retries on 503 does not retry a 500.
+- **`/users/me` will wait on a serial `GetUserProfile` hop** (#193; a plausible
+  latency risk, not measured). The enrichment (`UserServiceImpl.java:37-48`)
+  has no timeout of its own and is bounded only by `AUTH_GRPC_DEADLINE`, 3000 ms
+  by default (`application.yml:42`). A slow auth-service could delay every
+  screen's profile by up to 3 s before the degraded 200 arrives.
+  - To-be: a `.timeout(...)` well under that deadline on the enrichment `Mono`,
+    placed before the existing `onErrorResume` (:43), so that slowness degrades
+    to `avatarUnavailable: true` instead of delaying first paint.
+  - Layer: gateway service. Dependency: #193, merged as `b88150f` and deployed
+    2026-10-19. Epic child: a TAS-223 follow-up, or new under TAS-210.
+  - Measure before filing. #193 is deployed now; the 2026-10-19 probe checked
+    the fields, not the latency.
+- **The orphan-avatar state logs a stack trace on every `/users/me`** (low;
+  log volume, not correctness). For a user in the
+  [TAS-221](https://jira.ozero.dev/browse/TAS-221) state (an avatar row whose
+  object is gone), every read logs:
+  - a gateway WARN with the full stack trace (`UserServiceImpl.java:44`);
+  - a WARN from auth-service `ProfileGrpcService`;
+  - a WARN from `S3ExceptionHandler`.
+
+  The UI refetches `["me"]` on window focus once 20 s have passed, and no metric
+  counts degraded answers. This is a comment on TAS-221, not a story, because
+  TAS-221 removes the cause.
+- **The context reads a workflow `NOT_FOUND` as a missing project** (medium
+  confidence; #186 keeps it but did not cause it). workflow-service can answer
+  `NOT_FOUND` for an allowed type ("Default Workflow not found", "No active
+  statuses …", "No visible transitions …", `WorkflowServiceImpl.java:34-47`).
+  When it does, all of `/context` is 404, the status of a missing project, and
+  every member of an existing project sees NotFoundScreen.
+  - To-be, either of:
+    - workflow-service returns an empty `transitions` list instead of
+      `switchIfEmpty → NOT_FOUND`;
+    - project-service maps a workflow-leg `NOT_FOUND` to `INTERNAL` (500). Not
+      to `FAILED_PRECONDITION`, which `RestErrorMapper.java:17` sends as 400.
+
+    Then a 404 on `/context` means only that the project is missing.
+  - Separately, a missing `project_settings` row gives `workflows: []` with
+    only a log warning.
+  - Layer: service. Dependency: none. Epic child: new, or a TAS-261 follow-up.
+    No client compensation.
+  - Nobody has yet shown a real workflow reaching zero visible transitions.
+- **An assignee-side role refusal looks the same as the caller's own** (#194;
+  pre-existing). Both are 403 `PERMISSION_DENIED` with "Access denied" or "Not
+  allowed role" (`IssueServiceImpl.java:187-192`,
+  `IssuePatchServiceImpl.java:96-98`). An ADMIN who assigns someone demoted to
+  VIEWER since the member list was read is told "Not allowed role", as if the
+  ADMIN lacked the right.
+  - To-be: an `onErrorMap` on the assignee check, answering 400
+    `INVALID_ARGUMENT` with "Assignee is not a project member" or "Assignee role
+    is not allowed". (`FAILED_PRECONDITION` would also reach the client as
+    400.) Medium confidence that the backend wants a 400 here.
+  - Layer: issue-service only; no proto or mapper change. Dependency: none.
+    Epic child: none, new.
+  - Until then, the UI prints the server's sentence and must not parse it.
+- **Who gets 403 on project reads is written only in code, not in the
+  contract** (doc-only; high confidence that the text is absent; #186).
+  - As-is: `/context` lists 403 and 404 with no description (`openapi.yml:297-300`
+    at `cc03c0d`). `/projects/{projectId}` (:259-270) and `/workflow` list
+    only `default`.
+  - To-be: "403: не участник проекта, независимо от глобальной роли" on all
+    three routes, plus an explicit "404: проект не найден". The precedent is
+    `openapi.yml:465`, "Доступ запрещен (требуется роль GLOBAL_ADMIN)".
+  - Layer: openapi, doc only.
+  - Dependency: none left. It waited on #186 for `/context` and
+    `/projects/{id}` and on #190 for `/workflow`; #186 merged as `055d01b` and
+    #190 as `f34e504` on 2026-10-19, both deployed, and the three texts are
+    unchanged in the snapshot at develop `7d4f7395565c`. The non-member 403
+    itself is read in code, not probed (the probing account is a member of all
+    12 projects); `/workflow` on an unknown project answers 404 `NOT_FOUND`
+    "Project not found" (probed, `a4f42dc3-9166-4a09-a3b0-31d5f105bfa7`).
+  - Epic child: a TAS-212 follow-up.
+
+**Contract-text comments on #184, #193, #194 and #195.** These are doc only,
+and none needs a story. All four PRs merged on 2026-10-19 with these texts as
+read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
+
+- **#184 (TAS-232):** the column filter's description says nothing about the
+  uuid rule. A uuid column takes only equals, and a value outside the canonical
+  8-4-4-4-12 form (matched case-insensitively) is 400 `INVALID_ARGUMENT`
+  "Invalid UUID value for column '<c>': expected UUID in 8-4-4-4-12 format".
+  The rule is on the wire as read, in the mock's exact sentences (probed
+  2026-10-19: an uppercase id matches, `aa900e4a-a05e-4ab3-b758-fda74f99625e`;
+  a malformed one is refused, `9d5d2fea-a176-42d9-b528-865612de2b82`;
+  `contains` on the column is refused, `3bff2518-2679-44ee-a105-f69be4b34a63`).
+  Low; a comment on TAS-232.
+- **#193 (TAS-223):**
+  - `openapi.yml:2792` calls the profile "временно недоступен". The TAS-221
+    orphan state is not temporary: it lasts until an upload or
+    `DELETE /users/me/avatar` replaces the row. Suggested wording: "не удалось
+    прочитать".
+  - No test pins the wire JSON. A WebTestClient test on `GET /api/v1/users/me`
+    that asserts `"avatar": null` and the presence of `avatarUnavailable` would
+    lock in what today rests on Jackson 3's default inclusion. The stand
+    already shows `ALWAYS` (`API-DIVERGENCE.md` ~2767).
+- **#194 (TAS-228):** `assignIssue`'s text (:917) reads as if the non-member
+  gets the 403. On that route the caller gets "Access denied" when the assignee
+  is not a member, and "Not allowed role" when the assignee is a VIEWER. The
+  caller is checked first. Suggested: «Если вызывающий или назначаемый не
+  участник проекта — 403 «Access denied»; если роль одного из них не входит в
+  список — 403 «Not allowed role». Сначала проверяется вызывающий.»
+  Non-blocking.
+- **#195 (TAS-200):** the retry route's inline `'400'` drops the `X-Request-Id`
+  header declaration that `components.responses.ErrorResponse` carries. Low; a
+  comment on #195.

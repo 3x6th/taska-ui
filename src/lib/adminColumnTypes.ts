@@ -10,7 +10,7 @@
  * timestamp. Two copies of this map would be two chances to disagree with the
  * backend, and the mock is what the e2e suite runs against.
  */
-export type AdminColumnClass = "TEXT" | "TEMPORAL" | "NUMERIC" | "BOOLEAN" | "OTHER";
+export type AdminColumnClass = "TEXT" | "TEMPORAL" | "NUMERIC" | "BOOLEAN" | "UUID" | "OTHER";
 
 /**
  * The catalog states `information_schema.columns.data_type` verbatim, and the
@@ -42,11 +42,15 @@ const COLUMN_CLASS_BY_TYPE = new Map<string, AdminColumnClass>([
   ["bigserial", "NUMERIC"],
   ["smallserial", "NUMERIC"],
   ["boolean", "BOOLEAN"],
+  // Its own class since backend PR #184 (TAS-232): the gateway parses an
+  // `equals` value on a `uuid` column as a UUID and binds it typed, where it
+  // used to bind the raw string. Equality only, as before.
+  ["uuid", "UUID"],
 ]);
 
 /**
  * The class the gateway will put this column in. A type it has never heard of —
- * `uuid`, `jsonb`, `bytea`, an absent type, a domain type from a later
+ * `jsonb`, `bytea`, `inet`, an absent type, a domain type from a later
  * migration — is `OTHER` on purpose: fewer operators is the safe direction,
  * because offering one the server rejects turns a filter into a 400 the reader
  * cannot act on.

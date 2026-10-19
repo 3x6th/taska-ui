@@ -121,6 +121,16 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
   const run = useMutation({
     mutationFn: () => taskaApi.retryOutboxEvent(event.serviceKey, event.id, trimmed),
     onSuccess: (result) => onDone(result, onScreen.current ? "while-open" : "after-dismissal"),
+    onError: (error) => {
+      // The not-eligible refusal is the server saying the list behind this
+      // dialog is out of date — the event changed after it was read — so the
+      // list is asked again, the ordinary answer to a cache shown to be stale.
+      // This dialog stays open over it with the reason as typed: `pending`
+      // holds the event itself, not a row looked up in the list, so the
+      // refetch cannot take the dialog away. No other failure here proves
+      // anything about the list, and none of them reads it again.
+      if (isNotEligibleRefusal(error)) void queryClient.invalidateQueries({ queryKey: OUTBOX_PROBLEMS_KEY });
+    },
   });
 
   const submit = () => {
@@ -216,24 +226,6 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
           error. The attempt count is <strong>not</strong> reset — this event has {event.attempts}{" "}
           {event.attempts === 1 ? "attempt" : "attempts"} against it and will still have {event.attempts} afterwards.
         </p>
-        {/* Only for the status where the client genuinely cannot predict the
-            answer. The list calls a PROCESSING row stuck after the producing
-            service's timeout; the retry route wants a longer one of its own, and
-            neither number is visible from here (docs/ai/API-DIVERGENCE.md). Said
-            before the press rather than only in the refusal after it.
-
-            Two sentences, because it sits under the four-line note above it and
-            at 390 the pair was nine lines of 12px prose before the field. The
-            three facts are all still here: the status, that the server's
-            threshold is both longer and its own, and that the refusal changes
-            nothing. */}
-        {event.status.trim().toUpperCase() === "PROCESSING" ? (
-          <p className="admin-write-note">
-            This event is still processing. The server calls one stuck later than this list does, by a threshold of
-            its own — so a recently stuck event is refused, unchanged.
-          </p>
-        ) : null}
-
         <label className="field">
           <span>Reason</span>
           <textarea
@@ -280,6 +272,28 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
 }
 
 /**
+ * The one refusal that promises the row did not move, and it is reached on the
+ * code rather than on the taxonomy's `conflict` — narrower than
+ * `userWriteFailure` on purpose.
+ *
+ * `isConflict` also admits a bare 409 and `ABORTED`, which are right for the
+ * Users writes: their transition guard answers exactly that. This route emits
+ * neither today — its one refusal is `FAILED_PRECONDITION` on a 400 — and the
+ * guarantee it carries is not a general property of a conflict. It holds
+ * because admin-service checks eligibility before the `UPDATE` and again in the
+ * `UPDATE`'s own `WHERE`, so *that* refusal provably moved nothing. A future
+ * 409 from this path would arrive with no such proof behind it, and would
+ * rather be read as the plain rejection it is than be handed a promise this
+ * dialog cannot keep.
+ *
+ * Read twice: by `RetryFailure` for its sentence, and by the mutation for the
+ * re-read of the list that only this refusal justifies.
+ */
+function isNotEligibleRefusal(error: unknown): boolean {
+  return userWriteFailure(error) === "conflict" && apiErrorFacts(error).code === "FAILED_PRECONDITION";
+}
+
+/**
  * Why the retry failed, in the words of §5.8's taxonomy — the same five cases
  * the Users dialog words, and no sixth.
  *
@@ -300,38 +314,26 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
  */
 function RetryFailure({ error }: { error: unknown }) {
   const failure = userWriteFailure(error);
-  const { code, message, requestId } = apiErrorFacts(error);
-  /**
-   * The one arm that promises the row did not move, and it is reached on the
-   * code rather than on the taxonomy's `conflict` — narrower than
-   * `userWriteFailure` on purpose.
-   *
-   * `isConflict` also admits a bare 409 and `ABORTED`, which are right for the
-   * Users writes: their transition guard answers exactly that. This route emits
-   * neither today — its one refusal is `FAILED_PRECONDITION` on a 400 — and the
-   * guarantee below is not a general property of a conflict. It holds because
-   * admin-service checks eligibility before the `UPDATE` and again in the
-   * `UPDATE`'s own `WHERE`, so *that* refusal provably moved nothing. A future
-   * 409 from this path would arrive with no such proof behind it, and would
-   * rather be read as the plain rejection it is than be handed a promise this
-   * dialog cannot keep.
-   */
-  const notEligible = failure === "conflict" && code === "FAILED_PRECONDITION";
+  const { message, requestId } = apiErrorFacts(error);
+  const notEligible = isNotEligibleRefusal(error);
 
   return (
     <div className="admin-write-failure" role="alert">
       <p>
         {notEligible
-          ? // The refusal this route makes most often, and the one an operator
-            // is most likely to meet without having done anything wrong: only a
-            // failed event, or one stuck in PROCESSING past the server's own
-            // threshold, can be retried. The server's own sentence below says
-            // which of those it was.
+          ? // Since backend PR #195 (TAS-200) the list only offers Retry on a row
+            // the server itself called retryable when the list was read, so this
+            // refusal means the event changed in between — picked up, finished,
+            // or retried by somebody else. The retry command checks again and
+            // refuses rather than acting on the list's snapshot. The server's own
+            // sentence below says what it found, and the list behind this dialog
+            // is already being read again (`onError` above), so the sentence
+            // does not send the operator to do it.
             //
             // The last clause is the one that separates this arm from the two
-            // below it, and it is exact rather than reassuring — see above for
-            // why it is spoken only here.
-            "The server would not retry this event. Nothing is wrong with the request — it retries a failed event, or one stuck in processing past a threshold of its own, and this one is neither. The event is as it was."
+            // below it, and it is exact rather than reassuring — see
+            // `isNotEligibleRefusal` for why it is spoken only here.
+            "The server would not retry this event: it changed after this list was read. Nothing is wrong with the request, and this retry changed nothing."
           : failure === "refused"
             ? "The server refused this. Either you are not a global admin as far as the gateway is concerned, or that event is no longer in this service's outbox."
             : failure === "server"

@@ -35,13 +35,14 @@ describe("column type classification", () => {
     ["bigserial", "NUMERIC"],
     ["smallserial", "NUMERIC"],
     ["boolean", "BOOLEAN"],
+    ["uuid", "UUID"],
   ] as const)("puts %s in %s", (type, expected) => {
     expect(classifyColumnType(type)).toBe(expected);
     // The gateway lowercases before matching, and a catalog is free to shout.
     expect(classifyColumnType(type.toUpperCase())).toBe(expected);
   });
 
-  it.each(["uuid", "jsonb", "json", "bytea", "inet", "character varying[]", "timestamptz", undefined])(
+  it.each(["jsonb", "json", "bytea", "inet", "uuid[]", "character varying[]", "timestamptz", undefined])(
     "falls back to OTHER for %s",
     (type) => {
       expect(classifyColumnType(type)).toBe("OTHER");

@@ -41,7 +41,6 @@ import type {
   IssueComment,
   IssueLink,
   IssueSearchHit,
-  IssueType,
   IssueWatchers,
   IssueWorklog,
   IssueDetailsWithHistory,
@@ -63,7 +62,6 @@ import type {
   UserAvatar,
   UserStatusChange,
   WatchIssueResult,
-  Workflow,
 } from "../domain/types";
 
 /**
@@ -153,10 +151,6 @@ export class HybridTaskaApi implements TaskaApi {
 
   removeProjectMember(projectId: string, userId: string): Promise<void> {
     return this.live.removeProjectMember(projectId, userId);
-  }
-
-  getWorkflow(projectId: string, issueType?: IssueType): Promise<Workflow> {
-    return this.live.getWorkflow(projectId, issueType);
   }
 
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>> {
@@ -314,10 +308,6 @@ export class HybridTaskaApi implements TaskaApi {
 
   deleteMyAvatar(): Promise<void> {
     return this.live.deleteMyAvatar();
-  }
-
-  getUserAvatarUrl(userId: string): Promise<string | null> {
-    return this.live.getUserAvatarUrl(userId);
   }
 
   listIssueWorklogs(projectId: string, issueId: string): Promise<IssueWorklog[]> {

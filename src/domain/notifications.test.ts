@@ -45,18 +45,26 @@ describe("where a notification goes when it is pressed", () => {
     expect(notificationRoute(legacy)).toBeNull();
   });
 
+  it("opens the issue an attachment notification names, now that it carries both ids", () => {
+    // Since backend PR #191 (TAS-245) issue-service puts issueKey and projectId
+    // on the attachment payloads too, so these rows route like any other.
+    for (const kind of ["ISSUE_ATTACHMENT_ADDED", "ISSUE_ATTACHMENT_DELETED"]) {
+      expect(notificationRoute(about(kind, ISSUE_ID, PROJECT_ID))).toBe(`/projects/${PROJECT_ID}/issues/${ISSUE_ID}`);
+    }
+  });
+
   it("opens nothing for an issue that has been deleted, though it names one", () => {
     expect(notificationRoute(about("ISSUE_DELETED", ISSUE_ID, PROJECT_ID))).toBeNull();
   });
 
-  it("opens nothing for an attachment notification, which carries issueId alone until TAS-245", () => {
-    // Not a hypothetical: issue-service's PayloadSerializer writes issueId for
-    // ISSUE_ATTACHMENT_ADDED and ISSUE_ATTACHMENT_DELETED and never calls
-    // putIssueFields to add issueKey or projectId, so this is the shape these
-    // two kinds arrive in today. The route needs both ids, and guessing the
-    // project from the open board is the thing a notification opened from
-    // `/projects` cannot do.
+  it("opens nothing for an issueId without a projectId, whatever the kind", () => {
+    // Not a hypothetical: an attachment notification written before backend
+    // PR #191 (TAS-245) arrives this way, and the fix did not backfill. The
+    // route needs both ids, and guessing the project from the open board is
+    // the thing a notification opened from `/projects` cannot do.
     expect(notificationRoute(about("ISSUE_ATTACHMENT_ADDED", ISSUE_ID, null))).toBeNull();
+    expect(notificationRoute(about("ISSUE_ATTACHMENT_DELETED", ISSUE_ID, null))).toBeNull();
+    expect(notificationRoute(about("ISSUE_ASSIGNED", ISSUE_ID, null))).toBeNull();
     expect(notificationRoute(about("ISSUE_ASSIGNED", null, PROJECT_ID))).toBeNull();
     // An empty string is not an id either.
     expect(notificationRoute(about("ISSUE_ASSIGNED", "", PROJECT_ID))).toBeNull();

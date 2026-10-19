@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, HashRouter } from "react-router-dom";
 import { ROUTER_MODE } from "./lib/appLinks";
+import { keepSignedAvatarLink, ME_QUERY_KEY } from "./lib/ownAvatarLink";
 import { App } from "./screens/App";
 import "./styles.css";
 
@@ -14,6 +15,10 @@ const queryClient = new QueryClient({
     },
   },
 });
+// On the key rather than at each `useQuery(["me"])`, so every reader of the
+// account — five screens, the members dialog's `fetchQuery`, the login form's
+// `setQueryData` — keeps the reader's avatar link the same way (TAS-223).
+queryClient.setQueryDefaults(ME_QUERY_KEY, { structuralSharing: keepSignedAvatarLink });
 
 // One value for the router and for the links the app hands out (`appUrl`), so
 // a copied link is always in the scheme this build routes by.

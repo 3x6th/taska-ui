@@ -118,7 +118,34 @@ is cheaper than splitting an entry and the reader has to be told which.
   [TAS-162](https://jira.ozero.dev/browse/TAS-162) is answered, and the
   non-member case this entry used to wait on is the bullet directly above.
 
-### A failed workflow read is silently replaced by the mock's workflow
+### Closed by TAS-263: a failed workflow read was silently replaced by the mock's workflow
+
+**Closed on 2026-10-17. The compensation went in three steps, and this entry
+outlived all of them.**
+
+- **TAS-163, on 2026-08-12, the day this entry was written** (`6419634`),
+  deleted `fallbackTransitions`, the four transition ids copied from the
+  mock's seed. That was the fix this entry asked for. Nothing has posted an
+  invented transition id since.
+- **TAS-251** (`f45dc24`, 2026-10-10) moved the board off this route onto
+  `GET /projects/{projectId}/context`, so a failed workflow is a failed
+  context, said in the board's one banner (`contextUnread` in `BoardScreen`).
+- **TAS-263** (`aac71ed`) deleted `getWorkflow` from `TaskaApi` and from all
+  three implementations, so no client code calls the route.
+
+**What is left, checked in `src` on 2026-10-17:** `HybridTaskaApi` and
+`MockTaskaApi` hold no workflow fallback. Hybrid has no workflow code at all,
+and the mock's transition id `55555555-…` is its own seed workflow, which it
+serves as its answer, not a substitute for a failed one. `BoardScreen` keeps
+`fallbackStatuses`: the contract's three status keys with the board's own
+labels and order, and no transitions. `mergeWorkflowStatuses` draws them
+before the context answers, after it fails, and for a project whose context
+carries no statuses (no allowed type, or TAS-261's empty lists). No drop and
+no panel move can resolve a transition from them. That is the loading default
+this entry called reasonable, not the failure lie it recorded, so nothing is
+left to remove.
+
+The entry as it stood:
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/workflow`
 - **Found by `api-contract-guard`, 2026-08-12.** Pre-existing; recorded now
@@ -157,11 +184,23 @@ is cheaper than splitting an entry and the reader has to be told which.
 
 ### The contract's status keys are open, and the UI's are closed
 
-- **Endpoint:** `GET /api/v1/projects/{projectId}/workflow`
+- **Endpoint:** `GET /api/v1/projects/{projectId}/context`, its
+  `workflows[].workflow.statuses`. Until TAS-251 the board read them from
+  `GET /api/v1/projects/{projectId}/workflow`, which no client code calls
+  since TAS-263 deleted `getWorkflow`. Both answer the same
+  `WorkflowStatusDto`.
 - **Contract:** `statusKey` and `category` are deliberately unconstrained
   strings — the description says the enum is omitted "для расширяемости".
 - **UI:** both are modelled as the closed `IssueStatus` union, and
   `statusLabels` / `statusColors` (`src/lib/format.ts`) are keyed off it.
+  `RestTaskaApi.getProjectContext` passes `statuses` through as sent, so
+  nothing narrows a key between the wire and the union. From TAS-251 until
+  backend PR #183 the context sent every list empty (see the TAS-261 bullet
+  under "Backend PR #169"), so no key reached the board. #183 deployed on
+  2026-10-16, and the keys now arrive: probed with a token on 2026-10-19, the
+  context carried three statuses for each of TASK, BUG and STORY (request
+  `00f7c880-d17a-4b44-82f5-ceeffc1c0216`). A fourth key would reach the union
+  un-narrowed.
 - **Consequence:** a fourth status key renders a column with no colour and no
   label, and its issues appear in no column at all — the board filters cards by
   `issue.status === status.statusKey`.
@@ -171,7 +210,11 @@ is cheaper than splitting an entry and the reader has to be told which.
   have the contract state the enum. Filed 2026-09-11: the source is
   [TAS-217](https://jira.ozero.dev/browse/TAS-217) (`GET /meta`), the mapper
   defence is [TAS-173](https://jira.ozero.dev/browse/TAS-173), the contract
-  `$ref` is [TAS-206](https://jira.ozero.dev/browse/TAS-206).
+  `$ref` is [TAS-206](https://jira.ozero.dev/browse/TAS-206). TAS-217 merged
+  as backend PR #196 (`f453171`) on 2026-10-19, and `GET /meta` answered 200
+  on the stand the same day with `issueTypes`, `priorities`, `linkTypes`,
+  `notificationTypes` and `userStatuses`: no status keys, so it is not yet the
+  source this line asks for.
 
 ### Closed by measurement (TAS-195 pass): `GET /issues/{issueId}` no longer 500s on a commented issue
 
@@ -208,7 +251,22 @@ is cheaper than splitting an entry and the reader has to be told which.
   it needs a deliberate probe: add a comment to an issue, then read that issue.
 - **Removal:** [TAS-139](https://jira.ozero.dev/browse/TAS-139).
 
-### `GET /projects` reports an empty collection as 404
+### Closed by TAS-263: `GET /projects` reported an empty collection as 404, and the client mapped every 404 to `[]`
+
+**Closed on 2026-10-17 by removing the catch, on a code reading, not a probe.**
+On develop `4277199` `ProjectServiceImpl.listMyProjects`
+(`ProjectServiceImpl.java:208-215`) streams `findAllByMemberUserId` straight
+through, with no `switchIfEmpty`, so an account with no projects gets 200 and
+an empty list; the 2026-09-23 reading below still holds.
+[TAS-263](https://jira.ozero.dev/browse/TAS-263) (`aac71ed`) deleted the
+`try`/`catch` in `RestTaskaApi.listProjects`, so a 404 now reaches the caller
+as an error: a misrouted base URL or an undeployed route is said, not drawn as
+"you have no projects". Not probed, because a probe needs an account that
+owns no projects. If the server ever answers an empty list with 404 again,
+the projects screen says "The project list could not be loaded.", which is
+what the no-compensation rule asks for.
+
+The entry as it stood:
 
 - **Endpoint:** `GET /api/v1/projects`
 - **Contract:** `200` with a project list.
@@ -550,41 +608,91 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `ProjectContextResponseDto` `{ project, members, labels, workflows }`, in
   `docs/contract/openapi.yml`. #169 merged unchanged at `a1bfe19` and is in the
   snapshot at develop `fa90b51`; **deployed on stage 2026-10-12**, probed
-  without a token (401 without one, 400 for a non-uuid id). The response shape
-  has not yet been measured with a token.
+  without a token (401 without one, 400 for a non-uuid id). Read with a token
+  on 2026-10-15 and 2026-10-19 (the TAS-261 bullet below); the second read
+  counted one member and two labels on API Gateway and did not check them
+  field by field.
 - **What the board does with it (TAS-251):** one `getProjectContext` replaces
   seven reads — `GET /projects/{id}`, the same again for the role
   (`getMembership`), `…/members`, `…/workflow` × 3 and `…/labels`. Measured
   against `RestTaskaApi` over a stubbed `fetch`
   (src/screens/IssuePanelRequests.test.tsx): a settled board went from eleven
-  requests to five — the context, the issue page, `GET /users/me`, and the top
-  bar's notifications and avatar. `HybridTaskaApi` passes it through; the
-  members dialog and the projects screen still read `…/members`.
+  requests to five, and since TAS-263 (`aac71ed`) to four — the context, the
+  issue page, `GET /users/me` and the notifications. TAS-263 deleted the top
+  bar's `GET /users/{userId}/avatar`, because the reader's avatar rides on
+  `GET /users/me` since backend PR #193 deployed on 2026-10-19 (see "The
+  current user's avatar" below); the same test asserts that path is not
+  requested.
+  `HybridTaskaApi` passes it through; the members dialog and the projects
+  screen still read `…/members`.
 - **What the Java at the PR head does that the yml does not say** (read by
   `api-contract-guard`; the Java wins), and what each implementation does:
   - All or nothing: any part failing fails the response. The board therefore
     has one banner for it, where it had three (project, role, workflow).
-  - A non-member is `403` — a `GLOBAL_ADMIN` included — and a missing project
-    is `404`. At head `a1bfe19` the code intends 200 with empty members and labels (its
-    TODO says so), but the labels leg's denial arrives from issue-service as a
-    gRPC `StatusRuntimeException`, which `ProjectServiceImpl.isPermissionDenied`
-    (it matches only `DomainException`) does not catch, so the whole context
-    fails `PERMISSION_DENIED` and answers 403. Removal: when the labels call
-    carries the global role, or `isPermissionDenied` also matches a gRPC denial,
-    the context answers 200 with empty parts and the mock must follow.
-  - **A 404 or 403 can also be one avatar.** The members are enriched exactly
-    as `…/members` enriches them (`ProjectMemberServiceImpl` at #169): each
-    avatar HEADed and presigned per person, no per-row fallback. One missing
-    avatar object fails the whole context with 404 and a storage refusal with
-    403 — the statuses of a missing project and of no access.
-    **Compensation: none** (AGENTS.md, "No compensations for the backend";
-    the confirming `getProject` read TAS-251 first added was removed on
-    2026-10-12). A context 404/403 goes straight to §4.18's not-found screen,
-    as the server says. **What a user sees:** a project one of whose members
-    has an unreadable avatar object shows as not found, to every member.
-    **Backend ask** (comment on TAS-212): an unreadable avatar should come as
-    `avatar: null` on its row, not fail the read. Removal: when that ships,
-    this entry closes; nothing in the frontend changes.
+  - **A non-member of any global role is `403`, and a missing project is
+    `404`. This is the designed rule, not an accident of the code**: the owner
+    decided it on 2026-10-16 ([TAS-255](https://jira.ozero.dev/browse/TAS-255)),
+    and backend PR #186 (head `cc03c0d`) implements it.
+    `ProjectServiceImpl.getProjectContext` refuses a reader with no membership
+    row `PERMISSION_DENIED` "You don't have access to this project" whatever
+    their global role (`ProjectServiceImpl.java:143-148` at `cc03c0d`), before
+    any sub-read starts — the same check and sentence as `GET /projects/{id}`.
+    The `GLOBAL_ADMIN` bypass and the three `onErrorResume(isPermissionDenied)`
+    that turned a refused leg into `[]` are gone, so a sub-read that fails
+    fails the whole context with its own status, and the context never answers
+    200 with an empty part it could not read. **#186 merged as `055d01b` and
+    deployed 2026-10-19; read in code, not probed** (the only token at hand
+    belongs to a member of all 12 projects, so no non-member read could be
+    made). **On the stand before #186 deployed** (develop `4277199`, read in
+    code, not probed): a `USER` non-member already got 403 "You don't have
+    access to this project"; a `GLOBAL_ADMIN` non-member got 403 "Access
+    denied", because develop's bypass let the read go on, `isPermissionDenied`
+    (it matches only `DomainException`) swallowed the members leg's refusal,
+    and the labels leg's gRPC denial from issue-service failed the whole read.
+    Code and status are the same either way and the UI keys on the code
+    (`isMissingOrForbidden`), so nothing a person sees changes. TAS-263
+    follows #186: the mock refuses every non-member with #186's sentence.
+    **No removal**: this is the rule. Only the "before #186 deployed"
+    sentences go, once a non-member probe of `/context` answers 403 with that
+    sentence.
+  - **Closed, read in code and not probed: one unreadable avatar no longer
+    fails the context.** The ask below shipped on 2026-10-12 in two backend
+    merges. [TAS-225](https://jira.ozero.dev/browse/TAS-225) (PR #181,
+    `3379696`, merged as `aef3b68`) put the avatar id back into
+    `findUsersWithAvatars` and gave auth-service's `enrichWithAvatarUrl` a
+    per-row fallback: a presign that fails logs a warning and answers that row
+    `withoutAvatar` instead of failing the batch (`ProfileServiceImpl.java:174-184`
+    at develop `4277199`). [TAS-254](https://jira.ozero.dev/browse/TAS-254)
+    (PR #182, `b6f6e17`, merged as `3979d7e`) made the avatar mapping
+    null-safe in auth-service's `ProfileMapper` and project-service's
+    `ProjectMapper`, so a member without an avatar no longer 500s `…/members`
+    and `/context`. The context's members leg goes through that same lookup,
+    one `getUserDetailsByIds` call per 100 members
+    (`ProjectMemberServiceImpl.java:148-149`, `:174` at `4277199`), so a member
+    whose object is missing or refused comes back as a row with no face. The
+    one avatar read without that fallback is `getUserProfile` (`:54-61`), which
+    only `GET /users/me` uses — see "Avatar confirm trusts any `objectKey`"
+    below. Nothing changed in the frontend, as the removal line said. What
+    was measured is narrower: on the evening of 2026-10-12 `/context` and
+    `…/members` answered 200 on all 12 projects with avatars
+    (`JIRA-WORKFLOW.md`, TAS-251 row); a row with a broken object has not been
+    read. The same claim survives in code comments, swept after a probe
+    (`BACKLOG.md`, "Left by TAS-263").
+
+    The bullet as it stood: **A 404 or 403 can also be one avatar.** The
+    members are enriched exactly as `…/members` enriches them
+    (`ProjectMemberServiceImpl` at #169): each avatar HEADed and presigned per
+    person, no per-row fallback. One missing avatar object fails the whole
+    context with 404 and a storage refusal with 403 — the statuses of a missing
+    project and of no access. **Compensation: none** (AGENTS.md, "No
+    compensations for the backend"; the confirming `getProject` read TAS-251
+    first added was removed on 2026-10-12). A context 404/403 goes straight to
+    §4.18's not-found screen, as the server says. **What a user sees:** a
+    project one of whose members has an unreadable avatar object shows as not
+    found, to every member. **Backend ask** (comment on TAS-212): an
+    unreadable avatar should come as `avatar: null` on its row, not fail the
+    read. Removal: when that ships, this entry closes; nothing in the frontend
+    changes.
   - `workflows` covers only the project's allowed issue types — fewer than
     three, or `[]` — in no fixed order, and an unknown type arrives as
     `issueType: null`. `rest` keys the entries by type and drops a `null`; the
@@ -596,9 +704,22 @@ Same rule as above: "Closed by" is settled, the rest is live.
     though `WorkflowStatusDto` in the extract still declares them;
     The workflow itself does carry them; `ProjectWorkflow`
     (src/domain/types.ts) leaves them out because nothing reads them.
-  - **On stage every workflow arrives with `statuses: []` and
-    `transitions: []`** (measured 2026-10-15 with a token, request id
-    `6c5282d7-03c4-48c3-8f66-285e41a3537f`; the same workflow from
+  - **Closed, probed on 2026-10-19: every workflow in the context carries its
+    statuses and transitions.** Backend PR #183
+    ([TAS-261](https://jira.ozero.dev/browse/TAS-261)) merged as develop
+    `4277199` on 2026-10-16 and deployed the same day; its `@AfterMapping`
+    fills both lists (`ProjectMapper.addWorkflowStatusesAndTransitions`,
+    `ProjectMapper.java:154-159` at `4277199`). A token read of API Gateway's
+    `/context` on 2026-10-19 answered 200 with three statuses and three
+    transitions on each of TASK, BUG and STORY (request
+    `00f7c880-d17a-4b44-82f5-ceeffc1c0216`). Nothing changed in the frontend,
+    as the removal line said. TAS-262's refusal (`sentWithoutStatuses` in
+    `BoardScreen`) stays: it is what the board says for any workflow that
+    arrives empty, not a stand-in for the missing lists.
+
+    The bullet as it stood: **On stage every workflow arrives with
+    `statuses: []` and `transitions: []`** (measured 2026-10-15 with a token,
+    request id `6c5282d7-03c4-48c3-8f66-285e41a3537f`; the same workflow from
     `…/workflow?issueType=TASK` has three of each). project-service's MapStruct
     `ProjectMapper.toWorkflowDataResponse` never fills the protobuf builder's
     repeated fields, and `unmappedTargetPolicy = IGNORE` hides it — confirmed in
@@ -612,8 +733,13 @@ Same rule as above: "Closed by" is settled, the rest is live.
     empty them in the query cache. Backend:
     [TAS-261](https://jira.ozero.dev/browse/TAS-261), fix in
     [backend PR #183](https://github.com/VladislavYurin/taska-backend/pull/183).
-    Removal: when #183 is deployed, the context carries the lists, the board
-    moves statuses again, and this bullet closes with nothing to change here.
+    **#183 merged as develop `4277199` on 2026-10-16 (07:25 UTC) and was
+    deployed the same day.** It adds an `@AfterMapping` that fills both lists
+    (`ProjectMapper.addWorkflowStatusesAndTransitions`,
+    `ProjectMapper.java:154-159` at `4277199`); read in code. **Not yet probed
+    with a token**, and a deploy is not a measurement, so the bullet stays
+    open. Removal: when a token read of `/context` shows non-empty `statuses`
+    and `transitions`, this bullet closes with nothing to change here.
   - Labels carry `id`, `name` and `color` only — not `ProjectLabelResponseDto`
     — and are typed `Label`; the board's optimistic label rows invent no
     `createdAt` either.
@@ -622,9 +748,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
     (blank name → unnamed row, `compareMembers`), and keeps `addedAt` when it
     is there.
 - **Mock parity:** `MockTaskaApi.getProjectContext` applies the same rules:
-  403 for a non-member (Mark, the seed's `GLOBAL_ADMIN`, on WEB; removal
-  trigger above), 404 for a
-  missing project, and **Infra and Ops allows only TASK and BUG**. `createIssue`
+  `PERMISSION_DENIED` "You don't have access to this project" for a non-member
+  of any global role — #186's sentence, pinned in `MockTaskaApi.test.ts` for
+  Mark (the seed's `GLOBAL_ADMIN`, not on WEB) and Anna (a `USER`, not on
+  MOB) — `NOT_FOUND` "Project not found" for a missing project, and **Infra
+  and Ops allows only TASK and BUG**. The mock carries no HTTP status by
+  design; the code is what the UI reads. `createIssue`
   refuses a type the project does not allow with `400 INVALID_ARGUMENT` ("Issue
   type STORY is not allowed in project OPS"). **The server does not**: at
   develop `fa90b51` (#169 merged), issue-service `IssueServiceImpl.createIssue` checks only the
@@ -638,10 +767,12 @@ Same rule as above: "Closed by" is settled, the rest is live.
 - **Removal:** done for the contract — #169 merged, the pending extract is
   deleted and the snapshot refreshed to develop `fa90b51`; the route answers on
   stage (2026-10-12, without a token). The `workflows` part was measured with a
-  token on 2026-10-15 (the empty lists above); members and labels have not been
-  checked field by field. `getProject`, `getMembership`, `getWorkflow` and `listProjectLabels`
-  stay on `TaskaApi` with no screen calling them (docs/ai/BACKLOG.md); whether
-  they go is a separate decision.
+  token on 2026-10-15 (the empty lists above) and again on 2026-10-19, filled
+  since #183; members and labels have not been checked field by field.
+  `getProject`, `getMembership` and `listProjectLabels` stay on `TaskaApi`
+  with no screen calling them (docs/ai/BACKLOG.md); whether they go is a
+  separate decision. There were four: TAS-263 (`aac71ed`)
+  deleted `getWorkflow` from `TaskaApi` and from all three implementations.
 
 ### Pending backend PR #172 (TAS-160): the audit log, not served, and three things the Java does that the yml does not say
 
@@ -907,8 +1038,18 @@ Everything below is the entry as it stood, in the past tense.
   `PUT …/assignee` is a backend step that is not filed (`BACKLOG.md`, "Left by
   TAS-246").
 
-### Five watcher and assignee writes are role-gated by issue-service; on two the contract and the server disagree about the self case, and on three the contract names no role
+### Five watcher and assignee writes are role-gated by issue-service; since backend PR #194 the contract states the roles on every route but `PATCH`
 
+- **Status, 2026-10-19: the watcher half and the `PUT …/assignee` half are
+  closed; the `PATCH` half is open.** Backend PR #194
+  ([TAS-228](https://jira.ozero.dev/browse/TAS-228)) changed description text
+  only, no Java, and merged at its head `a33ed5d` as `95b1f35` on 2026-10-19.
+  The snapshot is refreshed to develop `7d4f7395565c` and the extract
+  `pr-194-TAS-228.yml` is deleted. Contract and server now agree on the four
+  watcher routes and on the deprecated `PUT …/assignee`, and only
+  `PATCH /issues/{issueId}` — the one assignee write the client sends — still
+  names no role. Nothing on the wire changed, so there was nothing to probe.
+  TAS-263 had already moved the mock (Compensation, below).
 - **Endpoints:**
   - `PUT` and `DELETE /api/v1/projects/{projectId}/issues/{issueId}/watchers/me`;
   - `POST /api/v1/projects/{projectId}/issues/{issueId}/watchers` (the
@@ -918,27 +1059,33 @@ Everything below is the entry as it stood, in the past tense.
     `assigneeId`, since [TAS-246](https://jira.ozero.dev/browse/TAS-246).
     Until then it was `PUT /api/v1/issues/{issueId}/assignee`, which is now
     `deprecated: true` in the contract and no longer called by the client.
-- **Contract:** `POST …/watchers` and `DELETE …/watchers/{userId}` both say
-  "Доступно только пользователю с ролью ADMIN в проекте", with no exception for
-  callers naming themselves (`docs/contract/openapi.yml` ~1766-1768 and
-  ~1902-1904). The DELETE description has one more line (~1905): "Viewer/MEMBER
-  без роли ADMIN не может удалить чужого watcher". It puts the restriction on
-  somebody else's watcher. That is the one hint in the contract that the self
-  case may be intended there, and it bears on the choice TAS-228 asks for. The
-  `…/watchers/me` pair states no role and lists a `403` without saying who gets
-  it. The assignee route states no role for the person assigning
-  or for the person assigned, and neither does `PATCH /issues/{issueId}`,
-  which states no role at all.
-- **Runtime** (defaults read in the Java at backend `develop` `1cfe4d7`; not
-  probed with a token): issue-service's `application.yml` (lines 45, 59, 61)
-  sets `issue.allowed-roles.assign-issue-roles` to `ADMIN,MEMBER`,
-  `watch-issue-roles` to `ADMIN,MEMBER` and `manage-watchers-roles` to `ADMIN`.
-  Each is an environment-variable default. `IssueWatcherServiceImpl.checkMutationRole`
-  (168-180) reads only the actor's role: `watch-issue-roles` when the target is
-  the actor, `manage-watchers-roles` when it is somebody else. All four watcher
-  writes go through it. The gateway names the target from the path on
+- **Contract, in the snapshot since #194:** `POST …/watchers` and
+  `DELETE …/watchers/{userId}` describe `checkMutationRole` as it is —
+  `manage-watchers-roles` (ADMIN by default) for somebody else's `userId`,
+  `watch-issue-roles` (ADMIN or MEMBER) for the caller's own
+  (`docs/contract/openapi.yml:2105-2106` and `:2252-2253`) — and no longer say
+  "только project ADMIN" in their summaries. The `…/watchers/me` pair names
+  `watch-issue-roles` and the 403 a VIEWER gets (`:2160`, `:2206`).
+  `PUT …/assignee` names `assign-issue-roles` for both people, and only the
+  caller's when assigning themselves (`:928-929`). The deprecated
+  `PUT /issues/{issueId}` names `update-issue-roles` (`:769`), a sixth route
+  TAS-228 did not name. `PATCH /issues/{issueId}` (`:830-840`) still states
+  no role. Each list is described as an environment default the stand can
+  override. Before #194 the two `userId` routes said "Доступно только
+  пользователю с ролью ADMIN в проекте" with no exception for callers naming
+  themselves, and the other three named no role.
+- **Runtime** (defaults read in the Java at backend `develop` `1cfe4d7`, and
+  re-read at `4277199`; #194 changed no Java; line numbers are at
+  `4277199`; not probed with a token): issue-service's `application.yml`
+  (lines 45, 59, 61) sets `issue.allowed-roles.assign-issue-roles` to
+  `ADMIN,MEMBER`, `watch-issue-roles` to `ADMIN,MEMBER` and
+  `manage-watchers-roles` to `ADMIN`. Each is an environment-variable default.
+  `IssueWatcherServiceImpl.checkMutationRole` (182-194) reads only the actor's
+  role: `watch-issue-roles` when the target is the actor,
+  `manage-watchers-roles` when it is somebody else. All four watcher writes go
+  through it. The gateway names the target from the path on
   `DELETE …/watchers/{userId}` and from the body on `POST …/watchers`
-  (`WatchersController` 80-105, `GrpcIssueWatcherServiceClient` 119-169). The
+  (`WatchersController` 80-106, `GrpcIssueWatcherServiceClient` 125-175). The
   `…/me` pair names nobody, so the target
   is the caller. Three things follow:
   - a VIEWER can neither watch nor unwatch themselves;
@@ -946,12 +1093,13 @@ Everything below is the entry as it stood, in the past tense.
   - **a MEMBER may add or remove themselves through the two routes the contract
     calls ADMIN-only.**
 
-  The old assign path in `IssueServiceImpl` (178-184) checks
+  The old assign path in `IssueServiceImpl` (181-193) checks
   `assign-issue-roles` for the actor, and for the assignee too unless the actor
   assigns themselves; a `null` assignee never reached it, because
   `AssignIssueRequestDto.assigneeId` is required.
   **Since TAS-246 the client assigns through `PATCH`**, and
-  `IssuePatchServiceImpl` (read at develop `60d62ee`, not probed) checks in a
+  `IssuePatchServiceImpl` (read at develop `60d62ee`, not probed; the `patch`
+  package is unchanged at `4277199`) checks in a
   different shape. `update-issue-roles` (`ADMIN,MEMBER` by default) applies to
   the actor on every `PATCH`, whatever it changes. `checkPatchAssigneeRoles`
   then runs only when the assignee actually changes: it returns early when the
@@ -971,10 +1119,19 @@ Everything below is the entry as it stood, in the past tense.
     current assignee as a disabled active chip. Since TAS-246 the "None" chip
     is live for anyone who may edit, matching the server's unassign, which
     checks only the actor.
-  - `MockTaskaStore` refuses the same cases, in its own words. On the self case
-    of the two ADMIN routes it follows the contract: `requireWatcherAdmin`
-    refuses a MEMBER. The UI never makes that call, because both controls
-    render only for an ADMIN.
+  - `MockTaskaStore` refuses the same cases, in its own words. **Since TAS-263
+    it follows the server on the self case of `POST …/watchers` and
+    `DELETE …/watchers/{userId}` too**: `requireWatcherRoleFor` applies
+    `checkMutationRole`'s rule, so a MEMBER may add or remove themselves
+    through either route and a VIEWER through neither. Until TAS-263 it
+    followed develop's contract there (`requireWatcherAdmin` refused a
+    MEMBER). The contract caught up when #194 merged. The UI never makes
+    that call, because both controls render only for an ADMIN.
+
+  The UI gates — `canWatch`, `isProjectAdmin`, the ADMIN and MEMBER assignee
+  chips — are unchanged by TAS-263. They mirror environment defaults the
+  client cannot read, and that is what keeps this a compensation now that
+  #194 states the defaults.
 
   Until TAS-226 the toggle was live for every reader, because a code comment
   took the contract's silence on `…/watchers/me` to mean "no role".
@@ -983,32 +1140,51 @@ Everything below is the entry as it stood, in the past tense.
   values live in the deploy environment, not in the repository. A change there
   needs no commit and no contract diff, and the UI keeps offering the old set.
   "Read at `1cfe4d7`" proves the defaults, not the stand's values.
-- **Removal:** [TAS-228](https://jira.ozero.dev/browse/TAS-228) asks for the
-  roles on all five routes to be stated in the contract. It also asks the
-  backend to settle the self case of the two ADMIN routes, either by describing
-  what the code does or by making `checkMutationRole` decide by route. Until
-  it is answered the mock keeps following the contract on that case, and does
-  not move to the server's behaviour. TAS-228 names `PUT …/assignee`, which the
-  client no longer calls. The same ask for `PATCH /issues/{issueId}`
-  (`update-issue-roles`, plus `assign-issue-roles` for the actor and the new
-  assignee) is a candidate extension of it, not yet written onto the ticket
-  (`BACKLOG.md`, "Left by TAS-246").
+- **Removal:** [TAS-228](https://jira.ozero.dev/browse/TAS-228) asked for the
+  roles on all five routes to be stated in the contract, and for the self case
+  of the two ADMIN routes to be settled. Backend PR #194 answered both by
+  describing what the code does. It merged as `95b1f35` on 2026-10-19 and the
+  snapshot is refreshed, so the watcher half and the `PUT …/assignee` half of
+  this entry closed under this line, and the Contract bullet on develop went.
+  The mock did not move again: TAS-263 had already moved it.
+
+  That leaves the compensation on the assignee chips, and the `PATCH` route
+  that carries the assignee, without a removal key. TAS-228 names
+  `PUT …/assignee`, which the client no longer calls, and #194 does not touch
+  `PATCH`. The key for that half is the ask "openapi: state the roles on
+  `PATCH /api/v1/issues/{issueId}`" (`BACKLOG.md`, "Left by TAS-246";
+  `update-issue-roles` for the caller before the `If-Match` compare, plus
+  `assign-issue-roles` for the caller and the new assignee), not filed yet.
+  Even then the gates stay a compensation for as long as the role lists are
+  environment variables the client cannot read (Switching off, above).
 
 ### Assigning an issue subscribes the assignee, and creating one subscribes the reporter; the contract does not say so, and the mock did neither
 
 - **Endpoints:** `PATCH /api/v1/issues/{issueId}` with `assigneeId`, the
   deprecated `PUT …/assignee`, and `POST /api/v1/projects/{projectId}/issues`.
 - **Contract:** silent. None of the three says a watcher row is written.
-- **Runtime** (read at develop `60d62ee`, not probed): every assignee change
-  calls `issueAutoWatchService.watchAssigneeOnAssign`. The `PATCH` path does it
-  at `IssuePatchExecutor.java:149` and the old `PUT` path at
-  `IssueServiceImpl.java:217`. Create subscribes the reporter
-  (`IssueServiceImpl.java:149`). Both are on by default through environment
-  variables in issue-service's `application.yml`: `issue.auto-watch.on-create-reporter`
+  Backend PR #194 (merged as `95b1f35` on 2026-10-19) did not add it: the
+  ask's optional half, stating the subscription, was left out, and its new
+  `PUT …/assignee` text names roles only.
+- **Runtime** (read at develop `60d62ee`, re-read at `4277199` with the line
+  numbers below; not probed): every assignee change calls
+  `issueAutoWatchService.watchAssigneeOnAssign`. The `PATCH` path does it at
+  `IssuePatchExecutor.java:149` and the old `PUT` path at
+  `IssueServiceImpl.java:221`. Create subscribes the reporter
+  (`IssueServiceImpl.java:153`). Both are on by default through environment
+  variables in issue-service's `application.yml` (lines 41-42):
+  `issue.auto-watch.on-create-reporter`
   (`ISSUE_AUTO_WATCH_ON_CREATE_REPORTER:true`) and `on-assign-assignee`
   (`ISSUE_AUTO_WATCH_ON_ASSIGN_ASSIGNEE:true`). The insert is idempotent
   (`ON CONFLICT DO NOTHING`, `IssueWatcherRepository.java:58`) and writes no
-  history row.
+  history row. **Neither subscription checks `watch-issue-roles`**:
+  `watchReporterOnCreate` (`IssueAutoWatchService.java:31-41`) and
+  `watchAssigneeOnAssign` both go through `autoWatchIfEnabled`, which checks
+  only the flag and a non-null user. With the default lists the sets
+  coincide (`create-issue-roles`, `assign-issue-roles` and
+  `watch-issue-roles` are all ADMIN and MEMBER), but a stand that widens
+  `ISSUE_CREATE_ROLES` or `ISSUE_ASSIGN_ROLES` beyond `ISSUE_WATCH_ROLES`
+  subscribes people who cannot then unwatch themselves.
 - **The mock, at `f35a490`:** `MockTaskaStore.assignIssue` and `createIssue`
   add no watcher. So in mock mode and in e2e, assigning yourself leaves Watch
   off and the watcher list unchanged. Against the gateway the refetch after the
@@ -1020,9 +1196,12 @@ Everything below is the entry as it stood, in the past tense.
   absent, with `createdBy` set to the actor and no history entry, and create
   does the same for the reporter (`autoWatch` in `MockTaskaApi.ts`).
 - **What is still owed here:** the contract stating the
-  subscription on the three routes. The contract half is a candidate
-  extension of [TAS-228](https://jira.ozero.dev/browse/TAS-228), documentation
-  only and not filed (`BACKLOG.md`, "Left by TAS-246"). The environment
+  subscription on the three routes. It was a candidate extension of
+  [TAS-228](https://jira.ozero.dev/browse/TAS-228); TAS-228 was not extended
+  and #194 did not do it, so it is now an ask of its own, documentation only
+  and not filed: "openapi: state auto-watch on create, `PUT …/assignee` and
+  `PATCH`" (`BACKLOG.md`, "Left by TAS-246"), with an optional service half
+  that checks `watch-issue-roles` in `autoWatchIfEnabled`. The environment
   variables can switch the subscription off on a stand without a contract
   change, which is one more reason the contract should say it exists.
 
@@ -1117,19 +1296,34 @@ Everything below is the entry as it stood, in the past tense.
   step down beside one. Member rows carry no `status`, so the client cannot
   tell (`api-contract-guard`, TAS-158).
 - **Change and remove check the target before the actor, and that discloses
-  membership.** Anyone signed in who is not an ADMIN of a project and knows its
-  id gets `404` for a `userId` that is not on the project and `403` for one
-  that is, on both `PATCH` and `DELETE`
+  membership.** On develop (`4277199`), anyone signed in who is not an ADMIN
+  of a project and knows its id gets `404` for a `userId` that is not on the
+  project and `403` for one that is, on both `PATCH` and `DELETE`
   (`ProjectMemberValidatorImpl.validateBeforeModify`; add checks the actor
   first). The dialog shows that `404` as "nothing changed" and does not re-read
   the reader's role. So a reader who was demoted in another session keeps the
   admin controls until something else re-reads their role. The client does not
   re-read the role on every `404`, because that would add reads to cover a
-  server ordering. `MockTaskaApi` mirrors that order, because parity
-  with the server is the rule, and `TaskaApi.ts` describes it. Filed as
-  [TAS-229](https://jira.ozero.dev/browse/TAS-229). When it lands, the order in
-  `MockTaskaApi`'s modify check, that doc and one case in
-  `src/api/members.test.ts` change with it (`api-contract-guard`, TAS-158).
+  server ordering. Filed as
+  [TAS-229](https://jira.ozero.dev/browse/TAS-229) (`api-contract-guard`,
+  TAS-158). **Backend PR #185 (TAS-229, head `ca1bd3c`) swaps the two
+  checks** in `ProjectMemberValidatorImpl.validateBeforeModify`: after the
+  project's existence, the actor's ADMIN role comes first — `403`
+  `PERMISSION_DENIED` "User with id: … is not an admin of project: …" — and
+  only then the target, `404` "Project member with id … was not found in
+  project with id …". A non-admin then learns nothing about who is a member.
+  **#185 merged as `ace2484` and deployed 2026-10-19; read in code at
+  `ca1bd3c`, not probed** (a probe needs a non-admin's token, and the only
+  token at hand belongs to a member of all 12 projects, under which a member
+  write that is not refused changes a real row). **TAS-263 already follows
+  it**: the order in `MockTaskaApi`'s modify check (`memberForModify`), the
+  `TaskaApi.ts` doc and the case in `src/api/members.test.ts` moved with it,
+  and `ProjectMembersModal`'s comment now expects a reader whom another admin
+  removed first to meet the `403` arm, which re-reads their role. Before #185
+  deployed, the stand answered in develop's order, so a non-admin naming a
+  non-member got `404` there and `403` from the mock. Removal: this bullet
+  goes when a non-admin's `PATCH` or `DELETE` on a non-member answers `403`
+  on the stand.
 - **The client is stricter about the id's spelling than the server.** Both
   implementations refuse anything that is not the canonical 8-4-4-4-12 form
   before sending (`isUserId`, `src/api/members.ts`). Java's `UUID.fromString`
@@ -1370,13 +1564,23 @@ Everything below is the entry as it stood, in the past tense.
   failure, so this deploy did not come from that workflow, and which `develop`
   commit is running is not known from outside. It shipped with
   [TAS-221](https://jira.ozero.dev/browse/TAS-221) open.
-- **Compensation, kept and now dormant:** every avatar failure still goes
-  through `isUndeployedRoute` first. Once the current user's avatar read meets
-  that signature, it is not asked again for the rest of the page session, so an
-  undeployed stand costs one 404 per page load rather than one per navigation,
-  and the menu offers no photo controls, only the sentence that photos are not on
-  this gateway yet. Against a deployed gateway it never fires. Accepted cost: a
-  tab opened before the deploy keeps that sentence until it is reloaded.
+- **Compensation, now only on the writes:** TAS-263 (`aac71ed`) deleted the
+  read half. The client no longer calls `GET /users/{userId}/avatar`
+  (`getUserAvatarUrl` is gone from `TaskaApi`), so the page-session memo of an
+  undeployed read (`clientsWithoutAvatarRoutes`) and the menu's "photos are not
+  on this gateway yet" band went with it. `isUndeployedRoute` now runs only on
+  the three writes — upload URL, confirm and delete — through
+  `UserProfileMenu`'s `writeFailureText`, which says "Profile photos are not on
+  this gateway yet, so nothing was saved." (or "removed"). Against a deployed
+  gateway it never fires.
+
+  The bullet as it stood before TAS-263: every avatar failure still went
+  through `isUndeployedRoute` first. Once the current user's avatar read met
+  that signature, it was not asked again for the rest of the page session, so
+  an undeployed stand cost one 404 per page load rather than one per
+  navigation, and the menu offered no photo controls, only the sentence that
+  photos were not on this gateway yet. Accepted cost: a tab opened before the
+  deploy kept that sentence until it was reloaded.
 - **Removed by:** nothing left to remove in code — the signature check is the
   general mechanism every route family uses. The remaining measurement is one
   real upload from `taska.ozero.dev`: the cross-origin PUT to the avatars bucket
@@ -1471,7 +1675,59 @@ Everything below is the entry as it stood, in the past tense.
   [TAS-217](https://jira.ozero.dev/browse/TAS-217), which does not list upload
   limits today. Same position as the attachment limits entry below.
 
-### The current user's avatar costs a second read, because `GET /users/me` carries none
+### The avatar link's lifetime is not on the wire, and the client keeps a link for ten minutes on that assumption
+
+- **Endpoints:** `GET /api/v1/users/me` (`avatar.downloadUrl`, backend PR #193
+  head `3bd33ca`, merged as `b88150f` and deployed 2026-10-19), and every
+  member row's `avatar.downloadUrl`.
+- **Observed** (code, not probed): every read signs the link anew, and nothing
+  in `AvatarDto` states when it expires. The lifetime is
+  `STORAGE_PRESIGNED_URL_TTL` in auth-service, 15 minutes by default and
+  overridable per stand.
+- **Client:** `src/lib/ownAvatarLink.ts` keeps the reader's own held link while
+  the avatar id is unchanged and the link was adopted less than 10 minutes ago,
+  so a focus refetch of `["me"]` does not download the face again. It invents
+  no data and re-reads nothing — `api-contract-guard` ruled it cache handling,
+  not a compensation (2026-10-17) — but it rests on the 15-minute default. A
+  stand configured below 10 minutes would draw an expired link until the next
+  refetch, and the `Avatar` fallback would show initials. Member rows are
+  re-signed on every list read and are not held (`BACKLOG.md`, "Member reads
+  re-sign every face").
+- **Removal:** the backend stating the lifetime on both `AvatarResponse`
+  protos and both `AvatarDto`s (`downloadUrlExpiresAt`, or `downloadUrlExpiresIn`
+  after the upload URL's `expiresIn`) or signing stable links; ready-to-file ask
+  in `BACKLOG.md`, "Left by TAS-263" — its Jira key replaces this pointer once
+  filed. Until then the 10 minutes stays a constant with this entry
+  as its reason.
+
+### Closed by TAS-263: the current user's avatar cost a second read, because `GET /users/me` carried none
+
+**Closed on 2026-10-17 by [TAS-263](https://jira.ozero.dev/browse/TAS-263)
+(`aac71ed`).** The second read is gone: the profile menu no longer calls
+`GET /users/{userId}/avatar`, `getUserAvatarUrl` is deleted from `TaskaApi`,
+and the settled board makes four requests (see "Backend PR #169" above). The
+reader's own avatar comes from `GET /users/me` as backend PR #193
+([TAS-223](https://jira.ozero.dev/browse/TAS-223), head `3bd33ca`) defines
+it: a nullable `avatar` and a required `avatarUnavailable`, `true` when the
+gateway's `GetUserProfile` read failed (`UserServiceImpl.java:43-48` at
+`3bd33ca`) and `false` when it read the profile, with a photo or without.
+`rest` copies the flag only when it is a boolean and leaves it off otherwise.
+Every read re-signs the link, so `src/lib/ownAvatarLink.ts` keeps the held
+link for an unchanged avatar id for up to ten minutes rather than
+re-downloading the face on every focus refetch.
+
+**#193 merged at that head as `b88150f` on 2026-10-19, deployed the same day,
+and probed.** A token read of `GET /users/me` answered 200 with `avatar` (an
+`AvatarDto` carrying `downloadUrl`, `id` and `objectKey` among its fields) and
+`avatarUnavailable: false` (request `0f9c038b-d0d5-458f-98b0-adb3af15d13f`).
+That closed the live sub-fact this entry carried until then: before the
+deploy `/users/me` carried neither key, so a TAS-263 build would have drawn
+the reader's own face as initials, which is why TAS-263 was held until #193
+and #195 were deployed and probed. The extract `pr-193-TAS-223.yml` is deleted;
+the shape is in the snapshot. The `avatarUnavailable: true` arm is read in
+code, not probed (see "Avatar confirm trusts any `objectKey`" below).
+
+The entry as it stood:
 
 - **Endpoints:** `GET /api/v1/users/me`, `GET /api/v1/users/{userId}/avatar`.
 - **Contract:** `ValidateAccessTokenResponseDto` is
@@ -1501,14 +1757,38 @@ Everything below is the entry as it stood, in the past tense.
   unique constraint on `object_key`, and the key is readable by any
   authenticated user — in the path of the presigned link from
   `GET /users/{userId}/avatar`. PR #152's member rows were to carry it as
-  `avatar.objectKey`, but they carry no avatar at `1cfe4d7` (TAS-225). So one
-  user can confirm another's key and then delete it
+  `avatar.objectKey`, and carried no avatar at `1cfe4d7`; since TAS-225
+  (backend PR #181, merged 2026-10-12) they carry the avatar, and auth-service
+  selects `object_key` for it (`UserRepository.findUsersWithAvatars` at
+  `4277199`), and the gateway passes it on: `ProjectMapper.java:148` copies
+  `objectKey` into the member row's `avatar` (read at `4277199` by
+  `api-contract-guard` on 2026-10-17, not probed). Dropping `objectKey` from
+  `AvatarDto` alone would not close this: the presigned link's path carries the
+  key too. TAS-221 (the confirm checks the key was minted for the caller) is the
+  fix. So one user can confirm another's key and then delete it
   with `DELETE /users/me/avatar`. Separately, confirming the **same key twice**
   deletes the object the saved row points at and then fails, and every later
   avatar read for that user answers 404, because the download presign issues a
-  HEAD first. **Since PR #152 deployed this reaches further:** the member read
-  HEADs every avatar owner with no per-row fallback, so `GET …/members` answers
-  404 in **every project that user belongs to** (TAS-225).
+  HEAD first. **From PR #152's deploy until TAS-225 this reached further:** the
+  member read HEADed every avatar owner with no per-row fallback, so
+  `GET …/members` answered 404 in every project that user belongs to. Since
+  TAS-225 the member and context reads drop that one face instead
+  (`ProfileServiceImpl.java:174-184` at `4277199`).
+- **What the user sees of it since backend PR #193 deployed** (head
+  `3bd33ca`, merged as `b88150f` and deployed 2026-10-19; this arm read in
+  code, not probed — the one probe read answered `avatarUnavailable: false`,
+  and reaching `true` needs a broken avatar object on a real account):
+  `GET /users/me` reads the reader's own avatar through `getUserProfile`
+  (`ProfileServiceImpl.java:54-61`), which has no per-row fallback, so the
+  failed presign fails it and the gateway answers 200 with
+  `avatar: null, avatarUnavailable: true` (`UserServiceImpl.java:43-48` at
+  `3bd33ca`). **For that user this is permanent, not transient**: every
+  read answers the same until an upload replaces the row or
+  `DELETE /users/me/avatar` removes it. The profile menu says "Your photo could
+  not be loaded." and offers "Upload a photo"; it does not offer "Remove photo",
+  which it shows only when there is a link, so in the UI an upload is the only
+  way out. Before #193 deployed the state was invisible in the menu, which
+  drew initials and said nothing.
 - **Compensation:** the menu never re-sends a key, and no comment in `src/api`
   licenses a retry of confirm. The mock reproduces the same-key behaviour so the
   defect is visible there rather than papered over.
@@ -1528,7 +1808,45 @@ Everything below is the entry as it stood, in the past tense.
   `ResponseEntity.status(HttpStatus.CREATED)`, so 201. There was no
   compensation, because none was needed. The removal was a clause in TAS-222.
 
-### Member rows never carry an avatar, and one unreadable avatar fails the whole member read
+### Closed by TAS-225 and TAS-254: member rows never carried an avatar, and one unreadable avatar failed the whole member read
+
+**Closed on 2026-10-17, under this entry's own "Removed by" line, which
+TAS-225 met on 2026-10-12.** Two backend merges that day, both read at develop
+`4277199`:
+
+- [TAS-225](https://jira.ozero.dev/browse/TAS-225) (PR #181, `3379696`,
+  merged as `aef3b68`) is the column and the per-row fallback this entry asked
+  for. `UserRepository.findUsersWithAvatars` selects `a.id AS avatar_id`
+  again, so a member row carries its avatar. auth-service's
+  `enrichWithAvatarUrl` now logs a failed presign and answers that row
+  `withoutAvatar` instead of failing the batch
+  (`ProfileServiceImpl.java:174-184`). project-service enriches members
+  through that lookup, one `getUserDetailsByIds` call per 100 members
+  (`ProjectMemberServiceImpl.java:148-149`, `:174`). So a missing object, a
+  storage refusal or a storage outage costs that one face, not the list.
+- [TAS-254](https://jira.ozero.dev/browse/TAS-254) (PR #182, `b6f6e17`,
+  merged as `3979d7e`) fixed what #181 broke on its own: with the avatar
+  arriving, auth-service's `ProfileMapper` failed on an avatar with no
+  `createdAt`, and project-service's `ProjectMapper.toProjectMemberResponse`
+  on a member with no avatar, so `…/members` and `/context` answered 500 (on
+  every project, for `/context`, per the TAS-251 row of `JIRA-WORKFLOW.md`).
+  Both mappers are null-safe since: `ProfileMapper.toProto(AvatarDto)` sets
+  each field only when it is non-null (`ProfileMapper.java:81-113`), and
+  `toProjectMemberResponse` carries `NullValueCheckStrategy.ALWAYS` on
+  `displayName`, `email`, `avatar` and `addedAt` (`ProjectMapper.java:97-103`).
+
+**Measured:** on the evening of 2026-10-12, `…/members` and `/context`
+answered 200 on all 12 projects with avatars (`JIRA-WORKFLOW.md`, TAS-251
+row). So the first half of the title, every face as initials, is closed by a
+measurement. **Still read, not probed:** the fallback itself. Nobody has read
+the member list of a project with a member whose avatar object is missing or
+refused, so "that one face, not the list" is a reading of the code. The
+mock already behaves that way (the parity bullet below), so mock and server
+now agree on it. Code comments that still repeat the old claim are swept after
+a probe (`BACKLOG.md`, "Left by TAS-263"). `GET /users/me` has no such
+fallback; see "Avatar confirm trusts any `objectKey`".
+
+The entry as it stood:
 
 - **Endpoint:** `GET /api/v1/projects/{projectId}/members`. Backend PR #152
   merged into `develop` `1cfe4d79f074` on 2026-09-16 **without the fix** and is
@@ -1718,6 +2036,23 @@ Everything below is the entry as it stood, in the past tense.
 
 ### The workflow read is not membership-checked, unlike every endpoint beside it
 
+- **Status, 2026-10-19: no client surface left, and the fix is deployed;
+  half of it is probed.** The board has read workflows from
+  `GET /projects/{projectId}/context` since TAS-251, and TAS-263 (`aac71ed`)
+  deleted `getWorkflow` from `TaskaApi` and all three implementations, so
+  nothing in this client calls the route. Backend PR #190 (TAS-207, head
+  `fb34dab`) makes `WorkflowController.getWorkflowForProject` call
+  `getProject` first (`WorkflowController.java:52-55` at `fb34dab`), so the
+  route answers exactly as the project read does: 403 `PERMISSION_DENIED`
+  "You don't have access to this project" for a non-member and 404 "Project
+  not found" for a missing project. **#190 merged as `f34e504` and deployed
+  2026-10-19.** The missing-project half is probed:
+  `GET /projects/00000000-0000-0000-0000-000000000000/workflow?issueType=TASK`
+  answered 404 `NOT_FOUND` "Project not found" (request
+  `a4f42dc3-9166-4a09-a3b0-31d5f105bfa7`). The non-member half — the one this
+  entry is about — is read in code, not probed: the only token at hand
+  belongs to a member of all 12 projects. The bullets below describe develop
+  before #190 deployed.
 - **Endpoint:** `GET /api/v1/projects/{projectId}/workflow?issueType=…`
 - **Contract:** declares `400`, `401`, **`403`**, `404` and `default` for this
   path — unlike the project read beside it, which enumerates nothing. So this is
@@ -1750,15 +2085,21 @@ Everything below is the entry as it stood, in the past tense.
   configuration — status keys, transition names, sort order. On this stand every
   project shares one "Default workflow", so today it discloses nothing a member
   could not already guess. That is a property of the seed, not of the endpoint.
-- **Compensation:** none needed, but not for the reason it first looks like.
-  The gate at `BoardScreen.tsx:315` reads the project query **alone**, so no
-  workflow answer can keep the board up. Nothing is refused "first": the five
-  project-scoped reads fire concurrently, and until the refusal lands the shell can
-  draw its columns from the workflow that just answered 200 — a second of
-  plausible chrome for a project the viewer must not see, which
-  `BoardScreen.tsx:64-73` already documents as its own window.
-- **Removal:** a backend fix — the membership check TAS-154 added to the project
-  read belongs on its siblings too. Not filed, and deliberately: AGENTS.md lets
+- **Compensation:** none, and since TAS-263 there is no call to compensate in.
+  The bullet as it stood before TAS-251, when the board still called this
+  route: none needed, but not for the reason it first looks like. The gate at
+  `BoardScreen.tsx:315` read the project query **alone**, so no workflow
+  answer could keep the board up. Nothing was refused "first": the five
+  project-scoped reads fired concurrently, and until the refusal landed the
+  shell could draw its columns from the workflow that just answered 200 — a
+  second of plausible chrome for a project the viewer must not see, which
+  `BoardScreen.tsx:64-73` documented as its own window. Those line numbers are
+  of that time.
+- **Removal:** backend PR #190 (above), merged and deployed 2026-10-19. This
+  entry closes when a non-member's `GET …/workflow` answers 403 on the stand;
+  nothing in the frontend changes. The bullet as it stood: a backend fix —
+  the membership check TAS-154 added to the project read belongs on its
+  siblings too. Not filed, and deliberately: AGENTS.md lets
   this harness file a contract-**design** problem directly, and this is a runtime
   defect against a contract that is already correct, so it is the owner's call.
   Surfaced to the owner in the working session that found it, on 2026-08-18,
@@ -2107,8 +2448,12 @@ Everything below is the entry as it stood, in the past tense.
   failure direction is the safe one — fewer operators offered, never a request
   the server refuses — but it is drift the contract cannot warn us about.
 - **Removal:** the catalog stating the operators a column accepts, rather than a
-  raw Postgres type the client has to classify for itself. `TableCapabilitiesDto`
-  is the obvious home; it already carries `filterableColumns`.
+  raw Postgres type the client has to classify for itself: `filterOperators` per
+  column on `ColumnMetadataDto`, from a new `repeated string filter_operators` on
+  proto `ColumnMetadata` (per column rather than `TableCapabilitiesDto`, because
+  the catalog is already the one read; `api-contract-guard`, 2026-10-17).
+  Ready-to-file ask in `BACKLOG.md`, "Left by TAS-263"; its Jira key replaces
+  this pointer once filed.
 
 ### Dates in a range filter must carry an offset, and the contract's example does not
 
@@ -2287,7 +2632,7 @@ Everything below is the entry as it stood, in the past tense.
   deployment. The risk closed without ever being realised. Details and the
   column-by-column treatment are in the entry above.
 
-### The catalog's real column types are all covered by the client's classifier
+### The catalog's real column types are all covered by the client's classifier, and `uuid` gets a class of its own with backend PR #184
 
 - **Endpoint:** `GET /api/v1/readonly/catalog`
 - **Observed 2026-08-11:** the 28 tables use exactly eight distinct
@@ -2297,11 +2642,56 @@ Everything below is the entry as it stood, in the past tense.
   (`bigint`/`integer` → NUMERIC, `boolean` → BOOLEAN, `character varying`/`text`
   → TEXT, `timestamp with time zone` → TEMPORAL) and two fall to `OTHER`
   (`jsonb`, `uuid`), which is what the gateway does with them too. So the
-  copied-map divergence recorded above, while still real in principle, has **no
-  live instance today**: every type the real catalog contains is classified the
-  same way on both sides.
+  copied-map divergence recorded above, while still real in principle, had **no
+  live instance** on that date: every type the real catalog contains was
+  classified the same way on both sides. From TAS-263 until backend PR #184
+  deployed there was one, on purpose and in the other direction: the client
+  put `uuid` in `UUID`, which develop's gateway did not have yet (next
+  bullet). Since 2026-10-19 both sides class `uuid` as `UUID`, and the
+  stand's refusal says so in its own words ("type: UUID", next bullet).
 - **Keep watching it anyway.** This is a snapshot of one deployment, and the
   drift risk was never about the types that exist now.
+- **Closed, probed on 2026-10-19: an `equals` filter on a `uuid` column
+  answers rows or a 400, not a 5xx.** Backend PR #184
+  ([TAS-232](https://jira.ozero.dev/browse/TAS-232)) merged at its head
+  `bac0080` as `a7beea5` and deployed the same day. Probed on
+  `GET /readonly/auth/users` with a token: `id.equals` with the reader's own id
+  in upper case answered 200 with one row, the reader (request
+  `aa900e4a-a05e-4ab3-b758-fda74f99625e`); `id.equals=1-1-1-1-1` answered 400
+  `INVALID_ARGUMENT` "Invalid UUID value for column 'id': expected UUID in
+  8-4-4-4-12 format" (`9d5d2fea-a176-42d9-b528-865612de2b82`); and
+  `id.contains=abc` answered 400 `INVALID_ARGUMENT` "Operator 'contains' is
+  not supported for column 'id' (type: UUID)"
+  (`3bff2518-2679-44ee-a105-f69be4b34a63`). Both sentences are the mock's,
+  word for word, so nothing changed in the frontend. The `INTERNAL` mapping of
+  a failed `SELECT` or `COUNT` is read in code, not probed.
+
+  The bullet as it stood: **`uuid` falling to `OTHER` was not harmless on
+  the server** (read in admin-service source and in backend PR #184's
+  integration test, not probed). `OTHER` keeps `equals`, and develop binds
+  its value as a string, so an `equals` filter on a `uuid` column puts
+  `uuid = varchar` in front of Postgres, which refuses it, and the read fails
+  with a 5xx rather than a 400 the console could explain. **Backend PR #184
+  ([TAS-232](https://jira.ozero.dev/browse/TAS-232), head `bac0080`, open)**
+  gives `uuid` its own `DbColumnType.UUID`, equality only as before, and
+  parses the value with `UUID.fromString`, accepting only the canonical
+  8-4-4-4-12 spelling, case-insensitively. Anything else is 400
+  `INVALID_ARGUMENT` "Invalid UUID value for column '<column>': expected UUID
+  in 8-4-4-4-12 format". It also maps any `DataAccessException` on the
+  read-only `SELECT` and `COUNT` to `INTERNAL` (500) "Administrative SELECT
+  query failed for service: <service>" (or `COUNT`). Read at `bac0080`.
+  **TAS-263 already follows it**: `src/lib/adminColumnTypes.ts` classifies
+  `uuid` as `UUID`, the filter popover offers it `equals` alone with a free
+  text field, and the mock refuses a non-canonical value with #184's sentence
+  and compares the canonical form case-insensitively. Until #184 deploys, the
+  client's `UUID` class has no counterpart on the stand, where the same filter
+  still fails with a 5xx. Removal of this bullet: when #184 merges and an
+  `equals` filter on a `uuid` column answers rows (or the 400 for a malformed
+  value) on the stand.
+- **Removal:** the copied map is the divergence left here, and its removal
+  is the catalog stating each column's filter operators — the ready-to-file
+  ask in `BACKLOG.md`, "Left by TAS-263", the same removal as the operator/type
+  entry above. Until then a type added on the backend falls to `OTHER` here.
 
 ### The page basis flipped, and the contract states it for the request only
 
@@ -3153,6 +3543,22 @@ the entry as it stood before.
   [TAS-245](https://jira.ozero.dev/browse/TAS-245), the missed part of TAS-184
   (already `Done`), under epic TAS-210. Removal: that fix; nothing on this side
   changes.
+
+  **The fix is backend PR #191 (TAS-245, head `9894a12`)**: both payload
+  builders now take the issue and call `putIssueFields`, so an attachment
+  notification created after #191 deployed carries `issueId`, `issueKey` and
+  `projectId` and opens its issue like any other row. **#191 merged as
+  `d46c192` and deployed 2026-10-19; read in code at `9894a12`, not probed**:
+  `GET /notifications` answered 200 that day, but no attachment notification
+  had been created since the deploy, so the new fields have not been seen on
+  the wire. **No backfill**: rows written before the deploy keep `issueId`
+  alone and stay inert ("Nothing to open"), like the pre-TAS-184 rows above.
+  **TAS-263 already follows it**: the mock's attachment notification carries
+  the key and the project, and `e2e/notifications.spec.ts` opens TAS-101 from
+  it. Before #191 deployed, the stand sent the id alone on new attachment
+  rows, so they stayed inert there and opened in the mock. Removal of this
+  bullet: when an attachment notification created after the deploy is read
+  with both ids; the older rows stay as they are.
 - **Not yet seen on the wire: a non-null `issueId`/`projectId`.** No
   notification had been created on the measured inbox since the deploy. The
   shape is read from the contract, the gateway's `NotificationMapper` and
@@ -3279,8 +3685,49 @@ the entry as it stood before.
 
 ---
 
-### Retry accepts a stuck event five minutes after the summary calls it stuck
+### Closed by TAS-200: Retry accepted a stuck event five minutes after the summary called it stuck; the summary now says which rows Retry takes
 
+**Closed on 2026-10-19, under this entry's own removal line: #195 merged,
+deployed and read on the stand.** Backend PR #195
+([TAS-200](https://jira.ozero.dev/browse/TAS-200)) merged at its head
+`45c22ee` as `447a7ed` and deployed the same day. The snapshot is refreshed to
+develop `7d4f7395565c` and the extract `pr-195-TAS-200.yml` is deleted:
+`ProblematicOutboxEventDto.retryable` is a required boolean
+(`docs/contract/openapi.yml:4348`), and the retry route's description states
+the rule (`:2506-2509`). A token read of
+`GET /readonly/outbox/problematic-summary` answered 200 with `counts`,
+`events` and `notAllShown`, and every event carried `retryable`, `true` on the
+`FAILED` rows (request `c28ef6d3-83df-48fb-a4af-821cdc731ea9`). The
+ship-order risk below is gone, because `rest` reads a field the stand now
+sends. The two thresholds are unchanged, so a row can still be listed as stuck
+and come back `retryable: false`; that is now the server's own statement, not
+a gap the client infers across. A row inside that gap was not read on the
+stand, so its `false` is read in code, not probed. Nothing in `src` comes out:
+TAS-263 had already deleted the client's re-derivation,
+`canRetryOutboxEvent` (`src/screens/admin/events.ts`) reads the server's flag,
+and the mock still seeds a `PROCESSING` row inside the gap so the missing
+button stays reachable.
+
+The entry as it stood:
+
+- **Status, 2026-10-17: the fix is in an open PR, and TAS-263 already
+  follows it.** Backend PR #195
+  ([TAS-200](https://jira.ozero.dev/browse/TAS-200), head `45c22ee`, open,
+  review required; extract `docs/contract/pending/pr-195-TAS-200.yml`) does
+  both halves of the removal below. `ProblematicOutboxEventDto` gains a
+  required boolean `retryable`, computed by admin-service with the retry
+  command's own rule, and the retry route's description states that rule:
+  `FAILED`, or `PROCESSING` with a non-null `processingStartedAt` strictly
+  earlier than now minus `ADMIN_OUTBOX_RETRY_STUCK_THRESHOLD` (10 minutes by
+  default); never `NEW` or `PUBLISHED`. `retryable` is a snapshot, and the
+  command re-checks and may still refuse `FAILED_PRECONDITION` (400). Read in
+  the extract at `45c22ee`, not probed. TAS-263 (`aac71ed`) changed the UI to
+  match (see "The UI instead" below). **Ship-order risk:** `rest` reads
+  `retryable: event.retryable === true`, so against a gateway without #195 the
+  field is absent and every row reads not retryable — if TAS-263 deploys
+  before #195, the Problems view shows no Retry button at all until #195
+  does. Removal of this entry: when #195 merges and is deployed, and a summary
+  read shows `retryable` on its rows.
 - **Endpoint:** `POST /api/v1/admin/outbox/{service}/{eventId}/retry` (backend
   PR #143, TAS-106, merged 2026-09-03), against
   `GET /api/v1/readonly/outbox/problematic-summary` beside it.
@@ -3310,14 +3757,26 @@ the entry as it stood before.
   "this row is problematic" would therefore fail on a whole category of the
   list. The brief for TAS-194 assumed exactly that and `frontend-builder`
   refused it, reading the service instead.
-- **The UI instead:** offers Retry on `FAILED` and `PROCESSING` only, never on
-  `NEW` or on a status it does not recognise, and never on a `serviceKey`
-  outside the path enum. On a `PROCESSING` row it says before the press that the
-  server's own threshold is longer than the list's, and after a refusal it
-  prints the server's sentence verbatim and keeps the dialog open. **No
-  client-side clock**: hard-coding ten minutes would be a guess about one
-  deployment's configuration, and the mock seeds a row inside the gap so the
-  refusal is reachable by clicking rather than only by argument.
+- **The UI instead, since TAS-263:** offers Retry only on a row whose
+  `retryable` is `true` and whose `serviceKey` is inside the path enum
+  (`canRetryOutboxEvent`, `src/screens/admin/events.ts`). The status is not
+  consulted. The note on a `PROCESSING` row is gone, because the list no
+  longer offers a row the server would refuse when it was read. A refusal now
+  means the event changed since the read; the dialog says so, prints the
+  server's sentence verbatim and stays open. **Still no client-side clock.**
+  The mock computes `retryable` with the server's rule and still seeds one
+  `PROCESSING` row inside the gap — listed as stuck, `retryable: false` — so
+  the missing button is reachable by clicking.
+
+  The bullet as it stood before TAS-263: offers Retry on `FAILED` and
+  `PROCESSING` only, never on `NEW` or on a status it does not recognise, and
+  never on a `serviceKey` outside the path enum. On a `PROCESSING` row it says
+  before the press that the server's own threshold is longer than the list's,
+  and after a refusal it prints the server's sentence verbatim and keeps the
+  dialog open. **No client-side clock**: hard-coding ten minutes would be a
+  guess about one deployment's configuration, and the mock seeds a row inside
+  the gap so the refusal is reachable by clicking rather than only by
+  argument.
 - **`attempts` is not reset**, which is the most assumable-and-wrong thing about
   this endpoint: the column is absent from the `UPDATE`, so the response
   reports the count the row already had. The dialog says so in the sentence
@@ -3342,6 +3801,12 @@ the entry as it stood before.
   entry has a removal at all. An earlier revision of this line said "none filed"
   while the story was already open — the drift this file exists to prevent,
   committed inside the entry that documents it.
+
+  **Backend PR #195 does both halves** — the flag and the stated rule (status
+  bullet at the top) — and leaves the two thresholds as they are, so a row can
+  still be listed as stuck and come back `retryable: false`. TAS-263 deleted
+  the client's re-derivation. The entry closes when #195 is merged, deployed
+  and read on the stand, not on the merge alone.
 
 ### Closed by TAS-194: the problems summary was TAS-105-only, then the endpoint answered, then the compensation came out
 
@@ -3732,7 +4197,11 @@ with the `60d62ee` deploy the same afternoon, and `/v3/api-docs` listed `LOCKED`
 on 2026-10-07. Nobody has read `/users/me` with a locked account's token, so
 the value has not been seen on the wire. A locked account using a token minted
 before the lock now reads `LOCKED`. That token still works:
-[TAS-198](https://jira.ozero.dev/browse/TAS-198) is In Progress (PR #174 open).
+[TAS-198](https://jira.ozero.dev/browse/TAS-198) closed that with PR #174
+(`3a0a1cb`, deployed 2026-10-13): a blocked or invited account's token calls
+now get **401** `UNAUTHENTICATED` "User not found or inactive", not 403. Read
+in the code, not probed. That PR also moved the login lock refusal to 401; see
+the lock-deadline entry below.
 [TAS-246](https://jira.ozero.dev/browse/TAS-246) changed only comments here. The
 profile menu's pill still has no `LOCKED` arm (`BACKLOG.md`).
 
@@ -3805,6 +4274,24 @@ and on TAS-108.
 
   The sentence is built by string concatenation in `AuthServiceImpl.java:235-238`.
   The deadline is in it and in nothing else.
+- **Not what the stand sent from 2026-10-13, and #187 should have restored
+  it on 2026-10-19; not probed.** Backend PR #174
+  ([TAS-198](https://jira.ozero.dev/browse/TAS-198), `3a0a1cb`, deployed
+  2026-10-13 14:30) raises the in-window refusal as `UNAUTHENTICATED`
+  (develop `AuthServiceImpl.java:116-119`), which the gateway sends as **401**
+  with the same sentence. `isAccountLocked` therefore never matches on the
+  stand: the login screen prints the raw sentence with a UTC instant — the
+  TAS-237 symptom again — and the attempt that triggers the lock still says
+  "Invalid credentials". Read at develop `4277199` by `api-contract-guard` on
+  2026-10-16, not probed: a wrong-password probe would change a real account's
+  lock state. **No compensation**: the client keeps reading
+  `PERMISSION_DENIED`. Backend PR #187
+  ([TAS-238](https://jira.ozero.dev/browse/TAS-238), head `0d86cee`) restores
+  it through `accountLockedError` (`:345-348` at `0d86cee`) on both the
+  in-window refusal and the attempt that locks. **#187 merged as `42bf5e5`
+  and deployed 2026-10-19; read in code, not probed**, for the same reason:
+  a wrong-password probe would change a real account's lock state. Remove
+  this bullet after a probe.
 - **The contract is not wrong here, it is silent — and so is the whole error
   envelope.** `RestErrorResponse` (`docs/contract/openapi.yml:3230`) is
   `{code, message}` with `details` nowhere in it, in the vendored snapshot and
@@ -4335,9 +4822,12 @@ folding it to `null` fails a test rather than a review.
 
 `GET /api/v1/projects/{projectId}/board` (TAS-125) merged into `develop` on
 2026-09-09 and is deployed. `TaskaApi.getBoard` exists in all three
-implementations as of TAS-191; **`BoardScreen` does not call it** and still
-composes its own board from `getWorkflow` and `listIssues`. This entry is why
-that is deliberate, and what would end it.
+implementations as of TAS-191; **`BoardScreen` does not call it**, and no other
+screen does. Since TAS-251 the board composes its own from one
+`GET /projects/{projectId}/context` read (project, role, members, labels and
+the workflows) and one `listIssues` page. Before TAS-251 it composed from
+`getWorkflow` × 3 and `listIssues`, and TAS-263 deleted `getWorkflow`. This
+entry is why that is deliberate, and what would end it.
 
 The previous version of this entry gave four reasons not to build against the
 route. Two are dead and are kept below in one paragraph each, because a reason
@@ -4421,9 +4911,12 @@ unknown status at all once `includeDone` is on, blanks the board.
 `issueType` is a **required** query parameter, so the board's own `ALL` filter
 needs one call per concrete type: three. The response carries no transitions,
 and `findTransition` on the drop path and `resolveTransitions` in the issue
-panel both need them, so the three `getWorkflow` reads stay. That is six
-requests against today's four — three workflows and one `listIssues` page —
-for a card that draws less. The one thing today's shape does worse is the
+panel both need them, so the context read stays; it also brings the members
+and labels the card resolves names and chips from. That is four requests
+against today's two — the context and one `listIssues` page — for a card that
+draws less. (Before TAS-251 this sentence read six against four: three
+`getWorkflow` reads stayed beside three board calls, against three workflows
+and one `listIssues` page.) The one thing today's shape does worse is the
 `pageSize: 100` ceiling on that single page; the gateway passes no
 `pageSizePerColumn` to `issue-service`, so the board route returns every issue
 in every column, and that is the one measured argument in its favour.

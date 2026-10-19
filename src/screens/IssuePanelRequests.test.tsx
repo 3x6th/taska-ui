@@ -80,9 +80,8 @@ function respond(url: string, init?: RequestInit): unknown {
     return { issue, history: [] };
   }
   if (path === "/users/me") {
-    return { id: ANNA, login: "anna", email: "anna@example.com", displayName: "Anna Ivanova", status: "ACTIVE" };
+    return { id: ANNA, login: "anna", email: "anna@example.com", displayName: "Anna Ivanova", status: "ACTIVE", avatar: null };
   }
-  if (path === `/users/${ANNA}/avatar`) return { url: null };
   if (path === `/projects/${PROJECT}/context`) {
     return {
       project: { id: PROJECT, projectKey: "TAS", name: "Taska Platform", createdBy: ANNA, createdAt: NOW, updatedAt: NOW, currentUserRole: "ADMIN" },
@@ -248,9 +247,10 @@ describe("the issue panel's request budget against the REST implementation", () 
   /**
    * The board's own frame since TAS-251: one context read where it used to make
    * seven — the project, the project again for the role, the members, a
-   * workflow per issue type and the labels. Beside it the issue page and the
-   * reader's profile, and the top bar's two (the notifications and the
-   * reader's avatar), which are not the board's.
+   * workflow per issue type and the labels. Beside it the issue page, the
+   * reader's profile — which carries their avatar since TAS-223, so the top
+   * bar's own avatar read is gone — and the notifications, which are not the
+   * board's.
    */
   it("loads the board with one context read, and none of the reads it replaced", async () => {
     const queryClient = renderBoard();
@@ -264,12 +264,12 @@ describe("the issue panel's request budget against the REST implementation", () 
         `/api/v1/projects/${PROJECT}/issues`,
         "/api/v1/users/me",
         "/api/v1/notifications",
-        `/api/v1/users/${ANNA}/avatar`,
       ].sort(),
     );
     for (const replaced of ["", "/members", "/workflow", "/labels"]) {
       expect(paths).not.toContain(`/api/v1/projects/${PROJECT}${replaced}`);
     }
+    expect(paths).not.toContain(`/api/v1/users/${ANNA}/avatar`);
     // The workflow came from the context: the panel offers its transition.
     fireEvent.click(screen.getByRole("button", { name: /TAS-102/ }));
     const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });

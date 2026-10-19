@@ -300,16 +300,17 @@ test("says which event was retried, so a second identical-looking retry is annou
 });
 
 /**
- * The refusal, and the reason it is not a bug in this screen.
+ * The row in the gap, and why it has no button.
  *
  * The summary calls a `PROCESSING` row stuck after the producing service's own
  * timeout; the retry route wants a longer wait of its own. Between the two, a
- * row is listed as stuck and refused — and the client cannot tell, because both
- * thresholds are server configuration (docs/ai/API-DIVERGENCE.md). The mock
- * seeds one row in that gap on purpose, so the whole path is exercised here:
- * the warning before the press, and the server's own sentence after it.
+ * row is listed as stuck and the retry route would refuse it. Since backend
+ * PR #195 (TAS-200) the summary says so per row — `retryable: false` — so the
+ * section draws no Retry button for it instead of a button and a refusal. The
+ * mock seeds one row in that gap on purpose. The refusal itself, for an event
+ * that changed between the read and the press, is pinned in AdminScreen.test.
  */
-test("keeps the dialog open when the server refuses, with its own words in it", async ({ page }) => {
+test("draws no Retry button on a stuck row the server says it would not retry yet", async ({ page }) => {
   await openEvents(page);
 
   const list = page.getByRole("table", { name: "Problematic events, oldest first" });
@@ -317,23 +318,28 @@ test("keeps the dialog open when the server refuses, with its own words in it", 
     .locator("tbody tr")
     .filter({ has: page.getByRole("cell", { name: "PROCESSING", exact: true }) })
     .filter({ has: page.getByRole("cell", { name: "project", exact: true }) });
-  await stuck.getByRole("button", { name: /^Retry event / }).click();
+  // Listed — it is a problem — but not offered.
+  await expect(stuck).toHaveCount(1);
+  await expect(stuck.getByRole("button", { name: /^Retry event / })).toHaveCount(0);
+  // While a failed row beside it, which the server does retry, keeps its button.
+  const failed = list
+    .locator("tbody tr")
+    .filter({ has: page.getByRole("cell", { name: "FAILED", exact: true }) })
+    .filter({ has: page.getByRole("cell", { name: "project", exact: true }) });
+  await expect(failed.first().getByRole("button", { name: /^Retry event / })).toBeVisible();
 
-  const dialog = page.getByRole("dialog", { name: "Retry outbox event" });
-  // Said before the press, not only after it.
-  await expect(dialog.getByText(/still processing/)).toBeVisible();
-  await dialog.getByLabel("Reason").fill("It looks stuck to me");
-  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
-
-  // Open, not closed over a change that did not happen (§5.8).
-  const alert = dialog.getByRole("alert");
-  await expect(alert).toBeVisible();
-  await expect(alert).toContainText(/would not retry this event/i);
-  // The server's own sentence, printed as it arrived — nothing here branches on
-  // its wording.
-  await expect(alert).toContainText("is not eligible for retry");
-  // And the reason survives, so a second attempt does not start from nothing.
-  await expect(dialog.getByLabel("Reason")).toHaveValue("It looks stuck to me");
+  // And the two rows are one height. A row with the button used to be 41 and
+  // one without it 30, so the list stepped as it went; the action cell now
+  // holds every row at the height the button needs.
+  const heights = await list
+    .locator("tbody tr")
+    .evaluateAll((rows) => rows.map((row) => Math.round(row.getBoundingClientRect().height * 10) / 10));
+  expect(heights.length).toBeGreaterThan(1);
+  expect(new Set(heights).size).toBe(1);
+  expect(await stuck.evaluate((row) => row.getBoundingClientRect().height)).toBeCloseTo(
+    await failed.first().evaluate((row) => row.getBoundingClientRect().height),
+    1,
+  );
 });
 
 // The whole dialog has to be reachable and dismissable from the keyboard: it is

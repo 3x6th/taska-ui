@@ -60,11 +60,10 @@ export function outboxCategory(status: string): string | null {
 /**
  * Whether this row may be offered a Retry button at all (DESIGN.md §5.8).
  *
- * Two questions, both of which the client can answer without asking, and
- * neither of which is a permission — the server decides, and hiding a control
- * has never been a right (§5.7). This exists for the same reason `actionFor`
- * exists in the Users section: a button certain to be refused is worse than no
- * button.
+ * Two questions, and neither is a permission — the server decides, and hiding a
+ * control has never been a right (§5.7). This exists for the same reason
+ * `actionFor` exists in the Users section: a button certain to be refused is
+ * worse than no button.
  *
  * **The service** has to be one the retry path will carry
  * (`RETRYABLE_OUTBOX_SERVICES`, a closed enum in the contract). On today's data
@@ -72,23 +71,19 @@ export function outboxCategory(status: string): string | null {
  * and it is here for the day a fourth outbox appears in the response before it
  * appears in the contract.
  *
- * **The status** has to be one admin-service will act on: `FAILED`, or
- * `PROCESSING`. Everything else is `FAILED_PRECONDITION`, and that emphatically
- * includes `NEW` — a third of the rows this very list draws. The Problems view
- * shows an overdue `NEW` row because nothing has *picked it up*; retry's job is
- * to put a row back into `NEW`, which for that row would be a no-op the server
- * refuses rather than performs. An unknown status is treated as ineligible, the
- * same way `outboxCategory` refuses to name one (TAS-173).
+ * **The event** has to be one the server says it would retry: the summary's
+ * own `retryable` (backend PR #195, TAS-200), computed by admin-service with
+ * the rule the retry command applies — `FAILED`, or `PROCESSING` that started
+ * longer ago than `admin.outbox-retry.stuck-threshold` (10m by default). Before
+ * that field the client re-derived the answer from `status` and had to let
+ * every `PROCESSING` row through, because the threshold is server config it
+ * never sees; a row stuck long enough to be listed but not long enough to be
+ * retried got a button and a refusal. The field is a snapshot as of the read,
+ * not a promise — the event can move on before the press, and the retry
+ * command re-checks and refuses `FAILED_PRECONDITION` when it has.
  *
- * **`PROCESSING` is a maybe, and it is deliberately allowed through.** The
- * server retries a stuck `PROCESSING` row only once it is older than
- * `admin.outbox-retry.stuck-threshold` (10m by default) — a *longer* wait than
- * the one that put it in this list (`admin.outbox.processing-timeouts`, 5m).
- * Both are server configuration this client never sees, so it cannot compute the
- * answer and must not hardcode either number. A row in the gap between them gets
- * a button and a refusal, in the server's own words, with the dialog left open;
- * that is honest, where a client-side clock guessing at a deployment's config
- * would not be. Recorded in docs/ai/API-DIVERGENCE.md.
+ * The status is not consulted at all: `retryable` already answers for it, and a
+ * second rule beside the server's would only ever be a way to disagree with it.
  *
  * A **type predicate**, not a boolean, and that is what saves the caller a cast.
  * The service key it narrows to is the one `retryOutboxEvent` requires
@@ -96,12 +91,10 @@ export function outboxCategory(status: string): string | null {
  * cannot be handed to the API method at all — the rule is held by the compiler
  * rather than by everybody remembering it.
  */
-export function canRetryOutboxEvent<T extends Pick<ProblematicOutboxEvent, "serviceKey" | "status">>(
+export function canRetryOutboxEvent<T extends Pick<ProblematicOutboxEvent, "serviceKey" | "retryable">>(
   event: T,
 ): event is T & { serviceKey: RetryableOutboxService } {
-  if (!isRetryableOutboxService(event.serviceKey)) return false;
-  const status = event.status.trim().toUpperCase();
-  return status === "FAILED" || status === "PROCESSING";
+  return isRetryableOutboxService(event.serviceKey) && event.retryable;
 }
 
 /**
