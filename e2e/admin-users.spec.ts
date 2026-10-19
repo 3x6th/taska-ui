@@ -18,7 +18,7 @@ import { expect, test, type Page } from "@playwright/test";
 async function openUsers(page: Page) {
   await page.goto("/login");
   await page.getByLabel("Email").fill("mark@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 

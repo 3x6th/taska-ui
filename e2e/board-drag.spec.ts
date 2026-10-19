@@ -18,7 +18,7 @@ const CARD = /TAS-102/;
 async function openBoard(page: Page) {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 
@@ -348,7 +348,7 @@ test.describe("a board this account may only read", () => {
   async function openViewerBoard(page: Page) {
     await page.goto("/login");
     await page.getByLabel("Email").fill("tom@example.com");
-    await page.getByLabel("Password").fill("mock-accepts-anything");
+    await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
     await page.locator("form button[type=submit]").click();
     await expect(page).toHaveURL(/\/projects$/);
 

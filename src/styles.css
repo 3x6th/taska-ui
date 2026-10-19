@@ -112,6 +112,79 @@ textarea:disabled {
   opacity: 0.58;
 }
 
+/* One focus ring for the whole product (DESIGN.md §4.1, §7; TAS-299). Before
+   this rule the ring lived in ~40 local copies, and everything none of them
+   reached — project and issue cards, "New", the segments, the assignee
+   filters, modal footers, the sign-in tabs and submit — was drawn by Chrome's
+   `outline: auto` in the reader's system accent, outside §2 altogether.
+
+   `:where()` has zero specificity, so every recorded exception below and
+   further down the file wins without `!important`. The ring takes its arc from
+   the element's own `border-radius`, so pills, segments and avatars need
+   nothing extra. A text field the reader can type in is not here: it keeps
+   §4.3's accent border (`.field input:focus:not(:read-only)` and its
+   neighbours) — a read-only one is, because it has no border to change. */
+:where(
+    a[href],
+    button,
+    select,
+    summary,
+    [tabindex],
+    input[type="checkbox"],
+    input[type="radio"],
+    input:read-only,
+    textarea:read-only
+  ):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A date field's own calendar button (Chrome draws one in `type="date"` and
+   `datetime-local`) is a Tab stop inside the field's browser-owned shadow.
+   While it holds focus the field itself matches neither `:focus` nor
+   `:focus-visible` — only `:focus-within` — so no rule of this sheet reached
+   it, and Chrome ringed the 14px icon in the reader's system accent: an
+   `outline: auto` the TAS-299 walk found on the panel's two dates and the
+   work log's (the create dialog's dates and the admin filters' date fields
+   carry the same button). The button's own ring goes, and the field wears
+   §7's ring instead while the button holds focus.
+
+   On the pseudo-element itself, never `…-indicator:focus`: a pseudo-class
+   does not apply to it, so that selector matched nothing and the system ring
+   stayed beside the field's (art-director, TAS-299 round 1). With no focus
+   state to key on, the button carries no outline at all; it draws none at
+   rest either. `src/styles.test.ts` pins both halves. */
+:where(input:focus-within:not(:focus)) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input::-webkit-calendar-picker-indicator {
+  outline: none;
+}
+
+/* Exception 2 (§7): a segment sits 3px from its neighbour inside §4.2's
+   container, and an outward ring ran a pixel onto the next segment and touched
+   the container's edge. */
+.segmented button:focus-visible {
+  outline-offset: 0;
+}
+
+/* Exception 1 (§7): a card in a column's `.issue-list`, whose padding (1 top,
+   2 at the sides) inside `overflow-y: auto` is less than the 4px an outward
+   ring needs — the first card lost its top edge. */
+.issue-card:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Exception 3 (§7): the chosen assignee filter already wears §4.4's selection
+   ring at 1.5 while at rest, so focus at the ordinary offset changed nothing
+   on screen. 4 moves it far enough to be seen and keeps a 5px gap to the next
+   avatar. */
+.avatar-filter.is-active:focus-visible {
+  outline-offset: 4px;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -572,7 +645,11 @@ textarea:disabled {
   position: relative;
 }
 
-.password-field input {
+/* Through `.field` (TAS-299): `.field input { padding: 0 12px }` sits further
+   down this file at the same weight, and until this selector outweighed it the
+   40 never applied — 12 was measured, and on the invite tab at 390 a long
+   password ran under the eye with the caret hidden behind it. */
+.field .password-field input {
   padding-right: 40px;
 }
 
@@ -876,11 +953,15 @@ textarea:disabled {
   line-height: 1.55;
 }
 
-.field input:focus,
-.field textarea:focus,
-.description-field textarea:focus,
-.member-search-input:focus,
-.summary-textarea:focus {
+/* `:not(:read-only)` (TAS-299): a box the reader cannot type in is not
+   offered the accent frame that says "type here", and the rule's `outline: 0`
+   at (0,2,0) would otherwise erase the global ring a read-only field takes
+   instead — the VIEWER's summary and description (§4.3, §5.7). */
+.field input:focus:not(:read-only),
+.field textarea:focus:not(:read-only),
+.description-field textarea:focus:not(:read-only),
+.member-search-input:focus:not(:read-only),
+.summary-textarea:focus:not(:read-only) {
   border-color: var(--accent);
   outline: 0;
 }
@@ -1043,6 +1124,13 @@ h1 {
   height: 39px;
   margin-top: 5px;
   font-size: 13.5px;
+}
+
+/* Both submits in flight — "Signing in", "Activating" (§4.27, TAS-299): the
+   in-flight recipe of §4.1, so no fade, and the cursor says the request is
+   out. The handler is what refuses a second press. */
+.auth-submit[aria-disabled="true"] {
+  cursor: progress;
 }
 
 .icon-button {
@@ -2019,9 +2107,14 @@ p.user-profile-photo-note:not(.is-error) {
   color: var(--fg);
 }
 
+/* Inward (§7, exception 1; TAS-299): the rows are the full width of
+   `.admin-catalog-list`, which scrolls (`overflow-y: auto`) with no side
+   padding, so an outward ring lost both its sides — 4px past each edge,
+   measured by e2e/focus-ring.spec.ts. The 1px between rows leaves the ring
+   whole above and below. */
 .admin-catalog-item:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .admin-catalog-empty {
@@ -3468,6 +3561,20 @@ p.user-profile-photo-note:not(.is-error) {
    at full accent it read as ready. The Resend confirmation has no field to be
    empty and keeps its primary as it is. */
 .admin-invite-form .modal-actions .primary-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+/* The Resend confirmation's primary, the two kinds of §4.1's `aria-disabled`
+   (TAS-299): while its request is out, the in-flight recipe — no fade, the
+   progress cursor; after a 409, steadily unavailable — the account no longer
+   waits for a link, so another press could only be refused the same way —
+   and so `button:disabled`'s look by hand. It keeps focus either way. */
+.admin-resend-submit[aria-disabled="true"] {
+  cursor: progress;
+}
+
+.admin-resend-submit.is-spent[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.58;
 }
@@ -5107,6 +5214,46 @@ p.user-profile-photo-note:not(.is-error) {
   text-transform: uppercase;
 }
 
+/* ---------- Delete asks first (§4.10, TAS-299) ---------- */
+
+/* §4.1's ghost-destructive: `--danger` only under the pointer and while its
+   question is open, never at rest — the member row's trash, the same recipe. */
+.issue-panel-head .issue-delete:hover:not(:disabled),
+.issue-panel-head .issue-delete[aria-expanded="true"] {
+  background: var(--surface-2);
+  color: var(--danger);
+}
+
+/* While the zone is open its own bottom edge is the line under the fixed part
+   of the panel, so the head's goes transparent: one line, not two (§1 rule 2). */
+.issue-panel-head.is-asking {
+  border-bottom-color: transparent;
+}
+
+/* Between the head and the body and outside the scroll: the head is one row of
+   52 that cannot wrap (§4.23), and at the top of a scrolled body the question
+   would be off screen. The body shrinks rather than being covered. The 16 at
+   the sides are the head's, so the strip runs from the type chip's left edge
+   to Close's right edge. */
+.issue-delete-zone {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px 12px;
+}
+
+/* §4.22's strip as it is drawn under a member row, without that row's avatar
+   indent and with no flex basis — this zone is not a flex row. 447×66 at 1440,
+   326×84 at 390, where the answers wrap under the sentence. */
+.member-confirm.issue-delete-confirm {
+  margin: 0;
+}
+
+/* In flight both answers are `aria-disabled` (§4.1's in-flight recipe): the
+   labels stay, nothing fades, and the cursor says the request is out. */
+.issue-delete-confirm .compact-button[aria-disabled="true"] {
+  cursor: progress;
+}
+
 /* ---------- Share (TAS-248) ---------- */
 
 .issue-share {
@@ -5569,6 +5716,26 @@ p.user-profile-photo-note:not(.is-error) {
   color: var(--fg);
 }
 
+/* Read-only for a reader without write access — a VIEWER, or a role unknown or
+   not yet answered (§4.3, §5.7, TAS-299) — where it used to be `disabled`:
+   the text stays at full `--fg` (17.88 light / 15.73 dark on `--surface`,
+   where `disabled`'s .58 gave 4.38 / 4.07), selects and copies, and keeps its
+   Tab stop. Everything that invites typing goes: the accent frame on focus
+   (the field focus rule is `:focus:not(:read-only)`), the resize handle, the
+   text cursor — and for the description its field fill, with the rest-state
+   `--border` in place of `--border-strong`. Padding and min-height stay, so
+   the text does not move when the role lands. Focus is the global ring. */
+.summary-textarea:read-only {
+  cursor: default;
+}
+
+.description-field textarea:read-only {
+  border-color: var(--border);
+  background: transparent;
+  cursor: default;
+  resize: none;
+}
+
 .issue-labels,
 .issue-links,
 .issue-attachments,
@@ -5700,14 +5867,22 @@ button.issue-link-open:hover {
    3.56px of ring to `.issue-panel-body`'s clip at 390 — the same shape as the
    notifications rows, wanting the same `-2px`, and pre-existing since TAS-179.
    It is in the backlog rather than fixed here, so nothing in this comment
-   should be read as saying the `.segmented` half is fine. */
+   should be read as saying the `.segmented` half is fine.
+
+   Since TAS-299 the ring is global and `.segmented button` takes offset 0
+   product-wide (§7, exception 2); the relation's segments follow it rather
+   than keep the outward ring, which is also what ends the 3.56px clip above. */
 .issue-link-open:focus-visible,
-.issue-link-form .segmented button:focus-visible,
 .issue-link-form .secondary-button:focus-visible,
 .issue-link-target select:focus-visible,
 .issue-link-row .icon-button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.issue-link-form .segmented button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
 }
 
 /* Fixed width for the relation so the key column does not jump between "Blocks"
@@ -7146,22 +7321,18 @@ button.attachment-open:hover:not(:disabled) {
   outline-offset: 2px;
 }
 
-/* The one thing the filter bar ever says on its own, and it is always a
-   failure — so it is named for that and coloured `--danger`. `--fg-3` is the
-   placeholder and disabled colour: a read that failed rendered in it reads as a
-   filter that has nothing to offer, which is the opposite of what happened.
-   Weight 550 because this sits inline in a 46px bar between `--fg-3` labels,
-   not in a box of its own.
-
-   No longer "like every other failure": since TAS-192 the boxed refusals set
-   their sentence in `--fg` beside a `--danger` stripe (`ErrorNote`), and this is
-   the one failure still printed in `--danger` — 3.68:1 on the bar's light
-   `--surface`, 4.99:1 dark, under §7's 4.5:1 in light. Open in
-   docs/ai/BACKLOG.md, not decided here. */
+/* Why there is no label picker (DESIGN.md §4.13, TAS-299): the context read
+   failed, and the board's banner already says so with the server's words and
+   the request id (§5.6, TAS-251). This line is a consequence of that failure,
+   not a second report of it, so it carries no `--danger`, no icon and no
+   stripe — the precedent of §5.6's "part the issue read did not bring".
+   `--fg-2`, not `--fg-3`: it is a statement where a control would be, not meta
+   (7.26 / 6.75 on `--surface`). The `--danger` it used to wear measured 3.68:1
+   in light. */
 .filter-error {
-  color: var(--danger);
+  color: var(--fg-2);
   font-size: 11.5px;
-  font-weight: 550;
+  font-weight: 400;
 }
 
 .label-create-form {

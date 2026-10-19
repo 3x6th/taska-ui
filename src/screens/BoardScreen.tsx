@@ -679,6 +679,102 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     },
   });
 
+  /**
+   * What the board says about a delete the panel made (§4.10, TAS-299), for a
+   * reader who sees neither the panel close nor the card go: one visually
+   * hidden polite region, mounted with the board and empty until then, so the
+   * change of its text is what is announced (§7 on regions that mount with
+   * their words).
+   */
+  const [boardStatus, setBoardStatus] = useState("");
+  const boardRef = useRef<HTMLElement>(null);
+  /** Where focus goes once the panel has closed after a delete, in order of preference; read by the effect below. */
+  const deleteFocusChain = useRef<DeleteFocusStep[] | null>(null);
+  /**
+   * The issue the route shows now, for a delete that answers after the reader
+   * has already left its panel: that answer must not close whatever is open by
+   * then, nor leave a focus target behind for a later close.
+   */
+  const shownIssueId = useRef(issueId);
+  useEffect(() => {
+    shownIssueId.current = issueId;
+  }, [issueId]);
+
+  /**
+   * The panel deleted an issue, or found it already gone (§4.10). The card
+   * leaves the board's cache now rather than after the re-read — and "X of Y"
+   * with it — and the panel closes by replacing its route, so Back does not
+   * open a 404. Focus lands where the card stood: the card that takes its
+   * place in the same column, else the one before it, else the column's "+",
+   * else "New". The list and the search are read again behind it.
+   */
+  const issueDeleted = (deleted: Pick<Issue, "id" | "issueKey" | "status">, alreadyGone: boolean) => {
+    // The column as the board draws it, which is the board list's status for
+    // the issue rather than the panel's, if the two are a re-read apart.
+    const status = issues.find((item) => item.id === deleted.id)?.status ?? deleted.status;
+    const inColumn = statuses.some((column) => column.statusKey === status);
+    const siblings = inColumn ? filteredIssues.filter((item) => item.status === status) : orphanIssues;
+    const index = siblings.findIndex((item) => item.id === deleted.id);
+    const chain: DeleteFocusStep[] = [];
+    if (index !== -1) {
+      const next = siblings[index + 1];
+      const previous = siblings[index - 1];
+      if (next) chain.push({ card: next.id });
+      if (previous) chain.push({ card: previous.id });
+    }
+    if (inColumn) chain.push({ add: status });
+    chain.push("new");
+    // Only while its panel is still the one open (release-reviewer, TAS-299
+    // round 1): a panel the reader closed, or left for another issue, while
+    // the request was out has handed focus on already.
+    const stillOpen = shownIssueId.current === deleted.id;
+    if (stillOpen) deleteFocusChain.current = chain;
+
+    queryClient.setQueriesData<Page<Issue>>({ queryKey: ["issues", projectId] }, (page) => {
+      if (!page?.items.some((item) => item.id === deleted.id)) return page;
+      return {
+        ...page,
+        items: page.items.filter((item) => item.id !== deleted.id),
+        ...(page.totalCount !== undefined ? { totalCount: Math.max(0, page.totalCount - 1) } : {}),
+      };
+    });
+    setBoardStatus(alreadyGone ? `${deleted.issueKey} was already deleted.` : `${deleted.issueKey} deleted.`);
+    if (stillOpen) navigate(`/projects/${projectId}/board`, { replace: true });
+    // The search is the other half of the counter and moves with the list:
+    // measured against the mock, a deleted match otherwise stayed in the
+    // search answer and came back as a row below the board, linking to a
+    // panel that no longer opens.
+    void queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
+    void queryClient.invalidateQueries({ queryKey: ["issue-search"] });
+  };
+
+  // After the delete's navigation has closed the panel: the first step of the
+  // chain that is on the board and can take focus. Drawn, because focus the
+  // reader did not move themselves is otherwise invisible after a pointer
+  // press (see `focusTrigger` in the admin Users section).
+  useEffect(() => {
+    // A panel open again means the chain, if any, belongs to a close that
+    // already happened another way: it never outlives the next route.
+    if (issueId) {
+      deleteFocusChain.current = null;
+      return;
+    }
+    const chain = deleteFocusChain.current;
+    if (!chain) return;
+    deleteFocusChain.current = null;
+    const root = boardRef.current;
+    if (!root) return;
+    const target = chain
+      .map((step) => findDeleteFocusTarget(root, step))
+      .find((element): element is HTMLButtonElement => element !== null && !element.disabled);
+    if (!target) return;
+    try {
+      target.focus({ focusVisible: true });
+    } catch {
+      target.focus();
+    }
+  }, [issueId]);
+
   const hasFilters = Boolean(query || typeFilter !== null || assigneeFilter !== "ALL" || labelFilter !== "ALL");
   const activeIssue = activeIssueId ? issues.find((item) => item.id === activeIssueId) : undefined;
 
@@ -765,7 +861,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   }
 
   return (
-    <main className="board-shell">
+    <main className="board-shell" ref={boardRef}>
+      <p className="visually-hidden" role="status">
+        {boardStatus}
+      </p>
       <header className="board-topbar" ref={topbarRef}>
         <button className="icon-button" onClick={() => navigate("/projects")} title="Back to projects" type="button">
           <ChevronLeft size={17} />
@@ -829,12 +928,25 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       </header>
 
       <section className="filterbar">
+        {/* `aria-pressed` on every segmented button (§7, TAS-299): the
+            current one is otherwise said only by its fill. */}
         <div className="segmented compact">
-          <button className={typeFilter === null ? "is-active" : ""} onClick={() => setTypeFilter(null)} type="button">
+          <button
+            aria-pressed={typeFilter === null}
+            className={typeFilter === null ? "is-active" : ""}
+            onClick={() => setTypeFilter(null)}
+            type="button"
+          >
             All
           </button>
           {offeredIssueTypes.map((type) => (
-            <button key={type} className={typeFilter === type ? "is-active" : ""} onClick={() => setTypeFilter(type)} type="button">
+            <button
+              aria-pressed={typeFilter === type}
+              key={type}
+              className={typeFilter === type ? "is-active" : ""}
+              onClick={() => setTypeFilter(type)}
+              type="button"
+            >
               {issueTypeLabel(type, meta?.issueTypes)}
             </button>
           ))}
@@ -890,10 +1002,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           <Users size={15} />
         </button>
         <span className="divider" />
-        {/* A failed label read is said here rather than in the notice stack
-            above: the stack is capped at four (§5.6) and this costs the board
-            nothing but a filter. Saying nothing would leave a picker offering
-            only "All" and looking like a project that has no labels. */}
+        {/* Labels arrive with the project's context (TAS-251), so a failed
+            read is reported once, by the banner above, with the server's words
+            and the request id. This line only says why there is no picker —
+            a consequence of that failure rather than a second report of it, in
+            `--fg-2` and with no `--danger` (§4.13, TAS-299). Saying nothing
+            would leave a picker offering only "All" and looking like a project
+            that has no labels. */}
         {labelsUnread.unanswered ? (
           <span className="filter-error">Labels could not be loaded</span>
         ) : (
@@ -1137,6 +1252,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             workflows={workflows}
             workflowUnknown={workflowUnknown}
             onClose={() => navigate(`/projects/${projectId}/board`)}
+            onDeleted={issueDeleted}
           />
         </ErrorBoundary>
       ) : null}
@@ -1195,6 +1311,42 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 }
 
 /**
+ * One step of where focus goes after a delete (§4.10): a card by its issue id,
+ * a column's "+" by the column's status key, or "New".
+ */
+type DeleteFocusStep = { card: string } | { add: string } | "new";
+
+/**
+ * The board's element for one step, or `null` when it is not drawn. Matched by
+ * the data attributes rather than built into a selector, so an id needs no
+ * escaping.
+ */
+function findDeleteFocusTarget(root: HTMLElement, step: DeleteFocusStep): HTMLButtonElement | null {
+  if (step === "new") return root.querySelector<HTMLButtonElement>(".board-new");
+  if ("card" in step) {
+    return (
+      [...root.querySelectorAll<HTMLButtonElement>("button.issue-card")].find(
+        (card) => card.dataset.issueId === step.card,
+      ) ?? null
+    );
+  }
+  const column = [...root.querySelectorAll<HTMLElement>(".board-column")].find(
+    (section) => section.dataset.statusKey === step.add,
+  );
+  return column?.querySelector<HTMLButtonElement>(".column-head button") ?? null;
+}
+
+/**
+ * The delete's 404: the issue is not there any more — deleted elsewhere in
+ * the meantime — which is the outcome the reader asked for, so it takes the
+ * success path with its own sentence (§4.10).
+ */
+function isIssueGone(error: unknown): boolean {
+  const { code, status } = apiErrorFacts(error);
+  return code === "NOT_FOUND" || status === 404;
+}
+
+/**
  * The columns to draw before the workflow has been read, and after a read that
  * failed. These are safe to invent because they are not inventions: the three
  * keys are `IssueStatus` from the contract, and most issues carry one of them.
@@ -1246,7 +1398,12 @@ function BoardColumn({
   // A named section rather than a bare div: each column is a landmark a screen
   // reader can jump between, and the drop target stops being anonymous.
   return (
-    <section aria-label={`${name} column`} className={`board-column ${isOver ? "is-over" : ""}`} ref={setNodeRef}>
+    <section
+      aria-label={`${name} column`}
+      className={`board-column ${isOver ? "is-over" : ""}`}
+      data-status-key={status.statusKey}
+      ref={setNodeRef}
+    >
       <div className="column-head">
         <StatusDot status={status} />
         <strong>{name}</strong>
@@ -1359,7 +1516,12 @@ function OtherStatusesGroup({
  */
 function IssueCardFailure({ issue, onOpen }: { issue: Pick<Issue, "id" | "issueKey">; onOpen: (issueId: string) => void }) {
   return (
-    <button className="issue-card is-static issue-card-failure" onClick={() => onOpen(issue.id)} type="button">
+    <button
+      className="issue-card is-static issue-card-failure"
+      data-issue-id={issue.id}
+      onClick={() => onOpen(issue.id)}
+      type="button"
+    >
       {typeof issue.issueKey === "string" && issue.issueKey ? <span className="issue-key">{issue.issueKey}</span> : null}
       <span className="issue-card-failure-text">This card could not be shown.</span>
     </button>
@@ -1392,6 +1554,8 @@ function IssueCard({
   return (
     <button
       className={`issue-card ${canEdit ? "" : "is-static"} ${isDragging ? "is-dragging" : ""}`}
+      // Where the board finds the card that takes a deleted one's place (§4.10).
+      data-issue-id={issue.id}
       onClick={() => onOpen(issue.id)}
       ref={setNodeRef}
       type="button"
@@ -1690,12 +1854,12 @@ function IssuePanelFailure({
   const key = [cachedKey, issueKey].find((value): value is string => typeof value === "string" && value !== "");
   return (
     <div className="panel-layer">
-      <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" type="button" />
+      <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" tabIndex={-1} type="button" />
       <aside aria-label={key ? `${key} issue` : "Issue"} className="issue-panel">
         <header className="issue-panel-head">
           {key ? <span className="issue-key">{key}</span> : null}
           <div className="topbar-spacer" />
-          <button className="icon-button" onClick={onClose} title="Close" type="button">
+          <button aria-label="Close" className="icon-button" onClick={onClose} title="Close" type="button">
             <X size={16} />
           </button>
         </header>
@@ -1724,6 +1888,7 @@ function IssuePanel({
   workflows,
   workflowUnknown,
   onClose,
+  onDeleted,
 }: {
   projectId: string;
   issueId: string;
@@ -1766,8 +1931,12 @@ function IssuePanel({
   /** The workflow read failed; these buttons are the keyboard path a drag has. */
   workflowUnknown: boolean;
   onClose: () => void;
+  /**
+   * The server answered the delete — or said the issue was already gone. The
+   * board takes it from here: the card, the route, the focus and the words.
+   */
+  onDeleted: (issue: Pick<Issue, "id" | "issueKey" | "status">, alreadyGone: boolean) => void;
 }) {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const meta = useMeta();
   const issueQuery = useQuery({
@@ -2110,34 +2279,88 @@ function IssuePanel({
       void invalidateBoard(queryClient, projectId);
     },
   });
+  /**
+   * Delete asks first (§4.10, TAS-299), in §4.22's strip in a fixed zone
+   * between the head and the body. One press used to delete — the hazard
+   * TAS-259 removed from comments, here with a whole issue behind it.
+   * `asking` is the strip; Share and the strip close each other.
+   */
+  const [asking, setAsking] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const deleteButton = useRef<HTMLButtonElement>(null);
+  const deleteConfirmId = useId();
+  /** The panel's one refusal slot, scrolled to when a delete is refused. */
+  const panelNoticeRef = useRef<HTMLDivElement>(null);
+  /**
+   * Not optimistic, by the argument §5.8 makes for the Users writes: a refused
+   * delete of a panel that had already closed would have nowhere left to be
+   * said. The strip waits, its two buttons `aria-disabled`, and the board is
+   * told only once the server has answered (`onDeleted`).
+   *
+   * A 404 is the issue already gone — deleted elsewhere in the meantime — and
+   * takes the success path with its own sentence. Not `invalidateBoard`, and
+   * not here at all: the board removes the card and re-reads its list and its
+   * search, and this path deliberately leaves `["issue", projectId, issueId]`
+   * alone, because this panel is still mounted for one more tick and a re-read
+   * of the issue just deleted would put a 404 on screen on the way out.
+   */
   const deleteIssue = useMutation({
-    mutationFn: () => taskaApi.deleteIssue(projectId, issueId),
-    onMutate: () => writeStarts({}),
-    onError: refusalLands,
-    // Not `invalidateBoard`: this path deliberately does not touch
-    // `["issue", projectId, issueId]`, because this panel is still mounted for
-    // one more tick and refetching the issue that was just deleted would put a
-    // 404 on screen on the way out. The search is the other half of the board's
-    // counter and has to move with the issue list — same reasoning as the
-    // prefix in `invalidateBoard`, and the worse half of it: measured against
-    // the mock, deleting the only match left the counter reading "1 of 1" over
-    // an empty board, because the deleted issue stayed in the search answer and
-    // came back as a row in the group below, linking to a panel that no longer
-    // opens. A wrong number is noticed; a plausible one is not.
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
-        queryClient.invalidateQueries({ queryKey: ["issue-search"] }),
-      ]);
-      navigate(`/projects/${projectId}/board`);
+    mutationFn: async (): Promise<{ alreadyGone: boolean }> => {
+      try {
+        await taskaApi.deleteIssue(projectId, issueId);
+        return { alreadyGone: false };
+      } catch (error) {
+        if (isIssueGone(error)) return { alreadyGone: true };
+        throw error;
+      }
+    },
+    onMutate: () => {
+      writeStarts({});
+      // The slot holds one refusal, and the newest: an edit's or a move's that
+      // is already standing must not sit in front of this one's (§5.5).
+      if (updateIssue.isError) updateIssue.reset();
+      if (transitionIssue.isError) transitionIssue.reset();
+    },
+    onError: () => {
+      refusalLands();
+      // The strip closes and focus goes back to the Delete that asked. Moved
+      // before the strip unmounts, so it never falls to <body> in between.
+      deleteButton.current?.focus();
+      setAsking(false);
+      // The board shows what the server actually did. A refusal is not proof
+      // that nothing was deleted (TAS-299, art-director's backend note;
+      // TAS-300), so the search — the other half of the counter — is read
+      // again with the list, as on success.
+      void queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["issue-search", projectId] });
+    },
+    onSuccess: ({ alreadyGone }) => {
+      const deleted = queryClient.getQueryData(issueKey)?.issue ?? issue;
+      if (deleted) onDeleted(deleted, alreadyGone);
     },
   });
+  const deleting = deleteIssue.isPending;
+  // Shown where every refusal of this panel is shown, and scrolled into view
+  // there: the reader's eye is on the head, and the slot may be below the fold.
+  const deleteRefusal = deleteIssue.error;
+  useEffect(() => {
+    if (deleteRefusal) panelNoticeRef.current?.scrollIntoView({ block: "nearest" });
+  }, [deleteRefusal]);
+  /**
+   * Cancel and Esc: the question closes and the panel stays, with focus back
+   * on the Delete that asked (§4.22) — moved before the strip unmounts, so it
+   * never falls to <body> in between.
+   */
+  const cancelDelete = () => {
+    deleteButton.current?.focus();
+    setAsking(false);
+  };
 
   if (!issue) {
     const loading = !issueQuery.isError;
     return (
       <div className="panel-layer">
-        <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" type="button" />
+        <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" tabIndex={-1} type="button" />
         {/* One `aside` for loading, failure and the loaded panel below, at the
             same place in the tree, so React keeps the element and `tk-slide`
             runs once rather than again when the issue lands.
@@ -2381,7 +2604,7 @@ function IssuePanel({
 
   return (
     <div className="panel-layer">
-      <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" type="button" />
+      <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" tabIndex={-1} type="button" />
       {/* A file let go over the panel outside the attachments section must not
           navigate the tab away to it (TAS-253). */}
       <aside
@@ -2390,7 +2613,10 @@ function IssuePanel({
         onDragOver={refuseStrayFileDrop}
         onDrop={refuseStrayFileDrop}
       >
-        <header className="issue-panel-head">
+        {/* The head's bottom line moves under the delete zone while it is open,
+            so there is one line under the fixed part of the panel, not two
+            (§1 rule 2, §4.10). */}
+        <header className={asking ? "issue-panel-head is-asking" : "issue-panel-head"}>
           <TypeChip type={issue.issueType} />
           <span className="issue-key">{issue.issueKey}</span>
           <span className="issue-type-label" title={typeName}>
@@ -2398,30 +2624,123 @@ function IssuePanel({
           </span>
           <div className="topbar-spacer" />
           {/* Read-only, so not gated by role (TAS-248). Only in the loaded head:
-              the skeleton's has no key to share yet. */}
-          <IssueShare issueId={issue.id} issueKey={issue.issueKey} projectId={issue.projectId} />
+              the skeleton's has no key to share yet. Opening it closes the
+              delete question, as opening the question closes it. */}
+          <IssueShare
+            issueId={issue.id}
+            issueKey={issue.issueKey}
+            onOpenChange={(open) => {
+              setShareOpen(open);
+              // Not while the delete is out: the strip's aria-disabled
+              // answers are the only sign of the request (art-director N1).
+              if (open && !deleting) setAsking(false);
+            }}
+            open={shareOpen}
+            projectId={issue.projectId}
+          />
           {/* Hidden from a VIEWER rather than shut (§5.7, TAS-236); for a role
-              nobody stated it stays, disabled (TAS-226). */}
+              nobody stated it stays, disabled (TAS-226), and asks nothing.
+              §4.1's ghost-destructive: `--danger` under the pointer and while
+              its question is open. A second press closes the question. */}
           {isProjectViewer ? null : (
-            <button className="icon-button" disabled={!canEdit} onClick={() => deleteIssue.mutate()} title="Delete" type="button">
-              <Trash2 size={15} />
+            <button
+              aria-controls={asking ? deleteConfirmId : undefined}
+              aria-expanded={asking}
+              aria-label={`Delete issue ${issue.issueKey}`}
+              className="icon-button issue-delete"
+              disabled={!canEdit}
+              onClick={() => {
+                if (!canEdit || deleting) return;
+                setShareOpen(false);
+                setAsking((open) => !open);
+              }}
+              onKeyDown={(event) => {
+                if (asking && event.key === "Escape") {
+                  event.stopPropagation();
+                  if (!deleting) cancelDelete();
+                }
+              }}
+              ref={deleteButton}
+              title="Delete"
+              type="button"
+            >
+              <Trash2 aria-hidden="true" size={15} />
             </button>
           )}
-          <button className="icon-button" onClick={onClose} title="Close" type="button">
+          {/* Named as well as titled (§7): `title` is the weakest source of an
+              accessible name and some assistive technology drops it. */}
+          <button aria-label="Close" className="icon-button" onClick={onClose} title="Close" type="button">
             <X size={16} />
           </button>
         </header>
+        {asking ? (
+          // Between the head and the body and outside the scroll (§4.10): the
+          // head is one row of 52 and cannot take a sentence, and at the top of
+          // a scrolled body the question would be off screen. The body gives up
+          // the height rather than being covered. No entrance animation.
+          <div className="issue-delete-zone">
+            <div
+              className="member-confirm issue-delete-confirm"
+              id={deleteConfirmId}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  // The question closes and the panel stays (§4.22).
+                  event.stopPropagation();
+                  if (!deleting) cancelDelete();
+                }
+              }}
+            >
+              <p className="member-confirm-sentence" id={`${deleteConfirmId}-sentence`}>
+                {issue.issueKey} will be deleted for everyone, with its comments, attachments, work log and links. This
+                cannot be undone.
+              </p>
+              <div className="member-confirm-actions">
+                {/* Both `aria-disabled` while the request is out (§4.1's
+                    in-flight recipe): no fade, the labels unchanged, and the
+                    handlers refuse — Cancel included, because the answer is
+                    already on its way. */}
+                <button
+                  aria-disabled={deleting || undefined}
+                  autoFocus
+                  className="secondary-button compact-button"
+                  onClick={() => {
+                    if (!deleting) cancelDelete();
+                  }}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  aria-describedby={`${deleteConfirmId}-sentence`}
+                  aria-disabled={deleting || undefined}
+                  className="secondary-button compact-button member-confirm-accept"
+                  onClick={() => {
+                    if (!deleting) deleteIssue.mutate();
+                  }}
+                  type="button"
+                >
+                  Delete issue
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="issue-panel-body">
+          {/* `readOnly` rather than `disabled` without write access (§4.3,
+              §5.7, TAS-299): the text keeps full contrast, selects, copies and
+              keeps its Tab stop. The commits early-return on the same flag,
+              because a read-only control still fires `blur`. */}
           <textarea
             className="summary-textarea"
-            disabled={!canEdit}
             onBlur={() => {
+              if (!canEdit) return;
               if (summary.trim() && summary !== issue.summary) editIssue({ summary: summary.trim() });
               // Put back to the stored text: nothing of the reader's is left
               // unsaved here, so a conflict line about it has nothing to say.
               else if (summary === issue.summary) settleText("summary");
             }}
             onChange={(event) => setSummary(event.target.value)}
+            readOnly={!canEdit}
             rows={2}
             value={summary}
           />
@@ -2547,6 +2866,7 @@ function IssuePanel({
             <div className="segmented compact fit">
               {priorityChoices.map((priority) => (
                 <button
+                  aria-pressed={issue.priority === priority}
                   className={issue.priority === priority ? "is-active" : ""}
                   disabled={!canEdit}
                   key={priority}
@@ -2622,7 +2942,7 @@ function IssuePanel({
                 <div className="planning-field">
                   <label htmlFor={`${planningId}-original-estimate`}>Original estimate</label>
                   <input
-                    aria-describedby={`${planningId}-original-estimate-hint`}
+                    aria-describedby={canEdit ? `${planningId}-original-estimate-hint` : undefined}
                     id={`${planningId}-original-estimate`}
                     onBlur={() => commitEstimate("originalEstimateMinutes")}
                     onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
@@ -2634,15 +2954,19 @@ function IssuePanel({
                   />
                   {/* On screen rather than in a `title`: a tooltip does not fire
                       on a touch device, so the one place the duration syntax was
-                      stated was the one place half the readers cannot reach. */}
-                  <p className="planning-hint" id={`${planningId}-original-estimate-hint`}>
-                    {PLANNING_ESTIMATE_HINT}
-                  </p>
+                      stated was the one place half the readers cannot reach.
+                      A typing hint, so only for a reader who can type here: a
+                      read-only box has nothing to say how to enter (TAS-299). */}
+                  {canEdit ? (
+                    <p className="planning-hint" id={`${planningId}-original-estimate-hint`}>
+                      {PLANNING_ESTIMATE_HINT}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="planning-field">
                   <label htmlFor={`${planningId}-remaining-estimate`}>Remaining estimate</label>
                   <input
-                    aria-describedby={`${planningId}-remaining-estimate-hint`}
+                    aria-describedby={canEdit ? `${planningId}-remaining-estimate-hint` : undefined}
                     id={`${planningId}-remaining-estimate`}
                     onBlur={() => commitEstimate("remainingEstimateMinutes")}
                     onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
@@ -2652,9 +2976,11 @@ function IssuePanel({
                     type="text"
                     value={planning.remainingEstimateMinutes}
                   />
-                  <p className="planning-hint" id={`${planningId}-remaining-estimate-hint`}>
-                    {PLANNING_ESTIMATE_HINT}
-                  </p>
+                  {canEdit ? (
+                    <p className="planning-hint" id={`${planningId}-remaining-estimate-hint`}>
+                      {PLANNING_ESTIMATE_HINT}
+                    </p>
+                  ) : null}
                 </div>
               </div>
               <div className="planning-row">
@@ -2714,20 +3040,22 @@ function IssuePanel({
               assertive announcement never reads a uuid out. The box is
               `ErrorNote`, the panel's one error look (TAS-192). */}
           {panelNotice ? (
-            <ErrorNote key={noticeKey} live="alert" requestId={shownRequestId}>
+            <ErrorNote key={noticeKey} live="alert" ref={panelNoticeRef} requestId={shownRequestId}>
               {panelNotice}
             </ErrorNote>
           ) : null}
 
           <label className="description-field">
             <span>Description</span>
+            {/* `readOnly`, as the summary above and for the same reasons. */}
             <textarea
-              disabled={!canEdit}
               onBlur={() => {
+                if (!canEdit) return;
                 if (description !== issue.description) editIssue({ description });
                 else settleText("description");
               }}
               onChange={(event) => setDescription(event.target.value)}
+              readOnly={!canEdit}
               rows={5}
               value={description}
             />
@@ -6072,7 +6400,13 @@ function CreateIssueModal({
             {issueTypes.length ? (
               <div className="segmented compact">
                 {issueTypes.map((type) => (
-                  <button className={issueType === type ? "is-active" : ""} key={type} onClick={() => setIssueType(type)} type="button">
+                  <button
+                    aria-pressed={issueType === type}
+                    className={issueType === type ? "is-active" : ""}
+                    key={type}
+                    onClick={() => setIssueType(type)}
+                    type="button"
+                  >
                     {issueTypeLabel(type, meta?.issueTypes)}
                   </button>
                 ))}
@@ -6085,7 +6419,13 @@ function CreateIssueModal({
             <span>Priority</span>
             <div className="segmented compact">
               {offeredPriorities.map((item) => (
-                <button className={priority === item ? "is-active" : ""} key={item} onClick={() => setPriority(item)} type="button">
+                <button
+                  aria-pressed={priority === item}
+                  className={priority === item ? "is-active" : ""}
+                  key={item}
+                  onClick={() => setPriority(item)}
+                  type="button"
+                >
                   {priorityLabel(item, meta?.priorities)}
                 </button>
               ))}

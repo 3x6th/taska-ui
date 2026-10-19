@@ -8,7 +8,7 @@ import { expect, test } from "@playwright/test";
 test("a project that allows two issue types offers only those two", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 

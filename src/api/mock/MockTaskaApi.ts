@@ -2454,9 +2454,16 @@ export class MockTaskaStore {
   }
 
   /**
-   * `POST /auth/invitations/accept`, in `AuthServiceImpl.setPasswordByToken`'s
-   * order (develop `e8a8d316b326`): the token present, the password policy, the
-   * token's length, then one 401 for every way the link can fail to be live.
+   * `POST /auth/invitations/accept`, in the order the stand checks it. First
+   * auth-service's gRPC transport, before the service sees the request: a
+   * blank token, then a blank password, each refused in the transport's own
+   * words — "body.token must not be blank", "body.newPassword must not be
+   * blank" (`AuthGrpcService.setPasswordByToken` through
+   * `GrpcRequestValidators.requireNonBlank`, `String.isBlank`). Then
+   * `AuthServiceImpl.setPasswordByToken`'s (develop `e8a8d316b326`): the
+   * password policy, the token's length, then one 401 for every way the link
+   * can fail to be live. The service's own "Token required" and "Password is
+   * required" sit behind the transport and are never reached on this route.
    * The password is checked before the token is looked up, which is why a weak
    * one does not spend the link.
    *
@@ -2467,8 +2474,15 @@ export class MockTaskaStore {
    */
   acceptInvitation(input: AcceptInvitationInput): void {
     const { token, newPassword } = input;
+    // `trim() === ""` approximates Java's `String.isBlank`, and is not it: JS
+    // trims U+00A0, U+2007, U+202F and U+FEFF, which `Character.isWhitespace`
+    // does not count, and keeps U+001C–U+001F, which it does. Nobody types either into these
+    // two fields, so the difference is named here rather than modelled.
     if (typeof token !== "string" || token.trim() === "") {
-      throw new MockApiError("INVALID_ARGUMENT", "Token required");
+      throw new MockApiError("INVALID_ARGUMENT", "body.token must not be blank");
+    }
+    if (typeof newPassword !== "string" || newPassword.trim() === "") {
+      throw new MockApiError("INVALID_ARGUMENT", "body.newPassword must not be blank");
     }
     const policy = passwordPolicyRefusal(newPassword);
     if (policy) throw new MockApiError("INVALID_ARGUMENT", policy);

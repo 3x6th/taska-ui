@@ -14,8 +14,10 @@ import { LoginScreen } from "./LoginScreen";
  * both places at once — so nothing there can tell which of the two the screen
  * read. These cases take the two apart.
  */
-const { fakeApi, refuseWith, inviteState } = vi.hoisted(() => {
+const { fakeApi, refuseWith, inviteState, loginState } = vi.hoisted(() => {
   const state: { refusal?: Error } = {};
+  /** A sign-in held open by hand, so its in-flight state can be looked at. */
+  const loginState = { hold: false, release: () => {}, calls: 0 };
   const inviteState = {
     session: false,
     refusal: undefined as Error | undefined,
@@ -27,6 +29,8 @@ const { fakeApi, refuseWith, inviteState } = vi.hoisted(() => {
   };
   const api = {
     login: async () => {
+      loginState.calls += 1;
+      if (loginState.hold) await new Promise<void>((resolve) => (loginState.release = resolve));
       if (state.refusal) throw state.refusal;
       return { accessToken: "a", refreshToken: "r" };
     },
@@ -48,10 +52,11 @@ const { fakeApi, refuseWith, inviteState } = vi.hoisted(() => {
   };
   return {
     fakeApi: api as unknown as TaskaApi,
-    refuseWith: (refusal: Error) => {
+    refuseWith: (refusal: Error | undefined) => {
       state.refusal = refusal;
     },
     inviteState,
+    loginState,
   };
 });
 
@@ -106,6 +111,79 @@ describe("LoginScreen, a locked account", () => {
 
     expect(await screen.findByText("Locked.")).toBeVisible();
     expect(screen.queryByText(/Account is locked until/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The sign-in tab since TAS-299 (DESIGN.md §4.27): New password's layout and
+ * show-password toggle on Password too, and a submit that keeps focus while it
+ * is out.
+ */
+describe("LoginScreen, signing in", () => {
+  afterEach(() => {
+    refuseWith(undefined);
+    Object.assign(loginState, { hold: false, release: () => {}, calls: 0 });
+  });
+
+  it("names the field exactly Password, with the toggle beside the field rather than inside its label", () => {
+    renderLogin();
+    const field = screen.getByLabelText("Password");
+    const toggle = screen.getByRole("button", { name: "Show password" });
+
+    // A label wrapping the button would have named the field "Password Show password".
+    expect(field).toHaveAccessibleName("Password");
+    expect(toggle.closest("label")).toBeNull();
+    expect(field.closest(".password-field")).toBe(toggle.closest(".password-field"));
+    expect(field).toHaveAttribute("type", "password");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(toggle);
+    expect(field).toHaveAttribute("type", "text");
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(toggle);
+    expect(field).toHaveAttribute("type", "password");
+  });
+
+  it("says which tab is the current one, and hides a shown password again on every tab change", () => {
+    renderLogin();
+    expect(screen.getByRole("button", { name: "Sign in", pressed: true })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Accept invite", pressed: false })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show password" }));
+    expect(screen.getByLabelText("Password")).toHaveAttribute("type", "text");
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept invite" }));
+    expect(screen.getByRole("button", { name: "Accept invite", pressed: true })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Show password" }));
+    expect(screen.getByLabelText("New password")).toHaveAttribute("type", "text");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign in", pressed: false }));
+    expect(screen.getByLabelText("Password")).toHaveAttribute("type", "password");
+    expect(screen.getByRole("button", { name: "Show password" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Accept invite" }));
+    expect(screen.getByLabelText("New password")).toHaveAttribute("type", "password");
+  });
+
+  it("keeps the submit focusable while signing in — aria-disabled, labelled Signing in — and Enter sends nothing more", async () => {
+    loginState.hold = true;
+    renderLogin();
+    const submit = screen.getAllByRole("button", { name: "Sign in" }).find((button) => button.getAttribute("type") === "submit")!;
+    submit.focus();
+
+    signIn();
+
+    const pending = await screen.findByRole("button", { name: "Signing in" });
+    expect(pending).toBe(submit);
+    expect(pending).toHaveAttribute("aria-disabled", "true");
+    expect(pending).not.toBeDisabled();
+    expect(pending).toHaveFocus();
+    // A second press, and Enter in a field, while it is out.
+    fireEvent.click(pending);
+    fireEvent.submit(screen.getByLabelText("Email").closest("form")!);
+    expect(loginState.calls).toBe(1);
+    refuseWith(new ApiError("Invalid credentials", "UNAUTHENTICATED", 401));
+    await act(async () => loginState.release());
+    expect(await screen.findByText("Invalid credentials")).toBeVisible();
   });
 });
 
@@ -271,6 +349,25 @@ describe("LoginScreen, accepting an invitation", () => {
     expect(screen.getByLabelText("New password")).toHaveValue("Correcthorse1");
     // Any refusal but the dead link keeps the hint under the button.
     expect(screen.getByText("Link expired? Ask the person who invited you to send a new one.")).toBeVisible();
+  });
+
+  it("marks the field for the transport's blank-password refusal, and not for its blank-token one", async () => {
+    // auth-service's gRPC transport refuses a blank field before the service
+    // sees the request, in its own words (TAS-299); the stand never says the
+    // service's "Password is required" here.
+    inviteState.refusal = new ApiError("body.newPassword must not be blank", "INVALID_ARGUMENT", 400);
+    holdInviteToken(TOKEN);
+    renderAuth();
+
+    activate("   ");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("body.newPassword must not be blank");
+    expect(screen.getByLabelText("New password")).toHaveAttribute("aria-invalid", "true");
+
+    inviteState.refusal = new ApiError("body.token must not be blank", "INVALID_ARGUMENT", 400);
+    activate("Correct-horse-1");
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("body.token must not be blank"));
+    expect(screen.getByLabelText("New password")).not.toHaveAttribute("aria-invalid");
   });
 
   it("keeps the button focusable while the request is out — aria-disabled, labelled Activating", async () => {

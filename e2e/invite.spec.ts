@@ -72,7 +72,7 @@ test("the emailed link lands on the invite form with the token out of the addres
   // And the account it activated signs in like any other.
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByLabel("Email").fill("leo@example.com");
-  await page.getByLabel("Password").fill(STRONG);
+  await page.getByLabel("Password", { exact: true }).fill(STRONG);
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 });
@@ -93,7 +93,7 @@ test("a link opened under somebody else's session warns first, and signs out onl
 }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 

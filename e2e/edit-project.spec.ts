@@ -18,7 +18,7 @@ import { expect, test, type Page } from "@playwright/test";
 async function signIn(page: Page) {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 }
@@ -134,7 +134,7 @@ test("shows no edit control to a reader who is not this project's admin", async 
   // covers both answers — and the difference is the role, not the screen.
   await page.goto("/login");
   await page.getByLabel("Email").fill("mark@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.locator(".skeleton-card")).toHaveCount(0);

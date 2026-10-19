@@ -611,7 +611,7 @@ describe("the admin Users section, inviting", () => {
     expect(rowFor("Leo Fischer")).toHaveClass("is-changed");
   });
 
-  it("says an account that stopped waiting for activation can no longer be invited, and reads the list again", async () => {
+  it("says an account that stopped waiting for activation has nothing to resend, and reads the list again", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: "Resend invite to Leo Fischer" }));
     const dialog = await screen.findByRole("dialog", { name: "Resend invitation" });
@@ -621,11 +621,76 @@ describe("the admin Users section, inviting", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Send new link" }));
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "Leo Fischer can no longer be invited — the account is no longer waiting for activation.",
+      "Leo Fischer’s account is no longer waiting for activation, so there is nothing to resend.",
     );
     await waitFor(() =>
       expect(within(rowFor("Leo Fischer")).queryByRole("button", { name: "Resend invite to Leo Fischer" })).toBeNull(),
     );
+  });
+
+  it("after that 409 keeps Send new link focused and steadily unavailable, and closing gives focus to what the row still offers", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Resend invite to Leo Fischer" }));
+    const dialog = await screen.findByRole("dialog", { name: "Resend invitation" });
+    await mock.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1" });
+    const invites = vi.spyOn(fakeApi, "inviteUser");
+
+    const send = within(dialog).getByRole("button", { name: "Send new link" });
+    send.focus();
+    fireEvent.click(send);
+    await within(dialog).findByRole("alert");
+    expect(invites).toHaveBeenCalledTimes(1);
+
+    // §4.1's steady kind of `aria-disabled`: still there, still focused, and
+    // neither a press nor Cmd/Ctrl+Enter sends the same 409 again.
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).toHaveClass("is-spent");
+    expect(send).toHaveFocus();
+    fireEvent.click(send);
+    fireEvent.keyDown(document, { key: "Enter", metaKey: true });
+    fireEvent.keyDown(document, { key: "Enter", ctrlKey: true });
+    // Settled first: a request these presses had started would reach the API
+    // only after react-query's own microtasks, and asserting before them would
+    // pass whether or not one went out (release-reviewer F2).
+    await act(async () => {});
+    expect(invites).toHaveBeenCalledTimes(1);
+    expect(send).toHaveFocus();
+    invites.mockRestore();
+
+    // Leo is ACTIVE now, so his row offers Block — where focus goes on close.
+    await waitFor(() =>
+      expect(within(rowFor("Leo Fischer")).queryByRole("button", { name: "Resend invite to Leo Fischer" })).toBeNull(),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(within(rowFor("Leo Fischer")).getByRole("button", { name: "Block Leo Fischer" })).toHaveFocus();
+  });
+
+  it("gives focus to the section's heading when the row is gone after that 409", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/admin/users"]}>
+          <section className="admin-section">
+            <h1 className="admin-section-title" tabIndex={-1}>
+              Administration › Users
+            </h1>
+            <AdminUsersSection />
+          </section>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Resend invite to Leo Fischer" }));
+    const dialog = await screen.findByRole("dialog", { name: "Resend invitation" });
+    await mock.acceptInvitation({ token: MOCK_INVITE_TOKENS.leo, newPassword: "Correct-horse-1" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Send new link" }));
+    await within(dialog).findByRole("alert");
+    // The row leaves the table altogether — taken by a page change, say.
+    rowFor("Leo Fischer").remove();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Administration › Users" })).toHaveFocus();
   });
 
   it("keeps the dialog open and says so in the taxonomy's words when the API cannot be reached", async () => {

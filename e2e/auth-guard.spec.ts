@@ -18,7 +18,7 @@ test("a signed-out deep link asks for a sign-in and then opens the page that was
   await expect(page.locator(".auth-notice")).toHaveCount(0);
 
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   // The originally requested board, not the generic project list.
@@ -30,10 +30,10 @@ test("the project list is not reachable without a session, and sign-in opens it"
   await page.goto("/projects");
 
   await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByLabel("Password")).toBeVisible();
+  await expect(page.getByLabel("Password", { exact: true })).toBeVisible();
 
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   await expect(page).toHaveURL(/\/projects$/);
@@ -50,7 +50,7 @@ test("a bare visit to the app root also asks for a sign-in and then lands on the
   await expect(page).toHaveURL(/\/login$/);
 
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   await expect(page).toHaveURL(/\/projects$/);
@@ -92,7 +92,7 @@ test("the not-found screen's way out sends a signed-out visitor through the guar
   await expect(page.locator("html")).toHaveAttribute("data-e2e-document", "not-found");
 
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   // /projects was what the click asked for, so that is what sign-in opens.
@@ -103,7 +103,7 @@ test("the not-found screen's way out sends a signed-out visitor through the guar
 test("a signed-in visitor is sent on from the login form", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 

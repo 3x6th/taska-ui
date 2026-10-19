@@ -976,6 +976,24 @@ export function ProjectMembersModal({
                   `scrollIntoView` on the active row. */}
               <div
                 className={`member-search${boxOpen ? " is-open" : ""}${boxOpen && searchFailed ? " is-error" : ""}`}
+                // A press inside the box but off a row, a link or a button —
+                // its state sentence, its empty space — leaves focus in the
+                // field, as a press on a row already does (§4.22, TAS-299).
+                // Two guards: a link, a button (RequestId's copy) and the
+                // server's words in `.member-note-detail` take the press as
+                // usual, the last so they can still be selected by hand, which
+                // RequestId's own fallback relies on; and a press on the box's
+                // scrollbar is left alone, so the gutter still drags.
+                onMouseDown={(event) => {
+                  if ((event.target as Element).closest("a, button, .member-note-detail")) return;
+                  if (
+                    event.target === event.currentTarget &&
+                    event.nativeEvent.offsetX >= event.currentTarget.clientWidth
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                }}
                 tabIndex={-1}
               >
                 <p

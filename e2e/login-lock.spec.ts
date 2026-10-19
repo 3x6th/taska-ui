@@ -42,7 +42,7 @@ async function attemptLockedSignIn(page: Page, now = ORDINARY_HOUR) {
   await page.clock.setFixedTime(new Date(now));
   await page.goto("/login");
   await page.getByLabel("Email").fill(LOCKED_ACCOUNT);
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   const lines = page.locator(".auth-lock > span");
@@ -218,7 +218,7 @@ test.describe("in a browser set to a non-Gregorian locale", () => {
 test("a sign-in refused for any other reason still prints the server's own sentence", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("nina@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
 
   await expect(page.locator(".error-note")).toHaveText("Invalid credentials");

@@ -14,7 +14,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 async function openConsole(page: Page) {
   await page.goto("/login");
   await page.getByLabel("Email").fill("mark@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 
@@ -565,7 +565,7 @@ test("no longer stands in for Audit, the last section that had no endpoints", as
 test("a plain user cannot reach the console at all", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 

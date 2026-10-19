@@ -19,7 +19,7 @@ import { expect, test, type Page } from "@playwright/test";
 async function signIn(page: Page) {
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
-  await page.getByLabel("Password").fill("mock-accepts-anything");
+  await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
   await expect(page).toHaveURL(/\/projects$/);
 }
@@ -73,13 +73,16 @@ test.describe("the board counter after a mutation", () => {
 
     await page.getByRole("button", { name: /TAS-105/ }).click();
     await expect(page.locator(".issue-panel")).toBeVisible();
-    await page.getByRole("button", { name: "Delete" }).click();
+    // Delete asks first since TAS-299; the answer is the strip's.
+    await page.getByRole("button", { name: "Delete issue TAS-105" }).click();
+    await page.getByRole("button", { name: "Delete issue", exact: true }).click();
 
     // The mirror image, and the worse of the two: against the bug this read
     // "1 of 1" over an empty board — the deleted issue survived as a search hit
-    // in the group below, linking to a panel that no longer opens.
+    // in the group below, linking to a panel that no longer opens. Exact, so
+    // the board's own "TAS-105 deleted." for a screen reader is not counted.
     await expect(counter).toHaveText("0 of 0");
-    await expect(page.getByText("TAS-105")).toHaveCount(0);
+    await expect(page.getByText("TAS-105", { exact: true })).toHaveCount(0);
     await expect(page.getByText(/Nothing else in this project matches/)).toBeVisible();
   });
 });

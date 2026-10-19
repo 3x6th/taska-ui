@@ -834,7 +834,7 @@ time.
   does work, so this is a wrong instruction rather than a dead end — but it is
   worse than silence. Either register a `KeyboardSensor` or supply
   `screenReaderInstructions` that describe the transition buttons instead.
-- **A `VIEWER`'s summary and description are `disabled`, not `readOnly`**
+- ~~**A `VIEWER`'s summary and description are `disabled`, not `readOnly`**~~ Closed by TAS-299: `readOnly`, 17.88 / 15.73.
   (`art-director`, re-measured 2026-10-19 in the TAS-236 re-verdict). §5.7 now
   records `disabled` as what ships, so the doc and code agree; the defect is the
   choice itself. `textarea:disabled { opacity: .58 }` puts the summary at
@@ -1562,8 +1562,8 @@ the next session in this image exactly as it bit this one.
   state where the buttons matter most. The fix is `overflow: auto` on the layer
   plus `align-items: safe center` reasoning from §5.1's login card, and it is a
   change to the shared component. (`art-director`)
-- **There is no global `.secondary-button:focus-visible`, so most of them have
-  no focus style at all.** The only two rules are scoped to `.issue-link-form`
+- ~~**There is no global `.secondary-button:focus-visible`, so most of them have
+  no focus style at all.**~~ Closed by TAS-299: one global `:where(...)` ring (DESIGN §7), Tab walk in `e2e/focus-ring.spec.ts`. The only two rules are scoped to `.issue-link-form`
   and `.issue-label-form`; every other secondary button in the product falls
   back to Chrome's `outline: auto` — the ring §7 already rejects by name for
   `.icon-button`, because Chrome derives it from the reader's *system* accent
@@ -3719,10 +3719,10 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
 
 ### Left by TAS-236, TAS-259, TAS-192 (VIEWER controls, comment delete, error contrast, 2026-10-19)
 
-- **The issue panel's Delete still deletes the issue on one click**
+- ~~**The issue panel's Delete still deletes the issue on one click**~~ Closed by TAS-299: the §4.22 strip (owner: «полоса везде»).
   (`frontend-builder`). The same hazard TAS-259 fixed for comments, worse in
   scope; a candidate story: the §4.22 strip on the panel's Delete.
-- **`.filter-error` is still `--danger` text, 3.68:1 light** (4.99 dark): the
+- ~~**`.filter-error` is still `--danger` text, 3.68:1 light**~~ Closed by TAS-299: `--fg-2` 11.5/400 (7.26 / 6.75). (4.99 dark): the
   filter bar's "Labels could not be loaded". Not a `.form-error` site, so
   TAS-192 left it; other `--danger`-as-text selectors (`.user-status.is-blocked`,
   `.admin-key.is-failed`) are not audited either. A design call for art-director.
@@ -3763,13 +3763,13 @@ entry), kept here so they are not lost (`api-contract-guard` F6):
   client words it neutrally meanwhile (`api-contract-guard` F2).
 
 Frontend notes:
-- **The sign-in tab's submit is `disabled`, not `aria-disabled`, and its
-  password field has no show-password toggle** (`art-director` N4, pre-build
+- ~~**The sign-in tab's submit is `disabled`, not `aria-disabled`, and its
+  password field has no show-password toggle**~~ Closed by TAS-299. (`art-director` N4, pre-build
   note) — focus drops to `<body>` while signing in. Outside TAS-208; take with
   the next sign-in change.
 - **The mock draws one person in two avatar colours** in the members dialog
   (search row vs member row) (`art-director` N2) — mock seed only.
-- **A blank New password reaches the wire, and the mock answers it differently**
+- ~~**A blank New password reaches the wire, and the mock answers it differently**~~ Closed by TAS-299: the mock answers with the transport's words; `isPasswordRefusal` matches `body.newPassword`.
   (`api-contract-guard` re-verdict N1). The stand's gRPC transport refuses it
   as "body.newPassword must not be blank" (no `aria-invalid`, since the marker
   keys on "Password"); the mock says the service's "Password is required" and
@@ -3777,3 +3777,44 @@ Frontend notes:
   password, `isPasswordRefusal` also matches `body.newPassword`, and the
   LoginScreen comment's count ("the policy's four … the token's two") is
   corrected — or the form refuses a blank password before sending.
+- ~~**System focus rings on modal footers and the auth card**~~ Closed by TAS-299 (global ring). (`art-director`
+  TAS-297 re-verdict R2-N1): Tab onto Cancel / Send invitation / Send new link,
+  the Block confirmation, the Sign in / Accept invite tabs and both auth
+  submits draws the browser's `outline: auto` (system blue) instead of `2px
+  solid var(--accent)`. Same gap as the "no global `.secondary-button:focus-visible`"
+  line above; one rule fixes every modal footer: `.modal-actions
+  .primary-button:focus-visible, .modal-actions .secondary-button:focus-visible
+  { outline: 2px solid var(--accent); outline-offset: 2px; }`, plus the same for
+  `.auth-submit` and the auth card's segmented tabs.
+- ~~**The modal backdrop is a Tab stop with a system ring around the viewport**~~ Closed by TAS-299: backdrops `tabIndex={-1}`, focus trap in `Modal.tsx`.
+  (R2-N2): Shift+Tab from a dialog's Close lands on `button.modal-backdrop`
+  ("Close modal", `Modal.tsx`), drawn as a 1px system-blue frame, then focus
+  leaves the dialog. `tabIndex={-1}` on it; Close and Esc stay the keyboard
+  routes. Next to the missing focus trap in §7.
+- ~~**Resend 409 wording and the action left after it**~~ Closed by TAS-299: new sentence, «Send new link» steady `aria-disabled`. (R2-N3, taste): "{name} can
+  no longer be invited — the account is no longer waiting for activation." says
+  "no longer" twice and answers "invite" in a resend dialog; proposed "{name}'s
+  account is no longer waiting for activation, so there is nothing to resend."
+  (mirror in §5.8), and "Send new link" can only 409 again after that —
+  `aria-disabled` it or leave only Cancel.
+- ~~**Pressing the people-search box's own sentence moves focus to the box**~~ Closed by TAS-299: mousedown guard.
+  (R2-N4, optional): `onMouseDown` on the box with `preventDefault()` unless the
+  target is inside an `<a>` keeps focus in the field.
+
+### Left by TAS-299 (one focus ring, issue delete asks first, 2026-10-20)
+
+- **The mock's `deleteIssue` checks no role** (`frontend-builder`), while
+  issue-service checks `delete-issue-roles` (ADMIN, MEMBER) — after deleting,
+  which is TAS-300. Older than TAS-299; the panel's refusal path is unit-tested
+  only, because the board never offers Delete to a reader the mock would refuse.
+- **The panel's head Delete ignores presses in flight but is not marked
+  `aria-disabled`** (only the strip's two buttons are). Low.
+- **The planning hints appear when an ADMIN's role lands after the issue**, so
+  the estimate row grows by the hint line once. Low; same family as New while
+  the role is read (§5.7).
+- **Steady `aria-disabled` at `.58` dims its own focus ring below 3:1**
+  (`art-director` TAS-299 N2): "Send new link" after a 409 keeps focus, and
+  element `opacity` dims the §7 ring with it. Proposed §4.1 amendment: the steady
+  recipe dims fill, border and label with `color-mix(in oklab, <token> 58%,
+  var(--surface))` instead of `opacity`, so the ring stays at full `--accent`;
+  apply to all four steady `aria-disabled` controls at once.

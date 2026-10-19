@@ -120,6 +120,15 @@ export function AdminUsersSection() {
   // (§7). `isConnected` because a row can be gone by then — a refetch that
   // dropped it, or a page change underneath.
   const trigger = useRef<HTMLButtonElement | null>(null);
+  /**
+   * The row whose Resend answered 409 (§5.8, TAS-299). The list is read again
+   * and the row loses "Resend invite", so closing the dialog cannot give focus
+   * back to the button that opened it: it goes to what the row still offers —
+   * Block, Unblock or Reset lockout — and to the section's heading when the
+   * row offers nothing or is gone.
+   */
+  const staleRow = useRef<HTMLTableRowElement | null>(null);
+  const planeRef = useRef<HTMLDivElement>(null);
 
   /**
    * Focus back on the trigger — and after a write, *drawn*.
@@ -159,10 +168,38 @@ export function AdminUsersSection() {
     return () => window.clearTimeout(timer);
   }, [flashed]);
 
+  /**
+   * After a Resend that answered 409: the row's remaining action — any of its
+   * buttons but the Resend that opened the dialog, which the re-read is taking
+   * away or already has — else the section's heading. Drawn, for the reason
+   * `focusTrigger` gives: the reader did not choose this element.
+   */
+  const focusAfterStaleResend = (row: HTMLTableRowElement) => {
+    const action = row.isConnected
+      ? [...row.querySelectorAll<HTMLButtonElement>(".admin-row-action")].find(
+          (button) => button !== trigger.current && !button.disabled,
+        )
+      : undefined;
+    const target =
+      action ?? planeRef.current?.closest(".admin-section")?.querySelector<HTMLElement>(".admin-section-title") ?? null;
+    if (!target) return;
+    try {
+      target.focus({ focusVisible: true });
+    } catch {
+      target.focus();
+    }
+  };
+
   const closeDialog = () => {
     setPending(null);
     setInviting(false);
     setResending(null);
+    const row = staleRow.current;
+    if (row) {
+      staleRow.current = null;
+      focusAfterStaleResend(row);
+      return;
+    }
     focusTrigger(false);
   };
 
@@ -220,7 +257,7 @@ export function AdminUsersSection() {
     override && override.userId === user.id ? { ...user, status: override.status } : user;
 
   return (
-    <div aria-busy={rowsQuery.isFetching} className="admin-plane admin-users-plane">
+    <div aria-busy={rowsQuery.isFetching} className="admin-plane admin-users-plane" ref={planeRef}>
       <div className="admin-plane-head">
         {/* The table these accounts are read from, said once. The section is
             named "Users" in the heading above; this says where that comes
@@ -416,7 +453,10 @@ export function AdminUsersSection() {
         <AdminResendInviteModal
           onClose={closeDialog}
           onDone={(result) => afterInvitation(resending.id, resentStatusText(result, personLabel(resending)))}
-          onStale={() => void queryClient.invalidateQueries({ queryKey: ["admin", "users"] })}
+          onStale={() => {
+            staleRow.current = trigger.current?.closest("tr") ?? null;
+            void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+          }}
           user={resending}
         />
       ) : null}

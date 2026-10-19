@@ -672,8 +672,11 @@ export interface TaskaApi {
    * opens no session in any implementation, and nothing reads `/users/me` after
    * it — there is nobody signed in to read.
    *
-   * What the server checks, in order (`AuthServiceImpl.setPasswordByToken`,
-   * develop `e8a8d316b326`): a blank token, 400 "Token required"; the password
+   * What the server checks, in order. auth-service's gRPC transport first: a
+   * blank token, 400 "body.token must not be blank", then a blank password,
+   * 400 "body.newPassword must not be blank" (`AuthGrpcService`,
+   * `GrpcRequestValidators`). Then `AuthServiceImpl.setPasswordByToken`
+   * (develop `e8a8d316b326`): the password
    * policy, 400 in the validator's own sentences (minimum 8 code points and at
    * most 128, at most 72 UTF-8 bytes, an upper-case letter, a digit and a
    * symbol — the defaults, each configurable on the stand); a token over 256
