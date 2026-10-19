@@ -4599,6 +4599,9 @@ p.user-profile-photo-note:not(.is-error) {
    place a card can be dropped. */
 .board-column.is-plain {
   border: 1px solid var(--border);
+  /* A column's padding less the hairline, so the head and the cards line up
+     with the columns beside it (cards 290 wide), as art-director measured. */
+  padding: 10px 8px 3px;
   background: transparent;
 }
 
@@ -4611,6 +4614,7 @@ p.user-profile-photo-note:not(.is-error) {
 .issue-card-when {
   min-width: 0;
   overflow: hidden;
+  color: var(--fg-3);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4749,6 +4753,12 @@ p.user-profile-photo-note:not(.is-error) {
   flex: none;
 }
 
+/* The chip's slot with nothing in it, where a row could not be drawn: the key
+   keeps its column without a grey square claiming a type (art-director N2). */
+.type-chip.is-placeholder {
+  visibility: hidden;
+}
+
 /* The type's name beside its chip, and the key before it. A name this build
    does not know is the code as the server sent it, and may be long: it gives
    way with an ellipsis and its full text in `title`, and the key never does
@@ -4762,6 +4772,7 @@ p.user-profile-photo-note:not(.is-error) {
 .issue-type-label {
   min-width: 0;
   overflow: hidden;
+  color: var(--fg-3);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

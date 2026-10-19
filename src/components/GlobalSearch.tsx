@@ -382,7 +382,8 @@ function GlobalSearchOption({
       <span className="global-search-key">{hit.issueKey}</span>
       <span className="global-search-summary">{hit.summary}</span>
       <span className="visually-hidden">
-        {issueTypeLabel(hit.issueType, meta?.issueTypes)}, {priorityInSentence(hit.priority, meta?.priorities)} priority
+        {issueTypeLabel(hit.issueType, meta?.issueTypes)},{" "}
+        {hit.priority ? `${priorityInSentence(hit.priority, meta?.priorities)} priority` : "no priority"}
       </span>
       {status ? <span className="global-search-note">{status}</span> : null}
       {unlinkableNote ? <span className="global-search-note">{unlinkableNote}</span> : null}
@@ -419,6 +420,8 @@ function GlobalSearchOptionFailure({
       onMouseEnter={onHover}
       role="option"
     >
+      {/* The chip's slot, empty, so the key stays in line with the rows around it. */}
+      <span aria-hidden="true" className="type-chip is-placeholder" />
       {typeof issueKey === "string" && issueKey ? <span className="global-search-key">{issueKey}</span> : null}
       <span className="global-search-summary is-failed">This result could not be shown.</span>
     </li>

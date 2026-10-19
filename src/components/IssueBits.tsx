@@ -35,8 +35,10 @@ export function PriorityBars({ priority, nameClassName = "priority-name" }: { pr
   const served = useMeta()?.priorities;
   const visual = priorityVisual(priority);
   const label = priorityLabel(priority, served);
+  // "URGENT priority", but "No priority" rather than "No priority priority".
+  const title = typeof priority === "string" && priority.trim() ? `${label} priority` : label;
   const bars = (
-    <span className="priority-bars" title={`${label} priority`}>
+    <span className="priority-bars" title={title}>
       {[5, 8, 11].map((height, index) => (
         <span
           key={height}

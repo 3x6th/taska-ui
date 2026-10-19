@@ -339,11 +339,12 @@ describe("MockTaskaApi", () => {
       ).resolves.toMatchObject({ priority: "URGENT" });
       await expect(
         api.createIssue(project.id, { summary: "Hot fix", description: "", priority: "BLOCKER", issueType: "TASK" }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Unknown issue priority: BLOCKER" });
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid request parameters" });
 
       const [issue] = (await api.listIssues(project.id)).items;
       await expect(api.updateIssue(project.id, issue.id, { priority: "BLOCKER" }, issue.version)).rejects.toMatchObject({
         code: "INVALID_ARGUMENT",
+        message: "Invalid request parameters",
       });
       await expect(api.updateIssue(project.id, issue.id, { priority: "URGENT" }, issue.version)).resolves.toMatchObject({
         priority: "URGENT",
@@ -354,7 +355,7 @@ describe("MockTaskaApi", () => {
       const [first, second] = (await api.listIssues(project.id)).items;
       await expect(
         api.createIssueLink(project.id, first.id, { targetIssueId: second.id, linkType: "SUPERSEDES" }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Unknown issue link type: SUPERSEDES" });
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: "Invalid request parameters" });
     });
 
     it("refuses a non-member of any global role with the project-service sentence, and a missing project with 404", async () => {

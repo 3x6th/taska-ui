@@ -253,14 +253,18 @@ const META: EnumDictionaries = {
 };
 
 /**
- * A request value the dictionary does not list is refused the way the gateway's
- * mapper refuses one it has no case for (`IssueMapper.toGrpcIssuePriority`:
- * 400 "Unknown issue priority: …"). The list here is the served one, so this
- * store accepts exactly what it tells the client is selectable.
+ * A request value the dictionary does not list is refused the way develop
+ * refuses it on all three paths this store checks — create, edit and link: the
+ * request DTOs bind priority and link type to their enums, so an unlisted value
+ * fails decoding before any mapper runs, and `GatewayValidationExceptionHandler`
+ * answers 400 `INVALID_ARGUMENT` "Invalid request parameters" for that
+ * `ServerWebInputException` (api-contract-guard, TAS-173). The list here is
+ * the served one, so this store accepts exactly what it tells the client is
+ * selectable.
  */
-function requireListed(dictionary: readonly DictionaryEntry[] | null, value: string, what: string): void {
+function requireListed(dictionary: readonly DictionaryEntry[] | null, value: string): void {
   if (!dictionary?.some((entry) => entry.code === value)) {
-    throw new MockApiError("INVALID_ARGUMENT", `Unknown ${what}: ${value}`);
+    throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
   }
 }
 
@@ -2761,7 +2765,7 @@ export class MockTaskaStore {
         `Issue type ${input.issueType} is not allowed in project ${project.projectKey}`,
       );
     }
-    requireListed(META.priorities, input.priority, "issue priority");
+    requireListed(META.priorities, input.priority);
     requirePlanningFields(input);
     const planning = resolvePlanningFields(input, emptyPlanningFields());
     const issueNumber =
@@ -2832,7 +2836,7 @@ export class MockTaskaStore {
     requirePlanningFields(input);
     const summaryRefusal = blankSummaryRefusal(input);
     if (summaryRefusal) throw new MockApiError(summaryRefusal.code, summaryRefusal.message);
-    if (input.priority !== undefined) requireListed(META.priorities, input.priority, "issue priority");
+    if (input.priority !== undefined) requireListed(META.priorities, input.priority);
 
     const issue = this.findIssue(projectId, issueId);
     if (expectedVersion !== issue.version) {
@@ -2976,7 +2980,7 @@ export class MockTaskaStore {
   }
 
   createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): IssueLink {
-    requireListed(META.linkTypes, input.linkType, "issue link type");
+    requireListed(META.linkTypes, input.linkType);
     const issue = this.findIssue(projectId, issueId);
     if (input.targetIssueId === issue.id) {
       throw new MockApiError("INVALID_ARGUMENT", "An issue cannot be linked to itself");

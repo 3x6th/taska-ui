@@ -100,7 +100,15 @@ describe("labels and visuals for codes off the wire", () => {
     expect(issueTypeLabel("TASK", served)).toBe("Task");
     expect(issueTypeLabel("EPIC", served)).toBe("Epic");
     expect(issueTypeLabel("SPIKE", served)).toBe("SPIKE");
-    expect(issueTypeLabel(null)).toBe("—");
+  });
+
+  // DESIGN.md §6: no value reads as "No …", the way a missing status reads
+  // "No status" — in running text lowercased, as the build's own words are.
+  it.each([[null], [undefined], [""], ["  "]])("names a type and a priority of %j as none", (code) => {
+    expect(issueTypeLabel(code)).toBe("No type");
+    expect(issueTypeInSentence(code)).toBe("no type");
+    expect(priorityLabel(code)).toBe("No priority");
+    expect(priorityInSentence(code)).toBe("no priority");
   });
 
   it("lowercases only the build's own words in a sentence", () => {

@@ -2359,6 +2359,41 @@ describe("values this build does not know", () => {
     await screen.findByRole("region", { name: "Other statuses" });
     expect(metaReads()).toBe(1);
   });
+
+  // `retryOnMount: false` in `useMeta` is what this pins (release-reviewer F2
+  // on 64742b3): react-query re-asks a failed query for every observer that
+  // mounts on it, so without the flag each card the filter brings back, and
+  // the panel's chips and pickers, would send `GET /meta` again.
+  it("does not ask again for dictionaries that failed, as cards and the panel mount", async () => {
+    seedMeta(new Error("Internal error"));
+    renderBoard();
+    await screen.findByRole("button", { name: /TAS-150/ });
+    await waitFor(() => expect(metaReads()).toBe(1));
+
+    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
+    fireEvent.click(within(filter).getByRole("button", { name: "Bug" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /TAS-150/ })).not.toBeInTheDocument());
+    fireEvent.click(within(filter).getByRole("button", { name: "All" }));
+    fireEvent.click(await screen.findByRole("button", { name: /TAS-150/ }));
+
+    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    expect(await within(panel).findByRole("button", { name: "URGENT" })).toHaveClass("is-active");
+    expect(metaReads()).toBe(1);
+  });
+
+  // The group waits for the columns (release-reviewer F2 on 64742b3): while the
+  // context read is out the columns are skeletons, and an issue that only looks
+  // orphaned against the fallback three must not be drawn in a group the
+  // project's own workflow may yet give a column to.
+  it("draws no group while the context read is still out, though the issues are in", async () => {
+    holdProject(true);
+    renderBoard();
+
+    // X of Y is drawn from the issue read alone, so this is the issues landing.
+    expect(await screen.findByText("3 of 3")).toBeVisible();
+    expect(document.querySelectorAll(".skeleton-card").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("region", { name: "Other statuses" })).not.toBeInTheDocument();
+  });
 });
 
 /**

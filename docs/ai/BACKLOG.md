@@ -2050,8 +2050,9 @@ search endpoint is claimed; the other is not:
   to TAS-206 as a comment. **Correction, 2026-10-19:** "`$ref`'d by nothing" is
   no longer true — #196 (TAS-217) `$ref`s `NotificationTypeDto` from
   `NotificationTypeMetaPairDto`, so `GET /meta` now publishes the eleven while
-  the wire sends twenty-two. Open PR #200 (TAS-206, `7cdcf28`) fixes both
-  halves; `API-DIVERGENCE.md`, "`GET /meta` lists eleven notification types".
+  the wire sends twenty-two. PR #200 (TAS-206, `7cdcf28`) fixed both halves —
+  merged and deployed with develop `398285c` on 2026-10-19, `/meta` probed
+  with twenty-three the same day; `API-DIVERGENCE.md`, "`GET /meta` lists eleven notification types".
 
 The 2026-09-05 refresh (backend `8b8b3c5aca21`) brought seven endpoints and one
 schema change. None was on the four open PRs this refresh was done for — they
@@ -3637,3 +3638,27 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   at 390** (`art-director`, 2026-10-19). On touch the only way out is the 31px
   scrim strip. Older than TAS-173; the panel's render-failure fallback added
   there does carry Close.
+- **A failed `GET /meta` surfaces nowhere, its request id included**
+  (`api-contract-guard`, TAS-173 verdict F7). By design (DESIGN.md §5.6: the
+  fallbacks are the honest state), but a support question "why is Epic not
+  offered" has no id to quote. Worth a line in a diagnostics panel if one is
+  ever built; not a story.
+- **Admin status sentences and the status-change type**
+  (`api-contract-guard`, TAS-173 verdict F8). `UserStatusChange` is the last
+  closed union read off the wire (admin block, unblock, reset); runtime-safe,
+  because the readers print through `userStatusLabel`. Open it when the admin
+  write routes are next touched.
+- **The same status reads differently on the board and in global search**
+  (`art-director`, TAS-173 verdict N4). Under DESIGN.md §6 a status takes its
+  workflow name, and a cross-project search hit carries no workflow, so WEB-15
+  reads "In Review" on the board and `IN_REVIEW` in the search dropdown; a
+  project that renames `TODO` to "Backlog" would show "Backlog" and "To Do".
+  Candidate fixes: the hit carries the status name (gateway, search DTO), or
+  search resolves it from a cached project context when one is present
+  (client, no request). Recorded in DESIGN.md §4.20.
+- **The board's one read cannot express "Other statuses"**
+  (`api-contract-guard`, TAS-173 verdict, ask A2). `BoardServiceImpl` answers
+  500 for any issue whose status the workflow does not list (develop
+  `398285c`). When TAS-213's board replaces client composition it needs an
+  explicit trailing bucket (e.g. `unplacedIssues: BoardIssueDto[]`) to keep the
+  X-of-Y invariant; added to TAS-213 as a comment.

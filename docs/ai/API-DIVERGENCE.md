@@ -191,8 +191,9 @@ The entry as it stood:
   the same `WorkflowStatusDto`.
 - **Contract:** `statusKey` and `category` are deliberately unconstrained
   strings — the description says the enum is omitted "для расширяемости".
-  Open backend PR #200 (TAS-206, head `7cdcf28`) keeps that and says so in
-  words: the key is open, not bounded by an enum.
+  Backend PR #200 (TAS-206, `7cdcf28`, merged and deployed with develop
+  `398285c` on 2026-10-19) keeps that and says so in words: the key is open,
+  not bounded by an enum.
 - **Was:** both were modelled as the closed `IssueStatus` union, and
   `statusLabels` / `statusColors` (`src/lib/format.ts`) were indexed by the
   wire value. `RestTaskaApi.getProjectContext` passed `statuses` through as
@@ -241,36 +242,60 @@ The entry as it stood:
   the code verbatim. Codes this build knows keep its own English labels
   whatever `/meta` says (owner, 2026-10-19). Today every name fails the check,
   so an unknown code reads as itself (`EPIC`).
-- **Switched off by:** deleting `isEnglishName` and its call, so any
-  non-blank `name` is used. One line and its tests.
+- **Switched off by:** removing the `isEnglishName` check in `servedName`
+  (`src/lib/enumLabel.ts`), so any non-blank `/meta` name is used. The other
+  caller, the workflow-name check in `statusLabel` (`src/lib/format.ts`),
+  stays: workflow names are project configuration under DESIGN.md §6's
+  English-UI rule, and TAS-264 does not touch them.
 - **Removal:** [TAS-264](https://jira.ozero.dev/browse/TAS-264) (`/meta` names
-  in English, filed 2026-10-19). Once deployed and probed, a new backend value
-  shows under its English name with no frontend release, and the check comes
-  out.
+  in English, filed 2026-10-19; backend PR #201, head `9dc0a4a`, open). Once
+  deployed and probed, a new backend value shows under its English name with
+  no frontend release, and the check comes out.
 
-### `GET /meta` lists eleven notification types; `GET /notifications` sends twenty-two
+### `GET /meta` lists placeholder values as ordinary rows, and the contract says nothing about which values may be chosen
+
+- **Endpoint:** `GET /api/v1/meta` (`userStatuses`, `notificationTypes`), and
+  the `status` field of `GET /api/v1/users/me`.
+- **Contract:** at develop `398285c` `UserStatusDto` gains `UNSPECIFIED` and
+  `NotificationTypeDto` carries `UNKNOWN`; `*MetaPairDto` has only `code` and
+  `name`, so nothing says a value is a placeholder rather than a choice.
+- **Runtime:** probed 2026-10-19 after #200 deployed (request
+  `f2739711-8300-4418-938c-146716a67cf8`): `userStatuses` lists five rows
+  including `UNSPECIFIED` «Не указан», `notificationTypes` twenty-three
+  including `UNKNOWN` «Неизвестный тип», as ordinary rows.
+- **Compensation:** two, both TAS-173.
+  - `selectableCodes` (`src/lib/enumLabel.ts`) never offers `UNSPECIFIED`,
+    `UNKNOWN` or `UNRECOGNIZED` in a picker fed by `/meta`
+    (`PLACEHOLDER_CODES`). Inert today: the dictionaries that feed pickers,
+    priorities and link types, carry no placeholder.
+  - `toUserStatus` (`src/api/rest/RestTaskaApi.ts`) maps `UNSPECIFIED` to
+    `null`, exactly as `toGlobalRole` does for its zero value, so the profile
+    menu reads "—" rather than the code. Same reasoning as the `globalRole`
+    entry: a proto zero value means "not stated".
+- **Removal:** [TAS-264](https://jira.ozero.dev/browse/TAS-264) / backend PR
+  #201 (head `9dc0a4a`, open), which adds `selectable` to every pair. Then
+  pickers filter on `selectable === false` instead of the hard-coded list,
+  and the `UNSPECIFIED` special case goes, so the served English name prints.
+
+### Closed by measurement: `GET /meta` lists eleven notification types; `GET /notifications` sends twenty-two
 
 - **Endpoint:** `GET /api/v1/meta`, `notificationTypes`.
-- **Contract:** the `/meta` description says the codes match what other
-  routes accept and return. `NotificationTypeMetaPairDto.code` `$ref`s
-  `NotificationTypeDto` (eleven members), while
-  `NotificationResponseDto.notificationType` is a bare `string`.
-- **Runtime:** eleven codes, probed 2026-10-19 (same request as above).
-  `MetaServiceImpl` reads `NotificationTypeDto.values()`; the gateway's
-  `NotificationMapper.toRestNotificationType` maps thirteen kinds explicitly
-  and sends the other nine (`ISSUE_LINK_*`, `USER_(UN)BLOCKED`,
-  `ISSUE_COMMENT_*`, `ISSUE_ATTACHMENT_*`) through `default`, which strips the
-  prefix. notification-service's own enum has twenty-two. Read at develop
-  `7d4f739`. This breaks TAS-217's own rule.
+- **Was (develop `7d4f739`, probed 2026-10-19, request
+  `66c3e9d7-1a3f-422e-bece-b196cd61b60d`):** eleven codes. `MetaServiceImpl`
+  read `NotificationTypeDto.values()` (eleven members), while the gateway's
+  `NotificationMapper.toRestNotificationType` mapped thirteen kinds explicitly
+  and sent the other nine through `default`; notification-service's own enum
+  has twenty-two. That broke TAS-217's own rule.
 - **Compensation:** none. The client reads `notificationTypes` into the
   dictionaries and nothing uses it; `Notification.notificationType` stays an
   open string (TAS-243).
-- **Removal:** backend PR #200 (TAS-206, head `7cdcf28`, open): it widens
-  `NotificationTypeDto` to twenty-two plus `UNKNOWN`, `$ref`s it from
-  `NotificationResponseDto`, replaces `default` with explicit cases, and names
-  every one in `MetaServiceImpl`. Closes once #200 is merged, deployed, and
-  `/meta` is probed with twenty-three entries. Recorded on TAS-206 rather than
-  filed.
+- **Removed by:** backend PR #200 (TAS-206, `7cdcf28`, merged as `9f09f31`
+  and deployed with develop `398285c` on 2026-10-19): `NotificationTypeDto` is
+  twenty-two plus `UNKNOWN`, `$ref`'d from `NotificationResponseDto`, the
+  mapper names every case, and `MetaServiceImpl` names every one. **Probed**
+  the same day: twenty-three entries (request
+  `f2739711-8300-4418-938c-146716a67cf8`). `UNKNOWN` arriving as an ordinary
+  row is the entry above.
 
 ### `GET /meta` names link types in one direction only
 
@@ -2974,10 +2999,12 @@ The entry as it stood:
   `toRestIssueEventType` already does for history events, and omitting the
   field for `UNSPECIFIED` and an unrecognised number; then the contract
   declaring the enum (TAS-206 / TAS-217). Not filed; a candidate ask in
-  `BACKLOG.md`, "Left by TAS-246". Open backend PR #200 (TAS-206, head
-  `7cdcf28`) declares `IssueLinkViewTypeDto` **with** the
-  `ISSUE_LINK_VIEW_TYPE_` prefix plus `UNRECOGNIZED`, so once it merges the
-  strip is the contract's own reading rather than a compensation.
+  `BACKLOG.md`, "Left by TAS-246". Backend PR #200 (TAS-206, `7cdcf28`,
+  merged and deployed with develop `398285c` on 2026-10-19) declares
+  `IssueLinkViewTypeDto` **with** the `ISSUE_LINK_VIEW_TYPE_` prefix plus
+  `UNRECOGNIZED`, so the strip is now the contract's own reading rather than a
+  compensation; the vendored snapshot catches up in TAS-265. The prefix itself
+  is a review remark on TAS-206 (R1), not filed.
 
 ---
 
@@ -4974,8 +5001,13 @@ as a column position. The runtime is narrower again than that list reads:
 `BoardServiceImpl` throws `500 "Inconsistent state: issues found with statuses
 not present in workflow"` when any issue carries a `statusKey` the workflow does
 not list — one bad row blanks the whole board. Composing on the client, an
-unknown status simply places no card. That is strictly better, and the merged
-code is unchanged on this point.
+unknown status lands in the board's "Other statuses" group (TAS-173,
+DESIGN.md §4.9) and is counted where it is drawn. That is strictly better, and
+the merged code is unchanged on this point (still so at develop `398285c`).
+The bucket a one-read board would need to say the same — e.g.
+`unplacedIssues` on `BoardResponseDto` — belongs to
+[TAS-213](https://jira.ozero.dev/browse/TAS-213), which already lists "no 500
+on a status outside the workflow".
 
 There is one exception, and it is worth stating because the mock reproduces it:
 a stray issue whose status key is the literal `DONE` never reaches that check

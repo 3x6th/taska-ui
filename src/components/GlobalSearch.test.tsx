@@ -363,6 +363,9 @@ describe("the top bar's global search", () => {
     const options = within(list).getAllByRole("option");
     expect(options[0]).toHaveTextContent("Fine");
     expect(options[1]).toHaveTextContent("TAS-102This result could not be shown.");
+    // An empty, hidden chip slot keeps the key in its column; no type is claimed.
+    expect(options[1].querySelector(".type-chip")).toHaveClass("is-placeholder");
+    expect(options[1].querySelector(".type-chip")).toHaveAttribute("aria-hidden", "true");
     fireEvent.click(options[1]);
     expect(screen.getByTestId("address")).toHaveTextContent("/projects/project-tas/issues/tas-102");
     consoleError.mockRestore();

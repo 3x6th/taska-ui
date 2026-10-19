@@ -15,14 +15,21 @@ export type KnownLabels = Readonly<Partial<Record<string, string>>>;
  * Russian word in the middle of an English screen reads as a fault rather than
  * as a label, so such a name is passed over and the code is printed as it came.
  *
- * Removal: backend TAS-264 (`/meta` names in English). Once it is deployed and
- * probed on the stand, the Cyrillic check goes and any non-blank name is used.
+ * Removal, of one use only: backend TAS-264 (`/meta` names in English). Once it
+ * is deployed and probed on the stand, the check in `servedName` below goes and
+ * any non-blank `/meta` name is used. The other use stays: `statusLabel`
+ * (src/lib/format.ts) reads a *workflow's* status name through this, and that
+ * name is project configuration an admin may write in any language — the
+ * English-UI rule of DESIGN.md §6, not a `/meta` gap TAS-264 closes.
  */
 export function isEnglishName(name: string): boolean {
   return name.trim() !== "" && !/\p{Script=Cyrillic}/u.test(name);
 }
 
-/** The served name for exactly this code, when there is one this UI may print. */
+/**
+ * The served name for exactly this code, when there is one this UI may print.
+ * The `isEnglishName` check here is the one TAS-264 removes.
+ */
 function servedName(code: string, served: readonly DictionaryEntry[] | null | undefined): string | null {
   const entry = served?.find((item) => item.code === code);
   return entry && isEnglishName(entry.name) ? entry.name.trim() : null;

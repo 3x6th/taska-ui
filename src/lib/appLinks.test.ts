@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { absoluteAppUrl, issueKeyRoute, issueRoute } from "./appLinks";
+import { describe, expect, it, vi } from "vitest";
+import { absoluteAppUrl, issueKeyRoute, issueRoute, reloadAt } from "./appLinks";
 
 /**
  * TAS-248: a copied link has to open in the app it was copied from, under the
@@ -56,5 +56,27 @@ describe("issueKeyRoute", () => {
   it("escapes a key the way the global search already links it", () => {
     expect(issueKeyRoute("TAS-101")).toBe("/browse/TAS-101");
     expect(issueKeyRoute("A B/1")).toBe("/browse/A%20B%2F1");
+  });
+});
+
+/**
+ * TAS-173: the app error screen's way out has to be a full load in both
+ * schemes. Under hash routing a link to `…/#/projects` is a hash change inside
+ * the failed tree, so the address is pushed first and the document reloaded —
+ * in that order, or the reload would bring back the page that failed.
+ */
+describe("reloadAt", () => {
+  it("puts a hash-routed address in the bar, then reloads the document", () => {
+    const calls: string[] = [];
+    const browser = {
+      history: { pushState: vi.fn((_data: unknown, _unused: string, url?: string | URL | null) => calls.push(`push ${String(url)}`)) },
+      location: { reload: vi.fn(() => calls.push("reload")) },
+    };
+    const url = absoluteAppUrl("/projects", { origin: "https://3x6th.github.io", base: "/taska-ui/", mode: "hash" });
+
+    reloadAt(url, browser);
+
+    expect(calls).toEqual(["push https://3x6th.github.io/taska-ui/#/projects", "reload"]);
+    expect(browser.history.pushState).toHaveBeenCalledWith(null, "", "https://3x6th.github.io/taska-ui/#/projects");
   });
 });

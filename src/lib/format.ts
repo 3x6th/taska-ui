@@ -65,13 +65,21 @@ const priorityLabels = labelsOf(priorityMeta);
  */
 export const issuePriorities: readonly IssuePriority[] = ["LOW", "MEDIUM", "HIGH"];
 
-/** "Task", a served English name, or the code as received (`enumLabel`). */
+/**
+ * "Task", a served English name, or the code as received (`enumLabel`). An issue
+ * with no type at all reads "No type", as one with no status reads "No status"
+ * (DESIGN.md §6, TAS-173).
+ */
 export const issueTypeLabel = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
-  enumLabel(code, issueTypeLabels, served);
+  enumLabel(code, issueTypeLabels, served, "No type");
 
-/** `issueTypeLabel` for running text: "no workflow for bug issues", "no workflow for EPIC issues". */
+/**
+ * `issueTypeLabel` for running text: "no workflow for bug issues", "no workflow
+ * for EPIC issues". "No type" is the build's own words, so it is lowercased here
+ * like the build's other words.
+ */
 export const issueTypeInSentence = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
-  enumLabelInSentence(code, issueTypeLabels, served);
+  enumLabelInSentence(code, issueTypeLabels, served, "no type");
 
 export const isKnownIssueType = (code: string | null | undefined): code is IssueType =>
   typeof code === "string" && Object.hasOwn(typeMeta, code);
@@ -87,13 +95,13 @@ export const issueTypeVisual = (code: string | null | undefined) =>
     ? { color: typeMeta[code].color, radius: typeMeta[code].radius, known: true }
     : { color: "var(--fg-3)", radius: "4px", known: false };
 
-/** "High", a served English name, or the code as received. */
+/** "High", a served English name, or the code as received; "No priority" for none (DESIGN.md §6). */
 export const priorityLabel = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
-  enumLabel(code, priorityLabels, served);
+  enumLabel(code, priorityLabels, served, "No priority");
 
-/** `priorityLabel` for running text: "high priority", "URGENT priority". */
+/** `priorityLabel` for running text: "high priority", "URGENT priority"; "no priority" for none. */
 export const priorityInSentence = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
-  enumLabelInSentence(code, priorityLabels, served);
+  enumLabelInSentence(code, priorityLabels, served, "no priority");
 
 export const isKnownPriority = (code: string | null | undefined): code is IssuePriority =>
   typeof code === "string" && Object.hasOwn(priorityMeta, code);
@@ -122,6 +130,8 @@ type NamedStatus = { statusKey: string; name: string };
 export const statusLabel = (key: string | null | undefined, statuses?: readonly NamedStatus[] | null) => {
   if (typeof key !== "string" || key.trim() === "") return "No status";
   const named = statuses?.find((status) => status.statusKey === key);
+  // Stays when TAS-264 lands: a workflow name is project configuration, not a
+  // `/meta` name, and the UI is English (DESIGN.md §6).
   if (named && typeof named.name === "string" && isEnglishName(named.name)) return named.name.trim();
   return enumLabel(key, statusLabels, null, "No status");
 };
@@ -148,9 +158,6 @@ export const userStatusLabel = (code: string | null | undefined, served?: readon
 /** `userStatusLabel` for running text: "is now blocked", "is now SUSPENDED". */
 export const userStatusInSentence = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
   enumLabelInSentence(code, userStatusLabels, served);
-
-export const isKnownUserStatus = (code: string | null | undefined): code is UserStatus =>
-  typeof code === "string" && Object.hasOwn(userStatusLabels, code);
 
 /**
  * The three relations a *request* may ask for, in the order the picker shows
