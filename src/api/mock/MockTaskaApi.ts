@@ -2970,10 +2970,11 @@ export class MockTaskaStore {
 
   /**
    * `PATCH /projects/{projectId}` — backend PR #155 (TAS-145). Reproduces what
-   * `ProjectServiceImpl.updateProject` does at head `c4b8c2c4dd24`, including
-   * the three answers the yml does not state: the refusal is ADMIN-only and
-   * `PERMISSION_DENIED`, a missing project is `NOT_FOUND`, and a body with
-   * nothing in it is a **success** that changes nothing.
+   * `ProjectServiceImpl.updateProject` does at head `28f5fe1`, including the
+   * answers the yml does not state: the refusal is ADMIN-only and
+   * `PERMISSION_DENIED`, a missing project is `NOT_FOUND`, a body with nothing
+   * in it is a **success** that changes nothing, and an explicit `null` clears
+   * `description` or `color` while an absent key keeps it.
    *
    * The order of the two checks is the server's own and is load-bearing for
    * §4.18: a project this reader cannot see must answer the same way as one
@@ -3006,25 +3007,29 @@ export class MockTaskaStore {
         throw new MockApiError("INVALID_ARGUMENT", PROJECT_NAME_REFUSAL);
       }
     }
-    if (input.description !== undefined && input.description.length > PROJECT_DESCRIPTION_MAX_LENGTH) {
+    if (
+      input.description !== undefined &&
+      input.description !== null &&
+      input.description.length > PROJECT_DESCRIPTION_MAX_LENGTH
+    ) {
       throw new MockApiError("INVALID_ARGUMENT", PROJECT_DESCRIPTION_REFUSAL);
     }
-    // `""` is refused here and accepted on create, and the difference is the
-    // whole one-way-door story: the pattern rejects the empty string, so there
-    // is no value a caller can send that means "go back to no colour". An
-    // absent `color` means "keep" — `Optional<String>` on the server cannot
-    // tell it from an explicit null — so this route can set a colour and
-    // change a colour, and can never remove one (TAS-145).
-    if (input.color !== undefined && !PROJECT_COLOR_PATTERN.test(input.color)) {
+    // `""` is refused here and accepted on create: the pattern rejects the
+    // empty string, and on this route an empty colour is not a clear. The
+    // clear is an explicit `null`, which the pattern never sees (`clear_color`
+    // on the proto since PR #155's head `28f5fe1`).
+    if (input.color !== undefined && input.color !== null && !PROJECT_COLOR_PATTERN.test(input.color)) {
       throw new MockApiError("INVALID_ARGUMENT", PROJECT_COLOR_REFUSAL);
     }
 
-    // Trimmed on the way in, like `createProject` above. The blank description
-    // survives that trim as `""` and is stored: it is how a description is
-    // cleared, and it is the one empty string this route treats as a value.
+    // `null` is stored as `null`, so the answer carries `"color": null` the
+    // way the gateway's Jackson does rather than dropping the key. A string
+    // description is trimmed on the way in, like `createProject` above, and a
+    // blank one survives as `""` — still stored, a legacy blank rather than a
+    // clear.
     const changes: Partial<Project> = {};
     if (input.name !== undefined) changes.name = input.name.trim();
-    if (input.description !== undefined) changes.description = input.description.trim();
+    if (input.description !== undefined) changes.description = input.description === null ? null : input.description.trim();
     if (input.color !== undefined) changes.color = input.color;
 
     if (Object.keys(changes).length === 0) {
@@ -3036,6 +3041,77 @@ export class MockTaskaStore {
 
     Object.assign(project, changes, { updatedAt: now() });
     return this.withCurrentUserRole(project);
+  }
+
+  /**
+   * `DELETE /projects/{projectId}` — backend PR #159 (TAS-146), reproducing
+   * `ProjectServiceImpl.softDeleteProject` at head `97464fe`
+   * (`docs/contract/pending/pr-159-TAS-146.yml`):
+   *
+   * - a missing project is `NOT_FOUND` "Project not found";
+   * - a caller who is not a member is `NOT_FOUND` **"User not found"** —
+   *   mirrored from the backend head as it stands, where `GET /projects/{id}`
+   *   answers the same caller 403. Raised as a bug; when the backend changes
+   *   it, this changes with it;
+   * - a member below ADMIN is `PERMISSION_DENIED` "User must have the role
+   *   ADMIN";
+   * - otherwise `archivedAt` is set once, and a second call answers with the
+   *   original instant and writes nothing.
+   *
+   * The answer comes from the entity mapper on the server, which sets no role,
+   * so it carries `currentUserRole: null` — like `POST /projects` — rather than
+   * the reader's role. `updatedAt` is left alone: the PR's header does not say
+   * the soft delete moves it, and this store does not invent that it does.
+   */
+  archiveProject(projectId: string): Project {
+    const project = this.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new MockApiError("NOT_FOUND", "Project not found");
+    }
+    const member = this.membersByProject[projectId]?.find((item) => item.userId === this.currentUserId);
+    if (!member) {
+      throw new MockApiError("NOT_FOUND", "User not found");
+    }
+    if (member.role !== "ADMIN") {
+      throw new MockApiError("PERMISSION_DENIED", "User must have the role ADMIN");
+    }
+    if (!project.archivedAt) project.archivedAt = now();
+    return { ...project, currentUserRole: null };
+  }
+
+  /**
+   * What an archived project answers to everything issue-service owns, at
+   * backend PR #159's head `97464fe`: every `ProjectAccessibility.check` there
+   * refuses it — reads included — with `FAILED_PRECONDITION` "Project archived"
+   * (400 on the wire). Called from `findIssue` and from the project-scoped
+   * issue-service methods (issues, board, labels, scoped search), so the board,
+   * the context (which composes the labels read), comments, links, work log,
+   * watchers and attachments all refuse together. `getProject`,
+   * `listProjects`, the members read and the unscoped search do not call it,
+   * because on the server they do not refuse.
+   *
+   * This mirrors the *pending* contract, not a settled one: whether an archived
+   * project's reads should answer is the open question on TAS-146, and this
+   * method changes when it is answered. One known difference in order: the
+   * server checks the role before the archive, and the few writes here that
+   * check a role do so after `findIssue`, so a refused role on an archived
+   * project answers "Project archived" here where the gateway would answer 403.
+   */
+  private refuseArchived(projectId: string): void {
+    if (this.projects.find((item) => item.id === projectId)?.archivedAt) {
+      throw new MockApiError("FAILED_PRECONDITION", "Project archived");
+    }
+  }
+
+  /**
+   * project-service's member writes on an archived project, in its own
+   * sentence (PR #159 head `97464fe`), after the actor's role has been checked
+   * — the same order the server keeps.
+   */
+  private refuseArchivedMemberWrite(projectId: string): void {
+    if (this.projects.find((item) => item.id === projectId)?.archivedAt) {
+      throw new MockApiError("FAILED_PRECONDITION", `Project ${projectId} has been archived`);
+    }
   }
 
   /**
@@ -3124,6 +3200,7 @@ export class MockTaskaStore {
         `Actor ${this.currentUserId} is not an admin of project: ${projectId}`,
       );
     }
+    this.refuseArchivedMemberWrite(projectId);
     if (rows.some((member) => member.userId === id)) {
       throw new MockApiError("ALREADY_EXISTS", `User with id: ${id} already exists in project: ${projectId}`);
     }
@@ -3204,6 +3281,7 @@ export class MockTaskaStore {
         `User with id: ${this.currentUserId} is not an admin of project: ${projectId}`,
       );
     }
+    this.refuseArchivedMemberWrite(projectId);
     const target = rows.find((member) => member.userId === id);
     if (!target) {
       throw new MockApiError(
@@ -3529,6 +3607,7 @@ export class MockTaskaStore {
 
   listIssues(projectId: string, params: ListIssuesParams = {}): Page<Issue> {
     this.getProject(projectId);
+    this.refuseArchived(projectId);
     const page = params.page ?? 0;
     const pageSize = params.pageSize ?? 100;
     const filtered = this.issues
@@ -3563,6 +3642,7 @@ export class MockTaskaStore {
    */
   getBoard(projectId: string, params: BoardParams): Board {
     this.getProject(projectId);
+    this.refuseArchived(projectId);
     const issues = this.issues
       .filter((item) => item.projectId === projectId && item.deletedAt === null)
       .filter((item) => item.issueType === params.issueType)
@@ -3615,6 +3695,9 @@ export class MockTaskaStore {
     if (params.projectId !== undefined && !visible.has(params.projectId)) {
       throw new MockApiError("NOT_FOUND", "Project not found");
     }
+    // Scoped to an archived project, issue-service refuses; unscoped, the
+    // archived project's issues still appear (PR #159 head `97464fe`).
+    if (params.projectId !== undefined) this.refuseArchived(params.projectId);
 
     const matched = this.issues
       .filter((item) => item.deletedAt === null)
@@ -3704,11 +3787,13 @@ export class MockTaskaStore {
     if (!this.membersByProject[issue.projectId]?.some((member) => member.userId === this.currentUserId)) {
       throw new MockApiError("PERMISSION_DENIED", "Access denied");
     }
+    this.refuseArchived(issue.projectId);
     return this.issueView(issue);
   }
 
   createIssue(projectId: string, input: CreateIssueInput): Issue {
     const project = this.getProject(projectId);
+    this.refuseArchived(projectId);
     // The mock models the *intended* rule, not the server's behaviour: at
     // develop `fa90b51` (backend #169 merged) issue-service `createIssue` checks only the role
     // and saves any issueType (201, an issue with no workflow). The UI never
@@ -3981,6 +4066,7 @@ export class MockTaskaStore {
 
   listProjectLabels(projectId: string): ProjectLabel[] {
     this.getProject(projectId);
+    this.refuseArchived(projectId);
     return this.projectLabels
       .filter((label) => label.projectId === projectId && label.deletedAt === null)
       .sort(byLabelName);
@@ -3988,6 +4074,7 @@ export class MockTaskaStore {
 
   createProjectLabel(projectId: string, input: CreateProjectLabelInput): ProjectLabel {
     this.getProject(projectId);
+    this.refuseArchived(projectId);
     const name = this.validLabelName(input.name);
     const color = this.validLabelColor(input.color);
     if (this.findLabelByName(projectId, name)) {
@@ -6167,16 +6254,16 @@ export class MockTaskaStore {
     name: string,
     /**
      * Undefined for a project that has none — which is now a state anything
-     * created at runtime can be in, and one an admin can return a project to
-     * by clearing the box (TAS-148). Distinct from `""` only in the store:
-     * both draw the card's placeholder, because §5.6's "no description" has to
-     * cover the blank one too.
+     * created at runtime can be in. Clearing the box stores `null` (PR #155's
+     * head `28f5fe1`), and a legacy `""` can still be stored; all three draw
+     * the card's placeholder, because §5.6's "no description" has to cover the
+     * blank one too.
      */
     description: string | undefined,
     /**
      * Absent from `docs/contract/openapi.yml`, which is still the authority:
      * backend PR #155 (TAS-145) adds `color` to all three project DTOs and was
-     * open and undeployed on 2026-09-12. The seeded projects state one so the
+     * open and undeployed on 2026-10-20. The seeded projects state one so the
      * mock keeps showing the palette DESIGN.md §2.2 chose; OPS states none and
      * is coloured from its key, which is the path a gateway without the PR
      * takes for every project.
@@ -6324,6 +6411,7 @@ export class MockTaskaStore {
 
   private findProjectLabel(projectId: string, labelId: string): ProjectLabel {
     this.getProject(projectId);
+    this.refuseArchived(projectId);
     const label = this.projectLabels.find(
       (item) => item.projectId === projectId && item.id === labelId && item.deletedAt === null,
     );
@@ -6362,6 +6450,7 @@ export class MockTaskaStore {
   }
 
   private findIssue(projectId: string, issueId: string): Issue {
+    this.refuseArchived(projectId);
     const issue = this.issues.find((item) => item.projectId === projectId && item.id === issueId && item.deletedAt === null);
     if (!issue) {
       throw new MockApiError("NOT_FOUND", "Issue not found");
@@ -6771,6 +6860,10 @@ export class MockTaskaApi implements TaskaApi {
 
   async updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
     return wait(this.store.updateProject(projectId, input));
+  }
+
+  async archiveProject(projectId: string): Promise<Project> {
+    return wait(this.store.archiveProject(projectId));
   }
 
   async getProjectContext(projectId: string): Promise<ProjectContext> {

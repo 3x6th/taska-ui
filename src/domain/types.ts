@@ -381,6 +381,13 @@ export interface Project {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * When the project was archived, or `null`. In the contract since before
+   * backend PR #159 (TAS-146), which is what sets it — `DELETE
+   * /projects/{id}`. An archived project is still listed and still readable
+   * as a row; what the UI draws from this field is the "Archived" badge, and
+   * nothing else — no screen hides, filters or refuses on it.
+   */
   archivedAt: string | null;
   /**
    * The reader's own role in this project — `currentUserRole` on
@@ -395,8 +402,10 @@ export interface Project {
    * `ObjectMapper` or codec customizer bean — so Jackson's default `ALWAYS`
    * inclusion applies, and a response built without a role still carries the
    * key, as an explicit `"currentUserRole": null` — exactly like `archivedAt`
-   * above. **Only one response is built that way: `POST /projects`**, whose
-   * answer goes through the mapper overload that sets no role. A read never
+   * above. **Only writes are built that way**: `POST /projects` today, and
+   * `PATCH` and `DELETE /projects/{id}` from the pending backend PRs #155 and
+   * #159, whose answers all go through the mapper overload that sets no role —
+   * so a caller merging a write answer keeps the role it already holds. A read never
    * carries the `null`: `GET /projects/{id}` refuses a non-member with 403 —
    * a `GLOBAL_ADMIN` included — so every 200 has a membership row whose role is
    * NOT NULL, and `GET /projects` inner-joins the reader's own membership, so
@@ -421,7 +430,7 @@ export interface Project {
   /**
    * Both of the next two are added to `ProjectResponseDto` by backend PR #155
    * (TAS-145), pinned at `docs/contract/pending/pr-155-TAS-145.yml`, and both
-   * are `nullable: true` there. **Open and undeployed on 2026-09-12**, so
+   * are `nullable: true` there. **Open and undeployed on 2026-10-20**, so
    * `docs/contract/openapi.yml` — the authority — still carries neither, and on
    * the stand the only values either field ever holds are the mock's.
    *
@@ -430,9 +439,10 @@ export interface Project {
    * explicit `null` for a project that stated no value, because the api-gateway
    * configures no Jackson inclusion override. Readers must treat the two alike.
    *
-   * An empty-string `description` is a third state and a meaningful one: the
-   * schema's `maxLength: 2000` accepts it, so `""` is how a description is
-   * cleared through `PATCH`. Anything drawing a placeholder for "no
+   * An empty-string `description` is a third state: since PR #155's head
+   * `28f5fe1` an explicit `null` is what clears a description through `PATCH`,
+   * but the schema's `maxLength: 2000` still accepts `""` and stores it, so a
+   * legacy blank can be on the row. Anything drawing a placeholder for "no
    * description" therefore has to cover blank as well as absent — `??` alone
    * does not.
    */
@@ -441,9 +451,9 @@ export interface Project {
    * The colour an admin chose, which wins over the one `keyBadgeStyle` computes
    * from the project key. `""` is *not* a third state here, in deliberate
    * contrast with `description` above: the schema's `^#[0-9A-Fa-f]{6}$` rejects
-   * it, and an absent `color` and an explicit `null` both mean "keep" on the
-   * PATCH — so there is no way through the contract to put a colour back to
-   * null once one is set (TAS-145 is the backend story that would add one).
+   * it. `null` is "no colour chosen", and since PR #155's head `28f5fe1` an
+   * explicit `null` on the PATCH puts a project back there, so the badge is
+   * computed from the key again (TAS-171).
    */
   color?: string | null;
   memberIds?: string[];

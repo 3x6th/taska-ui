@@ -272,6 +272,11 @@ function ProjectCard({
             {project.projectKey}
           </span>
           <strong>{project.name}</strong>
+          {/* From the row's own `archivedAt` (backend PR #159), so it costs no
+              request. Text, not a tint: the state has to read without colour
+              (§7), and the card stays where it was — nothing here hides or
+              sorts an archived project. */}
+          {project.archivedAt ? <span className="project-archived-badge">Archived</span> : null}
         </div>
         {/* `??` is not enough here and has not been since a description became
             clearable: `""` is a description the server genuinely holds, and it
@@ -343,10 +348,9 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [description, setDescription] = useState("");
   /**
    * `null` is Automatic: no `color` in the body, so the project computes one
-   * from its key. Default because it is the only choice that stays reversible
-   * — `PATCH` can change a colour but cannot take one away (TAS-145) — so a
-   * project created without one can still pick one later, and a project
-   * created with one is committed.
+   * from its key. Default because it states nothing the reader did not choose;
+   * since backend PR #155's head `28f5fe1` either choice is reversible, as
+   * `PATCH` clears a colour with an explicit `null` (TAS-145).
    */
   const [color, setColor] = useState<string | null>(null);
   const automaticHintId = useId();

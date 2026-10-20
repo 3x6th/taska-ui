@@ -254,13 +254,13 @@ describe("MockTaskaApi", () => {
 
   /**
    * `PATCH /projects/{projectId}` (TAS-148), written against backend PR #155 at
-   * head `c4b8c2c4dd24` — open and undeployed on 2026-09-12, where the path
-   * answers 405. So these cases pin a route this mock has never spoken to, out
-   * of `ProjectServiceImpl.updateProject` rather than out of the yml, and they
-   * are the only executable check on it until the PR merges.
+   * head `28f5fe1` — open and undeployed on 2026-10-20, where the path answers
+   * 405. So these cases pin a route this mock has never spoken to, out of
+   * `ProjectServiceImpl.updateProject` rather than out of the yml, and they are
+   * the only executable check on it until the PR merges.
    *
-   * The two string fields are asymmetric and that is most of what is here: `""`
-   * clears a description and `""` cannot clear a colour.
+   * Three spellings per string field: absent keeps, `null` clears, a string
+   * sets — and `""` is a stored blank for a description and a 400 for a colour.
    */
   /**
    * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
@@ -581,20 +581,29 @@ describe("MockTaskaApi", () => {
       expect(saved).toEqual(before);
     });
 
-    it("clears a description with the empty string", async () => {
+    it("stores an empty description as a blank rather than clearing it", async () => {
+      // `""` passes `maxLength: 2000` with no minimum, so the server keeps it
+      // — a legacy blank, not a clear. The card's placeholder still covers it:
+      // `??` would not have.
       const saved = await api.updateProject(project.id, { description: "" });
 
       expect(saved.description).toBe("");
-      // And the card's placeholder covers it: `??` would not have.
       await expect(api.getProject(project.id)).resolves.toMatchObject({ description: "" });
     });
 
-    it("refuses an empty colour rather than treating it as a clear", async () => {
-      // The one-way door, stated as a test: the schema's pattern rejects `""`,
-      // and an absent `color` means "keep", so no request this client can make
-      // puts a colour back to null. TAS-145 is the backend story that changes
-      // it; until then the picker disables "Automatic" instead of offering a
-      // reset that 400s.
+    it("clears a description and a colour with an explicit null, and answers null rather than dropping the key", async () => {
+      // PR #155's head `28f5fe1`: the gateway tells an explicit `null` from an
+      // absent key and forwards it as `clear_description` / `clear_color`.
+      const saved = await api.updateProject(project.id, { description: null, color: null });
+
+      expect(saved.description).toBeNull();
+      expect(saved.color).toBeNull();
+      // The key is there, holding `null`, as Jackson's default inclusion sends it.
+      expect(Object.hasOwn(saved, "color")).toBe(true);
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ description: null, color: null });
+    });
+
+    it("refuses an empty colour, because the clear is null and not the empty string", async () => {
       await expect(api.updateProject(project.id, { color: "" })).rejects.toThrow(/six-digit hex/);
       await expect(api.getProject(project.id)).resolves.toMatchObject({ color: "#0052cc" });
     });
@@ -638,6 +647,96 @@ describe("MockTaskaApi", () => {
     it("answers NOT_FOUND for a project that is not there", async () => {
       await expect(api.updateProject("00000000-0000-0000-0000-000000000000", { name: "Ghost" })).rejects.toMatchObject({
         code: "NOT_FOUND",
+      });
+    });
+  });
+
+  /**
+   * `DELETE /projects/{projectId}` (TAS-149), written against backend PR #159
+   * at head `97464fe` — open and undeployed on 2026-10-20, where the method
+   * answers 405. The refusals after archiving mirror that head too, including
+   * the reads issue-service refuses; TAS-146 asks whether they should, and
+   * these cases change when it answers.
+   */
+  describe("archiving a project", () => {
+    it("archives for an ADMIN and answers the row with archivedAt set and no role", async () => {
+      expect(project.archivedAt).toBeNull();
+      const archived = await api.archiveProject(project.id);
+
+      expect(archived.id).toBe(project.id);
+      expect(archived.archivedAt).toEqual(expect.any(String));
+      // The entity mapper sets no role on this answer.
+      expect(archived.currentUserRole).toBeNull();
+    });
+
+    it("is idempotent: a second archive answers the same archivedAt", async () => {
+      const first = await api.archiveProject(project.id);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const second = await api.archiveProject(project.id);
+
+      expect(second.archivedAt).toBe(first.archivedAt);
+    });
+
+    it("refuses a member below ADMIN with PERMISSION_DENIED", async () => {
+      await api.login({ email: "mark@example.com", password: "anything" });
+
+      await expect(api.archiveProject(project.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ archivedAt: null });
+    });
+
+    it("answers a non-member NOT_FOUND \"User not found\", as the backend head does", async () => {
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.archiveProject(mobile.id)).rejects.toMatchObject({ code: "NOT_FOUND", message: "User not found" });
+    });
+
+    it("answers NOT_FOUND for a project that is not there", async () => {
+      await expect(api.archiveProject("00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "Project not found",
+      });
+    });
+
+    it("keeps the project listed and readable, and refuses everything issue-service owns", async () => {
+      const { items } = await api.listIssues(project.id);
+      const issue = items[0];
+      expect(issue).toBeDefined();
+      await api.archiveProject(project.id);
+
+      // Still a row, with the field set: nothing is hidden.
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ archivedAt: expect.any(String) });
+      expect((await api.listProjects()).find((item) => item.id === project.id)?.archivedAt).toEqual(expect.any(String));
+      await expect(api.listMembers(project.id)).resolves.not.toHaveLength(0);
+
+      const archived = { code: "FAILED_PRECONDITION", message: "Project archived" };
+      await expect(api.getProjectContext(project.id)).rejects.toMatchObject(archived);
+      await expect(api.getBoard(project.id, { issueType: "TASK" })).rejects.toMatchObject(archived);
+      await expect(api.listIssues(project.id)).rejects.toMatchObject(archived);
+      await expect(api.getIssue(project.id, issue.id)).rejects.toMatchObject(archived);
+      await expect(api.getIssueByKey(issue.issueKey)).rejects.toMatchObject(archived);
+      await expect(api.listComments(project.id, issue.id)).rejects.toMatchObject(archived);
+      await expect(api.addComment(project.id, issue.id, "Still here?")).rejects.toMatchObject(archived);
+      await expect(api.listProjectLabels(project.id)).rejects.toMatchObject(archived);
+      await expect(api.listIssueLinks(project.id, issue.id)).rejects.toMatchObject(archived);
+      await expect(api.listIssueWorklogs(project.id, issue.id)).rejects.toMatchObject(archived);
+      await expect(api.listIssueWatchers(project.id, issue.id)).rejects.toMatchObject(archived);
+      await expect(api.listAttachments(project.id, issue.id)).rejects.toMatchObject(archived);
+      await expect(api.searchIssues({ projectId: project.id, query: "TAS" })).rejects.toMatchObject(archived);
+      // Unscoped, the archived project's issues still appear.
+      const unscoped = await api.searchIssues({ query: issue.issueKey });
+      expect(unscoped.items.map((hit) => hit.id)).toContain(issue.id);
+    });
+
+    it("refuses member writes in project-service's own sentence", async () => {
+      await api.archiveProject(project.id);
+
+      await expect(api.changeProjectMemberRole(project.id, "e65186a2-b807-42ae-a66f-711be116a93b", "VIEWER")).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: `Project ${project.id} has been archived`,
       });
     });
   });

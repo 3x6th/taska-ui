@@ -1352,7 +1352,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           built from a project that is no longer in hand would be editing
           fields nobody can vouch for. */}
       {editingProject && project ? (
-        <EditProjectModal project={project} onClose={() => setEditingProject(false)} />
+        <EditProjectModal
+          onArchived={() => navigate("/projects", { replace: true })}
+          onClose={() => setEditingProject(false)}
+          project={project}
+        />
       ) : null}
 
       {creating ? (

@@ -10,9 +10,10 @@ import { readableTextOn } from "../lib/format";
  * the checked state. DESIGN.md §8 asks for a prop rather than a second variant,
  * so the differences between the two are data. The project's picker passes one
  * extra option whose value is `null` ("Automatic", meaning the project states
- * no colour of its own and the client computes one), and marks it `disabled`
- * once the server holds a colour, because the contract has no way to take one
- * back.
+ * no colour of its own and the client computes one). It used to mark that
+ * option `disabled` once the server held a colour, because the contract had no
+ * way to take one back; backend PR #155's head `28f5fe1` clears a colour with
+ * an explicit `null`, so nothing here is refused any more and the prop went.
  *
  * A group of `aria-pressed` buttons rather than an ARIA radio group. `role=
  * "radio"` would announce a keyboard contract this does not implement — arrow
@@ -34,12 +35,6 @@ export interface ColorChoice {
   swatch: string;
   /** The swatch's accessible name. A colour alone is not a name (§7). */
   label: string;
-  /**
-   * Offered but refused, with the reason in text beside the group. A real
-   * `disabled`, so it carries DESIGN.md §4.1's recipe rather than only the
-   * `aria-disabled` §7 already records as a gap elsewhere.
-   */
-  disabled?: boolean;
 }
 
 export function ColorSwatches({
@@ -50,7 +45,7 @@ export function ColorSwatches({
   selected,
 }: {
   choices: ColorChoice[];
-  /** The id of the line explaining a refusal, announced on entering the group. */
+  /** The id of a line about the group, announced on entering it (the create form's "first swatch is Automatic"). */
   describedBy?: string;
   groupLabel: string;
   onPick: (value: string | null) => void;
@@ -72,7 +67,6 @@ export function ColorSwatches({
           className={`color-swatch ${choice.value === null ? "is-automatic" : ""} ${
             selected === choice.value ? "is-active" : ""
           }`}
-          disabled={choice.disabled}
           key={choice.value ?? "automatic"}
           onClick={() => onPick(choice.value)}
           // The fill and the ink that reads on it, set together in one place.

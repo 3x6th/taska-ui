@@ -1,11 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import type { UpdateProjectInput } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import type { Project, ProjectContext } from "../domain/types";
-import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
+import { computedProjectColor, formatDay, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import { projectContextKey } from "../lib/projectContext";
 import { ColorSwatches, type ColorChoice } from "./ColorSwatches";
 import { ErrorNote } from "./ErrorNote";
@@ -26,8 +26,22 @@ import { Modal } from "./Modal";
  * The key is displayed and not editable, and that is the contract rather than a
  * simplification: `UpdateProjectRequestDto` has no `projectKey`, because the
  * key is the prefix of every `issueKey` in the project.
+ *
+ * It also carries the project's one destructive action, archiving
+ * (`DELETE /projects/{projectId}`, backend PR #159, TAS-146), below the form
+ * and behind §4.22's confirmation strip. `onArchived` is the caller's say in
+ * where the reader goes next: the board leaves for `/projects`, because every
+ * read it would make after this one is refused; the projects screen stays.
  */
-export function EditProjectModal({ project, onClose }: { project: Project; onClose: () => void }) {
+export function EditProjectModal({
+  project,
+  onClose,
+  onArchived,
+}: {
+  project: Project;
+  onClose: () => void;
+  onArchived?: () => void;
+}) {
   const queryClient = useQueryClient();
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? "");
@@ -46,56 +60,45 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
    * the comparison below means an untouched colour is never sent back.
    */
   const [color, setColor] = useState<string | null>(project.color ?? null);
-  const noticeId = useId();
-
-  /**
-   * A colour is a one-way door until TAS-145 lands its backend half, which is
-   * what makes it a two-way one: an absent `color` and an explicit `null` are
-   * the same "keep" on the PATCH, and `""` fails the schema's hex pattern, so
-   * nothing a client can send means "go back to computing it". Once the
-   * *server* holds a colour, Automatic is therefore offered and refused rather
-   * than quietly dropped — a picker that hid the option would leave the reader
-   * wondering where it went, and one that offered it would spend a request on
-   * a 400.
-   *
-   * Read from `project.color`, never from the `color` state: a choice made in
-   * this dialog and not yet saved is still undoable, so picking a colour must
-   * not close the door before Save does.
-   */
-  const automaticLocked = Boolean(project.color);
 
   const choices = useMemo<ColorChoice[]>(
     () => [
       {
         value: null,
         // The colour the badge behind this dialog is drawing right now, from
-        // the one place that rule lives.
+        // the one place that rule lives. Always offered: since backend PR
+        // #155's head `28f5fe1` an explicit `null` clears a stored colour, so
+        // picking this on a coloured project is a change Save can send.
         swatch: computedProjectColor(project.projectKey),
         label: "Automatic colour, from the project key",
-        disabled: automaticLocked,
       },
       ...labelColorChoices.map((choice) => ({ value: choice, swatch: choice, label: `Colour ${choice}` })),
     ],
-    [automaticLocked, project.projectKey],
+    [project.projectKey],
   );
 
   /**
-   * Only what actually changed, which is what PATCH semantics ask for and also
-   * what keeps the two asymmetric fields honest.
+   * Only what actually changed, which is what PATCH semantics ask for: an
+   * absent key is "keep", so anything sent is a change the reader made.
    *
-   * `description` is compared against `project.description ?? ""` so that
-   * clearing a box that held something sends `""` — the one value that removes
-   * a description — while a box that was already empty on a project that never
-   * had one sends nothing at all. `color` is only ever a hex here: `null` means
-   * "leave it alone", because there is no request that means "remove it".
+   * `description` compares the trimmed box against what the server holds,
+   * reading `null` and a legacy `""` alike as "none". A box emptied on a
+   * project that had one sends `null` — the clear since PR #155's head
+   * `28f5fe1` — and an empty box on a project that had none sends nothing, so
+   * a `""` row is never rewritten to `null` behind the reader's back.
+   *
+   * `color` is `null` for Automatic, and is sent whenever it differs from what
+   * the server holds — so Automatic on a coloured project sends `color: null`,
+   * which clears it, and an untouched colour is never sent back.
    */
   const changes = useMemo<UpdateProjectInput>(() => {
     const input: UpdateProjectInput = {};
     const trimmedName = name.trim();
     if (trimmedName && trimmedName !== project.name) input.name = trimmedName;
     const trimmedDescription = description.trim();
-    if (trimmedDescription !== (project.description ?? "")) input.description = trimmedDescription;
-    if (color && color !== project.color) input.color = color;
+    const held = project.description ?? "";
+    if (trimmedDescription !== held) input.description = trimmedDescription === "" ? null : trimmedDescription;
+    if (color !== (project.color ?? null)) input.color = color;
     return input;
   }, [color, description, name, project.color, project.description, project.name]);
 
@@ -168,6 +171,73 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
     },
   });
 
+  // --- archiving (backend PR #159, TAS-146) ---------------------------------
+
+  /**
+   * ADMIN only, from the row this dialog was opened with — `currentUserRole`
+   * on the list row or on the board's context project. Both callers already
+   * gate the dialog itself on ADMIN; this is the same rule said where the
+   * control is, so a third caller cannot offer it by accident. The server
+   * refuses everybody else regardless (a member below ADMIN 403, a non-member
+   * 404).
+   */
+  const canArchive = project.currentUserRole === "ADMIN";
+  const [askingArchive, setAskingArchive] = useState(false);
+  const archiveTrigger = useRef<HTMLButtonElement>(null);
+  const archiveConfirmId = useId();
+
+  /**
+   * Not optimistic, like the issue panel's Delete (§4.10): the question strip
+   * is on screen while the request is out, and a refusal has to be said in a
+   * dialog that is still open. So there is nothing to roll back.
+   *
+   * On success, one write to the cache and no refetch:
+   *
+   * - `["projects"]` takes the server's row, `archivedAt` and all, keeping the
+   *   reader's `currentUserRole` from the row already held — the answer carries
+   *   `currentUserRole: null` (the entity mapper sets none), and spread in it
+   *   would take the edit control off the card;
+   * - every board-scoped query of this project is **removed**, not
+   *   invalidated — the context, issues, search, panel reads — because each of
+   *   them would refetch into a 400 "Project archived". Matched by the id in
+   *   second position, the rule `ProjectMembersModal.leaveProject` set out.
+   *   `project-summaries` is kept: it is the card's own count, true as of a
+   *   moment ago, and the projects screen would otherwise refetch it at once.
+   *
+   * `onArchived` (the board's navigation) runs before the removal, as in
+   * `leaveProject`: `navigate` only schedules the route change, and a query
+   * dropped from under a still-mounted observer is not rebuilt until it renders
+   * again.
+   */
+  const archive = useMutation({
+    mutationFn: () => taskaApi.archiveProject(project.id),
+    onSuccess: (archived) => {
+      queryClient.setQueryData<Project[]>(["projects"], (current) =>
+        current?.map((item) =>
+          item.id === archived.id ? { ...item, ...archived, currentUserRole: item.currentUserRole } : item,
+        ),
+      );
+      onClose();
+      onArchived?.();
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey[1] === archived.id && query.queryKey[0] !== "project-summaries",
+      });
+    },
+    // The question closes and focus goes back to the control that asked it;
+    // the reason is said under it (§4.22's refusals).
+    onError: () => {
+      setAskingArchive(false);
+      archiveTrigger.current?.focus();
+    },
+  });
+  const archiving = archive.isPending;
+  const archiveFailure = apiErrorFacts(archive.error);
+
+  const cancelArchive = () => {
+    setAskingArchive(false);
+    archiveTrigger.current?.focus();
+  };
+
   // No eyebrow badge, unlike the other project-scoped modals (§4.11). There the
   // key is context — which project am I creating an issue in — and here it is
   // content, with a labelled row of its own three lines down. Two copies of one
@@ -233,18 +303,7 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
 
         <div className="field">
           <span>Colour</span>
-          <ColorSwatches
-            choices={choices}
-            describedBy={automaticLocked ? noticeId : undefined}
-            groupLabel="Project colour"
-            onPick={setColor}
-            selected={color}
-          />
-          {automaticLocked ? (
-            <p className="field-note" id={noticeId}>
-              A colour cannot be set back to automatic yet.
-            </p>
-          ) : null}
+          <ColorSwatches choices={choices} groupLabel="Project colour" onPick={setColor} selected={color} />
         </div>
 
         {save.isError ? (
@@ -291,6 +350,109 @@ export function EditProjectModal({ project, onClose }: { project: Project; onClo
           </button>
         </div>
       </form>
+
+      {/* Outside the form, so Enter in a field never reaches it, and below
+          Save so the dialog's ordinary path ends before the destructive one
+          begins. */}
+      {canArchive ? (
+        <section aria-label="Archive project" className="project-archive">
+          {project.archivedAt ? (
+            // Archiving again is a 200 that changes nothing, so it is not
+            // offered; the fact is stated instead.
+            <p className="project-archive-note">
+              Archived on {formatDay(project.archivedAt)}. Its issues no longer open, and Taska has no way to restore
+              it yet.
+            </p>
+          ) : (
+            <div className="project-archive-row">
+              <p className="project-archive-note">
+                Archiving keeps {project.projectKey} in the project list, but its board and issues stop opening.
+              </p>
+              <button
+                aria-controls={askingArchive ? archiveConfirmId : undefined}
+                aria-expanded={askingArchive}
+                className="secondary-button compact-button project-archive-trigger"
+                onClick={() => {
+                  if (archiving) return;
+                  archive.reset();
+                  setAskingArchive((open) => !open);
+                }}
+                onKeyDown={(event) => {
+                  if (askingArchive && event.key === "Escape") {
+                    event.stopPropagation();
+                    if (!archiving) cancelArchive();
+                  }
+                }}
+                ref={archiveTrigger}
+                type="button"
+              >
+                Archive project
+              </button>
+            </div>
+          )}
+
+          {askingArchive ? (
+            // §4.22's strip, as the issue panel's Delete draws it (§4.10).
+            <div
+              className="member-confirm project-archive-confirm"
+              id={archiveConfirmId}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  if (!archiving) cancelArchive();
+                }
+              }}
+            >
+              <p className="member-confirm-sentence" id={`${archiveConfirmId}-sentence`}>
+                {project.projectKey} will be archived for everyone. Its board and issues stop opening, and there is no
+                way to restore it from Taska.
+              </p>
+              <div className="member-confirm-actions">
+                {/* Both `aria-disabled` while the request is out (§4.1's
+                    in-flight recipe): labels unchanged, the handlers refuse. */}
+                <button
+                  aria-disabled={archiving || undefined}
+                  autoFocus
+                  className="secondary-button compact-button"
+                  onClick={() => {
+                    if (!archiving) cancelArchive();
+                  }}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  aria-describedby={`${archiveConfirmId}-sentence`}
+                  aria-disabled={archiving || undefined}
+                  className="secondary-button compact-button member-confirm-accept"
+                  onClick={() => {
+                    if (!archiving) archive.mutate();
+                  }}
+                  type="button"
+                >
+                  Archive {project.projectKey}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {archive.isError ? (
+            // The same reading of a 405 as Save's above: backend PR #159 has
+            // not deployed this DELETE, nothing changed, and that is not a
+            // refusal to act on. Everything else is the server's words and
+            // the id that finds them in the gateway log.
+            isUndeployedRoute(archive.error, UNDEPLOYED_ROUTE_MESSAGE) ? (
+              <p className="field-note save-failed-note" role="status">
+                Archiving is not on this gateway yet, so this project was not archived.
+              </p>
+            ) : (
+              <ErrorNote live="alert" requestId={archiveFailure.requestId} serverWords={archiveFailure.message}>
+                This project was not archived.
+              </ErrorNote>
+            )
+          ) : null}
+        </section>
+      ) : null}
     </Modal>
   );
 }

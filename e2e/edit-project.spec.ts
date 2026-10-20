@@ -10,10 +10,10 @@ import { expect, test, type Page } from "@playwright/test";
 //
 // What this file is NOT: a statement about the gateway.
 // `PATCH /api/v1/projects/{id}` is backend PR #155 and was **open and
-// undeployed** on 2026-09-12, where the path answers 405. Every rule leaned on
-// here — ADMIN only, an empty description clears, an empty colour does not — is
-// `MockTaskaStore` reading that PR's Java, not observed behaviour. Read these
-// as pinning what the UI does.
+// undeployed** on 2026-10-20, where the path answers 405. Every rule leaned on
+// here — ADMIN only, an explicit null clears the description and the colour —
+// is `MockTaskaStore` reading that PR's Java at `28f5fe1`, not observed
+// behaviour. Read these as pinning what the UI does.
 
 async function signIn(page: Page) {
   await page.goto("/login");
@@ -76,23 +76,50 @@ test("clears a description, and the card falls back to its placeholder rather th
   await dialog.getByRole("button", { name: "Save changes" }).click();
   await expect(dialog).toBeHidden();
 
-  // `""` is a description the server genuinely holds — it is what clearing one
-  // sends — and it slips straight past a nullish check. Without the blank-aware
-  // condition this line is an empty paragraph.
+  // Clearing sends `description: null` since PR #155's head `28f5fe1`, and the
+  // card draws its placeholder for that as it does for a legacy `""`.
   await expect(card).toContainText("Project workspace");
+  await expect(card).not.toContainText("Customer-facing web client");
 });
 
-test("offers no way back to an automatic colour once one is set, and says why", async ({ page }) => {
+test("puts a coloured project back on its automatic colour, and the badge follows the key again", async ({ page }) => {
   await signIn(page);
   await expect(page.locator(".skeleton-card")).toHaveCount(0);
 
-  // Taska Platform states #0052cc in the seed, so its door is already shut.
+  // Taska Platform states #0052cc in the seed. Since PR #155's head `28f5fe1`
+  // an explicit `null` clears that, so Automatic is offered and works.
+  const badge = projectCard(page, "Taska Platform").locator(".key-badge");
+  const coloured = await badge.evaluate((node) => getComputedStyle(node).backgroundColor);
+
   await page.getByRole("button", { name: "Edit Taska Platform" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit project" });
-
   const automatic = dialog.getByRole("button", { name: /Automatic colour/ });
-  await expect(automatic).toBeDisabled();
-  await expect(dialog.getByText(/cannot be set back to automatic yet/)).toBeVisible();
+  await expect(automatic).toBeEnabled();
+  await expect(dialog.getByText(/cannot be set back to automatic/)).toHaveCount(0);
+
+  // The colour the key computes, as the swatch paints it, laid into the badge's
+  // own tint recipe — so the comparison is with what the badge should draw,
+  // not merely with "something different".
+  const computed = await automatic.evaluate((node) => {
+    const probe = document.createElement("span");
+    probe.style.background = `color-mix(in oklab, ${getComputedStyle(node).backgroundColor} 16%, transparent)`;
+    document.body.append(probe);
+    const tint = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return tint;
+  });
+
+  await automatic.click();
+  await expect(automatic).toHaveAttribute("aria-pressed", "true");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect.poll(() => badge.evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(computed);
+  expect(computed).not.toBe(coloured);
+
+  // And it is what the server now holds: reopened, the dialog sits on Automatic.
+  await page.getByRole("button", { name: "Edit Taska Platform" }).click();
+  await expect(dialog.getByRole("button", { name: /Automatic colour/ })).toHaveAttribute("aria-pressed", "true");
 });
 
 test("creates a project with a description and a colour, and the card shows both", async ({ page }) => {
@@ -160,8 +187,8 @@ test("opens the dialog from the board header and reaches Save from the keyboard"
   const dialog = page.getByRole("dialog", { name: "Edit project" });
   await expect(dialog).toBeVisible();
 
-  // Infra and Ops states no colour in the seed, so this is the other half of
-  // the door: Automatic is the selected state and still offered.
+  // Infra and Ops states no colour in the seed, so Automatic is the selected
+  // state.
   const automatic = dialog.getByRole("button", { name: /Automatic colour/ });
   await expect(automatic).toBeEnabled();
   await expect(automatic).toHaveAttribute("aria-pressed", "true");

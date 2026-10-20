@@ -133,15 +133,15 @@ export const INVITE_DISPLAY_NAME_MAX_LENGTH = 128;
 /**
  * `CreateProjectRequestDto`. `description` and `color` are new in backend
  * PR #155 (TAS-145) — see `docs/contract/pending/pr-155-TAS-145.yml`, open and
- * undeployed on 2026-09-12 — and both are optional there.
+ * undeployed on 2026-10-20 — and both are optional there.
  *
- * Creation is the one moment either field is genuinely free. Afterwards
- * `PATCH` can still change a description and can still change a colour, but it
- * cannot take a colour *away*: an absent `color` and an explicit `null` are the
- * same "keep" on that route, and `""` fails the schema's hex pattern. So a
- * project that is to stay on its computed colour has to be created without one,
+ * A project that is to stay on its computed colour is created without one,
  * which is why the create form offers "Automatic" and omits the field for it
- * rather than sending the computed value.
+ * rather than sending the computed value. Since PR #155's head `28f5fe1` that
+ * is no longer the only way back to a computed colour — `PATCH` clears one with
+ * an explicit `null` (see `UpdateProjectInput`) — but sending the computed
+ * value would still be wrong: it would store a colour the reader never chose,
+ * and the badge would stop following the key.
  */
 export interface CreateProjectInput {
   projectKey: string;
@@ -161,24 +161,29 @@ export interface CreateProjectInput {
  * key is the prefix of every `issueKey` in the project, so changing it would
  * rewrite every issue's identity.
  *
- * The two string fields are **not symmetric**, and the asymmetry is the thing
- * most likely to be got wrong by a reader who skims:
+ * Three spellings per string field, and they mean three different things —
+ * read at backend PR #155's head `28f5fe1`, where the gateway reads the raw
+ * JSON in `ProjectController.updateProject` to tell an explicit `null` from an
+ * absent key and forwards it as proto `clear_description` / `clear_color`:
  *
- * - `description: ""` genuinely clears a description. The schema is
- *   `maxLength: 2000` with no minimum, so the empty string is a value the
- *   server accepts and stores.
- * - `color: ""` clears nothing and is a **400**: the schema's
- *   `^#[0-9A-Fa-f]{6}$` rejects it. Nor does omitting the field clear it —
- *   `Optional<String>` in `ProjectServiceImpl.updateProject` makes an absent
- *   field and an explicit `null` the same instruction, "keep". Choosing a
- *   colour is therefore a one-way door until TAS-145's backend half makes it
- *   two-way, and the picker says so rather than offering a reset that 400s.
+ * - **absent** (`undefined` here, the key not on the wire) — keep;
+ * - **`null`** — clear: `description` and `color` go back to `null`, and a
+ *   project without a colour is coloured from its key again (TAS-171);
+ * - **a string** — set. `description: ""` is still accepted and stored as
+ *   `""` (the schema has no minimum), so it is a legacy blank rather than a
+ *   clear; the UI sends `null` to clear one. `color: ""` is a **400**: the
+ *   schema's `^#[0-9A-Fa-f]{6}$` rejects it.
+ *
+ * `name` takes no `null`: `name: null` is a 400 "Invalid request parameters",
+ * and so is a blank name.
  */
 export interface UpdateProjectInput {
-  /** 1–255 characters. A blank name is a 400, not a clear. */
+  /** 1–255 characters. A blank name is a 400, not a clear — and so is `null`, which is why the type has none. */
   name?: string;
-  description?: string;
-  color?: string;
+  /** `null` clears. `""` is stored as a blank, not cleared. */
+  description?: string | null;
+  /** `null` clears, back to the colour computed from the key. `""` is a 400. */
+  color?: string | null;
 }
 
 export interface ListIssuesParams {
@@ -263,8 +268,9 @@ export const SEARCH_QUERY_TOO_SHORT_MESSAGE = `Search query must be at least ${S
  * the other — and the two do not even share a subject, since `isLabelColor`
  * also filters avatar colours the gateway has never heard of.
  *
- * What it is for, concretely: `""` fails it. That is the whole reason a colour
- * cannot be cleared through `PATCH` — see `UpdateProjectInput`.
+ * What it is for, concretely: `""` fails it, so an empty colour is a 400 on
+ * `PATCH` rather than a clear. Clearing is an explicit `null`, which the
+ * pattern never sees — see `UpdateProjectInput`.
  */
 export const PROJECT_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
 
@@ -800,36 +806,73 @@ export interface TaskaApi {
    * `PATCH /api/v1/projects/{projectId}` — name, description and colour, and
    * nothing else. Answers with the whole project as the server now holds it.
    *
-   * Written against backend PR #155 (TAS-145) at head `c4b8c2c4dd24`, pinned at
+   * Written against backend PR #155 (TAS-145) at head `28f5fe1`, pinned at
    * `docs/contract/pending/pr-155-TAS-145.yml`. **Open and undeployed on
-   * 2026-09-12**, where the path answers **405** with `code:
+   * 2026-10-20**, where the path answers **405** with `code:
    * "METHOD_NOT_ALLOWED"` — it exists for GET, so this is not the
    * static-resource 404 arm of `isUndeployedRoute`, but its second arm
    * (TAS-148) matches this signature too. `HybridTaskaApi` delegates this
    * straight to the gateway, like everything else; `EditProjectModal` is what
    * reads the 405 that comes back and shows it as a quiet "not shipped yet"
-   * rather than the gateway's raw sentence.
+   * rather than the gateway's raw sentence. A merge is not a deploy, so that
+   * branch stays until the route answers on the stand.
    *
-   * Four things the yml does not say, read out of `ProjectServiceImpl` at that
-   * head, each of which decides something in the UI:
+   * What the Java does that the yml does not say, read out of
+   * `ProjectServiceImpl` and `ProjectController` at that head, each of which
+   * decides something in the UI:
    *
    * - **ADMIN only, refused with 403.** A non-member and a member below ADMIN
    *   both take `PERMISSION_DENIED`; a project that is not there is
    *   `NOT_FOUND`, a 404. So a 403 from this route is "not your project to
    *   edit" and must never be read as a dead session, and the control is not
    *   offered below ADMIN — while the server stays the authority either way.
-   * - **An all-absent body is a 200, not a 400.** With all three fields empty
+   * - **An all-absent body is a 200, not a 400.** With all three fields absent
    *   the service logs "nothing to update" and returns the project unchanged.
    *   A caller that sends no changes gets a successful no-op, so the UI does
    *   not need to defend against one; it declines to spend the request instead.
    * - **A concurrent edit is `ABORTED` → 409**, "Project was concurrently
    *   modified by another request, please retry". `isConflict` in
    *   `src/api/errors.ts` already matches both arms of that.
-   * - **A colour cannot be returned to null**, which is why the picker's
-   *   "Automatic" option is disabled once a colour is set. See
-   *   `UpdateProjectInput` for why, and for why `description` is not the same.
+   * - **An explicit `null` clears `description` and `color`**, an absent key
+   *   keeps them, and `name: null` is a 400. See `UpdateProjectInput`.
+   * - **The answer carries `currentUserRole: null`** — it is built by the
+   *   mapper overload that sets no role — so a caller keeps the role it
+   *   already holds rather than spreading this one in.
    */
   updateProject(projectId: string, input: UpdateProjectInput): Promise<Project>;
+  /**
+   * `DELETE /api/v1/projects/{projectId}` — archives the project: a soft
+   * delete that sets `archivedAt`, with no body on the request. Answers 200
+   * with the project as stored, `archivedAt` set and `currentUserRole: null`
+   * (the entity mapper sets no role).
+   *
+   * Written against backend PR #159 (TAS-146) at head `97464fe`, pinned at
+   * `docs/contract/pending/pr-159-TAS-146.yml`. **Open and undeployed on
+   * 2026-10-20**, where the method answers **405** `METHOD_NOT_ALLOWED` on a
+   * path that exists for GET — `isUndeployedRoute`'s second arm, the same
+   * signature `updateProject` meets. `HybridTaskaApi` passes it straight
+   * through.
+   *
+   * What the Java does at that head, which every implementation reproduces:
+   *
+   * - **Idempotent.** A second call answers 200 with the original
+   *   `archivedAt` and writes nothing.
+   * - **ADMIN only.** A missing project is 404 "Project not found"; a caller
+   *   who is not a member is **404 "User not found"** (where
+   *   `GET /projects/{id}` answers the same caller 403 — raised as a bug, not
+   *   compensated); a member below ADMIN is 403 `PERMISSION_DENIED`; a
+   *   malformed id is 400 `INVALID_ARGUMENT`.
+   * - **Afterwards the project is still listed and still readable** —
+   *   `GET /projects`, `GET /projects/{id}` and its members answer 200 — but
+   *   **every issue-service read and write refuses it** with 400
+   *   `FAILED_PRECONDITION` "Project archived": the board, the context (it
+   *   composes the labels read), issues, comments, labels, links, work log,
+   *   watchers and attachments. Member writes refuse with "Project <id> has
+   *   been archived". Whether reads should be allowed is the open question on
+   *   TAS-146; until it is answered the UI builds no read-only archived board
+   *   and matches on neither sentence.
+   */
+  archiveProject(projectId: string): Promise<Project>;
   /**
    * `GET /projects/{projectId}/context` — the project, the reader's role in it,
    * its members, its labels and the workflow of every issue type it allows, in
@@ -1951,8 +1994,9 @@ export interface TaskaApi {
  *
  * **Two callers pass it.** `UserProfileMenu`, for the avatar routes — deployed
  * on 2026-09-14, so this 404 no longer comes back for them — and
- * `EditProjectModal`, for `PATCH /projects/{id}`, which is still undeployed but
- * answers with the 405 that `isUndeployedRoute`'s other arm reads rather than
+ * `EditProjectModal`, for `PATCH /projects/{id}` and `DELETE /projects/{id}`
+ * (backend PRs #155 and #159), both still undeployed on 2026-10-20 and both
+ * answering with the 405 that `isUndeployedRoute`'s other arm reads rather than
  * with this 404. Two callers are gone. The admin user writes were the original
  * one — PR #146
  * deployed all three, so `POST /api/v1/admin/users/not-a-uuid/block` answers

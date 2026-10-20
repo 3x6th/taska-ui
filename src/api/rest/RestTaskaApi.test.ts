@@ -1168,17 +1168,17 @@ describe("RestTaskaApi project members", () => {
 });
 
 /**
- * Creating and editing a project (TAS-148), written against backend PR #155 at
- * head `c4b8c2c4dd24` — **open and undeployed on 2026-09-12**, where
- * `PATCH /api/v1/projects/{id}` answers 405 because only GET is mapped on that
- * path. So these cases pin a route this leg has never spoken to, and they are
- * the only check on it until the PR merges.
+ * Creating, editing and archiving a project (TAS-148, TAS-149), written
+ * against backend PR #155 at head `28f5fe1` and PR #159 at head `97464fe` —
+ * **both open and undeployed on 2026-10-20**, where `PATCH` and `DELETE
+ * /api/v1/projects/{id}` answer 405 because only GET is mapped on that path. So
+ * these cases pin routes this leg has never spoken to, and they are the only
+ * check on them until the PRs merge.
  *
- * What they are really about is the body: which keys are on it and which are
- * not. The route's whole semantics are "a field that is absent is not changed",
- * so an extra key is a change nobody asked for and a missing one is a change
- * that silently does not happen — and the two string fields differ, because
- * `description: ""` clears a description and `color: ""` is a 400.
+ * What the edit cases are really about is the body: which keys are on it and
+ * which are not. Absent is "keep", an explicit `null` is "clear", so an extra
+ * key is a change nobody asked for, a missing one is a change that silently
+ * does not happen, and a `null` that went missing is a clear that did not.
  */
 describe("RestTaskaApi project writes", () => {
   const answer = (status: number, body: unknown) =>
@@ -1269,12 +1269,26 @@ describe("RestTaskaApi project writes", () => {
     expect(result.name).toBe("Taska Core");
   });
 
-  it("sends an empty description, because that is what clears one", async () => {
-    // The test for "named" is `!== undefined`, not truthiness. Truthiness here
-    // would drop the one value that removes a description.
+  it("sends an empty description as written", async () => {
+    // The test for "named" is `!== undefined`, not truthiness. The server
+    // stores `""` as a blank; whether to send it is the caller's call, and
+    // this leg does not tidy it away.
     const { fetchStub } = await call(project(), (api) => api.updateProject("project-1", { description: "" }));
 
     expect(sentBody(fetchStub)).toEqual({ description: "" });
+  });
+
+  it("sends an explicit null colour, because that is what clears one", async () => {
+    const { fetchStub } = await call(project(), (api) => api.updateProject("project-1", { color: null }));
+
+    // Exactly this body: the key present and holding `null`.
+    expect(String((fetchStub.mock.calls[0][1] as RequestInit).body)).toBe('{"color":null}');
+  });
+
+  it("sends an explicit null description, because that is what clears one", async () => {
+    const { fetchStub } = await call(project(), (api) => api.updateProject("project-1", { description: null }));
+
+    expect(String((fetchStub.mock.calls[0][1] as RequestInit).body)).toBe('{"description":null}');
   });
 
   it("sends nothing at all for a body with nothing in it", async () => {
@@ -1283,6 +1297,8 @@ describe("RestTaskaApi project writes", () => {
     const { fetchStub } = await call(project(), (api) => api.updateProject("project-1", {}));
 
     expect(sentBody(fetchStub)).toEqual({});
+    // And no `null` invented for the keys the caller left out — that would clear them.
+    expect(String((fetchStub.mock.calls[0][1] as RequestInit).body)).toBe("{}");
   });
 
   it("reports a 403 as the refusal it is, with the server's own words", async () => {
@@ -1325,6 +1341,48 @@ describe("RestTaskaApi project writes", () => {
     expect(isConflict(failure)).toBe(true);
     expect(isMissingOrForbidden(failure)).toBe(false);
     expect((failure as Error).message).toMatch(/concurrently modified/);
+  });
+
+  it("archives with a DELETE on the project path, no body, and answers the row", async () => {
+    const archivedAt = "2026-10-20T10:00:00Z";
+    const { result, fetchStub } = await call(project({ archivedAt, currentUserRole: null }), (api) =>
+      api.archiveProject("project-1"),
+    );
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1");
+    const init = fetchStub.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe("DELETE");
+    expect(init.body).toBeUndefined();
+    expect(result).toMatchObject({ id: "project-1", archivedAt, currentUserRole: null });
+  });
+
+  it("keeps the request id on an archived project's refusal", async () => {
+    // What every issue-service read answers once a project is archived (PR
+    // #159 head `97464fe`). The UI matches on neither the code nor the
+    // sentence; it shows them, with the id that finds them in the log.
+    const failure = await call(
+      { code: "FAILED_PRECONDITION", message: "Project archived" },
+      (api) => api.getProjectContext("project-1"),
+      400,
+    ).catch((error: unknown) => error);
+
+    expect(apiErrorFacts(failure)).toMatchObject({
+      status: 400,
+      code: "FAILED_PRECONDITION",
+      message: "Project archived",
+      requestId: "req-1",
+    });
+    expect(isMissingOrForbidden(failure)).toBe(false);
+  });
+
+  it("reads a 405 on the archive as a route this gateway has not shipped", async () => {
+    const failure = await call(
+      { code: "METHOD_NOT_ALLOWED", message: "Request method 'DELETE' is not supported." },
+      (api) => api.archiveProject("project-1"),
+      405,
+    ).catch((error: unknown) => error);
+
+    expect(isUndeployedRoute(failure, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
   });
 
   it("carries a null description and a null colour through untouched", async () => {

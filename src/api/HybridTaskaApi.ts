@@ -166,6 +166,13 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.updateProject(projectId, input);
   }
 
+  // A pure pass-through, like the edit above: backend PR #159 is undeployed and
+  // the gateway answers 405, and a class that synthesised an archived row would
+  // be reporting an archive no server took.
+  archiveProject(projectId: string): Promise<Project> {
+    return this.live.archiveProject(projectId);
+  }
+
   getProjectContext(projectId: string): Promise<ProjectContext> {
     return this.live.getProjectContext(projectId);
   }

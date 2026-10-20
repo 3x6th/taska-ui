@@ -1079,10 +1079,12 @@ export class RestTaskaApi implements TaskaApi {
    *
    * Only the keys the caller actually named are sent, and the test for "named"
    * is `!== undefined` rather than truthiness. That distinction is the whole
-   * of the description-clearing story: `description: ""` has to survive this
-   * spread, because the empty string is how a description is removed, while
-   * `description: undefined` must not become `"description": null` — the
-   * service reads that as "keep" and the caller would be told nothing changed.
+   * of the clearing story since PR #155's head `28f5fe1`: an explicit `null`
+   * has to survive this spread as `"color": null` / `"description": null`,
+   * because that is what clears the field, while `undefined` must not become
+   * one — an absent key is "keep", and a stray `null` would wipe a colour the
+   * reader never touched. `description: ""` survives too and is stored as a
+   * blank; the dialog sends `null` instead when it means "remove".
    */
   updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
     return this.request<Project>(`/projects/${this.segment(projectId)}`, {
@@ -1093,6 +1095,16 @@ export class RestTaskaApi implements TaskaApi {
         ...(input.color !== undefined ? { color: input.color } : {}),
       },
     });
+  }
+
+  /**
+   * `DELETE /projects/{projectId}` — see `TaskaApi.archiveProject`. No body:
+   * the route takes none. The answer is the archived project as stored, passed
+   * through as the reads pass theirs, `currentUserRole: null` included — the
+   * caller decides what to keep from its own cache.
+   */
+  archiveProject(projectId: string): Promise<Project> {
+    return this.request<Project>(`/projects/${this.segment(projectId)}`, { method: "DELETE" });
   }
 
   /**

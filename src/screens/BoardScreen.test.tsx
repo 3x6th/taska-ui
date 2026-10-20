@@ -1418,6 +1418,28 @@ describe("board failures the user can see", () => {
     expect(screen.getByText("Project")).toBeVisible();
   });
 
+  // A deep link to an archived project's board (backend PR #159 head
+  // `97464fe`): every issue-service read refuses it, and the context composes
+  // one, so the frame read is a 400. The board says so in the generic words
+  // with the server's sentence and the id — nothing matches on "Project
+  // archived", and nothing is blank.
+  it("shows an archived project's refusal as the generic failure, with its request id", async () => {
+    const archived = () =>
+      Object.assign(new Error("Project archived"), {
+        status: 400,
+        code: "FAILED_PRECONDITION",
+        requestId: "5d0c2e7a-archived",
+      });
+    failProject(archived());
+    failIssues(archived());
+    renderBoard();
+
+    const alerts = await screen.findAllByRole("alert", undefined, AFTER_RETRY);
+    expect(alerts.some((alert) => /project could not be loaded/i.test(alert.textContent ?? ""))).toBe(true);
+    expect(screen.getAllByText("Project archived").length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "Copy request id 5d0c2e7a-archived" }).length).toBeGreaterThan(0);
+  });
+
   it("leaves an editor's board alone", async () => {
     renderBoard();
 
