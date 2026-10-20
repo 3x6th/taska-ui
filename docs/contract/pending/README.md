@@ -109,7 +109,8 @@ was written against it.
 
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
-| `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
+| `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148, TAS-149 |
+| `pr-159-TAS-146.yml` | [#159](https://github.com/VladislavYurin/taska-backend/pull/159) | TAS-146 | TAS-149 |
 
 `pr-219-TAS-388.yml` was here for TAS-389 and was deleted on 2026-10-23, the same day it
 was written: backend PR #219 merged unchanged at the pinned head `e9013d2a` as `ce189843`

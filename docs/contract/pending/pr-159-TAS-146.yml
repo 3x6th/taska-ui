@@ -1,0 +1,73 @@
+# Pending gateway contract — backend PR #159 (TAS-146)
+# Archiving a project: DELETE /api/v1/projects/{projectId}, soft delete via archivedAt
+#
+# Source: https://github.com/VladislavYurin/taska-backend/pull/159
+# Head commit: 97464fe0dc7d75a4b94c35997acefc651ca0e2f7
+# PR state on 2026-10-20: open, REVIEW_REQUIRED, CONFLICTING with develop (develop @ e8a8d316b326)
+# Extracted 2026-10-20 in TAS-149
+# Base for this extract: merge-base 5a8d805a3ac3e3522b595773097550832566e26c
+#
+# One new method on an existing path — the only hunk in the PR's openapi.yml. No schema
+# changes: `archivedAt` (nullable date-time) is already on ProjectResponseDto in
+# docs/contract/openapi.yml. Probed without a token on 2026-10-20: `DELETE
+# /api/v1/projects/not-a-uuid` answers **405** METHOD_NOT_ALLOWED (the path exists for GET),
+# so `isUndeployedRoute` reads it the same way it reads PATCH from PR #155.
+#
+# This is NOT the contract. docs/contract/openapi.yml stays the authority until the PR merges.
+# Delete this file when it does and the snapshot is refreshed.
+#
+# What the Java does that the yml does not say, read at the head above (api-contract-guard,
+# 2026-10-20). Where they disagree, the Java wins.
+#
+# - **200 with the project, and idempotent.** ProjectServiceImpl.softDeleteProject sets
+#   archivedAt = now and writes outbox PROJECT_ARCHIVED; a second DELETE answers 200 with the
+#   original archivedAt and writes nothing. The body comes from the entity mapper, so
+#   currentUserRole is null on it.
+# - **ADMIN only.** Missing project 404 "Project not found"; caller not a member **404 "User not
+#   found"** (GET /projects/{id} answers 403 to the same caller); member below ADMIN 403
+#   PERMISSION_DENIED "User must have the role ADMIN"; malformed id 400 INVALID_ARGUMENT.
+# - **No new error code on the wire.** DomainStatus.PROJECT_ARCHIVED → GrpcExceptionMapper
+#   FAILED_PRECONDITION → RestErrorMapper **400** code "FAILED_PRECONDITION", the same code as
+#   label and transition-validator refusals. Messages differ by service: "Project archived"
+#   (issue-service, workflow-service) and "Project <uuid> has been archived" (project-service
+#   member writes). The UI must not match on either sentence.
+# - **Reads are refused, not only writes.** Every issue-service ProjectAccessibility.check
+#   refuses an archived project: issue get/list/search-by-project/board, comments, project and
+#   issue labels, links, worklogs, watchers, watch state, attachment list/download, and every
+#   write. Role is checked before archived, so a refused role answers 403 first. This is the
+#   question raised on TAS-146 on 2026-09-17, still unanswered at this head.
+# - **Not refused:** GET /projects/{id} (200 with archivedAt), GET /projects (archived projects
+#   still listed), GET /projects/{id}/members, global issue search without projectId (archived
+#   issues appear), workflow reads, PATCH /projects/{id} from PR #155.
+# - **After rebase onto develop (inferred, not read):** GET /projects/{id}/context composes
+#   issue-service ListProjectLabels, which refuses — so the board's first read becomes a 400.
+# - **Notification:** PROJECT_ARCHIVED goes to createdBy only, without projectId; the gateway
+#   NotificationMapper has no case for it, so the client sees "UNKNOWN".
+
+paths:
+  /api/v1/projects/{projectId}:
+    delete:
+      summary: Мягкое удаление проекта по идентификатору
+      operationId: deleteProject
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Проект успешно удален
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
