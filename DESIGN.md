@@ -750,7 +750,7 @@ padding:6vh 16px`. Окно: `position:relative` (`top/right/bottom:auto`), widt
   not archived.»
 - **Успех** — диалог закрывается, строка `["projects"]` берёт `archivedAt` (роль читателя
   сохраняется), запросы доски проекта удаляются; с доски — переход на `/projects` с `replace`.
-- **Уже в архиве** — кнопки нет, одна строка 12 `--fg-2`: «Archived on {Mon D}. Its board and
+- **Уже в архиве** — кнопки нет, одна строка 12 `--fg-2`: «Archived on {Mon D} (другой год — {Mon D, YYYY}). Its board and
   issues no longer open, and Taska cannot restore it.» Предложение не растягивается по
   высоте (flex-basis только внутри строки с кнопкой).
 
