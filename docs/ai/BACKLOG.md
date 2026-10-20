@@ -1984,6 +1984,10 @@ them blocks the story.
   skipped on the client (see API-DIVERGENCE). Settled by TAS-146 allowing reads,
   or by TAS-211 taking counts off `listIssues`; if neither lands first, raise it
   with the owner before the deploy rather than shipping the banner.
+- **`IssueKeyScreen.tsx:15` and `ProjectMembersModal.tsx:28` keep local
+  `retryUnlessMissing` copies**, so a key link into an archived project spends
+  one retry on a final 400 where the board no longer does. Move both to
+  `isClientRefusal` (`release-reviewer`, TAS-149).
 - **A successful archive is not announced** to a screen reader — the dialog
   closes and the pill appears, with no status message.
 - **Remove both 405 notes** (`PATCH` and `DELETE /projects/{id}`) once a no-token
