@@ -48,6 +48,7 @@ import { taskaApi } from "../api/client";
 import {
   apiErrorFacts,
   isIssueVersionConflict,
+  isClientRefusal,
   isMissingOrForbidden,
   IssueVersionConflictError,
 } from "../api/errors";
@@ -156,16 +157,17 @@ type AssigneeFilter = string | "ALL";
 /** A project label's id, or every issue whatever it carries. */
 type LabelFilter = string | "ALL";
 type WorkflowsByIssueType = ProjectContext["workflows"];
-// "Missing or not yours" is an answer, not a transient failure. Without this,
-// the app-wide `retry: 1` (src/main.tsx) spends a full retryDelay re-asking a
-// question already answered, and the board shows a second of plausible chrome —
-// project name, filters, empty columns — for a project the viewer must not see,
-// before §4.18 replaces it. `failureCount < 1` reproduces the global budget, so
-// genuine failures (network, 5xx) still get their one retry.
+// A 4xx is an answer, not a transient failure. Without this, the app-wide
+// `retry: 1` (src/main.tsx) spends a full retryDelay re-asking a question
+// already answered: for "missing or not yours" the board showed a second of
+// plausible chrome — project name, filters, empty columns — for a project the
+// viewer must not see, before §4.18 replaced it; for an archived project's 400
+// `FAILED_PRECONDITION` (backend PR #159, TAS-149) it asked twice to be refused
+// twice. `failureCount < 1` reproduces the global budget, so genuine failures
+// (network, 5xx) still get their one retry.
 // `error: Error` is not decoration: react-query infers each query's TError from
 // this signature, and `unknown` here would make every `query.error` unknown.
-const retryUnlessMissing = (failureCount: number, error: Error) =>
-  !isMissingOrForbidden(error) && failureCount < 1;
+const retryUnlessRefused = (failureCount: number, error: Error) => !isClientRefusal(error) && failureCount < 1;
 // The gateway caps `pageSize` for comments at 50.
 const commentsPageSize = 50;
 // DESIGN.md §4.14. The box itself is instant; only the request waits.
@@ -437,7 +439,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryKey: projectContextKey(projectId),
     enabled: Boolean(projectId),
     queryFn: () => taskaApi.getProjectContext(projectId),
-    retry: retryUnlessMissing,
+    retry: retryUnlessRefused,
   });
   // The one filter the *server* applies, so it belongs in the key rather than
   // in the predicate below with the other three. With `pageSize: 100` a
@@ -453,7 +455,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         pageSize: 100,
         labelId: labelFilter === "ALL" ? undefined : labelFilter,
       }),
-    retry: retryUnlessMissing,
+    retry: retryUnlessRefused,
   });
   const meQuery = useQuery({
     queryKey: ["me"],
@@ -611,7 +613,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         assigneeId: assigneeFilter === "ALL" ? undefined : assigneeFilter,
         pageSize: boardSearchPageSize,
       }),
-    retry: retryUnlessMissing,
+    retry: retryUnlessRefused,
   });
   const searchUnread = useUnanswered(searchQuery);
   // Whether the server's answer is about the question currently in the box.
@@ -4134,7 +4136,7 @@ function IssueLabelsSection({
   const projectLabelsQuery = useQuery({
     queryKey: projectContextKey(projectId),
     queryFn: () => taskaApi.getProjectContext(projectId),
-    retry: retryUnlessMissing,
+    retry: retryUnlessRefused,
     select: (context: ProjectContext) => context.labels,
   });
 
@@ -4341,7 +4343,7 @@ function IssueLinksSection({
   const projectIssuesQuery = useQuery({
     queryKey: ["issues", projectId, "ALL"],
     queryFn: () => taskaApi.listIssues(projectId, { pageSize: 100 }),
-    retry: retryUnlessMissing,
+    retry: retryUnlessRefused,
   });
   const issues = useMemo(() => projectIssuesQuery.data?.items ?? [], [projectIssuesQuery.data]);
 
@@ -5856,7 +5858,7 @@ function ProjectLabelsModal({
   const labelsQuery = useQuery({
     queryKey: labelsKey,
     queryFn: () => taskaApi.getProjectContext(projectId),
-    retry: retryUnlessMissing,
+    retry: retryUnlessRefused,
     select: (context: ProjectContext) => context.labels,
   });
   const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);

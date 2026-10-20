@@ -46,7 +46,7 @@ test("an ADMIN archives a project after confirming, and its card says Archived",
 
   // The consequence, said before anything is sent — and Cancel is where focus
   // lands, so a stray Enter does not archive.
-  await expect(dialog.getByText(/Its board and issues stop opening, and there is no way to restore it/)).toBeVisible();
+  await expect(dialog.getByText("WEB will be archived for everyone. Taska cannot restore it.")).toBeVisible();
   const confirmCancel = dialog.locator(".project-archive-confirm").getByRole("button", { name: "Cancel" });
   await expect(confirmCancel).toBeFocused();
 

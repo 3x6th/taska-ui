@@ -1672,24 +1672,14 @@ h1 {
 }
 
 /* "Archived" on a project card and in the board header (TAS-149), from the
-   row's `archivedAt`. No design of its own in DESIGN.md yet, so this is the
-   quiet neutral pill the system already has — §4.5's label-chip geometry
-   (height 20, radius 20, 11.5/600) in `.admin-pill`'s colours: `--fg-2` on
-   `--surface-2`, 6.38:1 light / 7.03:1 dark. Neutral on purpose: archiving is a
-   state the reader chose, not a fault, so it takes no `--danger` and no hue
-   (§1). `flex: none` so a long name ellipsises before the pill does. Proposed
-   for art-director's ruling, not yet a §4 entry. */
+   row's `archivedAt` — DESIGN.md §4.5's neutral pill. It shares
+   `.admin-pill`'s rule (below, in the admin section) rather than copying it:
+   `--fg-2` on `--surface-2`, 6.38:1 light / 7.03:1 dark, no `--danger` and no
+   hue, because archiving is a state the reader chose, not a fault (§1). Only
+   what a pill in a name row needs is added here: `flex: none` so a long name
+   ellipsises before the pill does. */
 .project-archived-badge {
-  display: inline-flex;
   flex: none;
-  align-items: center;
-  height: 20px;
-  border-radius: 20px;
-  padding: 0 8px;
-  background: var(--surface-2);
-  color: var(--fg-2);
-  font-size: 11.5px;
-  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -3776,8 +3766,12 @@ h1 {
 
    ACTIVE has no modifier of its own and neither does a status this build does
    not recognise: both wear exactly this, so a class for either would be a hook
-   with no rule behind it — which reads like a style and is not one. */
-.admin-pill {
+   with no rule behind it — which reads like a style and is not one.
+
+   `.project-archived-badge` (TAS-149) is the same neutral pill on a project
+   card and the board header, so it takes this rule rather than a copy. */
+.admin-pill,
+.project-archived-badge {
   display: inline-flex;
   align-items: center;
   height: 20px;
@@ -5712,8 +5706,10 @@ h1 {
 }
 
 /* In flight both answers are `aria-disabled` (§4.1's in-flight recipe): the
-   labels stay, nothing fades, and the cursor says the request is out. */
-.issue-delete-confirm .compact-button[aria-disabled="true"] {
+   labels stay, nothing fades, and the cursor says the request is out. The edit
+   dialog's archive strip (TAS-149) is the same strip in flight. */
+.issue-delete-confirm .compact-button[aria-disabled="true"],
+.project-archive-confirm .compact-button[aria-disabled="true"] {
   cursor: progress;
 }
 
@@ -5739,7 +5735,6 @@ h1 {
 }
 
 .project-archive-note {
-  flex: 1 1 220px;
   margin: 0;
   color: var(--fg-2);
   font-size: 12px;
@@ -5747,8 +5742,23 @@ h1 {
   text-wrap: pretty;
 }
 
+/* The basis only in the row. The archived project's note is a child of the
+   column `.project-archive` itself, where a basis would be a 220px height. */
+.project-archive-row > .project-archive-note {
+  flex: 1 1 220px;
+}
+
 .project-archive-trigger {
   flex: none;
+}
+
+/* While its question is open the trigger wears the answer's edge (§4.22's
+   `--danger` at 45%) with `--fg` text — never `--danger` text, which measures
+   under §7's 4.5:1. Three classes' worth, so `.compact-button:hover` (later
+   in this file, 0,2,0) cannot repaint it accent under the pointer. */
+.secondary-button.project-archive-trigger[aria-expanded="true"] {
+  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
+  color: var(--fg);
 }
 
 /* §4.22's strip in a column, not a member row: no avatar indent, and no flex
@@ -5757,10 +5767,6 @@ h1 {
 .member-confirm.project-archive-confirm {
   flex: none;
   margin: 0;
-}
-
-.project-archive-confirm .compact-button[aria-disabled="true"] {
-  cursor: progress;
 }
 
 /* ---------- Share (TAS-248) ---------- */

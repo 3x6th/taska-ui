@@ -1223,7 +1223,7 @@ export class RestTaskaApi implements TaskaApi {
    * develop `398285cde074`); until then a missing object failed the whole read
    * with **404**, the status this route gives a missing project. A read that
    * fails for its own reasons is still mostly silent: the board's
-   * `retryUnlessMissing` does not retry a 404 or a 403, only the watcher
+   * `retryUnlessRefused` does not retry a 4xx, only the watcher
    * section of an open issue says the members could not be read, and only to
    * an ADMIN. Everywhere else there are simply no assignee chips and no people
    * in the assignee filter, and the reporter reads "Unknown".

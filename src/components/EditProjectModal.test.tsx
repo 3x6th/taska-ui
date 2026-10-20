@@ -157,7 +157,7 @@ describe("archiving a project from the dialog", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     // Cancel takes focus first (§4.22), and the sentence says the consequence.
     expect(within(dialog).getAllByRole("button", { name: "Cancel" }).at(-1)).toHaveFocus();
-    expect(within(dialog).getByText(/Its board and issues stop opening, and there is no way to restore it/)).toBeVisible();
+    expect(within(dialog).getByText("TAS will be archived for everyone. Taska cannot restore it.")).toBeVisible();
     fireEvent.click(within(dialog).getByRole("button", { name: "Archive TAS" }));
   };
 
@@ -183,6 +183,22 @@ describe("archiving a project from the dialog", () => {
     expect(calls.contextReads).toEqual([]);
     // The card's own counts stay, true as of a moment ago.
     expect(queryClient.getQueryData(["project-summaries", "project-1"])).toBeDefined();
+  });
+
+  it("wears the strip's danger edge on the trigger while its question is open", () => {
+    const { dialog } = renderDialog(baseProject());
+    const trigger = within(dialog).getByRole("button", { name: "Archive project" });
+
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    // `aria-expanded="true"` is what `.project-archive-trigger[aria-expanded="true"]` paints.
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("names the year of an archive from another year", () => {
+    const { dialog } = renderDialog(baseProject({ archivedAt: "2024-03-05T12:00:00Z" }));
+
+    expect(within(dialog).getByText(/^Archived on Mar 5, 2024\./)).toBeVisible();
   });
 
   it("closes the question on Cancel without sending anything", () => {
@@ -242,9 +258,12 @@ describe("archiving a project from the dialog", () => {
   );
 
   it("states an archived project as archived and does not offer it again", () => {
-    const { dialog } = renderDialog(baseProject({ archivedAt: "2026-10-20T10:00:00Z" }));
+    const { dialog } = renderDialog(baseProject({ archivedAt: new Date().toISOString() }));
 
-    expect(within(dialog).getByText(/Archived on/)).toBeVisible();
+    // No year for this year's date (`formatDayWithYearIfOther`).
+    expect(
+      within(dialog).getByText(/^Archived on [A-Z][a-z]{2} \d{1,2}\. Its board and issues no longer open, and Taska cannot restore it\.$/),
+    ).toBeVisible();
     expect(within(dialog).queryByRole("button", { name: /Archive/ })).not.toBeInTheDocument();
   });
 });

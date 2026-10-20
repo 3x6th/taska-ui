@@ -132,6 +132,39 @@ export function isMissingOrForbidden(error: unknown): boolean {
 }
 
 /**
+ * The gRPC codes `RestErrorMapper.mapGrpcCodeToHttpStatus` turns into a 4xx,
+ * read at backend `develop` `e8a8d316b326`: INVALID_ARGUMENT and OUT_OF_RANGE
+ * and FAILED_PRECONDITION → 400, UNAUTHENTICATED → 401, PERMISSION_DENIED →
+ * 403, NOT_FOUND → 404, ALREADY_EXISTS and ABORTED → 409, RESOURCE_EXHAUSTED →
+ * 429. The mock carries only the code, so this is how its refusals are read the
+ * same way as the gateway's statuses.
+ */
+const CLIENT_REFUSAL_CODES = new Set([
+  "INVALID_ARGUMENT",
+  "OUT_OF_RANGE",
+  "FAILED_PRECONDITION",
+  "UNAUTHENTICATED",
+  "PERMISSION_DENIED",
+  "NOT_FOUND",
+  "ALREADY_EXISTS",
+  "ABORTED",
+  "RESOURCE_EXHAUSTED",
+]);
+
+/**
+ * Whether the server answered with a 4xx — a refusal it will give again,
+ * rather than a failure worth one retry. Read off the status when there is one
+ * (rest, hybrid), off the code when there is not (mock). A 400
+ * `FAILED_PRECONDITION` "Project archived" (backend PR #159) is the case that
+ * made this a question: the board used to spend its one retry re-asking it.
+ */
+export function isClientRefusal(error: unknown): boolean {
+  const { code, status } = apiErrorFacts(error);
+  if (status !== null) return status >= 400 && status < 500;
+  return code !== null && CLIENT_REFUSAL_CODES.has(code);
+}
+
+/**
  * Whether this failure means "the gateway does not have this route yet" rather
  * than "the thing you asked for is not there".
  *

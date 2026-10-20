@@ -3060,8 +3060,10 @@ export class MockTaskaStore {
    *
    * The answer comes from the entity mapper on the server, which sets no role,
    * so it carries `currentUserRole: null` — like `POST /projects` — rather than
-   * the reader's role. `updatedAt` is left alone: the PR's header does not say
-   * the soft delete moves it, and this store does not invent that it does.
+   * the reader's role. `updatedAt` moves with the first archive and only then:
+   * `Project.updatedAt` is `@LastModifiedDate` under `@EnableR2dbcAuditing` at
+   * that head, so the save that sets `archivedAt` stamps it, and the second
+   * call saves nothing.
    */
   archiveProject(projectId: string): Project {
     const project = this.projects.find((item) => item.id === projectId);
@@ -3075,7 +3077,11 @@ export class MockTaskaStore {
     if (member.role !== "ADMIN") {
       throw new MockApiError("PERMISSION_DENIED", "User must have the role ADMIN");
     }
-    if (!project.archivedAt) project.archivedAt = now();
+    if (!project.archivedAt) {
+      const at = now();
+      project.archivedAt = at;
+      project.updatedAt = at;
+    }
     return { ...project, currentUserRole: null };
   }
 
@@ -3105,8 +3111,10 @@ export class MockTaskaStore {
 
   /**
    * project-service's member writes on an archived project, in its own
-   * sentence (PR #159 head `97464fe`), after the actor's role has been checked
-   * — the same order the server keeps.
+   * sentence (PR #159 head `97464fe`). Checked **first**, before the rows are
+   * read and before the actor's role: the Java runs
+   * `projectValidator.isArchived(...).then(validateBefore…)`, so an archived
+   * project answers this to an ADMIN and a non-admin alike.
    */
   private refuseArchivedMemberWrite(projectId: string): void {
     if (this.projects.find((item) => item.id === projectId)?.archivedAt) {
@@ -3193,6 +3201,7 @@ export class MockTaskaStore {
    */
   addProjectMember(projectId: string, userId: string, role: ProjectRole): ProjectMemberWriteResult {
     const id = memberWriteId(userId);
+    this.refuseArchivedMemberWrite(projectId);
     const rows = this.memberRowsForWrite(projectId);
     if (rows.find((member) => member.userId === this.currentUserId)?.role !== "ADMIN") {
       throw new MockApiError(
@@ -3200,7 +3209,6 @@ export class MockTaskaStore {
         `Actor ${this.currentUserId} is not an admin of project: ${projectId}`,
       );
     }
-    this.refuseArchivedMemberWrite(projectId);
     if (rows.some((member) => member.userId === id)) {
       throw new MockApiError("ALREADY_EXISTS", `User with id: ${id} already exists in project: ${projectId}`);
     }
@@ -3270,10 +3278,13 @@ export class MockTaskaStore {
    * target who is not on the project. Then the last-admin rule, which is
    * `FAILED_PRECONDITION` (a 400 on the wire) and counts every ADMIN row the
    * project has, the actor's own included. A project with no rows at all is
-   * still `NOT_FOUND`, first, from `memberRowsForWrite`.
+   * still `NOT_FOUND` from `memberRowsForWrite` — after one earlier check, the
+   * archived refusal (`refuseArchivedMemberWrite`), which the server runs
+   * before any of these.
    */
   private memberForModify(projectId: string, userId: string): ProjectMember {
     const id = memberWriteId(userId);
+    this.refuseArchivedMemberWrite(projectId);
     const rows = this.memberRowsForWrite(projectId);
     if (rows.find((member) => member.userId === this.currentUserId)?.role !== "ADMIN") {
       throw new MockApiError(
@@ -3281,7 +3292,6 @@ export class MockTaskaStore {
         `User with id: ${this.currentUserId} is not an admin of project: ${projectId}`,
       );
     }
-    this.refuseArchivedMemberWrite(projectId);
     const target = rows.find((member) => member.userId === id);
     if (!target) {
       throw new MockApiError(
@@ -3787,6 +3797,11 @@ export class MockTaskaStore {
     if (!this.membersByProject[issue.projectId]?.some((member) => member.userId === this.currentUserId)) {
       throw new MockApiError("PERMISSION_DENIED", "Access denied");
     }
+    // A guess about the rebased state, not a reading: PR #159's head
+    // `97464fe` predates `GET /issues/by-key/{issueKey}`, so no Java says what
+    // this route answers for an archived project. Refused like the issue read
+    // it sits beside, after the membership check (role before archived), until
+    // the rebased PR can be read.
     this.refuseArchived(issue.projectId);
     return this.issueView(issue);
   }

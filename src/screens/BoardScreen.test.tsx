@@ -1277,7 +1277,7 @@ function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
 }
 
 /**
- * The board gives a genuine failure one retry (`retryUnlessMissing`), so a
+ * The board gives a genuine failure one retry (`retryUnlessRefused`), so a
  * banner is a second away rather than a tick away. That budget is deliberate,
  * so the tests wait it out instead of taking it off the screen.
  */
@@ -1438,6 +1438,16 @@ describe("board failures the user can see", () => {
     expect(alerts.some((alert) => /project could not be loaded/i.test(alert.textContent ?? ""))).toBe(true);
     expect(screen.getAllByText("Project archived").length).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: "Copy request id 5d0c2e7a-archived" }).length).toBeGreaterThan(0);
+    // A 4xx is final: the board asked once and did not spend its retry.
+    expect(memberReads()).toBe(1);
+  });
+
+  it("still gives a 5xx its one retry", async () => {
+    failProject(Object.assign(new Error("Internal error"), { status: 500 }));
+    renderBoard();
+
+    await screen.findAllByRole("alert", undefined, AFTER_RETRY);
+    expect(memberReads()).toBe(2);
   });
 
   it("leaves an editor's board alone", async () => {

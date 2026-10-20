@@ -667,6 +667,9 @@ describe("MockTaskaApi", () => {
       expect(archived.archivedAt).toEqual(expect.any(String));
       // The entity mapper sets no role on this answer.
       expect(archived.currentUserRole).toBeNull();
+      // `@LastModifiedDate`: the save that archives stamps `updatedAt` too.
+      expect(archived.updatedAt).toBe(archived.archivedAt);
+      expect(archived.updatedAt).not.toBe(project.updatedAt);
     });
 
     it("is idempotent: a second archive answers the same archivedAt", async () => {
@@ -675,6 +678,8 @@ describe("MockTaskaApi", () => {
       const second = await api.archiveProject(project.id);
 
       expect(second.archivedAt).toBe(first.archivedAt);
+      // Nothing is saved the second time, so nothing is stamped.
+      expect(second.updatedAt).toBe(first.updatedAt);
     });
 
     it("refuses a member below ADMIN with PERMISSION_DENIED", async () => {
@@ -738,6 +743,21 @@ describe("MockTaskaApi", () => {
         code: "FAILED_PRECONDITION",
         message: `Project ${project.id} has been archived`,
       });
+    });
+
+    it("refuses an archived project's member writes before the actor's role, to a non-admin too", async () => {
+      // `projectValidator.isArchived(...).then(validateBefore…)`: the archive
+      // is checked first, so Mark (a MEMBER) is told it is archived, not 403.
+      await api.archiveProject(project.id);
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const archived = { code: "FAILED_PRECONDITION", message: `Project ${project.id} has been archived` };
+
+      await expect(api.addProjectMember(project.id, "11111111-1111-4111-8111-111111111111", "VIEWER")).rejects.toMatchObject(
+        archived,
+      );
+      await expect(api.removeProjectMember(project.id, "e65186a2-b807-42ae-a66f-711be116a93b")).rejects.toMatchObject(
+        archived,
+      );
     });
   });
 

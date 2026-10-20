@@ -5,7 +5,7 @@ import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import type { UpdateProjectInput } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import type { Project, ProjectContext } from "../domain/types";
-import { computedProjectColor, formatDay, keyBadgeStyle, labelColorChoices } from "../lib/format";
+import { computedProjectColor, formatDayWithYearIfOther, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import { projectContextKey } from "../lib/projectContext";
 import { ColorSwatches, type ColorChoice } from "./ColorSwatches";
 import { ErrorNote } from "./ErrorNote";
@@ -203,6 +203,11 @@ export function EditProjectModal({
    *   second position, the rule `ProjectMembersModal.leaveProject` set out.
    *   `project-summaries` is kept: it is the card's own count, true as of a
    *   moment ago, and the projects screen would otherwise refetch it at once.
+   *   `["issue-by-key", key]` is not matched either — its second element is an
+   *   issue key, not this id — and that is harmless: only `IssueKeyScreen`
+   *   observes it, and that screen is not mounted while this dialog is; a
+   *   later key link asks again and meets the server's own refusal, which
+   *   that screen shows as any other.
    *
    * `onArchived` (the board's navigation) runs before the removal, as in
    * `leaveProject`: `navigate` only schedules the route change, and a query
@@ -360,8 +365,8 @@ export function EditProjectModal({
             // Archiving again is a 200 that changes nothing, so it is not
             // offered; the fact is stated instead.
             <p className="project-archive-note">
-              Archived on {formatDay(project.archivedAt)}. Its issues no longer open, and Taska has no way to restore
-              it yet.
+              Archived on {formatDayWithYearIfOther(project.archivedAt)}. Its board and issues no longer open, and
+              Taska cannot restore it.
             </p>
           ) : (
             <div className="project-archive-row">
@@ -404,8 +409,7 @@ export function EditProjectModal({
               }}
             >
               <p className="member-confirm-sentence" id={`${archiveConfirmId}-sentence`}>
-                {project.projectKey} will be archived for everyone. Its board and issues stop opening, and there is no
-                way to restore it from Taska.
+                {project.projectKey} will be archived for everyone. Taska cannot restore it.
               </p>
               <div className="member-confirm-actions">
                 {/* Both `aria-disabled` while the request is out (§4.1's
