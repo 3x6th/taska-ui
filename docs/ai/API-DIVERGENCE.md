@@ -1897,7 +1897,8 @@ Everything below is the entry as it stood, in the past tense.
   an archived card's issue count will read as unknown, because its summary's
   `listIssues` answers 400 — the server's honest answer.
 - **User-visible effect:** an archived project stays in the list with its pill,
-  and its board does not open. The confirm says so in as many words. On the
+  and its board does not open. The note beside the Archive trigger says so in
+  as many words; the confirm adds that Taska cannot restore it. On the
   stand, while any archived project is in the list, `/projects` also shows the
   page-level "Some project details could not be loaded" notice on every visit
   and focus return, because that card's `listIssues` answers 400. The read is
