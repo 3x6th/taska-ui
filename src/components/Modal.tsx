@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 interface ModalProps {
   title: string;
@@ -65,17 +65,43 @@ function trapTab(event: KeyboardEvent<HTMLElement>) {
 
 export function Modal({ title, eyebrow, onClose, children, footer }: ModalProps) {
   const dialogRef = useRef<HTMLElement>(null);
+  /**
+   * The control the dialog was opened from, so closing hands focus back to it
+   * (§7). Read during the first render rather than in an effect: by the time
+   * any effect here runs, a field's `autoFocus` has already moved focus inside.
+   */
+  const [opener] = useState(() => {
+    const active = document.activeElement;
+    return active instanceof HTMLElement && active !== document.body ? active : null;
+  });
+
   // The trap above holds focus only once it is inside, and a dialog whose
-  // content asks for none (New project, release-reviewer TAS-299) left it on
-  // the button that opened it, under the scrim. So on mount the first stop
+  // content asks for none (a confirmation, release-reviewer TAS-299) left it
+  // on the button that opened it, under the scrim. So on mount the first stop
   // takes it — unless the content has already placed it: `autoFocus` lands
   // during commit, and a child's own effect runs before this one, so either
   // wins.
+  //
+  // The cleanup is the way back, and it acts only when focus went with the
+  // dialog, to `<body>`. A caller that put focus somewhere on purpose (the
+  // admin row's next action after a 409, the Users section's trigger after a
+  // write) or content mounted by the close that took it has already decided,
+  // and keeps it — and StrictMode's rehearsal unmount, which leaves focus
+  // inside the dialog, is not a close. A trigger that went with the close is
+  // detached, and focusing it does nothing.
+  //
+  // A plain `focus()`: measured in Chromium, the ring comes back drawn after
+  // Esc or a keyboard Cancel and undrawn after a pointer press — the browser's
+  // own modality, as TAS-193 ruled for focus handed on.
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (!dialog || dialog.contains(document.activeElement)) return;
-    tabbables(dialog)[0]?.focus();
-  }, []);
+    if (dialog && !dialog.contains(document.activeElement)) tabbables(dialog)[0]?.focus();
+    return () => {
+      const active = document.activeElement;
+      if (!opener || (active && active !== document.body)) return;
+      opener.focus();
+    };
+  }, [opener]);
 
   return (
     <div className="modal-layer" role="presentation">

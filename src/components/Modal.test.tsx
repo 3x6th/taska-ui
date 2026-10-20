@@ -1,6 +1,59 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { StrictMode, useState, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Modal } from "./Modal";
+
+/**
+ * A trigger and the dialog it opens, the way every caller holds one: a state
+ * flag, and the dialog mounted while it is set. `onCancel` is the content's own
+ * way out (a Cancel, a Save's success), given the close so it can do something
+ * around it; `after` is drawn once the dialog has closed, in the same update.
+ */
+function Opened({
+  field,
+  triggerStays = true,
+  onCancel = (close) => close(),
+  after,
+}: {
+  field?: ReactNode;
+  triggerStays?: boolean;
+  onCancel?: (close: () => void) => void;
+  after?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [closed, setClosed] = useState(false);
+  const close = () => {
+    setOpen(false);
+    setClosed(true);
+  };
+  return (
+    <>
+      {triggerStays || !closed ? (
+        <button onClick={() => setOpen(true)} type="button">
+          New project
+        </button>
+      ) : null}
+      <button type="button">Elsewhere</button>
+      {closed ? after : null}
+      {open ? (
+        <Modal onClose={close} title="New project">
+          {field}
+          <button onClick={() => onCancel(close)} type="button">
+            Cancel
+          </button>
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
+/** Opens the dialog from its trigger the way a keyboard does: focus on it, then the press. */
+function openFrom(name = "New project") {
+  const trigger = screen.getByRole("button", { name });
+  trigger.focus();
+  fireEvent.click(trigger);
+  return trigger;
+}
 
 function renderModal() {
   const onClose = vi.fn();
@@ -59,8 +112,8 @@ describe("Modal", () => {
     document.body.append(opener);
     opener.focus();
     render(
-      <Modal onClose={() => {}} title="New project">
-        <input aria-label="Key" />
+      <Modal onClose={() => {}} title="Retry outbox event">
+        <input aria-label="Reason" />
       </Modal>,
     );
 
@@ -87,5 +140,72 @@ describe("Modal", () => {
     expect(fireEvent.keyDown(field, { key: "Tab" })).toBe(true);
     expect(fireEvent.keyDown(field, { key: "Tab", shiftKey: true })).toBe(true);
     expect(field).toHaveFocus();
+  });
+});
+
+/**
+ * §7's way back (TAS-299 follow-up): closing gives focus to the control the
+ * dialog was opened from — whichever way it closed, and only when focus went
+ * with the dialog. The ring on the way back is measured in Chromium, in
+ * `e2e/focus-ring.spec.ts`; jsdom has no input modality to measure it with.
+ */
+describe("Modal, closing", () => {
+  it("gives focus back to the control it was opened from, after Close and after the content's own Cancel", () => {
+    render(<Opened field={<input aria-label="Key" autoFocus />} />);
+
+    const trigger = openFrom();
+    expect(screen.getByLabelText("Key")).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(trigger).toHaveFocus();
+
+    openFrom();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(trigger).toHaveFocus();
+  });
+
+  it("does the same under StrictMode, whose rehearsal unmount is not a close and leaves autoFocus where it landed", () => {
+    render(
+      <StrictMode>
+        <Opened field={<input aria-label="Key" autoFocus />} />
+      </StrictMode>,
+    );
+
+    const trigger = openFrom();
+    expect(screen.getByLabelText("Key")).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(trigger).toHaveFocus();
+  });
+
+  it("gives focus to nothing when the trigger went with the close", () => {
+    render(<Opened triggerStays={false} />);
+
+    openFrom();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("button", { name: "New project" })).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("leaves focus where the caller put it on the way out", () => {
+    render(
+      <Opened
+        onCancel={(close) => {
+          close();
+          screen.getByRole("button", { name: "Elsewhere" }).focus();
+        }}
+      />,
+    );
+
+    openFrom();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
+  });
+
+  it("leaves focus on what the close itself drew and focused — a new card, an opened panel", () => {
+    render(<Opened after={<button autoFocus type="button">TAS-108</button>} />);
+
+    openFrom();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "TAS-108" })).toHaveFocus();
   });
 });

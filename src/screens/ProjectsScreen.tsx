@@ -333,12 +333,13 @@ function ProjectCard({
 
 function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const queryClient = useQueryClient();
-  const [projectKey, setProjectKey] = useState("API");
-  const [name, setName] = useState("API Gateway");
-  // Empty, not "REST facade over Taska services". That sentence shipped as the
-  // box's initial value — somebody's demo text pre-typed into a form for every
-  // reader — and until this build it was also unsendable, because
-  // `RestTaskaApi.createProject` dropped `description` on the floor.
+  // All three empty. Key and Name used to open as "API" and "API Gateway", and
+  // the description as "REST facade over Taska services" — demo text pre-typed
+  // for every reader (TAS-148). Once Key took focus on open (TAS-299) the caret
+  // landed after "API", so typing a key appended to it: "APIWEB". Create stays
+  // disabled until both are at least two characters (`canSubmit`).
+  const [projectKey, setProjectKey] = useState("");
+  const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   /**
    * `null` is Automatic: no `color` in the body, so the project computes one
@@ -395,7 +396,15 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       >
         <label className="field">
           <span>Key</span>
-          <input className="mono-input" value={projectKey} onChange={(event) => setProjectKey(event.target.value.toUpperCase())} maxLength={6} />
+          {/* The first field takes focus, as in every form dialog (§7): `Modal`'s
+              fallback to Close is for content with nothing to fill in. */}
+          <input
+            autoFocus
+            className="mono-input"
+            value={projectKey}
+            onChange={(event) => setProjectKey(event.target.value.toUpperCase())}
+            maxLength={6}
+          />
         </label>
         <label className="field">
           <span>Name</span>

@@ -949,7 +949,8 @@ time.
   the mismatch between the two surfaces is the part a user notices.
 - **The "Manage labels" icon button takes its accessible name from `title`,
   not `aria-label`,** which §7 makes mandatory for text-free icon buttons.
-  Pre-existing pattern, shared with other icon buttons on the board.
+  Pre-existing pattern, shared with other icon buttons on the board. Found
+  again on the TAS-299 follow-up, where the panel's Close got its `aria-label`.
 - **The three `onError` restores TAS-169 added are themselves late writes, and
   none is pinned.** Each is guarded (`current === ""`, so it can only ever
   write into a field the user has left empty) and each is there for a good
@@ -2292,9 +2293,10 @@ is what recurs.
 - **Five from TAS-148's release review**, all small and none worth its own
   commit. `.project-card` also matches the loading skeleton, so the eighteen new
   end-to-end locators are safe only because every one of them passes `hasText`
-  — while `global-search.spec.ts` already counts `.project-card` without it. The
-  New project form still ships pre-filled with "API" and "API Gateway", which is
-  the same demo text the pre-filled description was. The edit dialog's key badge
+  — while `global-search.spec.ts` already counts `.project-card` without it.
+  ~~The New project form still ships pre-filled with "API" and "API Gateway"~~
+  Closed by the TAS-299 follow-up: both open empty, since Key now takes focus
+  and the caret at the end of "API" turned "WEB" into "APIWEB". The edit dialog's key badge
   draws the project's saved colour, so picking a colour gives no preview of the
   colour being picked. The "cannot be set back to automatic" note is wired
   through `aria-describedby` on a `role="group"` whose swatch is `disabled` and
@@ -3818,3 +3820,21 @@ Frontend notes:
   recipe dims fill, border and label with `color-mix(in oklab, <token> 58%,
   var(--surface))` instead of `opacity`, so the ring stays at full `--accent`;
   apply to all four steady `aria-disabled` controls at once.
+- **`Esc` closes only some modals** (`frontend-builder`, TAS-299 follow-up):
+  `Modal` has no Esc handler, so New project, New issue, Manage labels and Edit
+  project ignore it (§7's open item); Members and the admin dialogs bind it
+  themselves. A shared Esc in `Modal` needs an opt-out for Members' layered Esc
+  (confirmation, then the open list, then the dialog).
+- **Resend shows the §7 ring after a pointer Cancel** (`art-director` TAS-299
+  follow-up N3, older than it): its Cancel has `autoFocus`
+  (`AdminInviteModals.tsx:310`), so the ring is already on when the pointer
+  closes the dialog. The other four admin dialogs return focus without it.
+- **After New issue → Create, focus lands on the board's New (or the column +)
+  behind the slide-over** (`release-reviewer` TAS-299 follow-up): `onCreated`
+  closes the dialog and opens the panel, and the panel takes no focus on open.
+  Before the follow-up it fell to `<body>`, so not worse; the slide-over's first
+  focus (§7's open item) closes it. Untested: the e2e closes New issue by Cancel.
+- **`Modal` records its opener at first render** (`release-reviewer`, theoretical):
+  a dialog swapped for another, or re-keyed, in one commit would record a
+  control inside the old one, and on close focus would fall to `<body>`. No
+  caller does this today.
