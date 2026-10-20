@@ -1808,7 +1808,7 @@ Everything below is the entry as it stood, in the past tense.
   and `color` on `CreateProjectRequestDto` and on `ProjectResponseDto`.
 - **Contract:** none of it is in `docs/contract/openapi.yml`. All of it is on
   backend PR #155, pinned at `docs/contract/pending/pr-155-TAS-145.yml` at head
-  `c4b8c2c4dd24`, whose header carries the four readings of that PR's Java that
+  `28f5fe1af002` (first pinned at `c4b8c2c4dd24`), whose header carries the four readings of that PR's Java that
   the yml does not state.
 - **Observed 2026-09-12**, probed without a token so nothing could be mutated:
   `PATCH /api/v1/projects/{uuid}` answers **405** with code
@@ -1846,28 +1846,84 @@ Everything below is the entry as it stood, in the past tense.
   cards show the pencil, and Save lands on the 405 "not shipped yet" line above
   while PR #155 is open. That is the state this entry designed, now reached on
   the stand.
-- **Two asymmetries that look like one rule and are not.** A description can be
-  cleared and a colour cannot. Both fields reach project-service as
-  `Optional<String>`, where an absent field and an explicit null are the same
-  value — structurally, at three layers: the gateway generator runs with
-  `openApiNullable=false` so the DTO field is a plain `String`, the gateway
-  client sets the proto field only when it is non-null, and the service adapter
-  reads the has-bit. But an empty string is a *value*, and `description` accepts
-  one where `color` is refused twice, by the gateway's `@Pattern` and again by
-  the service's own non-blank check. So `description: ""` genuinely clears,
-  storing the empty string rather than SQL null, and there is no request that
-  returns a colour to the computed one.
-- **User-visible effect of that second half:** choosing a project colour is a
-  one-way door. The dialog draws it as one — the Automatic swatch is disabled
-  once a colour is saved, with a line saying so — rather than offering a control
-  that silently fails.
+- **The one-way door is gone at PR #155's head `28f5fe1`** (re-read 2026-10-20,
+  TAS-149). The gateway now reads the raw JSON body and sets `clear_color` /
+  `clear_description` on an explicit `null` (`ProjectController.java:99-110`,
+  proto fields 6 and 7), so an absent field keeps, `null` clears to SQL null and
+  a string sets. Before that head both fields were `Optional<String>` end to end
+  and no request returned a colour to the computed one; the dialog drew that as
+  a disabled Automatic swatch with a line saying so. TAS-149 removed both: the
+  dialog sends `color: null` for Automatic and `description: null` when a box
+  that held text is emptied. `description: ""` is still accepted and stored as
+  the empty string — a legacy blank that a project edited under the old dialog
+  may carry; the dialog never sends it again. Asked on TAS-145 to normalise blank
+  to null.
 - **Removal:** [TAS-145](https://jira.ozero.dev/browse/TAS-145) / backend PR
-  #155 for the route itself. The one-way door needs more than that PR merging
-  and was raised on TAS-145 while it is open: either an explicit clear flag on
-  the request, or the gateway generator moving to `openApiNullable=true` so a
-  null can be told from an absent field at all. The second is the general fix
-  and touches every nullable DTO in the gateway, so it is the owner's call
-  rather than ours.
+  #155 **deployed**, not merged — the 405 note stays until a no-token probe of
+  `PATCH /api/v1/projects/not-a-uuid` answers 400 or 401 instead of 405 (still
+  405 on 2026-10-20). On rebase PR #155 must renumber `description`/`color` in
+  `ProjectResponse` (develop already uses 8 for `current_user_role`) and add both
+  columns to develop's explicit membership `SELECT`s, or the list and the
+  context drop them silently; both raised on TAS-145 on 2026-10-20.
+
+### Archiving a project is not on the gateway, and an archived project refuses its own reads
+
+- **Endpoint:** `DELETE /api/v1/projects/{projectId}` (archive), and with it
+  every issue-service read of an archived project.
+- **Contract:** not in `docs/contract/openapi.yml`. On backend PR #159, pinned at
+  `docs/contract/pending/pr-159-TAS-146.yml` at head `97464fe`, whose header
+  carries the Java readings. `archivedAt` itself is already in the snapshot.
+- **Observed 2026-10-20**, without a token: `DELETE
+  /api/v1/projects/not-a-uuid` answers **405** `METHOD_NOT_ALLOWED` — the path
+  exists for `GET`.
+- **Compensation for the 405:** the same as `PATCH` above. The Archive action in
+  the Edit project dialog reads the 405 through `isUndeployedRoute` and says
+  archiving is not on this gateway yet, in a quiet status note; nothing changes.
+- **What the PR does once it lands (read, not observed):** every
+  `ProjectAccessibility.check` in issue-service refuses an archived project,
+  reads included — board, issues, comments, labels, links, worklogs, watchers,
+  attachments — with **400 `FAILED_PRECONDITION` "Project archived"**, the same
+  code other refusals use; member writes in project-service answer the same code
+  with a different sentence. `GET /projects` still lists the project and
+  `GET /projects/{id}` answers 200 with `archivedAt`. After a rebase onto develop
+  `/context` composes those labels and is expected to 400 as well (inferred).
+- **What the UI does about it: nothing, on purpose.** No message matching, no
+  client-side hiding of archived projects, no client-side refusal of writes, no
+  read-only board built on an error sentence. The card and the board header draw
+  an "Archived" pill from `archivedAt`; a deep link to an archived board shows the
+  generic "could not be loaded" notice with the server's sentence and request id.
+  After a successful archive the client drops that project's cached queries
+  instead of invalidating them, so nothing refetches into the 400. On the stand
+  an archived card's issue count will read as unknown, because its summary's
+  `listIssues` answers 400 — the server's honest answer.
+- **User-visible effect:** an archived project stays in the list with its pill,
+  and its board does not open. The confirm says so in as many words. On the
+  stand, while any archived project is in the list, `/projects` also shows the
+  page-level "Some project details could not be loaded" notice on every visit
+  and focus return, because that card's `listIssues` answers 400. The read is
+  not skipped on `archivedAt` and the card is not filtered — that would be the
+  compensation this direction forbids. Removed by the read half of TAS-146, or
+  for good by the per-project counts of [TAS-211](https://jira.ozero.dev/browse/TAS-211)
+  (`GET /project-stats`), which takes `listIssues` off the projects screen.
+  `release-reviewer` asked to skip that read for rows with `archivedAt`;
+  declined on `api-contract-guard`'s ruling that skipping it is the compensation
+  itself (orchestrator, 2026-10-20). It has to be settled before #159 deploys —
+  see BACKLOG.
+- **Two more edges the PR leaves, recorded so nobody meets them cold:** a
+  `PROJECT_ARCHIVED` notification reaches the client as kind `UNKNOWN` (the
+  gateway `NotificationMapper` has no case for it), so it renders through the
+  unknown-kind path of §6; and global search without `projectId` still returns
+  issues of an archived project, which then open into the same 400. Both raised
+  on TAS-146 on 2026-10-20.
+- **Removal:** [TAS-146](https://jira.ozero.dev/browse/TAS-146) answering the
+  question raised on 2026-09-17 and again on 2026-10-20: either reads allowed and
+  writes refused (then [TAS-149](https://jira.ozero.dev/browse/TAS-149)'s
+  read-only board gets built), or the project hidden from `GET /projects` with a
+  distinguishable refusal. A distinct wire reason (`details.reason`) was asked
+  for in the same comment. The 405 note goes once a no-token probe of the
+  `DELETE` stops answering 405. The mock's archive refusals mirror the PR head
+  and change with it — including its 404 "User not found" for a non-member,
+  which the backend answers where `GET` answers 403 (raised on TAS-146).
 
 ### The avatar routes deployed hours after they merged
 

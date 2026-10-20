@@ -1959,6 +1959,36 @@ them blocks the story.
   submit buttons of all four consumers. Declined inside TAS-189 because it
   touches every modal for a phone shorter than 844px.
 
+## Left by TAS-149 (2026-10-20)
+
+- **The read-only archived board** waits on TAS-146 allowing reads of an
+  archived project (see `API-DIVERGENCE.md`, "Archiving a project…").
+- **The mock checks archive before role on every issue-scoped method** —
+  `findIssue` refuses first, so update, delete, transition, comments, links,
+  worklog, watchers and attachments all say "archived" where the gateway answers
+  403 to a non-member or a refused role, and "archived" before not-found for a
+  missing issue. The by-key refusal is a guess: PR #159's head predates the
+  by-key route. Re-read both at #159's rebased head (`api-contract-guard`,
+  TAS-149).
+- **An archived card leads to a red board** (`art-director` S1, TAS-149): the
+  card says "Archived" calmly, the board then shows two `--danger` notices and
+  "Not loaded" columns, the first claiming "a failed read, not a read-only
+  project". Proposed: when the cached `["projects"]` row has `archivedAt`, one
+  neutral notice «{KEY} is archived. Its board and issues no longer open.» with
+  "Back to projects". Held for TAS-146's answer — if reads become allowed this is
+  the read-only board instead, and `api-contract-guard` asked not to join the
+  list cache onto the board meanwhile. Orchestrator's call, 2026-10-20.
+- **Must settle before #159 deploys: `/projects` shows a red banner for as
+  long as any project is archived** (`release-reviewer`, TAS-149, reproduced in
+  mock after `staleTime`). Each archived card's `listIssues` answers 400. Not
+  skipped on the client (see API-DIVERGENCE). Settled by TAS-146 allowing reads,
+  or by TAS-211 taking counts off `listIssues`; if neither lands first, raise it
+  with the owner before the deploy rather than shipping the banner.
+- **A successful archive is not announced** to a screen reader — the dialog
+  closes and the pill appears, with no status message.
+- **Remove both 405 notes** (`PATCH` and `DELETE /projects/{id}`) once a no-token
+  probe answers 400/401, i.e. once #155 and #159 deploy.
+
 ## Frontend stories already filed
 
 Filed 2026-08-04 from the owner's own list, not from a review verdict. Each
@@ -1984,6 +2014,9 @@ frontend story is blocked by its backend half and ships mock-first meanwhile.
   The project would show on the projects screen and its board would not open.
   Raised on TAS-146 before its review. Do not build TAS-149 against #159 until
   that comment is answered.
+  **2026-10-20:** still unanswered at head `97464fe`, raised again. TAS-149
+  shipped the slice that does not depend on it — the ADMIN Archive action, the
+  Archived pill — and left the read-only board for the answer.
 - [TAS-150](https://jira.ozero.dev/browse/TAS-150) — filed as a bug: no route
   guard exists, so a signed-out deep link lands on an empty projects screen
   with no way back to `/login`. Carries the auth-lifecycle item that used to

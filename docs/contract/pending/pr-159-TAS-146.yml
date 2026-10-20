@@ -34,7 +34,8 @@
 # - **Reads are refused, not only writes.** Every issue-service ProjectAccessibility.check
 #   refuses an archived project: issue get/list/search-by-project/board, comments, project and
 #   issue labels, links, worklogs, watchers, watch state, attachment list/download, and every
-#   write. Role is checked before archived, so a refused role answers 403 first. This is the
+#   write. In issue-service role is checked before archived, so a refused role answers 403
+#   first; project-service member writes check archived first. This is the
 #   question raised on TAS-146 on 2026-09-17, still unanswered at this head.
 # - **Not refused:** GET /projects/{id} (200 with archivedAt), GET /projects (archived projects
 #   still listed), GET /projects/{id}/members, global issue search without projectId (archived
