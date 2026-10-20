@@ -344,7 +344,28 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await pressOpen(page, newProject);
       const created = page.getByRole("dialog", { name: "New project" });
       await expect(created).toBeVisible();
-      await expect(created.getByRole("textbox", { name: "Key" })).toBeFocused();
+      const key = created.getByRole("textbox", { name: "Key", exact: true });
+      const name = created.getByRole("textbox", { name: "Name", exact: true });
+      const create = created.getByRole("button", { name: "Create project" });
+      await expect(key).toBeFocused();
+      // Both open empty, so what is typed is the key. Pre-filled with "API",
+      // the caret landed after it and "WEB" became "APIWEB" (art-director's N1
+      // on PR #93). Create waits for two characters in each; the dialog is
+      // cancelled below, so the seed's own WEB project never collides.
+      await expect(key).toHaveValue("");
+      await expect(name).toHaveValue("");
+      await expect(create).toBeDisabled();
+      await page.keyboard.type("WEB");
+      await expect(key).toHaveValue("WEB");
+      await expect(create).toBeDisabled();
+      await page.keyboard.press("Tab");
+      await expect(name).toBeFocused();
+      await page.keyboard.type("W");
+      await expect(create).toBeDisabled();
+      await page.keyboard.type("eb client");
+      await expect(create).toBeEnabled();
+      // Filled, so Create is a stop of the walk as it was before the fields
+      // opened empty.
       await walkBoth(page, "New project dialog", {
         scope: ".modal",
         first: () => firstIn(page, ".modal"),
