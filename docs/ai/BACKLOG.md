@@ -3838,3 +3838,13 @@ Frontend notes:
   a dialog swapped for another, or re-keyed, in one commit would record a
   control inside the old one, and on close focus would fall to `<body>`. No
   caller does this today.
+- **New project's Automatic swatch is pink before any key is typed**
+  (`art-director` TAS-299 follow-up re-verdict, taste): it hashes `""`, a colour
+  no project will get, and matches the pink swatch in the same row (§1: colour
+  carries meaning). Smallest fix: draw Automatic as its dashed ring with no fill
+  while `projectKey.trim()` is empty. The duplicate is not new — "API" gave the
+  row's indigo.
+- **New project's Key opens empty with no hint of its format**
+  (`release-reviewer` TAS-299 follow-up): nothing says 2–6 characters —
+  `maxLength={6}` stops the seventh silently, and below two Create is disabled
+  without saying why. A design call for `art-director`, not a safety one.
