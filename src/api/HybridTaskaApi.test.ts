@@ -116,6 +116,34 @@ describe("HybridTaskaApi", () => {
     expect(remove).toHaveBeenCalledWith(issue.projectId, issue.id, added.id);
   });
 
+  it("delegates the four workflow routes to live and synthesises nothing, refusals included (TAS-382)", async () => {
+    const live = liveApi();
+    const list = vi.spyOn(live, "listProjectWorkflows");
+    const create = vi.spyOn(live, "createProjectWorkflow");
+    const addStatus = vi.spyOn(live, "addWorkflowStatus");
+    const addTransition = vi.spyOn(live, "addWorkflowTransition");
+
+    const hybrid = new HybridTaskaApi(live);
+    await hybrid.login({ email: "anna@example.com", password: "anything" });
+    const [project] = await hybrid.listProjects();
+    const [shared] = await hybrid.listProjectWorkflows(project.id);
+    const status = { statusKey: "QA", name: "QA", category: "IN_PROGRESS", sortOrder: 25 };
+    const transition = { fromStatusKey: "TODO", toStatusKey: "QA", name: "Move to QA", sortOrder: 70, hidden: false };
+    const input = { name: "Empty", issueTypes: ["TASK"], statuses: [], transitions: [] };
+    await hybrid.createProjectWorkflow(project.id, input);
+    await expect(hybrid.addWorkflowStatus(project.id, shared.workflow.id, status)).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+    });
+    await expect(hybrid.addWorkflowTransition(project.id, shared.workflow.id, transition)).rejects.toMatchObject({
+      code: "FAILED_PRECONDITION",
+    });
+
+    expect(list).toHaveBeenCalledWith(project.id);
+    expect(create).toHaveBeenCalledWith(project.id, input);
+    expect(addStatus).toHaveBeenCalledWith(project.id, shared.workflow.id, status);
+    expect(addTransition).toHaveBeenCalledWith(project.id, shared.workflow.id, transition);
+  });
+
   /**
    * The two reads TAS-224 turned into delegations. Until then this class
    * answered both itself, out of `GET /projects/{id}` and `GET /users/me`, and

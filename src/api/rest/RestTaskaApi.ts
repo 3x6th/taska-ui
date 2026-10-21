@@ -11,6 +11,7 @@ import type {
   CreateIssueLinkInput,
   CreateProjectInput,
   CreateProjectLabelInput,
+  CreateProjectWorkflowInput,
   InviteUserInput,
   ListCommentsParams,
   ListIssuesParams,
@@ -25,6 +26,8 @@ import type {
   UpdateIssueInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
+  WorkflowStatusInput,
+  WorkflowTransitionInput,
 } from "../TaskaApi";
 import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
@@ -110,6 +113,7 @@ import type {
   ProjectLabel,
   ProjectMember,
   ProjectWorkflow,
+  ProjectWorkflowEntry,
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
@@ -119,6 +123,7 @@ import type {
   UserStatus,
   UserStatusChange,
   WatchIssueResult,
+  WorkflowDefinition,
   WorkflowStatus,
   WorkflowTransition,
   IssueHistoryEvent,
@@ -240,6 +245,27 @@ interface RestProjectWorkflowEntry {
     statuses?: WorkflowStatus[];
     transitions?: WorkflowTransition[];
   } | null;
+}
+
+/**
+ * `WorkflowResponseDto` as the workflow routes of backend PR #208 send it. Read
+ * field by field rather than passed through, as the context's workflows are:
+ * `hidden` on a transition is new and optional in the yml, and a raw copy would
+ * carry whatever else the wire held into the domain.
+ */
+interface RestWorkflowDefinition {
+  id?: string;
+  name?: string;
+  version?: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  statuses?: Partial<WorkflowStatus>[];
+  transitions?: (Partial<WorkflowTransition> & { hidden?: unknown })[];
+}
+
+/** `ProjectWorkflowsResponseDto` (backend PR #208). */
+interface RestProjectWorkflows {
+  items?: { workflow?: RestWorkflowDefinition | null; issueTypes?: unknown[] | null; shared?: unknown }[] | null;
 }
 
 /** `ListProjectMemberDetailsDto` — the array is `members`, not `items`. */
@@ -1850,6 +1876,64 @@ export class RestTaskaApi implements TaskaApi {
     });
   }
 
+  /**
+   * `GET /projects/{projectId}/workflows` — see `TaskaApi.listProjectWorkflows`.
+   * An item without a workflow is dropped, as the context drops one; an issue
+   * type is kept as sent, a code this build has no name for included
+   * (TAS-173). `shared` is `true` unless the server said `false` in so many
+   * words: a flag nobody stated must not open the writes on the shared default.
+   */
+  async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]> {
+    const response = await this.request<RestProjectWorkflows>(this.workflowsPath(projectId));
+    return (response.items ?? []).flatMap((item) =>
+      item.workflow
+        ? [
+            {
+              workflow: toWorkflowDefinition(item.workflow),
+              issueTypes: (item.issueTypes ?? []).flatMap((code) => {
+                const issueType = toIssueType(code);
+                return issueType ? [issueType] : [];
+              }),
+              shared: item.shared !== false,
+            },
+          ]
+        : [],
+    );
+  }
+
+  async createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<WorkflowDefinition> {
+    const response = await this.request<RestWorkflowDefinition>(this.workflowsPath(projectId), {
+      method: "POST",
+      body: {
+        name: input.name,
+        issueTypes: input.issueTypes,
+        statuses: input.statuses.map(workflowStatusBody),
+        transitions: input.transitions.map(workflowTransitionBody),
+      },
+    });
+    return toWorkflowDefinition(response);
+  }
+
+  async addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<WorkflowDefinition> {
+    const response = await this.request<RestWorkflowDefinition>(
+      `${this.workflowsPath(projectId)}/${this.segment(workflowId)}/statuses`,
+      { method: "POST", body: workflowStatusBody(input) },
+    );
+    return toWorkflowDefinition(response);
+  }
+
+  async addWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    input: WorkflowTransitionInput,
+  ): Promise<WorkflowDefinition> {
+    const response = await this.request<RestWorkflowDefinition>(
+      `${this.workflowsPath(projectId)}/${this.segment(workflowId)}/transitions`,
+      { method: "POST", body: workflowTransitionBody(input) },
+    );
+    return toWorkflowDefinition(response);
+  }
+
   async listComments(projectId: string, issueId: string, params: ListCommentsParams = {}): Promise<Page<IssueComment>> {
     const search = new URLSearchParams();
     if (params.page !== undefined) search.set("page", String(params.page));
@@ -2276,6 +2360,10 @@ export class RestTaskaApi implements TaskaApi {
 
   private worklogsPath(projectId: string, issueId: string) {
     return `/projects/${this.segment(projectId)}/issues/${this.segment(issueId)}/worklogs`;
+  }
+
+  private workflowsPath(projectId: string) {
+    return `/projects/${this.segment(projectId)}/workflows`;
   }
 
   private commentsPath(projectId: string, issueId: string) {
@@ -2785,6 +2873,53 @@ function toUserStatus(value: unknown): string | null {
  */
 function toIssueType(value: unknown): IssueTypeCode | null {
   return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+/**
+ * A `WorkflowResponseDto`, field by field, with the context's defaults for a
+ * field the wire left out. `hidden` is `true` only when the server said so —
+ * the list always sends a boolean, and a transition that arrives without one
+ * is one the board would offer.
+ */
+function toWorkflowDefinition(workflow: RestWorkflowDefinition): WorkflowDefinition {
+  return {
+    id: workflow.id ?? "",
+    name: workflow.name ?? "",
+    version: workflow.version ?? 0,
+    createdAt: workflow.createdAt ?? "",
+    updatedAt: workflow.updatedAt ?? "",
+    statuses: (workflow.statuses ?? []).map((status) => ({
+      id: status.id ?? "",
+      statusKey: status.statusKey ?? "",
+      name: status.name ?? "",
+      category: status.category ?? "",
+      sortOrder: status.sortOrder ?? 0,
+    })),
+    transitions: (workflow.transitions ?? []).map((transition) => ({
+      id: transition.id ?? "",
+      fromStatusId: transition.fromStatusId ?? "",
+      toStatusId: transition.toStatusId ?? "",
+      name: transition.name ?? "",
+      sortOrder: transition.sortOrder ?? 0,
+      hidden: transition.hidden === true,
+    })),
+  };
+}
+
+/** `CreateWorkflowStatusRequestDto`, exactly the four fields. */
+function workflowStatusBody(input: WorkflowStatusInput) {
+  return { statusKey: input.statusKey, name: input.name, category: input.category, sortOrder: input.sortOrder };
+}
+
+/** `CreateWorkflowTransitionRequestDto`, `hidden` always stated rather than left to the contract's default. */
+function workflowTransitionBody(input: WorkflowTransitionInput) {
+  return {
+    fromStatusKey: input.fromStatusKey,
+    toStatusKey: input.toStatusKey,
+    name: input.name,
+    sortOrder: input.sortOrder,
+    hidden: input.hidden,
+  };
 }
 
 /**

@@ -39,11 +39,13 @@ import type {
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
+  ProjectWorkflowEntry,
   UnwatchIssueResult,
   User,
   UserAvatar,
   UserStatusChange,
   WatchIssueResult,
+  WorkflowDefinition,
 } from "../domain/types";
 
 export interface LoginInput {
@@ -651,6 +653,46 @@ export interface UpdateIssueWorklogInput {
 
 /** `maxLength` of `AddIssueWorklogRequestDto.comment`, which the panel applies to an edit too. */
 export const WORKLOG_COMMENT_MAX_LENGTH = 2000;
+
+/**
+ * `CreateWorkflowStatusRequestDto` (backend PR #208). The server trims
+ * `statusKey` and `name`; the key's format (`^[A-Z][A-Z0-9_]{1,63}$`) and the
+ * 100-character name are workflow-service configuration, refused in its own
+ * words. `category` stays open: its values come from the list's own statuses,
+ * since the server publishes no dictionary of them (docs/ai/BACKLOG.md).
+ */
+export interface WorkflowStatusInput {
+  statusKey: string;
+  name: string;
+  category: IssueStatusKey;
+  sortOrder: number;
+}
+
+/**
+ * `CreateWorkflowTransitionRequestDto` (backend PR #208). The two keys are
+ * matched as sent — the server does not trim them — and `hidden` is always
+ * stated, never left to the contract's default.
+ */
+export interface WorkflowTransitionInput {
+  fromStatusKey: string;
+  toStatusKey: string;
+  name: string;
+  sortOrder: number;
+  hidden: boolean;
+}
+
+/**
+ * `CreateWorkflowRequestDto` (backend PR #208). The server checks no minimum —
+ * a workflow with no status, no `TODO` or no visible transition is accepted and
+ * then makes the project context answer 404 (docs/ai/API-DIVERGENCE.md) — so
+ * the one caller sends a verbatim copy of the shared default.
+ */
+export interface CreateProjectWorkflowInput {
+  name: string;
+  issueTypes: IssueTypeCode[];
+  statuses: WorkflowStatusInput[];
+  transitions: WorkflowTransitionInput[];
+}
 
 export interface ListCommentsParams {
   page?: number;
@@ -1544,6 +1586,54 @@ export interface TaskaApi {
   ): Promise<IssueWorklog>;
   /** `DELETE …/worklogs/{worklogId}`, answered `204`. */
   deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void>;
+
+  /**
+   * The four workflow routes of backend PR #208 (TAS-381, pending extract
+   * `docs/contract/pending/pr-208-TAS-381.yml` at `9a04e99`) — **open, not
+   * merged and not deployed** on 2026-10-21: a gateway without them answers the
+   * static-resource 404 that `isUndeployedRoute` reads. Read from the Java at
+   * that head (api-contract-guard, TAS-382):
+   *
+   * - The list is any member's: a missing project is 404 "Project not found", a
+   *   non-member — a `GLOBAL_ADMIN` included — 403. It walks TASK, BUG and STORY
+   *   whatever the project allows, resolves each to the project's own workflow
+   *   or the shared default, and answers each workflow once, at the position of
+   *   the first type on it. Statuses and transitions by `sortOrder`, hidden
+   *   transitions included.
+   * - The three writes are ADMIN-only, refused by workflow-service: 404
+   *   "Project not found", 403 "Access denied" for a non-member, 403 "Not
+   *   allowed role" for anybody else.
+   * - Nothing compares `version`: 1 on create, +1 per add, informational.
+   *
+   * Every 201 is a bare `WorkflowResponseDto` that does not say what the list
+   * says, so **no caller patches the list from one**: a write is followed by a
+   * re-read of the list and of the project context.
+   */
+  listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]>;
+  /**
+   * `POST /projects/{projectId}/workflows`. Refused in the server's order: the
+   * role; the whole body ("Workflow creation failed: …", 400 — on create a
+   * duplicate key or pair is 400 too); then any requested type already bound in
+   * the project, 409 `ALREADY_EXISTS`. The 201 holds no `issueTypes` and no
+   * `shared`, `version` 1, statuses and transitions in request order with the
+   * hidden ones marked.
+   */
+  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<WorkflowDefinition>;
+  /**
+   * `POST …/workflows/{workflowId}/statuses`. After the role: an unknown
+   * workflow is 404, the shared default 400 `FAILED_PRECONDITION` (not a
+   * conflict), another project's workflow 404; then the whole workflow is
+   * re-validated ("Workflow update failed: …") — 409 `ALREADY_EXISTS` only when
+   * every violation is a duplicate key or pair, 400 otherwise. The 201 holds
+   * the statuses by `sortOrder` and **only the visible transitions**.
+   */
+  addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<WorkflowDefinition>;
+  /**
+   * `POST …/workflows/{workflowId}/transitions`. The same refusals as
+   * `addWorkflowStatus`, and the same 201: a hidden transition just added is
+   * missing from its own answer.
+   */
+  addWorkflowTransition(projectId: string, workflowId: string, input: WorkflowTransitionInput): Promise<WorkflowDefinition>;
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>>;
   addComment(projectId: string, issueId: string, body: string): Promise<IssueComment>;

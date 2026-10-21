@@ -597,6 +597,35 @@ export interface Workflow {
 export type ProjectWorkflow = Omit<Workflow, "createdAt" | "updatedAt">;
 
 /**
+ * A transition as `GET /projects/{projectId}/workflows` sends it (backend PR
+ * #208, TAS-381): every one, hidden ones included and marked. Kept apart from
+ * `WorkflowTransition` because the project context never carries a hidden
+ * transition, so nothing on the board may branch on a flag it is never sent.
+ */
+export interface WorkflowDefinitionTransition extends WorkflowTransition {
+  hidden: boolean;
+}
+
+/** A workflow as the workflow routes of backend PR #208 send it: the whole thing, hidden transitions included. */
+export interface WorkflowDefinition extends Omit<Workflow, "transitions"> {
+  transitions: WorkflowDefinitionTransition[];
+}
+
+/**
+ * `ProjectWorkflowDto` (backend PR #208): one workflow the project runs on, the
+ * project's issue types that run on it, and whether it is the shared default.
+ * `issueTypes` as sent — may include types the project does not allow
+ * (workflow-service ignores `allowedIssueTypes`, docs/ai/BACKLOG.md), and no
+ * reader intersects it with the context. `shared` is `true` for anything but an
+ * explicit `false`, so a value nobody stated is read-only.
+ */
+export interface ProjectWorkflowEntry {
+  workflow: WorkflowDefinition;
+  issueTypes: IssueTypeCode[];
+  shared: boolean;
+}
+
+/**
  * `GET /projects/{projectId}/context` — `ProjectContextResponseDto`, backend
  * PR #169 (TAS-212), in `docs/contract/openapi.yml` (develop `fa90b51`): the
  * board's whole frame in one read, where it used to take seven (the project,

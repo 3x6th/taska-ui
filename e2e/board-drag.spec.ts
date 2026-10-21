@@ -256,10 +256,11 @@ test.describe("a board with no workflow for the card's type", () => {
     // loads too (TAS-380), and the absences below are true of the skeleton.
     await expect(panel).not.toHaveAttribute("aria-busy", "true");
 
-    // The four names the fallback carried, none of them the server's.
-    for (const name of ["Start Progress", "Complete", "Move to To Do", "Reopen"]) {
-      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
-    }
+    // No move at all. Counted in the row rather than looked up by name: since
+    // TAS-382 a move is named "{name}, move to {To}" (§4.1), so an exact
+    // lookup of "Start Progress" would find nothing whether or not the button
+    // were there.
+    await expect(panel.getByRole("group", { name: "Status" }).getByRole("button")).toHaveCount(0);
     await expect(page.getByText(/This project has no workflow for task issues, so no move is\s+offered\./)).toBeVisible();
   });
 });
@@ -304,30 +305,38 @@ test.describe("a board whose workflow came without statuses", () => {
     await expect(
       panel.getByText("The server sent this project’s task workflow without statuses, so no move is offered."),
     ).toBeVisible();
-    for (const name of ["Start Progress", "Complete", "Move to To Do", "Reopen"]) {
-      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
-    }
+    // Counted in the row, for the reason given in the block above.
+    await expect(panel.getByRole("group", { name: "Status" }).getByRole("button")).toHaveCount(0);
   });
 
   test("still names the missing move when the workflow has statuses but not that transition", async ({ page }) => {
-    // The mock's own workflow, untouched: it has statuses, and nothing goes
-    // from To Do straight to Done.
-    await openBoard(page);
+    // Since TAS-382 the mock's default workflow carries backend PR #208's six
+    // transitions, which join every pair of its three statuses — so the
+    // missing move is found in WEB's EPIC workflow instead, untouched: WEB-15
+    // sits in its In Review, and nothing goes from there back to To Do.
+    await page.goto("/login");
+    await page.getByLabel("Email").fill("anna@example.com");
+    await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
+    await page.locator("form button[type=submit]").click();
+    await expect(page).toHaveURL(/\/projects$/);
+    await page.locator(".project-card", { hasText: "Web App" }).click();
+    await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
+    const EPIC = /WEB-15/;
 
-    const todo = column(page, "To Do");
-    const done = column(page, "Done");
-    await dragCardTo(page, todo.getByRole("button", { name: CARD }), done);
+    const review = column(page, "In Review");
+    await expect(review.getByRole("button", { name: EPIC })).toBeVisible();
+    await dragCardTo(page, review.getByRole("button", { name: EPIC }), column(page, "To Do"));
 
     await expect(
-      page.getByRole("alert").filter({ hasText: "TAS-102: no transition from To Do to Done in this workflow" }),
+      page.getByRole("alert").filter({ hasText: "WEB-15: no transition from In Review to To Do in this workflow" }),
     ).toBeVisible();
     await expect(page.getByText(/without statuses/)).toHaveCount(0);
-    await expect(todo.getByRole("button", { name: CARD })).toBeVisible();
+    await expect(review.getByRole("button", { name: EPIC })).toBeVisible();
     expect(await onQueryClient(page, "count-drop-moves")).toBe(0);
 
     // The probe can see a move: the one legal drop from here starts exactly one.
-    await dragCardTo(page, todo.getByRole("button", { name: CARD }), column(page, "In Progress"));
-    await expect(column(page, "In Progress").getByRole("button", { name: CARD })).toBeVisible();
+    await dragCardTo(page, review.getByRole("button", { name: EPIC }), column(page, "Done"));
+    await expect(column(page, "Done").getByRole("button", { name: EPIC })).toBeVisible();
     expect(await onQueryClient(page, "count-drop-moves")).toBe(1);
   });
 });

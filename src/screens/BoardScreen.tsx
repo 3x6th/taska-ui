@@ -21,7 +21,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Upload, Users, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, Eye, EyeOff, Paperclip, Pencil, Plus, Search, Tag, Trash2, Upload, Users, Workflow as WorkflowIcon, X } from "lucide-react";
 import {
   useEffect,
   useId,
@@ -67,6 +67,7 @@ import { issueWorklogsOptions } from "../components/issueWorklogsQuery";
 import { Modal } from "../components/Modal";
 import { NotificationsBell } from "../components/NotificationsBell";
 import { ProjectMembersModal } from "../components/ProjectMembersModal";
+import { ProjectWorkflowsModal } from "../components/ProjectWorkflowsModal";
 import { RequestId } from "../components/RequestId";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
@@ -121,6 +122,7 @@ import {
   statusLabel,
 } from "../lib/format";
 import { selectableCodes } from "../lib/enumLabel";
+import { transitionButtonLabel } from "../lib/workflows";
 import {
   PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE,
   PLANNING_EMPTY_PLACEHOLDER,
@@ -389,6 +391,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   const [managingLabels, setManagingLabels] = useState(false);
   const [managingMembers, setManagingMembers] = useState(false);
   const [editingProject, setEditingProject] = useState(false);
+  const [managingWorkflows, setManagingWorkflows] = useState(false);
   // What `NotificationsBell` hands to `useTriggerAnchor`: the bell's own box
   // never changes size, only its position, and this is the box whose resizing
   // moves it — the bar wraps to two rows below 820 and to three at 390 when
@@ -891,7 +894,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             {project.projectKey}
           </span>
         ) : null}
-        <strong className="board-project-name">{project?.name ?? "Project"}</strong>
+        {/* The full name in `title`: on a phone this is the part of the bar
+            that gives way to the Workflows button, into an ellipsis (§4.28). */}
+        <strong className="board-project-name" title={project?.name}>
+          {project?.name ?? "Project"}
+        </strong>
         <span className="muted-label">Board</span>
         {/* Beside the key and the name it edits, and before the spacer so it
             stays with them on the row they wrap onto below 820 (§4.13). Not in
@@ -913,6 +920,19 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             <Pencil size={15} />
           </button>
         ) : null}
+        {/* Every role, from the first frame (§4.28): the dialog reads its own
+            list, and only the controls inside it are gated. Here rather than in
+            the filter bar, which holds filters and the people they filter. */}
+        <button
+          aria-haspopup="dialog"
+          aria-label="Workflows"
+          className="icon-button"
+          onClick={() => setManagingWorkflows(true)}
+          title="Workflows"
+          type="button"
+        >
+          <WorkflowIcon size={15} />
+        </button>
         <div className="topbar-spacer" />
         <label className="search-box">
           <Search size={15} />
@@ -1310,6 +1330,19 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // The same `role` every permission above reads, with a failed read
           // folded into `null`: the dialog tells a role nobody stated from a
           // role the server named, as the board's two banners do.
+          readerRole={roleUnknown ? null : role}
+        />
+      ) : null}
+
+      {managingWorkflows ? (
+        <ProjectWorkflowsModal
+          issueTypeOrder={offeredIssueTypes}
+          onClose={() => setManagingWorkflows(false)}
+          projectColor={project?.color}
+          projectId={projectId}
+          projectKey={project?.projectKey ?? ""}
+          // Members' reading of the role: a failed context read folded into
+          // `null`, so the dialog says the role is unknown rather than nothing.
           readerRole={roleUnknown ? null : role}
         />
       ) : null}
@@ -2784,7 +2817,10 @@ function IssuePanel({
           value={summary}
         />
 
-        <div className="transition-row">
+        {/* A group named for what it is about (§4.1, TAS-382): the moves and
+            the pill of the status they leave. On the row itself — a
+            `display: contents` wrapper loses the group role in Safari. */}
+        <div aria-label="Status" className="transition-row" role="group">
           {/* §4.5's pill. A status this build cannot colour — an unknown key
               in an unknown category — takes the neutral `--fg-2` rather than
               a colour nobody chose (art-director, TAS-173). */}
@@ -2824,17 +2860,26 @@ function IssuePanel({
               {statusName} is not in this project&rsquo;s {typeWord} workflow, so no move is offered.
             </span>
           ) : null}
-          {availableTransitions.map((transition) => (
-            <button
-              className="secondary-button compact-button"
-              disabled={!canEdit || transitionIssue.isPending}
-              key={transition.id}
-              onClick={() => transitionIssue.mutate(transition.id)}
-              type="button"
-            >
-              {transition.name}
-            </button>
-          ))}
+          {availableTransitions.map((transition) => {
+            // The name an admin gave it, and where it goes (§4.1): "Close"
+            // since backend PR #208's migration is also the panel's own Close.
+            const { text, ariaLabel } = transitionButtonLabel(
+              transition.name,
+              statusLabel(transition.toStatus, workflow?.statuses),
+            );
+            return (
+              <button
+                aria-label={ariaLabel}
+                className="secondary-button compact-button"
+                disabled={!canEdit || transitionIssue.isPending}
+                key={transition.id}
+                onClick={() => transitionIssue.mutate(transition.id)}
+                type="button"
+              >
+                {text}
+              </button>
+            );
+          })}
         </div>
 
         <div className="meta-grid">

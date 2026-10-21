@@ -432,6 +432,7 @@ for (const theme of ["light", "dark"] as Theme[]) {
         ["Manage labels", page.getByRole("button", { name: "Manage labels" }), "Close"],
         ["Members", page.getByRole("button", { name: "Members", exact: true }), "Escape"],
         ["Edit project", page.getByRole("button", { name: "Edit project" }), "Cancel"],
+        ["Workflows", page.getByRole("button", { name: "Workflows" }), "Escape"],
       ] as const) {
         await pressOpen(page, trigger);
         const dialog = page.getByRole("dialog");
@@ -463,6 +464,23 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await signIn(page, "tom@example.com");
       await openBoard(page);
       await walkBoth(page, "board, VIEWER");
+
+      // Workflows with nothing to press in it: the body is the stop that
+      // scrolls it, ringed inside the edge the modal clips at (§4.28, §7
+      // exception 1).
+      const workflows = page.getByRole("button", { name: "Workflows" });
+      await pressOpen(page, workflows);
+      const dialog = page.getByRole("dialog", { name: "Workflows" });
+      await expect(dialog.getByRole("heading", { level: 3, name: "Default workflow" })).toBeVisible();
+      await walkBoth(page, "Workflows dialog, VIEWER", {
+        scope: ".modal",
+        first: () => firstIn(page, ".modal"),
+        last: () => lastIn(page, ".modal"),
+        trapped: true,
+      });
+      await page.keyboard.press("Escape");
+      await expect(dialog).toBeHidden();
+      await expectFocusBack(page, workflows, { ring: true });
     });
 
     test("the issue panel as an ADMIN, with Share open and with the delete question open", async ({ page }) => {

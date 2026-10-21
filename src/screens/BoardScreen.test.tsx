@@ -501,6 +501,9 @@ const {
         archivedAt: null,
       };
     },
+    // The Workflows dialog's read (TAS-382): what the dialog does with it is
+    // ProjectWorkflowsModal.test.tsx's; here it only has to open.
+    listProjectWorkflows: async () => [],
     // The board's one frame read since TAS-251, composed from the same state
     // the five separate reads below were. All or nothing, as on the server: a
     // failure or a hold of any part is a failure or a hold of the whole, so
@@ -2272,7 +2275,8 @@ describe("values this build does not know", () => {
 
     const panel = await screen.findByRole("dialog", { name: "TAS-150 issue" });
     expect(await within(panel).findByText("In Review")).toHaveClass("status-pill");
-    expect(within(panel).getByRole("button", { name: "Approve" })).toBeVisible();
+    // Named by where it goes as well as by what it is called (§4.1, TAS-382).
+    expect(within(panel).getByRole("button", { name: "Approve, move to Done" })).toBeVisible();
     const priority = within(panel).getByRole("button", { name: "URGENT" });
     expect(priority).toHaveClass("is-active");
     expect(within(panel).getAllByRole("button", { name: /^(Low|Medium|High|URGENT)$/ }).map((b) => b.textContent)).toEqual([
@@ -2660,7 +2664,7 @@ describe("the write controls a role is shown", () => {
     for (const column of columnHeads()) {
       expect(within(column).queryByRole("button", { name: "Create issue" })).not.toBeInTheDocument();
     }
-    expect(panel.queryByRole("button", { name: "Start Progress" })).not.toBeInTheDocument();
+    expect(panel.queryByRole("button", { name: "Start Progress, move to In Progress" })).not.toBeInTheDocument();
     expect(panel.queryByRole("button", { name: /^Delete issue/ })).not.toBeInTheDocument();
     // No arrow pointing at moves that are not there, and no note either: the
     // issue has somewhere to go, this reader just cannot send it.
@@ -2681,7 +2685,7 @@ describe("the write controls a role is shown", () => {
       for (const column of columnHeads()) {
         expect(within(column).getByRole("button", { name: "Create issue" })).toBeEnabled();
       }
-      expect(await panel.findByRole("button", { name: "Start Progress" })).toBeEnabled();
+      expect(await panel.findByRole("button", { name: "Start Progress, move to In Progress" })).toBeEnabled();
       expect(panel.getByRole("button", { name: "Delete issue TAS-102" })).toBeEnabled();
       expect(document.querySelector(".transition-row .arrow")).not.toBeNull();
     });
@@ -2697,7 +2701,7 @@ describe("the write controls a role is shown", () => {
     for (const column of columnHeads()) {
       expect(within(column).getByRole("button", { name: "Create issue" })).toBeDisabled();
     }
-    expect(await panel.findByRole("button", { name: "Start Progress" })).toBeDisabled();
+    expect(await panel.findByRole("button", { name: "Start Progress, move to In Progress" })).toBeDisabled();
     const remove = panel.getByRole("button", { name: "Delete issue TAS-102" });
     expect(remove).toBeDisabled();
     // A switched-off Delete asks nothing (§4.10).
@@ -5782,5 +5786,71 @@ describe("the issue panel as a dialog", () => {
 
       expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
     });
+  });
+});
+
+/**
+ * TAS-382 on the board: the Workflows trigger in the bar for every role
+ * (§4.28), and the panel's moves named by where they go (§4.1) — the day
+ * backend PR #208's migration deploys, a transition called "Close" sits in the
+ * same panel as the panel's own Close.
+ */
+describe("the Workflows trigger and the panel's moves", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  for (const role of ["ADMIN", "MEMBER", "VIEWER", null] as const) {
+    it(`puts Workflows in the bar for ${role ?? "a role nobody stated"}`, async () => {
+      setMembership(role);
+      renderBoard();
+      const trigger = await screen.findByRole("button", { name: "Workflows" });
+      expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+      expect(trigger).toHaveAttribute("title", "Workflows");
+    });
+  }
+
+  it("opens the dialog, and closing it hands focus back to the trigger", async () => {
+    setMembership("MEMBER");
+    renderBoard();
+    const trigger = await screen.findByRole("button", { name: "Workflows" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Workflows" });
+    expect(await within(dialog).findByText("This project has no issue types, so it runs on no workflow.")).toBeVisible();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Workflows" })).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+  });
+
+  it("carries the project's full name in a title, for the phone bar that cuts it short", async () => {
+    renderBoard();
+    await waitFor(() => expect(document.querySelector(".board-project-name")).toHaveAttribute("title", "Taska Platform"));
+  });
+
+  it("names each move by its target unless its name already says it, inside a group named Status", async () => {
+    setMembership("ADMIN");
+    seedContextWorkflowParts({
+      statuses: [
+        { id: "s-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+        { id: "s-progress", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
+        { id: "s-done", statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30 },
+      ],
+      transitions: [
+        { id: "t-start", fromStatusId: "s-todo", toStatusId: "s-progress", name: "move to in progress", sortOrder: 10 },
+        { id: "t-close", fromStatusId: "s-todo", toStatusId: "s-done", name: "Close", sortOrder: 50 },
+      ],
+    });
+    renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+
+    const group = await panel.findByRole("group", { name: "Status" });
+    const close = within(group).getByRole("button", { name: "Close, move to Done" });
+    expect(close).toHaveTextContent(/^Close$/);
+    expect(close).not.toHaveAttribute("title");
+    expect(within(group).getByRole("button", { name: "move to in progress" })).not.toHaveAttribute("aria-label");
+    // The panel's own Close keeps its name and is the only control that has it.
+    expect(panel.getAllByRole("button", { name: "Close" })).toHaveLength(1);
   });
 });

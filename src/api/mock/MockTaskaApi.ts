@@ -11,6 +11,7 @@ import type {
   CreateIssueLinkInput,
   CreateProjectInput,
   CreateProjectLabelInput,
+  CreateProjectWorkflowInput,
   InviteUserInput,
   ListCommentsParams,
   ListIssuesParams,
@@ -25,6 +26,8 @@ import type {
   UpdateIssueWorklogInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
+  WorkflowStatusInput,
+  WorkflowTransitionInput,
 } from "../TaskaApi";
 import {
   ADMIN_WRITE_REASON_MAX_LENGTH,
@@ -121,6 +124,7 @@ import type {
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
+  ProjectWorkflowEntry,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -129,6 +133,7 @@ import type {
   UserStatusChange,
   WatchIssueResult,
   Workflow,
+  WorkflowDefinition,
 } from "../../domain/types";
 import { isDateOnly } from "../../domain/types";
 import { accountLockedMessage } from "../../lib/accountLock";
@@ -945,6 +950,180 @@ export function buildMockBoard(
   return { projectId, issueType: params.issueType, columns };
 }
 
+/**
+ * The issue types a workflow write may name — `IssueTypeDto` in the yml, which
+ * the gateway validates (`useValidation=true`), so anything else is refused
+ * before workflow-service is asked. Not the project's allowed set: workflow-
+ * service ignores `allowedIssueTypes` (backend PR #208, docs/ai/BACKLOG.md).
+ */
+const WORKFLOW_ISSUE_TYPES: readonly string[] = ["TASK", "BUG", "STORY"];
+/** `WorkflowStatusCategoryDto`, closed on the wire for a write. */
+const WORKFLOW_CATEGORIES: readonly string[] = ["TODO", "IN_PROGRESS", "DONE"];
+/** `workflow.validation.*` in workflow-service's application.yml at backend PR #208 (`9a04e99`). */
+const WORKFLOW_NAME_MAX_LENGTH = 100;
+const WORKFLOW_STATUS_KEY_PATTERN = /^[A-Z][A-Z0-9_]{1,63}$/;
+
+/** `WorkflowCreationDto` after `WorkflowCreationMapper`: names and status keys trimmed, transition keys as sent. */
+interface WorkflowCandidate {
+  name: string;
+  issueTypes: string[];
+  statuses: WorkflowStatusInput[];
+  transitions: WorkflowTransitionInput[];
+}
+
+/** One `WorkflowCreationViolation`; `duplicate` is the edit route's `CONFLICT_VIOLATIONS`. */
+interface WorkflowViolation {
+  message: string;
+  duplicate: boolean;
+}
+
+const isInt32 = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= -INT32_MAX - 1 && value <= INT32_MAX;
+
+/** The gateway's bean validation of `CreateWorkflowStatusRequestDto`: four required fields, the category an enum. */
+const isWorkflowStatusBody = (status: unknown): status is WorkflowStatusInput => {
+  const body = status as Partial<Record<keyof WorkflowStatusInput, unknown>> | null;
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    typeof body.statusKey === "string" &&
+    typeof body.name === "string" &&
+    typeof body.category === "string" &&
+    WORKFLOW_CATEGORIES.includes(body.category) &&
+    isInt32(body.sortOrder)
+  );
+};
+
+/** …and of `CreateWorkflowTransitionRequestDto`: `hidden` optional, a boolean when present. */
+const isWorkflowTransitionBody = (transition: unknown): transition is WorkflowTransitionInput => {
+  const body = transition as Partial<Record<keyof WorkflowTransitionInput, unknown>> | null;
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    typeof body.fromStatusKey === "string" &&
+    typeof body.toStatusKey === "string" &&
+    typeof body.name === "string" &&
+    isInt32(body.sortOrder) &&
+    (body.hidden === undefined || typeof body.hidden === "boolean")
+  );
+};
+
+/** `WorkflowCreationMapper.toStatusDto`: key and name trimmed. */
+const trimmedStatus = (status: WorkflowStatusInput): WorkflowStatusInput => ({
+  statusKey: status.statusKey.trim(),
+  name: status.name.trim(),
+  category: status.category,
+  sortOrder: status.sortOrder,
+});
+
+/** `WorkflowCreationMapper.toTransitionDto`: the name trimmed, the two keys **not**, `hidden` false unless sent. */
+const trimmedTransition = (transition: WorkflowTransitionInput): WorkflowTransitionInput => ({
+  fromStatusKey: transition.fromStatusKey,
+  toStatusKey: transition.toStatusKey,
+  name: transition.name.trim(),
+  sortOrder: transition.sortOrder,
+  hidden: transition.hidden === true,
+});
+
+/** `findDuplicates`: one violation per value seen more than once, in the order the second sighting comes. */
+function duplicatesOf<T>(items: readonly T[], keyOf: (item: T) => string, say: (key: string) => WorkflowViolation) {
+  const seen = new Set<string>();
+  const reported = new Set<string>();
+  const violations: WorkflowViolation[] = [];
+  for (const item of items) {
+    const key = keyOf(item);
+    if (seen.has(key) && !reported.has(key)) {
+      reported.add(key);
+      violations.push(say(key));
+    }
+    seen.add(key);
+  }
+  return violations;
+}
+
+/**
+ * `WorkflowCreationValidator.validateDto` at backend PR #208 (`9a04e99`), in
+ * its order and its words. The category check is left out: the gateway refuses
+ * a category outside the three before this is reached, so a `null` one cannot
+ * arrive here from REST.
+ */
+function workflowViolations(candidate: WorkflowCandidate): WorkflowViolation[] {
+  const violations: WorkflowViolation[] = [];
+  const say = (message: string, duplicate = false) => violations.push({ message, duplicate });
+  const { name, issueTypes, statuses, transitions } = candidate;
+  const pair = (transition: WorkflowTransitionInput) => `from ${transition.fromStatusKey} to ${transition.toStatusKey}`;
+
+  // validateNames
+  if (name === "") say("Workflow name must not be blank");
+  for (const status of statuses) if (status.name === "") say(`Status name must not be blank for status: ${status.statusKey}`);
+  for (const transition of transitions) if (transition.name === "") say(`Transition name must not be blank: ${pair(transition)}`);
+  // validateNameLengths
+  const max = WORKFLOW_NAME_MAX_LENGTH;
+  if (name.length > max) say(`Workflow name exceeds maximum length of ${max}`);
+  for (const status of statuses) {
+    if (status.name.length > max) say(`Status name exceeds maximum length of ${max} for status: ${status.statusKey}`);
+  }
+  for (const transition of transitions) {
+    if (transition.name.length > max) say(`Transition name exceeds maximum length of ${max}: ${pair(transition)}`);
+  }
+  // validateIssueTypes
+  if (issueTypes.length === 0) say("Issue type list must contain at least one valid issue type");
+  else violations.push(...duplicatesOf(issueTypes, (code) => code, (code) => ({ message: `Duplicate issue type: ${code}`, duplicate: false })));
+  // validateStatusKeys
+  for (const status of statuses) {
+    if (status.statusKey === "") say("Status key must not be blank");
+    else if (!WORKFLOW_STATUS_KEY_PATTERN.test(status.statusKey)) say(`Status key has invalid format: ${status.statusKey}`);
+  }
+  // validateStatusAndSortOrderUniqueness
+  violations.push(
+    ...duplicatesOf(statuses, (status) => status.statusKey, (key) => ({ message: `Status key is not unique: ${key}`, duplicate: true })),
+    ...duplicatesOf(statuses, (status) => String(status.sortOrder), (order) => ({
+      message: `Status sort order is not unique: ${order}`,
+      duplicate: false,
+    })),
+    ...duplicatesOf(transitions, (transition) => String(transition.sortOrder), (order) => ({
+      message: `Transition sort order is not unique: ${order}`,
+      duplicate: false,
+    })),
+  );
+  // validateTransitionStatusReferences
+  const keys = new Set(statuses.map((status) => status.statusKey));
+  const reported = new Set<string>();
+  for (const transition of transitions) {
+    for (const key of [transition.fromStatusKey, transition.toStatusKey]) {
+      if (!keys.has(key) && !reported.has(key)) {
+        reported.add(key);
+        say(`Transition references unknown status key: ${key}`);
+      }
+    }
+  }
+  // validateNoSelfTransitions
+  for (const transition of transitions) {
+    if (transition.fromStatusKey === transition.toStatusKey) {
+      say(`Self-transition is not allowed for status: ${transition.fromStatusKey}`);
+    }
+  }
+  // validateNoDuplicateTransitions — the pair as a two-element list, so no separator can collide.
+  violations.push(
+    ...duplicatesOf(transitions, (transition) => JSON.stringify([transition.fromStatusKey, transition.toStatusKey]), (key) => {
+      const [from, to] = JSON.parse(key) as [string, string];
+      return { message: `Duplicate transition from '${from}' to '${to}'`, duplicate: true };
+    }),
+  );
+  // validateSortOrders
+  for (const status of statuses) {
+    if (status.sortOrder < 0) say(`Status sort order must not be negative for status: ${status.statusKey}`);
+  }
+  for (const transition of transitions) {
+    if (transition.sortOrder < 0) say(`Transition sort order must not be negative: ${pair(transition)}`);
+  }
+  return violations;
+}
+
+/** `buildViolationMessage`: the prefix, then every violation joined with ", ". */
+const violationMessage = (prefix: string, violations: readonly WorkflowViolation[]) =>
+  `${prefix}${violations.map((violation) => violation.message).join(", ")}`;
+
 /** Substring, case-insensitive, over `issue_key` OR `summary` OR `description` — the probe's own OR. */
 const matchesSearchQuery = (issue: Issue, query: string | null) => {
   if (!query) return true;
@@ -1531,7 +1710,12 @@ export class MockTaskaStore {
    */
   private labelIdsByIssue: Record<string, string[]> = {};
   private notifications: Notification[];
-  private workflow: Workflow;
+  /**
+   * The shared default workflow, as backend PR #208's migration 0001 leaves it:
+   * six transitions, none hidden. Every project runs on it for each type that
+   * has no workflow of its own, and no write may change it.
+   */
+  private workflow: WorkflowDefinition;
   /**
    * The issue types each project allows, as backend PR #169's context reports
    * them through its `workflows` (TAS-212). A project not named here allows all
@@ -1549,11 +1733,13 @@ export class MockTaskaStore {
     [WEB_PROJECT_ID]: ["TASK", "BUG", "STORY", "EPIC"],
   };
   /**
-   * Workflows other than the default, by project and issue type. WEB's EPIC
-   * workflow adds `IN_REVIEW` between In Progress and Done — a status key this
-   * build does not know, in a category it does.
+   * Workflows other than the default, by project and issue type — workflow-
+   * service's bindings. WEB's EPIC workflow adds `IN_REVIEW` between In
+   * Progress and Done — a status key this build does not know, in a category it
+   * does. A workflow created through `createProjectWorkflow` is bound here under
+   * each of its types as one object, so an add reaches all of them at once.
    */
-  private workflowOverrides: Record<string, Partial<Record<string, Workflow>>> = {};
+  private workflowOverrides: Record<string, Partial<Record<string, WorkflowDefinition>>> = {};
   /**
    * The outbox rows, seeded once on first read rather than in the constructor.
    * Their timestamps are relative to *now* — a row has to be genuinely three
@@ -1854,6 +2040,7 @@ export class MockTaskaStore {
           toStatusId: IN_PROGRESS_STATUS_ID,
           name: "Start Progress",
           sortOrder: 10,
+          hidden: false,
         },
         {
           id: "66666666-6666-6666-6666-666666666666",
@@ -1861,13 +2048,18 @@ export class MockTaskaStore {
           toStatusId: DONE_STATUS_ID,
           name: "Complete",
           sortOrder: 20,
+          hidden: false,
         },
+        // Backend PR #208's migration 0001 (TAS-381) — the stand has only the
+        // three above and "Reopen" until it deploys (docs/ai/API-DIVERGENCE.md).
+        // This one was an invented "Move to To Do" at 25 before TAS-382.
         {
           id: "88888888-8888-8888-8888-888888888888",
           fromStatusId: IN_PROGRESS_STATUS_ID,
           toStatusId: TODO_STATUS_ID,
-          name: "Move to To Do",
-          sortOrder: 25,
+          name: "Stop Progress",
+          sortOrder: 40,
+          hidden: false,
         },
         {
           id: "77777777-7777-7777-7777-777777777777",
@@ -1875,6 +2067,23 @@ export class MockTaskaStore {
           toStatusId: IN_PROGRESS_STATUS_ID,
           name: "Reopen",
           sortOrder: 30,
+          hidden: false,
+        },
+        {
+          id: "99999999-9999-9999-9999-999999999999",
+          fromStatusId: TODO_STATUS_ID,
+          toStatusId: DONE_STATUS_ID,
+          name: "Close",
+          sortOrder: 50,
+          hidden: false,
+        },
+        {
+          id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+          fromStatusId: DONE_STATUS_ID,
+          toStatusId: TODO_STATUS_ID,
+          name: "Back to To Do",
+          sortOrder: 60,
+          hidden: false,
         },
       ],
     };
@@ -1897,6 +2106,7 @@ export class MockTaskaStore {
               toStatusId: IN_REVIEW_STATUS_ID,
               name: "Send to review",
               sortOrder: 22,
+              hidden: false,
             },
             {
               id: "99999999-9999-9999-9999-999999999992",
@@ -1904,6 +2114,7 @@ export class MockTaskaStore {
               toStatusId: DONE_STATUS_ID,
               name: "Approve",
               sortOrder: 27,
+              hidden: false,
             },
           ],
         },
@@ -3034,7 +3245,7 @@ export class MockTaskaStore {
   }
 
   /** The workflow an issue of this type follows in this project: its own, or the default. */
-  private workflowFor(projectId: string, issueType: string): Workflow {
+  private workflowFor(projectId: string, issueType: string): WorkflowDefinition {
     const overrides = this.workflowOverrides[projectId];
     return (overrides && Object.hasOwn(overrides, issueType) ? overrides[issueType] : undefined) ?? this.workflow;
   }
@@ -3057,9 +3268,237 @@ export class MockTaskaStore {
       workflows: Object.fromEntries(
         allowed.map((issueType) => {
           const { createdAt: _createdAt, updatedAt: _updatedAt, ...workflow } = this.workflowFor(projectId, issueType);
-          return [issueType, { ...workflow, statuses: [...workflow.statuses], transitions: [...workflow.transitions] }];
+          // `GetWorkflowForProject` reads only the visible transitions, and the
+          // context's transitions carry no `hidden` at all (backend PR #208).
+          const transitions = workflow.transitions
+            .filter((transition) => !transition.hidden)
+            .map(({ hidden: _hidden, ...transition }) => transition);
+          return [issueType, { ...workflow, statuses: [...workflow.statuses], transitions }];
         }),
       ),
+    };
+  }
+
+  /**
+   * `GET /projects/{projectId}/workflows` (backend PR #208, TAS-381): the
+   * gateway's `getProject` first — "Project not found", then a non-member's
+   * "You don't have access to this project", a `GLOBAL_ADMIN` included — and
+   * then `ProjectWorkflowListService`: TASK, BUG and STORY in that order
+   * **whatever the project allows** (OPS lists STORY on the default), each
+   * resolved to the project's own workflow or the shared default, one entry
+   * per workflow at the position of its first type. WEB's EPIC workflow is not
+   * listed: the gateway drops a type it cannot name, and workflow-service could
+   * not have bound it. Statuses and every transition, hidden ones included, by
+   * `sortOrder`.
+   */
+  listProjectWorkflows(projectId: string): ProjectWorkflowEntry[] {
+    this.getProject(projectId);
+    if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
+      throw new MockApiError("PERMISSION_DENIED", "You don't have access to this project");
+    }
+    const entries: ProjectWorkflowEntry[] = [];
+    for (const issueType of WORKFLOW_ISSUE_TYPES) {
+      const workflow = this.workflowFor(projectId, issueType);
+      const entry = entries.find((item) => item.workflow.id === workflow.id);
+      if (entry) entry.issueTypes.push(issueType);
+      else entries.push({ workflow: this.workflowView(workflow, "all"), issueTypes: [issueType], shared: workflow === this.workflow });
+    }
+    return entries;
+  }
+
+  /**
+   * `POST /projects/{projectId}/workflows`, in `WorkflowCreateService`'s order:
+   * the gateway's validation, the role, the whole body
+   * (`workflowViolations`, every failure 400 here — a duplicate included),
+   * then any requested type this project has already bound, 409. The 201 is
+   * the bare workflow, statuses and transitions in request order with the
+   * hidden ones marked; the types are bound to it from now on, in the context
+   * and on the board as well as in the list.
+   */
+  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): WorkflowDefinition {
+    const body = input as Partial<Record<keyof CreateProjectWorkflowInput, unknown>>;
+    if (
+      typeof body.name !== "string" ||
+      !Array.isArray(body.issueTypes) ||
+      !body.issueTypes.every((code) => typeof code === "string" && WORKFLOW_ISSUE_TYPES.includes(code)) ||
+      !Array.isArray(body.statuses) ||
+      !body.statuses.every(isWorkflowStatusBody) ||
+      !Array.isArray(body.transitions) ||
+      !body.transitions.every(isWorkflowTransitionBody)
+    ) {
+      throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    }
+    this.requireWorkflowRole(projectId);
+    const candidate: WorkflowCandidate = {
+      name: input.name.trim(),
+      issueTypes: [...input.issueTypes],
+      statuses: input.statuses.map(trimmedStatus),
+      transitions: input.transitions.map(trimmedTransition),
+    };
+    const violations = workflowViolations(candidate);
+    if (violations.length) {
+      throw new MockApiError("INVALID_ARGUMENT", violationMessage("Workflow creation failed: ", violations));
+    }
+    const bindings = (this.workflowOverrides[projectId] ??= {});
+    const bound = candidate.issueTypes.filter((code) => Object.hasOwn(bindings, code));
+    if (bound.length) {
+      throw new MockApiError(
+        "ALREADY_EXISTS",
+        `Workflow binding already exists for project ${projectId} and issue types: [${bound.join(", ")}]`,
+      );
+    }
+    const stamp = now();
+    const statuses = candidate.statuses.map((status) => ({ id: makeId("status"), ...status }));
+    const idOf = (key: string) => statuses.find((status) => status.statusKey === key)?.id ?? "";
+    const workflow: WorkflowDefinition = {
+      id: makeId("workflow"),
+      name: candidate.name,
+      version: 1,
+      createdAt: stamp,
+      updatedAt: stamp,
+      statuses,
+      transitions: candidate.transitions.map((transition) => ({
+        id: makeId("transition"),
+        fromStatusId: idOf(transition.fromStatusKey),
+        toStatusId: idOf(transition.toStatusKey),
+        name: transition.name,
+        sortOrder: transition.sortOrder,
+        hidden: transition.hidden,
+      })),
+    };
+    for (const code of candidate.issueTypes) bindings[code] = workflow;
+    return this.workflowView(workflow, "as-stored");
+  }
+
+  /**
+   * `POST …/workflows/{workflowId}/statuses` — `WorkflowEditService.addStatus`.
+   * See `editableWorkflow` for the refusals before the body is looked at.
+   */
+  addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): WorkflowDefinition {
+    if (!isWorkflowStatusBody(input)) throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    const { workflow, issueTypes } = this.editableWorkflow(projectId, workflowId);
+    const status = trimmedStatus(input);
+    this.refuseWorkflowUpdate(workflow, issueTypes, { status });
+    workflow.statuses.push({ id: makeId("status"), ...status });
+    return this.bumpWorkflow(workflow);
+  }
+
+  /** `POST …/workflows/{workflowId}/transitions` — `WorkflowEditService.addTransition`. */
+  addWorkflowTransition(projectId: string, workflowId: string, input: WorkflowTransitionInput): WorkflowDefinition {
+    if (!isWorkflowTransitionBody(input)) throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    const { workflow, issueTypes } = this.editableWorkflow(projectId, workflowId);
+    const transition = trimmedTransition(input);
+    this.refuseWorkflowUpdate(workflow, issueTypes, { transition });
+    const idOf = (key: string) => workflow.statuses.find((status) => status.statusKey === key)?.id ?? "";
+    workflow.transitions.push({
+      id: makeId("transition"),
+      fromStatusId: idOf(transition.fromStatusKey),
+      toStatusId: idOf(transition.toStatusKey),
+      name: transition.name,
+      sortOrder: transition.sortOrder,
+      hidden: transition.hidden,
+    });
+    return this.bumpWorkflow(workflow);
+  }
+
+  /**
+   * `ProjectRoleChecker` with `create-workflow-roles` / `edit-workflow-roles`
+   * (both `[ADMIN]`), in its three sentences: a missing project, a reader who
+   * is not a member, a member whose role is not in the set.
+   */
+  private requireWorkflowRole(projectId: string): void {
+    this.getProject(projectId);
+    const role = this.membersByProject[projectId]?.find((member) => member.userId === this.currentUserId)?.role;
+    if (!role) throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    if (role !== "ADMIN") throw new MockApiError("PERMISSION_DENIED", "Not allowed role");
+  }
+
+  /**
+   * `WorkflowEditService.loadEditableWorkflow`: the role, a workflow nobody
+   * holds (404), the shared default (400 `FAILED_PRECONDITION` — not a
+   * conflict), then a workflow no type of *this* project is bound to (404).
+   * The path is the gateway's to check first: a workflow id that is not a
+   * UUID never reaches the service.
+   */
+  private editableWorkflow(projectId: string, workflowId: string): { workflow: WorkflowDefinition; issueTypes: string[] } {
+    if (!UUID_PATTERN.test(workflowId)) throw new MockApiError("INVALID_ARGUMENT", "Invalid request parameters");
+    this.requireWorkflowRole(projectId);
+    const bound = Object.values(this.workflowOverrides).flatMap((bindings) => Object.values(bindings ?? {}));
+    const workflow = workflowId === this.workflow.id ? this.workflow : bound.find((item) => item?.id === workflowId);
+    if (!workflow) throw new MockApiError("NOT_FOUND", `Workflow not found: id=${workflowId}`);
+    if (workflow === this.workflow) {
+      throw new MockApiError(
+        "FAILED_PRECONDITION",
+        `Default workflow is shared by all projects and cannot be modified: id=${workflowId}. Create a project workflow first`,
+      );
+    }
+    const issueTypes = Object.entries(this.workflowOverrides[projectId] ?? {})
+      .filter(([, item]) => item === workflow)
+      .map(([code]) => code);
+    if (!issueTypes.length) throw new MockApiError("NOT_FOUND", `Workflow not found in project: id=${workflowId}`);
+    return { workflow, issueTypes };
+  }
+
+  /**
+   * The whole workflow as it would stand after the add, through the create
+   * rules with the edit's prefix. 409 `ALREADY_EXISTS` only when every
+   * violation is a duplicate key or a duplicate pair, 400 otherwise
+   * (`WorkflowEditService.checkViolations`).
+   */
+  private refuseWorkflowUpdate(
+    workflow: WorkflowDefinition,
+    issueTypes: string[],
+    added: { status?: WorkflowStatusInput; transition?: WorkflowTransitionInput },
+  ): void {
+    const keyOf = (statusId: string) => workflow.statuses.find((status) => status.id === statusId)?.statusKey ?? "";
+    const candidate: WorkflowCandidate = {
+      name: workflow.name,
+      issueTypes,
+      statuses: [
+        ...workflow.statuses.map(({ statusKey, name, category, sortOrder }) => ({ statusKey, name, category, sortOrder })),
+        ...(added.status ? [added.status] : []),
+      ],
+      transitions: [
+        ...workflow.transitions.map((transition) => ({
+          fromStatusKey: keyOf(transition.fromStatusId),
+          toStatusKey: keyOf(transition.toStatusId),
+          name: transition.name,
+          sortOrder: transition.sortOrder,
+          hidden: transition.hidden,
+        })),
+        ...(added.transition ? [added.transition] : []),
+      ],
+    };
+    const violations = workflowViolations(candidate);
+    if (!violations.length) return;
+    throw new MockApiError(
+      violations.every((violation) => violation.duplicate) ? "ALREADY_EXISTS" : "INVALID_ARGUMENT",
+      violationMessage("Workflow update failed: ", violations),
+    );
+  }
+
+  /** `incrementVersion`, then the workflow as `GetWorkflowForProject` reads it: statuses, visible transitions. */
+  private bumpWorkflow(workflow: WorkflowDefinition): WorkflowDefinition {
+    workflow.version += 1;
+    workflow.updatedAt = now();
+    return this.workflowView(workflow, "visible");
+  }
+
+  /**
+   * A copy of a stored workflow in one of the three shapes the routes answer:
+   * the list's (`all`, ordered by `sortOrder`), an add's (`visible` — sorted,
+   * the hidden transitions left out), and the create's (`as-stored`, request
+   * order).
+   */
+  private workflowView(workflow: WorkflowDefinition, shape: "all" | "visible" | "as-stored"): WorkflowDefinition {
+    const bySortOrder = <T extends { sortOrder: number }>(items: T[]) =>
+      shape === "as-stored" ? [...items] : [...items].sort((a, b) => a.sortOrder - b.sortOrder);
+    return {
+      ...workflow,
+      statuses: bySortOrder(workflow.statuses).map((status) => ({ ...status })),
+      transitions: bySortOrder(workflow.transitions)
+        .filter((transition) => shape !== "visible" || !transition.hidden)
+        .map((transition) => ({ ...transition })),
     };
   }
 
@@ -6524,6 +6963,26 @@ export class MockTaskaApi implements TaskaApi {
   async deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void> {
     this.store.deleteIssueWorklog(projectId, issueId, worklogId);
     await wait(null);
+  }
+
+  async listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]> {
+    return wait(this.store.listProjectWorkflows(projectId));
+  }
+
+  async createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<WorkflowDefinition> {
+    return wait(this.store.createProjectWorkflow(projectId, input));
+  }
+
+  async addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<WorkflowDefinition> {
+    return wait(this.store.addWorkflowStatus(projectId, workflowId, input));
+  }
+
+  async addWorkflowTransition(
+    projectId: string,
+    workflowId: string,
+    input: WorkflowTransitionInput,
+  ): Promise<WorkflowDefinition> {
+    return wait(this.store.addWorkflowTransition(projectId, workflowId, input));
   }
 
   async listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

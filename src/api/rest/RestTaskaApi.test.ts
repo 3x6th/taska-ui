@@ -4878,3 +4878,185 @@ describe("RestTaskaApi error envelope", () => {
     expect(failure).toMatchObject({ code: "UNKNOWN", status: 502, details: null });
   });
 });
+
+/**
+ * Backend PR #208 (TAS-381): the four workflow routes as `rest` sends and reads
+ * them — open and undeployed on 2026-10-21, pinned in
+ * docs/contract/pending/pr-208-TAS-381.yml at `9a04e99`.
+ */
+describe("RestTaskaApi project workflows", () => {
+  const PROJECT = "b4e2d3c5-0000-4000-8000-000000000382";
+  const WORKFLOW = "c5f3e4d6-0000-4000-8000-000000000382";
+  const base = `/api/v1/projects/${PROJECT}/workflows`;
+
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: RequestInit) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+  const sentBody = (fetchStub: ReturnType<typeof stubFetch>) => JSON.parse(String(fetchStub.mock.calls[0][1]?.body));
+
+  const wireWorkflow = {
+    id: WORKFLOW,
+    name: "Default workflow",
+    version: 3,
+    createdAt: "2026-10-01T09:00:00Z",
+    updatedAt: "2026-10-02T09:00:00Z",
+    statuses: [
+      { id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10, createdAt: "2026-10-01T09:00:00Z" },
+    ],
+    transitions: [
+      { id: "t1", fromStatusId: "s1", toStatusId: "s1", name: "Visible", sortOrder: 10, hidden: false, createdAt: null },
+      { id: "t2", fromStatusId: "s1", toStatusId: "s1", name: "Hidden", sortOrder: 20, hidden: true },
+      { id: "t3", fromStatusId: "s1", toStatusId: "s1", name: "Unsaid", sortOrder: 30 },
+      { id: "t4", fromStatusId: "s1", toStatusId: "s1", name: "Stringly", sortOrder: 40, hidden: "true" },
+    ],
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads the list field by field: hidden only when it says true, the timestamps of a row left behind", async () => {
+    const fetchStub = stubFetch({ items: [{ workflow: wireWorkflow, issueTypes: ["TASK", "EPIC"], shared: true }] });
+
+    const [entry] = await new RestTaskaApi().listProjectWorkflows(PROJECT);
+
+    expect(fetchStub.mock.calls[0][0]).toBe(base);
+    expect(entry.workflow.statuses).toEqual([{ id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 }]);
+    expect(entry.workflow.transitions.map((transition) => [transition.name, transition.hidden])).toEqual([
+      ["Visible", false],
+      ["Hidden", true],
+      ["Unsaid", false],
+      ["Stringly", false],
+    ]);
+    expect(entry.workflow.transitions[0]).not.toHaveProperty("createdAt");
+    expect(entry.workflow).toMatchObject({ id: WORKFLOW, name: "Default workflow", version: 3 });
+    // As sent: a type this build has no name for is kept, not intersected away.
+    expect(entry.issueTypes).toEqual(["TASK", "EPIC"]);
+  });
+
+  it("reads shared as true unless the server said false, and drops an item with no workflow or a type with no code", async () => {
+    stubFetch({
+      items: [
+        { workflow: wireWorkflow, issueTypes: ["TASK"], shared: false },
+        { workflow: { ...wireWorkflow, id: "w2" }, issueTypes: [null, "BUG"] },
+        { workflow: { ...wireWorkflow, id: "w3" }, issueTypes: [], shared: null },
+        { workflow: null, issueTypes: ["STORY"], shared: false },
+        { issueTypes: ["STORY"] },
+      ],
+    });
+
+    const entries = await new RestTaskaApi().listProjectWorkflows(PROJECT);
+
+    expect(entries.map((entry) => [entry.workflow.id, entry.shared, entry.issueTypes])).toEqual([
+      [WORKFLOW, false, ["TASK"]],
+      ["w2", true, ["BUG"]],
+      ["w3", true, []],
+    ]);
+  });
+
+  it("reads an answer with no items as no workflows", async () => {
+    stubFetch({});
+    await expect(new RestTaskaApi().listProjectWorkflows(PROJECT)).resolves.toEqual([]);
+  });
+
+  it("creates with exactly the four parts, every transition stating hidden", async () => {
+    const fetchStub = stubFetch({ ...wireWorkflow, version: 1 }, 201);
+
+    const created = await new RestTaskaApi().createProjectWorkflow(PROJECT, {
+      name: "Development",
+      issueTypes: ["TASK"],
+      statuses: [{ statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 }],
+      transitions: [
+        { fromStatusKey: "TODO", toStatusKey: "DONE", name: "Close", sortOrder: 50, hidden: false },
+        { fromStatusKey: "DONE", toStatusKey: "TODO", name: "Back", sortOrder: 60, hidden: true },
+      ],
+    });
+
+    expect(fetchStub.mock.calls[0][0]).toBe(base);
+    expect(fetchStub.mock.calls[0][1]?.method).toBe("POST");
+    expect(sentBody(fetchStub)).toEqual({
+      name: "Development",
+      issueTypes: ["TASK"],
+      statuses: [{ statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 }],
+      transitions: [
+        { fromStatusKey: "TODO", toStatusKey: "DONE", name: "Close", sortOrder: 50, hidden: false },
+        { fromStatusKey: "DONE", toStatusKey: "TODO", name: "Back", sortOrder: 60, hidden: true },
+      ],
+    });
+    expect(created.version).toBe(1);
+  });
+
+  it("adds a status and a transition on their own paths, hidden false sent rather than left to the default", async () => {
+    const statusStub = stubFetch(wireWorkflow, 201);
+    await new RestTaskaApi().addWorkflowStatus(PROJECT, WORKFLOW, {
+      statusKey: "CODE_REVIEW",
+      name: "Code Review",
+      category: "IN_PROGRESS",
+      sortOrder: 25,
+    });
+    expect(statusStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}/statuses`);
+    expect(statusStub.mock.calls[0][1]?.method).toBe("POST");
+    expect(sentBody(statusStub)).toEqual({ statusKey: "CODE_REVIEW", name: "Code Review", category: "IN_PROGRESS", sortOrder: 25 });
+
+    const transitionStub = stubFetch(wireWorkflow, 201);
+    await new RestTaskaApi().addWorkflowTransition(PROJECT, WORKFLOW, {
+      fromStatusKey: "IN_PROGRESS",
+      toStatusKey: "CODE_REVIEW",
+      name: "Move to Code Review",
+      sortOrder: 70,
+      hidden: false,
+    });
+    expect(transitionStub.mock.calls[0][0]).toBe(`${base}/${WORKFLOW}/transitions`);
+    expect(sentBody(transitionStub)).toEqual({
+      fromStatusKey: "IN_PROGRESS",
+      toStatusKey: "CODE_REVIEW",
+      name: "Move to Code Review",
+      sortOrder: 70,
+      hidden: false,
+    });
+  });
+
+  it("rejects a write with the server's words, code and request id, the shared default's refusal not a conflict status", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        status: 400,
+        ok: false,
+        headers: { get: (name: string) => (name === "X-Request-Id" ? "req-382" : null) },
+        json: async () => ({
+          code: "FAILED_PRECONDITION",
+          message: `Default workflow is shared by all projects and cannot be modified: id=${WORKFLOW}. Create a project workflow first`,
+        }),
+      })),
+    );
+
+    const failure = await new RestTaskaApi()
+      .addWorkflowStatus(PROJECT, WORKFLOW, { statusKey: "QA", name: "QA", category: "IN_PROGRESS", sortOrder: 25 })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(apiErrorFacts(failure)).toMatchObject({ status: 400, code: "FAILED_PRECONDITION", requestId: "req-382" });
+  });
+
+  it("rejects the undeployed route with the signature isUndeployedRoute reads", async () => {
+    stubFetch({ code: "NOT_FOUND", message: `No static resource api/v1/projects/${PROJECT}/workflows.` }, 404);
+
+    const failure = await new RestTaskaApi().listProjectWorkflows(PROJECT).catch((error: unknown) => error);
+
+    expect(isUndeployedRoute(failure, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+  });
+});
