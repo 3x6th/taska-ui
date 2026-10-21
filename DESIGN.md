@@ -736,9 +736,9 @@ PR #191, бэкфилла не было) остаётся кнопкой — н�
 ### 4.13 Top bar / Filter bar
 Есть два бара, и они разные. **Бар доски** — height 52, `background:var(--surface)`,
 нижний бордер, `padding:0 18`, `gap:12`. Порядок: назад → project key → название →
-контекст («Board») → **spacer** → поиск по проекту → уведомления → тема → primary «New»
-→ аватар. **Общий бар** (`/projects`, `/admin`) — тот же 52 и `padding:0 22`, и несёт
-логотип → глобальный поиск (§5.4, ищет по всем доступным проектам) → уведомления →
+контекст («Board») → Edit project (ADMIN) → Workflows (§4.28) → **spacer** → поиск по
+проекту → уведомления → тема → primary «New» → аватар. **Общий бар** (`/projects`,
+`/admin`) — тот же 52 и `padding:0 22`, и несёт логотип → глобальный поиск (§5.4, ищет по всем доступным проектам) → уведомления →
 тема → аватар.
 
 **Колокольчик стоит в обоих барах, и это не дублирование** (TAS-185). Бары
@@ -1689,6 +1689,212 @@ navigates the tab.
   `cursor:progress`, без затемнения; Enter в полёте ничего не шлёт. `cursor:progress` — и у
   «Activating».
 
+### 4.28 Workflows проекта (TAS-382)
+
+Модалка §4.11 «Workflows» по образцу участников (§4.22): eyebrow — бейдж ключа (§4.5);
+футера и `Cmd/Ctrl+Enter` нет, каждая форма уходит по Enter. Ручки — backend PR #208
+(TAS-381, выписка `docs/contract/pending/pr-208-TAS-381.yml`):
+`GET /projects/{projectId}/workflows` читает любой участник, три `POST` — только ADMIN.
+Переименования, удаления и перестановки нет ни у workflow, ни у статуса, ни у перехода.
+
+**Почему модалка, а не страница.** Вся настройка проекта, открываемая с доски, —
+модалки §4.11 (Edit project, Members, Manage labels); страница стала бы первым
+под-маршрутом проекта (§5.1) ради одного–трёх коротких списков. Доска остаётся под
+скримом: колонка, добавленная записью, появляется за ним после перечитывания контекста
+(§1, п. 4). Списки вертикальные и входят в 480: внутренняя ширина карточки 414 на 1440 и
+296 на 390. Отвергнуто: широкая модалка (новый размер, §2.7), вложенный диалог (два скрима
+и две `--shadow-modal` в одном вьюпорте, §2.6), формы полосой §4.22 (это рецепт
+подтверждения разрушительного действия). Когда у проекта появится четвёртая поверхность
+настройки, всё переезжает в `/projects/:projectId/settings/*` на рецепте §5.9 — не раньше.
+
+**Триггер.** `.icon-button` 32 с `Workflow` (lucide) 15 в баре доски, сразу после Edit
+project (у не-ADMIN — после «Board»), до спейсера (§4.13). `aria-label` и `title`
+«Workflows», `aria-haspopup="dialog"`. Виден всем ролям с первого кадра: диалог читает
+сам. **Не в фильтр-баре**: тот держит фильтры и людей, которых они фильтруют, и +46
+переносили бы нефильтрованный бар ADMIN'а на 821–854 вопреки §4.13. На 390 кнопка
+остаётся в первой строке (297–329, спейсер 80.7 → 36.7); имя проекта раньше уходит в
+многоточие (≈131 у ADMIN'а) и несёт `title` с полным именем. Закрытие диалога возвращает
+фокус на триггер.
+
+**Тело, сверху вниз.**
+- ADMIN: secondary compact «New workflow» (`Plus` 13). Если на общем default не осталось
+  типов — вместо кнопки строка 11.5 `--fg-2` «Every issue type in this project already has
+  its own workflow.»
+- MEMBER/VIEWER: строка 11.5 `--fg-2` «Only a project admin can change workflows.» Роль
+  неизвестна (§5.7) — «Your role on this project is unknown, so workflows cannot be changed
+  here.» Пока роль читается — ничего.
+- Карточки workflow, `gap:14`. Workflow — одна карточка со всеми своими типами, карточки на
+  каждый тип нет. Порядок: свои workflow проекта — по порядку типов доски
+  (`allowedIssueTypes`) их первого типа; общий default — последним.
+
+**Карточка.** `<section>`, `1px solid var(--border)`, radius 11, padding 14, без заливки и
+тени. Фон — `--surface` модалки, поля форм — `--surface-2`, третьего уровня нет (§1).
+- **Шапка.** `h3` имя 14/650 `--fg`. У общего — маркер `shared` по рецепту `read-only`
+  §5.8: 10.5 моно `--fg-2`, `1px --border`, radius 6, padding 2 7.
+- **Типы.** «Used by» 11.5 `--fg-2`, затем тип-чип §4.6 + подпись 12/550 `--fg` (функция
+  §6), `gap:8`, с переносом. Список типов — как прислал сервер, без пересечения с
+  контекстом (он может назвать тип, которого проект не разрешает; BACKLOG). Типов нет —
+  «No issue type uses it.»
+- **Строка общего default.** 11.5 `--fg-2` «Shared by every Taska project, so it cannot be
+  changed here.» ADMIN'у, когда есть что переносить, — второе предложение «A new workflow
+  starts as a copy of it.»
+- **Заголовки разделов.** «Statuses» и «Transitions» — `h4` 11.5/550 `--fg-2`, 14 сверху, 6
+  до списка.
+- **Статусы** — `<ol aria-label="Statuses of {workflow}">` в `sortOrder`. Строка
+  `min-height:28`, flex, `gap:8`: status dot 8 цвета категории (§4.9; незнакомая категория —
+  полое кольцо §2.2); имя 12.5/550 `--fg` — подпись §6, многоточие; ключ моно 11/500
+  `--fg-3` — мета, многоточие, полный в `title`; справа категория 11.5 `--fg-2` словами §6.
+  Цифры `sortOrder` не печатаются.
+  - Статус, кроме `TODO`, в который не ведёт ни один нескрытый переход: второй строкой под
+    именем, отступ 16, 11 `--fg-2` «No transition on the board leads here.»
+  - Нет статуса `TODO`: под списком 11.5 `--fg` «New issues always start in TODO, which this
+    workflow does not have, so new {types} issues will land in Other statuses on the board.»
+    Цвет `--fg`: это факт о данных, а не мета.
+  - Пустой `statuses` — 11.5 `--fg-2` «The server sent this workflow without statuses.»
+    (§5.3).
+- **Переходы** — `<ul aria-label="Transitions of {workflow}">`, по статусу «откуда» в порядке
+  колонок, внутри — по `sortOrder`. Строка `min-height:28`, `flex-wrap:wrap`,
+  `column-gap:8; row-gap:2`: «{From} → {To}» 12.5/500 `--fg`, стрелка — `.arrow` панели,
+  `aria-hidden`, для читалки визуально скрытое « to »; справа (`margin-left:auto`) имя
+  перехода 12 `--fg-2`, многоточие — это подпись кнопки перехода в панели (§4.10); у
+  скрытого — маркер `hidden` того же рецепта, что `shared`. Без status dots. Статусы
+  разрешаются по `fromStatusId`/`toStatusId`; незнакомый id — «Unknown status» `--fg-2`,
+  строка не выпадает.
+  - Есть скрытые — под списком 11.5 `--fg-2` «Hidden transitions are not offered on the
+    board.»
+  - Пусто — «No transitions yet, so issues cannot move between these statuses.»
+- **Кнопки ADMIN'а** — только у своего workflow: secondary compact «Add status» под
+  статусами и «Add transition» под переходами (`Plus` 13, 8 сверху). У общего их нет в DOM:
+  сервер отвечает на запись в него 400 `FAILED_PRECONDITION`, и это не конфликт —
+  формулировка не идёт через `isConflict`.
+
+**Формы — общее.** Форма встаёт на место своего триггера; фокус — в первое поле. Cancel и
+`Esc` возвращают триггер и фокус на него. Открыта одна форма на диалог: открытие другой
+закрывает текущую вместе с черновиком. Поля §4.3 высотой 32 (как Work log §4.24); подпись
+сверху 11.5/550 `--fg-2`, `gap:6`. `.form-two` — две колонки, ниже 480 вьюпорта — одна.
+Действия — ряд справа, `gap:8`: secondary compact «Cancel» и primary compact отправки.
+Пустое обязательное поле — отправка `aria-disabled` по рецепту «стойко недоступен» §4.1,
+без фразы. Любая иная причина — одна строка `.admin-write-hint` над рядом действий, по
+одной за раз. Формат ключа и длины имён клиент **не** проверяет сверх этих причин: это
+настройка сервера (`workflow.validation.*`), и его 400 называет проблему сам.
+
+**New workflow.** Бокс карточки (рамка `--border`, radius 11, padding 14) над карточками,
+`h3` «New workflow» 14/650.
+- «Name» — до 100 символов.
+- `fieldset` «Issue types»: чекбокс только на каждый тип, который сейчас на общем default
+  (тип со своим workflow сервер второй раз не привяжет, 409). Строка — `label`,
+  `min-height:28`, `gap:8`: нативный checkbox 14, `accent-color:var(--accent)`, `margin:0`;
+  тип-чип; подпись 12.5/500 `--fg`. Группа `flex-wrap`, `column-gap:16`.
+- Под группой 11.5 `--fg-2`, `aria-describedby` группы: «Starts as a copy of {shared name},
+  so issues of the types you move keep their status.»
+- Кнопка — «Create workflow».
+- **Тело запроса — копия общего default как есть**: ключи, имена, категории, `sortOrder` и
+  `hidden` всех статусов и всех переходов, скрытые включительно (их даёт только список,
+  контекста мало). Копию до отправки править нельзя: сервер не проверяет, что в workflow
+  есть статус `TODO` и хотя бы один видимый переход, а без них контекст проекта отвечает
+  404 всем участникам (API-DIVERGENCE, замечание в TAS-381). Копия — источник на экране,
+  без лишнего запроса; это поведение UI по умолчанию, а не компенсация
+  (`api-contract-guard`).
+
+**Add status.**
+- `.form-two`: «Name» (до 100) | «Key» (`.mono-input`, до 64). Ключ: верхний регистр при
+  вводе, пробел и дефис → `_`, как у ключа проекта; пока ключ не правили руками, он
+  выводится из имени. Под ключом 11.5 `--fg-2` «Capital letters, digits and underscores.»
+  Поле ключа нужно: кириллическое имя ключа не даст, а доска такой статус подписывает
+  ключом (§6).
+- «Category» — `.segmented.fit` §4.2 (`role="group"`, `aria-pressed`). Сегменты — категории,
+  которые есть у статусов в ответе списка (словаря категорий у сервера нет, BACKLOG), в
+  порядке To Do · In Progress · Done, незнакомая — по своему значению в конце; подписи §6.
+  По умолчанию In Progress, если он есть, иначе первый сегмент.
+- «Position» — select: «At the start», затем «After {status}» по каждому статусу. По
+  умолчанию — конец своей категории: после последнего статуса, чей ранг (TODO <
+  IN_PROGRESS < DONE) не выше выбранного; таких нет — «At the start». Пересчитывается со
+  сменой категории, пока Position не трогали. При «At the start» под select'ом 11.5
+  `--fg-2` «New issues will still start in {TODO name}.»
+- Последняя строка над действиями, `aria-describedby` кнопки: 11.5 `--fg-2` «A status cannot
+  be renamed, moved or removed once added.»
+- Причины: «{KEY} is already a status in this workflow.» / «A key starts with a letter and
+  has 2–64 capital letters, digits or underscores.»
+- Кнопка — «Add status».
+
+**Add transition.**
+- `.form-two`: «From» | «To» — select'ы статусов по подписи §6 в порядке колонок; в «To» нет
+  выбранного «From». По умолчанию «To» — статус, добавленный этим диалогом, в который ещё
+  ничего не ведёт; «From» тогда — статус перед ним в порядке колонок. Иначе «From» —
+  первый статус, «To» — первый, куда из «From» перехода нет.
+- «Name» (до 100) — «Move to {To}», пока его не правили. Под полем 11.5 `--fg-2` «Shown on
+  the move button of an issue.»
+- Флажка `hidden` нет: доска скрытый переход не предлагает. Отправляется `hidden:false`.
+- `sortOrder` — наибольший среди **всех** переходов workflow из списка (скрытые
+  включительно) + 10: по контексту, где скрытых нет, номер мог бы совпасть со скрытым и
+  получить 400.
+- Последняя строка: «A transition cannot be renamed or removed once added.»
+- Причина: «{From} → {To} already exists as “{name}”.»
+- Кнопка — «Add transition».
+
+**Порядок колонок.** Доска сводит статусы всех workflow проекта и сортирует их по
+`sortOrder` поперёк workflow (`mergeWorkflowStatuses`). Поэтому копия при создании несёт
+`sortOrder` как есть (на стенде статусы 10/20/30, переходы 10…60). Новый статус встаёт в
+середину промежутка своего workflow: `floor((prev+next)/2)`; «At the start» —
+`floor(first/2)`; после последнего — последний + 10. Позиция без места (`next−prev < 2` или
+`first = 0`) — `option disabled` «After {status} (no space left)». Перенумеровывать нельзя:
+статус 250 в копии встал бы на доске после Done = 30 общего default. «Всегда в конец»
+нельзя: перестановки нет, и колонка навсегда осталась бы за Done.
+
+**Состояния.**
+- **Загрузка.** Одна карточка-скелетон: рамка карточки и `.value-skeleton` (§5.6) — имя
+  140×14, «Used by» 90×11, три строки (круг 8 + 110×12, `gap:10`). `aria-busy` на списке,
+  визуально скрытый `role="status"` «Loading workflows». Без спиннера.
+- **Отказ чтения.** `ApiNotice` `live="off"`: «This project's workflows could not be
+  loaded.», слова сервера и `X-Request-Id`. Повтор — повторное открытие. Без повтора
+  запроса на 403, 404 и незадеплоенный маршрут.
+- **Маршрута нет** (`isUndeployedRoute` + `UNDEPLOYED_ROUTE_MESSAGE`). 12.5 `--fg-2`
+  «Workflows are not on this gateway yet, so they cannot be shown here.» Без id, без
+  `--danger`, не живая, кнопок записи нет. Данные контекста не подставляются (без
+  компенсаций).
+- **Пусто** (`items: []` — у проекта нет типов задач). 12.5 `--fg-2` «This project has no
+  issue types, so it runs on no workflow.» «New workflow» нет. Это ответ, а не отказ.
+- **В полёте.** Рецепт §4.1: отправка `aria-disabled`, подпись прежняя, без затемнения,
+  `cursor:progress`. Cancel и `Esc` инертны, остальные триггеры не открываются. Без
+  оптимизма — осознанное отступление от «мутации оптимистичны», как в §5.8 Users: запись
+  меняет доску всех участников, а откат вынул бы строку и переоткрыл форму на глазах.
+- **Отказ записи.** Форма остаётся с введённым, фокус на отправке. `ErrorNote` (§5.6) над
+  действиями; живая область только у предложения (`role="alert"`): «The workflow was not
+  created.» / «The status was not added.» / «The transition was not added.» Ниже — слова
+  сервера и `X-Request-Id` вне живой области. 404 и 409 вдобавок перечитывают
+  `/workflows`. Маршрут записи не задеплоен — `.save-failed-note` (`--fg-2`,
+  `role="status"`): «Workflow changes are not on this gateway yet, so this was not saved.»
+- **Успех.** Ответ записи в кэш **не кладётся**: ответ на добавление несёт только видимые
+  переходы, ответ на создание — голый workflow без типов и признака `shared`
+  (API-DIVERGENCE). Запись остаётся «в полёте», пока не перечитаются `/workflows` и
+  контекст проекта; затем форма закрывается, доска под скримом получает колонку и
+  переходы. Новая строка или карточка 2 с держит
+  `color-mix(in oklab, var(--accent) 14%, transparent)` (рецепт `.admin-key.is-copied`,
+  §5.8), radius 7; подсветка включается и гаснет без анимации. Постоянная визуально
+  скрытая polite-область диалога: «Workflow {name} created for {types}.» / «Status {name}
+  added. Add a transition so issues can move into it.» / «Transition {name} added: {From}
+  to {To}.» Если перечитывание после 201 само упало, форма всё равно закрывается, объявление
+  звучит, а над списком встаёт строка отказа чтения.
+- **Фокус после успеха.** New workflow → `h3` новой карточки (`tabIndex=-1`, кольцо 2px).
+  Add status → «Add transition» той же карточки (без перехода колонка недостижима). Add
+  transition → «Add transition».
+
+**Клавиатура.** Первый фокус — Close (правило `Modal.tsx`: полей при открытии нет). Tab:
+Close → New workflow → в каждой карточке Add status → Add transition. `Esc`: во время IME —
+ничего; открытая форма не в полёте — закрывает её (`preventDefault`), фокус на триггер; в
+полёте — ничего; иначе закрывает модалку. Enter в текстовом поле отправляет его форму. Для
+MEMBER, VIEWER и неизвестной роли `.modal-body` — фокусируемый скроллер: `tabIndex=0`,
+`aria-label="Workflows"`, кольцо по исключению 1 §7.
+
+**Темы и движение.** Только токены §2. На `--surface`: `--fg` 17.88/15.73, `--fg-2`
+7.26/6.75, ключ `--fg-3` 3.14/3.05 (мета). `--fg` на подсветке — около 14/13, замерить на
+сборке. Движения — только `tk-pop` модалки и пульс `.value-skeleton`. Формы, строки и
+подсветка без анимации; новых литеральных анимаций в §3 нет.
+
+**Чтения.** Открытие с доски — один запрос (список; контекст уже в кэше), холодный
+переход — два параллельно. Ключ `["project-workflows", projectId]`. Каждая запись — один
+`POST` и два параллельных перечитывания (список и контекст); ключи задач не трогаются.
+
 ## 5. Patterns
 
 ### 5.1 App shell и маршруты
@@ -1972,6 +2178,10 @@ VIEWER: «New», «+», transition-кнопки и Delete остаются на 
 читателя, но выключен (`disabled`, §4.21): `watch-issue-roles` — это
 `ADMIN,MEMBER`.
 Не полагаться только на скрытие — сервер всё равно проверяет.
+
+Workflows (§4.28) читают все. «New workflow», «Add status», «Add transition» и их формы —
+только ADMIN; у остальных и при неизвестной роли их нет в DOM. На общем default их нет
+ни у кого.
 
 Исполнителя сервер проверяет по роли назначающего и, если тот назначает не себя,
 ещё и по роли назначаемого (`assign-issue-roles: ADMIN,MEMBER`). Поэтому фишки
@@ -2955,7 +3165,7 @@ workflow-статуса раньше подписи сборки, если в н
 | --- | --- | --- |
 | session | currentUser, accessToken/refresh | auth-контекст + `GET /users/me` |
 | route | projectId, issueId | URL (§7 handoff README) |
-| server | projects, membership, workflow, issues, issue+history, comments, notifications | react-query, мутации оптимистичные + инвалидация |
+| server | projects, membership, workflow, workflows (`/workflows`, TAS-382), issues, issue+history, comments, notifications | react-query, мутации оптимистичные + инвалидация |
 | board ui | `{ q, type, assignee }`, dragIssueId, dragOverStatus | локальный стейт экрана |
 | app ui | notifOpen, creating, draft, editingCommentId | локальный стейт / контекст |
 | reader prefs (TAS-380) | theme, issueDetails, boardColumns | `localStorage` (`taska.theme`, `taska.issueDetails`, `taska.boardColumns`), отражены в атрибуты `<html>` до первой отрисовки; незнакомое значение — по умолчанию (§5.9) |
@@ -3182,7 +3392,8 @@ workflow-статуса раньше подписи сборки, если в н
   Исключения — только эти:
   1. `outline-offset:-2px` — элемент в контейнере с `overflow`, где до края меньше 4px: строки
      поповеров и меню (TAS-185, ниже), карточка задачи в списке колонки (`.issue-list`,
-     padding 1/2), строка каталога админки (`.admin-catalog-list`).
+     padding 1/2), строка каталога админки (`.admin-catalog-list`), `.modal-body`, когда он сам
+     фокусируемый скроллер (Workflows для читателя без записи, §4.28).
   2. `outline-offset:0` — сегмент в контейнере §4.2: зазор 3, наружное кольцо заходило на соседа.
   3. `outline-offset:4px` — выбранный фильтр исполнителя: в покое он уже носит кольцо выбора
      §4.4 на 1.5, и без сдвига фокус на нём невидим.
@@ -3224,6 +3435,9 @@ workflow-статуса раньше подписи сборки, если в н
   оставило фокус на `<body>` — кольцо при этом по правилу `:focus-visible` (после клавиатуры
   есть, после мыши нет). Открыто: `Esc` у модалок создания и правки (New project, New issue,
   Manage labels, Edit project). Панель задачи — закрыто в TAS-380 (§4.10).
+- **Открыто в TAS-382** (решение art-director 2026-10-21, до сборки): триггер Workflows 32×32;
+  New workflow / Add status / Add transition / Cancel / отправка ×29, поля 32, сегменты 30,
+  строки чекбоксов 28. Пол §1 держат все, 44 нет; тот же псевдоэлемент и правило пары.
 - **Открыто в TAS-380** (замер art-director 2026-10-21, 390): сегменты Settings → Appearance — 30
   в высоту, ссылки полосы рельса — 29.4, кнопки фото — 29. Пол §1 проходят, 44 тач-макета — нет;
   лечится тем же псевдоэлементом, что правило пары.

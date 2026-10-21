@@ -41,7 +41,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 - **`pr-155-TAS-145.yml` is stale**: backend PR #155's head moved from
   `c4b8c2c` to `28f5fe1` (found by `npm run contract:pins`, 2026-10-10).
   Re-extract and re-read TAS-148's edit dialog against it; the PR also
-  conflicts with `develop`.
+  conflicts with `develop`. Re-extracted at `28f5fe1` in TAS-297; on
+  2026-10-21 (TAS-382) the head had moved again, to `f3be973`. The re-read
+  belongs to TAS-149's branch (PR #95), which is written against it.
 - **Backend ask, not filed yet: issue-service creates an issue of a type the
   project does not allow.** `IssueServiceImpl.createIssue` (develop `fa90b51`,
   with backend #169 merged) checks only the role and saves any `issueType`; nothing in
@@ -51,6 +53,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `getProjectKeyInternal` and answer `INVALID_ARGUMENT`. The UI never offers such
   a type; the mock refuses it as the intended rule (`api-contract-guard`,
   TAS-251, 2026-10-10). File under TAS-210 when TAS-212 lands.
+- **Backend, latent: the workflow list and create ignore `allowedIssueTypes`
+  too** (#208 at `9a04e99`, `ProjectWorkflowListService.java:52`). The list
+  iterates TASK, BUG, STORY whatever the project allows, and create binds any of
+  them. Latent because nothing writes `allowedIssueTypes` today. The Workflow
+  surface (TAS-382) shows the list as sent and does not intersect it with the
+  context. Preferred fix (`api-contract-guard`): workflow-service's existing
+  `CheckProjectMemberRole` call also returns the allowed types. Same filing
+  moment as the line above; noted on TAS-381 on 2026-10-21.
+- **No dictionary for workflow status categories.** The Workflow surface
+  (TAS-382) offers the categories found in the list's own statuses rather than a
+  literal union. Ask: `/meta` gains `statusCategories`, gateway-only, beside the
+  existing pairs (`MetaServiceImpl.java:38-44`), TAS-217's line.
 - **Comment Edit/Delete links are under the 28×28 clickable minimum** (§1, §7):
   `.comment-actions .link-button` measures about 32×19 in the Comments section.
   Found by `art-director` on TAS-251, where the Work log copy of it was fixed;

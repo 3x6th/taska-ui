@@ -5625,6 +5625,67 @@ nothing but `BACKLOG.md` for now.
   grow the controls the Data section already has. Nothing has to be removed
   first.
 
+
+### The workflow routes of backend PR #208 are not deployed, and the mock's default workflow runs ahead of the stand
+
+- **Endpoints:** `GET`/`POST /api/v1/projects/{projectId}/workflows`,
+  `POST …/workflows/{workflowId}/statuses`, `POST …/workflows/{workflowId}/transitions`
+  (pending extract `docs/contract/pending/pr-208-TAS-381.yml`, head `9a04e99`).
+- **Observed 2026-10-21**, no token: the list and the status add answer the
+  static-resource 404 (`77aa41cc-819e-4537-a0e4-1b31af169eb9`,
+  `b590752a-5707-4922-a224-f89a040a1635`); the control
+  `GET …/workflow?issueType=TASK` answers 400.
+- **The default workflow on the stand** has three transitions: TODO→IN_PROGRESS,
+  IN_PROGRESS→DONE, DONE→IN_PROGRESS. Migration 0001 in #208 adds
+  IN_PROGRESS→TODO "Stop Progress" (40), TODO→DONE "Close" (50) and DONE→TODO
+  "Back to To Do" (60). The mock carries #208's six since TAS-382. Before that it
+  already carried an IN_PROGRESS→TODO "Move to To Do" (25) that the stand never
+  had, with no entry here — that was the older half of this divergence.
+- **The UI instead:** the Workflow surface asks the list once; an undeployed
+  answer (`isUndeployedRoute`) says the routes are not on this gateway yet and
+  shows no write control. Until #208 deploys, a drag the mock allows (In
+  Progress → To Do, To Do → Done, Done → To Do) is refused against the stand with
+  the board's ordinary "no transition" sentence. **Compensation: none.**
+- **Removal:** #208 merged and deployed — the list answers 401 without a token.
+  Then this entry closes and the "not on this gateway yet" state stays as the
+  ordinary undeployed handling. TAS-381 / TAS-382.
+
+### Adding a status or a transition answers the workflow without its hidden transitions
+
+- **Endpoints:** `POST …/workflows/{workflowId}/statuses` and `…/transitions`
+  (#208 at `9a04e99`).
+- **Read in code, not measured:** the 201 is built from
+  `findVisibleByWorkflowId` (`WorkflowEditService.java:184`), so a hidden
+  transition just added is missing from its own answer; the yml says the
+  workflow comes back whole. The create 201 is the bare `WorkflowResponseDto`,
+  statuses and transitions in request order, hidden ones included.
+- **The UI instead:** no write answer is read into the screen. Every successful
+  write invalidates the workflow list and the project context and re-reads
+  them. **Compensation: none** — a re-read after a write is the ordinary path.
+- **Removal:** the writes answering what the list shows. Asked on TAS-381
+  (comment, 2026-10-21); not blocking.
+
+### A workflow with no status or no visible transition makes the project context 404
+
+- **Endpoints:** `POST /api/v1/projects/{projectId}/workflows`, and through it
+  `GET /api/v1/projects/{projectId}/context` (#208 at `9a04e99`).
+- **Read in code, not measured:** the create validator checks no minimum
+  (`WorkflowCreationValidator.java:35`) — no status, no `TODO` key, no visible
+  transition is accepted. `GetWorkflowForProject` then answers NOT_FOUND
+  (`WorkflowServiceImpl.java:47`, `:51`), which fails the whole context, and the
+  board shows "not found" to every member.
+- **The UI instead:** Create workflow sends only a verbatim copy of the shared
+  workflow the chosen types run on now — statuses and transitions, hidden ones
+  included — and offers no way to edit that copy before it is sent. Statuses and
+  transitions are added afterwards through the add routes, which re-validate the
+  whole workflow. `api-contract-guard` ruled the copy a UI default, not a
+  compensation: it reads the list already on screen, adds no request, and the
+  form says it is a copy. **Compensation: none.** Any other client can still
+  send the empty body.
+- **Removal:** the validator requiring a status, the `TODO` key and a visible
+  transition, or the context tolerating empty lists. Blocking remark on TAS-381
+  (comment, 2026-10-21). The copy-only create stays as the default either way.
+
 ---
 
 ## Closed
