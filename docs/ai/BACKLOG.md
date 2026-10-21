@@ -3944,4 +3944,12 @@ Frontend notes:
   `WorkflowStatusCategoryDto`; TAS-217's line); optionally, the status-key
   format and name length served machine-readably (`/meta workflowLimits`), so
   the client stops mirroring server configuration.
+- **Diagram notes from art-director's post-build review** (TAS-382, approved
+  non-blocking): describe the nodes through `hidden` spans rather than
+  `.visually-hidden` (`WorkflowDiagram.tsx` ~207) — `aria-describedby` still reads
+  them and browse mode stops reading every description twice; a complete graph at
+  1440 (24 verticals) is honest but busy — fall back past 8 lanes a side if real
+  workflows ever get there; every node's `title` repeats its visible name; a hover
+  highlight can stay on a node a form's layout shift moved out from under a still
+  mouse until the mouse moves.
 
