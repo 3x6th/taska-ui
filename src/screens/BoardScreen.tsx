@@ -2409,13 +2409,15 @@ function IssuePanel({
   const loading = !issue && !issueQuery.isError;
   /**
    * The frame's head and name in each state (TAS-380, art-director's ruling
-   * 7). Loading: a skeleton of the key beside the real Close, named "Issue".
-   * A read that failed: the key if the board's page holds it. Share and Delete
-   * only once the issue has loaded.
+   * 7). The name is "{KEY} issue" as soon as the key is known, from the board
+   * page or from the issue; "Issue" only when neither has it. Close takes
+   * focus while the panel loads, so that first name is the one a screen reader
+   * announces, and a later rename is not announced again. Loading: a skeleton
+   * of the key beside the real Close. A read that failed: the key if the
+   * board's page holds it. Share and Delete only once the issue has loaded.
    */
-  const failedKey = !issue && !loading ? boardIssueKey : undefined;
   const head = useIssuePanelHead({
-    label: issue ? `${issue.issueKey} issue` : failedKey ? `${failedKey} issue` : "Issue",
+    label: issue ? `${issue.issueKey} issue` : boardIssueKey ? `${boardIssueKey} issue` : "Issue",
     busy: loading,
     asking: Boolean(issue) && asking,
   });
@@ -2446,7 +2448,7 @@ function IssuePanel({
     // words, and the request id that finds it in the gateway log.
     return (
       <>
-        {failedKey ? head.start(<span className="issue-key">{failedKey}</span>) : null}
+        {boardIssueKey ? head.start(<span className="issue-key">{boardIssueKey}</span>) : null}
         <div className="panel-loading">
           <ApiNotice error={issueQuery.error}>This issue could not be opened.</ApiNotice>
         </div>

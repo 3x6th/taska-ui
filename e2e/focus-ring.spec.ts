@@ -63,6 +63,9 @@ async function openPanel(page: Page, issueKey: string): Promise<Locator> {
   await page.locator(".issue-card", { hasText: issueKey }).click();
   const panel = page.getByRole("dialog", { name: `${issueKey} issue` });
   await expect(panel).toBeVisible();
+  // The issue has answered: the panel carries the key's name while it loads
+  // too (TAS-380), and a walk over the skeleton would measure less.
+  await expect(panel).not.toHaveAttribute("aria-busy", "true");
   // Every section's read has landed, so the walk meets the panel as it stays.
   await expect(panel.getByText("Loading comments")).toHaveCount(0);
   return panel;

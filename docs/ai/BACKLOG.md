@@ -2340,8 +2340,8 @@ is what recurs.
   the tone was dropped there.
 - **Five from TAS-220's release review**, recorded rather than taken. Three
   remain open:
-  - The always-mounted empty live region still consumes the photo band's 7px
-    flex gap when there is no notice.
+  - ~~The always-mounted empty live region still consumes the photo band's 7px
+    flex gap when there is no notice.~~ Closed by TAS-380 (`art-director` post-build r1, 2026-10-21): the region is out of flow on Settings → My profile.
   - Neither avatars nor attachments enforce the contract's 255-character
     `fileName` before asking for an upload URL.
   - The "15 minutes" in both expired-link sentences is a literal, not derived
@@ -2389,8 +2389,8 @@ is what recurs.
       `writeOwnFace` on upload, in `onSettled` on removal), run
       `invalidateQueries({ queryKey, exact: true })` on just those keys. That is
       at most one read per list that was already mid-read.
-- **The avatar photo buttons and the watchers block answer the same Chromium
-  behaviour two different ways.** DESIGN.md §4.21 records that a real `disabled`
+- ~~**The avatar photo buttons and the watchers block answer the same Chromium
+  behaviour two different ways.**~~ Closed by TAS-380 (`art-director` post-build r1, 2026-10-21): the photo buttons use the §4.1 in-flight `aria-disabled` recipe. DESIGN.md §4.21 records that a real `disabled`
   attribute blurs a focused element, and watchers answer it with `aria-disabled`
   plus a guard in the handler so focus never leaves; TAS-220's photo controls
   keep the real `disabled` and refocus once the write settles. Both work. Picking
@@ -2428,7 +2428,7 @@ is what recurs.
     straight to the photo. It shows initials only when there is no photo or
     when the server reports `avatarUnavailable`.
   - The store-unreachable and expired-link sentences, shared with attachments,
-    run to four lines in a 276px menu and explain infrastructure. One sentence
+    ~~run to four lines in a 276px menu~~ (width half closed by TAS-380: the controls moved to a 560 column, notes capped at 440) and explain infrastructure — the copy half stays open. One sentence
     plus "choose the photo again" would do (§1, §5.4).
   - The board's "New" is `disabled` rather than hidden for a VIEWER
     (`BoardScreen.tsx:509`), against §5.7. This predates TAS-220.
@@ -2463,8 +2463,8 @@ is what recurs.
   (TAS-222 put 2097152 in the schema), and the mock's `createAvatarUploadUrl`
   now judges size before type. The nuance is unchanged: the gateway checks the
   token first and the mock does not.
-- **Escape inside the profile menu — and the notifications popover — sends
-  focus to `<body>`** (`art-director`, 2026-09-14; the popover measured by
+- ~~**Escape inside the profile menu — and the notifications popover — sends
+  focus to `<body>`**~~ Closed by TAS-380 (`art-director` post-build r1, 2026-10-21): `useDismissOnOutside` returns focus to the trigger on Esc. (`art-director`, 2026-09-14; the popover measured by
   `art-director` on TAS-243 at 1440 and 390, both themes, where the next Tab
   starts again at the logo). Both dismiss through
   `src/hooks/useDismissOnOutside.ts:51`, so the fix belongs in the hook and
@@ -2475,7 +2475,7 @@ is what recurs.
   one line: on Escape, if focus was inside the popover, focus the trigger after
   closing.
 - **"Remove photo" on hover is `--danger` on `--surface-2`: 3.24:1 light, 5.19:1
-  dark** (`art-director`, 2026-09-14, from its own recipe). It is the same gap as
+  dark** (re-measured on the Settings page 2026-10-21: 3.24 / 5.19, unchanged — the button paints its own `--surface-2`; stays with TAS-142) (`art-director`, 2026-09-14, from its own recipe). It is the same gap as
   Log out's resting `--danger` at 3.68:1 (§4.16, TAS-142 note), so the two should
   be decided together.
 - ~~**A failed re-read can leave a stale photo beside "could not be loaded"**
@@ -2951,8 +2951,8 @@ is what recurs.
   its loading state — no error line after 6 s. Cause not traced. Worth
   tracing because the same path may hang on the gateway for a deleted issue
   opened from a stale link or notification.
-- **The issue panel has no `Esc`, no focus trap, and no Close while loading
-  or failed** (2026-09-23, `art-director` on TAS-242, non-blocking,
+- ~~**The issue panel has no `Esc`, no focus trap, and no Close while loading
+  or failed**~~ Closed by TAS-380 (`art-director` post-build r1, 2026-10-21): one `IssuePanelFrame`, Close in every state, Modal's trap, Esc order §4.10. (2026-09-23, `art-director` on TAS-242, non-blocking,
   pre-existing on `main`). DESIGN.md §4.10 says close by scrim, Close or `Esc`,
   focus into the panel and back to the opener on close. A grep of `src` finds
   no close handler on `Esc` in any panel state; during loading a real `Esc`
@@ -3028,7 +3028,7 @@ Frontend, recorded rather than taken:
   `padding-top: 10` is off the §2.4 scale. Fix: revert only the check icon after
   2 s, keep the line until the next press or close, padding 11; then update the
   matching sentence in §4.23.
-- **One Esc must not close both an overlay and the panel** (`release-reviewer`
+- ~~**One Esc must not close both an overlay and the panel**~~ Closed by TAS-380 (`art-director` post-build r1, 2026-10-21): inner layers `preventDefault`, the panel listens on `window` and skips handled events. (`release-reviewer`
   TAS-248 r1, a risk for later): `useDismissOnOutside` handles Escape on
   `document` without `preventDefault`. The panel has no Esc today (§7 gap); when
   it gets one, the hook should mark the event and the panel skip marked events.
@@ -3444,8 +3444,8 @@ From the role verdicts on the branch (2026-10-17), not taken in this PR:
   to that group, which also sets `border: 0; margin: 0; color: inherit` — then
   re-measure `.filter-select select { max-width: 148px }` truncation and the
   29px role selects.
-- **A write refusal in the profile menu survives closing and reopening, and
-  then hides "Your photo could not be loaded."** (`art-director`, 2026-10-17,
+- ~~**A write refusal in the profile menu survives closing and reopening, and
+  then hides "Your photo could not be loaded."**~~ Closed by TAS-380 (`art-director` post-build r1, 2026-10-21): the notice lives in a route component and resets on unmount. (`art-director`, 2026-10-17,
   pre-existing since TAS-220). Under §4.16's yield rule the stale refusal
   suppresses a line that describes the menu on opening. Fix: `setNotice(null)`
   wherever the popover closes (outside click, Esc, item choice) unless an upload
@@ -3645,8 +3645,8 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   `toRestIssuePriority`). So the client's unknown-value defence covers the
   frontend lagging a backend release, not a value the gateway itself does not
   know. Read, not verified. Not filed.
-- **The issue panel's read-failure state (§4.10) has no header and no Close
-  at 390** (`art-director`, 2026-10-19). On touch the only way out is the 31px
+- ~~**The issue panel's read-failure state (§4.10) has no header and no Close
+  at 390**~~ Closed by TAS-380 (`art-director` post-build r1, 2026-10-21): the read error keeps the frame's head with Close. (`art-director`, 2026-10-19). On touch the only way out is the 31px
   scrim strip. Older than TAS-173; the panel's render-failure fallback added
   there does carry Close.
 - **A failed `GET /meta` surfaces nowhere, its request id included**
@@ -3829,8 +3829,8 @@ Frontend notes:
   follow-up N3, older than it): its Cancel has `autoFocus`
   (`AdminInviteModals.tsx:310`), so the ring is already on when the pointer
   closes the dialog. The other four admin dialogs return focus without it.
-- **After New issue → Create, focus lands on the board's New (or the column +)
-  behind the slide-over** (`release-reviewer` TAS-299 follow-up): `onCreated`
+- ~~**After New issue → Create, focus lands on the board's New (or the column +)
+  behind the slide-over**~~ Closed by TAS-380 (`art-director` post-build r1, 2026-10-21): the new panel focuses its Close. (`release-reviewer` TAS-299 follow-up): `onCreated`
   closes the dialog and opens the panel, and the panel takes no focus on open.
   Before the follow-up it fell to `<body>`, so not worse; the slide-over's first
   focus (§7's open item) closes it. Untested: the e2e closes New issue by Cancel.
@@ -3852,3 +3852,4 @@ Frontend notes:
 ## Left by TAS-380
 
 - Settings → Appearance: a second open tab keeps the old issue-details / board-columns / theme choice until it reloads; a `storage` listener for the three keys would carry it over (art-director pre-build note 1, 2026-10-21). Not a defect of the story — the choice is per browser and applies on the next load.
+- The admin rail strip at 390 now scrolls 67px (scrollWidth 457) after TAS-380's `white-space:nowrap`, and "Back to projects" is cut off at the right edge with no sign that the strip scrolls (`art-director` post-build note 2, 2026-10-21). The area is desktop-first and the logo also leads out; a fade or an overflow cue would say there is more.

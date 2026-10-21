@@ -5121,7 +5121,10 @@ describe("the issue panel before its issue has answered", () => {
     holdIssue(true);
     renderBoard(ISSUE_PATH);
 
-    const pending = await screen.findByRole("dialog", { name: "Issue" });
+    // Named by its key from the first frame the board knows it (TAS-380,
+    // art-director's B1): Close takes focus while the panel loads, so this is
+    // the name a screen reader announces, and a rename later is not announced.
+    const pending = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(pending).toHaveAttribute("aria-busy", "true");
     // The words are for a screen reader; the eye gets the skeleton.
     const status = within(pending).getByRole("status");
@@ -5143,6 +5146,7 @@ describe("the issue panel before its issue has answered", () => {
 
     releaseIssue();
     const loaded = await screen.findByRole("dialog", { name: "TAS-102 issue" });
+    await waitFor(() => expect(loaded).not.toHaveAttribute("aria-busy"));
     // The same element, not a new one: the panel slides in once (§4.10), not
     // again when its issue lands — and Close is the same node, still focused.
     expect(loaded).toBe(pending);
@@ -5236,7 +5240,7 @@ describe("the issue panel before its issue has answered", () => {
     // The comments' answer is in — a failure — while the panel is still waiting
     // on the issue. The panel keeps waiting: it is not the panel's failure.
     await waitFor(() => expect(queryClient.getQueryState(["comments", PROJECT_ID, "issue-1"])?.status).toBe("error"));
-    expect(screen.getByRole("dialog", { name: "Issue" })).toHaveAttribute("aria-busy", "true");
+    expect(await screen.findByRole("dialog", { name: "TAS-102 issue" })).toHaveAttribute("aria-busy", "true");
 
     releaseIssue();
     const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
@@ -5433,12 +5437,13 @@ describe("sharing an issue from its panel", () => {
     holdIssue(true);
     renderBoard(ISSUE_PATH);
 
-    const pending = await screen.findByRole("dialog", { name: "Issue" });
+    const pending = await screen.findByRole("dialog", { name: "TAS-102 issue" });
+    expect(pending).toHaveAttribute("aria-busy", "true");
     expect(within(pending).queryByRole("button", { name: /^Share/ })).toBeNull();
 
     releaseIssue();
     const loaded = await screen.findByRole("dialog", { name: "TAS-102 issue" });
-    expect(within(loaded).getByRole("button", { name: "Share issue TAS-102" })).toBeVisible();
+    expect(await within(loaded).findByRole("button", { name: "Share issue TAS-102" })).toBeVisible();
   });
 });
 
@@ -5586,7 +5591,12 @@ describe("the activity feed's disclosure", () => {
  */
 describe("the issue panel as a dialog", () => {
   const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
-  const panel = () => screen.findByRole("dialog", { name: "TAS-102 issue" });
+  /** The panel once its issue has answered: it carries the key's name while it loads, too. */
+  const panel = async () => {
+    const dialog = await screen.findByRole("dialog", { name: "TAS-102 issue" });
+    await waitFor(() => expect(dialog).not.toHaveAttribute("aria-busy"));
+    return dialog;
+  };
   const card = () => document.querySelector<HTMLElement>('.issue-card[data-issue-id="issue-1"]')!;
   const where = () => screen.getByTestId("whereabouts");
   /** Esc as a browser sends it: on what has focus, bubbling to `window`. */

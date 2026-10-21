@@ -2061,6 +2061,12 @@ h1 {
   border-top: 1px solid var(--border);
 }
 
+/* The divider's 22 is the space on both sides of it: the first row adds no
+   padding of its own above, or the gap under the line read 31. */
+.settings-details > div:first-child {
+  padding-top: 0;
+}
+
 .settings-details dt {
   color: var(--fg-2);
   font-size: 11.5px;
