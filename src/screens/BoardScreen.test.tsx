@@ -5734,6 +5734,38 @@ describe("the issue panel as a dialog", () => {
       expect(box).toHaveFocus();
     });
 
+    it("keeps them for a work log entry being typed, from any of its boxes", async () => {
+      const dialog = await openFromCard();
+      const form = await within(dialog).findByRole("form", { name: "Log work" });
+      const spent = within(form).getByLabelText("Time spent");
+      spent.focus();
+      fireEvent.change(spent, { target: { value: "1h 30m" } });
+      fireEvent.change(within(form).getByLabelText(/^Comment/), { target: { value: "Paired on the retry guard" } });
+
+      pressEscape();
+      expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
+      expect(spent).toHaveValue("1h 30m");
+      expect(spent).toHaveFocus();
+
+      // The date box belongs to the same draft, though it is not text of its own.
+      const date = within(form).getByLabelText("Date");
+      date.focus();
+      pressEscape();
+      expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
+      expect(within(form).getByLabelText(/^Comment/)).toHaveValue("Paired on the retry guard");
+      expect(date).toHaveFocus();
+    });
+
+    it("closes the panel from an empty work log entry", async () => {
+      const dialog = await openFromCard();
+      const form = await within(dialog).findByRole("form", { name: "Log work" });
+      within(form).getByLabelText("Time spent").focus();
+
+      pressEscape();
+
+      await waitFor(() => expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+    });
+
     it("closes the panel from a field whose text is the saved one", async () => {
       const dialog = await openFromCard();
       dialog.querySelector<HTMLTextAreaElement>(".summary-textarea")!.focus();

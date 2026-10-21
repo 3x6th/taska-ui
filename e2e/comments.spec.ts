@@ -36,6 +36,9 @@ async function openComments(page: Page, issueKey: string): Promise<Locator> {
 
   await page.locator(".issue-card", { hasText: issueKey }).click();
   await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).not.toHaveAttribute("aria-busy", "true");
 
   return page.locator(".comments");
 }
@@ -50,6 +53,9 @@ async function reopenComments(page: Page, issueKey: string): Promise<Locator> {
   await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toHaveCount(0);
   await page.locator(".issue-card", { hasText: issueKey }).click();
   await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).not.toHaveAttribute("aria-busy", "true");
   return page.locator(".comments");
 }
 

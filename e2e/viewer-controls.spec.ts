@@ -26,6 +26,9 @@ async function openIssue(page: Page, issueKey: string): Promise<Locator> {
   await page.locator(".issue-card", { hasText: issueKey }).click();
   const panel = page.getByRole("dialog", { name: `${issueKey} issue` });
   await expect(panel).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(panel).not.toHaveAttribute("aria-busy", "true");
   return panel;
 }
 
@@ -37,8 +40,10 @@ test("a VIEWER is shown no New, no column +, no transition button and no Delete"
   const panel = await openIssue(page, "TAS-102");
 
   // Absent, not disabled: each is a count of zero, which a disabled control
-  // would fail. The board draws them, disabled, until the role answers, so
-  // these also wait for that answer.
+  // would fail. The board's New and "+" are drawn, disabled, until the role
+  // answers, so their counts wait for that answer. The panel's skeleton draws
+  // no transition button and no Delete at all, so their counts prove something
+  // only once the issue has answered — which `openIssue` waits for.
   await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create issue" })).toHaveCount(0);
   await expect(panel.getByRole("button", { name: "Start Progress" })).toHaveCount(0);
