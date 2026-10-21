@@ -2051,7 +2051,7 @@ export class MockTaskaStore {
           hidden: false,
         },
         // Backend PR #208's migration 0001 (TAS-381) — the stand has only the
-        // three above and "Reopen" until it deploys (docs/ai/API-DIVERGENCE.md).
+        // two above and "Reopen" until it deploys (docs/ai/API-DIVERGENCE.md).
         // This one was an invented "Move to To Do" at 25 before TAS-382.
         {
           id: "88888888-8888-8888-8888-888888888888",
@@ -3336,12 +3336,14 @@ export class MockTaskaStore {
       transitions: input.transitions.map(trimmedTransition),
     };
     // No minimum is checked, as on the server: a workflow with no status, no
-    // `TODO` or no visible transition is created here. On the server the
-    // project's context then answers 404 for every member
-    // (`GetWorkflowForProject`, docs/ai/API-DIVERGENCE.md "A workflow with no
-    // status or no visible transition makes the project context 404"); this
-    // store's context does not reproduce that. The dialog cannot send such a
-    // body — it sends a copy of the shared default.
+    // visible transition or no `TODO` is created here. On the server the
+    // project's context then answers 404 for every member when it has no
+    // status or no visible transition (`GetWorkflowForProject`,
+    // docs/ai/API-DIVERGENCE.md "A workflow with no status or no visible
+    // transition makes the project context 404"), and with no `TODO` new
+    // issues of its types land in Other statuses; this store's context
+    // reproduces neither. The dialog cannot send such a body — it sends a copy
+    // of the shared default.
     const violations = workflowViolations(candidate);
     if (violations.length) {
       throw new MockApiError("INVALID_ARGUMENT", violationMessage("Workflow creation failed: ", violations));

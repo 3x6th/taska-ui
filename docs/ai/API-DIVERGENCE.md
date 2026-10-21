@@ -5670,10 +5670,13 @@ nothing but `BACKLOG.md` for now.
 - **Endpoints:** `POST /api/v1/projects/{projectId}/workflows`, and through it
   `GET /api/v1/projects/{projectId}/context` (#208 at `9a04e99`).
 - **Read in code, not measured:** the create validator checks no minimum
-  (`WorkflowCreationValidator.java:35`) — no status, no `TODO` key, no visible
+  (`WorkflowCreationValidator.java:35`) — a workflow with no status or no visible
   transition is accepted. `GetWorkflowForProject` then answers NOT_FOUND
-  (`WorkflowServiceImpl.java:47`, `:51`), which fails the whole context, and the
-  board shows "not found" to every member.
+  (`WorkflowServiceImpl.java:45-51`), which fails the whole context, and the
+  board shows "not found" to every member. A workflow without a `TODO` status is
+  accepted too, but that does **not** 404 anything: issue-service creates new
+  issues in `TODO` (`IssueServiceImpl.java:69`), so new issues of those types land
+  in Other statuses on the board — what #208's own yml says.
 - **The UI instead:** Create workflow sends only a verbatim copy of the shared
   workflow the chosen types run on now — statuses and transitions, hidden ones
   included — and offers no way to edit that copy before it is sent. Statuses and
@@ -5682,8 +5685,9 @@ nothing but `BACKLOG.md` for now.
   compensation: it reads the list already on screen, adds no request, and the
   form says it is a copy. **Compensation: none.** Any other client can still
   send the empty body.
-- **Removal:** the validator requiring a status, the `TODO` key and a visible
-  transition, or the context tolerating empty lists. Blocking remark on TAS-381
+- **Removal:** the validator requiring a status and a visible transition, or the
+  context tolerating empty lists. (Requiring the `TODO` key as well was asked on
+  TAS-381 for the Other-statuses effect; it is not part of this entry.) Blocking remark on TAS-381
   (comment, 2026-10-21). The copy-only create stays as the default either way.
 
 ---

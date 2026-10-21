@@ -683,9 +683,10 @@ export interface WorkflowTransitionInput {
 
 /**
  * `CreateWorkflowRequestDto` (backend PR #208). The server checks no minimum —
- * a workflow with no status, no `TODO` or no visible transition is accepted and
- * then makes the project context answer 404 (docs/ai/API-DIVERGENCE.md) — so
- * the one caller sends a verbatim copy of the shared default.
+ * a workflow with no status or no visible transition is accepted and then makes
+ * the project context answer 404, and one with no `TODO` puts new issues of its
+ * types in Other statuses (docs/ai/API-DIVERGENCE.md) — so the one caller sends
+ * a verbatim copy of the shared default.
  */
 export interface CreateProjectWorkflowInput {
   name: string;

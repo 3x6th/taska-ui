@@ -145,10 +145,11 @@ interface ProjectWorkflowsModalProps {
  * refuses a write to it — so its card carries no control at all.
  *
  * **A new workflow is a verbatim copy of the shared default**, not editable
- * before it is sent: the server accepts a workflow with no status, no `TODO`
- * or no visible transition, and then the project's context answers 404 to
- * every member (docs/ai/API-DIVERGENCE.md). Statuses and transitions are added
- * afterwards, one at a time, and every add is re-validated whole on the server.
+ * before it is sent: the server accepts a workflow with no status or no visible
+ * transition, and then the project's context answers 404 to every member; one
+ * with no `TODO` puts new issues of its types in Other statuses
+ * (docs/ai/API-DIVERGENCE.md). Statuses and transitions are added afterwards,
+ * one at a time, and every add is re-validated whole on the server.
  *
  * **No write is optimistic**, deliberately against §1's rule (§4.28 "В
  * полёте"): each one changes the board of every member, and a rollback would

@@ -260,6 +260,7 @@ test.describe("a board with no workflow for the card's type", () => {
     // TAS-382 a move is named "{name}, move to {To}" (§4.1), so an exact
     // lookup of "Start Progress" would find nothing whether or not the button
     // were there.
+    await expect(panel.getByRole("group", { name: "Status" })).toBeVisible();
     await expect(panel.getByRole("group", { name: "Status" }).getByRole("button")).toHaveCount(0);
     await expect(page.getByText(/This project has no workflow for task issues, so no move is\s+offered\./)).toBeVisible();
   });
@@ -306,6 +307,7 @@ test.describe("a board whose workflow came without statuses", () => {
       panel.getByText("The server sent this project’s task workflow without statuses, so no move is offered."),
     ).toBeVisible();
     // Counted in the row, for the reason given in the block above.
+    await expect(panel.getByRole("group", { name: "Status" })).toBeVisible();
     await expect(panel.getByRole("group", { name: "Status" }).getByRole("button")).toHaveCount(0);
   });
 

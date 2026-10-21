@@ -3886,4 +3886,19 @@ Frontend notes:
   the same pattern, measured at 0 px overflow today because it sits near the top
   (`frontend-builder`, 2026-10-21). Admin dialogs not measured. The general fix
   is `position: relative` on `.modal-body`, checked against every `Modal` user.
+- **The client blocks submit on the status-key regex** (`ProjectWorkflowsModal.tsx`
+  ~869-874). The pending contract states the format, but on the server it is
+  `workflow.validation.*` configuration; a config change would leave the client
+  out of step. Kept on purpose (§4.28 lists the reason); revisit if the server
+  ever serves the pattern (release-reviewer, TAS-382).
+- **The mock's `makeId` falls back to non-UUID ids without `crypto.randomUUID`**
+  (`MockTaskaApi.ts` ~640-645: plain http on a LAN). Its add routes would then
+  refuse a workflow just created with "Invalid request parameters".
+- **`e2e/unknown-values.spec.ts:62` looks up "Close" without `exact: true`** — a
+  latent clash if WEB-15's workflow ever gains a transition named Close.
+- **Possibly: Esc with a modal over the open issue panel closes the panel
+  first** — `IssuePanelFrame`'s listener registers before the modal's. Not seen
+  in a browser; Members has the same shape (release-reviewer, TAS-382).
+- **The mock's 409 binding message lists types in request order**, the server in
+  database order. Cosmetic.
 

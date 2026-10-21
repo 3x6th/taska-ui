@@ -229,9 +229,10 @@ export function transitionsInListOrder(workflow: WorkflowDefinition): WorkflowDe
  * The body of Create workflow: the shared default as the list sent it, every
  * status and every transition — hidden ones included, which only the list has
  * — with their keys, names, categories and numbers unchanged (§4.28). The copy
- * is not editable: the server accepts a workflow with no status, no `TODO` or
- * no visible transition, and then the project's context answers 404 to every
- * member (docs/ai/API-DIVERGENCE.md). A transition naming a status the shared
+ * is not editable: the server accepts a workflow with no status or no visible
+ * transition, and then the project's context answers 404 to every member; one
+ * with no `TODO` puts new issues of its types in Other statuses
+ * (docs/ai/API-DIVERGENCE.md). A transition naming a status the shared
  * workflow does not list is sent with an empty key, for the server to refuse
  * in its own words rather than for this to guess one.
  */
