@@ -665,7 +665,7 @@ padding:6vh 16px`. Окно: `position:relative` (`top/right/bottom:auto`), widt
 отыграл один раз. Полосы — `.value-skeleton` (`--surface-3`, `tk-skeleton-pulse`, §5.6),
 контейнеры — собственные классы панели. «Loading issue» — только для вспомогательных
 технологий (`aria-busy` и визуально скрытый `role="status"`; имя диалогу даёт `aria-label`, см.
-ниже). Ошибка чтения —
+выше). Ошибка чтения —
 `ApiNotice` (§5.6) на месте скелетона: «This issue could not be opened.», слова сервера и
 `X-Request-Id`; с TAS-246 одно чтение задачи — это вся панель. Разделы панели начинают свои чтения вместе с задачей, а не
 после неё; их строки загрузки (§4, «Loading comments») остаются.
