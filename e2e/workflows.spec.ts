@@ -30,7 +30,30 @@ async function openWorkflows(page: Page) {
   return dialog;
 }
 
-test("an ADMIN makes a workflow, adds a status and a transition, and the board has the column and the move", async ({ page }) => {
+/**
+ * Only the dialog's body ever scrolls, never its box. A focus move after a
+ * write once scrolled `.modal` itself — `overflow: hidden` still scrolls from
+ * script — and cut the header off, because the rows' visually-hidden spans had
+ * given the box overflow of its own (TAS-382, the orchestrator's browser
+ * check). Checked after every write; on the laptop the body overflows by then,
+ * so there the check is not vacuous.
+ */
+async function expectOnlyTheBodyScrolls(page: Page, project: string) {
+  const box = await page.locator(".modal").evaluate((modal) => {
+    const body = modal.querySelector(".modal-body") as HTMLElement;
+    return {
+      scrollTop: modal.scrollTop,
+      overflow: modal.scrollHeight - modal.clientHeight,
+      bodyOverflow: body.scrollHeight - body.clientHeight,
+    };
+  });
+  expect(box.scrollTop).toBe(0);
+  expect(box.overflow).toBeLessThanOrEqual(1);
+  if (project === "laptop") expect(box.bodyOverflow).toBeGreaterThan(0);
+}
+
+test("an ADMIN makes a workflow, adds a status and a transition, and the board has the column and the move", async ({ page }, testInfo) => {
+  const project = testInfo.project.name;
   await openBoardAs(page, "anna@example.com");
   const dialog = await openWorkflows(page);
 
@@ -42,6 +65,7 @@ test("an ADMIN makes a workflow, adds a status and a transition, and the board h
 
   const heading = dialog.getByRole("heading", { level: 3, name: "Development" });
   await expect(heading).toBeFocused();
+  await expectOnlyTheBodyScrolls(page, project);
   // `has` is resolved inside each section, so the heading is named unscoped.
   const own = dialog.locator("section", { has: page.getByRole("heading", { level: 3, name: "Development" }) });
   await expect(own.getByRole("button", { name: "Add status" })).toBeVisible();
@@ -58,6 +82,7 @@ test("an ADMIN makes a workflow, adds a status and a transition, and the board h
 
   const addTransitionTrigger = own.getByRole("button", { name: "Add transition" });
   await expect(addTransitionTrigger).toBeFocused();
+  await expectOnlyTheBodyScrolls(page, project);
   await expect(own.getByRole("list", { name: "Statuses of Development" }).getByRole("listitem")).toHaveCount(4);
   await expect(own.getByText("No transition on the board leads here.")).toBeVisible();
 
@@ -70,6 +95,7 @@ test("an ADMIN makes a workflow, adds a status and a transition, and the board h
   await addTransition.getByRole("button", { name: "Add transition" }).click();
 
   await expect(addTransitionTrigger).toBeFocused();
+  await expectOnlyTheBodyScrolls(page, project);
   await expect(own.getByRole("list", { name: "Transitions of Development" })).toContainText(
     "In Progress→ to Code Review, named Move to Code Review",
   );

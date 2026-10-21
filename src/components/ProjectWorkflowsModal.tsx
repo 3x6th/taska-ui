@@ -95,6 +95,27 @@ function madeId(answer: WorkflowDefinition, sent: WorkflowWrite): string | null 
   return answer.transitions.find((transition) => transition.fromStatusId === from && transition.toStatusId === to)?.id ?? null;
 }
 
+/** Room for §7's ring when a node is scrolled into the body's view: its 2px offset and 2px width. */
+const RING_ROOM = 4;
+
+/**
+ * Focus that moves only the dialog's body. A plain `focus()` scrolls every
+ * scrollable ancestor into line, and `.modal` is one — `overflow: hidden`
+ * still scrolls from script — so a focus move after a write once scrolled the
+ * box itself and cut the header off (TAS-382). The box is kept free of
+ * overflow (`.workflows-panel` in styles.css); this keeps the guarantee where
+ * it is relied on: focus without scrolling, then the body's own `scrollTop`.
+ */
+function focusInBody(node: HTMLElement) {
+  node.focus({ preventScroll: true });
+  const body = node.closest(".modal-body");
+  if (!(body instanceof HTMLElement)) return;
+  const view = body.getBoundingClientRect();
+  const box = node.getBoundingClientRect();
+  if (box.top - RING_ROOM < view.top) body.scrollTop -= view.top - (box.top - RING_ROOM);
+  else if (box.bottom + RING_ROOM > view.bottom) body.scrollTop += box.bottom + RING_ROOM - view.bottom;
+}
+
 interface ProjectWorkflowsModalProps {
   projectId: string;
   projectKey: string;
@@ -179,7 +200,8 @@ export function ProjectWorkflowsModal({
     const key = pendingFocus.current;
     if (!key) return;
     pendingFocus.current = null;
-    focusables.current.get(key)?.focus();
+    const node = focusables.current.get(key);
+    if (node) focusInBody(node);
   });
 
   useEffect(() => {

@@ -3335,6 +3335,13 @@ export class MockTaskaStore {
       statuses: input.statuses.map(trimmedStatus),
       transitions: input.transitions.map(trimmedTransition),
     };
+    // No minimum is checked, as on the server: a workflow with no status, no
+    // `TODO` or no visible transition is created here. On the server the
+    // project's context then answers 404 for every member
+    // (`GetWorkflowForProject`, docs/ai/API-DIVERGENCE.md "A workflow with no
+    // status or no visible transition makes the project context 404"); this
+    // store's context does not reproduce that. The dialog cannot send such a
+    // body — it sends a copy of the shared default.
     const violations = workflowViolations(candidate);
     if (violations.length) {
       throw new MockApiError("INVALID_ARGUMENT", violationMessage("Workflow creation failed: ", violations));

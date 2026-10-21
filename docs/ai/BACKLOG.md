@@ -3877,3 +3877,13 @@ Frontend notes:
   closing cancels neither the write nor the re-read, so a refusal arriving after
   the dialog is gone has nowhere to land. Same missing toast as §5.6 records
   (TAS-140); nothing to build for it here.
+- **The Members dialog carries the latent half of TAS-382's clipped-header bug.**
+  `.modal` is `position: relative`, so an absolutely positioned
+  `.visually-hidden` inside the scrolling body takes `.modal` as its containing
+  block, escapes the body's clip and gives the `overflow: hidden` box scrollable
+  overflow that a focus move can scroll. TAS-382 fixed it for Workflows
+  (`.workflows-panel` is the containing block); Members' results status line is
+  the same pattern, measured at 0 px overflow today because it sits near the top
+  (`frontend-builder`, 2026-10-21). Admin dialogs not measured. The general fix
+  is `position: relative` on `.modal-body`, checked against every `Modal` user.
+

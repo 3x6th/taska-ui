@@ -8132,7 +8132,15 @@ button.attachment-open:hover:not(:disabled) {
    with a `--border` frame and no fill of their own, fields on `--surface-2` —
    two planes, as §1 allows, and no third. Every colour is a §2.1 token or a
    `color-mix` of one; nothing here animates but `.value-skeleton`'s pulse. */
+/* `position: relative` is load-bearing. `.modal` is positioned, so without it
+   every `.visually-hidden` span in the rows below — absolutely positioned —
+   took `.modal` rather than the scrolling `.modal-body` as its containing
+   block, escaped the body's clipping, and gave the `overflow: hidden` box
+   scrollable overflow of its own (scrollHeight 1065 against 783 at 1440×900).
+   A focus move after a write then scrolled `.modal` itself and cut the
+   dialog's header off (TAS-382, the orchestrator's browser check). */
 .workflows-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 14px;
