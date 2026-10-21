@@ -3901,4 +3901,47 @@ Frontend notes:
   in a browser; Members has the same shape (release-reviewer, TAS-382).
 - **The mock's 409 binding message lists types in request order**, the server in
   database order. Cosmetic.
+- **Post-build notes on TAS-382, all approved non-blocking, left for a pass
+  before #208 merges** (owner: after clean verdicts the non-blocking goes here,
+  not into another round):
+  - The code lags §4.28 in four places art-director ruled on 2026-10-21:
+    opening a form does not clear the 2 s highlight
+    (`ProjectWorkflowsModal.tsx` `openForm` ~259-264 → `setHighlight(null)`);
+    the read-only body-scroller's ring is clipped at the modal's two bottom
+    corners (`.modal-body.is-scroller { border-radius: 0 0 14px 14px }`,
+    `styles.css` ~8152); fewer than two statuses opens Add transition with empty
+    selects instead of disabling the trigger with "A transition joins two
+    statuses, so add a status first." (~600-607); fields stay editable in flight
+    instead of `readOnly` (typing during a write is dropped on success).
+  - The key-format reason should say A–Z — the server's pattern is ASCII and
+    §4.28 expects Cyrillic names (`ProjectWorkflowsModal.tsx` ~872); plus a unit
+    test that the pinned yml's `statusKey` description contains
+    `STATUS_KEY_PATTERN.source` (`src/lib/workflows.ts:37`), so a re-pin that
+    changes the format fails loudly (api-contract-guard N2).
+  - The mock's context returns statuses and transitions in storage order; the
+    server sorts both by `sort_order`. Visible only for WEB's EPIC panel order
+    (Stop Progress before Send to review). Sort in `getProjectContext` as
+    `workflowView("all")` does (`MockTaskaApi.ts` ~3270-3276, guard N1).
+  - A write refused with 403 (admin demoted while the dialog is open) or a
+    create's 409 binding should also invalidate the project context
+    (`ProjectWorkflowsModal.tsx` ~220-223, guard N3).
+  - The mock create comment says its context reproduces neither effect; the
+    Other-statuses one it does reproduce, since `createIssue` starts in `TODO`
+    (`MockTaskaApi.ts` ~3344, release-reviewer re-verdict).
+  - No request-budget test pins the dialog's counts (open 1; write 1+2;
+    404/409 1+1), in the `IssuePanelRequests` style.
+  - The `"TODO"` literal (`ProjectWorkflowsModal.tsx` ~460, ~867;
+    `lib/workflows.ts` ~213) is issue-service's `INIT_STATUS`; it goes when
+    TAS-381's "require TODO" validator rule lands.
+  - The mock lets WEB's EPIC workflow be edited by id through the API
+    (`editableWorkflow` searches every override); the server could never bind
+    EPIC. Unreachable from the UI.
+  - With one workflow, the read-only body is a Tab stop though nothing scrolls —
+    accepted (a stop that comes and goes would be worse); the light-theme card
+    tint after create is ~490 px of lavender for 2 s — loud, as ruled.
+- **Backend asks for later, not filed** (api-contract-guard, TAS-382): `/meta`
+  gains `statusCategories` beside the existing pairs (after #208, which brings
+  `WorkflowStatusCategoryDto`; TAS-217's line); optionally, the status-key
+  format and name length served machine-readably (`/meta workflowLimits`), so
+  the client stops mirroring server configuration.
 
