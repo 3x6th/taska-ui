@@ -28,7 +28,7 @@ async function openIssue(page: Page, issueKey: string): Promise<Locator> {
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
   await expect(page.locator(".filter-select select")).toBeEnabled();
   await page.locator("button.issue-card", { hasText: issueKey }).click();
-  const panel = page.getByRole("complementary", { name: `${issueKey} issue` });
+  const panel = page.getByRole("dialog", { name: `${issueKey} issue` });
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -118,5 +118,5 @@ test("deletes on the answer: the card goes, the panel closes for good, and focus
   // `replace`: Back does not open the issue that was just deleted.
   await page.goBack();
   await expect(page).not.toHaveURL(/\/issues\//);
-  await expect(page.getByRole("complementary", { name: "TAS-101 issue" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "TAS-101 issue" })).toHaveCount(0);
 });

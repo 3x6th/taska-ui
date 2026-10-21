@@ -35,7 +35,7 @@ async function openBoard(page: Page) {
 async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   await openBoard(page);
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
   return page.locator(".issue-labels");
 }
 
@@ -122,7 +122,7 @@ test("keeps an issue's links whole while the board is filtered by label", async 
   await expect(page.locator(".issue-card")).toHaveCount(2);
 
   await page.locator(".issue-card", { hasText: "TAS-101" }).click();
-  await expect(page.getByRole("complementary", { name: "TAS-101 issue" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "TAS-101 issue" })).toBeVisible();
 
   const links = page.locator(".issue-links");
   // Neither seeded target carries "backend" — TAS-102 carries "frontend",

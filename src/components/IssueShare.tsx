@@ -1,7 +1,7 @@
 import { Check, Copy, Share2 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, type FocusEvent, type RefObject } from "react";
 import { writeClipboard } from "../hooks/useCopied";
-import { useDismissOnOutside, type DismissedBy } from "../hooks/useDismissOnOutside";
+import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { appUrl, issueKeyRoute, issueRoute } from "../lib/appLinks";
 
 type LinkKind = "short" | "full";
@@ -72,14 +72,10 @@ export function IssueShare({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
 
-  const dismiss = useCallback(
-    (how: DismissedBy) => {
-      setOpen(false);
-      if (how === "escape") triggerRef.current?.focus();
-    },
-    [setOpen],
-  );
-  useDismissOnOutside(open, wrapRef, dismiss);
+  // `Escape` hands focus back to the trigger inside the hook (TAS-380), so
+  // this only closes; a press outside leaves focus where the press put it.
+  const dismiss = useCallback(() => setOpen(false), [setOpen]);
+  useDismissOnOutside(open, wrapRef, dismiss, triggerRef);
 
   // Only a move to a known element outside closes it. `relatedTarget` is null
   // when focus goes nowhere in particular — a click on a button in Safari, which

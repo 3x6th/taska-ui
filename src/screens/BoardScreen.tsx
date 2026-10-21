@@ -28,6 +28,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent as ReactDragEvent,
   type FocusEvent,
   type KeyboardEvent,
@@ -58,6 +59,8 @@ import { EditProjectModal } from "../components/EditProjectModal";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { ErrorNote } from "../components/ErrorNote";
 import { LabelChip, PriorityBars, TypeChip } from "../components/IssueBits";
+import { IssuePanelFrame } from "../components/IssuePanelFrame";
+import { useIssuePanelHead } from "../components/issuePanelFrameContext";
 import { IssueShare } from "../components/IssueShare";
 import { IssueWorklogSection } from "../components/IssueWorklogSection";
 import { issueWorklogsOptions } from "../components/issueWorklogsQuery";
@@ -70,7 +73,7 @@ import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useMeta } from "../hooks/useMeta";
-import { closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
+import { carriesFiles, closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
 import { personFor, type NamedBy } from "../lib/people";
 import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
 import { useUnanswered } from "../hooks/useUnanswered";
@@ -688,6 +691,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    */
   const [boardStatus, setBoardStatus] = useState("");
   const boardRef = useRef<HTMLElement>(null);
+  /** The last place focus can go when the issue panel closes (§4.10). */
+  const backButtonRef = useRef<HTMLButtonElement>(null);
   /** Where focus goes once the panel has closed after a delete, in order of preference; read by the effect below. */
   const deleteFocusChain = useRef<DeleteFocusStep[] | null>(null);
   /**
@@ -776,6 +781,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   }, [issueId]);
 
   const hasFilters = Boolean(query || typeFilter !== null || assigneeFilter !== "ALL" || labelFilter !== "ALL");
+  // Only once the issues are in and only when something is in it: not while
+  // the columns are skeletons, and not on a failed read, where every column
+  // already says it does not know.
+  const otherStatusesShown = !issuesUnknown && !contextQuery.isLoading && !issuesQuery.isLoading && orphanIssues.length > 0;
+  /** The key off the board's own page, when it holds the open issue — the read error's head names it. */
+  const boardIssueKey = issueId ? knownKey(issues.find((item) => item.id === issueId)?.issueKey) : undefined;
   const activeIssue = activeIssueId ? issues.find((item) => item.id === activeIssueId) : undefined;
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -866,7 +877,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         {boardStatus}
       </p>
       <header className="board-topbar" ref={topbarRef}>
-        <button className="icon-button" onClick={() => navigate("/projects")} title="Back to projects" type="button">
+        <button
+          className="icon-button"
+          onClick={() => navigate("/projects")}
+          ref={backButtonRef}
+          title="Back to projects"
+          type="button"
+        >
           <ChevronLeft size={17} />
         </button>
         {project ? (
@@ -1161,7 +1178,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       ) : null}
 
       <DndContext sensors={sensors} onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
-        <section className="columns-area">
+        {/* The two counts the centred alignment is computed from (Settings →
+            Appearance → Board columns, §5.2, art-director's ruling 2): the
+            workflow columns — the three skeletons while loading — and the
+            same plus "Other statuses" when that group is drawn. The stylesheet
+            centres the first set and hangs the group to its right; in the
+            default Left alignment, and at 820 and below, nothing reads them. */}
+        <section className="columns-area" style={boardColumnCounts(statuses.length, otherStatusesShown)}>
           {/* A read that has already failed goes back to `isLoading` on every
               retry, so without the first clause the columns explained by the
               banner above would swap themselves for skeletons on a timer. */}
@@ -1181,10 +1204,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
                 />
               ))}
-          {/* Only once the issues are in and only when something is in it:
-              not while the columns are skeletons, and not on a failed read,
-              where every column already says it does not know. */}
-          {!issuesUnknown && !contextQuery.isLoading && !issuesQuery.isLoading && orphanIssues.length > 0 ? (
+          {otherStatusesShown ? (
             <OtherStatusesGroup
               issues={orphanIssues}
               onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
@@ -1214,47 +1234,56 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       ) : null}
 
       {issueId ? (
-        // The panel's own boundary (TAS-173): an issue the panel cannot draw
-        // leaves the board behind it standing, with a head that can be closed.
-        // Keyed with the panel, so the next issue starts clean.
-        <ErrorBoundary
-          fallback={(error) => (
-            <IssuePanelFailure
-              error={error}
-              issueKey={issues.find((item) => item.id === issueId)?.issueKey}
-              issueId={issueId}
-              onClose={() => navigate(`/projects/${projectId}/board`)}
-              projectId={projectId}
-            />
-          )}
+        // One frame for every state of the panel (TAS-380, art-director's
+        // ruling 7): the layer, the scrim, the dialog and its head with Close
+        // sit outside the boundary, so a render failure inside keeps the same
+        // Close and does not play the entrance again.
+        <IssuePanelFrame
+          // Focus goes back to what opened the panel; when that is gone, to
+          // this issue's card, and when that is gone too, to the way back.
+          fallbackFocus={() =>
+            (boardRef.current ? findDeleteFocusTarget(boardRef.current, { card: issueId }) : null) ??
+            backButtonRef.current
+          }
           key={issueId}
+          onClose={() => navigate(`/projects/${projectId}/board`)}
         >
-          <IssuePanel
-            // Remount when the panel changes issue. Since TAS-157 a link row can
-            // swap `issueId` while this instance stays mounted, and without the
-            // key every piece of per-issue state — the comment draft above all,
-            // which would be posted onto the issue it was not written for —
-            // survives the navigation. This is not the reseed the drafts inside
-            // the panel avoid: those must not remount on a *refetch*, and
-            // `issueId` cannot change mid-edit.
+          {/* The panel's own boundary (TAS-173): an issue the panel cannot draw
+              leaves the board behind it standing, with a head that can be
+              closed. Keyed with the panel, so the next issue starts clean. */}
+          <ErrorBoundary
+            fallback={(error) => (
+              <IssuePanelFailure error={error} issueKey={boardIssueKey} issueId={issueId} projectId={projectId} />
+            )}
             key={issueId}
-            issueId={issueId}
-            projectId={projectId}
-            members={members}
-            membersAnswered={context !== undefined}
-            membersUnknown={membersUnread.unanswered}
-            userById={userById}
-            canEdit={canEdit}
-            isProjectAdmin={isProjectAdmin}
-            canWatch={canWatch}
-            isProjectViewer={isProjectViewer}
-            currentUserId={meQuery.data?.id}
-            workflows={workflows}
-            workflowUnknown={workflowUnknown}
-            onClose={() => navigate(`/projects/${projectId}/board`)}
-            onDeleted={issueDeleted}
-          />
-        </ErrorBoundary>
+          >
+            <IssuePanel
+              // Remount when the panel changes issue. Since TAS-157 a link row
+              // can swap `issueId` while this instance stays mounted, and
+              // without the key every piece of per-issue state — the comment
+              // draft above all, which would be posted onto the issue it was
+              // not written for — survives the navigation. This is not the
+              // reseed the drafts inside the panel avoid: those must not
+              // remount on a *refetch*, and `issueId` cannot change mid-edit.
+              key={issueId}
+              issueId={issueId}
+              boardIssueKey={boardIssueKey}
+              projectId={projectId}
+              members={members}
+              membersAnswered={context !== undefined}
+              membersUnknown={membersUnread.unanswered}
+              userById={userById}
+              canEdit={canEdit}
+              isProjectAdmin={isProjectAdmin}
+              canWatch={canWatch}
+              isProjectViewer={isProjectViewer}
+              currentUserId={meQuery.data?.id}
+              workflows={workflows}
+              workflowUnknown={workflowUnknown}
+              onDeleted={issueDeleted}
+            />
+          </ErrorBoundary>
+        </IssuePanelFrame>
       ) : null}
 
       {managingLabels ? (
@@ -1334,6 +1363,23 @@ function findDeleteFocusTarget(root: HTMLElement, step: DeleteFocusStep): HTMLBu
     (section) => section.dataset.statusKey === step.add,
   );
   return column?.querySelector<HTMLButtonElement>(".column-head button") ?? null;
+}
+
+/** A key worth printing: a non-empty string, which a value the board cannot draw is not (TAS-173). */
+function knownKey(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * `--board-cols` and `--board-cols-all` for `.columns-area` (§5.2, TAS-380):
+ * what the centred alignment's formula in the stylesheet reads. Strings, so
+ * React writes them as they are rather than guessing at a unit.
+ */
+function boardColumnCounts(workflowColumns: number, otherStatusesShown: boolean): CSSProperties {
+  return {
+    "--board-cols": String(workflowColumns),
+    "--board-cols-all": String(workflowColumns + (otherStatusesShown ? 1 : 0)),
+  } as CSSProperties;
 }
 
 /**
@@ -1751,11 +1797,12 @@ function ColumnSkeleton({ status }: { status: WorkflowStatus }) {
 }
 
 /**
- * The panel while its issue is on the way (TAS-242), in place of the line
- * "Loading issue" it used to show. §5.6: shaped like what it stands in for.
- * The head, the title, the status pill, the meta grid, the planning rows and
- * the description sit where the panel will put them, because the
- * containers are the panel's own classes, and only the values are bars.
+ * The panel's body while its issue is on the way (TAS-242), in place of the
+ * line "Loading issue" it used to show. §5.6: shaped like what it stands in
+ * for. The title, the status pill, the meta grid, the planning rows and the
+ * description sit where the panel will put them, because the containers are
+ * the panel's own classes, and only the values are bars. The head's bars are
+ * drawn by the panel into the frame's head, beside its real Close (TAS-380).
  *
  * Every bar is a `.value-skeleton`, so the pulse is the one the board's
  * pending counts already use, and so is its entry in the reduced-motion block
@@ -1779,103 +1826,87 @@ function IssuePanelSkeleton() {
     </div>
   );
   return (
-    <>
-      <div aria-hidden="true" className="issue-panel-head is-skeleton">
-        <span className="value-skeleton panel-skeleton-chip" />
-        <span className="value-skeleton panel-skeleton-key" />
-        <span className="value-skeleton panel-skeleton-type" />
+    <div aria-hidden="true" className="issue-panel-body is-skeleton">
+      <div className="panel-skeleton-title">
+        <span className="value-skeleton panel-skeleton-line" />
+        <span className="value-skeleton panel-skeleton-line is-short" />
       </div>
-      <div aria-hidden="true" className="issue-panel-body is-skeleton">
-        <div className="panel-skeleton-title">
-          <span className="value-skeleton panel-skeleton-line" />
-          <span className="value-skeleton panel-skeleton-line is-short" />
-        </div>
-        <div className="transition-row">
-          <span className="value-skeleton panel-skeleton-pill" />
-        </div>
-        <div className="meta-grid">
-          <span className="value-skeleton panel-skeleton-label" />
-          <span className="value-skeleton panel-skeleton-control" />
-          <span className="value-skeleton panel-skeleton-label" />
-          <span className="value-skeleton panel-skeleton-control is-short" />
-          <span className="value-skeleton panel-skeleton-label" />
-          <span className="value-skeleton panel-skeleton-value" />
-          <span className="value-skeleton panel-skeleton-label" />
-          <span className="value-skeleton panel-skeleton-value is-short" />
-        </div>
-        <div className="issue-planning">
-          <span className="value-skeleton panel-skeleton-label is-heading" />
-          <div className="planning-grid">
-            <div className="planning-row is-three">
-              {field}
-              {estimate}
-              {estimate}
-            </div>
-            <div className="planning-row">
-              {field}
-              {field}
-            </div>
+      <div className="transition-row">
+        <span className="value-skeleton panel-skeleton-pill" />
+      </div>
+      <div className="meta-grid">
+        <span className="value-skeleton panel-skeleton-label" />
+        <span className="value-skeleton panel-skeleton-control" />
+        <span className="value-skeleton panel-skeleton-label" />
+        <span className="value-skeleton panel-skeleton-control is-short" />
+        <span className="value-skeleton panel-skeleton-label" />
+        <span className="value-skeleton panel-skeleton-value" />
+        <span className="value-skeleton panel-skeleton-label" />
+        <span className="value-skeleton panel-skeleton-value is-short" />
+      </div>
+      <div className="issue-planning">
+        <span className="value-skeleton panel-skeleton-label is-heading" />
+        <div className="planning-grid">
+          <div className="planning-row is-three">
+            {field}
+            {estimate}
+            {estimate}
+          </div>
+          <div className="planning-row">
+            {field}
+            {field}
           </div>
         </div>
-        <div className="description-field">
-          <span className="value-skeleton panel-skeleton-label" />
-          <span className="value-skeleton panel-skeleton-box" />
-        </div>
       </div>
-    </>
+      <div className="description-field">
+        <span className="value-skeleton panel-skeleton-label" />
+        <span className="value-skeleton panel-skeleton-box" />
+      </div>
+    </div>
   );
 }
 
 /**
  * The panel when the issue it holds could not be drawn (TAS-173, art-director's
- * ruling 4). The same `aside` and the same 52px head as the loaded panel, with
- * only what is safe to read — the key, when the board's page or the panel's
- * cache already holds it — and Close, because a panel with no way out but the
- * scrim strip is a trap on a phone. The sentence sits where §4.10's read
- * failure sits, with the error's message as its detail. Polite rather than an
- * alert: the reader asked to open something, nothing they did was refused.
+ * ruling 4), inside the same frame as every other state (TAS-380): the head
+ * keeps its Close and shows only what is safe to read — the key, when the
+ * panel's cache or the board's page holds it as a string. The sentence sits
+ * where §4.10's read failure sits, with the error's message as its detail.
+ * Polite rather than an alert: the reader asked to open something, nothing
+ * they did was refused.
  */
 function IssuePanelFailure({
   error,
   issueId,
   issueKey,
   projectId,
-  onClose,
 }: {
   error: Error;
   issueId: string;
   /** The key off the board's page, if it holds this issue. */
   issueKey?: string;
   projectId: string;
-  onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const cachedKey = queryClient.getQueryData(issueDetailsOptions(projectId, issueId).queryKey)?.issue?.issueKey;
-  const key = [cachedKey, issueKey].find((value): value is string => typeof value === "string" && value !== "");
+  const key = knownKey(cachedKey) ?? issueKey;
+  const head = useIssuePanelHead({ label: key ? `${key} issue` : "Issue" });
   return (
-    <div className="panel-layer">
-      <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" tabIndex={-1} type="button" />
-      <aside aria-label={key ? `${key} issue` : "Issue"} className="issue-panel">
-        <header className="issue-panel-head">
-          {key ? <span className="issue-key">{key}</span> : null}
-          <div className="topbar-spacer" />
-          <button aria-label="Close" className="icon-button" onClick={onClose} title="Close" type="button">
-            <X size={16} />
-          </button>
-        </header>
-        <div className="panel-loading">
-          <ApiNotice error={error} live="polite">
-            This issue could not be shown.
-          </ApiNotice>
-        </div>
-      </aside>
-    </div>
+    <>
+      {key ? head.start(<span className="issue-key">{key}</span>) : null}
+      <div className="panel-loading">
+        <ApiNotice error={error} live="polite">
+          This issue could not be shown.
+        </ApiNotice>
+      </div>
+    </>
   );
 }
 
 function IssuePanel({
   projectId,
   issueId,
+  boardIssueKey,
   members,
   membersAnswered,
   membersUnknown,
@@ -1887,11 +1918,12 @@ function IssuePanel({
   currentUserId,
   workflows,
   workflowUnknown,
-  onClose,
   onDeleted,
 }: {
   projectId: string;
   issueId: string;
+  /** The key off the board's page, if it holds this issue: what the head shows when the read fails. */
+  boardIssueKey?: string;
   members: ProjectMember[];
   /**
    * Whether the member read has answered *at all*. Distinct from the flag
@@ -1930,7 +1962,6 @@ function IssuePanel({
   workflows?: WorkflowsByIssueType;
   /** The workflow read failed; these buttons are the keyboard path a drag has. */
   workflowUnknown: boolean;
-  onClose: () => void;
   /**
    * The server answered the delete — or said the issue was already gone. The
    * board takes it from here: the card, the route, the focus and the words.
@@ -1979,7 +2010,6 @@ function IssuePanel({
     () => queryClient.getQueryState(issueWorklogsOptions(projectId, issueId).queryKey) === undefined,
   );
   usePrefetchQuery(issueWorklogsOptions(projectId, issueId));
-  const loadingLabelId = useId();
   const issue = issueQuery.data?.issue;
   const history = issueQuery.data?.history ?? [];
   const [summary, setSummary] = useState("");
@@ -2355,43 +2385,72 @@ function IssuePanel({
     deleteButton.current?.focus();
     setAsking(false);
   };
+  /**
+   * Esc while the question is open closes the question, wherever focus is in
+   * the panel, and leaves the panel open (§4.10's Esc order, TAS-380): one
+   * press closes one thing. `preventDefault()` is what tells the panel's own
+   * listener — on `window`, after this one — that the press was used. While
+   * the delete is out, Esc does nothing at all; and when Share is open, Share
+   * is the inner one and its own dismissal takes the press.
+   */
+  useEffect(() => {
+    if (!asking) return;
+    const closeQuestion = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || shareOpen) return;
+      event.preventDefault();
+      if (deleting) return;
+      deleteButton.current?.focus();
+      setAsking(false);
+    };
+    document.addEventListener("keydown", closeQuestion);
+    return () => document.removeEventListener("keydown", closeQuestion);
+  }, [asking, shareOpen, deleting]);
+
+  const loading = !issue && !issueQuery.isError;
+  /**
+   * The frame's head and name in each state (TAS-380, art-director's ruling
+   * 7). Loading: a skeleton of the key beside the real Close, named "Issue".
+   * A read that failed: the key if the board's page holds it. Share and Delete
+   * only once the issue has loaded.
+   */
+  const failedKey = !issue && !loading ? boardIssueKey : undefined;
+  const head = useIssuePanelHead({
+    label: issue ? `${issue.issueKey} issue` : failedKey ? `${failedKey} issue` : "Issue",
+    busy: loading,
+    asking: Boolean(issue) && asking,
+  });
 
   if (!issue) {
-    const loading = !issueQuery.isError;
-    return (
-      <div className="panel-layer">
-        <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" tabIndex={-1} type="button" />
-        {/* One `aside` for loading, failure and the loaded panel below, at the
-            same place in the tree, so React keeps the element and `tk-slide`
-            runs once rather than again when the issue lands.
-
-            While loading, the words are for a screen reader only and the eye
-            gets the skeleton (§5.6) — the same split, and the same reason, as
-            the admin area's pending screen: `aria-busy` alone announces
-            nothing. */}
-        <aside
-          aria-busy={loading || undefined}
-          aria-labelledby={loading ? loadingLabelId : undefined}
-          className="issue-panel"
-        >
-          {loading ? (
-            <>
-              <p className="visually-hidden" id={loadingLabelId} role="status">
-                Loading issue
-              </p>
-              <IssuePanelSkeleton />
-            </>
-          ) : (
-            // The panel's one read is the whole panel since TAS-246, so its
-            // failure is stated the way a screen's is (`IssueKeyScreen`): a
-            // sentence, the server's words, and the request id that finds it in
-            // the gateway log — the last of which the plain line used to drop.
-            <div className="panel-loading">
-              <ApiNotice error={issueQuery.error}>This issue could not be opened.</ApiNotice>
-            </div>
+    if (loading) {
+      // The words are for a screen reader only and the eye gets the skeleton
+      // (§5.6) — the same split, and the same reason, as the admin area's
+      // pending screen: `aria-busy` alone announces nothing.
+      return (
+        <>
+          {head.start(
+            <span aria-hidden="true" className="issue-panel-head-slot is-skeleton">
+              <span className="value-skeleton panel-skeleton-chip" />
+              <span className="value-skeleton panel-skeleton-key" />
+              <span className="value-skeleton panel-skeleton-type" />
+            </span>,
           )}
-        </aside>
-      </div>
+          <p className="visually-hidden" role="status">
+            Loading issue
+          </p>
+          <IssuePanelSkeleton />
+        </>
+      );
+    }
+    // The panel's one read is the whole panel since TAS-246, so its failure is
+    // stated the way a screen's is (`IssueKeyScreen`): a sentence, the server's
+    // words, and the request id that finds it in the gateway log.
+    return (
+      <>
+        {failedKey ? head.start(<span className="issue-key">{failedKey}</span>) : null}
+        <div className="panel-loading">
+          <ApiNotice error={issueQuery.error}>This issue could not be opened.</ApiNotice>
+        </div>
+      </>
     );
   }
 
@@ -2411,9 +2470,9 @@ function IssuePanel({
     issue.priority && !offeredPriorities.includes(issue.priority) ? [...offeredPriorities, issue.priority] : offeredPriorities;
 
   /**
-   * Put a draft back the way the server has it. Used by Escape — abandoning an
-   * edit before it is written, which is a different thing from the rollback of
-   * one that was refused.
+   * Put a draft back the way the server has it: a half-typed date the browser
+   * could not read (`commitDate`), which is a different thing from the
+   * rollback of a write that was refused.
    */
   const revertPlanning = (field: keyof PlanningDrafts) =>
     setPlanning((current) => ({ ...current, [field]: serverPlanning[field] }));
@@ -2421,20 +2480,23 @@ function IssuePanel({
   /**
    * Enter commits by blurring rather than by writing directly, so the mouse and
    * the keyboard take the same path and there is one commit rule instead of
-   * two. Escape abandons the draft.
+   * two.
+   *
+   * Escape no longer abandons the draft (TAS-380, §4.10's Esc order): with a
+   * typed value that differs from the stored one, Esc leaves the panel, the
+   * text and the focus where they are — the field says so through
+   * `data-unsaved-text`, which the panel's own Esc reads. With nothing unsaved,
+   * Esc closes the panel like anywhere else in it.
    */
-  const planningKeyDown = (field: keyof PlanningDrafts) => (event: KeyboardEvent<HTMLInputElement>) => {
+  const planningKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
       event.currentTarget.blur();
-      return;
-    }
-    // Escape abandons the draft, so it abandons the sentence about it too.
-    if (event.key === "Escape") {
-      clearDateNotice();
-      revertPlanning(field);
     }
   };
+  /** `data-unsaved-text` for a box whose draft is not the stored value (§4.10's Esc order). */
+  const unsavedPlanning = (field: keyof PlanningDrafts) =>
+    canEdit && planning[field] !== serverPlanning[field] ? "true" : undefined;
 
   const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
     setPlanning((current) => ({ ...current, [field]: value }));
@@ -2603,29 +2665,21 @@ function IssuePanel({
   const noticeKey = dateNotice ? `date-${dateNotice.seq}` : conflict ? `conflict-${conflict.seq}` : "write";
 
   return (
-    <div className="panel-layer">
-      <button className="panel-backdrop" onClick={onClose} aria-label="Close issue" tabIndex={-1} type="button" />
-      {/* A file let go over the panel outside the attachments section must not
-          navigate the tab away to it (TAS-253). */}
-      <aside
-        aria-label={`${issue.issueKey} issue`}
-        className="issue-panel"
-        onDragOver={refuseStrayFileDrop}
-        onDrop={refuseStrayFileDrop}
-      >
-        {/* The head's bottom line moves under the delete zone while it is open,
-            so there is one line under the fixed part of the panel, not two
-            (§1 rule 2, §4.10). */}
-        <header className={asking ? "issue-panel-head is-asking" : "issue-panel-head"}>
+    <>
+      {head.start(
+        <>
           <TypeChip type={issue.issueType} />
           <span className="issue-key">{issue.issueKey}</span>
           <span className="issue-type-label" title={typeName}>
             {typeName}
           </span>
-          <div className="topbar-spacer" />
-          {/* Read-only, so not gated by role (TAS-248). Only in the loaded head:
-              the skeleton's has no key to share yet. Opening it closes the
-              delete question, as opening the question closes it. */}
+        </>,
+      )}
+      {head.actions(
+        <>
+          {/* Read-only, so not gated by role (TAS-248). Only in the loaded
+              head: the skeleton's has no key to share yet. Opening it closes
+              the delete question, as opening the question closes it. */}
           <IssueShare
             issueId={issue.id}
             issueKey={issue.issueKey}
@@ -2641,7 +2695,8 @@ function IssuePanel({
           {/* Hidden from a VIEWER rather than shut (§5.7, TAS-236); for a role
               nobody stated it stays, disabled (TAS-226), and asks nothing.
               §4.1's ghost-destructive: `--danger` under the pointer and while
-              its question is open. A second press closes the question. */}
+              its question is open. A second press closes the question; Esc
+              closes it too, from anywhere in the panel (above). */}
           {isProjectViewer ? null : (
             <button
               aria-controls={asking ? deleteConfirmId : undefined}
@@ -2654,12 +2709,6 @@ function IssuePanel({
                 setShareOpen(false);
                 setAsking((open) => !open);
               }}
-              onKeyDown={(event) => {
-                if (asking && event.key === "Escape") {
-                  event.stopPropagation();
-                  if (!deleting) cancelDelete();
-                }
-              }}
               ref={deleteButton}
               title="Delete"
               type="button"
@@ -2667,463 +2716,457 @@ function IssuePanel({
               <Trash2 aria-hidden="true" size={15} />
             </button>
           )}
-          {/* Named as well as titled (§7): `title` is the weakest source of an
-              accessible name and some assistive technology drops it. */}
-          <button aria-label="Close" className="icon-button" onClick={onClose} title="Close" type="button">
-            <X size={16} />
-          </button>
-        </header>
-        {asking ? (
-          // Between the head and the body and outside the scroll (§4.10): the
-          // head is one row of 52 and cannot take a sentence, and at the top of
-          // a scrolled body the question would be off screen. The body gives up
-          // the height rather than being covered. No entrance animation.
-          <div className="issue-delete-zone">
-            <div
-              className="member-confirm issue-delete-confirm"
-              id={deleteConfirmId}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  // The question closes and the panel stays (§4.22).
-                  event.stopPropagation();
-                  if (!deleting) cancelDelete();
-                }
-              }}
-            >
-              <p className="member-confirm-sentence" id={`${deleteConfirmId}-sentence`}>
-                {issue.issueKey} will be deleted for everyone, with its comments, attachments, work log and links. This
-                cannot be undone.
-              </p>
-              <div className="member-confirm-actions">
-                {/* Both `aria-disabled` while the request is out (§4.1's
-                    in-flight recipe): no fade, the labels unchanged, and the
-                    handlers refuse — Cancel included, because the answer is
-                    already on its way. */}
-                <button
-                  aria-disabled={deleting || undefined}
-                  autoFocus
-                  className="secondary-button compact-button"
-                  onClick={() => {
-                    if (!deleting) cancelDelete();
-                  }}
-                  type="button"
-                >
-                  Cancel
-                </button>
-                <button
-                  aria-describedby={`${deleteConfirmId}-sentence`}
-                  aria-disabled={deleting || undefined}
-                  className="secondary-button compact-button member-confirm-accept"
-                  onClick={() => {
-                    if (!deleting) deleteIssue.mutate();
-                  }}
-                  type="button"
-                >
-                  Delete issue
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-        <div className="issue-panel-body">
-          {/* `readOnly` rather than `disabled` without write access (§4.3,
-              §5.7, TAS-299): the text keeps full contrast, selects, copies and
-              keeps its Tab stop. The commits early-return on the same flag,
-              because a read-only control still fires `blur`. */}
-          <textarea
-            className="summary-textarea"
-            onBlur={() => {
-              if (!canEdit) return;
-              if (summary.trim() && summary !== issue.summary) editIssue({ summary: summary.trim() });
-              // Put back to the stored text: nothing of the reader's is left
-              // unsaved here, so a conflict line about it has nothing to say.
-              else if (summary === issue.summary) settleText("summary");
-            }}
-            onChange={(event) => setSummary(event.target.value)}
-            readOnly={!canEdit}
-            rows={2}
-            value={summary}
-          />
-
-          <div className="transition-row">
-            {/* §4.5's pill. A status this build cannot colour — an unknown key
-                in an unknown category — takes the neutral `--fg-2` rather than
-                a colour nobody chose (art-director, TAS-173). */}
-            <span
-              className="status-pill"
-              style={{ color: statusColor(issue.status, workflowStatus?.category) ?? "var(--fg-2)" }}
-            >
-              {statusName}
-            </span>
-            {availableTransitions.length ? <span className="arrow">→</span> : null}
-            {/* Said here as well as on the board behind this panel: the panel
-                covers the notice stack, and an empty row beside a status pill
-                reads as "this issue has nowhere to go" rather than "we do not
-                know where it can go". */}
-            {workflowUnknown ? (
-              <span className="transition-note">The workflow could not be loaded, so no move is offered.</span>
-            ) : workflows && !workflow ? (
-              // The context answered without this issue's type: the project no
-              // longer allows it (TAS-251). Not a failure, and not "nowhere to go".
-              <span className="transition-note">
-                This project has no workflow for {typeWord} issues, so no move is offered.
-              </span>
-            ) : workflow && sentWithoutStatuses(workflow) ? (
-              // A workflow arrived with nothing in it (TAS-261) — the drop's
-              // third refusal, read off the same predicate.
-              <span className="transition-note">
-                The server sent this project&rsquo;s {typeWord} workflow without statuses, so no move is offered.
-              </span>
-            ) : workflow && !issue.status ? (
-              // The issue arrived with no status (TAS-173): there is nothing to
-              // move it from.
-              <span className="transition-note">This issue has no status, so no move is offered.</span>
-            ) : workflow && !workflowStatus ? (
-              // A status the issue's own workflow does not list — the card sits
-              // in "Other statuses" — so no transition can start from it.
-              <span className="transition-note">
-                {statusName} is not in this project&rsquo;s {typeWord} workflow, so no move is offered.
-              </span>
-            ) : null}
-            {availableTransitions.map((transition) => (
+        </>,
+      )}
+      {asking ? (
+        // Between the head and the body and outside the scroll (§4.10): the
+        // head is one row of 52 and cannot take a sentence, and at the top of
+        // a scrolled body the question would be off screen. The body gives up
+        // the height rather than being covered. No entrance animation.
+        <div className="issue-delete-zone">
+          <div className="member-confirm issue-delete-confirm" id={deleteConfirmId}>
+            <p className="member-confirm-sentence" id={`${deleteConfirmId}-sentence`}>
+              {issue.issueKey} will be deleted for everyone, with its comments, attachments, work log and links. This
+              cannot be undone.
+            </p>
+            <div className="member-confirm-actions">
+              {/* Both `aria-disabled` while the request is out (§4.1's
+                  in-flight recipe): no fade, the labels unchanged, and the
+                  handlers refuse — Cancel included, because the answer is
+                  already on its way. */}
               <button
+                aria-disabled={deleting || undefined}
+                autoFocus
                 className="secondary-button compact-button"
-                disabled={!canEdit || transitionIssue.isPending}
-                key={transition.id}
-                onClick={() => transitionIssue.mutate(transition.id)}
+                onClick={() => {
+                  if (!deleting) cancelDelete();
+                }}
                 type="button"
               >
-                {transition.name}
+                Cancel
+              </button>
+              <button
+                aria-describedby={`${deleteConfirmId}-sentence`}
+                aria-disabled={deleting || undefined}
+                className="secondary-button compact-button member-confirm-accept"
+                onClick={() => {
+                  if (!deleting) deleteIssue.mutate();
+                }}
+                type="button"
+              >
+                Delete issue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className="issue-panel-body">
+        {/* `readOnly` rather than `disabled` without write access (§4.3,
+            §5.7, TAS-299): the text keeps full contrast, selects, copies and
+            keeps its Tab stop. The commits early-return on the same flag,
+            because a read-only control still fires `blur`. */}
+        <textarea
+          className="summary-textarea"
+          // Unsaved text holds the panel open on Esc (§4.10, TAS-380).
+          data-unsaved-text={canEdit && summary !== issue.summary ? "true" : undefined}
+          onBlur={() => {
+            if (!canEdit) return;
+            if (summary.trim() && summary !== issue.summary) editIssue({ summary: summary.trim() });
+            // Put back to the stored text: nothing of the reader's is left
+            // unsaved here, so a conflict line about it has nothing to say.
+            else if (summary === issue.summary) settleText("summary");
+          }}
+          onChange={(event) => setSummary(event.target.value)}
+          readOnly={!canEdit}
+          rows={2}
+          value={summary}
+        />
+
+        <div className="transition-row">
+          {/* §4.5's pill. A status this build cannot colour — an unknown key
+              in an unknown category — takes the neutral `--fg-2` rather than
+              a colour nobody chose (art-director, TAS-173). */}
+          <span
+            className="status-pill"
+            style={{ color: statusColor(issue.status, workflowStatus?.category) ?? "var(--fg-2)" }}
+          >
+            {statusName}
+          </span>
+          {availableTransitions.length ? <span className="arrow">→</span> : null}
+          {/* Said here as well as on the board behind this panel: the panel
+              covers the notice stack, and an empty row beside a status pill
+              reads as "this issue has nowhere to go" rather than "we do not
+              know where it can go". */}
+          {workflowUnknown ? (
+            <span className="transition-note">The workflow could not be loaded, so no move is offered.</span>
+          ) : workflows && !workflow ? (
+            // The context answered without this issue's type: the project no
+            // longer allows it (TAS-251). Not a failure, and not "nowhere to go".
+            <span className="transition-note">
+              This project has no workflow for {typeWord} issues, so no move is offered.
+            </span>
+          ) : workflow && sentWithoutStatuses(workflow) ? (
+            // A workflow arrived with nothing in it (TAS-261) — the drop's
+            // third refusal, read off the same predicate.
+            <span className="transition-note">
+              The server sent this project&rsquo;s {typeWord} workflow without statuses, so no move is offered.
+            </span>
+          ) : workflow && !issue.status ? (
+            // The issue arrived with no status (TAS-173): there is nothing to
+            // move it from.
+            <span className="transition-note">This issue has no status, so no move is offered.</span>
+          ) : workflow && !workflowStatus ? (
+            // A status the issue's own workflow does not list — the card sits
+            // in "Other statuses" — so no transition can start from it.
+            <span className="transition-note">
+              {statusName} is not in this project&rsquo;s {typeWord} workflow, so no move is offered.
+            </span>
+          ) : null}
+          {availableTransitions.map((transition) => (
+            <button
+              className="secondary-button compact-button"
+              disabled={!canEdit || transitionIssue.isPending}
+              key={transition.id}
+              onClick={() => transitionIssue.mutate(transition.id)}
+              type="button"
+            >
+              {transition.name}
+            </button>
+          ))}
+        </div>
+
+        <div className="meta-grid">
+          <span>Assignee</span>
+          <div className="chip-row">
+            {/* "None" unassigns, since TAS-246: the edit is a PATCH, whose
+                `assigneeId` is nullable, where the old assign route required
+                an id and could not clear one (docs/ai/API-DIVERGENCE.md,
+                "Closed by TAS-246: an assignee could not be cleared — by
+                contract"). On an unassigned issue it is the field's current
+                value and a press changes nothing, so the handler sends
+                nothing — but it is `aria-disabled`, not `disabled`, and not
+                faded: the answer to a keyboard press on it is what makes the
+                issue unassigned, and a real `disabled` landing on the button
+                that has focus drops focus to `<body>` (§4.21, §5.5). A real
+                `disabled` is only for a reader who cannot edit (§5.7). */}
+            <AssigneeChip
+              active={!issue.assigneeId}
+              ariaDisabled={canEdit && issue.assigneeId == null}
+              disabled={!canEdit}
+              label="None"
+              onClick={() => {
+                if (canEdit && issue.assigneeId != null) editIssue({ assigneeId: null });
+              }}
+              user={null}
+            />
+            {/* Offered only to the people the server takes as an assignee
+                (`canBeAssigned`), where every member used to get a chip and a
+                VIEWER's was a request the server refuses.
+
+                The current assignee stays whatever their role is now: somebody
+                assigned and then demoted is still who holds the issue, and
+                dropping the chip would draw it as unassigned. That chip is the
+                assignment, not an offer — `disabled`, because pressing an
+                active chip sends the assignment again, and for this person
+                that is the refused request. The board's assignee filter keeps
+                everyone: it asks who holds an issue, not who may. */}
+            {members
+              .filter((member) => canBeAssigned(member) || member.userId === issue.assigneeId)
+              .map((member) => {
+                const assignable = canBeAssigned(member);
+                return (
+                  <AssigneeChip
+                    active={issue.assigneeId === member.userId}
+                    disabled={!canEdit || !assignable}
+                    key={member.userId}
+                    label={member.user?.displayName.split(" ")[0] ?? "User"}
+                    onClick={() => {
+                      if (canEdit && assignable) editIssue({ assigneeId: member.userId });
+                    }}
+                    user={
+                      member.user
+                        ? {
+                            id: member.userId,
+                            displayName: member.user.displayName,
+                            color: member.user.color,
+                            // Same row, same reason as the filter above: the
+                            // picture is already in hand.
+                            avatarUrl: member.user.avatarUrl,
+                          }
+                        : null
+                    }
+                  />
+                );
+              })}
+          </div>
+          <span>Priority</span>
+          <div className="segmented compact fit">
+            {priorityChoices.map((priority) => (
+              <button
+                aria-pressed={issue.priority === priority}
+                className={issue.priority === priority ? "is-active" : ""}
+                disabled={!canEdit}
+                key={priority}
+                onClick={() => editIssue({ priority })}
+                type="button"
+              >
+                {priorityLabel(priority, meta?.priorities)}
               </button>
             ))}
           </div>
-
-          <div className="meta-grid">
-            <span>Assignee</span>
-            <div className="chip-row">
-              {/* "None" unassigns, since TAS-246: the edit is a PATCH, whose
-                  `assigneeId` is nullable, where the old assign route required
-                  an id and could not clear one (docs/ai/API-DIVERGENCE.md,
-                  "Closed by TAS-246: an assignee could not be cleared — by
-                  contract"). On an unassigned issue it is the field's current
-                  value and a press changes nothing, so the handler sends
-                  nothing — but it is `aria-disabled`, not `disabled`, and not
-                  faded: the answer to a keyboard press on it is what makes the
-                  issue unassigned, and a real `disabled` landing on the button
-                  that has focus drops focus to `<body>` (§4.21, §5.5). A real
-                  `disabled` is only for a reader who cannot edit (§5.7). */}
-              <AssigneeChip
-                active={!issue.assigneeId}
-                ariaDisabled={canEdit && issue.assigneeId == null}
-                disabled={!canEdit}
-                label="None"
-                onClick={() => {
-                  if (canEdit && issue.assigneeId != null) editIssue({ assigneeId: null });
-                }}
-                user={null}
-              />
-              {/* Offered only to the people the server takes as an assignee
-                  (`canBeAssigned`), where every member used to get a chip and a
-                  VIEWER's was a request the server refuses.
-
-                  The current assignee stays whatever their role is now: somebody
-                  assigned and then demoted is still who holds the issue, and
-                  dropping the chip would draw it as unassigned. That chip is the
-                  assignment, not an offer — `disabled`, because pressing an
-                  active chip sends the assignment again, and for this person
-                  that is the refused request. The board's assignee filter keeps
-                  everyone: it asks who holds an issue, not who may. */}
-              {members
-                .filter((member) => canBeAssigned(member) || member.userId === issue.assigneeId)
-                .map((member) => {
-                  const assignable = canBeAssigned(member);
-                  return (
-                    <AssigneeChip
-                      active={issue.assigneeId === member.userId}
-                      disabled={!canEdit || !assignable}
-                      key={member.userId}
-                      label={member.user?.displayName.split(" ")[0] ?? "User"}
-                      onClick={() => {
-                        if (canEdit && assignable) editIssue({ assigneeId: member.userId });
-                      }}
-                      user={
-                        member.user
-                          ? {
-                              id: member.userId,
-                              displayName: member.user.displayName,
-                              color: member.user.color,
-                              // Same row, same reason as the filter above: the
-                              // picture is already in hand.
-                              avatarUrl: member.user.avatarUrl,
-                            }
-                          : null
-                      }
-                    />
-                  );
-                })}
-            </div>
-            <span>Priority</span>
-            <div className="segmented compact fit">
-              {priorityChoices.map((priority) => (
-                <button
-                  aria-pressed={issue.priority === priority}
-                  className={issue.priority === priority ? "is-active" : ""}
-                  disabled={!canEdit}
-                  key={priority}
-                  onClick={() => editIssue({ priority })}
-                  type="button"
-                >
-                  {priorityLabel(priority, meta?.priorities)}
-                </button>
-              ))}
-            </div>
-            <span>Reporter</span>
-            <div className="person-line">
-              <Avatar user={reporter} size="sm" />
-              <strong>{reporter?.displayName ?? "Unknown"}</strong>
-            </div>
-            <span>Created</span>
-            <strong className="soft-strong">{formatDateTime(issue.createdAt)}</strong>
+          <span>Reporter</span>
+          <div className="person-line">
+            <Avatar user={reporter} size="sm" />
+            <strong>{reporter?.displayName ?? "Unknown"}</strong>
           </div>
+          <span>Created</span>
+          <strong className="soft-strong">{formatDateTime(issue.createdAt)}</strong>
+        </div>
 
-          {/* The five planning fields (TAS-189), right under the meta they
-              belong with and above the description, because they are read in
-              the same glance as assignee and priority.
+        {/* The five planning fields (TAS-189), right under the meta they
+            belong with and above the description, because they are read in
+            the same glance as assignee and priority.
 
-              Every box is an inline edit on the terms §4.3 and §5.5 set for the
-              summary: no edit mode, commit on blur or Enter, Escape abandons.
-              The one departure from the summary is deliberate — these commit on
-              blur rather than on a debounce, because a half-typed duration or a
-              half-picked date is a value the server would refuse, and a debounce
-              would send it.
+            Every box is an inline edit on the terms §4.3 and §5.5 set for the
+            summary: no edit mode, commit on blur or Enter. Esc with unsaved
+            text keeps the panel, the text and the focus (§4.10, TAS-380).
+            The one departure from the summary is deliberate — these commit on
+            blur rather than on a debounce, because a half-typed duration or a
+            half-picked date is a value the server would refuse, and a debounce
+            would send it.
 
-              An empty box shows `—` and never `0`: for the three text fields
-              that is the placeholder below, and for the two dates it is the
-              browser's own empty date mask, which `type="date"` draws instead of
-              any placeholder we set — so `data-empty` hands the CSS the one fact
-              it cannot see, and the mask is set in `--fg-3` like every other
-              placeholder in the product (§4.3). Both read as "not set"; neither
-              reads as a number nobody entered.
+            An empty box shows `—` and never `0`: for the three text fields
+            that is the placeholder below, and for the two dates it is the
+            browser's own empty date mask, which `type="date"` draws instead of
+            any placeholder we set — so `data-empty` hands the CSS the one fact
+            it cannot see, and the mask is set in `--fg-3` like every other
+            placeholder in the product (§4.3). Both read as "not set"; neither
+            reads as a number nobody entered.
 
-              A reader without write access gets `readOnly` rather than
-              `disabled` (§5.7). The values are the point of the block for them
-              too: `disabled` would dim the lot, drop the em dash under 2:1, and
-              take five focusable boxes out of the tab order, so the one reader
-              most likely to be copying a date out of here could not reach it.
-              The commits below early-return on the same flag, because a
-              read-only control can still fire `blur`. */}
-          <section className="issue-planning">
-            <h3>Planning</h3>
-            <div className="planning-grid">
-              {/* Two rows rather than a column pair: the three short boxes read
-                  across the top and the two dates share the row below, which is
-                  the shape the values have. A 2×3 grid left an empty cell under
-                  the fifth field — an orphan the eye reads as a missing sixth
-                  field — and cost the panel a row of height for it. */}
-              <div className="planning-row is-three">
-                <div className="planning-field">
-                  <label htmlFor={`${planningId}-story-points`}>Story points</label>
-                  <input
-                    id={`${planningId}-story-points`}
-                    // Not `type="number"`: 1.5 is a legal value (`format: double`)
-                    // and a spinner on a story-point field invites clicking it to
-                    // a number nobody meant. `inputMode` still brings up the
-                    // decimal keypad on a phone.
-                    inputMode="decimal"
-                    onBlur={commitStoryPoints}
-                    onChange={(event) => draftOf("storyPoints")(event.target.value)}
-                    onKeyDown={planningKeyDown("storyPoints")}
-                    placeholder={PLANNING_EMPTY_PLACEHOLDER}
-                    readOnly={!canEdit}
-                    type="text"
-                    value={planning.storyPoints}
-                  />
-                </div>
-                <div className="planning-field">
-                  <label htmlFor={`${planningId}-original-estimate`}>Original estimate</label>
-                  <input
-                    aria-describedby={canEdit ? `${planningId}-original-estimate-hint` : undefined}
-                    id={`${planningId}-original-estimate`}
-                    onBlur={() => commitEstimate("originalEstimateMinutes")}
-                    onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
-                    onKeyDown={planningKeyDown("originalEstimateMinutes")}
-                    placeholder={PLANNING_EMPTY_PLACEHOLDER}
-                    readOnly={!canEdit}
-                    type="text"
-                    value={planning.originalEstimateMinutes}
-                  />
-                  {/* On screen rather than in a `title`: a tooltip does not fire
-                      on a touch device, so the one place the duration syntax was
-                      stated was the one place half the readers cannot reach.
-                      A typing hint, so only for a reader who can type here: a
-                      read-only box has nothing to say how to enter (TAS-299). */}
-                  {canEdit ? (
-                    <p className="planning-hint" id={`${planningId}-original-estimate-hint`}>
-                      {PLANNING_ESTIMATE_HINT}
-                    </p>
-                  ) : null}
-                </div>
-                <div className="planning-field">
-                  <label htmlFor={`${planningId}-remaining-estimate`}>Remaining estimate</label>
-                  <input
-                    aria-describedby={canEdit ? `${planningId}-remaining-estimate-hint` : undefined}
-                    id={`${planningId}-remaining-estimate`}
-                    onBlur={() => commitEstimate("remainingEstimateMinutes")}
-                    onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
-                    onKeyDown={planningKeyDown("remainingEstimateMinutes")}
-                    placeholder={PLANNING_EMPTY_PLACEHOLDER}
-                    readOnly={!canEdit}
-                    type="text"
-                    value={planning.remainingEstimateMinutes}
-                  />
-                  {canEdit ? (
-                    <p className="planning-hint" id={`${planningId}-remaining-estimate-hint`}>
-                      {PLANNING_ESTIMATE_HINT}
-                    </p>
-                  ) : null}
-                </div>
+            A reader without write access gets `readOnly` rather than
+            `disabled` (§5.7). The values are the point of the block for them
+            too: `disabled` would dim the lot, drop the em dash under 2:1, and
+            take five focusable boxes out of the tab order, so the one reader
+            most likely to be copying a date out of here could not reach it.
+            The commits below early-return on the same flag, because a
+            read-only control can still fire `blur`. */}
+        <section className="issue-planning">
+          <h3>Planning</h3>
+          <div className="planning-grid">
+            {/* Two rows rather than a column pair: the three short boxes read
+                across the top and the two dates share the row below, which is
+                the shape the values have. A 2×3 grid left an empty cell under
+                the fifth field — an orphan the eye reads as a missing sixth
+                field — and cost the panel a row of height for it. */}
+            <div className="planning-row is-three">
+              <div className="planning-field">
+                <label htmlFor={`${planningId}-story-points`}>Story points</label>
+                <input
+                  id={`${planningId}-story-points`}
+                  // Not `type="number"`: 1.5 is a legal value (`format: double`)
+                  // and a spinner on a story-point field invites clicking it to
+                  // a number nobody meant. `inputMode` still brings up the
+                  // decimal keypad on a phone.
+                  inputMode="decimal"
+                  onBlur={commitStoryPoints}
+                  onChange={(event) => draftOf("storyPoints")(event.target.value)}
+                  data-unsaved-text={unsavedPlanning("storyPoints")}
+                  onKeyDown={planningKeyDown}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  readOnly={!canEdit}
+                  type="text"
+                  value={planning.storyPoints}
+                />
               </div>
-              <div className="planning-row">
-                <div className="planning-field">
-                  <label htmlFor={`${planningId}-start-date`}>Start date</label>
-                  <input
-                    // The browser draws its own `dd.mm.yyyy` mask in an empty
-                    // date box, at the text colour, which reads as a value
-                    // somebody entered. This is what lets the CSS put it at
-                    // `--fg-3` — where §4.3 puts a placeholder — so an empty
-                    // date reads as empty next to the `—` in the boxes above.
-                    data-empty={planning.startDate === ""}
-                    id={`${planningId}-start-date`}
-                    onBlur={(event) => commitDate("startDate", event)}
-                    onChange={(event) => draftOf("startDate")(event.target.value)}
-                    onKeyDown={planningKeyDown("startDate")}
-                    readOnly={!canEdit}
-                    type="date"
-                    value={planning.startDate}
-                  />
-                </div>
-                <div className="planning-field">
-                  <label htmlFor={`${planningId}-due-date`}>Due date</label>
-                  <input
-                    data-empty={planning.dueDate === ""}
-                    id={`${planningId}-due-date`}
-                    onBlur={(event) => commitDate("dueDate", event)}
-                    onChange={(event) => draftOf("dueDate")(event.target.value)}
-                    onKeyDown={planningKeyDown("dueDate")}
-                    readOnly={!canEdit}
-                    type="date"
-                    value={planning.dueDate}
-                  />
-                </div>
+              <div className="planning-field">
+                <label htmlFor={`${planningId}-original-estimate`}>Original estimate</label>
+                <input
+                  aria-describedby={canEdit ? `${planningId}-original-estimate-hint` : undefined}
+                  id={`${planningId}-original-estimate`}
+                  onBlur={() => commitEstimate("originalEstimateMinutes")}
+                  onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
+                  data-unsaved-text={unsavedPlanning("originalEstimateMinutes")}
+                  onKeyDown={planningKeyDown}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  readOnly={!canEdit}
+                  type="text"
+                  value={planning.originalEstimateMinutes}
+                />
+                {/* On screen rather than in a `title`: a tooltip does not fire
+                    on a touch device, so the one place the duration syntax was
+                    stated was the one place half the readers cannot reach.
+                    A typing hint, so only for a reader who can type here: a
+                    read-only box has nothing to say how to enter (TAS-299). */}
+                {canEdit ? (
+                  <p className="planning-hint" id={`${planningId}-original-estimate-hint`}>
+                    {PLANNING_ESTIMATE_HINT}
+                  </p>
+                ) : null}
+              </div>
+              <div className="planning-field">
+                <label htmlFor={`${planningId}-remaining-estimate`}>Remaining estimate</label>
+                <input
+                  aria-describedby={canEdit ? `${planningId}-remaining-estimate-hint` : undefined}
+                  id={`${planningId}-remaining-estimate`}
+                  onBlur={() => commitEstimate("remainingEstimateMinutes")}
+                  onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
+                  data-unsaved-text={unsavedPlanning("remainingEstimateMinutes")}
+                  onKeyDown={planningKeyDown}
+                  placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  readOnly={!canEdit}
+                  type="text"
+                  value={planning.remainingEstimateMinutes}
+                />
+                {canEdit ? (
+                  <p className="planning-hint" id={`${planningId}-remaining-estimate-hint`}>
+                    {PLANNING_ESTIMATE_HINT}
+                  </p>
+                ) : null}
               </div>
             </div>
-          </section>
+            <div className="planning-row">
+              <div className="planning-field">
+                <label htmlFor={`${planningId}-start-date`}>Start date</label>
+                <input
+                  // The browser draws its own `dd.mm.yyyy` mask in an empty
+                  // date box, at the text colour, which reads as a value
+                  // somebody entered. This is what lets the CSS put it at
+                  // `--fg-3` — where §4.3 puts a placeholder — so an empty
+                  // date reads as empty next to the `—` in the boxes above.
+                  data-empty={planning.startDate === ""}
+                  id={`${planningId}-start-date`}
+                  onBlur={(event) => commitDate("startDate", event)}
+                  onChange={(event) => draftOf("startDate")(event.target.value)}
+                  data-unsaved-text={unsavedPlanning("startDate")}
+                  onKeyDown={planningKeyDown}
+                  readOnly={!canEdit}
+                  type="date"
+                  value={planning.startDate}
+                />
+              </div>
+              <div className="planning-field">
+                <label htmlFor={`${planningId}-due-date`}>Due date</label>
+                <input
+                  data-empty={planning.dueDate === ""}
+                  id={`${planningId}-due-date`}
+                  onBlur={(event) => commitDate("dueDate", event)}
+                  onChange={(event) => draftOf("dueDate")(event.target.value)}
+                  data-unsaved-text={unsavedPlanning("dueDate")}
+                  onKeyDown={planningKeyDown}
+                  readOnly={!canEdit}
+                  type="date"
+                  value={planning.dueDate}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
 
-          {/* `role="alert"` because this line is the *only* account of a
-              refused write, and a planning field puts its stored value back at
-              the same moment (§5.5) — so without a live region a screen-reader
-              reader watches the box revert with nothing said. Same treatment as
-              the admin write dialogs. Since TAS-231 it carries the half-typed
-              date refusal too, which is the same shape of event without a
-              request behind it: a box reverts, and this is what says why.
+        {/* `role="alert"` because this line is the *only* account of a
+            refused write, and a planning field puts its stored value back at
+            the same moment (§5.5) — so without a live region a screen-reader
+            reader watches the box revert with nothing said. Same treatment as
+            the admin write dialogs. Since TAS-231 it carries the half-typed
+            date refusal too, which is the same shape of event without a
+            request behind it: a box reverts, and this is what says why.
 
-              The `key` is that refusal's sequence number, so a repeat of the
-              same sentence remounts this node instead of re-rendering identical
-              text — a live region that emits no mutation announces nothing, and
-              the second refusal would be as silent as the first bug. A version
-              conflict carries one for the same reason. A write's other refusals
-              need no counter: the mutation drops the error as the next attempt
-              starts, so the node goes away and comes back on its own.
+            The `key` is that refusal's sequence number, so a repeat of the
+            same sentence remounts this node instead of re-rendering identical
+            text — a live region that emits no mutation announces nothing, and
+            the second refusal would be as silent as the first bug. A version
+            conflict carries one for the same reason. A write's other refusals
+            need no counter: the mutation drops the error as the next attempt
+            starts, so the node goes away and comes back on its own.
 
-              The live region is the sentence, not the box: the request id under
-              it is plain text, as in `WatcherNoteDetail` and `ApiNotice`, so an
-              assertive announcement never reads a uuid out. The box is
-              `ErrorNote`, the panel's one error look (TAS-192). */}
-          {panelNotice ? (
-            <ErrorNote key={noticeKey} live="alert" ref={panelNoticeRef} requestId={shownRequestId}>
-              {panelNotice}
-            </ErrorNote>
-          ) : null}
+            The live region is the sentence, not the box: the request id under
+            it is plain text, as in `WatcherNoteDetail` and `ApiNotice`, so an
+            assertive announcement never reads a uuid out. The box is
+            `ErrorNote`, the panel's one error look (TAS-192). */}
+        {panelNotice ? (
+          <ErrorNote key={noticeKey} live="alert" ref={panelNoticeRef} requestId={shownRequestId}>
+            {panelNotice}
+          </ErrorNote>
+        ) : null}
 
-          <label className="description-field">
-            <span>Description</span>
-            {/* `readOnly`, as the summary above and for the same reasons. */}
-            <textarea
-              onBlur={() => {
-                if (!canEdit) return;
-                if (description !== issue.description) editIssue({ description });
-                else settleText("description");
-              }}
-              onChange={(event) => setDescription(event.target.value)}
-              readOnly={!canEdit}
-              rows={5}
-              value={description}
-            />
-          </label>
-
-          {/* Above the other three sections on purpose: it is the one whose
-              state has to be legible without hunting, and that state — whether
-              you are watching — is about the reader rather than the issue, so
-              it matters to every reader. Not every reader can change it: since
-              TAS-226 the toggle follows the server's `watch-issue-roles`, and a
-              VIEWER sees their subscription without a way to change it. It
-              also keeps the toggle above the fold at 1440×900 and one short
-              scroll away at 390×844. */}
-          <IssueWatchersSection
-            projectId={projectId}
-            issueId={issueId}
-            currentUserId={currentUserId}
-            members={members}
-            membersAnswered={membersAnswered}
-            membersUnknown={membersUnknown}
-            userById={userById}
-            isProjectAdmin={isProjectAdmin}
-            canWatch={canWatch}
-            isProjectViewer={isProjectViewer}
+        <label className="description-field">
+          <span>Description</span>
+          {/* `readOnly`, as the summary above and for the same reasons. */}
+          <textarea
+            data-unsaved-text={canEdit && description !== issue.description ? "true" : undefined}
+            onBlur={() => {
+              if (!canEdit) return;
+              if (description !== issue.description) editIssue({ description });
+              else settleText("description");
+            }}
+            onChange={(event) => setDescription(event.target.value)}
+            readOnly={!canEdit}
+            rows={5}
+            value={description}
           />
+        </label>
 
-          <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
+        {/* Above the other three sections on purpose: it is the one whose
+            state has to be legible without hunting, and that state — whether
+            you are watching — is about the reader rather than the issue, so
+            it matters to every reader. Not every reader can change it: since
+            TAS-226 the toggle follows the server's `watch-issue-roles`, and a
+            VIEWER sees their subscription without a way to change it. It
+            also keeps the toggle above the fold at 1440×900 and one short
+            scroll away at 390×844. */}
+        <IssueWatchersSection
+          projectId={projectId}
+          issueId={issueId}
+          currentUserId={currentUserId}
+          members={members}
+          membersAnswered={membersAnswered}
+          membersUnknown={membersUnknown}
+          userById={userById}
+          isProjectAdmin={isProjectAdmin}
+          canWatch={canWatch}
+          isProjectViewer={isProjectViewer}
+        />
 
-          <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
+        <IssueLabelsSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
-          <IssueAttachmentsSection
-            projectId={projectId}
-            issueId={issueId}
-            canEdit={canEdit}
-            isProjectAdmin={isProjectAdmin}
-            currentUserId={currentUserId}
-            userById={userById}
-          />
+        <IssueLinksSection projectId={projectId} issueId={issueId} canEdit={canEdit} />
 
-          <IssueWorklogSection
-            projectId={projectId}
-            issueId={issueId}
-            canLog={canEdit}
-            isProjectAdmin={isProjectAdmin}
-            currentUserId={currentUserId}
-            userById={userById}
-            prefetched={worklogsPrefetched}
-            writeScope={issueWriteScope(issueId)}
-          />
+        <IssueAttachmentsSection
+          projectId={projectId}
+          issueId={issueId}
+          canEdit={canEdit}
+          isProjectAdmin={isProjectAdmin}
+          currentUserId={currentUserId}
+          userById={userById}
+        />
 
-          <CommentsSection
-            projectId={projectId}
-            issueId={issueId}
-            canComment={canEdit}
-            currentUserId={currentUserId}
-            userById={userById}
-            prefetched={commentsPrefetched}
-          />
+        <IssueWorklogSection
+          projectId={projectId}
+          issueId={issueId}
+          canLog={canEdit}
+          isProjectAdmin={isProjectAdmin}
+          currentUserId={currentUserId}
+          userById={userById}
+          prefetched={worklogsPrefetched}
+          writeScope={issueWriteScope(issueId)}
+        />
 
-          <ActivitySection
-            history={history}
-            priorities={meta?.priorities}
-            statuses={workflow?.statuses}
-            userById={userById}
-          />
-        </div>
-      </aside>
-    </div>
+        <CommentsSection
+          projectId={projectId}
+          issueId={issueId}
+          canComment={canEdit}
+          currentUserId={currentUserId}
+          userById={userById}
+          prefetched={commentsPrefetched}
+        />
+
+        <ActivitySection
+          history={history}
+          priorities={meta?.priorities}
+          statuses={workflow?.statuses}
+          userById={userById}
+        />
+      </div>
+    </>
   );
 }
 
@@ -4507,28 +4550,6 @@ interface WaitingUpload {
 }
 
 /**
- * Whether a drag carries files from outside the page — the only drag this
- * section takes. A card dragged across the panel, or selected text, carries no
- * `Files` type and is left alone.
- */
-function carriesFiles(dataTransfer: DataTransfer | null) {
-  return Boolean(dataTransfer && Array.from(dataTransfer.types).includes("Files"));
-}
-
-/**
- * A file let go anywhere on the issue panel outside the attachments section —
- * or over a section that cannot take it — must not navigate the tab away to the
- * file, which is what a browser does with a drop nobody handled. Refused rather
- * than accepted: `dropEffect: "none"` shows the "no" cursor, and the drop never
- * fires. A drop the section already took is left alone (`defaultPrevented`).
- */
-function refuseStrayFileDrop(event: ReactDragEvent<HTMLElement>) {
-  if (event.defaultPrevented || !carriesFiles(event.dataTransfer)) return;
-  event.preventDefault();
-  event.dataTransfer.dropEffect = "none";
-}
-
-/**
  * `GET/POST/DELETE /projects/{projectId}/issues/{issueId}/attachments` and the
  * two extra routes the upload needs — plus two legs that are not routes at all.
  *
@@ -5336,6 +5357,8 @@ function CommentsSection({
           }}
         >
           <textarea
+            // A comment being written holds the panel open on Esc (§4.10).
+            data-unsaved-text={draft !== "" ? "true" : undefined}
             onChange={(event) => setDraft(event.target.value)}
             placeholder="Leave a comment"
             rows={3}
@@ -5460,6 +5483,8 @@ function CommentItem({
         className="comment-main"
         onKeyDown={(event) => {
           if (asking && event.key === "Escape") {
+            // Used: the panel's own Esc skips a press something inside took (§4.10).
+            event.preventDefault();
             event.stopPropagation();
             cancelConfirm();
           }
@@ -5476,7 +5501,14 @@ function CommentItem({
 
         {editing ? (
           <>
-            <textarea onChange={(event) => setBody(event.target.value)} rows={3} value={body} autoFocus />
+            <textarea
+              // A comment being edited holds the panel open on Esc (§4.10).
+              data-unsaved-text={body !== "" ? "true" : undefined}
+              onChange={(event) => setBody(event.target.value)}
+              rows={3}
+              value={body}
+              autoFocus
+            />
             <div className="comment-actions">
               <button
                 className="primary-button compact-button"

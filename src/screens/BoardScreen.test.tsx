@@ -7,6 +7,7 @@ import type { IssueComment, IssueHistoryEvent, Notification } from "../domain/ty
 import { BoardScreen } from "./BoardScreen";
 import { ATTACHMENT_MAX_SIZE_BYTES } from "../api/attachments";
 import { ObjectStoreError } from "../api/objectStore";
+import { tabbables } from "../lib/focusTrap";
 import { PLANNING_ESTIMATE_HINT } from "../lib/planning";
 
 /**
@@ -2121,7 +2122,7 @@ describe("a project that allows fewer issue types", () => {
     seedIssueTypes(["BUG"]);
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(panel).findByText(/no workflow for task issues/i)).toBeVisible();
     expect(within(panel).queryByText(/could not be loaded, so no move/i)).not.toBeInTheDocument();
   });
@@ -2269,7 +2270,7 @@ describe("values this build does not know", () => {
   it("opens an epic in review with its status, its priority active and its own transitions", async () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-150 issue" });
     expect(await within(panel).findByText("In Review")).toHaveClass("status-pill");
     expect(within(panel).getByRole("button", { name: "Approve" })).toBeVisible();
     const priority = within(panel).getByRole("button", { name: "URGENT" });
@@ -2286,7 +2287,7 @@ describe("values this build does not know", () => {
     seedMeta(new Error("Internal error"));
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-150 issue" });
     const segments = (await within(panel).findByRole("button", { name: "URGENT" })).parentElement as HTMLElement;
     expect(within(segments).getAllByRole("button").map((button) => button.textContent)).toEqual([
       "Low",
@@ -2300,7 +2301,7 @@ describe("values this build does not know", () => {
   it("says why an issue in a status its workflow does not list offers no move", async () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-orphan`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-151 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-151 issue" });
     expect(
       await within(panel).findByText("BLOCKED_BY_QA is not in this project’s task workflow, so no move is offered."),
     ).toBeVisible();
@@ -2317,7 +2318,7 @@ describe("values this build does not know", () => {
     setMembership("VIEWER");
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-orphan`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-151 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-151 issue" });
     expect(
       await within(panel).findByText("BLOCKED_BY_QA is not in this project’s task workflow, so no move is offered."),
     ).toBeVisible();
@@ -2327,7 +2328,7 @@ describe("values this build does not know", () => {
     seedExtraIssues([{ ...orphan, status: "" }]);
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-orphan`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-151 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-151 issue" });
     expect(await within(panel).findByText("This issue has no status, so no move is offered.")).toBeVisible();
     expect(within(panel).getByText("No status", { selector: ".status-pill" })).toBeVisible();
   });
@@ -2353,7 +2354,7 @@ describe("values this build does not know", () => {
     ]);
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-150 issue" });
     // The from-key verbatim, the to-key by its workflow's English name.
     expect(await within(panel).findByText(/moved BLOCKED_BY_QA to In Review/)).toBeVisible();
     expect(within(panel).getByText(/set priority to URGENT/)).toBeVisible();
@@ -2402,7 +2403,7 @@ describe("values this build does not know", () => {
 
   it("asks for the dictionaries once, however many chips and pickers read them", async () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
-    await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    await screen.findByRole("dialog", { name: "TAS-150 issue" });
     await screen.findByRole("region", { name: "Other statuses" });
     expect(metaReads()).toBe(1);
   });
@@ -2423,7 +2424,7 @@ describe("values this build does not know", () => {
     fireEvent.click(within(filter).getByRole("button", { name: "All" }));
     fireEvent.click(await screen.findByRole("button", { name: /TAS-150/ }));
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-150 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-150 issue" });
     expect(await within(panel).findByRole("button", { name: "URGENT" })).toHaveClass("is-active");
     expect(metaReads()).toBe(1);
   });
@@ -2482,14 +2483,17 @@ describe("an issue the board cannot draw", () => {
     seedExtraIssues([{ id: "issue-bad", issueKey: { key: "TAS-161" } as unknown as string }]);
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-bad`);
 
-    const panel = await screen.findByRole("complementary", { name: "Issue" });
-    expect(within(panel).getByRole("status")).toHaveTextContent("This issue could not be shown.");
+    // Named "Issue" while it loads too, so wait for the failure itself: the
+    // key this issue carries is not a string, and is not printed anywhere.
+    const panel = await screen.findByRole("dialog", { name: "Issue" });
+    expect(await within(panel).findByText("This issue could not be shown.")).toHaveAttribute("role", "status");
+    expect(within(panel).queryByText(/Loading issue/)).toBeNull();
     expect(within(panel).getByText(/Objects are not valid as a React child/)).toBeVisible();
     expect(screen.getByRole("region", { name: "To Do column" })).toBeVisible();
 
     fireEvent.click(within(panel).getByRole("button", { name: "Close" }));
     expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/board`);
-    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
 
@@ -2512,7 +2516,7 @@ describe("a workflow the server sent without statuses", () => {
     seedContextWorkflowParts({ statuses: [], transitions: [] });
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     const note = await within(panel).findByText(
       "The server sent this project’s task workflow without statuses, so no move is offered.",
     );
@@ -2537,7 +2541,7 @@ describe("a workflow the server sent without statuses", () => {
     });
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     // The columns are this workflow's two statuses, so the context has answered
     // and the absence below is about an answered workflow, not a pending one.
     expect(await screen.findByRole("region", { name: "Done column" })).toBeVisible();
@@ -2635,7 +2639,7 @@ describe("the write controls a role is shown", () => {
     ],
     transitions: [{ id: "t-start", fromStatusId: "s-todo", toStatusId: "s-progress", name: "Start Progress", sortOrder: 10 }],
   };
-  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
   const columnHeads = () => screen.getAllByRole("region", { name: / column$/ });
 
   beforeEach(() => {
@@ -2718,7 +2722,7 @@ describe("deleting an issue from its panel", () => {
     { id: "issue-7", issueKey: "TAS-107", summary: "Rotate the signing keys", status: "TODO" },
     { id: "issue-8", issueKey: "TAS-108", summary: "Cache the workflow", status: "TODO" },
   ];
-  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
   const zone = () => document.querySelector<HTMLElement>(".issue-delete-zone");
   const cardOf = (id: string) => document.querySelector<HTMLElement>(`.issue-card[data-issue-id="${id}"]`);
   const boardStatus = () =>
@@ -2807,7 +2811,7 @@ describe("deleting an issue from its panel", () => {
     expect(zone()).toBeNull();
     expect(remove).toHaveFocus();
 
-    expect(screen.getByRole("complementary", { name: "TAS-102 issue" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "TAS-102 issue" })).toBeInTheDocument();
     expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
     expect(deletes).not.toHaveBeenCalled();
   });
@@ -2899,7 +2903,7 @@ describe("deleting an issue from its panel", () => {
     fireEvent.click(panel.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
     fireEvent.click(cardOf("issue-8")!);
-    const other = within(await screen.findByRole("complementary", { name: "TAS-108 issue" }));
+    const other = within(await screen.findByRole("dialog", { name: "TAS-108 issue" }));
 
     answer();
     // The card goes and the board says so — and the open panel stays open.
@@ -2930,13 +2934,13 @@ describe("deleting an issue from its panel", () => {
     // The next card in the same column, which took its place.
     expect(cardOf("issue-7")).toHaveFocus();
     expect(boardStatus()).toEqual(["TAS-102 deleted."]);
-    expect(screen.queryByRole("complementary", { name: "TAS-102 issue" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "TAS-102 issue" })).not.toBeInTheDocument();
   });
 
   it("falls back to the card before it, then to the column's +, for the last card of a column", async () => {
     seedExtraIssues([{ ...neighbours[0] }]);
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-7`);
-    const panel = within(await screen.findByRole("complementary", { name: "TAS-107 issue" }));
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-107 issue" }));
     fireEvent.click(panel.getByRole("button", { name: "Delete issue TAS-107" }));
     fireEvent.click(within(zone()!).getByRole("button", { name: "Delete issue" }));
     await waitFor(() => expect(cardOf("issue-7")).toBeNull());
@@ -3028,7 +3032,7 @@ describe("deleting a comment from the issue panel", () => {
     version: 1,
   };
   const openRow = async () => {
-    const panel = within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
     const row = (await panel.findByText(anna.body)).closest(".comment-item") as HTMLElement;
     return { panel, row: within(row) };
   };
@@ -3159,7 +3163,7 @@ describe("the planning fields on an issue panel", () => {
 
   it("reads the four the issue carries and leaves the fifth empty", async () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
-    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    await screen.findByRole("dialog", { name: "TAS-102 issue" });
 
     expect(await screen.findByLabelText("Story points")).toHaveValue("3");
     // Verbatim, as `DateOnly`: the box holds the day, not a moment in a
@@ -3177,7 +3181,7 @@ describe("the planning fields on an issue panel", () => {
   it("shows a viewer the values and lets them change none", async () => {
     setMembership("VIEWER");
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
-    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    await screen.findByRole("dialog", { name: "TAS-102 issue" });
 
     // Read-only, not disabled and not hidden: a reader without write access
     // still has to be able to read the plan (§5.7, which names `readOnly` for
@@ -3205,7 +3209,7 @@ describe("the planning fields on an issue panel", () => {
   it("gives a viewer the summary and the description read-only, not disabled (TAS-299)", async () => {
     setMembership("VIEWER");
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
-    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    await screen.findByRole("dialog", { name: "TAS-102 issue" });
 
     // §4.3, §5.7: full contrast, selectable, in the Tab order — the same terms
     // the planning fields have had since TAS-189. `disabled` dimmed both to .58.
@@ -3227,7 +3231,7 @@ describe("the planning fields on an issue panel", () => {
 
   it("keeps a draft in one field while the answer to another lands", async () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
-    await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    await screen.findByRole("dialog", { name: "TAS-102 issue" });
 
     // The estimate is committed and its answer held, so the refetch it triggers
     // lands *after* the second field has been typed into — which is the window
@@ -3277,7 +3281,7 @@ describe("the assignee chips on an issue panel", () => {
   const chipLabels = () =>
     [...document.querySelectorAll(".meta-grid .assignee-chip span:last-child")].map((node) => node.textContent);
 
-  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
 
   beforeEach(() => {
     reset();
@@ -3332,7 +3336,7 @@ describe("issue edits under optimistic locking", () => {
   const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
   const ISSUE_KEY = ["issue", PROJECT_ID, "issue-1"];
 
-  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
 
   beforeEach(() => {
     reset();
@@ -4209,7 +4213,7 @@ describe("issue attachments", () => {
   it("refuses a file dropped elsewhere on the panel instead of letting the tab navigate to it", async () => {
     renderBoard(ISSUE_PATH);
     await section();
-    const description = screen.getByRole("complementary", { name: "TAS-102 issue" }).querySelector(".issue-panel-head")!;
+    const description = screen.getByRole("dialog", { name: "TAS-102 issue" }).querySelector(".issue-panel-head")!;
     const drag = filesDrag([new File(["x"], "a.txt", { type: "text/plain" })]);
     expect(fireEvent.dragOver(description, drag)).toBe(false);
     expect(drag.dataTransfer.dropEffect).toBe("none");
@@ -5067,7 +5071,7 @@ describe("the issue panel before its issue has answered", () => {
     expect(sectionReads()).toEqual(twoReads);
 
     releaseIssue();
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     // Every section drew its answer out of the one read.
     expect(await within(panel).findByText("No comments yet")).toBeVisible();
     expect(within(panel).getByText("No one is watching this issue yet")).toBeVisible();
@@ -5081,7 +5085,7 @@ describe("the issue panel before its issue has answered", () => {
   it("names the reporter from the issue read, and falls back for a name the server left blank", async () => {
     seedSummaries({ "user-anna": "Anna from the issue read" });
     renderBoard(ISSUE_PATH);
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     // No member list was seeded, so this name can only have come from the read.
     expect(await within(panel).findByText("Anna from the issue read")).toBeVisible();
   });
@@ -5091,7 +5095,7 @@ describe("the issue panel before its issue has answered", () => {
     // the member list is asked instead, and without it the word is "Unknown".
     seedSummaries({ "user-anna": "" });
     renderBoard(ISSUE_PATH);
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     const reporterLine = (await within(panel).findByText("Reporter")).nextElementSibling as HTMLElement;
     expect(within(reporterLine).getByText("Unknown")).toBeVisible();
   });
@@ -5108,7 +5112,7 @@ describe("the issue panel before its issue has answered", () => {
       },
     ]);
     renderBoard(ISSUE_PATH);
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     const reporterLine = (await within(panel).findByText("Reporter")).nextElementSibling as HTMLElement;
     expect(await within(reporterLine).findByText("Anna Ivanova")).toBeVisible();
   });
@@ -5117,7 +5121,7 @@ describe("the issue panel before its issue has answered", () => {
     holdIssue(true);
     renderBoard(ISSUE_PATH);
 
-    const pending = await screen.findByRole("complementary", { name: "Loading issue" });
+    const pending = await screen.findByRole("dialog", { name: "Issue" });
     expect(pending).toHaveAttribute("aria-busy", "true");
     // The words are for a screen reader; the eye gets the skeleton.
     const status = within(pending).getByRole("status");
@@ -5125,19 +5129,25 @@ describe("the issue panel before its issue has answered", () => {
     expect(status).toHaveClass("visually-hidden");
     // The old line — plain text as the panel's only content — is gone.
     expect(document.querySelector(".panel-loading")).toBeNull();
-    // Shaped like the panel: a head and a body, hidden from assistive
-    // technology, drawn from the pending-value bars §5.6's pulse lives on.
+    // Shaped like the panel: the head's bars beside a real Close, and the
+    // body, both hidden from assistive technology and drawn from the
+    // pending-value bars §5.6's pulse lives on.
     const shapes = pending.querySelectorAll(".is-skeleton");
     expect(shapes).toHaveLength(2);
     shapes.forEach((shape) => expect(shape).toHaveAttribute("aria-hidden", "true"));
-    expect(pending.querySelector(".issue-panel-head.is-skeleton .value-skeleton")).not.toBeNull();
+    expect(pending.querySelector(".issue-panel-head .is-skeleton .value-skeleton")).not.toBeNull();
     expect(pending.querySelector(".issue-panel-body.is-skeleton .meta-grid .value-skeleton")).not.toBeNull();
+    // Close exists while loading (TAS-380), and it is where focus starts.
+    const close = within(pending).getByRole("button", { name: "Close" });
+    expect(close).toHaveFocus();
 
     releaseIssue();
-    const loaded = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const loaded = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     // The same element, not a new one: the panel slides in once (§4.10), not
-    // again when its issue lands.
+    // again when its issue lands — and Close is the same node, still focused.
     expect(loaded).toBe(pending);
+    expect(within(loaded).getByRole("button", { name: "Close" })).toBe(close);
+    expect(close).toHaveFocus();
     expect(loaded).not.toHaveAttribute("aria-busy");
     expect(loaded.querySelector(".is-skeleton")).toBeNull();
   });
@@ -5155,7 +5165,7 @@ describe("the issue panel before its issue has answered", () => {
     expect(message.closest(".api-notice-detail")).not.toBeNull();
     const copy = screen.getByRole("button", { name: /Copy request id req-panel/ });
     expect(sentence.contains(copy)).toBe(false);
-    const panel = message.closest("aside");
+    const panel = message.closest('[role="dialog"]');
     expect(panel).not.toHaveAttribute("aria-busy");
     expect(panel?.querySelector(".is-skeleton")).toBeNull();
     expect(screen.queryByRole("status", { name: "Loading issue" })).toBeNull();
@@ -5202,7 +5212,7 @@ describe("the issue panel before its issue has answered", () => {
       drop(new Error("not sent"));
       renderBoard(ISSUE_PATH);
 
-      const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+      const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
       const line = await within(panel).findByText(`The ${name} could not be loaded with this issue. Reopen it to try again.`);
       expect(line).toBeVisible();
       // One recipe in all four sections (art-director, TAS-246): the empty
@@ -5226,10 +5236,10 @@ describe("the issue panel before its issue has answered", () => {
     // The comments' answer is in — a failure — while the panel is still waiting
     // on the issue. The panel keeps waiting: it is not the panel's failure.
     await waitFor(() => expect(queryClient.getQueryState(["comments", PROJECT_ID, "issue-1"])?.status).toBe("error"));
-    expect(screen.getByRole("complementary", { name: "Loading issue" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("dialog", { name: "Issue" })).toHaveAttribute("aria-busy", "true");
 
     releaseIssue();
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(panel).findByText("Comments are unavailable")).toBeVisible();
     ["No one is watching this issue yet", "No labels yet", "No links yet", "No attachments yet"].forEach((text) =>
       expect(within(panel).getByText(text)).toBeVisible(),
@@ -5242,16 +5252,16 @@ describe("the issue panel before its issue has answered", () => {
   it("asks again when the panel is reopened after a part did not come", async () => {
     failWatchersRead(new Error("not sent"));
     renderBoard(ISSUE_PATH);
-    const first = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const first = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(first).findByText(/watchers could not be loaded/)).toBeVisible();
 
     fireEvent.click(within(first).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(screen.queryByRole("complementary", { name: "TAS-102 issue" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "TAS-102 issue" })).toBeNull());
 
     // The server recovers; reopening is how a reader asks again.
     failWatchersRead(undefined);
     fireEvent.click(await screen.findByRole("button", { name: /TAS-102/ }));
-    const second = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const second = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(second).findByText("No one is watching this issue yet")).toBeVisible();
     expect(within(second).queryByText(/watchers could not be loaded/)).toBeNull();
     expect(sectionReads().issue).toBe(2);
@@ -5280,7 +5290,7 @@ describe("people and link targets from the issue read", () => {
     seedWatcherNames({ "user-zoe": "Zoe Park" });
     renderBoard(ISSUE_PATH);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(panel).findByText("Zoe Park")).toBeVisible();
   });
 
@@ -5292,7 +5302,7 @@ describe("people and link targets from the issue read", () => {
     seedWatcherNames({ "user-gone": "" });
     renderBoard(ISSUE_PATH);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     const list = (await within(panel).findByRole("heading", { name: /watchers/i })).closest("section") as HTMLElement;
     expect(await within(list).findByText("Unknown")).toBeVisible();
   });
@@ -5313,7 +5323,7 @@ describe("people and link targets from the issue read", () => {
     seedSummaries({ "user-zoe": "Zoe Park" });
     renderBoard(ISSUE_PATH);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(panel).findByText(/Zoe Park/)).toBeVisible();
   });
 
@@ -5332,7 +5342,7 @@ describe("people and link targets from the issue read", () => {
     ]);
     renderBoard(ISSUE_PATH);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     // The row itself, not its remove control ("Remove link to WEB-9").
     const row = (await within(panel).findAllByRole("button", { name: /WEB-9/ })).find((button) =>
       button.classList.contains("issue-link-open"),
@@ -5371,7 +5381,7 @@ describe("people and link targets from the issue read", () => {
     });
     renderBoard(ISSUE_PATH);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     const rowFor = async (key: string) =>
       (await within(panel).findAllByRole("button", { name: new RegExp(key) })).find((button) =>
         button.classList.contains("issue-link-open"),
@@ -5399,7 +5409,7 @@ describe("sharing an issue from its panel", () => {
   it("offers a VIEWER the share links, with no Delete beside them", async () => {
     setMembership("VIEWER");
     renderBoard(ISSUE_PATH);
-    const panel = within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
 
     const share = panel.getByRole("button", { name: "Share issue TAS-102" });
     await waitFor(() => expect(panel.queryByRole("button", { name: /^Delete issue/ })).not.toBeInTheDocument());
@@ -5423,11 +5433,11 @@ describe("sharing an issue from its panel", () => {
     holdIssue(true);
     renderBoard(ISSUE_PATH);
 
-    const pending = await screen.findByRole("complementary", { name: "Loading issue" });
+    const pending = await screen.findByRole("dialog", { name: "Issue" });
     expect(within(pending).queryByRole("button", { name: /^Share/ })).toBeNull();
 
     releaseIssue();
-    const loaded = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const loaded = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(within(loaded).getByRole("button", { name: "Share issue TAS-102" })).toBeVisible();
   });
 });
@@ -5441,7 +5451,7 @@ describe("the activity feed's disclosure", () => {
   const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
   const STORAGE_KEY = "taska.activityCollapsed";
 
-  const openPanel = async () => within(await screen.findByRole("complementary", { name: "TAS-102 issue" }));
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
   const toggleIn = (panel: ReturnType<typeof within>) => panel.findByRole("button", { name: /^Activity/ });
   const items = () => [...document.querySelectorAll(".activity .activity-item")];
 
@@ -5564,5 +5574,171 @@ describe("the activity feed's disclosure", () => {
 
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(panel.queryByText("No activity yet")).toBeNull();
+  });
+});
+
+/**
+ * The issue panel is a dialog (TAS-380, art-director's ruling 7, DESIGN.md
+ * §4.10): `role="dialog"` with `aria-modal` in both placements, first focus on
+ * Close, Tab held inside, focus handed back on the way out, and Esc closing
+ * exactly one thing — the innermost. It used to be an `aside`: focus stayed on
+ * the card behind the scrim and Esc did nothing.
+ */
+describe("the issue panel as a dialog", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const panel = () => screen.findByRole("dialog", { name: "TAS-102 issue" });
+  const card = () => document.querySelector<HTMLElement>('.issue-card[data-issue-id="issue-1"]')!;
+  const where = () => screen.getByTestId("whereabouts");
+  /** Esc as a browser sends it: on what has focus, bubbling to `window`. */
+  const pressEscape = (init: KeyboardEventInit = {}) =>
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape", ...init });
+
+  /** Opens TAS-102 from its card, the way a keyboard reader does. */
+  const openFromCard = async () => {
+    renderBoard();
+    await waitFor(() => expect(card()).not.toBeNull());
+    card().focus();
+    fireEvent.click(card());
+    return panel();
+  };
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it("is a modal dialog named by its key, with focus on Close from the first frame", async () => {
+    const dialog = await openFromCard();
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(dialog.tagName).not.toBe("ASIDE");
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    expect(close).toHaveFocus();
+    // The scrim is a way out for the pointer, not a Tab stop.
+    expect(screen.getByRole("button", { name: "Close issue" })).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("wraps Tab and Shift+Tab inside the panel", async () => {
+    const dialog = await openFromCard();
+    await within(dialog).findByText("No comments yet");
+    // The trap's own idea of a stop — the one `Modal` uses too.
+    const stops = tabbables(dialog);
+    expect(stops[0]).toBe(within(dialog).getByRole("button", { name: "Share issue TAS-102" }));
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+
+    last.focus();
+    fireEvent.keyDown(last, { key: "Tab" });
+    expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+    expect(last).toHaveFocus();
+  });
+
+  it.each([
+    ["Close", () => fireEvent.click(within(screen.getByRole("dialog", { name: "TAS-102 issue" })).getByRole("button", { name: "Close" }))],
+    ["Esc", () => pressEscape()],
+    ["the scrim", () => fireEvent.click(screen.getByRole("button", { name: "Close issue" }))],
+  ])("hands focus back to the card that opened it, on %s", async (_way, close) => {
+    await openFromCard();
+    close();
+    await waitFor(() => expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+    expect(screen.queryByRole("dialog", { name: "TAS-102 issue" })).not.toBeInTheDocument();
+    expect(card()).toHaveFocus();
+  });
+
+  it("falls back to the issue's card when nothing on the board opened it", async () => {
+    renderBoard(ISSUE_PATH);
+    await panel();
+    // Opened from the address: focus was on <body>, so there is no opener.
+    pressEscape();
+    await waitFor(() => expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+    expect(card()).toHaveFocus();
+  });
+
+  it("falls back to the board's back button when the card is not on the board either", async () => {
+    renderBoard(ISSUE_PATH);
+    const dialog = await panel();
+    // TAS-102 is a task; with only bugs on the board its card is gone.
+    fireEvent.click(screen.getByRole("button", { name: "Bug" }));
+    await waitFor(() => expect(card()).toBeNull());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+    expect(screen.getByRole("button", { name: "Back to projects" })).toHaveFocus();
+  });
+
+  describe("Esc closes one thing, the innermost", () => {
+    it("closes Share first, with focus back on Share and the panel open", async () => {
+      const dialog = await openFromCard();
+      const share = within(dialog).getByRole("button", { name: "Share issue TAS-102" });
+      fireEvent.click(share);
+      within(screen.getByRole("dialog", { name: "Share TAS-102" })).getAllByRole("button")[0].focus();
+
+      pressEscape();
+
+      expect(screen.queryByRole("dialog", { name: "Share TAS-102" })).not.toBeInTheDocument();
+      expect(share).toHaveFocus();
+      expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
+    });
+
+    it("closes the delete question next, from anywhere in the panel, with focus on Delete", async () => {
+      const dialog = await openFromCard();
+      const remove = within(dialog).getByRole("button", { name: "Delete issue TAS-102" });
+      fireEvent.click(remove);
+      expect(document.querySelector(".issue-delete-zone")).not.toBeNull();
+      // Focus moved into the body, away from the strip's own buttons.
+      dialog.querySelector<HTMLTextAreaElement>(".summary-textarea")!.focus();
+
+      pressEscape();
+
+      expect(document.querySelector(".issue-delete-zone")).toBeNull();
+      expect(remove).toHaveFocus();
+      expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
+    });
+
+    it("keeps the panel, the text and the focus when the field has unsaved text", async () => {
+      const dialog = await openFromCard();
+      const summary = dialog.querySelector<HTMLTextAreaElement>(".summary-textarea")!;
+      summary.focus();
+      fireEvent.change(summary, { target: { value: "Wire the board to the gateway, and test it" } });
+
+      pressEscape();
+
+      expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
+      expect(summary).toHaveValue("Wire the board to the gateway, and test it");
+      expect(summary).toHaveFocus();
+    });
+
+    it.each([
+      ["a comment being written", (dialog: HTMLElement) => within(dialog).getByPlaceholderText("Leave a comment")],
+      ["a planning value", (dialog: HTMLElement) => within(dialog).getByLabelText("Story points")],
+    ])("keeps them for %s too", async (_what, field) => {
+      const dialog = await openFromCard();
+      await within(dialog).findByText("No comments yet");
+      const box = field(dialog) as HTMLInputElement;
+      box.focus();
+      fireEvent.change(box, { target: { value: "5" } });
+
+      pressEscape();
+
+      expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
+      expect(box).toHaveValue("5");
+      expect(box).toHaveFocus();
+    });
+
+    it("closes the panel from a field whose text is the saved one", async () => {
+      const dialog = await openFromCard();
+      dialog.querySelector<HTMLTextAreaElement>(".summary-textarea")!.focus();
+
+      pressEscape();
+
+      await waitFor(() => expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
+    });
+
+    it("ignores Esc while an input method is composing", async () => {
+      await openFromCard();
+
+      pressEscape({ isComposing: true });
+
+      expect(where()).toHaveTextContent(`/projects/${PROJECT_ID}/issues/issue-1`);
+    });
   });
 });

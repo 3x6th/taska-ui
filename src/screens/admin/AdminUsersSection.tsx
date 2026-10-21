@@ -181,7 +181,7 @@ export function AdminUsersSection() {
         )
       : undefined;
     const target =
-      action ?? planeRef.current?.closest(".admin-section")?.querySelector<HTMLElement>(".admin-section-title") ?? null;
+      action ?? planeRef.current?.closest(".area-section")?.querySelector<HTMLElement>(".area-section-title") ?? null;
     if (!target) return;
     try {
       target.focus({ focusVisible: true });

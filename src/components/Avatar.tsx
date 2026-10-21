@@ -16,7 +16,8 @@ interface AvatarProps {
    */
   user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
   label?: string;
-  size?: "sm" | "md" | "lg";
+  /** §2.7: 24 / 28 / 34, and 64 on Settings → My profile (TAS-380). */
+  size?: "sm" | "md" | "lg" | "xl";
   className?: string;
   loading?: boolean;
 }
@@ -25,6 +26,7 @@ const sizeClass = {
   sm: "avatar-sm",
   md: "avatar-md",
   lg: "avatar-lg",
+  xl: "avatar-xl",
 };
 
 export function Avatar({ user, label, size = "md", className = "", loading = false }: AvatarProps) {

@@ -3848,3 +3848,7 @@ Frontend notes:
   (`release-reviewer` TAS-299 follow-up): nothing says 2–6 characters —
   `maxLength={6}` stops the seventh silently, and below two Create is disabled
   without saying why. A design call for `art-director`, not a safety one.
+
+## Left by TAS-380
+
+- Settings → Appearance: a second open tab keeps the old issue-details / board-columns / theme choice until it reloads; a `storage` listener for the three keys would carry it over (art-director pre-build note 1, 2026-10-21). Not a defect of the story — the choice is per browser and applies on the next load.

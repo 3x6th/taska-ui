@@ -1,5 +1,6 @@
 import type {
   DictionaryEntry,
+  GlobalRole,
   IssueComment,
   IssueLinkType,
   IssuePriority,
@@ -154,6 +155,18 @@ export const statusColor = (key: string | null | undefined, category?: string | 
 /** "Active", a served English name, or the value as received. */
 export const userStatusLabel = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>
   enumLabel(code, userStatusLabels, served);
+
+/**
+ * The account-wide role (`USER` / `GLOBAL_ADMIN`), not the project one: shown,
+ * never acted on (§4.16). One table since TAS-380, when Settings → My profile
+ * became the second place that prints it, beside the profile menu.
+ */
+const globalRoleLabels: Record<GlobalRole, string> = {
+  USER: "User",
+  GLOBAL_ADMIN: "Global admin",
+};
+
+export const globalRoleLabel = (role: GlobalRole) => globalRoleLabels[role];
 
 /** `userStatusLabel` for running text: "is now blocked", "is now SUSPENDED". */
 export const userStatusInSentence = (code: string | null | undefined, served?: readonly DictionaryEntry[] | null) =>

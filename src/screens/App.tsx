@@ -24,6 +24,9 @@ import { IssueKeyScreen } from "./IssueKeyScreen";
 import { LoginScreen } from "./LoginScreen";
 import { NotFoundScreen } from "./NotFoundScreen";
 import { ProjectsScreen } from "./ProjectsScreen";
+import { SettingsAppearanceSection } from "./settings/SettingsAppearanceSection";
+import { SettingsProfileSection } from "./settings/SettingsProfileSection";
+import { SettingsScreen } from "./settings/SettingsScreen";
 
 export interface ScreenProps {
   theme: Theme;
@@ -33,7 +36,7 @@ export interface ScreenProps {
 }
 
 export function App() {
-  const { theme, toggleTheme } = useTheme();
+  const { theme, setTheme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -198,6 +201,22 @@ export function App() {
                 element={<AdminSectionPlaceholder section={section} />}
               />
             ))}
+        </Route>
+        {/* The reader's own settings (TAS-380, DESIGN.md §5.9): an area with
+            sections like /admin, behind the session guard and open to every
+            role. An address inside /settings that matches no section falls
+            through to the `*` route below, as /admin's do. */}
+        <Route
+          path="/settings"
+          element={
+            <RequireSession>
+              <SettingsScreen {...screenProps} setTheme={setTheme} />
+            </RequireSession>
+          }
+        >
+          <Route index element={<Navigate to="/settings/profile" replace />} />
+          <Route path="/settings/profile" element={<SettingsProfileSection />} />
+          <Route path="/settings/appearance" element={<SettingsAppearanceSection />} />
         </Route>
         {/* An unknown URL is an answer, not a redirect: bouncing to /projects
             hid the typo and pretended the address was fine (DESIGN.md §4.18).

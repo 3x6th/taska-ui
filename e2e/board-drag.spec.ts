@@ -250,7 +250,7 @@ test.describe("a board with no workflow for the card's type", () => {
     await failWorkflowRead(page);
 
     await column(page, "To Do").getByRole("button", { name: CARD }).click();
-    await expect(page.getByRole("complementary", { name: "TAS-102 issue" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "TAS-102 issue" })).toBeVisible();
 
     // The four names the fallback carried, none of them the server's.
     for (const name of ["Start Progress", "Complete", "Move to To Do", "Reopen"]) {
@@ -294,7 +294,7 @@ test.describe("a board whose workflow came without statuses", () => {
     await onQueryClient(page, "empty-every-workflow");
 
     await column(page, "To Do").getByRole("button", { name: CARD }).click();
-    const panel = page.getByRole("complementary", { name: "TAS-102 issue" });
+    const panel = page.getByRole("dialog", { name: "TAS-102 issue" });
     await expect(panel).toBeVisible();
 
     await expect(
@@ -404,7 +404,7 @@ test.describe("a board this account may only read", () => {
     await openViewerBoard(page);
 
     await page.getByRole("button", { name: VIEWER_CARD }).click();
-    await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "MOB-5 issue" })).toBeVisible();
     // The keyboard path a writer would use is closed to a reader: the button
     // equivalent of the drag is no more available than the drag, and since
     // TAS-236 it is not drawn at all (§5.7).

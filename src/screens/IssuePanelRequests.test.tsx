@@ -242,7 +242,7 @@ describe("the issue panel's request budget against the REST implementation", () 
   const openPanel = async () => {
     const queryClient = renderBoard();
     fireEvent.click(await screen.findByRole("button", { name: /TAS-102/ }));
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(panel).findByText("No comments yet")).toBeVisible();
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     return { queryClient, panel, before: sent.length };
@@ -287,7 +287,7 @@ describe("the issue panel's request budget against the REST implementation", () 
     expect(paths).not.toContain(`/api/v1/users/${ANNA}/avatar`);
     // The workflow came from the context: the panel offers its transition.
     fireEvent.click(screen.getByRole("button", { name: /TAS-102/ }));
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(panel).findByRole("button", { name: "Start progress" })).toBeVisible();
   });
 
@@ -310,7 +310,7 @@ describe("the issue panel's request budget against the REST implementation", () 
     ].sort();
     expect(requested.slice(beforeOpen).map((url) => url.split("?")[0]).sort()).toEqual(expected);
 
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(panel).findByText("No comments yet")).toBeVisible();
     expect(within(panel).getByText("No one is watching this issue yet")).toBeVisible();
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
@@ -391,7 +391,7 @@ describe("the issue panel's request budget against the REST implementation", () 
   it("edits with one PATCH carrying If-Match, and no read before it", async () => {
     const queryClient = renderBoard();
     fireEvent.click(await screen.findByRole("button", { name: /TAS-102/ }));
-    const panel = await screen.findByRole("complementary", { name: "TAS-102 issue" });
+    const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
     expect(await within(panel).findByText("No comments yet")).toBeVisible();
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     const beforeEdit = sent.length;

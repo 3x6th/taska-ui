@@ -461,6 +461,8 @@ function WorklogRow({
         className="worklog-main"
         onKeyDown={(event) => {
           if (confirming && event.key === "Escape") {
+            // Used: the issue panel's own Esc skips a press something inside took (§4.10).
+            event.preventDefault();
             event.stopPropagation();
             onCancelConfirm();
           }
@@ -479,6 +481,7 @@ function WorklogRow({
             noValidate
             onKeyDown={(event: KeyboardEvent) => {
               if (event.key === "Escape") {
+                event.preventDefault();
                 event.stopPropagation();
                 onCancelEdit();
               }

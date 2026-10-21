@@ -671,8 +671,8 @@ describe("the admin Users section, inviting", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={["/admin/users"]}>
-          <section className="admin-section">
-            <h1 className="admin-section-title" tabIndex={-1}>
+          <section className="area-section">
+            <h1 className="area-section-title" tabIndex={-1}>
               Administration › Users
             </h1>
             <AdminUsersSection />

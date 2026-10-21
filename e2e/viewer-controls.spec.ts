@@ -24,7 +24,7 @@ async function openIssue(page: Page, issueKey: string): Promise<Locator> {
   await page.locator(".project-card", { hasText: "Taska Platform" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  const panel = page.getByRole("complementary", { name: `${issueKey} issue` });
+  const panel = page.getByRole("dialog", { name: `${issueKey} issue` });
   await expect(panel).toBeVisible();
   return panel;
 }

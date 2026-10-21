@@ -87,7 +87,10 @@ export function NotificationsBell({
   // «Закрытие: Esc, клик вне». Until TAS-179 the bell was the only way back
   // out, and §7 carried the gap as a written defect.
   const close = useCallback(() => setOpen(false), []);
-  useDismissOnOutside(open, wrapRef, close);
+  // `Escape` hands focus back to the bell (TAS-380): the row that held it
+  // went with the popover, and focus fell to <body>.
+  const bellRef = useRef<HTMLButtonElement>(null);
+  useDismissOnOutside(open, wrapRef, close, bellRef);
   // The bell is the first control of a group pinned to the bar's right edge, so
   // it is the one trigger on either bar whose own right edge is nowhere near
   // the screen's. This publishes where it actually landed; the panel stays
@@ -111,6 +114,7 @@ export function NotificationsBell({
         aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"}
         className="icon-button"
         onClick={() => setOpen((value) => !value)}
+        ref={bellRef}
         title="Notifications"
         type="button"
       >
