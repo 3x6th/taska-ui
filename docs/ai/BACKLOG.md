@@ -3869,3 +3869,11 @@ Frontend notes:
 - The admin rail strip at 390 now scrolls 67px (scrollWidth 457) after TAS-380's `white-space:nowrap`, and "Back to projects" is cut off at the right edge with no sign that the strip scrolls (`art-director` post-build note 2, 2026-10-21). The area is desktop-first and the logo also leads out; a fade or an overflow cue would say there is more.
 - Panel e2e specs find the issue dialog by its name, which since TAS-380 is set while the issue is still loading; a spec that asserts absence right after `toBeVisible()` passes against the skeleton. TAS-380 fixed the ones release-reviewer found by waiting for `aria-busy` to clear; a shared `openPanel` helper that always waits would stop the pattern coming back (`release-reviewer` TAS-380 r1, note 3).
 - `e2e/notifications.spec.ts:59` (laptop) failed once under full-suite load during TAS-380: `getByText("TAS-107", { exact: true })` hit strict mode because the board card and the loaded panel head both show the key. 24/24 with `--repeat-each=8`; scope the lookup to the panel. Not touched by TAS-380.
+
+### Left by TAS-382 (the Workflows dialog, frontend for backend #208, 2026-10-21)
+
+- **A write refused after the Workflows dialog was closed is never shown.** Close
+  and the scrim stay usable while a write is in flight (§4.28, art-director), and
+  closing cancels neither the write nor the re-read, so a refusal arriving after
+  the dialog is gone has nowhere to land. Same missing toast as §5.6 records
+  (TAS-140); nothing to build for it here.

@@ -375,6 +375,14 @@ Slide-over — единственная поверхность с горизон
 - **Destructive:** ghost + hover `color:var(--danger)`.
 - **Transition button** (в карточке задачи): height 29, padding 0 12, radius 8,
   `border:1px var(--border-strong)`, 12px/550; hover: `border-color/color: var(--accent)`.
+  Доступное имя — `{name}, move to {To}` (подпись статуса по §6); видимый текст — имя
+  перехода без изменений (WCAG 2.5.3), без `title`. Без `aria-label`, если имя равно
+  «Move to {To}» без учёта регистра и крайних пробелов; пустое имя рисуется как
+  «Move to {To}». Имя перехода задаёт админ проекта (§4.28) и может совпасть с именем
+  контрола панели («Close» в migration 0001 backend PR #208), поэтому различает цель, а не
+  имя. `.transition-row` — `role="group"`, `aria-label="Status"` (в ряду и пилюля текущего
+  статуса, поэтому не «Move this issue»; на самом ряду, а не на обёртке: `display:contents`
+  теряет роль группы в Safari). Close панели не меняется (TAS-382, art-director).
 - **Фокус (все интерактивные):** `outline:2px solid var(--accent); outline-offset:2px`, только
   `:focus-visible`. Объявлен один раз глобальным правилом нулевой специфичности (§7); компонент
   его не повторяет, а собственное правило фокуса допустимо только как исключение, записанное в
@@ -1756,7 +1764,8 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
   колонок, внутри — по `sortOrder`. Строка `min-height:28`, `flex-wrap:wrap`,
   `column-gap:8; row-gap:2`: «{From} → {To}» 12.5/500 `--fg`, стрелка — `.arrow` панели,
   `aria-hidden`, для читалки визуально скрытое « to »; справа (`margin-left:auto`) имя
-  перехода 12 `--fg-2`, многоточие — это подпись кнопки перехода в панели (§4.10); у
+  перехода 12 `--fg-2` с визуально скрытым «, named » перед ним (строка читается «To Do to
+  Done, named Close»; маркер `hidden` своим текстом даёт «, hidden»), многоточие — это подпись кнопки перехода в панели (§4.10); у
   скрытого — маркер `hidden` того же рецепта, что `shared`. Без status dots. Статусы
   разрешаются по `fromStatusId`/`toStatusId`; незнакомый id — «Unknown status» `--fg-2`,
   строка не выпадает.
@@ -1802,14 +1811,18 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
   выводится из имени. Под ключом 11.5 `--fg-2` «Capital letters, digits and underscores.»
   Поле ключа нужно: кириллическое имя ключа не даст, а доска такой статус подписывает
   ключом (§6).
-- «Category» — `.segmented.fit` §4.2 (`role="group"`, `aria-pressed`). Сегменты — категории,
-  которые есть у статусов в ответе списка (словаря категорий у сервера нет, BACKLOG), в
-  порядке To Do · In Progress · Done, незнакомая — по своему значению в конце; подписи §6.
-  По умолчанию In Progress, если он есть, иначе первый сегмент.
+- «Category» — `.segmented.fit` §4.2 (`role="group"`, `aria-pressed`). Сегменты — категории
+  статусов **всех** workflow ответа списка, общий включительно (словаря категорий у сервера
+  нет, BACKLOG; иначе workflow без категории никогда бы её не получил). Порядок по правилу
+  открытого набора §4.2: известные по рангу (To Do, In Progress, Done), затем незнакомые в
+  порядке ответа, сырым кодом (§6), без иного отличия. По умолчанию In Progress, если он
+  есть, иначе первый. Категорий в ответе нет — «Add status» `aria-disabled` с подсказкой
+  «The server sent no status categories, so a status cannot be added here.»
 - «Position» — select: «At the start», затем «After {status}» по каждому статусу. По
   умолчанию — конец своей категории: после последнего статуса, чей ранг (TODO <
   IN_PROGRESS < DONE) не выше выбранного; таких нет — «At the start». Пересчитывается со
-  сменой категории, пока Position не трогали. При «At the start» под select'ом 11.5
+  сменой категории, пока Position не трогали. Ранжируются только три известные категории;
+  у незнакомой по умолчанию — после последнего статуса. При «At the start» под select'ом 11.5
   `--fg-2` «New issues will still start in {TODO name}.»
 - Последняя строка над действиями, `aria-describedby` кнопки: 11.5 `--fg-2` «A status cannot
   be renamed, moved or removed once added.»
@@ -1855,7 +1868,8 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
 - **Пусто** (`items: []` — у проекта нет типов задач). 12.5 `--fg-2` «This project has no
   issue types, so it runs on no workflow.» «New workflow» нет. Это ответ, а не отказ.
 - **В полёте.** Рецепт §4.1: отправка `aria-disabled`, подпись прежняя, без затемнения,
-  `cursor:progress`. Cancel и `Esc` инертны, остальные триггеры не открываются. Без
+  `cursor:progress`. Cancel формы и `Esc` инертны, остальные триггеры не открываются; Close
+  и скрим диалог закрывают (см. «Успех»). Без
   оптимизма — осознанное отступление от «мутации оптимистичны», как в §5.8 Users: запись
   меняет доску всех участников, а откат вынул бы строку и переоткрыл форму на глазах.
 - **Отказ записи.** Форма остаётся с введённым, фокус на отправке. `ErrorNote` (§5.6) над
@@ -1864,17 +1878,24 @@ project (у не-ADMIN — после «Board»), до спейсера (§4.13)
   сервера и `X-Request-Id` вне живой области. 404 и 409 вдобавок перечитывают
   `/workflows`. Маршрут записи не задеплоен — `.save-failed-note` (`--fg-2`,
   `role="status"`): «Workflow changes are not on this gateway yet, so this was not saved.»
-- **Успех.** Ответ записи в кэш **не кладётся**: ответ на добавление несёт только видимые
-  переходы, ответ на создание — голый workflow без типов и признака `shared`
-  (API-DIVERGENCE). Запись остаётся «в полёте», пока не перечитаются `/workflows` и
-  контекст проекта; затем форма закрывается, доска под скримом получает колонку и
-  переходы. Новая строка или карточка 2 с держит
+- **Успех.** Ответ записи в кэш не кладётся: add-status/add-transition отдают только
+  видимые переходы, create — workflow без `issueTypes`/`shared` (backend PR #208, `9a04e99`,
+  API-DIVERGENCE). Из ответа берётся только `id` новой строки или карточки. Форма остаётся
+  «в полёте» (§4.1) до конца перечитывания `/workflows`; контекст проекта инвалидируется
+  тогда же, но не ожидается — доска обновляется под скримом и о своих отказах говорит сама
+  (§5.6). `Esc` в полёте инертен; Close и скрим диалог закрывают, запись и перечитывание не
+  отменяются. Затем форма закрывается, найденная по `id` строка или карточка 2 с держит
   `color-mix(in oklab, var(--accent) 14%, transparent)` (рецепт `.admin-key.is-copied`,
-  §5.8), radius 7; подсветка включается и гаснет без анимации. Постоянная визуально
-  скрытая polite-область диалога: «Workflow {name} created for {types}.» / «Status {name}
-  added. Add a transition so issues can move into it.» / «Transition {name} added: {From}
-  to {To}.» Если перечитывание после 201 само упало, форма всё равно закрывается, объявление
-  звучит, а над списком встаёт строка отказа чтения.
+  §5.8), radius 7, без анимации; постоянная визуально скрытая polite-область диалога
+  говорит: «Workflow {name} created for {types}.» / «Status {name} added. Add a transition
+  so issues can move into it.» / «Transition {name} added: {From} to {To}.»; фокус — по
+  правилу ниже.
+  **Перечитывание после 2xx отказало:** форма закрыта, прежние карточки на месте, над ними
+  `ApiNotice` (`live="polite"`) «Status {name} was added, but this list could not be read
+  again. Reopen Workflows to see it.» (Transition {name} was added, but … / Workflow {name}
+  was created, but …) со словами сервера и id чтения. Скрытая область молчит (успех звучит
+  один раз), подсветки нет, фокус — на триггер закрытой формы. Никогда не `ErrorNote`
+  «was not added»: 201 — то, что произошло.
 - **Фокус после успеха.** New workflow → `h3` новой карточки (`tabIndex=-1`, кольцо 2px).
   Add status → «Add transition» той же карточки (без перехода колонка недостижима). Add
   transition → «Add transition».
