@@ -35,7 +35,10 @@ async function openComments(page: Page, issueKey: string): Promise<Locator> {
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).not.toHaveAttribute("aria-busy", "true");
 
   return page.locator(".comments");
 }
@@ -47,9 +50,12 @@ async function openComments(page: Page, issueKey: string): Promise<Locator> {
 async function reopenComments(page: Page, issueKey: string): Promise<Locator> {
   // Exact: the backdrop behind the panel is also a button, named "Close issue".
   await page.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toHaveCount(0);
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).not.toHaveAttribute("aria-busy", "true");
   return page.locator(".comments");
 }
 
@@ -150,7 +156,7 @@ test("Delete asks first: Esc and Cancel keep the comment, and only the answer re
   await expect(remove).toHaveAttribute("aria-expanded", "false");
   await expect(remove).toBeFocused();
   // And the panel is still open: Esc answered the question, nothing else.
-  await expect(page.getByRole("complementary", { name: "TAS-102 issue" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "TAS-102 issue" })).toBeVisible();
 
   // So does Cancel.
   await remove.click();

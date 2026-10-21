@@ -250,7 +250,11 @@ test.describe("a board with no workflow for the card's type", () => {
     await failWorkflowRead(page);
 
     await column(page, "To Do").getByRole("button", { name: CARD }).click();
-    await expect(page.getByRole("complementary", { name: "TAS-102 issue" })).toBeVisible();
+    const panel = page.getByRole("dialog", { name: "TAS-102 issue" });
+    await expect(panel).toBeVisible();
+    // Answered, not the skeleton: the panel carries the key's name while it
+    // loads too (TAS-380), and the absences below are true of the skeleton.
+    await expect(panel).not.toHaveAttribute("aria-busy", "true");
 
     // The four names the fallback carried, none of them the server's.
     for (const name of ["Start Progress", "Complete", "Move to To Do", "Reopen"]) {
@@ -294,7 +298,7 @@ test.describe("a board whose workflow came without statuses", () => {
     await onQueryClient(page, "empty-every-workflow");
 
     await column(page, "To Do").getByRole("button", { name: CARD }).click();
-    const panel = page.getByRole("complementary", { name: "TAS-102 issue" });
+    const panel = page.getByRole("dialog", { name: "TAS-102 issue" });
     await expect(panel).toBeVisible();
 
     await expect(
@@ -404,7 +408,11 @@ test.describe("a board this account may only read", () => {
     await openViewerBoard(page);
 
     await page.getByRole("button", { name: VIEWER_CARD }).click();
-    await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();
+    const panel = page.getByRole("dialog", { name: "MOB-5 issue" });
+    await expect(panel).toBeVisible();
+    // Answered, not the skeleton: the panel carries the key's name while it
+    // loads too (TAS-380), and the absence below is true of the skeleton.
+    await expect(panel).not.toHaveAttribute("aria-busy", "true");
     // The keyboard path a writer would use is closed to a reader: the button
     // equivalent of the drag is no more available than the drag, and since
     // TAS-236 it is not drawn at all (§5.7).

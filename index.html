@@ -4,6 +4,38 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <!--
+      The reader's three appearance choices (DESIGN.md §4.17, §5.9; TAS-380),
+      on <html> before anything is drawn: the theme, where an issue opens, and
+      where the board's columns sit. A classic script in <head> runs before the
+      first paint; the app's module does not. Every storage read is guarded,
+      and an unknown value is the default. The same keys, values and defaults
+      as src/lib/readerPrefs.ts and src/hooks/useTheme.ts — readerPrefs.test.ts
+      runs this script against them.
+    -->
+    <script>
+      (function () {
+        var root = document.documentElement;
+        function read(key) {
+          try {
+            return window.localStorage.getItem(key);
+          } catch (error) {
+            return null;
+          }
+        }
+        var theme = read("taska.theme");
+        if (theme !== "light" && theme !== "dark") {
+          try {
+            theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          } catch (error) {
+            theme = "light";
+          }
+        }
+        root.setAttribute("data-theme", theme);
+        root.setAttribute("data-issue-details", read("taska.issueDetails") === "centered" ? "centered" : "side");
+        root.setAttribute("data-board-columns", read("taska.boardColumns") === "centered" ? "centered" : "left");
+      })();
+    </script>
     <meta name="description" content="Taska is a lightweight issue tracker for focused project boards, issue workflows, and fast team updates." />
     <meta name="theme-color" content="#4f46e5" />
     <meta property="og:site_name" content="Taska" />

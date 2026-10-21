@@ -29,7 +29,7 @@ async function openBoard(page: Page) {
 
 async function openIssue(page: Page, issueKey: string): Promise<Locator> {
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  const panel = page.getByRole("complementary", { name: `${issueKey} issue` });
+  const panel = page.getByRole("dialog", { name: `${issueKey} issue` });
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -37,7 +37,7 @@ async function openIssue(page: Page, issueKey: string): Promise<Locator> {
 async function closeIssue(page: Page, issueKey: string) {
   // Exact: the backdrop behind the panel is also a button, named "Close issue".
   await page.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toHaveCount(0);
 }
 
 /** The heading's one button: chevron, "Activity" and the count, so the name starts with the word. */

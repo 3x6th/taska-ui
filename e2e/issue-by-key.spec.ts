@@ -27,7 +27,7 @@ async function signIn(page: Page) {
   await expect(page).toHaveURL(/\/projects$/);
 }
 
-const panelOf = (page: Page, issueKey: string) => page.getByRole("complementary", { name: `${issueKey} issue` });
+const panelOf = (page: Page, issueKey: string) => page.getByRole("dialog", { name: `${issueKey} issue` });
 
 test("opens an issue from its key, in its own project, whatever the key's case", async ({ page }) => {
   await signIn(page);

@@ -35,7 +35,10 @@ async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).not.toHaveAttribute("aria-busy", "true");
 
   return page.locator(".issue-attachments");
 }
@@ -46,9 +49,12 @@ async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
 // round trip is meant to prove.
 async function reopenIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   await page.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toHaveCount(0);
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).not.toHaveAttribute("aria-busy", "true");
   return page.locator(".issue-attachments");
 }
 
@@ -342,7 +348,7 @@ test("a viewer reads the files and is offered neither upload nor delete", async 
   await signIn(page, "tom@example.com");
   await page.goto(`/projects/${MOB_PROJECT_ID}/board`);
   await page.locator(".issue-card", { hasText: "MOB-5" }).click();
-  await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "MOB-5 issue" })).toBeVisible();
 
   const attachments = page.locator(".issue-attachments");
   await expect(attachments.getByRole("button", { name: "Download crash-report.json" })).toBeVisible();

@@ -55,14 +55,14 @@ test("opens the epic and the orphan with their status, priority and the reason n
   await openWebBoard(page);
 
   await page.getByRole("region", { name: "In Review column" }).getByRole("button", { name: /WEB-15/ }).click();
-  const panel = page.getByRole("complementary", { name: "WEB-15 issue" });
+  const panel = page.getByRole("dialog", { name: "WEB-15 issue" });
   await expect(panel.locator(".status-pill")).toHaveText("In Review");
   await expect(panel.getByRole("button", { name: "Approve" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "URGENT" })).toHaveClass(/is-active/);
   await panel.getByRole("button", { name: "Close" }).click();
 
   await page.getByRole("region", { name: "Other statuses" }).getByRole("button", { name: /WEB-16/ }).click();
-  const orphan = page.getByRole("complementary", { name: "WEB-16 issue" });
+  const orphan = page.getByRole("dialog", { name: "WEB-16 issue" });
   await expect(orphan.locator(".status-pill")).toHaveText("BLOCKED_BY_QA");
   await expect(orphan.getByText("BLOCKED_BY_QA is not in this project’s task workflow, so no move is offered.")).toBeVisible();
 });

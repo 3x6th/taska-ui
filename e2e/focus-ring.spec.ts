@@ -61,8 +61,11 @@ async function openBoard(page: Page) {
 
 async function openPanel(page: Page, issueKey: string): Promise<Locator> {
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  const panel = page.getByRole("complementary", { name: `${issueKey} issue` });
+  const panel = page.getByRole("dialog", { name: `${issueKey} issue` });
   await expect(panel).toBeVisible();
+  // The issue has answered: the panel carries the key's name while it loads
+  // too (TAS-380), and a walk over the skeleton would measure less.
+  await expect(panel).not.toHaveAttribute("aria-busy", "true");
   // Every section's read has landed, so the walk meets the panel as it stays.
   await expect(panel.getByText("Loading comments")).toHaveCount(0);
   return panel;
@@ -498,6 +501,21 @@ for (const theme of ["light", "dark"] as Theme[]) {
       });
     });
 
+    test("the issue panel as a centred window", async ({ page }) => {
+      // Settings → Appearance → Issue details (TAS-380): the window clips to
+      // its radius, so every ring inside it is measured against that clip.
+      await page.addInitScript(() => window.localStorage.setItem("taska.issueDetails", "centered"));
+      await signIn(page, "anna@example.com");
+      await openBoard(page);
+      await openPanel(page, "TAS-101");
+      await expect(page.locator(".issue-panel")).toHaveCSS("overflow", "hidden");
+      await walkBoth(page, "issue panel, centred window", {
+        scope: ".issue-panel",
+        first: () => firstIn(page, ".issue-panel"),
+        last: () => lastIn(page, ".issue-panel"),
+      });
+    });
+
     test("the issue panel as a VIEWER", async ({ page }) => {
       await signIn(page, "tom@example.com");
       await openBoard(page);
@@ -520,7 +538,7 @@ for (const theme of ["light", "dark"] as Theme[]) {
         await page.goto(path);
         await expect(page.getByRole("heading", { level: 1, name: new RegExp(name === "Outbox" ? "Events" : name) })).toBeVisible();
         // Every read of the section answered, so the walk meets what stays.
-        await expect(page.locator(".admin-section")).not.toContainText(/Loading|Reading/);
+        await expect(page.locator(".area-section")).not.toContainText(/Loading|Reading/);
         await walkBoth(page, `/admin, ${name}`);
       }
     });
@@ -551,6 +569,18 @@ for (const theme of ["light", "dark"] as Theme[]) {
         await expect(dialog).toBeHidden();
         await expectFocusBack(page, trigger, { ring: true });
       }
+    });
+
+    test("settings: My profile and Appearance", async ({ page }) => {
+      await signIn(page, "anna@example.com");
+      await page.goto("/settings/profile");
+      // The profile answered, so the walk meets the photo controls.
+      await expect(page.getByRole("button", { name: "Upload a photo" })).toBeVisible();
+      await walkBoth(page, "/settings, My profile");
+
+      await page.goto("/settings/appearance");
+      await expect(page.getByRole("group", { name: "Theme" })).toBeVisible();
+      await walkBoth(page, "/settings, Appearance");
     });
 
     test("a key that resolves to nothing, and a page that is not there", async ({ page }) => {

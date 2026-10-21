@@ -94,7 +94,7 @@ async function openBoard(page: Page) {
 /** The panel of one issue, and the Planning block inside it. */
 async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
   return page.locator(".issue-planning");
 }
 
@@ -209,7 +209,8 @@ test("creates an issue with a plan, and the panel reads it back", async ({ page 
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();
 
-  const modal = page.getByRole("dialog");
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
   await modal.getByLabel("Summary").fill("Plan the planning fields");
   await modal.getByLabel("Story points").fill("2");
   // Typed as a duration, sent as minutes: this is the one assertion that covers
@@ -443,7 +444,8 @@ test("the create form refuses a half-typed date in its own words, and points at 
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();
 
-  const modal = page.getByRole("dialog");
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
   await modal.getByLabel("Summary").fill("Plan with a half-typed date");
   // One whole date and one the reader did not finish. Before TAS-231 this form
   // left the refusal to native validation, which does not fire `submit` at all:
@@ -491,7 +493,8 @@ test("the press that fixes the date creates the issue, rather than being swallow
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();
 
-  const modal = page.getByRole("dialog");
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
   await modal.getByLabel("Summary").fill("Plan with a corrected date");
   const start = modal.getByLabel("Start date");
   const create = modal.getByRole("button", { name: "Create issue" });
@@ -546,7 +549,8 @@ test("the create form's refusal is announced once, not on every exit from a date
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();
 
-  const modal = page.getByRole("dialog");
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
   await modal.getByLabel("Summary").fill("Plan with one date half typed");
   const start = modal.getByLabel("Start date");
   const due = modal.getByLabel("Due date");
@@ -581,7 +585,8 @@ test("the create form's refusal comes down the moment the reader empties the box
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();
 
-  const modal = page.getByRole("dialog");
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
   await modal.getByLabel("Summary").fill("Plan with the date given up on");
   const start = modal.getByLabel("Start date");
   const notice = modal.locator(".error-note");
@@ -619,7 +624,8 @@ test("the create form's mark follows the fault, rather than staying on the date 
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();
 
-  const modal = page.getByRole("dialog");
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
   await modal.getByLabel("Summary").fill("Plan with each date half typed in turn");
   const start = modal.getByLabel("Start date");
   const due = modal.getByLabel("Due date");
@@ -654,7 +660,8 @@ test("the create form answers the second press as loudly as the first", async ({
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();
 
-  const modal = page.getByRole("dialog");
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
   await modal.getByLabel("Summary").fill("Plan pressed twice");
   const start = modal.getByLabel("Start date");
   const notice = modal.locator(".error-note");
@@ -691,7 +698,8 @@ test("creates an issue with both dates, and they are still there when the panel 
   await openBoard(page);
   await page.getByRole("button", { name: "New", exact: true }).click();
 
-  const modal = page.getByRole("dialog");
+  // By name: the issue panel the form opens on success is a dialog too (TAS-380).
+  const modal = page.getByRole("dialog", { name: "New issue" });
   await modal.getByLabel("Summary").fill("Plan both ends of the work");
   await modal.getByLabel("Start date").fill("2026-09-18");
   await modal.getByLabel("Due date").fill("2026-09-19");

@@ -27,7 +27,10 @@ async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).not.toHaveAttribute("aria-busy", "true");
 
   return page.locator(".issue-links");
 }
@@ -49,9 +52,12 @@ test("shows the links seeded for an issue", async ({ page }) => {
 async function reopenIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   // Exact: the backdrop behind the panel is also a button, named "Close issue".
   await page.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toHaveCount(0);
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  await expect(page.getByRole("complementary", { name: `${issueKey} issue` })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).toBeVisible();
+  // Answered, not the skeleton: the panel carries the key's name while it
+  // loads too (TAS-380), and an absence checked against the skeleton is true.
+  await expect(page.getByRole("dialog", { name: `${issueKey} issue` })).not.toHaveAttribute("aria-busy", "true");
   return page.locator(".issue-links");
 }
 
@@ -107,7 +113,7 @@ test("keeps no state from the issue it was just looking at", async ({ page }) =>
   await links.getByRole("button", { name: "Duplicates", exact: true }).click();
 
   await links.getByRole("button", { name: /Blocks TAS-102/ }).click();
-  await expect(page.getByRole("complementary", { name: "TAS-102 issue" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "TAS-102 issue" })).toBeVisible();
 
   await expect(page.locator(".comment-composer textarea")).toHaveValue("");
   await expect(page.locator(".issue-panel")).not.toContainText("draft-marker-101");
@@ -122,7 +128,7 @@ test("walks to the linked issue from the keyboard and shows the relation from th
   await expect(row).toBeFocused();
   await page.keyboard.press("Enter");
 
-  await expect(page.getByRole("complementary", { name: "TAS-102 issue" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "TAS-102 issue" })).toBeVisible();
   // The mock answers each end with the relation as *that* end sees it, so the
   // blocked issue reads "Is blocked by" — a value the request enum cannot
   // express. What is pinned here is that the UI prints whatever string it is
@@ -150,7 +156,7 @@ test("a viewer reads the links and is offered no way to change them", async ({ p
 
   await page.goto("/projects/f315c5cf-3333-47d1-8d22-79f07c2ec99b/board");
   await page.locator(".issue-card", { hasText: "MOB-5" }).click();
-  await expect(page.getByRole("complementary", { name: "MOB-5 issue" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "MOB-5 issue" })).toBeVisible();
 
   const links = page.locator(".issue-links");
   await expect(links.getByRole("button", { name: /Blocks MOB-6/ })).toBeVisible();

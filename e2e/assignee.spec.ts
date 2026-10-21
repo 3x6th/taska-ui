@@ -30,7 +30,7 @@ async function openIssuePanel(page: Page, issueKey: string): Promise<Locator> {
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
 
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  const panel = page.getByRole("complementary", { name: `${issueKey} issue` });
+  const panel = page.getByRole("dialog", { name: `${issueKey} issue` });
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -93,7 +93,7 @@ test("unassigns an issue with None, and the card and a reopened panel agree", as
 
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.locator(".issue-card", { hasText: "TAS-102" }).click();
-  const reopened = page.getByRole("complementary", { name: "TAS-102 issue" });
+  const reopened = page.getByRole("dialog", { name: "TAS-102 issue" });
   await expect(reopened.locator(".assignee-chip", { hasText: "None" })).toHaveClass(/is-active/);
 });
 

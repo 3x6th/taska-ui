@@ -325,6 +325,10 @@ export function IssueWorklogSection({
             onChange={setDraft}
             problems={shownAddProblems}
             today={today}
+            // A typed duration or comment holds the issue panel open on Esc
+            // (§4.10, TAS-380). The date alone is not the reader's text: it
+            // starts at today.
+            unsaved={draft.duration.trim() !== "" || draft.comment.trim() !== ""}
           />
           <div className="worklog-form-actions">
             {/* `aria-disabled`, never `disabled` (§4.22): an empty duration reads as
@@ -461,6 +465,8 @@ function WorklogRow({
         className="worklog-main"
         onKeyDown={(event) => {
           if (confirming && event.key === "Escape") {
+            // Used: the issue panel's own Esc skips a press something inside took (§4.10).
+            event.preventDefault();
             event.stopPropagation();
             onCancelConfirm();
           }
@@ -479,6 +485,7 @@ function WorklogRow({
             noValidate
             onKeyDown={(event: KeyboardEvent) => {
               if (event.key === "Escape") {
+                event.preventDefault();
                 event.stopPropagation();
                 onCancelEdit();
               }
@@ -567,6 +574,11 @@ function WorklogRow({
  * A box that is wrong says so under itself, in place of its hint, and is
  * described by that sentence; the problems are only passed in once the reader
  * has tried to save, so nobody is scolded for a box they have not reached yet.
+ *
+ * `unsaved` marks every box `data-unsaved-text`, which the issue panel's Esc
+ * reads (§4.10, TAS-380): with focus in any of them, Esc leaves the panel, the
+ * draft and the focus where they are. The inline editor does not pass it — its
+ * own Esc closes the editor first and never reaches the panel.
  */
 function WorklogFields({
   draft,
@@ -574,6 +586,7 @@ function WorklogFields({
   idPrefix,
   today,
   autoFocus = false,
+  unsaved = false,
   onChange,
 }: {
   draft: WorklogDraft;
@@ -581,10 +594,12 @@ function WorklogFields({
   idPrefix: string;
   today: string;
   autoFocus?: boolean;
+  unsaved?: boolean;
   onChange: (draft: WorklogDraft) => void;
 }) {
   const set = (field: WorklogDraftField) => (value: string) => onChange({ ...draft, [field]: value });
   const noteId = (field: WorklogDraftField) => `${idPrefix}-${field}-note`;
+  const unsavedText = unsaved ? "true" : undefined;
 
   return (
     <>
@@ -596,6 +611,7 @@ function WorklogFields({
             aria-invalid={problems.duration ? true : undefined}
             autoComplete="off"
             autoFocus={autoFocus}
+            data-unsaved-text={unsavedText}
             id={`${idPrefix}-duration`}
             onChange={(event) => set("duration")(event.target.value)}
             placeholder="1h 30m"
@@ -611,6 +627,7 @@ function WorklogFields({
           <input
             aria-describedby={problems.workDate ? noteId("workDate") : undefined}
             aria-invalid={problems.workDate ? true : undefined}
+            data-unsaved-text={unsavedText}
             id={`${idPrefix}-workDate`}
             // The reader's today: work not yet done is not work to log.
             max={today}
@@ -632,6 +649,7 @@ function WorklogFields({
         <textarea
           aria-describedby={problems.comment ? noteId("comment") : undefined}
           aria-invalid={problems.comment ? true : undefined}
+          data-unsaved-text={unsavedText}
           id={`${idPrefix}-comment`}
           maxLength={WORKLOG_COMMENT_MAX_LENGTH}
           onChange={(event) => set("comment")(event.target.value)}

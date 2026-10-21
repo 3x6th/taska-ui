@@ -1,8 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft } from "lucide-react";
-import { useEffect, useId, useRef } from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { taskaApi } from "../../api/client";
+import { SectionArea } from "../../components/SectionArea";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { TopBar } from "../../components/TopBar";
 import type { ScreenProps } from "../App";
@@ -24,9 +23,6 @@ import { adminSections, sectionForPath } from "./sections";
  */
 export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const location = useLocation();
-  const headingId = useId();
-  const headingRef = useRef<HTMLHeadingElement>(null);
-  const lastSectionId = useRef<string | null>(null);
   const meQuery = useQuery({
     queryKey: ["me"],
     queryFn: () => taskaApi.getCurrentUser(),
@@ -36,21 +32,6 @@ export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // redirects into `/admin/data`, and captioning that tick with nothing would
   // make the heading flicker.
   const section = sectionForPath(location.pathname) ?? adminSections[0];
-
-  useEffect(() => {
-    // Moving between sections replaces the whole body while the keyboard stays
-    // wherever the rail left it, and a screen reader is told nothing at all —
-    // so focus goes to the new section's heading (§7). Deliberately *not* on
-    // every route change inside the area: choosing a table in the Data catalog
-    // also changes the URL, and yanking focus out of the list on every arrow
-    // press would make the catalog unusable from the keyboard.
-    const previous = lastSectionId.current;
-    lastSectionId.current = section.id;
-    // Not on arrival: focus that moves before the user has done anything is a
-    // jump they did not ask for.
-    if (previous === null || previous === section.id) return;
-    headingRef.current?.focus();
-  }, [section]);
 
   // Deciding before `me` settles would flash Page not found on every single
   // load of this area, admins included. Nothing is drawn until the answer is
@@ -89,65 +70,23 @@ export function AdminScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         loggingOut={logoutPending}
         onLogout={onLogout}
       />
-      <div className="admin-area">
-        <nav aria-label="Administration" className="admin-rail">
-          <ul>
-            {adminSections.map((item) => {
-              const Icon = item.icon;
-              return (
-                <li key={item.id}>
-                  {/* NavLink rather than Link: it states `aria-current="page"`
-                      from the match itself, so the rail cannot claim a section
-                      the router is not showing. Prefix matching is what keeps
-                      Data marked while a table is open. */}
-                  <NavLink className="admin-rail-link" to={item.path}>
-                    <Icon aria-hidden="true" size={15} />
-                    {item.label}
-                  </NavLink>
-                </li>
-              );
-            })}
-          </ul>
-          {/* The way out of the area belongs to the area, not to whichever
-              section happens to be open — which is why the button that used to
-              sit under the content is gone (§5.8). */}
-          <div className="admin-rail-foot">
-            <Link className="admin-rail-link admin-rail-exit" to="/projects">
-              <ArrowLeft aria-hidden="true" size={15} />
-              Back to projects
-            </Link>
-          </div>
-        </nav>
-
-        <section aria-labelledby={headingId} className="admin-section">
-          <header className="admin-section-head">
-            {/* The area names itself, not only the section: «Data» on its own
-                reads as one more product screen (§5.8). Both parts live inside
-                the h1 — the reason the crumb exists is just as true in the
-                accessibility tree, and a sibling <p> would leave the heading
-                announced as the bare section name. The grid places the two
-                spans; the crumb is text, not a link, because `/admin` only
-                redirects here.
-
-                tabIndex -1 so the effect above can put focus here; it is not in
-                the tab order and never takes focus from a pointer. */}
-            <h1 className="admin-section-title" id={headingId} ref={headingRef} tabIndex={-1}>
-              <span className="admin-crumb">
-                Administration
-                <span aria-hidden="true"> ›</span>
-              </span>
-              <span className="admin-section-name">{section.label}</span>
-            </h1>
-            {/* Not a request state and not decoration: it says this section
-                only reads, and two sections have now left it — Users writes
-                since TAS-186, Events since TAS-194 — while Data still carries
-                it. That they leave one at a time is exactly why it
-                is a field on the section rather than a fixture of the shell. */}
-            {section.readOnly ? <p className="admin-readonly">read-only</p> : null}
-          </header>
-          <Outlet />
-        </section>
-      </div>
+      {/* The rail, its exit and the heading are the shared area recipe
+          (`SectionArea`, TAS-380), which Settings draws too. */}
+      <SectionArea
+        aside={
+          // Not a request state and not decoration: it says this section only
+          // reads, and two sections have now left it — Users writes since
+          // TAS-186, Events since TAS-194 — while Data still carries it. That
+          // they leave one at a time is exactly why it is a field on the
+          // section rather than a fixture of the shell.
+          section.readOnly ? <p className="admin-readonly">read-only</p> : null
+        }
+        current={section}
+        name="Administration"
+        sections={adminSections}
+      >
+        <Outlet />
+      </SectionArea>
     </main>
   );
 }

@@ -28,7 +28,7 @@ async function openIssue(page: Page, issueKey: string): Promise<Locator> {
   await page.locator(".project-card", { hasText: "Taska Platform" }).click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
   await page.locator(".issue-card", { hasText: issueKey }).click();
-  const panel = page.getByRole("complementary", { name: `${issueKey} issue` });
+  const panel = page.getByRole("dialog", { name: `${issueKey} issue` });
   await expect(panel).toBeVisible();
   return panel;
 }
@@ -70,13 +70,13 @@ test("copies both links, and each one opens the same issue", async ({ page, base
     window.dispatchEvent(new PopStateEvent("popstate"));
   }, fullLink);
   await expect(page).toHaveURL(fullLink);
-  await expect(page.getByRole("complementary", { name: "TAS-101 issue" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "TAS-101 issue" })).toBeVisible();
 
   // The short link, cold: a key is stable across loads, and `/browse` resolves
   // it into the issue's own address.
   await page.goto(shortLink);
   await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+\/issues\/[^/]+$/);
-  await expect(page.getByRole("complementary", { name: "TAS-101 issue" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "TAS-101 issue" })).toBeVisible();
 });
 
 test("opens from the keyboard, keeps a sane Tab order with §7's ring, and closes three ways", async ({ page }) => {

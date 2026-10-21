@@ -32,10 +32,19 @@ export type DismissedBy = "escape" | "outside";
  * render of the screen around it.
  *
  * It is told which way out was taken, because the two can differ in where
- * focus belongs afterwards (TAS-248): after `Escape` a caller may put focus
- * back on its trigger, while a press outside has already chosen where focus
- * goes next and must not have it taken back. The hook moves no focus itself;
- * callers that do not care ignore the argument.
+ * focus belongs afterwards (TAS-248): a press outside has already chosen where
+ * focus goes next and must not have it taken back.
+ *
+ * **`Escape` closes, hands focus back and says it was used** (TAS-380,
+ * art-director's ruling 4). Closing a popover that held focus unmounted the
+ * element that had it, and focus fell to `<body>` — Tab then restarted at the
+ * top of the page. So when focus was inside (the popover or its trigger) or
+ * had already fallen to `<body>`, it goes to `trigger`; focus the reader put
+ * somewhere else on purpose stays there. And `preventDefault()`, because one
+ * press closes exactly one thing: the issue panel listens for `Escape` on
+ * `window`, after this, and skips a press something inside has already used
+ * (§4.10) — without it, Esc in the Share popover closed the panel too. A press
+ * during IME composition is the input method's, not ours.
  */
 export function useDismissOnOutside(
   /** Whether the overlay is on screen. Nothing is bound while this is false. */
@@ -43,6 +52,8 @@ export function useDismissOnOutside(
   /** The element that counts as "inside": the panel *and* its trigger. */
   ref: RefObject<HTMLElement | null>,
   onDismiss: (how: DismissedBy) => void,
+  /** Where `Escape` hands focus back. Absent for a trigger that never loses it (a combobox's field). */
+  trigger?: RefObject<HTMLElement | null>,
 ) {
   const dismiss = useRef(onDismiss);
 
@@ -57,7 +68,14 @@ export function useDismissOnOutside(
       if (!ref.current?.contains(event.target as Node)) dismiss.current("outside");
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dismiss.current("escape");
+      // Already used by something inside (§4.10's mechanism), or the input
+      // method's while it composes.
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      const active = document.activeElement;
+      const hadFocus = !active || active === document.body || Boolean(ref.current?.contains(active));
+      event.preventDefault();
+      dismiss.current("escape");
+      if (hadFocus) trigger?.current?.focus();
     };
 
     document.addEventListener("pointerdown", handlePointerDown);
@@ -66,5 +84,5 @@ export function useDismissOnOutside(
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open, ref]);
+  }, [open, ref, trigger]);
 }

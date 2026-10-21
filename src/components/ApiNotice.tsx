@@ -37,8 +37,11 @@ export function ApiNotice({
   /**
    * `alert` interrupts, `polite` waits for a gap. A screen that has failed at
    * its main job interrupts; one that is merely missing a count does not.
+   * `off` is a state found on arrival rather than an answer to anything the
+   * reader did — a read that failed as the page opened (§5.6) — and is not
+   * announced at all (Settings → My profile, TAS-380).
    */
-  live?: "alert" | "polite";
+  live?: "alert" | "polite" | "off";
   /** Events — a rejected drop, a rolled-back move — can be dismissed. States cannot. */
   dismiss?: { label: string; onDismiss: () => void };
 }) {
@@ -47,7 +50,7 @@ export function ApiNotice({
   return (
     <div className="api-notice">
       <div className="api-notice-body">
-        <p className="api-notice-sentence" role={live === "alert" ? "alert" : "status"}>
+        <p className="api-notice-sentence" role={live === "off" ? undefined : live === "alert" ? "alert" : "status"}>
           {children}
         </p>
         {message || requestId ? (

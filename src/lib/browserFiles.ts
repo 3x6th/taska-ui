@@ -1,3 +1,5 @@
+import type { DragEvent as ReactDragEvent } from "react";
+
 /**
  * The two ways the attachments panel hands a file to the browser, written once
  * so each can be tested without a panel around it (TAS-253).
@@ -86,4 +88,26 @@ export function saveBlob(blob: Blob, fileName: string): void {
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), OBJECT_URL_REVOKE_DELAY_MS);
   }
+}
+
+/**
+ * Whether a drag carries files from outside the page — the only drag this
+ * section takes. A card dragged across the panel, or selected text, carries no
+ * `Files` type and is left alone.
+ */
+export function carriesFiles(dataTransfer: DataTransfer | null) {
+  return Boolean(dataTransfer && Array.from(dataTransfer.types).includes("Files"));
+}
+
+/**
+ * A file let go anywhere on the issue panel outside the attachments section —
+ * or over a section that cannot take it — must not navigate the tab away to the
+ * file, which is what a browser does with a drop nobody handled. Refused rather
+ * than accepted: `dropEffect: "none"` shows the "no" cursor, and the drop never
+ * fires. A drop the section already took is left alone (`defaultPrevented`).
+ */
+export function refuseStrayFileDrop(event: ReactDragEvent<HTMLElement>) {
+  if (event.defaultPrevented || !carriesFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "none";
 }

@@ -2,7 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 
 /**
  * The user's avatar — upload, replace, delete and show (TAS-220, backend PR
- * #150, merged and deployed on 2026-09-14).
+ * #150, merged and deployed on 2026-09-14). The controls are on Settings → My
+ * profile since TAS-380; they lived in the profile menu before.
  *
  * Mock-backed like every spec here (playwright.config.ts starts the server with
  * VITE_TASKA_API_MODE=mock), and for this feature that is not a convenience but
@@ -52,7 +53,20 @@ async function signIn(page: Page, email = "anna@example.com") {
 }
 
 const trigger = (page: Page) => page.getByRole("button", { name: /Open profile/ });
-const popover = (page: Page) => page.getByRole("dialog", { name: "Current user profile" });
+/** Settings → My profile, where the photo controls are. */
+const profile = (page: Page) => page.locator(".settings-profile");
+
+/**
+ * Settings → My profile, reached the way a reader reaches it — the profile
+ * menu's Settings row — so the app's cache comes along: the project cards a
+ * write rewrites are the ones `/projects` already holds.
+ */
+async function openMyProfile(page: Page) {
+  await trigger(page).click();
+  await page.getByRole("link", { name: "Settings" }).click();
+  await expect(page).toHaveURL(/\/settings\/profile$/);
+  await expect(profile(page).getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
+}
 
 /**
  * Hands a file to the input the "Upload a photo" button drives.
@@ -68,41 +82,43 @@ async function choose(page: Page, name: string, buffer: Buffer = PNG, mimeType =
 }
 
 /**
- * The photo band's bottom inset as a reader sees it: from the last thing in the
- * band that draws anything to the band's own bottom edge. Measured against
- * what has height rather than against the last child, because the defect was
- * an empty one — the mounted live region, zero tall but in flow, which put the
- * band's 7px gap under the hint and read 19 where a refusal read 12.
+ * What the photo column spends under its last drawn line: from the last child
+ * that draws anything to the column's own bottom edge. Measured against what
+ * has height rather than against the last child, because the defect this
+ * guards against was an empty one — the mounted live region, zero tall but in
+ * flow, which took the column's 7px gap with nothing under it.
  */
-async function photoBandInset(page: Page) {
-  return popover(page)
-    .locator(".user-profile-photo")
-    .evaluate((band) => {
-      const drawn = [...band.children].filter((child) => child.getBoundingClientRect().height > 0);
+async function photoColumnInset(page: Page) {
+  return profile(page)
+    .locator(".settings-photo")
+    .evaluate((column) => {
+      const drawn = [...column.children].filter((child) => child.getBoundingClientRect().height > 0);
       const last = drawn[drawn.length - 1];
-      return band.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
+      return column.getBoundingClientRect().bottom - last.getBoundingClientRect().bottom;
     });
 }
 
-test("keeps the photo band's bottom inset at 12, at rest and with a refusal in it", async ({ page }) => {
+test("keeps the empty live region out of the flow, and lays a refusal out in it", async ({ page }) => {
   await signIn(page);
-  await trigger(page).click();
-  await expect(popover(page).getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
+  await openMyProfile(page);
 
   // At rest the live region is mounted and empty — and takes no gap.
-  const live = popover(page).locator(".user-profile-photo-note-sentence");
+  const live = profile(page).locator(".settings-photo-sentence");
   await expect(live).toHaveAttribute("aria-live", "polite");
   await expect(live).toHaveText("");
-  expect(await photoBandInset(page)).toBeCloseTo(12, 1);
+  expect(await photoColumnInset(page)).toBeCloseTo(0, 1);
 
-  // A refusal decided without a request fills that same region, in flow.
+  // A refusal decided without a request fills that same region, in flow, in
+  // the `.admin-write-failure` recipe, capped at 440.
   await choose(page, "animation.gif", Buffer.from("GIF89a"), "image/gif");
   await expect(live).toContainText("animation.gif is not a type this product accepts.");
-  await expect(popover(page).locator(".user-profile-photo-live.user-profile-photo-note.is-error")).toBeVisible();
-  expect(await photoBandInset(page)).toBeCloseTo(12, 1);
+  const box = profile(page).locator(".settings-photo-live.admin-write-failure");
+  await expect(box).toBeVisible();
+  expect(await photoColumnInset(page)).toBeCloseTo(0, 1);
+  expect((await box.boundingBox())!.width).toBeLessThanOrEqual(440);
 });
 
-test("uploads a photo from the profile menu, then deletes it and gets the initials back", async ({ page }) => {
+test("uploads a photo on My profile, then deletes it and gets the initials back", async ({ page }) => {
   await signIn(page);
 
   // Anna is seeded without an avatar on purpose, so the flow starts where a new
@@ -110,25 +126,24 @@ test("uploads a photo from the profile menu, then deletes it and gets the initia
   await expect(trigger(page).locator(".avatar")).toHaveText("AI");
   await expect(trigger(page).locator("img")).toHaveCount(0);
 
-  // The project card behind the menu holds Anna's member row too. Sofia's face
-  // being drawn is what says the card's summary has loaded — so the change
-  // below can only have come from the menu writing into it, not from the
-  // card's own first answer arriving late.
+  // The project card holds Anna's member row too. Sofia's face being drawn is
+  // what says the card's summary has loaded — so the change below can only
+  // have come from the page writing into it, not from the card's own first
+  // answer arriving late.
   const card = page.locator(".project-card", { hasText: "Taska Platform" });
   await expect(card.locator(".avatar-stack img")).toHaveCount(1);
 
-  await trigger(page).click();
-  await expect(popover(page).getByText("Up to 2 MB. JPEG, PNG or WebP.")).toBeVisible();
-  // Nothing to remove yet, and the menu says so by not offering it — only a
+  await openMyProfile(page);
+  // Nothing to remove yet, and the page says so by not offering it — only a
   // successful read may claim there is none (§5.6).
-  await expect(popover(page).getByRole("button", { name: "Remove photo" })).toHaveCount(0);
+  await expect(profile(page).getByRole("button", { name: "Remove photo" })).toHaveCount(0);
 
   await choose(page, "face.png");
 
-  // The trigger and the popover header are the same circle twice, and both
-  // become the picture.
+  // The trigger and the page's 64 are the same circle twice, and both become
+  // the picture.
   await expect(trigger(page).locator("img")).toHaveCount(1);
-  await expect(popover(page).locator(".user-profile-head img")).toHaveCount(1);
+  await expect(profile(page).locator(".settings-profile-head .avatar-xl img")).toHaveCount(1);
   await expect(trigger(page).locator(".avatar")).toHaveText("");
   // The name never moves onto the image: the circle keeps it, so a screen
   // reader hears the person rather than "image".
@@ -137,30 +152,38 @@ test("uploads a photo from the profile menu, then deletes it and gets the initia
   // And the picture actually decoded, rather than merely being requested.
   expect(await trigger(page).locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
 
+  // The button now offers the other two operations.
+  await expect(profile(page).getByRole("button", { name: "Replace photo" })).toBeVisible();
+
   // The new face is on the card as well, through the summary the card already
-  // held: the menu writes it there rather than having every card on the page
+  // held: the page writes it there rather than having every card on /projects
   // read its issues and members again.
+  await page.getByRole("link", { name: "Back to projects" }).click();
+  await expect(page).toHaveURL(/\/projects$/);
   await expect(card.locator(".avatar-stack img")).toHaveCount(2);
 
-  // The button now offers the other two operations.
-  await expect(popover(page).getByRole("button", { name: "Replace photo" })).toBeVisible();
-  await popover(page).getByRole("button", { name: "Remove photo" }).click();
+  await openMyProfile(page);
+  await profile(page).getByRole("button", { name: "Remove photo" }).click();
 
   // No confirmation dialog: this is undone by uploading again.
   await expect(trigger(page).locator("img")).toHaveCount(0);
   await expect(trigger(page).locator(".avatar")).toHaveText("AI");
-  await expect(popover(page).getByRole("button", { name: "Upload a photo" })).toBeVisible();
+  await expect(profile(page).getByRole("button", { name: "Upload a photo" })).toBeVisible();
+  await page.getByRole("link", { name: "Back to projects" }).click();
   await expect(card.locator(".avatar-stack img")).toHaveCount(1);
 });
 
-test("gives Remove photo a real target in the control colour, and a focus ring the popover does not clip", async ({
+test("gives Remove photo a real target in the control colour, and a focus ring the page does not clip", async ({
   page,
 }) => {
   await signIn(page);
-  await trigger(page).click();
+  await openMyProfile(page);
   await choose(page, "face.png");
-  const remove = popover(page).getByRole("button", { name: "Remove photo" });
+  const remove = profile(page).getByRole("button", { name: "Remove photo" });
   await expect(remove).toBeVisible();
+  // At rest means not under the pointer: on the touch project the tap that
+  // opened Settings leaves its hover wherever it landed, which can be here.
+  await page.mouse.move(1, 1);
 
   const resting = await remove.evaluate((button) => {
     const probe = document.createElement("span");
@@ -180,26 +203,24 @@ test("gives Remove photo a real target in the control colour, and a focus ring t
   expect(resting.color).toBe(resting.fg2);
 
   // From the keyboard, because `:focus-visible` is what is under test: the ring
-  // is §7's outward one, and the band's padding keeps all of it inside the
-  // popover's `overflow: hidden`.
-  await popover(page).getByRole("button", { name: "Replace photo" }).focus();
+  // is §7's outward one, and the plane's padding keeps all of it inside the
+  // scroller's clip.
+  await profile(page).getByRole("button", { name: "Replace photo" }).focus();
   await page.keyboard.press("Tab");
   await expect(remove).toBeFocused();
   const ring = await remove.evaluate((button) => {
-    const pop = button.closest(".user-profile-popover") as HTMLElement;
+    const plane = button.closest(".settings-plane") as HTMLElement;
     const style = getComputedStyle(button);
-    const panel = getComputedStyle(pop);
     const spread = parseFloat(style.outlineOffset) + parseFloat(style.outlineWidth);
     const b = button.getBoundingClientRect();
-    const p = pop.getBoundingClientRect();
-    const border = parseFloat(panel.borderTopWidth);
+    const p = plane.getBoundingClientRect();
     return {
       offset: style.outlineOffset,
       width: style.outlineWidth,
-      clearLeft: b.left - spread - (p.left + border),
-      clearRight: p.right - border - (b.right + spread),
-      clearTop: b.top - spread - (p.top + border),
-      clearBottom: p.bottom - border - (b.bottom + spread),
+      clearLeft: b.left - spread - p.left,
+      clearRight: p.right - (b.right + spread),
+      clearTop: b.top - spread - p.top,
+      clearBottom: p.bottom - (b.bottom + spread),
     };
   });
   expect(ring.offset).toBe("2px");
@@ -207,22 +228,22 @@ test("gives Remove photo a real target in the control colour, and a focus ring t
   expect(Math.min(ring.clearLeft, ring.clearRight, ring.clearTop, ring.clearBottom)).toBeGreaterThanOrEqual(0);
 });
 
-test("keeps a refused file's long name inside the popover", async ({ page }) => {
+test("keeps a refused file's long name inside its 440 line", async ({ page }) => {
   await signIn(page);
-  await trigger(page).click();
+  await openMyProfile(page);
 
   // One unbroken word, the way a camera or a download names a file. The refusal
-  // quotes it, and before `overflow-wrap: anywhere` the sentence ran through the
-  // popover's edge, where `overflow: hidden` cut it off mid-name.
+  // quotes it; without `overflow-wrap: anywhere` the sentence would run through
+  // its box's edge.
   const name = `IMG_${"20260914111400".repeat(6)}_screenshot_from_the_long_meeting.gif`;
   await choose(page, name, Buffer.from("GIF89a"), "image/gif");
-  const note = popover(page).locator(".user-profile-photo-note.is-error");
+  const note = profile(page).locator(".settings-photo-live.admin-write-failure");
   await expect(note).toContainText(name);
 
   const fit = await note.evaluate((element) => {
-    const pop = element.closest(".user-profile-popover") as HTMLElement;
+    const column = element.closest(".settings-column") as HTMLElement;
     const box = element.getBoundingClientRect();
-    const panel = pop.getBoundingClientRect();
+    const panel = column.getBoundingClientRect();
     return {
       overflow: element.scrollWidth - element.clientWidth,
       clearRight: panel.right - box.right,
@@ -232,63 +253,43 @@ test("keeps a refused file's long name inside the popover", async ({ page }) => 
   expect(fit.overflow).toBeLessThanOrEqual(0);
   expect(fit.clearRight).toBeGreaterThanOrEqual(0);
   expect(fit.clearLeft).toBeGreaterThanOrEqual(0);
+  expect((await note.boundingBox())!.width).toBeLessThanOrEqual(440);
 });
 
 /**
- * Both cases below prove the same two things on different writes: focus
- * lands back on the upload button once the write settles, and the popover —
- * a `role="dialog"` with no focus trap — still has it, so the very next Tab
- * continues the sequence inside the menu instead of restarting at the top of
- * the document. That second assertion is the one that actually distinguishes
- * a fix from a coincidence: focus can equal the upload button for an instant
- * and still be about to fall through to `<body>` on the next render, and
- * "some element inside the dialog" would pass even if Tab jumped backwards.
- * Naming the exact next control — Anna carries no Administration entry, so it
- * is "Log out" once "Remove photo" is gone, and "Remove photo" once an upload
- * just mounted it — is what `edit-project.spec.ts` does for the same reason.
+ * Focus never falls to <body> during a write (ruling 4, TAS-380). An upload
+ * keeps it on the button that started it — `aria-disabled` while the legs are
+ * out, where `disabled` made Chromium blur it — and a removal, whose button
+ * unmounts with the picture, hands it to Upload first. Naming the exact next
+ * control after Tab is what tells a fix from a coincidence.
  */
 
-test("returns focus to the upload button after Remove, so Tab continues inside the menu", async ({ page }) => {
+test("moves focus to Upload when Remove takes its own button away", async ({ page }) => {
   await signIn(page);
-  await trigger(page).click();
+  await openMyProfile(page);
   await choose(page, "face.png");
   await expect(trigger(page).locator("img")).toHaveCount(1);
 
-  // "Remove photo" unmounts along with the picture it just removed — the
-  // button the reader pressed is gone a render later — which is the harder
-  // of the two ways this band can lose focus to <body>.
-  await popover(page).getByRole("button", { name: "Remove photo" }).click();
+  await profile(page).getByRole("button", { name: "Remove photo" }).click();
   await expect(trigger(page).locator("img")).toHaveCount(0);
-  await expect(popover(page).getByRole("button", { name: "Upload a photo" })).toBeFocused();
-
-  await page.keyboard.press("Tab");
-  await expect(popover(page).getByRole("button", { name: "Log out" })).toBeFocused();
+  await expect(profile(page).getByRole("button", { name: "Upload a photo" })).toBeFocused();
 });
 
-test("returns focus to the upload button after a plain upload, so Tab continues inside the menu", async ({
-  page,
-}) => {
+test("keeps focus on the button that started an upload, so Tab continues from it", async ({ page }) => {
   await signIn(page);
-  await trigger(page).click();
+  await openMyProfile(page);
 
-  // Nothing unmounts on this path — the button that starts an upload is the
-  // same one that ends it — so the precondition has to be set up rather than
-  // produced by the previous step: focus it first, the way a keyboard reader
-  // who just activated it already would have it.
-  const uploadButton = popover(page).getByRole("button", { name: "Upload a photo" });
+  const uploadButton = profile(page).getByRole("button", { name: "Upload a photo" });
   await uploadButton.focus();
   await expect(uploadButton).toBeFocused();
 
   await choose(page, "face.png");
   await expect(trigger(page).locator("img")).toHaveCount(1);
-  // `disabled` arrives on this same button the moment the upload starts, and
-  // Chromium blurs a focused element the instant that happens — the button
-  // is named "Replace photo" by the time it is enabled again, so this is a
-  // fresh query rather than a re-check of the `uploadButton` handle above.
-  await expect(popover(page).getByRole("button", { name: "Replace photo" })).toBeFocused();
+  // The same button, renamed once the photo is there.
+  await expect(profile(page).getByRole("button", { name: "Replace photo" })).toBeFocused();
 
   await page.keyboard.press("Tab");
-  await expect(popover(page).getByRole("button", { name: "Remove photo" })).toBeFocused();
+  await expect(profile(page).getByRole("button", { name: "Remove photo" })).toBeFocused();
 });
 
 /**
@@ -306,13 +307,13 @@ test("says the photo could not be loaded when the profile read fails, and an upl
   // from the start; time still flows, and `fastForward` is the lid closing.
   await page.clock.install();
   await signIn(page);
-  await trigger(page).click();
+  await openMyProfile(page);
 
   await choose(page, "object-lost.png");
   // The confirm's own answer carried the link, so the picture is drawn at
   // first — exactly as the server's answer would draw it.
   await expect(trigger(page).locator("img")).toHaveCount(1);
-  const note = popover(page).getByText("Your photo could not be loaded.");
+  const note = profile(page).getByText("Your photo could not be loaded.");
   await expect(note).toHaveCount(0);
 
   // Back to the tab after the profile went stale: `["me"]` is read again, and
@@ -324,9 +325,9 @@ test("says the photo could not be loaded when the profile read fails, and an upl
   await expect(trigger(page).locator(".avatar")).toHaveText("AI");
   await expect(note).toBeVisible();
   // Quiet, not a refusal: no danger tint, not announced, no request id.
-  await expect(note).not.toHaveClass(/is-error/);
+  await expect(note).not.toHaveClass(/admin-write-failure/);
   expect(await note.evaluate((element) => element.closest("[aria-live]") === null)).toBe(true);
-  await expect(popover(page).locator(".user-profile-photo-note-detail")).toHaveCount(0);
+  await expect(profile(page).locator(".settings-photo-detail")).toHaveCount(0);
   // But not the hint's fine print either: the same size and slot, set apart by
   // tone alone — `--fg` where the hint above it is `--fg-2` — and no tint.
   const tones = await note.evaluate((element) => {
@@ -338,7 +339,7 @@ test("says the photo could not be loaded when the profile read fails, and an upl
       span.remove();
       return color;
     };
-    const hint = element.parentElement?.querySelector(".user-profile-photo-hint") as HTMLElement;
+    const hint = element.parentElement?.querySelector(".settings-photo-hint") as HTMLElement;
     return {
       note: getComputedStyle(element).color,
       noteBackground: getComputedStyle(element).backgroundColor,
@@ -353,30 +354,30 @@ test("says the photo could not be loaded when the profile read fails, and an upl
   expect(tones.hint).toBe(tones.fg2);
   expect(tones.noteSize).toBe(tones.hintSize);
   expect(tones.noteBackground).toBe("rgba(0, 0, 0, 0)");
-  // The note is the last thing in the band, and the empty live region under it
-  // adds no gap.
-  expect(await photoBandInset(page)).toBeCloseTo(12, 1);
+  // The note is the last thing in the column, and the empty live region under
+  // it adds no gap.
+  expect(await photoColumnInset(page)).toBeCloseTo(0, 1);
   // Upload is the way out; there is nothing the server says to remove.
-  await expect(popover(page).getByRole("button", { name: "Upload a photo" })).toBeEnabled();
-  await expect(popover(page).getByRole("button", { name: "Remove photo" })).toHaveCount(0);
+  await expect(profile(page).getByRole("button", { name: "Upload a photo" })).toBeEnabled();
+  await expect(profile(page).getByRole("button", { name: "Remove photo" })).toHaveCount(0);
 
   await choose(page, "face.png");
 
   await expect(trigger(page).locator("img")).toHaveCount(1);
   await expect(note).toHaveCount(0);
-  await expect(popover(page).getByRole("button", { name: "Remove photo" })).toBeVisible();
+  await expect(profile(page).getByRole("button", { name: "Remove photo" })).toBeVisible();
 });
 
 test("replaces a photo with another, leaving one", async ({ page }) => {
   await signIn(page);
-  await trigger(page).click();
+  await openMyProfile(page);
 
   await choose(page, "first.png");
   await expect(trigger(page).locator("img")).toHaveCount(1);
   const first = await trigger(page).locator("img").getAttribute("src");
 
   await choose(page, "second.png", OTHER_PNG);
-  await expect(popover(page).getByRole("button", { name: "Replace photo" })).toBeVisible();
+  await expect(profile(page).getByRole("button", { name: "Replace photo" })).toBeVisible();
 
   // One circle, one picture — an avatar is replaced rather than appended to,
   // which is the whole difference from an attachment.
@@ -386,13 +387,13 @@ test("replaces a photo with another, leaving one", async ({ page }) => {
 
 test("refuses a type and a size before spending a request, in the reader's terms", async ({ page }) => {
   await signIn(page);
-  await trigger(page).click();
+  await openMyProfile(page);
 
   // A GIF passes the picker on some systems — `accept` filters by the operating
   // system's idea of a type and `File.type` is the browser's.
   await choose(page, "wave.gif", Buffer.from("GIF89a"), "image/gif");
   await expect(
-    popover(page).getByText("wave.gif is not a type this product accepts. Choose a JPEG, PNG or WebP image."),
+    profile(page).getByText("wave.gif is not a type this product accepts. Choose a JPEG, PNG or WebP image."),
   ).toBeVisible();
   await expect(trigger(page).locator("img")).toHaveCount(0);
 
@@ -401,24 +402,24 @@ test("refuses a type and a size before spending a request, in the reader's terms
   // sentence and a round trip that comes back "Invalid request parameters".
   await choose(page, "huge.png", Buffer.alloc(3 * 1024 * 1024));
   await expect(
-    popover(page).getByText("huge.png is 3 MB. The largest photo this product accepts is 2 MB."),
+    profile(page).getByText("huge.png is 3 MB. The largest photo this product accepts is 2 MB."),
   ).toBeVisible();
   await expect(trigger(page).locator("img")).toHaveCount(0);
 });
 
 test("reports a blocked cross-origin PUT as the store leg it is", async ({ page }) => {
   await signIn(page);
-  await trigger(page).click();
+  await openMyProfile(page);
 
   // The mock reads the file name for this, because nothing in the backend
   // repository configures CORS on the bucket and the failure is otherwise
   // unreachable from a browser.
   await choose(page, "cors-blocked.png");
 
-  await expect(popover(page).getByText(/the browser could not reach the file store/)).toBeVisible();
+  await expect(profile(page).getByText(/the browser could not reach the file store/)).toBeVisible();
   // The sentence names where the request was going, because "storage" being a
   // different server from Taska is the fact that makes it make sense.
-  await expect(popover(page).getByText(/straight to storage rather than through Taska/)).toBeVisible();
+  await expect(profile(page).getByText(/straight to storage rather than through Taska/)).toBeVisible();
   await expect(trigger(page).locator("img")).toHaveCount(0);
 });
 
