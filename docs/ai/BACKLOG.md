@@ -3952,4 +3952,17 @@ Frontend notes:
   workflows ever get there; every node's `title` repeats its visible name; a hover
   highlight can stay on a node a form's layout shift moved out from under a still
   mouse until the mouse moves.
+- **Diagram notes from release-reviewer** (TAS-382, approved non-blocking, on
+  `3582d9d`): the shared-card e2e check counts `button:not(.workflow-diagram-node)`
+  where `getByRole("button")` toHaveCount(3) would keep the old strength
+  (`e2e/workflows.spec.ts` ~126); a ResizeObserver flip is possible in theory when
+  a card sits within a scrollbar's width of a fit threshold and the body's height
+  is at its limit — art-director ruled `scrollbar-gutter: stable` out because the
+  Transitions list keeps the scrollbar up whenever a fallback is reachable; revisit
+  only if "ResizeObserver loop" ever shows in the console; no test asserts the
+  observer disconnects on unmount; a status named "Close" gives the dialog a second
+  Close button (told apart only by `aria-pressed`); a hidden and a visible edge
+  sharing a port share one solid arrowhead; jsdom renders every in-dialog diagram
+  as the fallback, so only e2e exercises a drawn one; `hovered` can go stale across
+  a drawn → fallback → drawn flip.
 
