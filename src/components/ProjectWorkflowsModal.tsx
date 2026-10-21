@@ -15,7 +15,7 @@ import type {
 } from "../domain/types";
 import { useMeta } from "../hooks/useMeta";
 import { useUnanswered } from "../hooks/useUnanswered";
-import { issueTypeInSentence, issueTypeLabel, keyBadgeStyle, statusColor, statusLabel } from "../lib/format";
+import { issueTypeInSentence, issueTypeLabel, keyBadgeStyle, statusLabel } from "../lib/format";
 import { projectContextKey } from "../lib/projectContext";
 import {
   STATUS_KEY_MAX_LENGTH,
@@ -43,8 +43,9 @@ import {
 } from "../lib/workflows";
 import { ApiNotice } from "./ApiNotice";
 import { ErrorNote } from "./ErrorNote";
-import { TypeChip } from "./IssueBits";
+import { CategoryDot, TypeChip } from "./IssueBits";
 import { Modal } from "./Modal";
+import { WorkflowDiagram } from "./WorkflowDiagram";
 import { projectWorkflowsKey, projectWorkflowsOptions } from "./projectWorkflowsQuery";
 
 /** The one form a dialog may have open (§4.28: opening another closes this one, draft and all). */
@@ -505,6 +506,11 @@ function WorkflowCard({
         </p>
       ) : null}
 
+      {/* A picture over the lists, never in their place (§4.28): the lists
+          below stay whole, and are the keyboard's, the reader's and the
+          phone's way through the same facts. */}
+      <WorkflowDiagram name={name} workflow={workflow} />
+
       <h4 className="workflow-section-heading">Statuses</h4>
       {statuses.length ? (
         <ol aria-label={`Statuses of ${name}`} className="workflow-rows">
@@ -614,19 +620,6 @@ function WorkflowCard({
 /** A status named in a transition row, or "Unknown status" for an id the workflow does not list — the row stays. */
 function StatusWord({ name }: { name: string | null }) {
   return name === null ? <span className="workflow-status-unknown">Unknown status</span> : <span>{name}</span>;
-}
-
-/**
- * §4.9's dot, coloured by the status's category — the row says the category in
- * words beside it — and the hollow ring for one this build cannot colour.
- */
-function CategoryDot({ category }: { category: string }) {
-  const color = statusColor(null, category);
-  return color ? (
-    <span aria-hidden="true" className="status-dot" style={{ background: color }} />
-  ) : (
-    <span aria-hidden="true" className="status-dot is-unknown" />
-  );
 }
 
 /**

@@ -8260,6 +8260,121 @@ button.attachment-open:hover:not(:disabled) {
   margin-top: 8px;
 }
 
+/* §4.28's diagram of the transitions: no heading, frame or fill of its own —
+   the card is the frame (§1, п. 2). The wrapper takes the card's whole content
+   width, which is what the component measures; the block inside is exactly as
+   wide as the lanes and the nodes need, centred, and never wider than the
+   wrapper — the component draws a line in its place instead (B4: no scroll,
+   no `viewBox` scaling). */
+.workflow-diagram {
+  min-width: 0;
+  margin-top: 14px;
+}
+
+.workflow-diagram-block {
+  position: relative;
+  margin: 0 auto;
+}
+
+.workflow-diagram-block ~ .workflows-note {
+  margin-top: 6px;
+}
+
+/* Hidden from assistive technology and from the pointer: the nodes above it
+   are what is pressed and read. */
+.workflow-diagram-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* §4.28: `--fg-3` lines (3.14 / 3.05 to `--surface`, over the 3:1 floor for
+   graphics); a hidden transition is the same colour dashed — a shape, not a
+   colour (§7). Colours only here, on tokens; nothing in the SVG carries one. */
+.workflow-diagram-line {
+  fill: none;
+  stroke: var(--fg-3);
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.workflow-diagram-line.is-hidden {
+  stroke-dasharray: 4 3;
+}
+
+.workflow-diagram-arrow {
+  fill: var(--fg-3);
+}
+
+/* Dimmed as one group, so stubs that overlap fade together rather than
+   darkening where they cross. The lit group is drawn after it, on top. The
+   lines switch at once: no transition here, and no draw-in (§4.28). */
+.workflow-diagram-rest.is-dimmed {
+  opacity: 0.4;
+}
+
+.workflow-diagram-lit .workflow-diagram-line {
+  stroke: var(--accent);
+}
+
+.workflow-diagram-lit .workflow-diagram-arrow {
+  fill: var(--accent);
+}
+
+/* A node: §2.7's 28 high, 160 or 128 wide (set by the component), on the
+   modal's `--surface`. Not §4.5's status pill — To Do on it is 1.91:1, and
+   In Progress's tint is the accent tint that says "active" here. */
+.workflow-diagram-node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-hover) var(--ease),
+    border-color var(--dur-hover) var(--ease);
+}
+
+/* §7's 44: the border box and 8 above and below it. `-9px -1px` because an
+   absolute child is placed against the padding box, inside the 1px border —
+   `-8px 0` would give 42. Neighbours 44 apart tile without overlapping. */
+.workflow-diagram-node::before {
+  position: absolute;
+  inset: -9px -1px;
+  content: "";
+}
+
+.workflow-diagram-node-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--dur-hover) var(--ease);
+}
+
+.workflow-diagram-node.is-active {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+
+/* A status the active one has no transition with recedes; its neighbours stay
+   as they are. */
+.workflow-diagram-node.is-far {
+  border-color: var(--border);
+}
+
+.workflow-diagram-node.is-far .workflow-diagram-node-name {
+  color: var(--fg-2);
+}
+
 .workflow-section-heading {
   margin: 14px 0 6px;
   color: var(--fg-2);

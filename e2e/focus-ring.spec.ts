@@ -465,9 +465,9 @@ for (const theme of ["light", "dark"] as Theme[]) {
       await openBoard(page);
       await walkBoth(page, "board, VIEWER");
 
-      // Workflows with nothing to press in it: the body is the stop that
+      // Workflows with nothing to write in it: the body is the stop that
       // scrolls it, ringed inside the edge the modal clips at (§4.28, §7
-      // exception 1).
+      // exception 1), and each card's diagram is one stop more after it.
       const workflows = page.getByRole("button", { name: "Workflows" });
       await pressOpen(page, workflows);
       const dialog = page.getByRole("dialog", { name: "Workflows" });
@@ -478,6 +478,20 @@ for (const theme of ["light", "dark"] as Theme[]) {
         last: () => lastIn(page, ".modal"),
         trapped: true,
       });
+
+      // The diagram's stop, named rather than only walked over (art-director,
+      // §4.28): Close → body → its first node, ringed on the accent tint the
+      // node takes under keyboard focus, and not cut by the body scrolling it.
+      await dialog.getByRole("button", { name: "Close", exact: true }).focus();
+      await page.keyboard.press("Tab");
+      await expect(dialog.getByRole("region", { name: "Workflows" })).toBeFocused();
+      await page.keyboard.press("Tab");
+      const node = dialog.getByRole("group", { name: "Diagram of Default workflow" }).getByRole("button", { name: "To Do" });
+      await expect(node).toBeFocused();
+      await expect(node).toHaveClass(/is-active/);
+      const stop = await inspect(page, ".modal");
+      expect(stop?.focusVisible, stop?.label).toBe(true);
+      expect(stop?.problem ?? null, stop?.label).toBeNull();
       await page.keyboard.press("Escape");
       await expect(dialog).toBeHidden();
       await expectFocusBack(page, workflows, { ring: true });

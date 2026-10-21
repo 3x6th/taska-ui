@@ -122,8 +122,105 @@ test("the shared default offers no write, even to an ADMIN", async ({ page }) =>
 
   const shared = dialog.locator("section", { has: page.getByRole("heading", { level: 3, name: "Default workflow" }) });
   await expect(shared.getByText("shared", { exact: true })).toBeVisible();
-  await expect(shared.getByRole("button")).toHaveCount(0);
+  // The diagram's nodes are its only buttons, and they write nothing (§4.28).
+  await expect(shared.getByRole("group", { name: "Diagram of Default workflow" }).getByRole("button")).toHaveCount(3);
+  await expect(shared.locator("button:not(.workflow-diagram-node)")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "New workflow" })).toBeVisible();
+});
+
+/**
+ * §4.28's diagram on the seed's shared default: three statuses and all six
+ * moves between them, none hidden. On every viewport the block fits its card
+ * without scrolling or scaling, and it is one Tab stop between New workflow
+ * and the card's (absent) writes.
+ */
+test("the shared default's diagram draws every move, fits its card, and is one Tab stop with a pin", async ({ page }, testInfo) => {
+  const project = testInfo.project.name;
+  await openBoardAs(page, "anna@example.com");
+  const dialog = await openWorkflows(page);
+  const shared = dialog.locator("section", { has: page.getByRole("heading", { level: 3, name: "Default workflow" }) });
+  const diagram = shared.getByRole("group", { name: "Diagram of Default workflow" });
+  const nodes = diagram.getByRole("button");
+
+  await expect(nodes).toHaveText(["To Do", "In Progress", "Done"]);
+  await expect(nodes.nth(0)).toHaveAccessibleDescription("Leads to In Progress and Done. Reached from In Progress and Done.");
+  await expect(nodes.nth(1)).toHaveAccessibleDescription("Leads to To Do and Done. Reached from To Do and Done.");
+  await expect(nodes.nth(2)).toHaveAccessibleDescription("Leads to To Do and In Progress. Reached from To Do and In Progress.");
+  await expect(diagram.locator("svg .workflow-diagram-line")).toHaveCount(6);
+  await expect(shared.getByText(/Too many transitions|Dashed arrows|not drawn/)).toHaveCount(0);
+
+  // B4: inside the card's content box, centred, and nothing scrolls sideways.
+  const fit = await shared.evaluate((card) => {
+    const block = card.querySelector(".workflow-diagram-block") as HTMLElement;
+    const wrapper = card.querySelector(".workflow-diagram") as HTMLElement;
+    const [outer, inner] = [wrapper.getBoundingClientRect(), block.getBoundingClientRect()];
+    const body = card.closest(".modal-body") as HTMLElement;
+    return {
+      left: inner.left - outer.left,
+      right: outer.right - inner.right,
+      sideways: body.scrollWidth - body.clientWidth,
+      height: inner.height,
+    };
+  });
+  expect(fit.left).toBeGreaterThanOrEqual(0);
+  expect(fit.right).toBeGreaterThanOrEqual(0);
+  expect(Math.abs(fit.left - fit.right)).toBeLessThanOrEqual(1);
+  expect(fit.sideways).toBeLessThanOrEqual(0);
+  expect(fit.height).toBe(3 * 44 - 16);
+
+  // Close → New workflow → the diagram, on its first node.
+  await expect(dialog.getByRole("button", { name: "Close", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "New workflow" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(nodes.nth(0)).toBeFocused();
+  await expect(nodes.nth(0)).toHaveClass(/is-active/);
+
+  await page.keyboard.press("ArrowDown");
+  await expect(nodes.nth(1)).toBeFocused();
+  await expect(nodes.nth(1)).toHaveClass(/is-active/);
+  await page.keyboard.press("Enter");
+  await expect(nodes.nth(1)).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("End");
+  await expect(nodes.nth(2)).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(nodes.nth(2)).toHaveAttribute("aria-pressed", "true");
+  await expect(nodes.nth(1)).toHaveAttribute("aria-pressed", "false");
+
+  // Out of the diagram and back: the pinned node is the stop, and the pin
+  // holds the highlight with focus gone.
+  await page.keyboard.press("Tab");
+  await expect(nodes.nth(2)).not.toBeFocused();
+  await expect(nodes.nth(2)).toHaveClass(/is-active/);
+  await page.keyboard.press("Shift+Tab");
+  await expect(nodes.nth(2)).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(nodes.nth(2)).toHaveAttribute("aria-pressed", "false");
+
+  if (project === "mobile") {
+    // A tap pins; a touch is not a hover.
+    await nodes.nth(0).tap();
+    await expect(nodes.nth(0)).toHaveAttribute("aria-pressed", "true");
+    await nodes.nth(0).tap();
+    await expect(nodes.nth(0)).toHaveAttribute("aria-pressed", "false");
+  } else {
+    // A mouse over a node lights it ahead of the pin; a second click unpins
+    // with nothing left lit once the mouse has gone.
+    await nodes.nth(0).click();
+    await expect(nodes.nth(0)).toHaveAttribute("aria-pressed", "true");
+    await nodes.nth(2).hover();
+    await expect(nodes.nth(2)).toHaveClass(/is-active/);
+    await expect(nodes.nth(0)).not.toHaveClass(/is-active/);
+    await nodes.nth(0).click();
+    await expect(nodes.nth(0)).toHaveAttribute("aria-pressed", "false");
+    await page.mouse.move(0, 0);
+    await expect(diagram.locator(".is-active")).toHaveCount(0);
+  }
+
+  // Esc is the dialog's, not the diagram's.
+  await nodes.nth(0).focus();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
 });
 
 for (const [email, role] of [
