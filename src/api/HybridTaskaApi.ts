@@ -11,6 +11,7 @@ import type {
   CreateIssueLinkInput,
   CreateProjectInput,
   CreateProjectLabelInput,
+  CreateProjectWorkflowInput,
   InviteUserInput,
   ListCommentsParams,
   ListIssuesParams,
@@ -25,6 +26,8 @@ import type {
   UpdateIssueWorklogInput,
   UpdateProjectInput,
   UpdateProjectLabelInput,
+  WorkflowStatusInput,
+  WorkflowTransitionInput,
 } from "./TaskaApi";
 import type {
   AdminCatalog,
@@ -62,11 +65,13 @@ import type {
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
+  ProjectWorkflowEntry,
   UnwatchIssueResult,
   User,
   UserAvatar,
   UserStatusChange,
   WatchIssueResult,
+  WorkflowDefinition,
 } from "../domain/types";
 
 /**
@@ -346,6 +351,22 @@ export class HybridTaskaApi implements TaskaApi {
 
   deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void> {
     return this.live.deleteIssueWorklog(projectId, issueId, worklogId);
+  }
+
+  listProjectWorkflows(projectId: string): Promise<ProjectWorkflowEntry[]> {
+    return this.live.listProjectWorkflows(projectId);
+  }
+
+  createProjectWorkflow(projectId: string, input: CreateProjectWorkflowInput): Promise<WorkflowDefinition> {
+    return this.live.createProjectWorkflow(projectId, input);
+  }
+
+  addWorkflowStatus(projectId: string, workflowId: string, input: WorkflowStatusInput): Promise<WorkflowDefinition> {
+    return this.live.addWorkflowStatus(projectId, workflowId, input);
+  }
+
+  addWorkflowTransition(projectId: string, workflowId: string, input: WorkflowTransitionInput): Promise<WorkflowDefinition> {
+    return this.live.addWorkflowTransition(projectId, workflowId, input);
   }
 
   listComments(projectId: string, issueId: string, params?: ListCommentsParams): Promise<Page<IssueComment>> {

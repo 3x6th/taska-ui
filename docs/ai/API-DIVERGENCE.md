@@ -1539,57 +1539,54 @@ Everything below is the entry as it stood, in the past tense.
   words beneath it. The "Unknown" rendering stays for rows written before the
   fix.
 
-### `DELETE /issues/{issueId}` deletes before it checks the caller's role
+### Closed by TAS-300 (backend PR #206, merged and deployed 2026-10-22 as `c01e08d`): `DELETE /issues/{issueId}` checked the caller's role after it deleted
 
 - **Endpoint:** `DELETE /api/v1/issues/{issueId}`.
-- **Contract:** silent on roles — `DELETE /issues/{issueId}` lists only 204 and
-  the default error. The role set is issue-service config `delete-issue-roles`
-  (`${ISSUE_DELETE_ROLES:ADMIN,MEMBER}`, overridable per environment).
-- **Runtime (read at develop `e8a8d316`, not probed — a probe would delete a real
-  issue):** `IssueServiceImpl.deleteIssue` (issue-service, lines 318–350) runs
-  `softDeleteAndReturn` (`UPDATE … RETURNING`) first and only then
-  `projectRoleChecker.checkProjectRole`; the method is not `@Transactional`, and
-  the gateway passes the call through. So any signed-in user — a VIEWER, a
-  non-member — who knows an issue id soft-deletes it and still receives 403; the
-  history row and outbox event are never written, so nothing records it.
-- **UI:** cannot reach it — a VIEWER has no Delete (TAS-236), and since TAS-299 the
-  panel asks first and **re-reads the board after a refusal**, so a refused
-  delete that the server performed anyway shows as gone rather than as still
-  there.
-- **Compensation:** after a refused delete the board list **and** the search are
-  re-read (`BoardScreen.tsx`, the delete mutation's error path), because the
-  server may have deleted the issue anyway — one extra read on the error path.
-  Remove it, or keep it as policy, when TAS-300 lands. A client cannot make a
-  server check its permissions; this only keeps the board honest about what the
-  server did.
-- **Removal:** [TAS-300](https://jira.ozero.dev/browse/TAS-300) (High, filed
-  2026-10-20 from `art-director`'s TAS-299 ruling, verified by the
-  orchestrator): read the issue, check the role, then delete, in one
-  transaction with the history and outbox writes.
+- **Was (read at develop `e8a8d316`):** `IssueServiceImpl.deleteIssue` ran
+  `softDeleteAndReturn` first and only then `checkProjectRole`, outside a
+  transaction, so any signed-in user who knew an issue id soft-deleted it and still
+  received 403, with no history row or outbox event.
+- **Now (read at develop `594f637`, api-contract-guard, TAS-382):** the method is
+  `@Transactional`, locks the issue with `findActiveByIdForUpdate` (404
+  `NOT_FOUND` "Issue with id: …" if missing), checks the role, and only then soft
+  deletes and writes history and outbox; `DeleteIssueIntegrationTest` covers a
+  VIEWER and a non-member changing nothing, the role service unavailable, a failed
+  history/outbox write rolling back, and two concurrent deletes. Refusals: 403
+  `PERMISSION_DENIED` "Access denied" (non-member) / "Not allowed role" (VIEWER).
+  Deployed with the whole stack at `594f637` on 2026-10-22 (deploy-stage green
+  08:04Z; the stack's commit shown by the workflow routes answering 401 and an
+  authenticated context read, `185be0ce-f7ab-4da7-b6b7-19600a84d971`). Not probed
+  itself — a safe probe needs a VIEWER or non-member token.
+- **What the UI does:** after a failed delete the board still re-reads the list and
+  the search — now as ordinary policy, not a compensation: a refusal proves nothing
+  was deleted, but a timeout, a 5xx or a dropped connection leaves the outcome
+  unknown (`BoardScreen.tsx`, the delete mutation's error path; DESIGN.md §4.10).
+- **What is still owed here:** the contract declares only 204 and the default error
+  for this route; the role set is issue-service configuration (`delete-issue-roles`).
+  An ask to declare the 403 and 404 is in BACKLOG.
 
-### A deleted comment's text stays in the issue's history payload
+### Closed by TAS-298 (backend PR #207, merged and deployed 2026-10-22 as `f38839b`): a deleted comment's text stayed in the issue's history payload
 
-- **Endpoint:** `GET /api/v1/issues/{issueId}` (history), any reader of the
-  issue — `get-issue-roles` is ADMIN, MEMBER, VIEWER.
-- **Contract:** history `payload` is free-form; nothing states what a comment
-  event carries.
-- **Runtime (read at develop `9aea7e3`, not probed):** issue-service writes the
-  text into every comment event — `body` on create
-  (`CommentServiceImpl.java:381`), `oldBody`/`newBody` on edit (`:401-402`), the
-  deleted `body` on delete (`:422`) — and the gateway passes `payload` through
-  (`IssueMapper.java:135`). So a deleted comment, and every earlier version of an
-  edited one, stays readable over the API by any project member, a VIEWER
-  included. A watcher's `ISSUE_COMMENT_CREATED` notification preview keeps the
-  text too.
-- **UI:** never renders payload bodies — the feed says "commented on this issue",
-  "edited a comment", "deleted a comment". The delete confirmation (TAS-259)
-  says the comment "will be removed from this issue for everyone", which is true
-  of the thread and of the screen, not of the API. The mock writes only
-  `{commentId}` into these events, so mock and REST payloads differ unseen.
-- **Compensation:** none.
-- **Removal:** [TAS-298](https://jira.ozero.dev/browse/TAS-298) (filed
-  2026-10-19 from `api-contract-guard`'s TAS-259 verdict): comment events carry
-  `commentId` only, and the stored history is cleaned.
+- **Endpoint:** `GET /api/v1/issues/{issueId}` (history), and notifications.
+- **Was (read at develop `9aea7e3`):** issue-service wrote the comment text into
+  every comment event (`body`, `oldBody`/`newBody`), the gateway passed `payload`
+  through, and a watcher's `ISSUE_COMMENT_CREATED` notification kept a preview — so
+  a deleted comment stayed readable by any project member, a VIEWER included.
+- **Now (read at develop `594f637`, api-contract-guard, TAS-382):** comment events
+  carry `commentId`, `actorUserId`, `issueId`, `issueKey`, `projectId` (plus
+  `watcherIds` on create) and no text; `IssueMapperUtils.historyPayload` strips the
+  three text keys from any older row on every read; migration `0009` strips them
+  from stored `issue_history` and `outbox_events`; an `ISSUE_COMMENT_CREATED`
+  notification body is now «Новый комментарий к задаче {KEY}» with no preview
+  (`NotificationMapper.safeBody`, migration `0008`). Deployed with the stack at
+  `594f637` (see the TAS-300 entry above for the evidence); not probed itself.
+- **What the UI does:** nothing changes — the feed never rendered payload bodies and
+  the bell shows `title`/`body` as sent. The mock always wrote `{commentId}` only,
+  so mock and REST now agree. TAS-259's «removed from this issue for everyone» is
+  now true of the API as well. **Compensation: none, before or after.**
+- **Left over (BACKLOG):** a soft-deleted comment keeps its `body` in
+  `issue.issue_comments`, readable by GLOBAL_ADMIN in the Data console; and
+  `safeBody` forces a Russian sentence any English-texts ask must change too.
 
 ### Closed by contract (TAS-265): comment ordering is unspecified
 
@@ -5624,6 +5621,73 @@ nothing but `BACKLOG.md` for now.
 - **Removal:** if a future catalog marks columns on this table, the section can
   grow the controls the Data section already has. Nothing has to be removed
   first.
+
+
+### Closed by TAS-382 (backend PR #208, merged and deployed 2026-10-22 as `594f637`): the workflow routes were not deployed, and the mock's default workflow ran ahead of the stand
+
+- **Endpoints:** `GET`/`POST /api/v1/projects/{projectId}/workflows`,
+  `POST …/workflows/{workflowId}/statuses`, `POST …/workflows/{workflowId}/transitions`
+  — in `docs/contract/openapi.yml` since develop `594f63791565`.
+- **Was, 2026-10-21, no token:** the list and the status add answered the
+  static-resource 404 (`77aa41cc-819e-4537-a0e4-1b31af169eb9`,
+  `b590752a-5707-4922-a224-f89a040a1635`). The stand's default workflow had three
+  transitions; the mock carried #208's six from TAS-382, and before that an invented
+  IN_PROGRESS→TODO "Move to To Do" (25) with no entry here.
+- **Closed, 2026-10-22 08:04Z after deploy-stage went green:** without a token, a
+  valid UUID on the list answers **401** (`92bb4e7a-660a-4797-94a7-988c2534083c`)
+  and on the status add **401** (`0c1c2a53-a71b-49cf-b2d8-0edc700fbdd2`); a bad
+  UUID answers 400 (`90861a39-be70-448c-809a-671de71e4cb2`) — routes mapped. With a
+  token (GET only), project API: the list answers **200** with one entry, "Default
+  workflow", `shared: true`, TASK/BUG/STORY, statuses 10/20/30 and transitions
+  Start Progress 10, Complete 20, Reopen 30, Stop Progress 40, Close 50, Back to To
+  Do 60 (`1c2edc96-0ddf-4732-92b0-76b806d3caf0`); the context answers 200 with those
+  six transitions on all three types (`185be0ce-f7ab-4da7-b6b7-19600a84d971`) — so
+  migration 0001 ran (its HALT precondition did not fire) and the mock now matches
+  the stand.
+- **What stays:** the "not on this gateway yet" state remains the ordinary handling
+  of an undeployed route. The other two #208 entries below stay open — neither was
+  fixed in #208.
+
+### Adding a status or a transition answers the workflow without its hidden transitions
+
+- **Endpoints:** `POST …/workflows/{workflowId}/statuses` and `…/transitions`
+  (#208 at `9a04e99`, merged unchanged as `594f637`).
+- **Read in code, not measured:** the 201 is built from
+  `findVisibleByWorkflowId` (`WorkflowEditService.java:184`), so a hidden
+  transition just added is missing from its own answer; the yml says the
+  workflow comes back whole. The create 201 is the bare `WorkflowResponseDto`,
+  statuses and transitions in request order, hidden ones included.
+- **The UI instead:** no write answer is read into the screen. Every successful
+  write invalidates the workflow list and the project context and re-reads
+  them. **Compensation: none** — a re-read after a write is the ordinary path.
+- **Removal:** the writes answering what the list shows. Asked on TAS-381
+  (comment, 2026-10-21); not blocking.
+
+### A workflow with no status or no visible transition makes the project context 404
+
+- **Endpoints:** `POST /api/v1/projects/{projectId}/workflows`, and through it
+  `GET /api/v1/projects/{projectId}/context` (#208 at `9a04e99`, merged unchanged as
+  `594f637`).
+- **Read in code, not measured:** the create validator checks no minimum
+  (`WorkflowCreationValidator.java:35`) — a workflow with no status or no visible
+  transition is accepted. `GetWorkflowForProject` then answers NOT_FOUND
+  (`WorkflowServiceImpl.java:45-51`), which fails the whole context, and the
+  board shows "not found" to every member. A workflow without a `TODO` status is
+  accepted too, but that does **not** 404 anything: issue-service creates new
+  issues in `TODO` (`IssueServiceImpl.java:69`), so new issues of those types land
+  in Other statuses on the board — what #208's own yml says.
+- **The UI instead:** Create workflow sends only a verbatim copy of the shared
+  workflow the chosen types run on now — statuses and transitions, hidden ones
+  included — and offers no way to edit that copy before it is sent. Statuses and
+  transitions are added afterwards through the add routes, which re-validate the
+  whole workflow. `api-contract-guard` ruled the copy a UI default, not a
+  compensation: it reads the list already on screen, adds no request, and the
+  form says it is a copy. **Compensation: none.** Any other client can still
+  send the empty body.
+- **Removal:** the validator requiring a status and a visible transition, or the
+  context tolerating empty lists. (Requiring the `TODO` key as well was asked on
+  TAS-381 for the Other-statuses effect; it is not part of this entry.) Blocking remark on TAS-381
+  (comment, 2026-10-21). The copy-only create stays as the default either way.
 
 ---
 

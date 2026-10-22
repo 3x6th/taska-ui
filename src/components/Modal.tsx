@@ -8,9 +8,16 @@ interface ModalProps {
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  /**
+   * The body as a Tab stop of its own, named by the title: for a dialog whose
+   * reader may have nothing focusable in it to scroll by (Workflows for anybody
+   * but an ADMIN, DESIGN.md §4.28). Its ring is §7's exception 1, drawn inside
+   * the edge the modal clips at.
+   */
+  focusableBody?: boolean;
 }
 
-export function Modal({ title, eyebrow, onClose, children, footer }: ModalProps) {
+export function Modal({ title, eyebrow, onClose, children, footer, focusableBody = false }: ModalProps) {
   const dialogRef = useRef<HTMLElement>(null);
   /**
    * The control the dialog was opened from, so closing hands focus back to it
@@ -72,7 +79,18 @@ export function Modal({ title, eyebrow, onClose, children, footer }: ModalProps)
             <X size={16} />
           </button>
         </header>
-        <div className="modal-body">{children}</div>
+        {/* One element either way, so a role that arrives after the dialog
+            opened turns the stop on without remounting what is inside. A
+            region rather than a bare `div`: a name on an element with no role
+            is one assistive technology is allowed to drop. */}
+        <div
+          aria-label={focusableBody ? title : undefined}
+          className={focusableBody ? "modal-body is-scroller" : "modal-body"}
+          role={focusableBody ? "region" : undefined}
+          tabIndex={focusableBody ? 0 : undefined}
+        >
+          {children}
+        </div>
         {footer ? <footer className="modal-footer">{footer}</footer> : null}
       </section>
     </div>

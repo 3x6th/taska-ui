@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import type { Label } from "../domain/types";
 import { useMeta } from "../hooks/useMeta";
-import { issueTypeLabel, issueTypeVisual, labelChipStyle, priorityLabel, priorityVisual } from "../lib/format";
+import { issueTypeLabel, issueTypeVisual, labelChipStyle, priorityLabel, priorityVisual, statusColor } from "../lib/format";
 
 /**
  * §4.6. Takes any code the server sent (TAS-173): a type this build has no
@@ -58,6 +58,21 @@ export function PriorityBars({ priority, nameClassName = "priority-name" }: { pr
       </span>
       {bars}
     </>
+  );
+}
+
+/**
+ * §4.9's dot, coloured by a workflow status's category — whatever stands
+ * beside it says the status in words — and the hollow ring for a category this
+ * build cannot colour (§2.2). A Workflows status row and a diagram node draw it
+ * (§4.28).
+ */
+export function CategoryDot({ category }: { category: string }) {
+  const color = statusColor(null, category);
+  return color ? (
+    <span aria-hidden="true" className="status-dot" style={{ background: color }} />
+  ) : (
+    <span aria-hidden="true" className="status-dot is-unknown" />
   );
 }
 

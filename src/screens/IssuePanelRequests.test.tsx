@@ -288,7 +288,7 @@ describe("the issue panel's request budget against the REST implementation", () 
     // The workflow came from the context: the panel offers its transition.
     fireEvent.click(screen.getByRole("button", { name: /TAS-102/ }));
     const panel = await screen.findByRole("dialog", { name: "TAS-102 issue" });
-    expect(await within(panel).findByRole("button", { name: "Start progress" })).toBeVisible();
+    expect(await within(panel).findByRole("button", { name: "Start progress, move to In Progress" })).toBeVisible();
   });
 
   it("opens a panel with three requests in one round: the issue, the comments and the work log", async () => {
@@ -429,7 +429,7 @@ describe("the issue panel's request budget against the REST implementation", () 
   it("re-reads the issue once after a transition", async () => {
     const { queryClient, panel, before } = await openPanel();
 
-    fireEvent.click(within(panel).getByRole("button", { name: "Start progress" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "Start progress, move to In Progress" }));
 
     await waitFor(() => expect(within(panel).getByText("In Progress")).toBeVisible());
     await settled(queryClient);

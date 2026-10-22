@@ -41,7 +41,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 - **`pr-155-TAS-145.yml` is stale**: backend PR #155's head moved from
   `c4b8c2c` to `28f5fe1` (found by `npm run contract:pins`, 2026-10-10).
   Re-extract and re-read TAS-148's edit dialog against it; the PR also
-  conflicts with `develop`.
+  conflicts with `develop`. Re-extracted at `28f5fe1` in TAS-297; on
+  2026-10-21 (TAS-382) the head had moved again, to `f3be973`. The re-read
+  belongs to TAS-149's branch (PR #95), which is written against it.
 - **Backend ask, not filed yet: issue-service creates an issue of a type the
   project does not allow.** `IssueServiceImpl.createIssue` (develop `fa90b51`,
   with backend #169 merged) checks only the role and saves any `issueType`; nothing in
@@ -51,6 +53,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `getProjectKeyInternal` and answer `INVALID_ARGUMENT`. The UI never offers such
   a type; the mock refuses it as the intended rule (`api-contract-guard`,
   TAS-251, 2026-10-10). File under TAS-210 when TAS-212 lands.
+- **Backend, latent: the workflow list and create ignore `allowedIssueTypes`
+  too** (#208 at `9a04e99`, `ProjectWorkflowListService.java:52`). The list
+  iterates TASK, BUG, STORY whatever the project allows, and create binds any of
+  them. Latent because nothing writes `allowedIssueTypes` today. The Workflow
+  surface (TAS-382) shows the list as sent and does not intersect it with the
+  context. Preferred fix (`api-contract-guard`): workflow-service's existing
+  `CheckProjectMemberRole` call also returns the allowed types. Same filing
+  moment as the line above; noted on TAS-381 on 2026-10-21.
+- **No dictionary for workflow status categories.** The Workflow surface
+  (TAS-382) offers the categories found in the list's own statuses rather than a
+  literal union. Ask: `/meta` gains `statusCategories`, gateway-only, beside the
+  existing pairs (`MetaServiceImpl.java:38-44`), TAS-217's line.
 - **Comment Edit/Delete links are under the 28×28 clickable minimum** (§1, §7):
   `.comment-actions .link-button` measures about 32×19 in the Comments section.
   Found by `art-director` on TAS-251, where the Work log copy of it was fixed;
@@ -3805,10 +3819,13 @@ Frontend notes:
 
 ### Left by TAS-299 (one focus ring, issue delete asks first, 2026-10-20)
 
-- **The mock's `deleteIssue` checks no role** (`frontend-builder`), while
-  issue-service checks `delete-issue-roles` (ADMIN, MEMBER) — after deleting,
-  which is TAS-300. Older than TAS-299; the panel's refusal path is unit-tested
-  only, because the board never offers Delete to a reader the mock would refuse.
+- **The mock's `deleteIssue` checks no role** (`frontend-builder`), like every
+  issue write in the store (`MockTaskaApi.ts` ~3762-3764), while issue-service
+  refuses a non-member ("Access denied") and a VIEWER ("Not allowed role") with 403
+  before deleting anything since backend PR #206 (TAS-300). The panel's refusal
+  path is unit-tested only, because the board never offers Delete to a reader the
+  mock would refuse. If built: `findIssue` first (the server's 404 precedes the
+  role check), then the existing `requireWorklogRole(projectId, ["ADMIN","MEMBER"])`.
 - **The panel's head Delete ignores presses in flight but is not marked
   `aria-disabled`** (only the strip's two buttons are). Low.
 - **The planning hints appear when an ADMIN's role lands after the issue**, so
@@ -3855,3 +3872,114 @@ Frontend notes:
 - The admin rail strip at 390 now scrolls 67px (scrollWidth 457) after TAS-380's `white-space:nowrap`, and "Back to projects" is cut off at the right edge with no sign that the strip scrolls (`art-director` post-build note 2, 2026-10-21). The area is desktop-first and the logo also leads out; a fade or an overflow cue would say there is more.
 - Panel e2e specs find the issue dialog by its name, which since TAS-380 is set while the issue is still loading; a spec that asserts absence right after `toBeVisible()` passes against the skeleton. TAS-380 fixed the ones release-reviewer found by waiting for `aria-busy` to clear; a shared `openPanel` helper that always waits would stop the pattern coming back (`release-reviewer` TAS-380 r1, note 3).
 - `e2e/notifications.spec.ts:59` (laptop) failed once under full-suite load during TAS-380: `getByText("TAS-107", { exact: true })` hit strict mode because the board card and the loaded panel head both show the key. 24/24 with `--repeat-each=8`; scope the lookup to the panel. Not touched by TAS-380.
+
+### Left by TAS-382 (the Workflows dialog, frontend for backend #208, 2026-10-21)
+
+- **A write refused after the Workflows dialog was closed is never shown.** Close
+  and the scrim stay usable while a write is in flight (§4.28, art-director), and
+  closing cancels neither the write nor the re-read, so a refusal arriving after
+  the dialog is gone has nowhere to land. Same missing toast as §5.6 records
+  (TAS-140); nothing to build for it here.
+- **The Members dialog carries the latent half of TAS-382's clipped-header bug.**
+  `.modal` is `position: relative`, so an absolutely positioned
+  `.visually-hidden` inside the scrolling body takes `.modal` as its containing
+  block, escapes the body's clip and gives the `overflow: hidden` box scrollable
+  overflow that a focus move can scroll. TAS-382 fixed it for Workflows
+  (`.workflows-panel` is the containing block); Members' results status line is
+  the same pattern, measured at 0 px overflow today because it sits near the top
+  (`frontend-builder`, 2026-10-21). Admin dialogs not measured. The general fix
+  is `position: relative` on `.modal-body`, checked against every `Modal` user.
+- **The client blocks submit on the status-key regex** (`ProjectWorkflowsModal.tsx`
+  ~869-874). The contract states the format, but on the server it is
+  `workflow.validation.*` configuration; a config change would leave the client
+  out of step. Kept on purpose (§4.28 lists the reason); revisit if the server
+  ever serves the pattern (release-reviewer, TAS-382).
+- **The mock's `makeId` falls back to non-UUID ids without `crypto.randomUUID`**
+  (`MockTaskaApi.ts` ~640-645: plain http on a LAN). Its add routes would then
+  refuse a workflow just created with "Invalid request parameters".
+- **`e2e/unknown-values.spec.ts:62` looks up "Close" without `exact: true`** — a
+  latent clash if WEB-15's workflow ever gains a transition named Close.
+- **Possibly: Esc with a modal over the open issue panel closes the panel
+  first** — `IssuePanelFrame`'s listener registers before the modal's. Not seen
+  in a browser; Members has the same shape (release-reviewer, TAS-382).
+- **The mock's 409 binding message lists types in request order**, the server in
+  database order. Cosmetic.
+- **Post-build notes on TAS-382, all approved non-blocking** (owner: after clean
+  verdicts the non-blocking goes here, not into another round; #208 merged on
+  2026-10-22 without this pass):
+  - The code lags §4.28 in four places art-director ruled on 2026-10-21:
+    opening a form does not clear the 2 s highlight
+    (`ProjectWorkflowsModal.tsx` `openForm` ~259-264 → `setHighlight(null)`);
+    the read-only body-scroller's ring is clipped at the modal's two bottom
+    corners (`.modal-body.is-scroller { border-radius: 0 0 14px 14px }`,
+    `styles.css` ~8152); fewer than two statuses opens Add transition with empty
+    selects instead of disabling the trigger with "A transition joins two
+    statuses, so add a status first." (~600-607); fields stay editable in flight
+    instead of `readOnly` (typing during a write is dropped on success).
+  - The key-format reason should say A–Z — the server's pattern is ASCII and
+    §4.28 expects Cyrillic names (`ProjectWorkflowsModal.tsx` ~872); plus a unit
+    test that the pinned yml's `statusKey` description contains
+    `STATUS_KEY_PATTERN.source` (`src/lib/workflows.ts:37`), so a re-pin that
+    changes the format fails loudly (api-contract-guard N2).
+  - The mock's context returns statuses and transitions in storage order; the
+    server sorts both by `sort_order`. Visible only for WEB's EPIC panel order
+    (Stop Progress before Send to review). Sort in `getProjectContext` as
+    `workflowView("all")` does (`MockTaskaApi.ts` ~3270-3276, guard N1).
+  - A write refused with 403 (admin demoted while the dialog is open) or a
+    create's 409 binding should also invalidate the project context
+    (`ProjectWorkflowsModal.tsx` ~220-223, guard N3).
+  - The mock create comment says its context reproduces neither effect; the
+    Other-statuses one it does reproduce, since `createIssue` starts in `TODO`
+    (`MockTaskaApi.ts` ~3344, release-reviewer re-verdict).
+  - No request-budget test pins the dialog's counts (open 1; write 1+2;
+    404/409 1+1), in the `IssuePanelRequests` style.
+  - The `"TODO"` literal (`ProjectWorkflowsModal.tsx` ~460, ~867;
+    `lib/workflows.ts` ~213) is issue-service's `INIT_STATUS`; it goes when
+    TAS-381's "require TODO" validator rule lands.
+  - The mock lets WEB's EPIC workflow be edited by id through the API
+    (`editableWorkflow` searches every override); the server could never bind
+    EPIC. Unreachable from the UI.
+  - With one workflow, the read-only body is a Tab stop though nothing scrolls —
+    accepted (a stop that comes and goes would be worse); the light-theme card
+    tint after create is ~490 px of lavender for 2 s — loud, as ruled.
+- **Backend asks for later, not filed** (api-contract-guard, TAS-382): `/meta`
+  gains `statusCategories` beside the existing pairs (after #208, which brings
+  `WorkflowStatusCategoryDto`; TAS-217's line); optionally, the status-key
+  format and name length served machine-readably (`/meta workflowLimits`), so
+  the client stops mirroring server configuration.
+- **Diagram notes from art-director's post-build review** (TAS-382, approved
+  non-blocking): describe the nodes through `hidden` spans rather than
+  `.visually-hidden` (`WorkflowDiagram.tsx` ~207) — `aria-describedby` still reads
+  them and browse mode stops reading every description twice; a complete graph at
+  1440 (24 verticals) is honest but busy — fall back past 8 lanes a side if real
+  workflows ever get there; every node's `title` repeats its visible name; a hover
+  highlight can stay on a node a form's layout shift moved out from under a still
+  mouse until the mouse moves.
+- **Diagram notes from release-reviewer** (TAS-382, approved non-blocking, on
+  `3582d9d`): the shared-card e2e check counts `button:not(.workflow-diagram-node)`
+  where `getByRole("button")` toHaveCount(3) would keep the old strength
+  (`e2e/workflows.spec.ts` ~126); a ResizeObserver flip is possible in theory when
+  a card sits within a scrollbar's width of a fit threshold and the body's height
+  is at its limit — art-director ruled `scrollbar-gutter: stable` out because the
+  Transitions list keeps the scrollbar up whenever a fallback is reachable; revisit
+  only if "ResizeObserver loop" ever shows in the console; no test asserts the
+  observer disconnects on unmount; a status named "Close" gives the dialog a second
+  Close button (told apart only by `aria-pressed`); a hidden and a visible edge
+  sharing a port share one solid arrowhead; jsdom renders every in-dialog diagram
+  as the fallback, so only e2e exercises a drawn one; `hovered` can go stale across
+  a drawn → fallback → drawn flip.
+- **Merge-day notes on #206/#207/#208** (api-contract-guard, 2026-10-22): the
+  mock's delete writes history `UPDATED {field:"deleted"}` where the server writes
+  `DELETED` (unseen — a deleted issue cannot be read); a 403 on delete to someone
+  who was shown Delete means a stale role — invalidating the project context with
+  the list would hide Delete (same shape as guard N3 on the workflow writes);
+  `NotificationMapper.safeBody` now forces the Russian "Новый комментарий к задаче
+  {KEY}" on every comment notification it serves, so any English-texts ask
+  (TAS-301's line) must change `safeBody` too; a soft-deleted comment keeps its
+  `body` in `issue.issue_comments`, readable by GLOBAL_ADMIN in the Data console
+  (`allow: []` serves every table, no sensitive-column entry) — whether that is
+  inside TAS-298's promise is the owner's call, the ask is ready (clear `body` on
+  soft delete, or `issue_comments.body: HIDE`); the contract declares only 204 and
+  the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
+  ("Access denied" / "Not allowed role") and 404, contract text only.
+
