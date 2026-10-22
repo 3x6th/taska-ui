@@ -3565,7 +3565,10 @@ Backend, no ask:
   PR #198): no new orphan can be made through confirm any more, but rows already
   orphaned on the stand keep logging until their owner uploads a new photo or
   removes the old one. Not probed.
-- **The context reads a workflow `NOT_FOUND` as a missing project** (medium
+- ~~**The context reads a workflow `NOT_FOUND` as a missing project**~~ —
+  **graduated to [TAS-383](https://jira.ozero.dev/browse/TAS-383)** on 2026-10-22
+  (with the validator minimums and the sortOrder race from #208). Kept below as
+  the reading that led to it. (medium
   confidence; #186 keeps it but did not cause it). workflow-service can answer
   `NOT_FOUND` for an allowed type ("Default Workflow not found", "No active
   statuses …", "No visible transitions …", `WorkflowServiceImpl.java:34-47`).
