@@ -2390,10 +2390,12 @@ function IssuePanel({
       // before the strip unmounts, so it never falls to <body> in between.
       deleteButton.current?.focus();
       setAsking(false);
-      // The board shows what the server actually did. A refusal is not proof
-      // that nothing was deleted (TAS-299, art-director's backend note;
-      // TAS-300), so the search — the other half of the counter — is read
-      // again with the list, as on success.
+      // The board shows what the server actually did. A refusal says nothing
+      // was deleted — issue-service checks the role before the soft delete, in
+      // one transaction with the history and outbox writes (backend PR #206,
+      // TAS-300) — but a timeout, a 5xx or a dropped connection leaves the
+      // outcome unknown, so on any failure the list and the search — the two
+      // halves of the counter — are read again, as on success.
       void queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
       void queryClient.invalidateQueries({ queryKey: ["issue-search", projectId] });
     },

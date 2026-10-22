@@ -4881,8 +4881,8 @@ describe("RestTaskaApi error envelope", () => {
 
 /**
  * Backend PR #208 (TAS-381): the four workflow routes as `rest` sends and reads
- * them — open and undeployed on 2026-10-21, pinned in
- * docs/contract/pending/pr-208-TAS-381.yml at `9a04e99`.
+ * them — in docs/contract/openapi.yml since develop `594f637` (2026-10-22),
+ * the PR's head `9a04e99` merged unchanged.
  */
 describe("RestTaskaApi project workflows", () => {
   const PROJECT = "b4e2d3c5-0000-4000-8000-000000000382";

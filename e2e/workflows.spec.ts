@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 /**
  * The Workflows dialog (TAS-382, DESIGN.md §4.28) against MockTaskaApi, which
- * plays backend PR #208 ahead of the stand (docs/ai/API-DIVERGENCE.md). Anna is
+ * plays backend PR #208's routes and migration 0001 (develop `594f637`). Anna is
  * the ADMIN of Taska Platform, Mark one of its MEMBERs and Tom its VIEWER.
  *
  * What the ADMIN path proves is the acceptance of the story end to end: a

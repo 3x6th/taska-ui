@@ -3819,10 +3819,13 @@ Frontend notes:
 
 ### Left by TAS-299 (one focus ring, issue delete asks first, 2026-10-20)
 
-- **The mock's `deleteIssue` checks no role** (`frontend-builder`), while
-  issue-service checks `delete-issue-roles` (ADMIN, MEMBER) — after deleting,
-  which is TAS-300. Older than TAS-299; the panel's refusal path is unit-tested
-  only, because the board never offers Delete to a reader the mock would refuse.
+- **The mock's `deleteIssue` checks no role** (`frontend-builder`), like every
+  issue write in the store (`MockTaskaApi.ts` ~3762-3764), while issue-service
+  refuses a non-member ("Access denied") and a VIEWER ("Not allowed role") with 403
+  before deleting anything since backend PR #206 (TAS-300). The panel's refusal
+  path is unit-tested only, because the board never offers Delete to a reader the
+  mock would refuse. If built: `findIssue` first (the server's 404 precedes the
+  role check), then the existing `requireWorklogRole(projectId, ["ADMIN","MEMBER"])`.
 - **The panel's head Delete ignores presses in flight but is not marked
   `aria-disabled`** (only the strip's two buttons are). Low.
 - **The planning hints appear when an ADMIN's role lands after the issue**, so
@@ -3887,7 +3890,7 @@ Frontend notes:
   (`frontend-builder`, 2026-10-21). Admin dialogs not measured. The general fix
   is `position: relative` on `.modal-body`, checked against every `Modal` user.
 - **The client blocks submit on the status-key regex** (`ProjectWorkflowsModal.tsx`
-  ~869-874). The pending contract states the format, but on the server it is
+  ~869-874). The contract states the format, but on the server it is
   `workflow.validation.*` configuration; a config change would leave the client
   out of step. Kept on purpose (§4.28 lists the reason); revisit if the server
   ever serves the pattern (release-reviewer, TAS-382).
@@ -3901,9 +3904,9 @@ Frontend notes:
   in a browser; Members has the same shape (release-reviewer, TAS-382).
 - **The mock's 409 binding message lists types in request order**, the server in
   database order. Cosmetic.
-- **Post-build notes on TAS-382, all approved non-blocking, left for a pass
-  before #208 merges** (owner: after clean verdicts the non-blocking goes here,
-  not into another round):
+- **Post-build notes on TAS-382, all approved non-blocking** (owner: after clean
+  verdicts the non-blocking goes here, not into another round; #208 merged on
+  2026-10-22 without this pass):
   - The code lags §4.28 in four places art-director ruled on 2026-10-21:
     opening a form does not clear the 2 s highlight
     (`ProjectWorkflowsModal.tsx` `openForm` ~259-264 → `setHighlight(null)`);
@@ -3965,4 +3968,18 @@ Frontend notes:
   sharing a port share one solid arrowhead; jsdom renders every in-dialog diagram
   as the fallback, so only e2e exercises a drawn one; `hovered` can go stale across
   a drawn → fallback → drawn flip.
+- **Merge-day notes on #206/#207/#208** (api-contract-guard, 2026-10-22): the
+  mock's delete writes history `UPDATED {field:"deleted"}` where the server writes
+  `DELETED` (unseen — a deleted issue cannot be read); a 403 on delete to someone
+  who was shown Delete means a stale role — invalidating the project context with
+  the list would hide Delete (same shape as guard N3 on the workflow writes);
+  `NotificationMapper.safeBody` now forces the Russian "Новый комментарий к задаче
+  {KEY}" on every comment notification it serves, so any English-texts ask
+  (TAS-301's line) must change `safeBody` too; a soft-deleted comment keeps its
+  `body` in `issue.issue_comments`, readable by GLOBAL_ADMIN in the Data console
+  (`allow: []` serves every table, no sensitive-column entry) — whether that is
+  inside TAS-298's promise is the owner's call, the ask is ready (clear `body` on
+  soft delete, or `issue_comments.body: HIDE`); the contract declares only 204 and
+  the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
+  ("Access denied" / "Not allowed role") and 404, contract text only.
 

@@ -110,7 +110,6 @@ was written against it.
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
 | `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
-| `pr-208-TAS-381.yml` | [#208](https://github.com/VladislavYurin/taska-backend/pull/208) | TAS-381 | TAS-382 |
 
 `pr-118-TAS-125.yml` was here for TAS-125 / TAS-191 and was deleted on 2026-09-09
 when backend PR #118 merged and the snapshot was refreshed to develop
@@ -198,3 +197,13 @@ a frontend pass began. The same check as above holds: 15 blocks differ from
 route's text), 7 at `9dc0a4a` (#201: the `/meta` pair schemas, `selectable`,
 `linkViewTypes`), 1 at `cbdd726` (#202: the board's `includeDone` text) — and
 nothing else differs.
+
+`pr-208-TAS-381.yml` (TAS-381 / TAS-382) was deleted on 2026-10-22, in TAS-382,
+when backend PR #208 merged as merge commit `594f637` and the snapshot was
+refreshed to develop `594f63791565`. The PR's head never moved from the pinned
+`9a04e99`, and develop's `openapi.yml` at the merge is byte-identical to that
+head's: the old snapshot (`e8a8d316b326`) and the new one differ by exactly the
+three workflow paths and seven schemas the extract pinned, plus the comment banner
+the extract deliberately left out. #206 (TAS-300) and #207 (TAS-298), merged
+minutes earlier, change no contract text.
+

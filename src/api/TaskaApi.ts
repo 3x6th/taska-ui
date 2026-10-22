@@ -1589,11 +1589,11 @@ export interface TaskaApi {
   deleteIssueWorklog(projectId: string, issueId: string, worklogId: string): Promise<void>;
 
   /**
-   * The four workflow routes of backend PR #208 (TAS-381, pending extract
-   * `docs/contract/pending/pr-208-TAS-381.yml` at `9a04e99`) — **open, not
-   * merged and not deployed** on 2026-10-21: a gateway without them answers the
-   * static-resource 404 that `isUndeployedRoute` reads. Read from the Java at
-   * that head (api-contract-guard, TAS-382):
+   * The four workflow routes of backend PR #208 (TAS-381), merged into develop
+   * as `594f637` on 2026-10-22 and in `docs/contract/openapi.yml` since. A
+   * gateway that has not deployed them answers the static-resource 404 that
+   * `isUndeployedRoute` reads. Read from the Java at the PR's head `9a04e99`,
+   * which the merge took unchanged (api-contract-guard, TAS-382):
    *
    * - The list is any member's: a missing project is 404 "Project not found", a
    *   non-member — a `GLOBAL_ADMIN` included — 403. It walks TASK, BUG and STORY

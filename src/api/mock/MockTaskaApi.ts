@@ -2050,8 +2050,8 @@ export class MockTaskaStore {
           sortOrder: 20,
           hidden: false,
         },
-        // Backend PR #208's migration 0001 (TAS-381) — the stand has only the
-        // two above and "Reopen" until it deploys (docs/ai/API-DIVERGENCE.md).
+        // Backend PR #208's migration 0001 (TAS-381, develop `594f637`) adds
+        // this one, "Close" and "Back to To Do" to the two above and "Reopen".
         // This one was an invented "Move to To Do" at 25 before TAS-382.
         {
           id: "88888888-8888-8888-8888-888888888888",

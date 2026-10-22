@@ -5791,8 +5791,8 @@ describe("the issue panel as a dialog", () => {
 
 /**
  * TAS-382 on the board: the Workflows trigger in the bar for every role
- * (§4.28), and the panel's moves named by where they go (§4.1) — the day
- * backend PR #208's migration deploys, a transition called "Close" sits in the
+ * (§4.28), and the panel's moves named by where they go (§4.1) — since
+ * backend PR #208's migration 0001, a transition called "Close" sits in the
  * same panel as the panel's own Close.
  */
 describe("the Workflows trigger and the panel's moves", () => {
