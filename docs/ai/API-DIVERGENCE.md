@@ -5684,8 +5684,10 @@ nothing but `BACKLOG.md` for now.
   compensation: it reads the list already on screen, adds no request, and the
   form says it is a copy. **Compensation: none.** Any other client can still
   send the empty body.
-- **Removal:** the validator requiring a status and a visible transition, or the
-  context tolerating empty lists. (Requiring the `TODO` key as well was asked on
+- **Removal:** [TAS-383](https://jira.ozero.dev/browse/TAS-383) (filed 2026-10-22,
+  High): the validator requiring a status and a visible transition, the context
+  tolerating empty lists, and one type's failed workflow no longer failing the
+  whole context. (Requiring the `TODO` key as well was asked on
   TAS-381 for the Other-statuses effect; it is not part of this entry.) Blocking remark on TAS-381
   (comment, 2026-10-21). The copy-only create stays as the default either way.
 
