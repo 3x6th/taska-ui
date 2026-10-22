@@ -1560,7 +1560,7 @@ Everything below is the entry as it stood, in the past tense.
 - **What the UI does:** after a failed delete the board still re-reads the list and
   the search — now as ordinary policy, not a compensation: a refusal proves nothing
   was deleted, but a timeout, a 5xx or a dropped connection leaves the outcome
-  unknown (`BoardScreen.tsx`, the delete mutation's error path; DESIGN.md §4.22).
+  unknown (`BoardScreen.tsx`, the delete mutation's error path; DESIGN.md §4.10).
 - **What is still owed here:** the contract declares only 204 and the default error
   for this route; the role set is issue-service configuration (`delete-issue-roles`).
   An ask to declare the 403 and 404 is in BACKLOG.
