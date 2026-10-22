@@ -44,8 +44,10 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   conflicts with `develop`. Re-extracted at `28f5fe1` in TAS-297; on
   2026-10-21 (TAS-382) the head had moved again, to `f3be973`. The re-read
   belongs to TAS-149's branch (PR #95), which is written against it.
-- **Backend ask, not filed yet: issue-service creates an issue of a type the
-  project does not allow.** `IssueServiceImpl.createIssue` (develop `fa90b51`,
+- ~~**Backend ask, not filed yet: issue-service creates an issue of a type the
+  project does not allow.**~~ — **graduated to
+  [TAS-386](https://jira.ozero.dev/browse/TAS-386)** on 2026-10-22 (the issue type
+  becomes an open key checked against the project's type registry, TAS-385). `IssueServiceImpl.createIssue` (develop `fa90b51`,
   with backend #169 merged) checks only the role and saves any `issueType`; nothing in
   issue-service reads `allowedIssueTypes`, which only project-service uses, for
   the context. The result is an issue with no workflow. Service change: read the
@@ -53,8 +55,10 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `getProjectKeyInternal` and answer `INVALID_ARGUMENT`. The UI never offers such
   a type; the mock refuses it as the intended rule (`api-contract-guard`,
   TAS-251, 2026-10-10). File under TAS-210 when TAS-212 lands.
-- **Backend, latent: the workflow list and create ignore `allowedIssueTypes`
-  too** (#208 at `9a04e99`, `ProjectWorkflowListService.java:52`). The list
+- ~~**Backend, latent: the workflow list and create ignore `allowedIssueTypes`
+  too**~~ — **graduated to [TAS-386](https://jira.ozero.dev/browse/TAS-386)** on
+  2026-10-22 (ListProjectWorkflows and CreateWorkflow take the project's types from
+  the registry). (#208 at `9a04e99`, `ProjectWorkflowListService.java:52`). The list
   iterates TASK, BUG, STORY whatever the project allows, and create binds any of
   them. Latent because nothing writes `allowedIssueTypes` today. The Workflow
   surface (TAS-382) shows the list as sent and does not intersect it with the
