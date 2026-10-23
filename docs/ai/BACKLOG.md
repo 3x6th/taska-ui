@@ -12,11 +12,8 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Conscious decisions to revisit
 
-- **Existing TAS-145 pending pin is stale (observed during TAS-387, 2026-10-23):**
-  `pr-155-TAS-145.yml` still records `28f5fe1af002`, while open backend PR #155
-  now points to `f3be9738b848`. Re-extract that separate project's pending contract
-  before merging work that depends on it. TAS-387's own PR #215 pin is current;
-  no project-editing implementation was changed here.
+- ~~**Existing TAS-145 pending pin is stale (observed during TAS-387, 2026-10-23)**~~ —
+  **closed by TAS-149** the same day: #155 merged (`ed064ade`) and the extract was deleted.
 
 - ~~**`VITE_TASKA_ASSUME_PROJECT_ADMIN=true` is a deploy variable.** Every
   signed-in user gets the ADMIN surface of the UI. Accepted by the owner while
@@ -2211,8 +2208,9 @@ is what recurs.
   in `API-DIVERGENCE.md` removable.
 - [TAS-146](https://jira.ozero.dev/browse/TAS-146) — archive a project
   (`DELETE /projects/{id}` as a soft delete) and refuse writes to an archived
-  one. `archived_at` already exists in the table and in `ProjectResponse`;
-  nothing sets or filters on it. Restore is deliberately out of scope.
+  one. **Merged 2026-10-23** as #159 (`fcbbaac8`): `DELETE` sets `archived_at`, the
+  project leaves `GET /projects` and `/project-stats`, reads stay open, writes answer 400
+  `PROJECT_ARCHIVED` (API-DIVERGENCE, the #159 entry). Restore is deliberately out of scope.
 - [TAS-147](https://jira.ozero.dev/browse/TAS-147) — **Done.** `globalRole` is
   on `GET /users/me` in the 2026-08-05 contract, as
   `enum [GLOBAL_ADMIN, USER, UNSPECIFIED]`, which unblocked TAS-151. This is
@@ -4004,6 +4002,21 @@ Frontend notes:
   soft delete, or `issue_comments.body: HIDE`); the contract declares only 204 and
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
+
+### Left by TAS-149 (archive and the read-only archived board, frontend for backend #155/#159, 2026-10-23)
+
+- **The last-admin refusal carries no reason** (`api-contract-guard`): 400
+  `FAILED_PRECONDITION` "Can't modify last admin: …" without `details`, so the Members
+  dialog tells it apart only as "FAILED_PRECONDITION and not `PROJECT_ARCHIVED`" — a set that
+  can grow. Backend ask: `details.reason: "LAST_ADMIN"` (ProjectMemberValidatorImpl:107,
+  precedent `ProjectArchived.error()`), and `RestErrorResponse.details` documenting its
+  `reason` values. Not filed.
+- **Several write surfaces show a refusal without its request id** — comments, labels,
+  links, attachment toasts, the create-issue form (`api-contract-guard`); predates TAS-149,
+  but archived and rollout 503 refusals now land there too.
+- **Nothing has been archived on the stand.** The DELETE answer and the refusal shape are
+  read from the Java; the first smoke (archive a throwaway project, one write → 400 with
+  `details.reason` and a request id) needs the owner's word.
 
 ### Left by TAS-389 (the user's login removed, frontend for backend #219, 2026-10-23)
 
