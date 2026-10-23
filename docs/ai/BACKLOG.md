@@ -4009,6 +4009,15 @@ Frontend notes:
 The code came from the backend developer's Codex run (PR #101); this repository's three
 roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
 
+- **Connect Telegram costs two requests where #218 made it one** (`api-contract-guard`,
+  TAS-389 pass, 2026-10-23). Backend #218 (develop `3a2644f7`) returns an optional
+  `preferences` snapshot on `POST /users/me/telegram/link`; `TelegramLink`
+  (`src/domain/types.ts`) has no such field and `RestTaskaApi` drops it, so the section
+  refetches preferences after every link. Map it through `toNotificationPreferences`,
+  `setQueryData` when present, invalidate only when absent (the contract calls it optional
+  during rolling upgrades, so that is not a compensation); the mock returns it too.
+  `telegramStatus` `UNKNOWN` and the open `telegramError` set from the same PR are already
+  handled (`toTelegramStatus` → `null`, generic "unavailable" text).
 - **"Open Telegram bot" could be the primary action in PENDING** — it is the one step the
   user must take (art-director). §5.9 keeps it secondary for now.
 - **`.settings-telegram-disconnect` duplicates `.settings-photo-remove`** with different

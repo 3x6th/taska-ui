@@ -1770,35 +1770,37 @@ Everything below is the entry as it stood, in the past tense.
   [TAS-387](https://jira.ozero.dev/browse/TAS-387) with the review's other backend asks.
 
 
-### TAS-389: written ahead of TAS-388 — `login` leaves `GET /users/me`, `actorLogin` leaves the audit log
+### Closed by TAS-388 (backend PR #219, merged `ce189843` and deployed 2026-10-23): `login` left `GET /users/me`, `actorLogin` left the audit log
 
 - **Endpoints:** `GET /api/v1/users/me` (`ValidateAccessTokenResponseDto`);
   `GET /api/v1/readonly/audit-entries` (`AuditEntryDto`); the raw `auth.users` and
   `admin_audit_log` through `GET /api/v1/readonly/catalog` and
   `GET /api/v1/readonly/{service}/{table}`.
-- **Contract today** (snapshot develop `3a2644f7`): `ValidateAccessTokenResponseDto.login:
-  string`; `AuditEntryDto.actorLogin: string`. `auth.users.login varchar(64) NOT NULL
-  UNIQUE` (`0000-init.sql`); `admin_audit_log.actor_login varchar(64) NOT NULL`
-  (`0001-admin-audit-log.sql`).
-- **Contract after TAS-388**, pinned as `docs/contract/pending/pr-219-TAS-388.yml` (backend
-  PR #219 @ `e9013d2a8a69`): `/users/me` without `login`; `AuditEntryDto` without
-  `actorLogin`, with `actorDisplayName` and `actorEmail`, both nullable; `actorUserId`
-  unchanged. `actor_login` is renamed to `actor_display_name` (so historical rows show the
-  old login there) and `actor_email` is added, empty for historical rows; `auth.users.login`
-  is dropped. The gateway sets each audit field only when the gRPC entry has it, so an
-  absent value may arrive omitted rather than `null`; the adapter reads both as `null`.
+- **What changed:** `/users/me` has no `login`; `AuditEntryDto` has no `actorLogin` and
+  carries `actorDisplayName` and `actorEmail`, both nullable; `actorUserId` unchanged.
+  `auth.users.login` is dropped (`auth-service` `0007-remove-user-login`).
+  `admin_audit_log.actor_login` is **renamed** to `actor_display_name` (type `text`, the
+  `NOT NULL` of `0001-admin-audit-log` kept), so historical rows show the old login there,
+  and `actor_email varchar(320)` is appended after `created_at`, `NULL` for historical rows
+  (`admin-service` `0003-audit-actor-identity`).
+- **What the Java says that the yml does not** (read at `ce189843`): admin-service refuses
+  an admin write whose actor name or email is blank (`requireNonBlank` on both, 400
+  `INVALID_ARGUMENT`), and `users.display_name` is `NOT NULL` with an invite's blank name
+  defaulting to the address's local part, so every row written after the deploy carries
+  both. The gateway sets each audit field only when the gRPC entry has it and writes `null`
+  otherwise; the adapter treats absent and `null` alike. The email-only, id-only and empty
+  actor states DESIGN.md §5.8 draws are legal under the contract and unreachable today; they
+  are covered by unit fixtures, not by the mock's seed.
 - **Compensation:** none. Nothing reads `login` or `actorLogin`, and there is no fallback
   to either; the audit actor is never resolved client-side from `actorUserId`.
-- **Against today's gateway:** every audit actor cell falls to the actor id's short key
-  (DESIGN.md §5.8 Audit), the detail still names the full UUID. Nothing else visibly changes.
-- **Today's `main` against a TAS-388 gateway:** a bare "@" under the name in the profile
-  menu and on My profile, a `login` column of "—" in Users, and "—" in every audit actor cell.
-- **Merge gate:** #219 merged and deployed; snapshot refreshed to that commit and both
-  schemas diffed against the extract; the mock's raw column names checked against the
-  merged changesets; stand probed after deploy (`GET /users/me` has no `login`; an audit row
-  carries `actorDisplayName`), request ids recorded here.
-- **Removal:** TAS-388 merged and deployed. Rename the heading to "Closed by TAS-388 (backend
-  PR #219, …)" and delete the extract.
+- **Measured on the stand** after deploy run `39964284871` (green 13:57Z), from the owner's
+  signed-in tab: `GET /users/me` 200 without `login` (`7447bdf2-eefa-41d8-837e-c9e7630fa5a5`);
+  `auth.users` columns without `login` (`680a50a0-2e1a-473f-9432-60d7e0e465a6`);
+  `GET /readonly/audit-entries` 200, 23 historical rows, each `actorDisplayName: "admin"`,
+  `actorEmail: null`, no `actorLogin` key (`902d999c-6b68-440f-bdab-cfd6de9c9a66`).
+- **Between the deploy and TAS-389's merge** the stand ran `main` against the new gateway: a
+  bare "@" under the name in the profile menu and on My profile, a `login` column of "—" in
+  Users, and "—" in every audit actor cell. Nothing failed.
 
 ### `PATCH /projects/{id}` is not in the contract, so editing a project runs on the mock
 
