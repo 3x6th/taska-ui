@@ -1,6 +1,6 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: caf139ecc461f1657333cde1c74f9f2b207e9fe6 (develop, 2026-10-23)
+# Backend commit: 562d84de8cfc7333525736517de8c1ecdf9e5568 (develop, 2026-10-23)
 # Fetched: 2026-10-23
 #
 # The backend repository is the single source of truth for this contract.
@@ -751,6 +751,42 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
 
   /api/v1/projects/{projectId}:
+    delete:
+      operationId: archiveProject
+      summary: Архивировать проект — только ADMIN проекта, идемпотентно
+      description: >
+        Проект и его данные сохраняются. Архивный проект скрыт из списка проектов, но доступен
+        участникам по прямой ссылке для чтения. Запись отклоняется с FAILED_PRECONDITION и
+        details.reason=PROJECT_ARCHIVED. Повторный DELETE возвращает тот же archivedAt без нового события.
+      tags: [project-archive]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Проект в архиве
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+
     get:
       summary: Возвращает проект по идентификатору
       operationId: getProject
@@ -774,6 +810,83 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+    patch:
+      summary: Обновляет проект (имя, описание, цвет)
+      description: >
+        Частичное обновление проекта (PATCH-семантика): поле, отсутствующее в теле запроса,
+        не изменяется. Доступно только участнику проекта с ролью ADMIN.
+      operationId: updateProject
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequestDto'
+      responses:
+        '200':
+          description: Проект успешно обновлён
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponseDto'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/context:
+    get:
+      summary: Контекст проекта — проект, участники, метки, все workflows
+      operationId: getProjectContext
+      tags:
+        - project
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Контекст проекта успешно получен
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectContextResponseDto'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -886,38 +999,6 @@ paths:
       responses:
         '204':
           description: Success
-        default:
-          $ref: '#/components/responses/ErrorResponse'
-
-  /api/v1/projects/{projectId}/context:
-    get:
-      summary: Контекст проекта — проект, участники, метки, все workflows
-      operationId: getProjectContext
-      tags:
-        - project
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: projectId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Контекст проекта успешно получен
-          headers:
-            X-Request-Id:
-              $ref: '#/components/headers/X-RequestId-Header'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProjectContextResponseDto'
-        '403':
-          $ref: '#/components/responses/ErrorResponse'
-        '404':
-          $ref: '#/components/responses/ErrorResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -2118,7 +2199,8 @@ paths:
             format: uuid
         - name: issueType
           in: query
-          required: true
+          required: false
+          description: Фильтр по типу задачи. Без параметра возвращаются задачи всех типов.
           schema:
             $ref: '#/components/schemas/IssueTypeDto'
         - name: assigneeId
@@ -2140,6 +2222,19 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: priority
+          in: query
+          required: false
+          description: Фильтр по приоритету задачи.
+          schema:
+            $ref: '#/components/schemas/IssuePriorityDto'
+        - name: query
+          in: query
+          required: false
+          description: Полнотекстовый фильтр по ключу, краткому описанию и описанию задачи (регистронезависимый).
+          schema:
+            type: string
+            minLength: 1
       responses:
         '200':
           description: Доска успешно сформирована
@@ -4709,6 +4804,7 @@ components:
         - USER_INVITED
         - USER_ACTIVATED
         - PROJECT_CREATED
+        - PROJECT_ARCHIVED
         - MEMBER_ADDED
         - MEMBER_UPDATED
         - MEMBER_REMOVED
@@ -4890,35 +4986,99 @@ components:
       properties:
         projectKey:
           type: string
+          description: Ключ проекта (используется как префикс issueKey задач, например "TASKA")
           minLength: 1
           pattern: '^[\x21-\x7E]+$'
         name:
           type: string
+          description: Название проекта
           minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          description: >
+            Описание проекта. Пустая строка или строка из пробелов приводится к null.
+          maxLength: 2000
+        color:
+          type: string
+          description: Цвет проекта в HEX формате (Пример:#0052CC)
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          example: "#0052CC"
+
+    UpdateProjectRequestDto:
+      type: object
+      description: >
+        Все поля опциональны (PATCH-семантика). Отсутствие поля в теле запроса означает «не менять»
+        текущее значение. Явная передача поля как null означает явный сброс значения в null
+        для description/color — но не для name (см. описание поля name). project_key через этот
+        эндпоинт изменить нельзя.
+      properties:
+        name:
+          type: string
+          description: >
+            Новое имя проекта. Отсутствие поля в теле запроса — «не менять» текущее значение.
+            В отличие от description/color, null для этого поля не поддерживается и приводит
+            к ошибке 400 — имя проекта не может быть пустым.
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          nullable: true
+          description: >
+            Новое описание проекта. Отсутствие поля в теле запроса — «не менять» текущее значение.
+            Явная передача null — явный сброс описания в null. Пустая строка или строка из пробелов
+            приводится к null — то есть трактуется как тот же явный сброс, а не как значение "".
+          maxLength: 2000
+        color:
+          type: string
+          nullable: true
+          description: >
+            Новый цвет проекта в HEX формате. Отсутствие поля в теле запроса — «не менять» текущее
+            значение. Явная передача null — явный сброс цвета в null (чтобы клиент снова вычислял
+            цвет сам, см. TAS-171).
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          example: "#0052CC"
 
     ProjectResponseDto:
       type: object
       properties:
         id:
           type: string
+          description: Уникальный идентификатор проекта
         projectKey:
           type: string
+          description: Ключ проекта (используется как префикс issueKey задач); не меняется никаким запросом
         name:
           type: string
+          description: Название проекта
         createdBy:
           type: string
+          description: Идентификатор пользователя, создавшего проект
         createdAt:
           type: string
           format: date-time
+          description: Дата и время создания проекта
         updatedAt:
           type: string
           format: date-time
+          description: Дата и время последнего обновления проекта
         archivedAt:
           type: string
           format: date-time
           nullable: true
+          description: Дата и время архивации проекта (null, если проект не архивирован)
         currentUserRole:
           type: string
+        description:
+          type: string
+          nullable: true
+          description: Описание проекта (null, если не задано)
+        color:
+          type: string
+          nullable: true
+          description: >
+            Цвет проекта в HEX формате. null означает, что цвет не выбран пользователем —
+            в этом случае клиент вычисляет цвет самостоятельно (например, по id проекта).
 
     ListProjectStatsDto:
       type: object
@@ -6069,17 +6229,20 @@ components:
 
     BoardResponseDto:
       type: object
-      required: [ projectId, issueType, columns ]
+      required: [ projectId, columns, unplacedIssues ]
       properties:
         projectId:
           type: string
           format: uuid
-        issueType:
-          $ref: '#/components/schemas/IssueTypeDto'
         columns:
           type: array
           items:
             $ref: '#/components/schemas/BoardColumnDto'
+        unplacedIssues:
+          type: array
+          description: Задачи, чей statusKey не входит ни в один workflow, использованный для построения колонок.
+          items:
+            $ref: '#/components/schemas/BoardIssueDto'
 
     BoardColumnDto:
       type: object
@@ -6103,7 +6266,7 @@ components:
 
     BoardIssueDto:
       type: object
-      required: [ id, issueKey, summary ]
+      required: [ id, issueKey, summary, issueType, priority, statusKey, version, createdAt, updatedAt ]
       properties:
         id:
           type: string
@@ -6112,16 +6275,49 @@ components:
           type: string
         summary:
           type: string
-        storyPoints:
+        issueType:
+          $ref: '#/components/schemas/IssueTypeDto'
+        priority:
+          $ref: '#/components/schemas/IssuePriorityDto'
+        statusKey:
+          type: string
+          description: Открытый ключ статуса из workflow проекта; набор не ограничен enum.
+        description:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
           type: integer
           format: int32
+        storyPoints:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+        dueDate:
+          type: string
+          format: date
+          nullable: true
+        commentCount:
+          type: integer
+          format: int32
+        attachmentCount:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Число подтверждённых вложений без удалённых файлов.
         assignee:
           $ref: '#/components/schemas/BoardUserDto'
         labels:
           type: array
-          description: Идентификаторы меток в порядке id asc.
+          description: Метки задачи в порядке label_ids карточки; id метки, отсутствующей в проекте, пропускается.
           items:
-            type: string
+            $ref: '#/components/schemas/IssueLabelResponseDto'
 
     BoardUserDto:
       type: object
@@ -6132,3 +6328,7 @@ components:
           format: uuid
         displayName:
           type: string
+          nullable: true
+        avatarUrl:
+          type: string
+          nullable: true

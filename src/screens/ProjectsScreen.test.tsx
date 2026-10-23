@@ -16,6 +16,7 @@ import { ProjectsScreen } from "./ProjectsScreen";
  * unknown.
  */
 const {
+  archiveElsewhere,
   fakeApi,
   failIssuesFor,
   failMembersFor,
@@ -23,6 +24,7 @@ const {
   holdSummaries,
   projectsRefetchStarted,
   refuseEdits,
+  refuseEditsAsArchived,
   refuseEditsAsUndeployed,
   releaseProjectsList,
   releaseSummaries,
@@ -39,8 +41,16 @@ const {
     /** What the server holds after a successful edit, so a refetch agrees with it. */
     edits: Record<string, Record<string, unknown>>;
     refuseEdit: boolean;
+    /** Projects archived through `archiveProject`, which `GET /projects` leaves out (backend PR #159). */
+    archived: Set<string>;
     /** The 405 signature `PATCH /projects/{id}` answers with on a gateway that has not deployed backend PR #155. */
     refuseEditAsUndeployed: boolean;
+    /**
+     * Somebody else archived the project a moment before the save: the PATCH
+     * answers the archived refusal (backend PR #159), and `GET /projects` no
+     * longer lists it.
+     */
+    refuseEditAsArchived: boolean;
     /** A gate the summary reads wait behind, so the pending state can be looked at. */
     gate?: Promise<void>;
     openGate?: () => void;
@@ -74,7 +84,9 @@ const {
     roles: {},
     edits: {},
     refuseEdit: false,
+    archived: new Set<string>(),
     refuseEditAsUndeployed: false,
+    refuseEditAsArchived: false,
   };
   const now = "2026-08-01T09:00:00Z";
 
@@ -111,7 +123,9 @@ const {
         project("project-a", "AAA", "Alpha"),
         project("project-b", "BBB", "Beta"),
         project("project-c", "CCC", "Gamma"),
-      ].map((row) => ({
+      ]
+        .filter((row) => !state.archived.has(row.id))
+        .map((row) => ({
         ...row,
         // `currentUserRole` on the row and nowhere else (backend TAS-137):
         // this screen reads the role from the list and spends no request of
@@ -144,16 +158,25 @@ const {
       ];
     },
     updateProject: async (projectId: string, input: Record<string, unknown>) => {
+      if (state.refuseEditAsArchived) {
+        state.archived.add(projectId);
+        throw Object.assign(new Error("Project is archived"), {
+          code: "FAILED_PRECONDITION",
+          status: 400,
+          details: { reason: "PROJECT_ARCHIVED" },
+          requestId: "5d0e7c31-archived",
+        });
+      }
       // Recorded before the possible throw below: a refusal that never wrote
       // this would let `listProjects` answer the old name on its own, and the
       // rollback test could pass on that coincidence with `onError` deleted.
       // Recording it first means a refetch answers the *new* name, so only a
       // real rollback can show the old one.
       state.edits[projectId] = { ...(state.edits[projectId] ?? {}), ...input };
-      // The 405 signature `isUndeployedRoute`'s second arm matches (TAS-148):
-      // the path exists for GET, so this is not the static-resource 404, and
-      // it carries the code the real gateway names rather than a message the
-      // predicate would have to parse.
+      // The 405 `PATCH /projects/{id}` answered before backend PR #155
+      // deployed: the path existed for GET, so not the static-resource 404.
+      // `isUndeployedRoute` read it as "not deployed yet" until TAS-149 took
+      // that arm out; the dialog now shows it as the refusal it is.
       if (state.refuseEditAsUndeployed) {
         throw Object.assign(new Error("Request method 'PATCH' is not supported."), {
           code: "METHOD_NOT_ALLOWED",
@@ -174,6 +197,10 @@ const {
       }
       return { ...project(projectId, "BBB", "Beta"), id: projectId, ...state.edits[projectId] };
     },
+    archiveProject: async (projectId: string) => {
+      state.archived.add(projectId);
+      return { ...project(projectId, "BBB", "Beta"), archivedAt: "2026-10-23T10:00:00Z", currentUserRole: "ADMIN" as const };
+    },
     // No `getMembership` on purpose. This screen used to fall back to it for
     // any row that stated no role, which against the gateway meant one extra
     // request per card forever; leaving it off the fake is what makes a
@@ -190,6 +217,13 @@ const {
     },
     refuseEditsAsUndeployed: () => {
       state.refuseEditAsUndeployed = true;
+    },
+    refuseEditsAsArchived: () => {
+      state.refuseEditAsArchived = true;
+    },
+    /** Another session archives the project: the next `GET /projects` leaves it out. */
+    archiveElsewhere: (projectId: string) => {
+      state.archived.add(projectId);
     },
     roleFor: (projectId: string, role: ProjectRole) => {
       state.roles[projectId] = role;
@@ -227,7 +261,9 @@ const {
       state.roles = {};
       state.edits = {};
       state.refuseEdit = false;
+      state.archived.clear();
       state.refuseEditAsUndeployed = false;
+      state.refuseEditAsArchived = false;
       state.gate = undefined;
       state.openGate = undefined;
       state.listGate = undefined;
@@ -599,20 +635,17 @@ describe("saving a project edit", () => {
     expect(within(dialog).getByRole("button", { name: "Copy request id 2f1c7d40-9b3e-4a11" })).toBeVisible();
   });
 
-  // A 405 on a path that exists for GET reads as the gateway not having
-  // shipped this write yet (TAS-148), not as a protocol sentence for the
-  // reader to puzzle over or act on.
-  it("reads a 405 as this gateway not shipping the write yet, not as a failure to act on", async () => {
+  // Backend PR #155 deployed — `PATCH` answers 401 without a token on
+  // 2026-10-23, where it answered 405 — so the dialog's "not on this gateway
+  // yet" line went (TAS-149) and a 405 is a refusal like any other.
+  it("shows a 405 as the ordinary refusal, in the server's words", async () => {
     refuseEditsAsUndeployed();
     const { dialog } = await openEditor("Beta");
     fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Beta Renamed" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
 
-    expect(await within(dialog).findByText(/not on this gateway yet/)).toBeVisible();
-    // Never the gateway's own sentence, and never the error box every other
-    // refusal in this dialog gets.
-    expect(within(dialog).queryByText(/Request method/)).not.toBeInTheDocument();
-    expect(document.querySelector(".error-note")).not.toBeInTheDocument();
+    expect(await within(dialog).findByText("Request method 'PATCH' is not supported.")).toBeVisible();
+    expect(within(dialog).queryByText(/not on this gateway yet/)).not.toBeInTheDocument();
   });
 
   it("spends no request on a dialog nothing was changed in", async () => {
@@ -633,5 +666,122 @@ describe("saving a project edit", () => {
     // Said on screen, not left to be worked out. A disabled button cannot take
     // focus, so its own tooltip would never be read.
     expect(within(dialog).getByText(/Save is off until there is one/)).toBeVisible();
+  });
+});
+
+/**
+ * Archiving from a card's Edit dialog (TAS-149, DESIGN.md §4.11 «Успех» from
+ * `/projects`): the card leaves the grid in the frame the dialog closes in —
+ * `GET /projects` no longer lists it — focus goes to the card that took its
+ * place, and the page says what happened.
+ */
+describe("archiving a project from its card", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const archiveFromCard = async (name: string, key: string) => {
+    fireEvent.click(await screen.findByRole("button", { name: `Edit ${name}` }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit project" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Archive project" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: `Archive ${key}` }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit project" })).not.toBeInTheDocument());
+  };
+
+  it("takes the card away, hands focus to the next one and says so", async () => {
+    renderProjects();
+    await findCard("Gamma");
+
+    await archiveFromCard("Beta", "BBB");
+
+    // Gone in the same frame as the dialog, with no archived row of our own.
+    expect(screen.queryByRole("button", { name: cardName("Beta") })).not.toBeInTheDocument();
+    expect(screen.getByText(/^2\s+projects/)).toBeInTheDocument();
+    expect(card("Gamma")).toHaveFocus();
+    expect(screen.getByRole("status")).toHaveTextContent("BBB archived. It no longer appears in Projects.");
+    expect(screen.queryByText("Archived")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the card before it, and then to New project", async () => {
+    renderProjects();
+    await findCard("Gamma");
+
+    await archiveFromCard("Gamma", "CCC");
+    expect(card("Beta")).toHaveFocus();
+
+    await archiveFromCard("Beta", "BBB");
+    await archiveFromCard("Alpha", "AAA");
+    expect(screen.getByRole("button", { name: "New project" })).toHaveFocus();
+  });
+});
+
+/**
+ * Archived by somebody else while its Edit dialog is open (DESIGN.md §4.11,
+ * «Архив пришёл отказом Save на `/projects`»; art-director B2, api-contract-
+ * guard L1, release-reviewer N3 on TAS-149). The row leaves `["projects"]` on
+ * the next read, and the dialog stays on the last row seen, read-only, until
+ * the reader closes it; then focus goes where it goes after an archive, and the
+ * page says nothing — the dialog did.
+ */
+describe("a project archived under its open Edit dialog", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const openEditor = async (name: string) => {
+    const queryClient = renderProjects();
+    await findCard("Gamma");
+    fireEvent.click(await screen.findByRole("button", { name: `Edit ${name}` }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit project" });
+    return { dialog, queryClient };
+  };
+
+  const expectReadOnly = (dialog: HTMLElement, typed: string) => {
+    expect(within(dialog).getByLabelText("Name")).toHaveValue(typed);
+    expect(within(dialog).getByLabelText("Name")).toHaveAttribute("readonly");
+    expect(within(dialog).queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Archive project" })).not.toBeInTheDocument();
+  };
+
+  it("survives its refused Save and the refetch that drops the row, then hands focus to the next card", async () => {
+    refuseEditsAsArchived();
+    const { dialog } = await openEditor("Beta");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Beta Renamed" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(await within(dialog).findByText("This project has been archived, so nothing in it can be changed.")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Copy request id 5d0e7c31-archived" })).toBeVisible();
+    // The refetch no longer lists it: the card goes, the dialog does not.
+    await waitFor(() => expect(screen.queryByRole("button", { name: cardName("Beta") })).not.toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Edit project" })).toBe(dialog);
+    expectReadOnly(dialog, "Beta Renamed");
+    // Its own refusal says it, so no second line.
+    expect(within(dialog).queryByText(/no longer appears in Projects/)).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(card("Gamma")).toHaveFocus());
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("says why when the row left without a refusal, and falls back to the card before it", async () => {
+    const { dialog, queryClient } = await openEditor("Gamma");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Gamma typed" } });
+
+    archiveElsewhere("project-c");
+    await queryClient.invalidateQueries({ queryKey: ["projects"] });
+
+    expect(
+      await within(dialog).findByText("This project no longer appears in Projects, so it cannot be edited here."),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: cardName("Gamma") })).not.toBeInTheDocument();
+    expectReadOnly(dialog, "Gamma typed");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(card("Beta")).toHaveFocus());
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 });

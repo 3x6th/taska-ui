@@ -113,9 +113,9 @@ export interface EnumDictionaries {
 }
 /**
  * The notification kinds the gateway can emit — exactly the contract's
- * `NotificationTypeDto`, which since backend PR #200 lists all twenty-three and
- * is what `NotificationResponseDto.notificationType` refers to (develop
- * `398285cde074`). `UNKNOWN` is the gateway's own fallback for a kind it does
+ * `NotificationTypeDto`, which lists all twenty-four since backend PR #159
+ * added `PROJECT_ARCHIVED` (develop `562d84de`) and is what
+ * `NotificationResponseDto.notificationType` refers to. `UNKNOWN` is the gateway's own fallback for a kind it does
  * not recognise, and `/meta` lists it as an ordinary entry.
  *
  * Two of these are named without being live: `ISSUE_COMMENT_UPDATED` and
@@ -150,6 +150,7 @@ export type NotificationType =
   | "USER_BLOCKED"
   | "USER_UNBLOCKED"
   | "PROJECT_CREATED"
+  | "PROJECT_ARCHIVED"
   | "MEMBER_ADDED"
   | "MEMBER_UPDATED"
   | "MEMBER_REMOVED"
@@ -381,6 +382,20 @@ export interface Project {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * When the project was archived, or `null` — set by `DELETE /projects/{id}`
+   * (backend PR #159, TAS-146, merged and deployed 2026-10-23). Stated on the
+   * reads of one project (`GET /projects/{id}`, the context's `project`) and on
+   * the archive's own answer; `null` on every row of `GET /projects`, which
+   * leaves archived projects out altogether, and on the answers of `POST` and
+   * `PATCH`, which an archived project never reaches.
+   *
+   * An archived project stays readable — board, issues, comments, work log,
+   * attachments — and refuses every write with `PROJECT_ARCHIVED`
+   * (`isProjectArchived`). The board reads this field off its context and
+   * offers no write at all (DESIGN.md §5.7, «Архивный проект»); it is the one
+   * signal, and a refusal is never read as one.
+   */
   archivedAt: string | null;
   /**
    * The reader's own role in this project — `currentUserRole` on
@@ -395,8 +410,11 @@ export interface Project {
    * `ObjectMapper` or codec customizer bean — so Jackson's default `ALWAYS`
    * inclusion applies, and a response built without a role still carries the
    * key, as an explicit `"currentUserRole": null` — exactly like `archivedAt`
-   * above. **Only one response is built that way: `POST /projects`**, whose
-   * answer goes through the mapper overload that sets no role. A read never
+   * above. **Only one answer is built that way: `POST /projects`**, through the
+   * mapper overload that sets no role. `PATCH` and `DELETE /projects/{id}`
+   * (backend PRs #155 and #159, merged) answer `"ADMIN"` — the only role either
+   * route lets through — and a caller still keeps the role it already holds
+   * rather than taking one from a write answer. A read never
    * carries the `null`: `GET /projects/{id}` refuses a non-member with 403 —
    * a `GLOBAL_ADMIN` included — so every 200 has a membership row whose role is
    * NOT NULL, and `GET /projects` inner-joins the reader's own membership, so
@@ -419,31 +437,28 @@ export interface Project {
    */
   currentUserRole?: ProjectRole | null;
   /**
-   * Both of the next two are added to `ProjectResponseDto` by backend PR #155
-   * (TAS-145), pinned at `docs/contract/pending/pr-155-TAS-145.yml`, and both
-   * are `nullable: true` there. **Open and undeployed on 2026-09-12**, so
-   * `docs/contract/openapi.yml` — the authority — still carries neither, and on
-   * the stand the only values either field ever holds are the mock's.
+   * Both of the next two are on `ProjectResponseDto` since backend PR #155
+   * (TAS-145), merged and deployed, and both are `nullable: true`.
    *
    * Optional *and* nullable for the same reason `currentUserRole` above is: a
    * gateway that predates the PR omits the key, and one that has it sends an
    * explicit `null` for a project that stated no value, because the api-gateway
    * configures no Jackson inclusion override. Readers must treat the two alike.
    *
-   * An empty-string `description` is a third state and a meaningful one: the
-   * schema's `maxLength: 2000` accepts it, so `""` is how a description is
-   * cleared through `PATCH`. Anything drawing a placeholder for "no
-   * description" therefore has to cover blank as well as absent — `??` alone
-   * does not.
+   * A description is non-blank or `null` on the server: create and update both
+   * store a blank or whitespace-only one as `null` (PR #155 as merged), so `""`
+   * never comes back from the gateway. The card's placeholder still covers a
+   * blank as well as an absent one — `??` alone would not — because that costs
+   * nothing and a row from an older mock seed could carry one.
    */
   description?: string | null;
   /**
    * The colour an admin chose, which wins over the one `keyBadgeStyle` computes
    * from the project key. `""` is *not* a third state here, in deliberate
    * contrast with `description` above: the schema's `^#[0-9A-Fa-f]{6}$` rejects
-   * it, and an absent `color` and an explicit `null` both mean "keep" on the
-   * PATCH — so there is no way through the contract to put a colour back to
-   * null once one is set (TAS-145 is the backend story that would add one).
+   * it. `null` is "no colour chosen", and an explicit `null` on the PATCH
+   * (backend PR #155) puts a project back there, so the badge is computed from
+   * the key again (TAS-171).
    */
   color?: string | null;
   memberIds?: string[];
@@ -1396,7 +1411,12 @@ export interface Notification {
    * issue-service's `PayloadSerializer` did not call `putIssueFields` for
    * them. New attachment notifications carry all three; the old rows were not
    * backfilled. `notificationRoute` (src/domain/notifications.ts) needs both
-   * `issueId` and `projectId`, so such an old row opens nothing.
+   * `issueId` and `projectId` to open an issue, so such an old row opens
+   * nothing.
+   *
+   * A fourth sends `projectId` alone: `PROJECT_ARCHIVED` (backend PR #159,
+   * TAS-146) names the project and no issue, and opens that project's board,
+   * which an archived project still serves read-only (TAS-149).
    */
   issueId: string | null;
   issueKey: string | null;

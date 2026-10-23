@@ -4924,6 +4924,30 @@ h1 {
    whatever fails, the board keeps two thirds of the plane, and the stack
    scrolls within itself. Everything inside it is reachable by keyboard —
    dismiss buttons and the request id — so the scroll has a keyboard path. */
+/* An archived project's board (TAS-149, DESIGN.md §5.7): one line above the
+   notices and outside them, with nothing behind it — no fill, edge, stripe or
+   icon, because archiving is a state of the project and not a failure. The
+   fact in `--fg` 600 (16.56:1 light / 17.13:1 dark on `--bg`), the consequence
+   in `--fg-2` (6.73 / 7.35). The notices' own inset, so the two align. Focus
+   lands here by script when the board turns read-only under the reader, and
+   wears the product's ring from the `[tabindex]` rule at the top. */
+.board-archive-line {
+  flex: none;
+  /* Its own width rather than the row's, so the ring drawn when focus is put
+     here hugs the sentence instead of spanning the board (art-director). */
+  align-self: flex-start;
+  margin: 12px 18px 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.board-archive-line strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 .board-notices {
   display: flex;
   max-height: 34vh;
@@ -5690,9 +5714,62 @@ h1 {
 }
 
 /* In flight both answers are `aria-disabled` (§4.1's in-flight recipe): the
-   labels stay, nothing fades, and the cursor says the request is out. */
-.issue-delete-confirm .compact-button[aria-disabled="true"] {
+   labels stay, nothing fades, and the cursor says the request is out. The edit
+   dialog's archive strip (TAS-149) is the same strip in flight. */
+.issue-delete-confirm .compact-button[aria-disabled="true"],
+.project-archive-confirm .compact-button[aria-disabled="true"] {
   cursor: progress;
+}
+
+/* The edit dialog's archive section (TAS-149): below the form, set off by one
+   `--border` line and the form's own 13 gap rather than a second surface (§1,
+   two planes at most). The sentence is `--fg-2`, not `.field-note`'s `--fg-3`:
+   it is the only account of what the button does, not meta beside a field
+   (the argument `.admin-write-hint` makes). */
+.project-archive {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.project-archive-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.project-archive-note {
+  flex: 1 1 220px;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.project-archive-trigger {
+  flex: none;
+}
+
+/* While its question is open the trigger wears the answer's edge (§4.22's
+   `--danger` at 45%) with `--fg` text — never `--danger` text, which measures
+   under §7's 4.5:1. Three classes' worth, so `.compact-button:hover` (later
+   in this file, 0,2,0) cannot repaint it accent under the pointer. */
+.secondary-button.project-archive-trigger[aria-expanded="true"] {
+  border-color: color-mix(in oklab, var(--danger) 45%, transparent);
+  color: var(--fg);
+}
+
+/* §4.22's strip in a column, not a member row: no avatar indent, and no flex
+   basis, which in this column would be a height (the trap `.worklog-confirm`
+   records). */
+.member-confirm.project-archive-confirm {
+  flex: none;
+  margin: 0;
 }
 
 /* ---------- Share (TAS-248) ---------- */
@@ -6018,8 +6095,7 @@ h1 {
    fields grows by 16 and not by a paragraph.
 
    `.field-note` is the same thing said about a field that is not an estimate —
-   why a project key cannot be edited, why a colour cannot go back to automatic
-   (TAS-148) — and shares the rule rather than copying four declarations under
+   why a project key cannot be edited (TAS-148) — and shares the rule rather than copying four declarations under
    a second name. The estimate comment above stays because the *measurement* is
    the planning row's; the recipe is not. */
 .planning-hint,
@@ -7539,6 +7615,50 @@ button.attachment-open:hover:not(:disabled) {
   gap: 10px;
 }
 
+/* Why a dialog the project was archived under no longer writes (TAS-149,
+   DESIGN.md §5.7, «Архив пришёл отказом записи»): one sentence above the
+   footer — in Labels, where the New label form stood. `--fg-2`, not `--fg-3`:
+   it is the only explanation for the controls that went (7.26:1 light /
+   6.75:1 dark on `--surface`), the members and workflows dialogs' own line.
+   `fit-content` so the ring drawn when focus is put here hugs the words, in
+   the form's flex column and in the labels dialog's plain body alike. */
+.modal-archive-note {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* In the labels dialog it takes the form's place, and the form's 16 below. */
+.modal-body > .modal-archive-note {
+  margin-bottom: 16px;
+}
+
+/* A field the archive made read-only keeps the reader's words at full
+   contrast and its Tab stop (§4.3); what goes is the invitation to type. */
+.modal .field input:read-only,
+.modal .field textarea:read-only,
+.modal .label-edit-form input:read-only {
+  cursor: default;
+}
+
+.modal .field textarea:read-only {
+  resize: none;
+}
+
+/* §4.1's steadily-unavailable `aria-disabled`, for the choices of a dialog
+   the project was archived under: the type and priority segments and the
+   colour swatches keep their pressed state and their Tab stop, and look and
+   act like `button:disabled`. */
+.modal .segmented button[aria-disabled="true"],
+.color-swatch[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .form-two {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -7864,7 +7984,7 @@ button.attachment-open:hover:not(:disabled) {
   border-radius: 50%;
 }
 
-.color-swatch:not(:disabled):hover {
+.color-swatch:not(:disabled):not([aria-disabled="true"]):hover {
   transform: scale(1.12);
 }
 
@@ -7920,7 +8040,9 @@ button.attachment-open:hover:not(:disabled) {
   font-size: 12.5px;
 }
 
-.label-edit-form input:focus {
+/* Not on a rename the archive caught open (TAS-149), which is read-only and
+   takes the global ring instead: the accent frame says "type here" (§4.3). */
+.label-edit-form input:focus:not(:read-only) {
   border-color: var(--accent);
 }
 

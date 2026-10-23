@@ -78,9 +78,10 @@ export interface ApiErrorFacts {
 
 /**
  * `RestErrorResponse.details` (backend PR #199, TAS-239, merged and deployed
- * 2026-10-19): `{string: string}`, nullable, filled by exactly one refusal
- * today — the account lock's `lockedUntil` (`src/lib/accountLock.ts`) — and
- * `null` on every other error the gateway answers.
+ * 2026-10-19): `{string: string}`, nullable, filled by two refusals today —
+ * the account lock's `lockedUntil` (`src/lib/accountLock.ts`) and an archived
+ * project's `reason` (`isProjectArchived`, backend PR #159) — and `null` on
+ * every other error the gateway answers.
  */
 export type ErrorDetails = Readonly<Record<string, string>>;
 
@@ -131,20 +132,46 @@ export function isMissingOrForbidden(error: unknown): boolean {
   return code === "NOT_FOUND" || code === "PERMISSION_DENIED" || status === 404 || status === 403;
 }
 
+/** `details.reason` on the archived-project refusal (backend PR #159, TAS-146). */
+export const PROJECT_ARCHIVED_REASON = "PROJECT_ARCHIVED";
+
+/**
+ * Whether a write was refused because its project is archived — backend PR
+ * #159 (TAS-146), merged and deployed 2026-10-23: HTTP 400,
+ * `{"code":"FAILED_PRECONDITION","message":"Project is archived",
+ * "details":{"reason":"PROJECT_ARCHIVED"}}`, from every write on an archived
+ * project — issues, comments, attachments, labels, links, work log, watchers,
+ * workflows, members and `PATCH /projects/{id}` — and from no read.
+ *
+ * **`details.reason` is the key, and the only one.** `FAILED_PRECONDITION` by
+ * itself is not: the last-admin refusal of a member write is a 400
+ * `FAILED_PRECONDITION` too, and so are a label's and a transition's refusals.
+ * The message is prose and never matched. The code is checked beside the
+ * reason only because the two arrive together and a `reason` on any other code
+ * is not this refusal. Read as an own property, as `errorDetails` asks.
+ *
+ * Not a signal that the project is archived — the board reads that off
+ * `archivedAt` in its context, and a refusal only makes it read the context
+ * again (DESIGN.md §5.7, «Архив пришёл отказом записи»).
+ */
+export function isProjectArchived(error: unknown): boolean {
+  const { code, details } = apiErrorFacts(error);
+  return (
+    code === "FAILED_PRECONDITION" &&
+    details !== null &&
+    Object.hasOwn(details, "reason") &&
+    details.reason === PROJECT_ARCHIVED_REASON
+  );
+}
+
 /**
  * Whether this failure means "the gateway does not have this route yet" rather
  * than "the thing you asked for is not there".
  *
- * Two signatures answer this, and they are different evidence rather than two
- * readings of one status: a 404 here means nobody mapped the *path*; a 405
- * means somebody mapped it, for a *different method*. Only the second can be
- * confused with a genuine client error, which is why it carries a requirement
- * the first does not need — each arm is documented where it is checked, below.
- *
- * **The 404 arm.** Both halves are required, and the pairing is narrow on
- * purpose. An unmapped path falls through to Spring's static-resource
- * handler, which answers **404** with a message beginning `No static resource
- * …` — measured 2026-09-06 against
+ * One signature answers this: the 404 an unmapped *path* gets. Both halves
+ * are required, and the pairing is narrow on purpose. An unmapped path falls
+ * through to Spring's static-resource handler, which answers **404** with a
+ * message beginning `No static resource …` — measured 2026-09-06 against
  * `GET /api/v1/projects/{uuid}/issues/{uuid}/attachments`, where a deployed
  * neighbour (`…/comments`) answers `401` for the same unauthenticated request
  * and the attachment routes answer this. A deployed route's own 404 says
@@ -152,14 +179,14 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * message is the whole distinction; matching the status alone would read a
  * missing issue as a missing deployment.
  *
- * The attachments panel was this arm's first caller. The admin user writes
- * were next, measured the same way on 2026-08-25 against
+ * The attachments panel was this predicate's first caller. The admin user
+ * writes were next, measured the same way on 2026-08-25 against
  * `POST /api/v1/admin/users/not-a-uuid/block`; backend PR #146 mapped all three
  * of those paths and they answer `400 INVALID_ARGUMENT` as of 2026-09-08, so
  * TAS-196 removed that compensation. The attachment routes followed: they
  * merged with backend PR #147 and are deployed — their list route answered
  * `401` without a token on 2026-09-16 — and TAS-224 removed the panel's
- * branch. `UserProfileMenu` still reads this arm
+ * branch. `UserProfileMenu` still reads it
  * for the avatar routes, and `AdminAuditSection` for a gateway older than
  * backend PR #197 — the 501 a mapped-but-empty audit route would have answered
  * at that PR's predecessor (#172) never shipped, and the sibling predicate that
@@ -168,10 +195,10 @@ export function isMissingOrForbidden(error: unknown): boolean {
  *
  * Matched as a substring rather than by equality because the tail of the
  * message is the request path, which differs per call — and by the same token
- * it says nothing about *which* route was asked for, which is what lets this
- * arm serve every undeployed family at once. Each family stops matching the
- * day its routes deploy — and that is all the deployment does. A check that
- * goes quiet reports nothing to anyone, so the note does not remove itself: the
+ * it says nothing about *which* route was asked for, which is what lets it
+ * serve every undeployed family at once. Each family stops matching the day
+ * its routes deploy — and that is all the deployment does. A check that goes
+ * quiet reports nothing to anyone, so the note does not remove itself: the
  * admin one stopped matching the moment PR #146's routes deployed, and still
  * had to be deleted by hand, in TAS-196, and the attachments one in TAS-224, as
  * recorded above.
@@ -183,47 +210,25 @@ export function isMissingOrForbidden(error: unknown): boolean {
  * copy of it, and two copies of a measurement are two chances to drift — which
  * is the very thing moving this predicate out of the Users section was meant to
  * stop. Every caller passes the constant, so the constant is what is matched.
- * The 405 arm below takes no such parameter: `code` is not free text a caller
- * has to measure and pin, it is one of a small fixed set the gateway already
- * names.
  *
- * **The 405 arm** (TAS-148). A path Spring *does* recognise, but only for
- * other methods, answers **405** with `code: "METHOD_NOT_ALLOWED"` in the
- * body. `GET /projects/{id}/members` met this signature first, while backend
- * PR #152 was undeployed and only `POST` was mapped on that path — it answers
- * `401` without a token since TAS-137 deployed (measured 2026-09-16) — and PR
- * #155's `PATCH /projects/{id}` meets it a second time, for the same reason.
- * The second is what this predicate was widened for; nothing ever called it
- * for the first.
+ * **No 405 arm any more** (TAS-149, api-contract-guard). A path Spring mapped
+ * for other methods only answers 405 `METHOD_NOT_ALLOWED`, and TAS-148 read
+ * that as "not deployed yet" too: `GET /projects/{id}/members` met it while
+ * backend PR #152 was undeployed, and PR #155's `PATCH /projects/{id}` until it
+ * deployed (401 without a token on 2026-10-23). Every route this build calls
+ * is now mapped for the method it calls it with, so no route answers it a 405
+ * — yet every caller of this predicate took the "not on this gateway yet"
+ * branch on one, which by now could only be a bug of ours calling a mapped
+ * path with the wrong method. Such a 405 is the ordinary refusal it is.
  *
- * What the `code` conjunct buys is narrower than it looks, and worth stating
- * exactly because the obvious reading of it is false. It is **not** that this
- * gateway answers 405 for other reasons: it cannot. `GatewayWebExceptionHandler`
- * is an `@Order(-2)` `WebExceptionHandler`, so every unhandled exception in the
- * chain — the router's `MethodNotAllowedException` included — reaches
- * `GatewayErrorHandler`, where a `ResponseStatusException` takes the code from
- * the status name and no gRPC code maps to 405 at all
- * (`RestErrorMapper.mapGrpcCodeToHttpStatus`; permission-denied is 403). Read
- * at `origin/develop` on 2026-09-12. So every 405 *this gateway* emits carries
- * `METHOD_NOT_ALLOWED`, and that includes one caused by a bug of ours calling a
- * mapped path with the wrong method — which would read here as "not deployed
- * yet", and is the one way this arm can be wrong.
- *
- * What it does buy: that the 405 came from our gateway rather than from
- * something in front of it. A proxy answering with a non-JSON body leaves
- * `RestTaskaApi.request` with no `code` to read and falling back to `UNKNOWN`,
- * and that failure has nothing to say about what the gateway has shipped.
- *
- * It lives here rather than beside either of its callers because it is a fact
+ * It lives here rather than beside any of its callers because it is a fact
  * about the *gateway*, in the same family as `isMissingOrForbidden`. It is
  * never true against the mock: `MockApiError` carries no HTTP status, so mock
- * mode cannot reproduce either signature at all and does not try to.
+ * mode cannot reproduce the signature at all and does not try to.
  */
 export function isUndeployedRoute(error: unknown, undeployedMessage: string): boolean {
-  const { status, message, code } = apiErrorFacts(error);
-  const unmappedPath = status === 404 && message !== null && message.includes(undeployedMessage);
-  const mappedForOtherMethods = status === 405 && code === "METHOD_NOT_ALLOWED";
-  return unmappedPath || mappedForOtherMethods;
+  const { status, message } = apiErrorFacts(error);
+  return status === 404 && message !== null && message.includes(undeployedMessage);
 }
 
 /**

@@ -231,6 +231,21 @@ export const formatDay = (iso: string) =>
     day: "numeric",
   }).format(new Date(iso));
 
+/**
+ * `formatDay` for an instant that may be old: `Oct 20`, with the year when it
+ * is not the current one (`Oct 20, 2025`) — the rule `formatWorkDate` in
+ * src/lib/worklog.ts keeps for date-only strings. Read in the reader's own
+ * time zone, as `formatDay` reads.
+ */
+export const formatDayWithYearIfOther = (iso: string, now: Date = new Date()) => {
+  const date = new Date(iso);
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  }).format(date);
+};
+
 export const formatDateTime = (iso: string) =>
   new Intl.DateTimeFormat("en-US", {
     month: "short",

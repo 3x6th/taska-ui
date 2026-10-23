@@ -5,7 +5,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { DIRECTORY_QUERY_MAX_LENGTH, DIRECTORY_QUERY_MIN_CODE_POINTS, directoryQueryLength } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts, isMissingOrForbidden } from "../api/errors";
+import { apiErrorFacts, isMissingOrForbidden, isProjectArchived } from "../api/errors";
+import { refusalWords } from "../lib/projectArchive";
 import { PROJECT_ROLES } from "../api/members";
 import type { DirectoryUser, GlobalRole, Project, ProjectMember, ProjectRole } from "../domain/types";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
@@ -155,6 +156,12 @@ interface ProjectMembersModalProps {
    * writes for anybody else.
    */
   readerRole: ProjectRole | null | undefined;
+  /**
+   * The project is archived (backend PR #159, DESIGN.md §5.7): the list stays,
+   * every control goes for every role, and one line says why in place of the
+   * role's. Off the board's context, like the role.
+   */
+  archived?: boolean;
   /** `undefined` until `GET /users/me` answers; until then no row is marked as the reader's. */
   currentUserId?: string;
   /**
@@ -205,11 +212,12 @@ export function ProjectMembersModal({
   projectKey,
   projectColor,
   readerRole,
+  archived = false,
   currentUserId,
   globalRole,
   onClose,
 }: ProjectMembersModalProps) {
-  const isProjectAdmin = readerRole === "ADMIN";
+  const isProjectAdmin = readerRole === "ADMIN" && !archived;
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   /** What is typed in the search field. Kept while a person is chosen, so "Choose someone else" brings the search back. */
@@ -302,7 +310,14 @@ export function ProjectMembersModal({
   const confirmOffered = pendingConfirm !== null && offersConfirm(pendingConfirm, guard(members));
   if (pendingConfirm !== null && !confirmOffered) {
     setConfirm(null);
-    if (notice === null) setNotice({ tone: "info", text: isProjectAdmin ? LIST_CHANGED_TEXT : ROLE_CHANGED_TEXT });
+    if (notice === null) {
+      setNotice({
+        tone: "info",
+        // An archive that landed under the open question took the controls,
+        // not the reader's role.
+        text: isProjectAdmin ? LIST_CHANGED_TEXT : archived ? ARCHIVED_BEFORE_CONFIRM_TEXT : ROLE_CHANGED_TEXT,
+      });
+    }
   }
   const confirm = confirmOffered ? pendingConfirm : null;
 
@@ -1123,7 +1138,14 @@ export function ProjectMembersModal({
               nobody stated it would be inventing the answer — so that reader is
               told the role is unknown, which the board's banner also says, under
               this dialog's scrim. Nothing while the role is still being read. */}
-          {readerRole === "MEMBER" || readerRole === "VIEWER" ? (
+          {archived ? (
+            // Every role, ADMIN included, and in place of the role's line (§5.7).
+            // `tabIndex=-1`: where the board puts focus if the archive took the
+            // control that had it — focus never leaves an open dialog.
+            <p className="member-readonly-note" data-archive-note="modal" tabIndex={-1}>
+              This project is archived, so its members cannot be changed.
+            </p>
+          ) : readerRole === "MEMBER" || readerRole === "VIEWER" ? (
             <p className="member-readonly-note">Only a project admin can add, change or remove members.</p>
           ) : readerRole === null ? (
             <p className="member-readonly-note">Your role on this project is unknown, so members cannot be changed here.</p>
@@ -1403,7 +1425,9 @@ function MemberRow({
  * people, belong under it rather than in its place.
  */
 function MemberNoteDetail({ error }: { error: unknown }) {
-  const { message, requestId } = apiErrorFacts(error);
+  const { requestId } = apiErrorFacts(error);
+  // The server's words, or ours for an archived project's refusal (§5.7).
+  const message = refusalWords(error);
   if (!message && !requestId) return null;
   return (
     <p className="member-note-detail">
@@ -1470,6 +1494,8 @@ function offersConfirm(confirm: PendingConfirm, guard: AdminGuard | undefined): 
 const LIST_CHANGED_TEXT = "The member list changed before you confirmed, so nothing was sent.";
 /** And when what moved was the reader's own role, which took every control with it. */
 const ROLE_CHANGED_TEXT = "Your role on this project changed before you confirmed, so nothing was sent.";
+/** And when the project was archived under the open question. */
+const ARCHIVED_BEFORE_CONFIRM_TEXT = "This project was archived before you confirmed, so nothing was sent.";
 
 /**
  * The note under a row whose role cannot change and which cannot be removed.
@@ -1501,8 +1527,14 @@ function isAlreadyMember(error: unknown): boolean {
   return code === "ALREADY_EXISTS" || status === 409;
 }
 
+/**
+ * The last-admin refusal: `FAILED_PRECONDITION` with no reason. An archived
+ * project's refusal shares the code (backend PR #159) and is told apart by
+ * `details.reason` alone — read as last-admin it would tell the reader they
+ * are the project's only admin.
+ */
 function isLastAdmin(error: unknown): boolean {
-  return apiErrorFacts(error).code === "FAILED_PRECONDITION";
+  return apiErrorFacts(error).code === "FAILED_PRECONDITION" && !isProjectArchived(error);
 }
 
 function isForbidden(error: unknown): boolean {

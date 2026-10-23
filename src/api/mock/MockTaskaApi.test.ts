@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MOCK_ATTACHMENT_TRIGGERS, MOCK_INVITE_TOKENS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
+import { MOCK_ATTACHMENT_TRIGGERS, MOCK_INVITE_TOKENS, MOCK_PROJECT_TRIGGERS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
 import type { BoardParams, UpdateIssueInput } from "../TaskaApi";
 import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../TaskaApi";
 import type { Board, Issue, NotificationType, Project, Workflow } from "../../domain/types";
@@ -29,6 +29,9 @@ import { workflowCopyInput } from "../../lib/workflows";
  * and hybrid adapters to. These tests pin the behaviour that parity is measured
  * against, not the seed data.
  */
+const ANNA_ID = "6d774efa-57d8-4ae0-a27e-2984d1dfbbf6";
+const MARK_ID = "e65186a2-b807-42ae-a66f-711be116a93b";
+
 describe("MockTaskaApi", () => {
   let api: MockTaskaApi;
   let project: Project;
@@ -253,14 +256,13 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * `PATCH /projects/{projectId}` (TAS-148), written against backend PR #155 at
-   * head `c4b8c2c4dd24` — open and undeployed on 2026-09-12, where the path
-   * answers 405. So these cases pin a route this mock has never spoken to, out
-   * of `ProjectServiceImpl.updateProject` rather than out of the yml, and they
-   * are the only executable check on it until the PR merges.
+   * `PATCH /projects/{projectId}` (TAS-148, TAS-149), backend PR #155 as
+   * merged and deployed — out of `ProjectServiceImpl.updateProject` rather than
+   * out of the yml.
    *
-   * The two string fields are asymmetric and that is most of what is here: `""`
-   * clears a description and `""` cannot clear a colour.
+   * Three spellings per string field: absent keeps, `null` clears, a string
+   * sets — and a blank description is stored as `null`, where `""` is a 400
+   * for a colour.
    */
   /**
    * `GET /projects/{projectId}/context` (backend PR #169, TAS-212), with the
@@ -422,7 +424,13 @@ describe("MockTaskaApi", () => {
         { code: "RELATES_TO", name: "Relates to", selectable: true },
         { code: "DUPLICATES", name: "Duplicates", selectable: true },
       ]);
-      expect(meta.notificationTypes).toHaveLength(23);
+      // Twenty-four since backend PR #159 added `PROJECT_ARCHIVED`.
+      expect(meta.notificationTypes).toHaveLength(24);
+      expect(meta.notificationTypes?.find((entry) => entry.code === "PROJECT_ARCHIVED")).toEqual({
+        code: "PROJECT_ARCHIVED",
+        name: "Project archived",
+        selectable: true,
+      });
       expect(meta.notificationTypes?.at(-1)).toEqual({ code: "UNKNOWN", name: "Unknown", selectable: false });
       expect(meta.userStatuses).toEqual([
         { code: "INVITED", name: "Invited", selectable: true },
@@ -474,6 +482,7 @@ describe("MockTaskaApi", () => {
         USER_BLOCKED: true,
         USER_UNBLOCKED: true,
         PROJECT_CREATED: true,
+        PROJECT_ARCHIVED: true,
         MEMBER_ADDED: true,
         MEMBER_UPDATED: true,
         MEMBER_REMOVED: true,
@@ -581,20 +590,27 @@ describe("MockTaskaApi", () => {
       expect(saved).toEqual(before);
     });
 
-    it("clears a description with the empty string", async () => {
-      const saved = await api.updateProject(project.id, { description: "" });
+    it.each([[""], ["   "]])("stores a blank description %j as null, the same clear", async (description) => {
+      // PR #155 as merged: no blank description is ever stored.
+      const saved = await api.updateProject(project.id, { description });
 
-      expect(saved.description).toBe("");
-      // And the card's placeholder covers it: `??` would not have.
-      await expect(api.getProject(project.id)).resolves.toMatchObject({ description: "" });
+      expect(saved.description).toBeNull();
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ description: null });
     });
 
-    it("refuses an empty colour rather than treating it as a clear", async () => {
-      // The one-way door, stated as a test: the schema's pattern rejects `""`,
-      // and an absent `color` means "keep", so no request this client can make
-      // puts a colour back to null. TAS-145 is the backend story that changes
-      // it; until then the picker disables "Automatic" instead of offering a
-      // reset that 400s.
+    it("clears a description and a colour with an explicit null, and answers null rather than dropping the key", async () => {
+      // The gateway tells an explicit `null` from an absent key and forwards it
+      // as `clear_description` / `clear_color`.
+      const saved = await api.updateProject(project.id, { description: null, color: null });
+
+      expect(saved.description).toBeNull();
+      expect(saved.color).toBeNull();
+      // The key is there, holding `null`, as Jackson's default inclusion sends it.
+      expect(Object.hasOwn(saved, "color")).toBe(true);
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ description: null, color: null });
+    });
+
+    it("refuses an empty colour, because the clear is null and not the empty string", async () => {
       await expect(api.updateProject(project.id, { color: "" })).rejects.toThrow(/six-digit hex/);
       await expect(api.getProject(project.id)).resolves.toMatchObject({ color: "#0052cc" });
     });
@@ -639,6 +655,245 @@ describe("MockTaskaApi", () => {
       await expect(api.updateProject("00000000-0000-0000-0000-000000000000", { name: "Ghost" })).rejects.toMatchObject({
         code: "NOT_FOUND",
       });
+    });
+
+    it("refuses an archived project's edit after the ADMIN check, so only its ADMIN is told it is archived", async () => {
+      await api.archiveProject(project.id);
+
+      await expect(api.updateProject(project.id, { name: "Too late" })).rejects.toMatchObject({
+        code: "FAILED_PRECONDITION",
+        message: "Project is archived",
+        details: { reason: "PROJECT_ARCHIVED" },
+      });
+      // A MEMBER is refused for the role first, as before.
+      await api.login({ email: "mark@example.com", password: "anything" });
+      await expect(api.updateProject(project.id, { name: "Too late" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ name: "Taska Platform" });
+    });
+  });
+
+  /**
+   * `DELETE /projects/{projectId}` (TAS-149), backend PR #159 as merged and
+   * deployed on 2026-10-23: an archived project leaves the list, stays
+   * readable, and refuses every write with one refusal whose only key is
+   * `details.reason`.
+   */
+  describe("archiving a project", () => {
+    const archivedRefusal = {
+      code: "FAILED_PRECONDITION",
+      message: "Project is archived",
+      details: { reason: "PROJECT_ARCHIVED" },
+    };
+
+    it("archives for an ADMIN and answers the row with archivedAt set and the ADMIN role", async () => {
+      expect(project.archivedAt).toBeNull();
+      const archived = await api.archiveProject(project.id);
+
+      expect(archived.id).toBe(project.id);
+      expect(archived.archivedAt).toEqual(expect.any(String));
+      expect(archived.currentUserRole).toBe("ADMIN");
+      // `@LastModifiedDate`: the save that archives stamps `updatedAt` too.
+      expect(archived.updatedAt).toBe(archived.archivedAt);
+      expect(archived.updatedAt).not.toBe(project.updatedAt);
+    });
+
+    it("is idempotent: a second archive answers the same archivedAt", async () => {
+      const first = await api.archiveProject(project.id);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const second = await api.archiveProject(project.id);
+
+      expect(second.archivedAt).toBe(first.archivedAt);
+      // Nothing is saved the second time, so nothing is stamped.
+      expect(second.updatedAt).toBe(first.updatedAt);
+    });
+
+    it("refuses a member below ADMIN and a non-member alike, with PERMISSION_DENIED", async () => {
+      const refused = { code: "PERMISSION_DENIED", message: "Project ADMIN role is required" };
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB");
+      expect(mobile).toBeDefined();
+      if (!mobile) return;
+
+      await expect(api.archiveProject(project.id)).rejects.toMatchObject(refused);
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ archivedAt: null });
+
+      // Anna is not on Mobile at all.
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await expect(api.archiveProject(mobile.id)).rejects.toMatchObject(refused);
+    });
+
+    it("answers NOT_FOUND for a project that is not there", async () => {
+      await expect(api.archiveProject("00000000-0000-0000-0000-000000000000")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "Project not found",
+      });
+    });
+
+    it("leaves the project list, for every member, and the unscoped search with it", async () => {
+      const { items } = await api.listIssues(project.id);
+      const issue = items[0];
+      await api.archiveProject(project.id);
+
+      expect((await api.listProjects()).map((item) => item.id)).not.toContain(project.id);
+      const unscoped = await api.searchIssues({ query: issue.issueKey });
+      expect(unscoped.items.map((hit) => hit.id)).not.toContain(issue.id);
+
+      await api.login({ email: "tom@example.com", password: "anything" });
+      expect((await api.listProjects()).map((item) => item.id)).not.toContain(project.id);
+    });
+
+    it("keeps every read open, to every member", async () => {
+      const { items } = await api.listIssues(project.id);
+      const issue = items[0];
+      expect(issue).toBeDefined();
+      await api.archiveProject(project.id);
+
+      for (const email of ["anna@example.com", "tom@example.com"]) {
+        await api.login({ email, password: "anything" });
+        await expect(api.getProject(project.id)).resolves.toMatchObject({ archivedAt: expect.any(String) });
+        const context = await api.getProjectContext(project.id);
+        expect(context.project.archivedAt).toEqual(expect.any(String));
+        await expect(api.listIssues(project.id)).resolves.toMatchObject({ totalCount: items.length });
+        await expect(api.getBoard(project.id, { issueType: "TASK" })).resolves.toBeDefined();
+        await expect(api.getIssue(project.id, issue.id)).resolves.toMatchObject({ issue: { id: issue.id } });
+        await expect(api.getIssueByKey(issue.issueKey)).resolves.toMatchObject({ id: issue.id });
+        await expect(api.listComments(project.id, issue.id)).resolves.toBeDefined();
+        await expect(api.listProjectLabels(project.id)).resolves.toBeDefined();
+        await expect(api.listIssueLinks(project.id, issue.id)).resolves.toBeDefined();
+        await expect(api.listIssueWorklogs(project.id, issue.id)).resolves.toBeDefined();
+        await expect(api.listIssueWatchers(project.id, issue.id)).resolves.toBeDefined();
+        await expect(api.listAttachments(project.id, issue.id)).resolves.toBeDefined();
+        await expect(api.listMembers(project.id)).resolves.not.toHaveLength(0);
+        await expect(api.listProjectWorkflows(project.id)).resolves.not.toHaveLength(0);
+        // Scoped to it, the search still answers.
+        await expect(api.searchIssues({ projectId: project.id, query: issue.issueKey })).resolves.toMatchObject({
+          totalCount: 1,
+        });
+      }
+    });
+
+    it("refuses every write with the one archived refusal", async () => {
+      const { items } = await api.listIssues(project.id);
+      const [issue, other] = items;
+      const [label] = await api.listProjectLabels(project.id);
+      const [worklog] = await api.listIssueWorklogs(project.id, issue.id);
+      const [comment] = (await api.listComments(project.id, issue.id)).items;
+      const workflows = await api.listProjectWorkflows(project.id);
+      await api.archiveProject(project.id);
+      const version = (await api.getIssue(project.id, issue.id)).issue.version;
+      const writes: [string, () => Promise<unknown>][] = [
+        ["createIssue", () => api.createIssue(project.id, { issueType: "TASK", summary: "Late", description: "", priority: "LOW" })],
+        ["updateIssue", () => api.updateIssue(project.id, issue.id, { summary: "Late" }, version)],
+        ["transitionIssue", () => api.transitionIssue(project.id, issue.id, "any")],
+        ["deleteIssue", () => api.deleteIssue(project.id, issue.id)],
+        ["addComment", () => api.addComment(project.id, issue.id, "Late")],
+        ["createIssueLink", () => api.createIssueLink(project.id, issue.id, { linkType: "RELATES_TO", targetIssueId: other.id })],
+        ["createProjectLabel", () => api.createProjectLabel(project.id, { name: "Late", color: "#0052cc" })],
+        ["deleteProjectLabel", () => api.deleteProjectLabel(project.id, label.id)],
+        ["addIssueLabel", () => api.addIssueLabel(project.id, issue.id, label.id)],
+        ["watchIssue", () => api.watchIssue(project.id, issue.id)],
+        ["unwatchIssue", () => api.unwatchIssue(project.id, issue.id)],
+        ["addIssueWatcher", () => api.addIssueWatcher(project.id, issue.id, MARK_ID)],
+        [
+          "createAttachmentUploadUrl",
+          () => api.createAttachmentUploadUrl(project.id, issue.id, { fileName: "a.png", contentType: "image/png", sizeBytes: 10 }),
+        ],
+        ["addIssueWorklog", () => api.addIssueWorklog(project.id, issue.id, { spentMinutes: 30, workDate: "2026-01-02" })],
+        ["changeProjectMemberRole", () => api.changeProjectMemberRole(project.id, MARK_ID, "VIEWER")],
+        ["removeProjectMember", () => api.removeProjectMember(project.id, MARK_ID)],
+        ["addProjectMember", () => api.addProjectMember(project.id, "11111111-1111-4111-8111-111111111111", "VIEWER")],
+        [
+          "createProjectWorkflow",
+          () => api.createProjectWorkflow(project.id, workflowCopyInput(workflows[0].workflow, "Late", ["TASK"])),
+        ],
+      ];
+      if (worklog) writes.push(["deleteIssueWorklog", () => api.deleteIssueWorklog(project.id, issue.id, worklog.id)]);
+      if (comment) writes.push(["deleteComment", () => api.deleteComment(project.id, issue.id, comment.id)]);
+
+      for (const [name, write] of writes) {
+        await expect(write(), name).rejects.toMatchObject(archivedRefusal);
+      }
+      // And nothing was written.
+      await expect(api.getIssue(project.id, issue.id)).resolves.toMatchObject({ issue: { summary: issue.summary } });
+    });
+
+    it("tells a member of any role that it is archived before it checks the role", async () => {
+      // Tom is the VIEWER: before archiving he is refused for his role, after
+      // it for the archive — membership, then the archive, then the role.
+      const { items } = await api.listIssues(project.id);
+      const issue = items[0];
+      await api.login({ email: "tom@example.com", password: "anything" });
+      await expect(api.addIssueWorklog(project.id, issue.id, { spentMinutes: 30, workDate: "2026-01-02" })).rejects.toMatchObject({
+        code: "PERMISSION_DENIED",
+      });
+
+      await api.login({ email: "anna@example.com", password: "anything" });
+      await api.archiveProject(project.id);
+      await api.login({ email: "tom@example.com", password: "anything" });
+
+      await expect(api.addIssueWorklog(project.id, issue.id, { spentMinutes: 30, workDate: "2026-01-02" })).rejects.toMatchObject(
+        archivedRefusal,
+      );
+      await expect(api.addProjectMember(project.id, "11111111-1111-4111-8111-111111111111", "VIEWER")).rejects.toMatchObject(
+        archivedRefusal,
+      );
+      await expect(api.addWorkflowStatus(project.id, "0f0f0f0f-0000-4000-8000-000000000382", {
+        statusKey: "LATE",
+        name: "Late",
+        category: "IN_PROGRESS",
+        sortOrder: 99,
+      })).rejects.toMatchObject(archivedRefusal);
+    });
+
+    // The mock-only seam that stands in for another session's archive, so the
+    // board turning read-only under its reader can be seen without a gateway.
+    it("archives meanwhile on a comment that asks for it, then refuses that comment", async () => {
+      const [issue] = (await api.listIssues(project.id)).items;
+
+      await expect(
+        api.addComment(project.id, issue.id, `Ship it ${MOCK_PROJECT_TRIGGERS.archivedMeanwhile}`),
+      ).rejects.toMatchObject(archivedRefusal);
+      await expect(api.getProject(project.id)).resolves.toMatchObject({ archivedAt: expect.any(String) });
+      expect((await api.listComments(project.id, issue.id)).items.map((item) => item.body)).not.toContain(
+        `Ship it ${MOCK_PROJECT_TRIGGERS.archivedMeanwhile}`,
+      );
+    });
+
+    // The server looks the attachment up before anything else: a missing one
+    // is a 204 with no check made, archived or not; a present one meets
+    // `checkProjectWriteRole` — membership, archive, role (api-contract-guard).
+    it("looks an attachment up before refusing its delete on an archived project", async () => {
+      const issue = (await api.listIssues(project.id)).items.find((item) => item.issueKey === "TAS-101")!;
+      const [attachment] = await api.listAttachments(project.id, issue.id);
+      expect(attachment).toBeDefined();
+      await api.archiveProject(project.id);
+
+      await expect(
+        api.deleteAttachment(project.id, issue.id, "00000000-0000-0000-0000-000000000000"),
+      ).resolves.toBeUndefined();
+      await expect(api.deleteAttachment(project.id, issue.id, attachment.id)).rejects.toMatchObject(archivedRefusal);
+      expect((await api.listAttachments(project.id, issue.id)).map((item) => item.id)).toContain(attachment.id);
+    });
+
+    it("tells the last ADMIN it is archived, not that they are the last admin", async () => {
+      await api.archiveProject(project.id);
+
+      await expect(api.changeProjectMemberRole(project.id, ANNA_ID, "MEMBER")).rejects.toMatchObject(archivedRefusal);
+    });
+
+    it("never tells an outsider that a project is archived", async () => {
+      await api.login({ email: "mark@example.com", password: "anything" });
+      const mobile = (await api.listProjects()).find((item) => item.projectKey === "MOB")!;
+      const [issue] = (await api.listIssues(mobile.id)).items;
+      // Mark is Mobile's ADMIN in the seed.
+      await api.archiveProject(mobile.id);
+
+      await api.login({ email: "anna@example.com", password: "anything" });
+      const refusal = await api.addComment(mobile.id, issue.id, "Hello?").catch((error: unknown) => error);
+      expect(refusal).toMatchObject({ code: "PERMISSION_DENIED" });
+      expect(apiErrorFacts(refusal).details).toBeNull();
     });
   });
 

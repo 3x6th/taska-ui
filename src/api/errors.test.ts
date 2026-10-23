@@ -7,6 +7,7 @@ import {
   isConflict,
   isIssueVersionConflict,
   isMissingOrForbidden,
+  isProjectArchived,
   isUndeployedRoute,
 } from "./errors";
 import type { IssueWriteAnswer } from "./TaskaApi";
@@ -21,6 +22,7 @@ class MockLikeError extends Error {
   constructor(
     public readonly code: string,
     message: string,
+    public readonly details: Readonly<Record<string, string>> | null = null,
   ) {
     super(message);
   }
@@ -155,34 +157,15 @@ describe("isUndeployedRoute", () => {
     expect(isUndeployedRoute(new ApiError(staticResource, "INTERNAL", 500), UNDEPLOYED_ROUTE_MESSAGE)).toBe(false);
   });
 
-  // The second signature (TAS-148): a path Spring maps for other methods, as
-  // measured against the members route before backend PR #152 deployed, and
-  // met again by PR #155's `PATCH /projects/{id}`. The message plays no part
-  // here — the `undeployedMessage` argument passed in is the 404 arm's string
-  // and this arm must not need it — so the whole test is about the status and
-  // the code.
-  it("also accepts a 405 for a path mapped to other methods, by its code alone", () => {
+  // The 405 arm TAS-148 added is gone (TAS-149, api-contract-guard): every
+  // route this build calls is mapped for its method now, so a 405 could only be
+  // a bug of ours — the ordinary refusal, never "not on this gateway yet".
+  it("does not read a 405 as an undeployed route", () => {
     expect(
       isUndeployedRoute(
         new ApiError("Request method 'PATCH' is not supported.", "METHOD_NOT_ALLOWED", 405),
         UNDEPLOYED_ROUTE_MESSAGE,
       ),
-    ).toBe(true);
-  });
-
-  // What the code conjunct is actually for, since this gateway cannot emit a
-  // 405 carrying anything else (see `isUndeployedRoute`): a 405 that did not
-  // come from our gateway at all. Something in front of it answering with a
-  // non-JSON body leaves `RestTaskaApi.request` with no code to read and
-  // falling back to `UNKNOWN` — both shapes below are that, one where the body
-  // would not parse and one where it parsed but named no code — and neither
-  // says anything about what the gateway has shipped.
-  it("refuses a 405 that did not come from this gateway", () => {
-    expect(isUndeployedRoute(new ApiError("Request failed with 405", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE)).toBe(
-      false,
-    );
-    expect(
-      isUndeployedRoute(new ApiError("Method Not Allowed", "UNKNOWN", 405), UNDEPLOYED_ROUTE_MESSAGE),
     ).toBe(false);
   });
 });
@@ -228,6 +211,59 @@ describe("isAccountLocked", () => {
     expect(isAccountLocked("PERMISSION_DENIED")).toBe(false);
     expect(isAccountLocked({ code: "PERMISSION_DENIED" })).toBe(false);
     expect(isAccountLocked(null)).toBe(false);
+  });
+});
+
+/**
+ * The archived-project refusal (backend PR #159, TAS-146, as merged): HTTP 400
+ * `{"code":"FAILED_PRECONDITION","message":"Project is archived",
+ * "details":{"reason":"PROJECT_ARCHIVED"}}` on every write of an archived
+ * project. `details.reason` is the key; the code alone is shared with refusals
+ * that have nothing to do with archiving.
+ */
+describe("isProjectArchived", () => {
+  const archivedDetails = { reason: "PROJECT_ARCHIVED" };
+
+  it("accepts the gateway's archived refusal", () => {
+    expect(
+      isProjectArchived(new ApiError("Project is archived", "FAILED_PRECONDITION", 400, "req-1", undefined, archivedDetails)),
+    ).toBe(true);
+  });
+
+  it("accepts the mock's status-less version of it", () => {
+    expect(isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Project is archived", archivedDetails))).toBe(true);
+  });
+
+  // The last-admin refusal of a member write is a 400 FAILED_PRECONDITION with
+  // no details — read by code alone it would be an archive nobody made.
+  it("refuses a FAILED_PRECONDITION that carries no reason, the last-admin refusal included", () => {
+    expect(
+      isProjectArchived(new ApiError("Can't modify last admin: u in project: p", "FAILED_PRECONDITION", 400)),
+    ).toBe(false);
+    expect(isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Can't modify last admin: u in project: p"))).toBe(
+      false,
+    );
+    expect(
+      isProjectArchived(new ApiError("Project is archived", "FAILED_PRECONDITION", 400, "req-1", undefined, null)),
+    ).toBe(false);
+  });
+
+  it("refuses another reason, and the reason on another code", () => {
+    expect(
+      isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Locked", { reason: "SOMETHING_ELSE" })),
+    ).toBe(false);
+    expect(isProjectArchived(new MockLikeError("PERMISSION_DENIED", "Project is archived", archivedDetails))).toBe(false);
+  });
+
+  // The words are never consulted.
+  it("ignores the message", () => {
+    expect(isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Проект в архиве", archivedDetails))).toBe(true);
+    expect(isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Project is archived"))).toBe(false);
+  });
+
+  it("refuses values that are not errors", () => {
+    expect(isProjectArchived({ code: "FAILED_PRECONDITION", details: archivedDetails })).toBe(false);
+    expect(isProjectArchived(null)).toBe(false);
   });
 });
 

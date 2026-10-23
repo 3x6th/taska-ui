@@ -1802,72 +1802,72 @@ Everything below is the entry as it stood, in the past tense.
   bare "@" under the name in the profile menu and on My profile, a `login` column of "—" in
   Users, and "—" in every audit actor cell. Nothing failed.
 
-### `PATCH /projects/{id}` is not in the contract, so editing a project runs on the mock
+### Closed by TAS-149 (backend PR #155, merged `ed064ade` and deployed 2026-10-23): `PATCH /projects/{id}` and the project's description and colour
 
-- **Endpoint:** `PATCH /api/v1/projects/{projectId}`, and with it `description`
-  and `color` on `CreateProjectRequestDto` and on `ProjectResponseDto`.
-- **Contract:** none of it is in `docs/contract/openapi.yml`. All of it is on
-  backend PR #155, pinned at `docs/contract/pending/pr-155-TAS-145.yml` at head
-  `c4b8c2c4dd24`, whose header carries the four readings of that PR's Java that
-  the yml does not state.
-- **Observed 2026-09-12**, probed without a token so nothing could be mutated:
-  `PATCH /api/v1/projects/{uuid}` answers **405** with code
-  `METHOD_NOT_ALLOWED` and the message "Request method 'PATCH' is not
-  supported.", because the path exists for `GET`. The preflight passes and
-  `CorsWebFilter` writes its headers before the chain, so a browser really
-  receives that body rather than an opaque CORS failure — which is what makes
-  the compensation below possible at all.
-- **Compensation:** the feature ships mock-backed, which is this repository's
-  normal mode, and the dialog reads the 405 through `isUndeployedRoute` and
-  says the route is not on this gateway yet, in a quiet note rather than the red
-  error box. Without that a person meets the gateway's own protocol sentence.
-  The optimistic update rolls back, nothing is written, and the session is
-  untouched — a 405 is produced by routing before authentication, so no token is
-  spent and no 401 path is entered.
-- **The edit control is not on the projects screen against the gateway**, and
-  that is deliberate rather than an oversight. It is gated on
-  `currentUserRole`, which arrives with backend PR #152 and was absent when this was written, so
-  in `rest` and in `hybrid` the card shows no pencil while the board header
-  still does — the board already holds a membership read and spends nothing.
-  The alternative was a membership read per card, and its cost depends on the
-  mode in a way worth stating rather than averaging: **on the stand it is
-  nothing at all** — `hybrid` with `VITE_TASKA_ASSUME_PROJECT_ADMIN` returns the
-  role before any await, so the screen was 1 + 2N with the fallback and is
-  1 + 2N without it. It is N extra round-trips in `rest`, and 2N in `hybrid`
-  with the flag off, where that leg reads the project *and* the current user. So
-  the change buys nothing on the one deployment this repository has; what it
-  buys is that no mode pays a request to decide whether to offer a dialog whose
-  Save cannot succeed, and that the branch nothing exercises against a real
-  gateway is gone. Both entry points light up on their own when PR #152
-  deploys.
-  **They did, on 2026-09-16** (TAS-224). Every `GET /projects` item now carries
-  the reader's role: project-service `ProjectRepository.java:27-29` inner-joins
-  the reader's membership, at develop `1cfe4d7`. So on the stand an ADMIN's
-  cards show the pencil, and Save lands on the 405 "not shipped yet" line above
-  while PR #155 is open. That is the state this entry designed, now reached on
-  the stand.
-- **Two asymmetries that look like one rule and are not.** A description can be
-  cleared and a colour cannot. Both fields reach project-service as
-  `Optional<String>`, where an absent field and an explicit null are the same
-  value — structurally, at three layers: the gateway generator runs with
-  `openApiNullable=false` so the DTO field is a plain `String`, the gateway
-  client sets the proto field only when it is non-null, and the service adapter
-  reads the has-bit. But an empty string is a *value*, and `description` accepts
-  one where `color` is refused twice, by the gateway's `@Pattern` and again by
-  the service's own non-blank check. So `description: ""` genuinely clears,
-  storing the empty string rather than SQL null, and there is no request that
-  returns a colour to the computed one.
-- **User-visible effect of that second half:** choosing a project colour is a
-  one-way door. The dialog draws it as one — the Automatic swatch is disabled
-  once a colour is saved, with a line saying so — rather than offering a control
-  that silently fails.
-- **Removal:** [TAS-145](https://jira.ozero.dev/browse/TAS-145) / backend PR
-  #155 for the route itself. The one-way door needs more than that PR merging
-  and was raised on TAS-145 while it is open: either an explicit clear flag on
-  the request, or the gateway generator moving to `openApiNullable=true` so a
-  null can be told from an absent field at all. The second is the general fix
-  and touches every nullable DTO in the gateway, so it is the owner's call
-  rather than ours.
+- **Endpoint:** `PATCH /api/v1/projects/{projectId}`, and `description` and `color` on
+  `CreateProjectRequestDto` and `ProjectResponseDto`.
+- **Was:** none of it in the contract; the dialog ran on the mock, and against the gateway
+  Save met a 405 ("not on this gateway yet") from 2026-09-12 to 2026-10-23.
+- **Now, in the contract and on the stand:** an absent field keeps, `null` clears to SQL
+  null, a string sets; a blank or whitespace description becomes `null` on create and on
+  update (`normalizeDescription`), so no `""` exists on the server — the "legacy blank" this
+  entry once described was only ever the mock's. ADMIN-only; the answer carries
+  `currentUserRole`. The gateway parses the body by hand: unknown or immutable keys, a
+  non-string value, a missing body and `name: null` or blank answer 400; `{}` is a 200
+  no-op. Checks run validation → not found → non-member 403 → non-ADMIN 403 → archived
+  400 `PROJECT_ARCHIVED` (see the #159 entry below). The proto numbering and the
+  membership `SELECT`s raised on TAS-145 were settled before the merge.
+- **Probed after the deploy** (run `39969103400` green 14:39:54Z, develop `d20ba0bc`): without
+  a token, `PATCH` and `DELETE /api/v1/projects/{uuid}` answer 401 (were 405;
+  `806c14f9-5166-44d7-90b3-edffbe3e672c` for the DELETE). `/projects/not-a-uuid` now answers
+  404 with an empty body for every method — the edge's path match wants a well-formed UUID —
+  so a "deployed?" probe must use one.
+- **Compensation:** none left. The 405 notes are gone with TAS-149.
+
+### Backend PR #159 (TAS-146), merged `fcbbaac8` and deployed 2026-10-23: archiving a project — what the yml does not say
+
+- **Endpoint:** `DELETE /api/v1/projects/{projectId}`, and every read and write scoped to a
+  project.
+- **Superseded before shipping.** TAS-149 was first written (PR #95, 2026-10-20) against
+  #159's head `97464fe`, where an archived project stayed in `GET /projects` and every issue
+  read of it answered 400. The PR merged at `919c1d6d` the other way round, and the entry
+  that described the old head is replaced by this one.
+- **Read in the Java at develop `d20ba0bc`:**
+  - `GET /projects` and `GET /project-stats` leave archived projects out for every caller
+    (`archived_at IS NULL`); unscoped issue search derives its projects from the same list.
+    No route lists archived projects and none restores one.
+  - Reads stay open: the project, `/context` (labels included), issues, board, by-key,
+    comments, watchers, work log (`ArchivedProjectIssuesIntegrationTest`).
+  - `DELETE` has no body and answers 200 `ProjectResponseDto` with `archivedAt` and
+    `currentUserRole: "ADMIN"`; a repeat answers the stored row (same `archivedAt`, no new
+    event); 404 for a missing project; 403 "Project ADMIN role is required" for a non-member
+    and for a member below ADMIN.
+  - Every write answers 400 `{"code":"FAILED_PRECONDITION","message":"Project is
+    archived","details":{"reason":"PROJECT_ARCHIVED"}}` — issue-service (membership →
+    archive → role), workflow-service (same order), member writes (membership → archive →
+    role and last-admin), the type registry and `PATCH` (ADMIN → archive). An outsider is
+    never told: 403 or 404 as before. `FAILED_PRECONDITION` alone does not identify it (the
+    last-admin refusal shares it); the client keys on `details.reason` only.
+  - During a partial rollout an issue or workflow service in front of an older
+    project-service answers 503 "Project service does not support archive-aware writes".
+  - Members at the moment of archiving, minus the archiver, get `PROJECT_ARCHIVED` (title
+    "Project archived", body "Project {name} was archived", `projectId` set, no `issueId`);
+    `/meta` lists it.
+- **Compensation:** none. The board reads `archivedAt` from `/context` and offers no write
+  on an archived project — the contract states the server enforces it, so this is the
+  project's property, not a workaround (DESIGN.md §5.7).
+- **Not seen live:** nothing has been archived on the stand; an archive is a mutation and
+  needs the owner's word.
+
+### `RestTaskaApi.getBoard` maps the board shape from before backend #205
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/board` (`BoardResponseDto`).
+- **What changed:** backend #205 (TAS-213, merged `d20ba0bc` on 2026-10-23) dropped
+  `issueType` from the board request, turned labels into objects and made `unplacedIssues`
+  required; the snapshot carries it since TAS-149's refresh.
+- **Client:** `getBoard` / `toBoardIssue` still map the old shape. No screen calls `getBoard`
+  today, so nothing a reader sees is wrong.
+- **Removal:** the TAS-213 frontend catch-up, which moves the board onto the one read.
 
 ### The avatar routes deployed hours after they merged
 
@@ -2270,35 +2270,13 @@ The entry as it stood:
   mock-only behaviour; it is not a compensation for a gateway defect and should
   not be filed as one.
 
-### The create-project form shows a field the contract does not have
+### Closed by TAS-149 (backend PR #155, merged 2026-10-23): the create-project form's description and colour were discarded
 
-- **Endpoint:** `POST /api/v1/projects`
-- **Contract:** `CreateProjectRequestDto` is `{projectKey, name}` — there is
-  no `description`.
-- **Compensation, rewritten 2026-09-12 when it stopped being true.** This entry
-  used to say "the UI renders a Description textarea; `RestTaskaApi` correctly
-  does not send it". Since [TAS-148](https://jira.ozero.dev/browse/TAS-148) it
-  sends it, and sends a `color` beside it, so the record said the opposite of
-  what shipped and the silent discard had quietly widened from one field to two.
-  Found by `release-reviewer` on that story.
-- **What happens now:** the deployed gateway takes both fields and throws them
-  away. Its `CreateProjectRequestDto` declares neither, and nothing anywhere in
-  the api-gateway makes an undeclared field an error — no `spring.jackson`
-  block, no `ObjectMapper` or codec bean, no `@JsonIgnoreProperties` in the
-  repository at all, and the generated model carries only `@JsonProperty`.
-  Spring Boot 4 on Jackson 3 leaves `FAIL_ON_UNKNOWN_PROPERTIES` off by default
-  besides, so it is two independent reasons rather than one. Settled by reading
-  `develop` at `21a0d9d177a1`, not by sending a create to the stand.
-- **User-visible effect:** a person who types a description and picks a colour
-  when creating a project gets a project with neither, and no error. The UI omits
-  both when they are empty, so the case is exactly "somebody filled the field
-  in".
-- **Removal:** backend PR #155 ([TAS-145](https://jira.ozero.dev/browse/TAS-145)),
-  which puts `description` and `color` on the create request and adds the `PATCH`
-  that edits them. Nothing in this frontend changes when it merges; the fields
-  simply stop being discarded. This entry used to point at TAS-141 and no longer
-  does: the fields are landing in the project itself rather than in a contract
-  cleanup.
+- **Endpoint:** `POST /api/v1/projects`.
+- **Was:** the form sent `description` and `color` (since TAS-148) and the gateway's
+  `CreateProjectRequestDto` declared neither, so both were silently dropped.
+- **Now:** #155 put both on the create request; a blank description becomes `null`. Nothing
+  in the frontend changed when it merged.
 
 ### Neither a project nor a user carries a colour, and the UI draws one anyway
 
@@ -2329,6 +2307,10 @@ The entry as it stood:
 - **How it is switched off:** it is not. There is no flag and no mode in which
   the computation is skipped — it is the fallback arm of an expression, and it
   stops being reached for a given project the moment a stored colour arrives.
+- **2026-10-23: the project half is no longer a compensation.** Backend #155 merged with a
+  nullable `color`; a `null` colour is now the contract's own instruction to compute it, so
+  the key badge's computed colour is the designed default, not a stand-in. The avatar half
+  stands as written below.
 - **Removal:** partial, and only for the project half.
   [TAS-145](https://jira.ozero.dev/browse/TAS-145) and
   [TAS-148](https://jira.ozero.dev/browse/TAS-148) were **widened on

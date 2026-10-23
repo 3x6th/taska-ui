@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import { apiErrorFacts } from "../api/errors";
+import { refusalWords } from "../lib/projectArchive";
 import { RequestId } from "./RequestId";
 
 /**
@@ -45,7 +46,10 @@ export function ApiNotice({
   /** Events — a rejected drop, a rolled-back move — can be dismissed. States cannot. */
   dismiss?: { label: string; onDismiss: () => void };
 }) {
-  const { message, requestId } = apiErrorFacts(error);
+  const { requestId } = apiErrorFacts(error);
+  // The server's words — or, for a write refused because the project was
+  // archived meanwhile, ours in their place (DESIGN.md §5.7).
+  const message = refusalWords(error);
 
   return (
     <div className="api-notice">

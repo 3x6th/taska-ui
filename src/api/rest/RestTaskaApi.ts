@@ -1074,15 +1074,18 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
-   * `PATCH /projects/{projectId}` — see `TaskaApi.updateProject` for the four
+   * `PATCH /projects/{projectId}` — see `TaskaApi.updateProject` for the
    * behaviours of this route that its schema does not state.
    *
    * Only the keys the caller actually named are sent, and the test for "named"
    * is `!== undefined` rather than truthiness. That distinction is the whole
-   * of the description-clearing story: `description: ""` has to survive this
-   * spread, because the empty string is how a description is removed, while
-   * `description: undefined` must not become `"description": null` — the
-   * service reads that as "keep" and the caller would be told nothing changed.
+   * of the clearing story (backend PR #155): an explicit `null` has to survive
+   * this spread as `"color": null` / `"description": null`, because that is
+   * what clears the field, while `undefined` must not become one — an absent
+   * key is "keep", and a stray `null` would wipe a colour the reader never
+   * touched. `description: ""` survives too, as written; the server stores a
+   * blank one as `null`, the same clear the dialog sends explicitly. And no key
+   * beyond the three: the gateway answers an unknown one with a 400.
    */
   updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
     return this.request<Project>(`/projects/${this.segment(projectId)}`, {
@@ -1093,6 +1096,17 @@ export class RestTaskaApi implements TaskaApi {
         ...(input.color !== undefined ? { color: input.color } : {}),
       },
     });
+  }
+
+  /**
+   * `DELETE /projects/{projectId}` — see `TaskaApi.archiveProject`. No body:
+   * the route takes none. The answer is the archived project as stored, passed
+   * through as the reads pass theirs, `currentUserRole: "ADMIN"` included —
+   * the caller decides what to keep from it, and the edit dialog keeps only
+   * `archivedAt`.
+   */
+  archiveProject(projectId: string): Promise<Project> {
+    return this.request<Project>(`/projects/${this.segment(projectId)}`, { method: "DELETE" });
   }
 
   /**
@@ -1809,9 +1823,9 @@ export class RestTaskaApi implements TaskaApi {
    * it answered Spring's static-resource 404 while `GET /users/me` answered
    * 401 in the same run, and the routes still answered it on 2026-09-14 at
    * 11:14 UTC, after the merge. Probed again at 13:53 UTC, this route answered
-   * 405 rather than that 404 — the first arm of `isUndeployedRoute` no longer
-   * matches on this gateway, though it is still what `UserProfileMenu` reads
-   * before it offers a control or prints a refusal.
+   * 405 rather than that 404 — `isUndeployedRoute`, whose one arm is that
+   * 404, no longer matches on this gateway, though it is still what
+   * `UserProfileMenu` reads before it offers a control or prints a refusal.
    *
    * Refused before the request by `refuseAvatar` below, with the answers the
    * gateway would give. The

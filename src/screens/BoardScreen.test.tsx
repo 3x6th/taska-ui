@@ -66,6 +66,7 @@ const {
   seedIssueVersion,
   emptyPartsOnRead,
   setMembership,
+  seedArchivedAt,
   seedAssignee,
   assignCalls,
   failMembership,
@@ -76,6 +77,7 @@ const {
   failWorkflow,
   seedLabels,
   holdLabelCreate,
+  failNextCreate,
   failMembers,
   holdMembers,
   memberReads,
@@ -152,6 +154,8 @@ const {
   const state: {
     /** `role: null` is an answered read that named no role this build knows — not a failure, and not a VIEWER. */
     membership: { role: "ADMIN" | "MEMBER" | "VIEWER" | null; isMember: boolean; projectExists: boolean };
+    /** `project.archivedAt` on the context read (backend PR #159, TAS-149). */
+    archivedAt: string | null;
     membershipFailure?: Error;
     membershipHeld: boolean;
     projectFailure?: Error;
@@ -183,6 +187,8 @@ const {
     workflowFailure?: Error;
     labels: { id: string; name: string; color: string }[];
     labelCreateHeld: boolean;
+    /** The next issue or label create is refused with this error, and creates nothing. */
+    createFailure?: Error;
     searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null; storyPoints: number | null }[];
     searchTotal: number;
     searchFailure?: Error;
@@ -363,6 +369,7 @@ const {
     commentDeleteFailure?: Error;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
+    archivedAt: null,
     membershipHeld: false,
     projectHeld: false,
     issueTypes: ["TASK", "BUG", "STORY"],
@@ -528,7 +535,7 @@ const {
           createdBy: "user-anna",
           createdAt: now,
           updatedAt: now,
-          archivedAt: null,
+          archivedAt: state.archivedAt,
           currentUserRole: state.membership.role,
         },
         role: state.membership.role,
@@ -575,6 +582,11 @@ const {
     // from one that strands it.
     createIssue: async (_projectId: string, input: { summary: string; description: string }) => {
       state.createCalls.push({ ...input });
+      if (state.createFailure) {
+        const failure = state.createFailure;
+        state.createFailure = undefined;
+        throw failure;
+      }
       const created = makeIssue(`issue-${state.created.length + 2}`, `TAS-20${state.created.length}`, input.summary, input.description);
       state.created = [...state.created, created];
       state.searchTotal += 1;
@@ -683,6 +695,11 @@ const {
       // test that raced it would be passing on a stopwatch. Holding the
       // promise makes the window the whole test instead.
       if (state.labelCreateHeld) return new Promise(() => {});
+      if (state.createFailure) {
+        const failure = state.createFailure;
+        state.createFailure = undefined;
+        throw failure;
+      }
       const label = { id: `label-${state.labels.length + 1}`, name: input.name, color: input.color };
       state.labels = [...state.labels, label];
       return label;
@@ -885,6 +902,10 @@ const {
     setMembership: (role: "ADMIN" | "MEMBER" | "VIEWER" | null) => {
       state.membership = { role, isMember: true, projectExists: true };
     },
+    /** What the next context read says about the archive. */
+    seedArchivedAt: (archivedAt: string | null) => {
+      state.archivedAt = archivedAt;
+    },
     seedAssignee: (assigneeId: string | null) => {
       state.assigneeId = assigneeId;
     },
@@ -980,6 +1001,10 @@ const {
     heldDeleteCount: () => state.deleteReleases.length,
     holdLabelCreate: (held: boolean) => {
       state.labelCreateHeld = held;
+    },
+    /** The next issue or label create answers with this refusal. */
+    failNextCreate: (error: Error) => {
+      state.createFailure = error;
     },
     failMembers: (error: Error) => {
       state.membersFailure = error;
@@ -1141,6 +1166,7 @@ const {
       state.createCalls = [];
       state.contextWorkflowParts = undefined;
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
+      state.archivedAt = null;
       state.membershipFailure = undefined;
       state.membershipHeld = false;
       state.projectFailure = undefined;
@@ -1149,6 +1175,7 @@ const {
       state.workflowFailure = undefined;
       state.labels = [];
       state.labelCreateHeld = false;
+      state.createFailure = undefined;
       state.searchHits = [];
       state.searchTotal = 0;
       state.searchFailure = undefined;
@@ -1285,6 +1312,423 @@ const AFTER_RETRY = { timeout: 3000 };
 
 /** The board's one frame read since TAS-251: project, role, members, labels and workflows. */
 const membershipKey = ["project-context", PROJECT_ID];
+
+/**
+ * An archived project's board (TAS-149, backend PR #159; DESIGN.md §5.7,
+ * «Архивный проект»): readable by every member, writable by none. The signal
+ * is `archivedAt` on the context read and nothing else; a refusal only makes
+ * the board read the context again.
+ */
+describe("an archived project's board", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+  const archivedRefusal = () =>
+    Object.assign(new Error("Project is archived"), {
+      status: 400,
+      code: "FAILED_PRECONDITION",
+      details: { reason: "PROJECT_ARCHIVED" },
+      requestId: "7c41e2d9-archived",
+    });
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it.each([["ADMIN" as const], ["MEMBER" as const], ["VIEWER" as const]])(
+    "reads, and offers no write, to a %s",
+    async (role) => {
+      setMembership(role);
+      seedArchivedAt("2026-10-20T10:00:00Z");
+      renderBoard();
+
+      const line = await screen.findByText(/^Archived on Oct 20\./);
+      expect(line.closest("p")).toHaveTextContent("Archived on Oct 20. This board and its issues are read-only.");
+      // Outside the problems region: an archived project is not a failure.
+      expect(screen.queryByRole("region", { name: "Board problems" })).not.toBeInTheDocument();
+      // Its issues are there, and none of them can be dragged.
+      expect(await screen.findByRole("button", { name: /TAS-102/ })).toHaveClass("is-static");
+      // The VIEWER's set, for every role, ADMIN included.
+      expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Edit project" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Manage labels" })).not.toBeInTheDocument();
+      // The reads stay.
+      expect(screen.getByRole("button", { name: "Members" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Workflows" })).toBeVisible();
+    },
+  );
+
+  it("names the year of an archive from another year", async () => {
+    seedArchivedAt("2024-03-05T12:00:00Z");
+    renderBoard();
+
+    expect(await screen.findByText("Archived on Mar 5, 2024.")).toBeVisible();
+  });
+
+  it("does not say the role is unstated on an archived project", async () => {
+    setMembership(null);
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    renderBoard();
+
+    await screen.findByText(/^Archived on/);
+    expect(screen.queryByText(/Your role came back empty or unrecognised/)).not.toBeInTheDocument();
+  });
+
+  it("opens an issue read-only, with the archive in the transition slot", async () => {
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    const note = panel.getByText("This project was archived on Oct 20, so this issue is read-only.");
+    expect(note).toHaveAttribute("tabindex", "-1");
+    expect(panel.queryByRole("button", { name: /Delete issue/ })).not.toBeInTheDocument();
+    expect(panel.queryByPlaceholderText("Leave a comment")).not.toBeInTheDocument();
+    expect(panel.queryByRole("form", { name: "Log work" })).not.toBeInTheDocument();
+    // The text stays readable, selectable and copyable (§4.3): `readOnly`.
+    expect(document.querySelector("textarea.summary-textarea")).toHaveAttribute("readonly");
+    expect(panel.getByRole("button", { name: /Watch/ })).toBeDisabled();
+  });
+
+  it("turns read-only from a re-read after a refused write, and says so with the request id", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    expect(screen.queryByText(/^Archived on/)).not.toBeInTheDocument();
+
+    // Archived elsewhere while the panel was open: the server refuses, and its
+    // next context read says so.
+    failNextUpdate(archivedRefusal());
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+
+    expect(await panel.findByRole("alert")).toHaveTextContent(
+      "This project has been archived, so nothing in it can be changed.",
+    );
+    expect(panel.queryByText("Project is archived")).not.toBeInTheDocument();
+    expect(panel.getByRole("button", { name: "Copy request id 7c41e2d9-archived" })).toBeVisible();
+    // The board turned read-only from the context it read again.
+    expect(await screen.findByText(/^Archived on Oct 20\./)).toBeVisible();
+    expect(await panel.findByText("This project was archived on Oct 20, so this issue is read-only.")).toBeVisible();
+  });
+
+  it("keeps a comment the archive caught unsent, read-only", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    const composer = panel.getByPlaceholderText("Leave a comment");
+    fireEvent.change(composer, { target: { value: "Half a thought" } });
+
+    failNextUpdate(archivedRefusal());
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    await screen.findByText(/^Archived on/);
+
+    const kept = await panel.findByDisplayValue("Half a thought");
+    expect(kept).toHaveAttribute("readonly");
+    expect(panel.queryByRole("button", { name: "Comment" })).not.toBeInTheDocument();
+  });
+
+  it("does not read a refusal without the reason as an archive", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    failNextUpdate(
+      Object.assign(new Error("Transition is not available for the current issue status"), {
+        status: 400,
+        code: "FAILED_PRECONDITION",
+      }),
+    );
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+
+    expect(await panel.findByRole("alert")).toHaveTextContent("Transition is not available for the current issue status");
+    // Nothing asked the context again, so nothing on screen says archived.
+    expect(screen.queryByText(/^Archived on/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * Archived by somebody else while a dialog of the board's was open (§5.7,
+   * «Архив пришёл отказом записи», art-director's B1/B3/B4 on TAS-149). The
+   * dialogs stay open and go read-only like Members and Workflows; focus never
+   * leaves an open one; unsaved panel text keeps its Esc hold.
+   */
+  describe("with a dialog open when the archive arrives", () => {
+    /** The board's next context read says archived — as after another session's archive. */
+    const archiveArrives = async (queryClient: QueryClient) => {
+      seedArchivedAt("2026-10-20T10:00:00Z");
+      await queryClient.invalidateQueries({ queryKey: membershipKey });
+      await screen.findByText(/^Archived on Oct 20\./);
+    };
+    const boardLine = () => screen.getByText(/^Archived on Oct 20\./).closest("p");
+    const openNewIssue = async () => {
+      await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "New" }));
+      return within(await screen.findByRole("dialog", { name: "New issue" }));
+    };
+    const openLabels = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Manage labels" }));
+      return within(await screen.findByRole("dialog", { name: "Labels" }));
+    };
+
+    it("keeps New issue open with what was typed, read-only, and says why above the footer", async () => {
+      const queryClient = renderBoard();
+      const dialog = await openNewIssue();
+      fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "A drafted issue" } });
+      fireEvent.change(dialog.getByLabelText("Description"), { target: { value: "Words worth keeping" } });
+      fireEvent.change(dialog.getByLabelText("Story points"), { target: { value: "3" } });
+
+      await archiveArrives(queryClient);
+
+      expect(await dialog.findByText("This project is archived, so issues cannot be created in it.")).toBeVisible();
+      for (const [field, value] of [
+        ["Summary", "A drafted issue"],
+        ["Description", "Words worth keeping"],
+        ["Story points", "3"],
+      ]) {
+        expect(dialog.getByLabelText(field)).toHaveValue(value);
+        expect(dialog.getByLabelText(field)).toHaveAttribute("readonly");
+      }
+      expect(dialog.queryByRole("button", { name: "Create issue" })).not.toBeInTheDocument();
+      // The choices stay legible and reachable, and a press does nothing. (Not
+      // "Low" or "Task": the first segment of each is named by its `<label>`.)
+      const high = dialog.getByRole("button", { name: "High" });
+      fireEvent.click(high);
+      expect(high).toHaveAttribute("aria-pressed", "false");
+      expect(dialog.getByRole("button", { name: "Medium" })).toHaveAttribute("aria-pressed", "true");
+      for (const segment of [high, dialog.getByRole("button", { name: "Bug" })]) {
+        for (const choice of within(segment.parentElement!).getAllByRole("button")) {
+          expect(choice).toHaveAttribute("aria-disabled", "true");
+        }
+      }
+      // The ways out stay.
+      expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible();
+      expect(dialog.getByRole("button", { name: "Close" })).toBeVisible();
+      // And Enter in a box asks for nothing.
+      fireEvent.submit(dialog.getByLabelText("Summary").closest("form")!);
+      expect(createCalls()).toEqual([]);
+    });
+
+    it("lets a refused create say it in place of the line, and keeps focus in the dialog", async () => {
+      const queryClient = renderBoard();
+      const dialog = await openNewIssue();
+      fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "A drafted issue" } });
+      failNextCreate(archivedRefusal());
+      seedArchivedAt("2026-10-20T10:00:00Z");
+      const create = dialog.getByRole("button", { name: "Create issue" });
+      create.focus();
+      fireEvent.click(create);
+
+      const sentence = await dialog.findByText("This project has been archived, so nothing in it can be changed.");
+      await screen.findByText(/^Archived on Oct 20\./);
+      await waitFor(() => expect(dialog.queryByRole("button", { name: "Create issue" })).not.toBeInTheDocument());
+      // One fact, one place: the refusal says it, so the line does not.
+      expect(dialog.queryByText("This project is archived, so issues cannot be created in it.")).not.toBeInTheDocument();
+      // Create issue went from under focus; focus stays inside, on the refusal —
+      // not on the board's line under the scrim.
+      await waitFor(() => expect(sentence.closest(".error-note")).toHaveFocus());
+      expect(boardLine()).not.toHaveFocus();
+      expect(dialog.getByLabelText("Summary")).toHaveValue("A drafted issue");
+      void queryClient;
+    });
+
+    it("puts the line in the New label form's place, drops the row actions, and keeps focus inside", async () => {
+      seedLabels([{ id: "label-backend", name: "backend", color: "#0052cc" }]);
+      const queryClient = renderBoard();
+      const dialog = await openLabels();
+      const edit = await dialog.findByRole("button", { name: "Edit backend" });
+      edit.focus();
+
+      await archiveArrives(queryClient);
+
+      const line = await dialog.findByText("This project is archived, so its labels cannot be changed.");
+      expect(dialog.queryByLabelText("New label")).not.toBeInTheDocument();
+      expect(dialog.queryByRole("button", { name: "Add label" })).not.toBeInTheDocument();
+      expect(dialog.queryByRole("button", { name: "Edit backend" })).not.toBeInTheDocument();
+      expect(dialog.queryByRole("button", { name: "Delete backend" })).not.toBeInTheDocument();
+      // The list itself stays.
+      expect(dialog.getByText("backend")).toBeVisible();
+      // The pencil in focus went, and focus went to the dialog's own line.
+      await waitFor(() => expect(line).toHaveFocus());
+      expect(line).toHaveAttribute("tabindex", "-1");
+      expect(boardLine()).not.toHaveFocus();
+    });
+
+    it("keeps a rename the archive caught open, read-only and without its Save", async () => {
+      seedLabels([{ id: "label-backend", name: "backend", color: "#0052cc" }]);
+      const queryClient = renderBoard();
+      const dialog = await openLabels();
+      fireEvent.click(await dialog.findByRole("button", { name: "Edit backend" }));
+      fireEvent.change(dialog.getByLabelText("Rename backend"), { target: { value: "backend-api" } });
+
+      await archiveArrives(queryClient);
+
+      await dialog.findByText("This project is archived, so its labels cannot be changed.");
+      const rename = dialog.getByLabelText("Rename backend");
+      expect(rename).toHaveValue("backend-api");
+      expect(rename).toHaveAttribute("readonly");
+      expect(dialog.queryByRole("button", { name: "Save label" })).not.toBeInTheDocument();
+      expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible();
+      for (const swatch of within(dialog.getByRole("group", { name: "Label colour" })).getAllByRole("button")) {
+        expect(swatch).toHaveAttribute("aria-disabled", "true");
+      }
+    });
+
+    it("lets a refused label create say it, with no line beside it", async () => {
+      const queryClient = renderBoard();
+      const dialog = await openLabels();
+      failNextCreate(archivedRefusal());
+      seedArchivedAt("2026-10-20T10:00:00Z");
+      fireEvent.change(dialog.getByLabelText("New label"), { target: { value: "release" } });
+      fireEvent.click(dialog.getByRole("button", { name: "Add label" }));
+
+      expect(await dialog.findByText("This project has been archived, so nothing in it can be changed.")).toBeVisible();
+      await screen.findByText(/^Archived on Oct 20\./);
+      await waitFor(() => expect(dialog.queryByLabelText("New label")).not.toBeInTheDocument());
+      expect(dialog.queryByText("This project is archived, so its labels cannot be changed.")).not.toBeInTheDocument();
+      void queryClient;
+    });
+
+    it("keeps the board's Edit project open with what was typed, without Save or the danger zone", async () => {
+      const queryClient = renderBoard();
+      fireEvent.click(await screen.findByRole("button", { name: "Edit project" }));
+      const dialog = within(await screen.findByRole("dialog", { name: "Edit project" }));
+      expect(dialog.getByRole("button", { name: "Archive project" })).toBeVisible();
+      fireEvent.change(dialog.getByLabelText("Description"), { target: { value: "Typed and kept" } });
+
+      await archiveArrives(queryClient);
+
+      expect(await dialog.findByText("This project is archived, so it cannot be edited.")).toBeVisible();
+      expect(dialog.getByLabelText("Description")).toHaveValue("Typed and kept");
+      expect(dialog.getByLabelText("Description")).toHaveAttribute("readonly");
+      expect(dialog.getByLabelText("Name")).toHaveAttribute("readonly");
+      expect(dialog.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+      expect(dialog.queryByRole("region", { name: "Archive project" })).not.toBeInTheDocument();
+      for (const swatch of within(dialog.getByRole("group", { name: "Project colour" })).getAllByRole("button")) {
+        expect(swatch).toHaveAttribute("aria-disabled", "true");
+      }
+      expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible();
+    });
+
+    it("hands focus to the board's archive line when such a dialog closes, its opener gone", async () => {
+      const queryClient = renderBoard();
+      const dialog = await openLabels();
+
+      await archiveArrives(queryClient);
+      await dialog.findByText("This project is archived, so its labels cannot be changed.");
+      expect(screen.queryByRole("button", { name: "Manage labels" })).not.toBeInTheDocument();
+      fireEvent.click(dialog.getByRole("button", { name: "Close" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Labels" })).not.toBeInTheDocument());
+      await waitFor(() => expect(boardLine()).toHaveFocus());
+    });
+
+    it("keeps the Esc hold on summary and description text the archive caught unsaved", async () => {
+      const queryClient = renderBoard(ISSUE_PATH);
+      const panel = await openPanel();
+      const summary = document.querySelector<HTMLTextAreaElement>("textarea.summary-textarea")!;
+      const description = panel.getByLabelText("Description");
+      fireEvent.change(description, { target: { value: "Half a description" } });
+      summary.focus();
+      fireEvent.change(summary, { target: { value: "Wire the board to the gateway, typed on" } });
+
+      await archiveArrives(queryClient);
+      await panel.findByText("This project was archived on Oct 20, so this issue is read-only.");
+
+      for (const [box, value] of [
+        [summary, "Wire the board to the gateway, typed on"],
+        [description, "Half a description"],
+      ] as const) {
+        expect(box).toHaveAttribute("readonly");
+        expect(box).toHaveValue(value);
+        expect(box).toHaveAttribute("data-unsaved-text", "true");
+      }
+      // Esc in kept text leaves the panel, the text and the focus where they are (§4.10).
+      expect(summary).toHaveFocus();
+      fireEvent.keyDown(summary, { key: "Escape" });
+      description.focus();
+      fireEvent.keyDown(description, { key: "Escape" });
+      expect(screen.getByRole("dialog", { name: "TAS-102 issue" })).toBeInTheDocument();
+      expect(summary).toHaveValue("Wire the board to the gateway, typed on");
+    });
+
+    // Only a `PROJECT_ARCHIVED` refusal stands in for a dialog's archive line
+    // (art-director's round 2 on TAS-149, decision 4 refused). One of another
+    // kind says nothing about the archive: the line stays under it, and the
+    // line — never that refusal, which the reader may have read already — is
+    // where focus goes.
+    const otherRefusal = () =>
+      Object.assign(new Error("Summary is too long"), { status: 400, code: "VALIDATION_ERROR", requestId: "2a9d-other" });
+
+    it("keeps New issue's line under a refusal of another kind, and puts lost focus on the line", async () => {
+      const queryClient = renderBoard();
+      const dialog = await openNewIssue();
+      fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "A drafted issue" } });
+      failNextCreate(otherRefusal());
+      const create = dialog.getByRole("button", { name: "Create issue" });
+      create.focus();
+      fireEvent.click(create);
+      const sentence = await dialog.findByText("Summary is too long");
+      expect(create).toHaveFocus();
+
+      await archiveArrives(queryClient);
+
+      const line = await dialog.findByText("This project is archived, so issues cannot be created in it.");
+      const refusal = sentence.closest(".error-note")!;
+      expect(refusal).not.toHaveAttribute("data-archive-note");
+      expect(refusal).not.toHaveAttribute("tabindex");
+      expect(line).toHaveAttribute("data-archive-note", "modal");
+      // Under the refusal, not in its place.
+      expect(refusal.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(dialog.queryByRole("button", { name: "Create issue" })).not.toBeInTheDocument();
+      await waitFor(() => expect(line).toHaveFocus());
+      expect(boardLine()).not.toHaveFocus();
+    });
+
+    it("keeps the Labels line beside a refusal of another kind, and puts lost focus on the line", async () => {
+      const queryClient = renderBoard();
+      const dialog = await openLabels();
+      failNextCreate(Object.assign(new Error("A label named release already exists"), { status: 409, code: "CONFLICT" }));
+      fireEvent.change(dialog.getByLabelText("New label"), { target: { value: "release" } });
+      fireEvent.click(dialog.getByRole("button", { name: "Add label" }));
+      const sentence = await dialog.findByText("A label named release already exists");
+      dialog.getByLabelText("New label").focus();
+
+      await archiveArrives(queryClient);
+
+      const line = await dialog.findByText("This project is archived, so its labels cannot be changed.");
+      expect(sentence).toBeVisible();
+      expect(sentence.closest(".error-note")).not.toHaveAttribute("data-archive-note");
+      expect(dialog.queryByLabelText("New label")).not.toBeInTheDocument();
+      await waitFor(() => expect(line).toHaveFocus());
+      expect(boardLine()).not.toHaveFocus();
+    });
+
+    // A Planning value typed and not sent would stand in a read-only box as if
+    // the issue held it (§5.7): the turn puts it back to the stored one, as a
+    // refused write does (§5.5). Free text is the reader's work and stays.
+    it("puts unsent planning drafts back to the stored values when the archive arrives", async () => {
+      const queryClient = renderBoard(ISSUE_PATH);
+      const panel = await openPanel();
+      const points = await panel.findByLabelText("Story points");
+      const estimate = panel.getByLabelText("Original estimate");
+      expect(points).toHaveValue("3");
+      fireEvent.change(estimate, { target: { value: "2h" } });
+      points.focus();
+      fireEvent.change(points, { target: { value: "13" } });
+
+      await archiveArrives(queryClient);
+      await panel.findByText("This project was archived on Oct 20, so this issue is read-only.");
+
+      expect(points).toHaveValue("3");
+      expect(estimate).toHaveValue("8h");
+      for (const box of [points, estimate]) {
+        expect(box).toHaveAttribute("readonly");
+        // Nothing unsaved is left in it, so Esc there closes the panel as anywhere.
+        expect(box).not.toHaveAttribute("data-unsaved-text");
+      }
+      // Leaving the box sends nothing: there is nothing left to send, and no write.
+      fireEvent.blur(points);
+      expect(updateCalls()).toEqual([]);
+    });
+  });
+});
 
 describe("board failures the user can see", () => {
   beforeEach(() => {

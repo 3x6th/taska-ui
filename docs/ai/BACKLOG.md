@@ -12,11 +12,8 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Conscious decisions to revisit
 
-- **Existing TAS-145 pending pin is stale (observed during TAS-387, 2026-10-23):**
-  `pr-155-TAS-145.yml` still records `28f5fe1af002`, while open backend PR #155
-  now points to `f3be9738b848`. Re-extract that separate project's pending contract
-  before merging work that depends on it. TAS-387's own PR #215 pin is current;
-  no project-editing implementation was changed here.
+- ~~**Existing TAS-145 pending pin is stale (observed during TAS-387, 2026-10-23)**~~ —
+  **closed by TAS-149** the same day: #155 merged (`ed064ade`) and the extract was deleted.
 
 - ~~**`VITE_TASKA_ASSUME_PROJECT_ADMIN=true` is a deploy variable.** Every
   signed-in user gets the ADMIN surface of the UI. Accepted by the owner while
@@ -44,12 +41,8 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   for whoever adds one.
 - **The audit table lacks the scroll fade Users and Events have** (TAS-251,
   builder's own note).
-- **`pr-155-TAS-145.yml` is stale**: backend PR #155's head moved from
-  `c4b8c2c` to `28f5fe1` (found by `npm run contract:pins`, 2026-10-10).
-  Re-extract and re-read TAS-148's edit dialog against it; the PR also
-  conflicts with `develop`. Re-extracted at `28f5fe1` in TAS-297; on
-  2026-10-21 (TAS-382) the head had moved again, to `f3be973`. The re-read
-  belongs to TAS-149's branch (PR #95), which is written against it.
+- ~~**`pr-155-TAS-145.yml` is stale**~~ — **closed by TAS-149** on 2026-10-23: #155 merged
+  (`ed064ade`), the extract was deleted and the dialog re-read against the merged Java.
 - ~~**Backend ask, not filed yet: issue-service creates an issue of a type the
   project does not allow.**~~ — **graduated to
   [TAS-386](https://jira.ozero.dev/browse/TAS-386)** on 2026-10-22 (the issue type
@@ -1984,6 +1977,11 @@ frontend story is blocked by its backend half and ships mock-first meanwhile.
   The project would show on the projects screen and its board would not open.
   Raised on TAS-146 before its review. Do not build TAS-149 against #159 until
   that comment is answered.
+  **2026-10-20:** still unanswered at head `97464fe`, raised again.
+  **Answered 2026-10-23 by the merge itself:** #159 merged at `919c1d6d` with
+  reads open, the project left out of `GET /projects` and writes refused with
+  `details.reason` `PROJECT_ARCHIVED`; TAS-149 was reworked onto that and ships
+  the read-only board (API-DIVERGENCE, the #159 entry).
 - [TAS-150](https://jira.ozero.dev/browse/TAS-150) — filed as a bug: no route
   guard exists, so a signed-out deep link lands on an empty projects screen
   with no way back to `/login`. Carries the auth-lifecycle item that used to
@@ -2210,8 +2208,9 @@ is what recurs.
   in `API-DIVERGENCE.md` removable.
 - [TAS-146](https://jira.ozero.dev/browse/TAS-146) — archive a project
   (`DELETE /projects/{id}` as a soft delete) and refuse writes to an archived
-  one. `archived_at` already exists in the table and in `ProjectResponse`;
-  nothing sets or filters on it. Restore is deliberately out of scope.
+  one. **Merged 2026-10-23** as #159 (`fcbbaac8`): `DELETE` sets `archived_at`, the
+  project leaves `GET /projects` and `/project-stats`, reads stay open, writes answer 400
+  `PROJECT_ARCHIVED` (API-DIVERGENCE, the #159 entry). Restore is deliberately out of scope.
 - [TAS-147](https://jira.ozero.dev/browse/TAS-147) — **Done.** `globalRole` is
   on `GET /users/me` in the 2026-08-05 contract, as
   `enum [GLOBAL_ADMIN, USER, UNSPECIFIED]`, which unblocked TAS-151. This is
@@ -4003,6 +4002,30 @@ Frontend notes:
   soft delete, or `issue_comments.body: HIDE`); the contract declares only 204 and
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
+
+### Left by TAS-149 (archive and the read-only archived board, frontend for backend #155/#159, 2026-10-23)
+
+- **The last-admin refusal carries no reason** (`api-contract-guard`): 400
+  `FAILED_PRECONDITION` "Can't modify last admin: …" without `details`, so the Members
+  dialog tells it apart only as "FAILED_PRECONDITION and not `PROJECT_ARCHIVED`" — a set that
+  can grow. Backend ask: `details.reason: "LAST_ADMIN"` (ProjectMemberValidatorImpl:107,
+  precedent `ProjectArchived.error()`), and `RestErrorResponse.details` documenting its
+  `reason` values. Not filed.
+- **Several write surfaces show a refusal without its request id** — comments, labels,
+  links, attachment toasts, the create-issue form (`api-contract-guard`); predates TAS-149,
+  but archived and rollout 503 refusals now land there too.
+- **Typing at the end of an issue's summary scrolls `.issue-panel-body` by 44–81px**
+  (`art-director`, TAS-149 pass; measured 44px on main too, so not from TAS-149).
+- **A half-typed panel date (`badInput`) survives the archive** (`frontend-builder`,
+  TAS-149 round 2): the planning reset puts story points and estimates back to the stored
+  values, but a date box holding partial segments keeps them visible, read-only, until the
+  panel closes — clearing it needs the DOM value written directly, as `commitDate` does.
+- **Read-only dialogs can only be left by Cancel or ✕** (`art-director`, TAS-149 round 3):
+  `Modal` has no Esc handler at all — the TAS-142 gap DESIGN.md already lists; the archived
+  read-only state of Edit project, New issue and Labels makes it more visible.
+- **Nothing has been archived on the stand.** The DELETE answer and the refusal shape are
+  read from the Java; the first smoke (archive a throwaway project, one write → 400 with
+  `details.reason` and a request id) needs the owner's word.
 
 ### Left by TAS-389 (the user's login removed, frontend for backend #219, 2026-10-23)
 

@@ -42,7 +42,8 @@ const NOTIFICATIONS_KEY = ["notifications"];
  *
  * The navigation is why sharing it is cheap: a notification states its own
  * `projectId` and `issueId` (TAS-243), and `notificationRoute` builds the
- * absolute `/projects/…/issues/…` route from those two alone. No caller has to
+ * absolute `/projects/…/issues/…` route — or, for a row naming only a project,
+ * `/projects/…/board` (TAS-149) — from those two alone. No caller has to
  * have a project in scope, and no read stands between the press and the route,
  * so `/projects` and `/admin` — which have no project — open a notification
  * exactly as the board does.

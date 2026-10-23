@@ -302,12 +302,9 @@ describe("HybridTaskaApi", () => {
    * The project write (TAS-148) goes down untouched, body and all, and whatever
    * comes back comes back.
    *
-   * Sharper here than for the reads around it, because the route is **not
-   * deployed**: `PATCH /api/v1/projects/{id}` answered 405 on 2026-09-12, not
-   * the static-resource 404 — backend PR #155 maps a method on a path that
-   * already exists for GET. A class that compensated would be reporting a
-   * rename to a gateway that never took one, and the next `GET /projects` would
-   * contradict it.
+   * A class that compensated — `PATCH /api/v1/projects/{id}` answered 405
+   * until backend PR #155 deployed — would be reporting a rename to a gateway
+   * that never took one, and the next `GET /projects` would contradict it.
    */
   it("passes a project edit straight to the live api, empty bodies and refusals included", async () => {
     const live = liveApi();
@@ -318,11 +315,12 @@ describe("HybridTaskaApi", () => {
     const input = { name: "Taska Core", description: "", color: "#8b5cf6" };
     await expect(hybrid.updateProject(project.id, input)).resolves.toMatchObject({
       name: "Taska Core",
-      description: "",
+      // The server stores a blank description as `null` (backend PR #155 as merged).
+      description: null,
       color: "#8b5cf6",
     });
-    // The body arrives as written — the empty description above is the value
-    // that clears one, and a leg that tidied it away would silently do nothing.
+    // The body arrives as written — a leg that tidied the empty description
+    // away would be deciding for the caller what the server stores.
     expect(updateProject).toHaveBeenCalledWith(project.id, input);
 
     // An all-absent body is a 200 with the project unchanged, and this class
@@ -330,10 +328,30 @@ describe("HybridTaskaApi", () => {
     await expect(hybrid.updateProject(project.id, {})).resolves.toMatchObject({ name: "Taska Core" });
 
     // And a refusal arrives as a refusal: the empty colour the contract's
-    // pattern rejects, which is why there is no way back to an automatic one.
+    // pattern rejects. The clear is `null`, and it passes through as `null`.
     await expect(hybrid.updateProject(project.id, { color: "" })).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
     });
+    await hybrid.updateProject(project.id, { color: null });
+    expect(updateProject).toHaveBeenLastCalledWith(project.id, { color: null });
+  });
+
+  // Backend PR #159. A class that built an archived row of its own would
+  // report an archive no server took.
+  it("passes an archive straight to the live api, refusals included", async () => {
+    const live = liveApi();
+    const hybrid = new HybridTaskaApi(live);
+    const archiveProject = vi.spyOn(live, "archiveProject");
+    const [project] = await hybrid.listProjects();
+
+    const archived = await hybrid.archiveProject(project.id);
+    expect(archiveProject).toHaveBeenCalledWith(project.id);
+    expect(archived).toEqual(await archiveProject.mock.results[0].value);
+
+    archiveProject.mockRejectedValueOnce(
+      Object.assign(new Error("Project ADMIN role is required"), { code: "PERMISSION_DENIED", status: 403 }),
+    );
+    await expect(hybrid.archiveProject(project.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
   });
 
   // The 409 this class must not swallow. `ABORTED` on the server maps to 409,

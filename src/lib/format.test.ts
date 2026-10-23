@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DictionaryEntry } from "../domain/types";
 import {
+  formatDayWithYearIfOther,
   avatarColor,
   avatarColorChoices,
   commentWasEdited,
@@ -525,5 +526,17 @@ describe("formatFileSize", () => {
     // and NaN only arrive from a caller that has no number at all.
     expect(formatFileSize(-1)).toBe("");
     expect(formatFileSize(Number.NaN)).toBe("");
+  });
+});
+
+describe("formatDayWithYearIfOther", () => {
+  const now = new Date("2026-10-20T12:00:00");
+
+  it("leaves the year off a date in the current year", () => {
+    expect(formatDayWithYearIfOther("2026-03-05T12:00:00", now)).toBe("Mar 5");
+  });
+
+  it("names the year of a date in another year", () => {
+    expect(formatDayWithYearIfOther("2025-03-05T12:00:00", now)).toBe("Mar 5, 2025");
   });
 });

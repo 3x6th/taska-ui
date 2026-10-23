@@ -166,6 +166,13 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.updateProject(projectId, input);
   }
 
+  // A pure pass-through, like the edit above (backend PR #159). A class that
+  // built an archived row of its own would be reporting an archive no server
+  // took, and every write it refuses afterwards is the server's to refuse.
+  archiveProject(projectId: string): Promise<Project> {
+    return this.live.archiveProject(projectId);
+  }
+
   getProjectContext(projectId: string): Promise<ProjectContext> {
     return this.live.getProjectContext(projectId);
   }

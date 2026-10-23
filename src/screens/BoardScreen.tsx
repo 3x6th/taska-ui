@@ -49,6 +49,7 @@ import {
   apiErrorFacts,
   isIssueVersionConflict,
   isMissingOrForbidden,
+  isProjectArchived,
   IssueVersionConflictError,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
@@ -75,8 +76,10 @@ import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useMeta } from "../hooks/useMeta";
 import { carriesFiles, closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
+import { tabbables } from "../lib/focusTrap";
 import { personFor, type NamedBy } from "../lib/people";
 import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
+import { archivedOnDay, PROJECT_ARCHIVED_SENTENCE, refusalWords, rereadContextIfArchived } from "../lib/projectArchive";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   DictionaryEntry,
@@ -476,19 +479,27 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // with no role this build can act on (`ProjectContext.role`). Every
   // permission below and the unstated-role banner read this one value.
   const role = context?.role;
-  const canEdit = role === "ADMIN" || role === "MEMBER";
+  // The project was archived (backend PR #159, TAS-149): read off the same
+  // context read as the role, and the only signal — a refusal never stands in
+  // for it (§5.7, «Архивный проект»). Every role, ADMIN included, then gets the
+  // VIEWER's board: each permission below is off, and the controls a VIEWER
+  // has hidden are hidden. An archived project's reads stay open, so nothing
+  // else on the board changes.
+  const archivedAt = project?.archivedAt ?? null;
+  const archived = archivedAt !== null;
+  const canEdit = !archived && (role === "ADMIN" || role === "MEMBER");
   // Creating needs a type to create, and a project that allows none has none.
   const canCreate = canEdit && offeredIssueTypes.length > 0;
   // Narrower than `canEdit` on purpose: TAS-119 lets a MEMBER put labels on an
   // issue but reserves creating, renaming and deleting the project's labels for
   // its ADMIN. The server enforces both; this only decides what is offered.
-  const isProjectAdmin = role === "ADMIN";
+  const isProjectAdmin = !archived && role === "ADMIN";
   // issue-service's `watch-issue-roles` (ADMIN, MEMBER), which it checks against
   // the reader's own role when they watch or unwatch themselves — a rule the
   // contract does not state (TAS-226). The same two roles as `canEdit` today,
   // and a name of its own because it is a separate rule on the server that can
   // move without the other.
-  const canWatch = role === "ADMIN" || role === "MEMBER";
+  const canWatch = !archived && (role === "ADMIN" || role === "MEMBER");
   // A reader the server *named* a VIEWER, as against one it named nothing. Only
   // this reader may be told that their role is the reason a control is off —
   // and only this reader's write controls are hidden rather than switched off
@@ -496,6 +507,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // A role that is unknown or unstated (TAS-226) is not a VIEWER, so those
   // stay on screen, disabled, under the board's banner.
   const isProjectViewer = role === "VIEWER";
+  // Whose write controls are hidden rather than switched off: a VIEWER's, and
+  // anybody's on an archived project — there is nothing to wait for there.
+  const hidesWrites = isProjectViewer || archived;
   // Each of these is the same single fact as the behaviour beside it, never a
   // second opinion about the same query: `canEdit` is "the membership answer
   // says so", and `roleUnread.unanswered` is "there is no membership answer and
@@ -539,7 +553,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // `role`, the value `canEdit` reads, so no refetch can put the banner and the
   // controls out of step: a refetch keeps `data`, and both with it, and an
   // answer that states a role moves both in the same render.
-  const roleUnstated = role === null;
+  // Not on an archived project: the banner says "not a read-only project", and
+  // that one is exactly that (§5.7).
+  const roleUnstated = role === null && !archived;
   // Failure is not zero. With no issue list, "0" in a column head, "0 of 0" in
   // the filter bar and "Drop issues here" in every column are three claims
   // about the project made by a request that never answered — the last of them
@@ -707,6 +723,96 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   useEffect(() => {
     shownIssueId.current = issueId;
   }, [issueId]);
+
+  /**
+   * A write refused because the project was archived meanwhile (§5.7, «Архив
+   * пришёл отказом записи») makes the board read its context again, and the
+   * board turns read-only from the `archivedAt` that read brings — never from
+   * the refusal. Heard here, once, for every mutation the board, its panel and
+   * its dialogs make, by `details.reason` and nothing else; the writes that are
+   * not mutations (the attachment legs) call `rereadContextIfArchived`.
+   */
+  useEffect(() => {
+    if (!projectId) return;
+    return queryClient.getMutationCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "error") return;
+      rereadContextIfArchived(queryClient, projectId, event.action.error);
+    });
+  }, [projectId, queryClient]);
+
+  /**
+   * The board's archive line, and where focus goes when the board turns
+   * read-only under the reader (§4.11, §5.7): after archiving from Edit
+   * project, always — the line's reading is the announcement; after a refusal
+   * brought the archive, only if the control in focus went or was switched
+   * off, and then to the nearest open layer: inside an open dialog, its
+   * `PROJECT_ARCHIVED` refusal, else its own archive line, else its first
+   * stop; else the open panel's line; else the board's.
+   *
+   * **Focus never leaves an open dialog** (art-director, TAS-149). Under its
+   * scrim the board's ring cannot be seen, and the next Tab would walk the
+   * board while the dialog still stands over it. The dialogs here stay open
+   * and turn read-only, so their own effects — child effects, which run before
+   * this one — have drawn the line or the refusal by the time this looks; and
+   * Edit project places its own (it is opened from `/projects` too, where no
+   * board would), so it is never found without focus here.
+   */
+  const archiveLineRef = useRef<HTMLParagraphElement>(null);
+  const focusArchiveLine = useRef(false);
+  // `null` until the context has answered: a board that opens archived has not
+  // turned read-only under anybody, and its opening takes no focus.
+  const archiveState = project ? (archived ? "archived" : "open") : null;
+  const previousArchiveState = useRef(archiveState);
+  useEffect(() => {
+    const turned = previousArchiveState.current === "open" && archiveState === "archived";
+    previousArchiveState.current = archiveState;
+    if (!turned) return;
+    const asked = focusArchiveLine.current;
+    focusArchiveLine.current = false;
+    // Asked for by Edit project's own archive, which closes that dialog in the
+    // same frame: the board's line, and no dialog is left to look inside.
+    if (asked) {
+      archiveLineRef.current?.focus();
+      return;
+    }
+    const active = document.activeElement;
+    const lost =
+      !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
+    if (!lost) return;
+    const dialog = document.querySelector<HTMLElement>(".modal[aria-modal='true']");
+    if (dialog) {
+      const inside =
+        // The dialog's `PROJECT_ARCHIVED` refusal or, without one, its archive
+        // line: one of the two, never both, carries the mark. A refusal of
+        // another kind does not — it is about something else, and may be one
+        // the reader has already read.
+        dialog.querySelector<HTMLElement>("[data-archive-note='modal']") ??
+        // A dialog with neither: its first stop, rather than anything behind it.
+        tabbables(dialog)[0];
+      inside?.focus();
+      return;
+    }
+    const panelLine = document.querySelector<HTMLElement>("[data-archive-note='panel']");
+    (panelLine ?? archiveLineRef.current)?.focus();
+  }, [archiveState]);
+
+  /**
+   * New issue, Labels and Edit project stay open when the project is archived
+   * under them, and the controls that opened them leave the board with the
+   * archive. Closed then, a dialog has nothing to hand focus back to (`Modal`
+   * tries its opener, which is gone), so it lands on the board's archive line
+   * rather than on `<body>`, where the next Tab would start over from the top.
+   */
+  const writeDialogOpen = creating || managingLabels || editingProject;
+  const writeDialogWasOpen = useRef(writeDialogOpen);
+  useEffect(() => {
+    const closed = writeDialogWasOpen.current && !writeDialogOpen;
+    writeDialogWasOpen.current = writeDialogOpen;
+    if (!closed || !archived) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    archiveLineRef.current?.focus();
+  }, [archived, writeDialogOpen]);
 
   /**
    * The panel deleted an issue, or found it already gone (§4.10). The card
@@ -949,7 +1055,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <div className="topbar-actions">
           <NotificationsBell bar={topbarRef} />
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
-          {isProjectViewer ? null : (
+          {hidesWrites ? null : (
             <button className="primary-button board-new" disabled={!canCreate} onClick={() => setCreating(true)} type="button">
               <Plus size={15} />
               New
@@ -1138,6 +1244,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         </span>
       </section>
 
+      {/* The archive line (§5.7): above the notices and outside them — an
+          archived project is not a failure. A state found on opening, not an
+          answer to anything, so not a live region; `tabIndex=-1` makes it the
+          place focus is put when the board turns read-only under the reader. */}
+      {archivedAt ? (
+        <p className="board-archive-line" ref={archiveLineRef} tabIndex={-1}>
+          <strong>Archived on {archivedOnDay(archivedAt)}.</strong> This board and its issues are read-only.
+        </p>
+      ) : null}
+
       {/* One container, capped, so the board keeps most of the plane whatever
           fails. As five loose siblings these took 54% of a 900px viewport and
           75% of a 640px one, and at 390x640 the columns collapsed to 24px
@@ -1219,7 +1335,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   userById={userById}
                   canEdit={canEdit}
                   canCreate={canCreate}
-                  offersCreate={!isProjectViewer}
+                  offersCreate={!hidesWrites}
                   onAdd={() => setCreating(true)}
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
                 />
@@ -1297,6 +1413,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               isProjectAdmin={isProjectAdmin}
               canWatch={canWatch}
               isProjectViewer={isProjectViewer}
+              archivedAt={archivedAt}
               currentUserId={meQuery.data?.id}
               workflows={workflows}
               workflowUnknown={workflowUnknown}
@@ -1308,6 +1425,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
 
       {managingLabels ? (
         <ProjectLabelsModal
+          archived={archived}
           projectId={projectId}
           projectKey={project?.projectKey ?? ""}
           projectColor={project?.color}
@@ -1331,6 +1449,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // folded into `null`: the dialog tells a role nobody stated from a
           // role the server named, as the board's two banners do.
           readerRole={roleUnknown ? null : role}
+          archived={archived}
         />
       ) : null}
 
@@ -1344,6 +1463,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // Members' reading of the role: a failed context read folded into
           // `null`, so the dialog says the role is unknown rather than nothing.
           readerRole={roleUnknown ? null : role}
+          archived={archived}
         />
       ) : null}
 
@@ -1352,11 +1472,21 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           built from a project that is no longer in hand would be editing
           fields nobody can vouch for. */}
       {editingProject && project ? (
-        <EditProjectModal project={project} onClose={() => setEditingProject(false)} />
+        <EditProjectModal
+          // The reader stays: an archived project's board still reads, and in
+          // this frame it turns read-only from the context the dialog has just
+          // patched. Focus then goes to the archive line (the effect above).
+          onArchived={() => {
+            focusArchiveLine.current = true;
+          }}
+          onClose={() => setEditingProject(false)}
+          project={project}
+        />
       ) : null}
 
       {creating ? (
         <CreateIssueModal
+          archived={archived}
           issueTypes={offeredIssueTypes}
           projectKey={project?.projectKey ?? ""}
           projectColor={project?.color}
@@ -1948,6 +2078,7 @@ function IssuePanel({
   isProjectAdmin,
   canWatch,
   isProjectViewer,
+  archivedAt,
   currentUserId,
   workflows,
   workflowUnknown,
@@ -1991,6 +2122,13 @@ function IssuePanel({
   canWatch: boolean;
   /** The server named this reader a VIEWER, the one case the toggle's hint may give the role as its reason. */
   isProjectViewer: boolean;
+  /**
+   * When the project was archived, off the board's context, or `null` (§5.7).
+   * Every write here is then off through the flags above; this hides the
+   * VIEWER's set besides — the moves and Delete — and puts the transition
+   * slot's line in their place.
+   */
+  archivedAt: string | null;
   currentUserId?: string;
   workflows?: WorkflowsByIssueType;
   /** The workflow read failed; these buttons are the keyboard path a drag has. */
@@ -2166,6 +2304,20 @@ function IssuePanel({
     }
     setPlanning((current) => reseedPlanningDrafts(current, previous?.planning ?? null, serverPlanning));
   }
+  /**
+   * The project was archived while the panel was open (DESIGN.md §5.7): the
+   * planning boxes go `readOnly`, and a value typed into one and not yet sent
+   * would then stand there as if the issue held it — and nothing can send it
+   * any more. So the turn puts every planning draft back to the stored value,
+   * as a refused write puts its own field back (§5.5). Free text is not
+   * touched: the reader's words are work and stay, read-only, marked
+   * `data-unsaved-text`. During render, for the reseed's reason above.
+   */
+  const [planningArchived, setPlanningArchived] = useState(archivedAt !== null);
+  if (planningArchived !== (archivedAt !== null)) {
+    setPlanningArchived(archivedAt !== null);
+    if (archivedAt !== null) setPlanning(serverPlanning);
+  }
 
   const workflow = issue ? workflowFor(workflows, issue.issueType) : undefined;
   // These buttons are the drag's keyboard equivalent (§5.3), so they answer to
@@ -2175,8 +2327,12 @@ function IssuePanel({
   // A VIEWER is offered none (§5.7, TAS-236), so the arrow goes with them; the
   // notes below about why no move is offered are about the issue, not the
   // reader, and stay for every role.
+  //
+  // On an archived project nobody is offered one either, ADMIN included
+  // (§5.7), and the slot's own line says why instead of the notes below.
+  const hidesWrites = isProjectViewer || archivedAt !== null;
   const availableTransitions =
-    issue && workflow && !isProjectViewer ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
+    issue && workflow && !hidesWrites ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
   // The issue's status as its own workflow describes it, when it does: the name
   // the project chose and the category its colour comes from (TAS-173).
   const workflowStatus = issue ? workflow?.statuses.find((status) => status.statusKey === issue.status) : undefined;
@@ -2454,7 +2610,7 @@ function IssuePanel({
   const head = useIssuePanelHead({
     label: issue ? `${issue.issueKey} issue` : boardIssueKey ? `${boardIssueKey} issue` : "Issue",
     busy: loading,
-    asking: Boolean(issue) && asking,
+    asking: Boolean(issue) && asking && !hidesWrites,
   });
 
   if (!issue) {
@@ -2734,7 +2890,7 @@ function IssuePanel({
               §4.1's ghost-destructive: `--danger` under the pointer and while
               its question is open. A second press closes the question; Esc
               closes it too, from anywhere in the panel (above). */}
-          {isProjectViewer ? null : (
+          {hidesWrites ? null : (
             <button
               aria-controls={asking ? deleteConfirmId : undefined}
               aria-expanded={asking}
@@ -2755,7 +2911,9 @@ function IssuePanel({
           )}
         </>,
       )}
-      {asking ? (
+      {/* Not once the project is archived under an open question: its answer
+          is a write nothing here offers any more. */}
+      {asking && !hidesWrites ? (
         // Between the head and the body and outside the scroll (§4.10): the
         // head is one row of 52 and cannot take a sentence, and at the top of
         // a scrolled body the question would be off screen. The body gives up
@@ -2804,8 +2962,10 @@ function IssuePanel({
             because a read-only control still fires `blur`. */}
         <textarea
           className="summary-textarea"
-          // Unsaved text holds the panel open on Esc (§4.10, TAS-380).
-          data-unsaved-text={canEdit && summary !== issue.summary ? "true" : undefined}
+          // Unsaved text holds the panel open on Esc (§4.10, TAS-380) — and
+          // keeps holding it once an archive has made the box read-only with
+          // the reader's words still in it (§5.7): they are still unsaved.
+          data-unsaved-text={(canEdit || archivedAt !== null) && summary !== issue.summary ? "true" : undefined}
           onBlur={() => {
             if (!canEdit) return;
             if (summary.trim() && summary !== issue.summary) editIssue({ summary: summary.trim() });
@@ -2837,7 +2997,15 @@ function IssuePanel({
               covers the notice stack, and an empty row beside a status pill
               reads as "this issue has nowhere to go" rather than "we do not
               know where it can go". */}
-          {workflowUnknown ? (
+          {archivedAt ? (
+            // The archive displaces every other line of the slot (§5.7): it is
+            // the reason for every one of them. Focusable from script only —
+            // where focus goes when the panel turns read-only under the
+            // reader and the control they were on went with it.
+            <span className="transition-note" data-archive-note="panel" tabIndex={-1}>
+              This project was archived on {archivedOnDay(archivedAt)}, so this issue is read-only.
+            </span>
+          ) : workflowUnknown ? (
             <span className="transition-note">The workflow could not be loaded, so no move is offered.</span>
           ) : workflows && !workflow ? (
             // The context answered without this issue's type: the project no
@@ -3141,7 +3309,8 @@ function IssuePanel({
           <span>Description</span>
           {/* `readOnly`, as the summary above and for the same reasons. */}
           <textarea
-            data-unsaved-text={canEdit && description !== issue.description ? "true" : undefined}
+            // As the summary's: held over an archive too (§5.7).
+            data-unsaved-text={(canEdit || archivedAt !== null) && description !== issue.description ? "true" : undefined}
             onBlur={() => {
               if (!canEdit) return;
               if (description !== issue.description) editIssue({ description });
@@ -3193,6 +3362,7 @@ function IssuePanel({
           issueId={issueId}
           canLog={canEdit}
           isProjectAdmin={isProjectAdmin}
+          archived={archivedAt !== null}
           currentUserId={currentUserId}
           userById={userById}
           prefetched={worklogsPrefetched}
@@ -3203,6 +3373,7 @@ function IssuePanel({
           projectId={projectId}
           issueId={issueId}
           canComment={canEdit}
+          archived={archivedAt !== null}
           currentUserId={currentUserId}
           userById={userById}
           prefetched={commentsPrefetched}
@@ -4062,7 +4233,9 @@ function watcherSubject(
  * answer for an error that is not an `ApiError` at all.
  */
 function WatcherNoteDetail({ error, sentence }: { error: unknown; sentence?: string }) {
-  const { message, requestId } = apiErrorFacts(error);
+  const { requestId } = apiErrorFacts(error);
+  // The same words `watcherFailureText` prefers, so the two compare equal.
+  const message = refusalWords(error);
   const gatewayWords = message && message !== sentence ? message : null;
   if (!gatewayWords && !requestId) return null;
 
@@ -4094,7 +4267,9 @@ function WatcherNoteDetail({ error, sentence }: { error: unknown; sentence?: str
  * things and are worth different sentences.
  */
 function watcherFailureText(error: unknown, fallback: string): string {
-  const { message, status, code } = apiErrorFacts(error);
+  const { status, code } = apiErrorFacts(error);
+  // The server's words, or ours for an archived project's refusal (§5.7).
+  const message = refusalWords(error);
   if (message) return message;
   if (status === 403 || code === "PERMISSION_DENIED") {
     return "The server refused: only a project admin may change who else watches this issue.";
@@ -4190,8 +4365,8 @@ function IssueLabelsSection({
   // would otherwise be explained by whatever the refetch said instead. A
   // mutation error is always about the action just taken; a query error is
   // about the background.
-  const error =
-    (addLabel.error ?? removeLabel.error ?? projectLabelsQuery.error)?.message;
+  const failure = addLabel.error ?? removeLabel.error ?? projectLabelsQuery.error;
+  const error = failure ? (refusalWords(failure) ?? failure.message) : undefined;
 
   return (
     <section className="issue-labels">
@@ -4414,9 +4589,8 @@ function IssueLinksSection({
   // `IssueLabelsSection`: with a cached page plus a failed background refetch
   // the picker is still populated, so a refused link would be explained by the
   // refetch rather than by the refusal.
-  const error =
-    localError ??
-    (createLink.error ?? deleteLink.error ?? projectIssuesQuery.error)?.message;
+  const failure = createLink.error ?? deleteLink.error ?? projectIssuesQuery.error;
+  const error = localError ?? (failure ? (refusalWords(failure) ?? failure.message) : undefined);
 
   return (
     <section className="issue-links">
@@ -4705,7 +4879,7 @@ function IssueAttachmentsSection({
     },
     onError: (error, _attachmentId, context) => {
       attachmentsCache.restore(context?.previous);
-      say({ tone: "error", text: apiErrorFacts(error).message ?? "The attachment could not be removed." });
+      say({ tone: "error", text: refusalWords(error) ?? "The attachment could not be removed." });
     },
     onSettled: settle,
   });
@@ -4843,9 +5017,11 @@ function IssueAttachmentsSection({
       ticket = await taskaApi.createAttachmentUploadUrl(projectId, issueId, candidate);
     } catch (error) {
       setPending(null);
+      // Not a mutation, so the board's listener does not hear it (§5.7).
+      rereadContextIfArchived(queryClient, projectId, error);
       addNotice({
         tone: "error",
-        text: `${file.name} was not attached. ${apiErrorFacts(error).message ?? "The upload could not be prepared."}`,
+        text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be prepared."}`,
       });
       return;
     }
@@ -4919,9 +5095,10 @@ function IssueAttachmentsSection({
         });
         return;
       }
+      rereadContextIfArchived(queryClient, projectId, error);
       addNotice({
         tone: "error",
-        text: `${file.name} was not attached. ${apiErrorFacts(error).message ?? "The upload could not be confirmed."}`,
+        text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be confirmed."}`,
       });
     }
   };
@@ -5310,6 +5487,7 @@ function CommentsSection({
   projectId,
   issueId,
   canComment,
+  archived,
   currentUserId,
   userById,
   prefetched,
@@ -5317,6 +5495,12 @@ function CommentsSection({
   projectId: string;
   issueId: string;
   canComment: boolean;
+  /**
+   * The project is archived (§5.7). Writing is off through `canComment`; this
+   * only keeps a comment the reader had typed and not sent on screen, read-only,
+   * when the archive lands under them — their words are work (§5.5).
+   */
+  archived: boolean;
   currentUserId?: string;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   /**
@@ -5369,6 +5553,10 @@ function CommentsSection({
   const comments = commentsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const totalCount = commentsQuery.data?.pages[0]?.totalCount ?? comments.length;
   const mutationError = addComment.error ?? updateComment.error ?? deleteComment.error;
+  const mutationWords = mutationError ? (refusalWords(mutationError) ?? mutationError.message) : "";
+  // The composer stays for a draft the archive caught unsent, read-only and
+  // without its button; otherwise it goes with the right to comment.
+  const keepsDraft = !canComment && archived && draft !== "";
 
   /**
    * Delete asks first (TAS-259), in §4.22's strip under the row, as the work
@@ -5397,12 +5585,12 @@ function CommentsSection({
         {totalCount ? <span className="count-pill">{totalCount}</span> : null}
       </h3>
 
-      {canComment ? (
+      {canComment || keepsDraft ? (
         <form
           className="comment-composer"
           onSubmit={(event) => {
             event.preventDefault();
-            if (draft.trim()) addComment.mutate(draft.trim());
+            if (canComment && draft.trim()) addComment.mutate(draft.trim());
           }}
         >
           <textarea
@@ -5410,14 +5598,17 @@ function CommentsSection({
             data-unsaved-text={draft !== "" ? "true" : undefined}
             onChange={(event) => setDraft(event.target.value)}
             placeholder="Leave a comment"
+            readOnly={!canComment}
             rows={3}
             value={draft}
           />
-          <div className="comment-composer-actions">
-            <button className="primary-button compact-button" disabled={!draft.trim() || addComment.isPending} type="submit">
-              Comment
-            </button>
-          </div>
+          {canComment ? (
+            <div className="comment-composer-actions">
+              <button className="primary-button compact-button" disabled={!draft.trim() || addComment.isPending} type="submit">
+                Comment
+              </button>
+            </div>
+          ) : null}
         </form>
       ) : null}
 
@@ -5432,7 +5623,7 @@ function CommentsSection({
           space. */}
       <div className={mutationError ? "error-note" : undefined}>
         <p aria-live="polite" className="error-note-sentence">
-          {mutationError?.message ?? ""}
+          {mutationWords}
         </p>
       </div>
 
@@ -5448,6 +5639,8 @@ function CommentsSection({
           comment={comment}
           author={personFor(comment.authorUserId, comment.author, userById)}
           canManage={canComment && comment.authorUserId === currentUserId}
+          // An edit the archive caught open stays open, read-only (§5.7):
+          // `canManage` goes, `editing` does not.
           editing={editingId === comment.id}
           confirming={confirmingId === comment.id}
           confirmId={`${sectionId}-confirm-${comment.id}`}
@@ -5554,19 +5747,24 @@ function CommentItem({
               // A comment being edited holds the panel open on Esc (§4.10).
               data-unsaved-text={body !== "" ? "true" : undefined}
               onChange={(event) => setBody(event.target.value)}
+              // Only after an archive landed mid-edit (§5.7): the reader's
+              // text stays, and nothing can send it.
+              readOnly={!canManage}
               rows={3}
               value={body}
               autoFocus
             />
             <div className="comment-actions">
-              <button
-                className="primary-button compact-button"
-                disabled={!body.trim() || body.trim() === comment.body || pending}
-                onClick={() => onSave(body.trim())}
-                type="button"
-              >
-                Save
-              </button>
+              {canManage ? (
+                <button
+                  className="primary-button compact-button"
+                  disabled={!body.trim() || body.trim() === comment.body || pending}
+                  onClick={() => onSave(body.trim())}
+                  type="button"
+                >
+                  Save
+                </button>
+              ) : null}
               <button className="secondary-button compact-button" onClick={onCancelEdit} type="button">
                 Cancel
               </button>
@@ -5820,12 +6018,22 @@ const isPendingLabel = (label: { id: string }) => label.id === optimisticLabelId
  * permission.
  */
 function ProjectLabelsModal({
+  archived,
   projectId,
   projectKey,
   projectColor,
   onClose,
   onLabelDeleted,
 }: {
+  /**
+   * The project was archived while this dialog was open (DESIGN.md §5.7,
+   * «Архив пришёл отказом записи»; the board offers no Labels on an archived
+   * project, so this is only ever that). The list stays; the New label form
+   * and every row's actions go, an open rename keeps what was typed,
+   * read-only, and one line says why — unless a refusal of this dialog's
+   * already does.
+   */
+  archived: boolean;
   projectId: string;
   projectKey: string;
   /**
@@ -5935,7 +6143,16 @@ function ProjectLabelsModal({
     onSettled: settle,
   });
 
-  const error = (labelsQuery.error ?? createLabel.error ?? updateLabel.error ?? deleteLabel.error)?.message;
+  const refusal = createLabel.error ?? updateLabel.error ?? deleteLabel.error;
+  const failure = labelsQuery.error ?? refusal;
+  const error = failure ? (refusalWords(failure) ?? failure.message) : undefined;
+  /**
+   * The note on screen is this dialog's `PROJECT_ARCHIVED` refusal, which says
+   * what the archive line would (§5.7): then it stands in for the line, and is
+   * where focus goes. A refusal of any other kind — a duplicate name, a 403 —
+   * says nothing about the archive, and the line stays.
+   */
+  const archiveRefused = isProjectArchived(failure);
   const trimmed = name.trim();
   const badge = keyBadgeStyle(projectKey, projectColor);
 
@@ -5955,42 +6172,55 @@ function ProjectLabelsModal({
       }
       onClose={onClose}
     >
-      <form
-        className="label-create-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!trimmed) return;
-          createLabel.mutate({ name: trimmed, color });
-          // Cleared here rather than in the mutation's `onSuccess`, for the
-          // reason the label and link pickers carry above: a reset that lands
-          // with the server's answer lands on whatever was typed during the
-          // round trip and takes it. Third and last of the three inputs that
-          // were reset on the answer — `updateLabel` below still closes the
-          // rename row from `onSuccess`, which is a mode change rather than a
-          // reset of a value this handler read, and moving it would close the
-          // editor before the save landed. It shares the hazard all the same,
-          // a write arriving late enough to land on something newer, and is
-          // guarded there rather than moved.
-          setName("");
-        }}
-      >
-        <label className="field">
-          <span>New label</span>
-          <input
-            autoFocus
-            maxLength={50}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="backend"
-            value={name}
-          />
-        </label>
-        <LabelSwatches onPick={setColor} selected={color} />
-        <button className="primary-button" disabled={!trimmed || createLabel.isPending} type="submit">
-          Add label
-        </button>
-      </form>
+      {archived ? (
+        // In the New label form's place, and only while no `PROJECT_ARCHIVED`
+        // refusal of this dialog's is on screen: then that one says it (§5.7,
+        // one fact, one place). A refusal of another kind does not, and the
+        // line stays — here, where the form stood, above it. A place focus is
+        // put, never a Tab stop — see the board's archive effect.
+        archiveRefused ? null : (
+          <p className="modal-archive-note" data-archive-note="modal" tabIndex={-1}>
+            This project is archived, so its labels cannot be changed.
+          </p>
+        )
+      ) : (
+        <form
+          className="label-create-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!trimmed) return;
+            createLabel.mutate({ name: trimmed, color });
+            // Cleared here rather than in the mutation's `onSuccess`, for the
+            // reason the label and link pickers carry above: a reset that lands
+            // with the server's answer lands on whatever was typed during the
+            // round trip and takes it. Third and last of the three inputs that
+            // were reset on the answer — `updateLabel` below still closes the
+            // rename row from `onSuccess`, which is a mode change rather than a
+            // reset of a value this handler read, and moving it would close the
+            // editor before the save landed. It shares the hazard all the same,
+            // a write arriving late enough to land on something newer, and is
+            // guarded there rather than moved.
+            setName("");
+          }}
+        >
+          <label className="field">
+            <span>New label</span>
+            <input
+              autoFocus
+              maxLength={50}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="backend"
+              value={name}
+            />
+          </label>
+          <LabelSwatches onPick={setColor} selected={color} />
+          <button className="primary-button" disabled={!trimmed || createLabel.isPending} type="submit">
+            Add label
+          </button>
+        </form>
+      )}
 
-      {error ? <ErrorNote>{error}</ErrorNote> : null}
+      {error ? <ErrorNote archiveNote={archiveRefused}>{error}</ErrorNote> : null}
 
       {labelsQuery.isPending ? <p className="issue-links-empty">Loading labels</p> : null}
       {labelsQuery.isSuccess && labels.length === 0 ? (
@@ -6009,31 +6239,40 @@ function ProjectLabelsModal({
                   onSubmit={(event) => {
                     event.preventDefault();
                     const next = editing.name.trim();
-                    if (next) updateLabel.mutate({ id: editing.id, name: next, color: editing.color });
+                    if (next && !archived) updateLabel.mutate({ id: editing.id, name: next, color: editing.color });
                   }}
                 >
+                  {/* A rename the archive caught open keeps what was typed,
+                      read-only, and loses its Save; its Cancel stays (§5.7). */}
                   <input
                     aria-label={`Rename ${label.name || "label"}`}
                     maxLength={50}
                     onChange={(event) => setEditing({ ...editing, name: event.target.value })}
+                    readOnly={archived}
                     value={editing.name}
                   />
                   <LabelSwatches
                     onPick={(next) => setEditing({ ...editing, color: next })}
                     selected={editing.color}
+                    unavailable={archived}
                   />
-                  <button
-                    aria-label="Save label"
-                    className="icon-button"
-                    disabled={!editing.name.trim() || updateLabel.isPending}
-                    type="submit"
-                  >
-                    <Check size={15} />
-                  </button>
+                  {archived ? null : (
+                    <button
+                      aria-label="Save label"
+                      className="icon-button"
+                      disabled={!editing.name.trim() || updateLabel.isPending}
+                      type="submit"
+                    >
+                      <Check size={15} />
+                    </button>
+                  )}
                   <button aria-label="Cancel" className="icon-button" onClick={() => setEditing(null)} type="button">
                     <X size={15} />
                   </button>
                 </form>
+              ) : archived ? (
+                // The row's actions go with the archive (§5.7); the label stays.
+                <LabelChip label={label} />
               ) : (
                 <>
                   <LabelChip label={label} />
@@ -6088,7 +6327,16 @@ function ProjectLabelsModal({
  * over it: a colour is always chosen, never `null`, because a label has no
  * "automatic".
  */
-function LabelSwatches({ onPick, selected }: { onPick: (color: string) => void; selected: string }) {
+function LabelSwatches({
+  onPick,
+  selected,
+  unavailable = false,
+}: {
+  onPick: (color: string) => void;
+  selected: string;
+  /** Archived under the dialog: `ColorSwatches`' steadily-unavailable state. */
+  unavailable?: boolean;
+}) {
   return (
     <ColorSwatches
       choices={labelColorChoices.map((choice) => ({ value: choice, swatch: choice, label: `Colour ${choice}` }))}
@@ -6101,11 +6349,13 @@ function LabelSwatches({ onPick, selected }: { onPick: (color: string) => void; 
         if (value !== null) onPick(value);
       }}
       selected={selected}
+      unavailable={unavailable}
     />
   );
 }
 
 function CreateIssueModal({
+  archived,
   issueTypes,
   projectId,
   projectKey,
@@ -6113,6 +6363,14 @@ function CreateIssueModal({
   onClose,
   onCreated,
 }: {
+  /**
+   * The project was archived while the form was open (DESIGN.md §5.7, «Архив
+   * пришёл отказом записи»; the board offers no New on an archived project).
+   * The form stays with what was typed, read-only: Create issue goes, the
+   * pickers are `aria-disabled`, Cancel and ✕ stay, and one line says why —
+   * unless the refused create already does.
+   */
+  archived: boolean;
   /**
    * The types this project allows (`allowedIssueTypes`), in the board's order —
    * a type this build has no name for included, after the ones it knows
@@ -6191,8 +6449,11 @@ function CreateIssueModal({
    * where withdrawing the *line* is not (`checkDates`).
    */
   const unmarkDate = () => setDateNotice((current) => (current?.marked ? { ...current, marked: false } : current));
-  /** The one box the mark is on, if any — see the state above for the "if". */
-  const markedDate = dateNotice?.marked ? dateNotice.field : null;
+  /**
+   * The one box the mark is on, if any — see the state above for the "if".
+   * None once archived: the line it points at is not shown then.
+   */
+  const markedDate = dateNotice?.marked && !archived ? dateNotice.field : null;
   /** The estimate fields' `for`/`id`/`aria-describedby` prefix — see the panel's. */
   const planningId = useId();
   /**
@@ -6330,6 +6591,9 @@ function CreateIssueModal({
    * stand over no marked box rather than over a box that is fine.
    */
   const checkDates = () => {
+    // Nothing to refuse on a form that can no longer create — and a refusal
+    // here would `reset()` the refused create whose sentence is on screen.
+    if (archived) return;
     const incomplete = incompleteDateEntry();
     if (incomplete) refuseDate(incomplete.field);
     else unmarkDate();
@@ -6402,12 +6666,25 @@ function CreateIssueModal({
    * the date line first. The line is dropped when a create starts and if it
    * fails, and a refused create is dropped when the line takes the slot, so
    * neither is ever left standing over the other.
+   *
+   * Archived, the date line is not shown: it asks the reader to finish or
+   * clear a box that can no longer be typed in, and there is no create left
+   * for it to stand in front of.
    */
-  const formNotice = dateNotice
-    ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
-    : createIssue.isError
-      ? createIssue.error.message
-      : null;
+  const formNotice =
+    dateNotice && !archived
+      ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
+      : createIssue.isError
+        ? (refusalWords(createIssue.error) ?? createIssue.error.message)
+        : null;
+  /**
+   * The slot holds this form's `PROJECT_ARCHIVED` refusal, which says what the
+   * archive line would (§5.7): it stands in for the line and is where focus
+   * goes. A refusal of any other kind leaves the line under it. The date line
+   * is never shown once archived, so whenever the create's error is this, the
+   * slot is showing it.
+   */
+  const archiveRefused = isProjectArchived(createIssue.error) && !(dateNotice && !archived);
 
   return (
     <Modal
@@ -6443,6 +6720,9 @@ function CreateIssueModal({
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
+          // No Create issue once archived, and Enter in a field is the one
+          // way left to ask for it.
+          if (archived) return;
           // Before the summary check, because this is the refusal the reader
           // cannot otherwise account for: an empty summary disables the button
           // they just pressed, and a half-typed date does not.
@@ -6467,13 +6747,25 @@ function CreateIssueModal({
           if (summary.trim() && issueType) createIssue.mutate(issueType);
         }}
       >
+        {/* Every box `readOnly` once archived: the reader's words stay, legible
+            and copyable, and nothing invites more (§4.3, §5.7). */}
         <label className="field">
           <span>Summary</span>
-          <input value={summary} onChange={(event) => setSummary(event.target.value)} autoFocus />
+          <input
+            autoFocus
+            onChange={(event) => setSummary(event.target.value)}
+            readOnly={archived}
+            value={summary}
+          />
         </label>
         <label className="field">
           <span>Description</span>
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} />
+          <textarea
+            onChange={(event) => setDescription(event.target.value)}
+            readOnly={archived}
+            rows={4}
+            value={description}
+          />
         </label>
         <div className={`form-two ${stackPickers ? "is-stacked" : ""}`}>
           <label>
@@ -6482,10 +6774,15 @@ function CreateIssueModal({
               <div className="segmented compact">
                 {issueTypes.map((type) => (
                   <button
+                    // §4.1's steadily-unavailable `aria-disabled`: the choice
+                    // made stays legible and reachable, a press does nothing.
+                    aria-disabled={archived || undefined}
                     aria-pressed={issueType === type}
                     className={issueType === type ? "is-active" : ""}
                     key={type}
-                    onClick={() => setIssueType(type)}
+                    onClick={() => {
+                      if (!archived) setIssueType(type);
+                    }}
                     type="button"
                   >
                     {issueTypeLabel(type, meta?.issueTypes)}
@@ -6501,10 +6798,13 @@ function CreateIssueModal({
             <div className="segmented compact">
               {offeredPriorities.map((item) => (
                 <button
+                  aria-disabled={archived || undefined}
                   aria-pressed={priority === item}
                   className={priority === item ? "is-active" : ""}
                   key={item}
-                  onClick={() => setPriority(item)}
+                  onClick={() => {
+                    if (!archived) setPriority(item);
+                  }}
                   type="button"
                 >
                   {priorityLabel(item, meta?.priorities)}
@@ -6533,6 +6833,7 @@ function CreateIssueModal({
                   inputMode="decimal"
                   onChange={(event) => draftOf("storyPoints")(event.target.value)}
                   placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  readOnly={archived}
                   type="text"
                   value={planning.storyPoints}
                 />
@@ -6547,6 +6848,7 @@ function CreateIssueModal({
                   id={`${planningId}-original-estimate`}
                   onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
                   placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  readOnly={archived}
                   type="text"
                   value={planning.originalEstimateMinutes}
                 />
@@ -6561,6 +6863,7 @@ function CreateIssueModal({
                   id={`${planningId}-remaining-estimate`}
                   onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
                   placeholder={PLANNING_EMPTY_PLACEHOLDER}
+                  readOnly={archived}
                   type="text"
                   value={planning.remainingEstimateMinutes}
                 />
@@ -6613,6 +6916,7 @@ function CreateIssueModal({
                   // the two that fires while the entry is unreadable, and
                   // `input` is the only one the calendar popup fires at all.
                   onKeyUp={relaxDates}
+                  readOnly={archived}
                   ref={startDateRef}
                   type="date"
                   value={planning.startDate}
@@ -6630,6 +6934,7 @@ function CreateIssueModal({
                     relaxDates();
                   }}
                   onKeyUp={relaxDates}
+                  readOnly={archived}
                   ref={dueDateRef}
                   type="date"
                   value={planning.dueDate}
@@ -6645,17 +6950,34 @@ function CreateIssueModal({
             story removes. The `id` is what the offending date box describes
             itself by — the sentence's, so the description is the sentence. */}
         {formNotice ? (
-          <ErrorNote id={noticeId} key={dateNotice ? dateNotice.seq : "write"} live="alert">
+          <ErrorNote
+            // Where focus goes when the archive this refused create brought
+            // takes Create issue away from under it (§5.7) — this refusal only.
+            archiveNote={archiveRefused}
+            id={noticeId}
+            key={dateNotice && !archived ? dateNotice.seq : "write"}
+            live="alert"
+          >
             {formNotice}
           </ErrorNote>
+        ) : null}
+        {archived && !archiveRefused ? (
+          // Above the footer, and under a refusal of another kind if one is
+          // on screen; not while this form's `PROJECT_ARCHIVED` refusal is —
+          // then that one says it (§5.7, one fact, one place).
+          <p className="modal-archive-note" data-archive-note="modal" tabIndex={-1}>
+            This project is archived, so issues cannot be created in it.
+          </p>
         ) : null}
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel
           </button>
-          <button className="primary-button" disabled={!summary.trim() || !issueType || createIssue.isPending} type="submit">
-            Create issue
-          </button>
+          {archived ? null : (
+            <button className="primary-button" disabled={!summary.trim() || !issueType || createIssue.isPending} type="submit">
+              Create issue
+            </button>
+          )}
         </div>
       </form>
     </Modal>
@@ -6932,6 +7254,9 @@ function issueConflictText(fields: (keyof UpdateIssueInput)[]): string {
  * here, so this is the guard for whatever reads a write's error next.
  */
 function writeFailureText(error: Error, sent: UpdateIssueInput | undefined): string {
+  // An archive that landed while the panel was open (§5.7): our sentence in
+  // place of the server's, the request id beside it as usual.
+  if (isProjectArchived(error)) return PROJECT_ARCHIVED_SENTENCE;
   if (isIssueVersionConflict(error)) return issueConflictText(sent ? (Object.keys(sent) as (keyof UpdateIssueInput)[]) : []);
   if (sent && isDatesOutOfOrderRefusal(error)) {
     if (sent.startDate !== undefined && sent.dueDate === undefined) return planningDateOrderAdvice("startDate");

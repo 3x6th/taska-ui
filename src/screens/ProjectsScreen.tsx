@@ -1,6 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Search } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { taskaApi } from "../api/client";
 import { ApiNotice } from "../components/ApiNotice";
@@ -46,7 +46,7 @@ async function loadSummary(projectId: string): Promise<ProjectSummary> {
   // deployed — so it fired once per card rather than never, and in `rest` it
   // turned 1 + 2N requests into 1 + 3N. No mode should pay a request to decide
   // whether to offer a control, all of it to draw a pencil opening a dialog
-  // whose Save cannot succeed until PR #155 deploys either. The row's own
+  // whose Save could not succeed until PR #155 deployed either. The row's own
   // field is the only source.
   const [issues, members] = await Promise.allSettled([
     taskaApi.listIssues(projectId, { pageSize: 100 }),
@@ -65,8 +65,26 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
-  /** The project whose edit dialog is open, by id — see the render below. */
-  const [editing, setEditing] = useState<string | null>(null);
+  /**
+   * The project whose edit dialog is open: the last row the list held for it,
+   * and where its card stood in the grid then. Kept up to date below while the
+   * row is listed, and kept as it was once the row has gone — see the render.
+   */
+  const [editing, setEditing] = useState<{ row: Project; index: number } | null>(null);
+  /**
+   * The page's one status line (DESIGN.md §4.11, «Успех» from `/projects`):
+   * "{KEY} archived. It no longer appears in Projects." Mounted from the first
+   * frame and visually hidden, so the sentence that lands in it is announced.
+   * Held until the next archive or until the reader leaves the page.
+   */
+  const [status, setStatus] = useState("");
+  /**
+   * The project focus goes to once an archived card has left the grid — after
+   * this page's archive, or after the dialog of a card somebody else archived
+   * is closed; `null` for "New project".
+   */
+  const focusAfterArchive = useRef<{ id: string | null } | null>(null);
+  const newProjectButton = useRef<HTMLButtonElement>(null);
 
   const [filter, setFilter] = useState("");
 
@@ -113,13 +131,32 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
     [projects, summaryQueries],
   );
 
-  // Resolved against the live list every render, and `null` when the row is
-  // gone: a project that disappeared between the click and the answer has no
-  // dialog to draw, and one that was renamed has a new name to draw with.
-  const editingProject = useMemo(
-    () => (editing ? (projects.find((project) => project.id === editing) ?? null) : null),
-    [editing, projects],
-  );
+  /**
+   * The open dialog's row, resolved against the live list every render, so
+   * its own optimistic patch and a rename from elsewhere both reach it.
+   *
+   * When the row leaves `["projects"]` under the open dialog — somebody else
+   * archived the project, and a refetch (this dialog's own refused Save
+   * included) no longer lists it — the dialog does not vanish under the
+   * reader. It stays on the last row seen, read-only, until it is closed
+   * (DESIGN.md §4.11, «Архив пришёл отказом Save на `/projects`»). Looked up in
+   * the unfiltered list, so a rename that takes the card out of the filter is
+   * not mistaken for that; its place in the grid is the filtered one, which is
+   * where focus has to go on close. Updated during render — the pattern
+   * `GlobalSearch` uses — so no frame draws the stale row.
+   */
+  const listedRow = editing ? projects.find((project) => project.id === editing.row.id) : undefined;
+  const listedIndex = editing ? visibleProjects.findIndex((project) => project.id === editing.row.id) : -1;
+  if (
+    editing &&
+    listedRow &&
+    (listedRow !== editing.row || (listedIndex >= 0 && listedIndex !== editing.index))
+  ) {
+    setEditing({ row: listedRow, index: listedIndex >= 0 ? listedIndex : editing.index });
+  }
+  const editingProject = editing ? (listedRow ?? editing.row) : null;
+  // Only against a list that answered: no data is not "the row left".
+  const editingUnlisted = editing !== null && listedRow === undefined && projectsQuery.data !== undefined;
 
   const projectsUnread = useUnanswered(projectsQuery);
   // One line for the whole grid, not one per card: a gateway that is failing
@@ -129,6 +166,48 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   // screen and to a keyboard, and it never carried the message or the request
   // id at all.
   const summaryFailure = summaryQueries.find((query) => query.data?.failure)?.data?.failure;
+
+  /**
+   * An archived project leaves the grid in the frame the dialog closes in —
+   * the dialog takes it out of `["projects"]` before it closes — so this only
+   * decides where focus goes and what is said. Focus: the card that takes the
+   * archived one's place, else the one before it, else "New project", read
+   * off the grid as it stands, filter included. Nothing animates.
+   */
+  const projectArchived = (archived: Project) => {
+    const index = visibleProjects.findIndex((project) => project.id === archived.id);
+    const remaining = visibleProjects.filter((project) => project.id !== archived.id);
+    const next = index < 0 ? undefined : (remaining[index] ?? remaining[index - 1]);
+    focusAfterArchive.current = { id: next?.id ?? null };
+    setStatus(`${archived.projectKey} archived. It no longer appears in Projects.`);
+  };
+  /**
+   * Closing the dialog. Over a row that has left the list, focus goes where it
+   * goes after an archive — the card now in that card's place, else the one
+   * before it, else "New project" — and nothing is said: the dialog already
+   * said it (§4.11). Otherwise the dialog hands focus back to its opener itself.
+   */
+  const closeEditor = () => {
+    if (editing && editingUnlisted) {
+      const next = visibleProjects[editing.index] ?? visibleProjects[editing.index - 1];
+      focusAfterArchive.current = { id: next?.id ?? null };
+    }
+    setEditing(null);
+  };
+  // After the commit that took the card away, and after the dialog's own
+  // cleanup, which hands focus to its opener only when focus fell to <body> —
+  // and that opener, the archived card's pencil, has gone with the card.
+  useEffect(() => {
+    const target = focusAfterArchive.current;
+    if (!target) return;
+    focusAfterArchive.current = null;
+    // Matched on the data attribute rather than built into a selector, so an
+    // id needs no escaping.
+    const card = [...document.querySelectorAll<HTMLButtonElement>("button.project-card")].find(
+      (node) => target.id !== null && node.dataset.projectId === target.id,
+    );
+    (card ?? newProjectButton.current)?.focus();
+  });
 
   return (
     <main className="page-shell">
@@ -140,6 +219,9 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
         onLogout={onLogout}
       />
       <section className="projects-page">
+        <p className="visually-hidden" role="status">
+          {status}
+        </p>
         <div className="projects-heading">
           <div>
             <h1>Projects</h1>
@@ -169,7 +251,7 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
                 value={filter}
               />
             </label>
-            <button className="primary-button" onClick={() => setCreating(true)} type="button">
+            <button className="primary-button" onClick={() => setCreating(true)} ref={newProjectButton} type="button">
               <Plus size={15} />
               New project
             </button>
@@ -211,7 +293,7 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
                 // every visit as em dashes before appearing, which said a
                 // request that was about to succeed had already failed.
                 pending={summaryByProject.get(project.id)?.isPending ?? true}
-                onEdit={() => setEditing(project.id)}
+                onEdit={() => setEditing({ row: project, index: visibleProjects.indexOf(project) })}
                 onOpen={() => navigate(`/projects/${project.id}/board`)}
               />
             ))}
@@ -219,10 +301,17 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
         )}
       </section>
       {creating ? <NewProjectModal onClose={() => setCreating(false)} onCreated={() => queryClient.invalidateQueries({ queryKey: ["projects"] })} /> : null}
-      {/* Held by id rather than by object, so the dialog reads the row the list
-          currently holds: its own optimistic patch lands in `["projects"]`, and
-          a captured object would go on showing the name it opened with. */}
-      {editingProject ? <EditProjectModal project={editingProject} onClose={() => setEditing(null)} /> : null}
+      {/* The row the list currently holds, while it holds one: the dialog's own
+          optimistic patch lands in `["projects"]`, and a captured object would
+          go on showing the name it opened with. */}
+      {editingProject ? (
+        <EditProjectModal
+          onArchived={() => projectArchived(editingProject)}
+          onClose={closeEditor}
+          project={editingProject}
+          unlisted={editingUnlisted}
+        />
+      ) : null}
     </main>
   );
 }
@@ -250,11 +339,9 @@ function ProjectCard({
    * request is spent here asking for one. Before TAS-137 deployed no row on the
    * stand stated one, so no card carried a pencil. Now every `GET /projects`
    * item carries the reader's role (read at `develop` `1cfe4d79f074`), so on
-   * the stand an ADMIN's cards show the pencil, and Save reaches
-   * `EditProjectModal`'s "not on this gateway yet" note while PR #155's `PATCH`
-   * is still undeployed — TAS-148's designed state, not a defect. The board's
-   * own header draws its pencil from the membership query it already mounts
-   * for other reasons.
+   * the stand an ADMIN's cards show the pencil, and Save reaches PR #155's
+   * `PATCH`, deployed since 2026-10-23. The board's own header draws its pencil
+   * from the context read it already mounts for other reasons.
    */
   const canEdit = project.currentUserRole === "ADMIN";
   /**
@@ -266,7 +353,7 @@ function ProjectCard({
    */
   return (
     <div className={`project-card-shell ${canEdit ? "is-editable" : ""}`}>
-      <button className="project-card" onClick={onOpen} type="button">
+      <button className="project-card" data-project-id={project.id} onClick={onOpen} type="button">
         <div className="project-card-head">
           <span className="key-badge" style={keyBadgeStyle(project.projectKey, project.color)}>
             {project.projectKey}
@@ -343,10 +430,9 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [description, setDescription] = useState("");
   /**
    * `null` is Automatic: no `color` in the body, so the project computes one
-   * from its key. Default because it is the only choice that stays reversible
-   * — `PATCH` can change a colour but cannot take one away (TAS-145) — so a
-   * project created without one can still pick one later, and a project
-   * created with one is committed.
+   * from its key. Default because it states nothing the reader did not choose;
+   * either choice is reversible, as `PATCH` clears a colour with an explicit
+   * `null` (backend PR #155, TAS-145).
    */
   const [color, setColor] = useState<string | null>(null);
   const automaticHintId = useId();

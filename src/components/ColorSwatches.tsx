@@ -10,9 +10,10 @@ import { readableTextOn } from "../lib/format";
  * the checked state. DESIGN.md §8 asks for a prop rather than a second variant,
  * so the differences between the two are data. The project's picker passes one
  * extra option whose value is `null` ("Automatic", meaning the project states
- * no colour of its own and the client computes one), and marks it `disabled`
- * once the server holds a colour, because the contract has no way to take one
- * back.
+ * no colour of its own and the client computes one). It used to mark that
+ * option `disabled` once the server held a colour, because the contract had no
+ * way to take one back; backend PR #155 clears a colour with an explicit
+ * `null`, so nothing here is refused any more and the prop went.
  *
  * A group of `aria-pressed` buttons rather than an ARIA radio group. `role=
  * "radio"` would announce a keyboard contract this does not implement — arrow
@@ -34,12 +35,6 @@ export interface ColorChoice {
   swatch: string;
   /** The swatch's accessible name. A colour alone is not a name (§7). */
   label: string;
-  /**
-   * Offered but refused, with the reason in text beside the group. A real
-   * `disabled`, so it carries DESIGN.md §4.1's recipe rather than only the
-   * `aria-disabled` §7 already records as a gap elsewhere.
-   */
-  disabled?: boolean;
 }
 
 export function ColorSwatches({
@@ -48,18 +43,28 @@ export function ColorSwatches({
   groupLabel,
   onPick,
   selected,
+  unavailable = false,
 }: {
   choices: ColorChoice[];
-  /** The id of the line explaining a refusal, announced on entering the group. */
+  /** The id of a line about the group, announced on entering it (the create form's "first swatch is Automatic"). */
   describedBy?: string;
   groupLabel: string;
   onPick: (value: string | null) => void;
   selected: string | null;
+  /**
+   * Nothing may be picked any more — the project was archived under an open
+   * dialog (DESIGN.md §5.7, «Архив пришёл отказом записи»). `aria-disabled`
+   * rather than `disabled`, §4.1's steadily-unavailable kind: the swatches stay
+   * in the Tab order and keep saying which colour is chosen, and a press does
+   * nothing.
+   */
+  unavailable?: boolean;
 }) {
   return (
     <div aria-describedby={describedBy} aria-label={groupLabel} className="color-swatches" role="group">
       {choices.map((choice) => (
         <button
+          aria-disabled={unavailable || undefined}
           aria-label={choice.label}
           aria-pressed={selected === choice.value}
           // `is-automatic` draws a dashed inner ring, which is the only thing
@@ -72,9 +77,10 @@ export function ColorSwatches({
           className={`color-swatch ${choice.value === null ? "is-automatic" : ""} ${
             selected === choice.value ? "is-active" : ""
           }`}
-          disabled={choice.disabled}
           key={choice.value ?? "automatic"}
-          onClick={() => onPick(choice.value)}
+          onClick={() => {
+            if (!unavailable) onPick(choice.value);
+          }}
           // The fill and the ink that reads on it, set together in one place.
           // The dashed ring above is drawn in `--swatch-ink`, so anything laid
           // over this fill is chosen *from* it by §2.2's own rule rather than
