@@ -3195,9 +3195,10 @@ history: прямая ссылка и перезагрузка обязаны д
 стопкой уже 560: переключатель 44 умещается справа и на 320. Inbox в Taska от каналов не зависит,
 своего переключателя у него нет.
 
-Описание Telegram — одно из трёх: привязка есть (`CONNECTED` или `UNAVAILABLE`) — аккаунт «{name} ·
-@{username}» (без имени — «@{username}»); привязки нет и Telegram недоступен — «Telegram
-notifications are not available right now.»; иначе — «Connect your account before turning Telegram
+Описание Telegram — одно из четырёх: привязка есть (`CONNECTED` или `UNAVAILABLE`) — аккаунт «{name}
+· @{username}» (без имени — «@{username}»); привязки нет и Telegram недоступен — «Telegram
+notifications are not available right now.»; статус, которого сборка не знает, — «Taska cannot read
+the state of this Telegram connection.»; иначе — «Connect your account before turning Telegram
 notifications on.» Без подтверждённой привязки переключатель Telegram стойко недоступен (§4.29).
 
 Под строкой Telegram — блок без карточки и без подложки: колонка `gap:8`, заметки 11.5/400 `--fg-2`,
@@ -3212,9 +3213,17 @@ Telegram → возврат в профиль → кандидат и primary «
 `fit-content` — чтобы кольцо обводило слово, а не колонку 560. Отключение Telegram не меняет Email.
 
 `UNAVAILABLE` — одна заметка: текст кода отказа (`telegramDeliveryErrorText`, `src/lib/format.ts`),
-а без кода — «The connected bot cannot deliver notifications right now. You can disconnect Telegram
-and connect again when it is available.»; две заметки подряд не рисуются. Выключить канал и
-Disconnect остаются доступны. Технический код пользовательским текстом не становится.
+но только пока `telegramAvailable`; без кода или при выключенной интеграции — «The connected bot
+cannot deliver notifications right now. You can disconnect Telegram and connect again when it is
+available.» (выключенная интеграция отдаёт `BOT_CHANGED` каждой привязке, и фраза про другого бота
+была бы неправдой). Две заметки подряд не рисуются; переключатель Telegram читает заметку в
+`aria-describedby` после описания. Выключить канал и Disconnect остаются доступны. Технический код
+пользовательским текстом не становится.
+
+Статус, которого сборка не знает (TAS-173: в REST сужается до `null`), — одна заметка «You can
+disconnect Telegram and connect again.» и одно действие, «Disconnect Telegram»: DELETE не отказывает
+никогда. Connect, ссылки на бота и Confirm нет; включённый переключатель можно выключить,
+выключенный стойко недоступен (§4.29).
 
 Состояния. Первое чтение — скрытый `role="status"` и две полосы `.value-skeleton`, padding `14 0`,
 без спиннера. Чтение не удалось — `ApiNotice` «Your notification choices could not be loaded.» со

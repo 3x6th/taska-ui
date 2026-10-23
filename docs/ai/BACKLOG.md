@@ -4029,10 +4029,29 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
   same today (api-contract-guard).
 - **No test asserts exactly one `/auth/refresh` for N concurrent same-account 401s**; the
   existing test counts expiries (release-reviewer).
+- **Dimmed focus ring on a steadily unavailable control.** `opacity: .58` on a switch with
+  `data-unavailable` dims its focus ring too (≈2.6:1 light, 2.2:1 dark); §4.1's "Send new link"
+  does the same. WCAG 1.4.11 exempts inactive controls; if it is ever fixed, it is a §7 rule
+  for all such controls, e.g. opacity on track and thumb instead of the button (art-director).
+- **An empty 200/204 on a preferences route would surface a raw TypeError.**
+  `toNotificationPreferences` reads `wire.telegramStatus` unguarded, so a body-less answer
+  shows "Cannot read properties of undefined…" through `apiErrorFacts`. Only if the server
+  breaks the contract; before TAS-387's fix the same case silently drew "not connected"
+  (release-reviewer).
+- **Three e2e flakes on retry in CI run 39953655781, none in this diff:**
+  `admin-users.spec.ts:90` [desktop] (the "Users" heading not visible within 5 s after sign-in),
+  `admin-users.spec.ts:57` [mobile], `admin-console.spec.ts:555` [laptop] — the CPU-contention
+  class recorded above under "The e2e suite flakes under CPU contention" (release-reviewer).
+- **Stale after the 2026-10-23 snapshot refresh, no false behaviour** (api-contract-guard):
+  `API-DIVERGENCE.md` still gives `ProjectContextResponseDto` as project, members, labels,
+  workflows — the snapshot now requires `issueTypes`, and since #212 `workflows` comes from the
+  registry filtered to the three known types; `JIRA-WORKFLOW.md` still has TAS-211 in progress
+  (#209 merged) and TAS-385 waiting for its backend PR (#212 merged). The board's type order
+  ignores the registry's `sortOrder` and default — TAS-385's frontend story.
 - **Backend asks raised on TAS-387** (api-contract-guard, verified at `34589adf`): `GET
   /users/me` waits on `GetPreferences` (`UserServiceImpl`, deadline 3 s) — the identity read
   behind every first paint; an unknown `telegram_status` is a 500 (throwing `fromValue`);
   the refusals and the `telegramError` set are not in `openapi.yml`; the preferences `GET`
   writes the row on every read while the UI polls it every 3 s; the link answer carries no
   preferences, so Connect costs two requests; with the integration off and the bot username
-  empty, every bound user is reported `BOT_CHANGED`.
+  empty, every bound user is reported `BOT_CHANGED` (one-line `isEnabled()` guard).

@@ -1757,7 +1757,10 @@ Everything below is the entry as it stood, in the past tense.
     gateway maps it with a throwing `fromValue`.
   - `GET /users/me` now waits on notification-service's `GetPreferences` before it answers.
 - **Compensation: none.** The UI calls these routes as they are, in `rest` and `hybrid`
-  alike, and shows a refusal with the server's words and the request id. The mock
+  alike, and shows a refusal with the server's words and the request id. `rest` narrows
+  a `telegramStatus` this build does not know to `null` (TAS-173, the `toUserStatus`
+  precedent), which offers only Disconnect; that path is unreachable while the gateway's
+  `fromValue` throws, and the mock never produces it. The mock
   reproduces the refusal codes and the states that refuse, but never sets
   `telegramError` and reaches `UNAVAILABLE` only with the integration off; the bot's
   `/start` and `/stop` exist in it only as test fixtures, so mock mode cannot reach a
