@@ -482,7 +482,6 @@ const {
     },
     getCurrentUser: async () => ({
       id: "user-anna",
-      login: "anna",
       email: "anna@example.com",
       displayName: "Anna Ivanova",
       status: "ACTIVE" as const,

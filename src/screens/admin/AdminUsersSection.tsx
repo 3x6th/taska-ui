@@ -31,6 +31,14 @@ import { useMeta } from "../../hooks/useMeta";
 
 const PAGE_SIZE = 20;
 
+/**
+ * The named columns, in order (§5.8): four with the action cell after them. No
+ * login since TAS-389 — the account has none (TAS-388). The header is drawn
+ * from this list and the empty state spans `COLUMNS`, so the two cannot drift.
+ */
+const COLUMN_NAMES = ["person", "global role", "status"] as const;
+const COLUMNS = COLUMN_NAMES.length + 1;
+
 /** How long a changed row stays marked, matching the copy confirmation (§5.8). */
 const FLASH_MS = 2000;
 
@@ -274,7 +282,7 @@ export function AdminUsersSection() {
           <>
             <span className="admin-plane-spacer" />
             {/* The section's one accent (§1), over the table's right edge: the
-                row it sits on is capped at the table's 860 (§5.8). */}
+                row it sits on is capped at the table's 720 (§5.8). */}
             <button
               className="primary-button compact-button admin-users-invite"
               onClick={(event) => {
@@ -321,10 +329,11 @@ export function AdminUsersSection() {
               {/* Named columns, not the catalog's own — this section knows what
                   it is looking at. No header is a button: the gateway states no
                   sortable column for this table (§5.8). */}
-              <th scope="col">person</th>
-              <th scope="col">login</th>
-              <th scope="col">global role</th>
-              <th scope="col">status</th>
+              {COLUMN_NAMES.map((column) => (
+                <th key={column} scope="col">
+                  {column}
+                </th>
+              ))}
               {/* Empty to the eye, named for a screen reader: a visible header
                   over the buttons would caption the one column that is not
                   data. */}
@@ -339,7 +348,7 @@ export function AdminUsersSection() {
                 {/* `aria-live`, not `role="status"`: the role would replace the
                     cell role, and in table-navigation mode the message would
                     stop being part of the grid it is explaining. */}
-                <td aria-live="polite" className="admin-empty-cell" colSpan={5}>
+                <td aria-live="polite" className="admin-empty-cell" colSpan={COLUMNS}>
                   This gateway lists no accounts.
                 </td>
               </tr>
@@ -368,11 +377,8 @@ export function AdminUsersSection() {
                       <span className="admin-user-email">{user.email}</span>
                     ) : null}
                   </td>
-                  {/* The three value cells share one shape: the section's dash
+                  {/* The two value cells share one shape: the section's dash
                       for an absent value, kept pale, and the value otherwise. */}
-                  <td className={user.login === null ? "admin-cell-mono admin-cell-null" : "admin-cell-mono"}>
-                    {user.login ?? "—"}
-                  </td>
                   <td className={user.globalRole === null ? "admin-cell-null" : undefined}>
                     {user.globalRole === null ? (
                       "—"

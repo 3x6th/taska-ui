@@ -92,7 +92,7 @@ function respond(url: string, init?: RequestInit): unknown {
     };
   }
   if (path === "/users/me") {
-    return { id: ANNA, login: "anna", email: "anna@example.com", displayName: "Anna Ivanova", status: "ACTIVE", avatar: null };
+    return { id: ANNA, email: "anna@example.com", displayName: "Anna Ivanova", status: "ACTIVE", avatar: null };
   }
   if (path === `/projects/${PROJECT}/context`) {
     return {

@@ -157,7 +157,6 @@ export type NotificationType =
 
 export interface User {
   id: string;
-  login: string;
   email: string;
   displayName: string;
   /**
@@ -308,8 +307,8 @@ export interface UserStatusChange {
 
 /**
  * One person as the people directory names them — `DirectoryUserDto`, the row
- * of `GET /users` (backend #204, TAS-204). Not a `User`: there is no status,
- * no login and no role on the wire, by the route's own description ("Поиск не
+ * of `GET /users` (backend #204, TAS-204). Not a `User`: there is no status
+ * and no role on the wire, by the route's own description ("Поиск не
  * предоставляет доступа к проектам, ролям, токенам и credentials").
  *
  * `avatarUrl` is a presigned link, or `null` both when there is no avatar and
@@ -1553,10 +1552,17 @@ export interface AuditEntriesQuery {
  * One row of the admin audit log (`AuditEntryDto`).
  *
  * Every field is nullable here although the table behind it declares nine of
- * them `NOT NULL` (the id, actor id and login, action, the three target
+ * them `NOT NULL` (the id, the actor's id and name, action, the three target
  * fields, reason and the time): the schema has no `required` block, so the
  * wire promises nothing and the mapping takes nothing on trust. `requestId`,
- * `oldValue` and `newValue` are nullable in the database as well.
+ * `oldValue`, `newValue` and `actorEmail` are nullable in the database as well.
+ *
+ * `actorDisplayName` and `actorEmail` are a snapshot of who acted, taken when
+ * the row was written (backend PR #219, TAS-388). The name column used to hold
+ * the actor's login and was renamed rather than refilled, so on a historical
+ * row it still carries that old designation (`mark`) and the email is empty.
+ * The same `actorUserId` can therefore appear under two names; nothing here
+ * reconciles them, and the actor is never looked up by id on the client.
  *
  * `id` is the row's primary key (`format: uuid`, backend PR #197) and what the
  * section keys a row by. It is still `string | null` for the reason above, and
@@ -1571,7 +1577,8 @@ export interface AuditEntriesQuery {
 export interface AuditEntry {
   id: string | null;
   actorUserId: string | null;
-  actorLogin: string | null;
+  actorDisplayName: string | null;
+  actorEmail: string | null;
   action: string | null;
   targetService: string | null;
   targetTable: string | null;

@@ -84,7 +84,7 @@ const { fakeApi, state, reset, release, releaseList } = vi.hoisted(() => {
     getCurrentUser: async () => {
       state.meReads += 1;
       if (state.meFailure) throw state.meFailure;
-      return { ...state.me, login: "reader", email: "reader@example.com", displayName: "Reader", status: "ACTIVE" };
+      return { ...state.me, email: "reader@example.com", displayName: "Reader", status: "ACTIVE" };
     },
     // `GET /users` (backend #204), as the mock answers it: name or email, case
     // folded, ordered by name, one row read past the page for `hasMore`.

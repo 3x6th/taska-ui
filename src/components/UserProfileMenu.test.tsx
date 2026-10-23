@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, focusManager, onlineManager, useQuery } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +10,6 @@ import { UserProfileMenu } from "./UserProfileMenu";
 
 const anna: User = {
   id: "3f1f5a2e-0000-4000-8000-000000000001",
-  login: "anna",
   email: "anna@example.com",
   displayName: "Anna Ivanova",
   status: "ACTIVE",
@@ -158,9 +157,22 @@ describe("UserProfileMenu", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
 
     expect(screen.getByText("Anna Ivanova")).toBeVisible();
-    expect(screen.getByText("@anna")).toBeVisible();
-    expect(screen.getByText("anna@example.com")).toBeVisible();
     expect(screen.queryByText("Your profile could not be loaded.")).not.toBeInTheDocument();
+  });
+
+  it("puts the email under the name, whole, and does not list it again (TAS-389)", () => {
+    renderMenu({ user: { ...anna, globalRole: "USER" }, loading: false, onLogout: vi.fn() });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open profile for Anna Ivanova" }));
+
+    // In the header, where the handle the account no longer has used to be —
+    // and only there: the list below is Status and Role.
+    const head = document.querySelector<HTMLElement>(".user-profile-head")!;
+    expect(within(head).getByText("anna@example.com")).toBeVisible();
+    expect(screen.getAllByText("anna@example.com")).toHaveLength(1);
+    expect(head).not.toHaveTextContent("@anna");
+    const terms = [...document.querySelectorAll(".user-profile-details dt")].map((term) => term.textContent);
+    expect(terms).toEqual(["Status", "Role"]);
   });
 
   it("prints a status it has never heard of instead of an empty badge", () => {

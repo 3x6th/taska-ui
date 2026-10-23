@@ -15,7 +15,8 @@ import {
 const entry = (overrides: Partial<AuditEntry> = {}): AuditEntry => ({
   id: "5e7a0700-2c4b-4d1e-9f3a-6b8c0d2e4f1a",
   actorUserId: "e65186a2-b807-42ae-a66f-711be116a93b",
-  actorLogin: "mark",
+  actorDisplayName: "Mark Lee",
+  actorEmail: "mark@example.com",
   action: "BLOCK_USER",
   targetService: "auth",
   targetTable: "users",

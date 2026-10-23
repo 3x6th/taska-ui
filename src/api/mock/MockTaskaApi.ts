@@ -1362,8 +1362,19 @@ const OUTBOX_TABLE = "outbox_events";
  * a test means the same rows every day. Newest first, which is the order the
  * server answers in.
  *
- * `vera` is a former admin and `migrator` a service account: the log keeps a
- * denormalised login, so neither has to be a user the rest of the seed knows.
+ * The log keeps a snapshot of the actor's name and email, taken when the row
+ * was written (backend PR #219, TAS-388), so an actor does not have to be a
+ * user the rest of the seed knows: `vera` is a former admin and `migrator` a
+ * service account. The snapshot comes in the two shapes the stand has. Rows
+ * written since #219 carry the display name and the email. Rows written before
+ * it went through changeset `0003-audit-actor-identity`, which renamed
+ * `actor_login` to `actor_display_name` rather than refilling it, so they still
+ * hold the old login there and no email. Mark has both: one id, "Mark Lee" on
+ * his newest rows and "mark" on the older ones. No row has a blank name —
+ * the column is `NOT NULL` and admin-service refuses one — so the Audit
+ * section's address-only, id-only and dash states are reached by its tests
+ * rather than by this seed.
+ *
  * Some rows have no request id, some no old value (an invitation creates
  * something) and some no new value (a session revoked is gone); secrets inside
  * the documents are already `"***"`, as the server masks them. The documents
@@ -1375,13 +1386,20 @@ const OUTBOX_TABLE = "outbox_events";
  * relation to the row's time — the server's tiebreak is the id's own order.
  */
 function seedAuditEntries(): AuditEntry[] {
-  const actors = [
-    { id: MARK_ID, login: "mark" },
-    { id: FORMER_ACCOUNT_ID, login: "vera" },
-    { id: "5a1c7e93-2d4b-4f60-9b8e-0c3d7a6f1e28", login: "migrator" },
-  ];
+  type Actor = Pick<AuditEntry, "actorUserId" | "actorDisplayName" | "actorEmail">;
+  // Written since #219: the name and the address as they were at the time.
+  const mark: Actor = { actorUserId: MARK_ID, actorDisplayName: "Mark Lee", actorEmail: "mark@example.com" };
+  // Written before it: the old login, kept by the rename, and no address.
+  const before = {
+    mark: { actorUserId: MARK_ID, actorDisplayName: "mark", actorEmail: null },
+    vera: { actorUserId: FORMER_ACCOUNT_ID, actorDisplayName: "vera", actorEmail: null },
+    migrator: { actorUserId: "5a1c7e93-2d4b-4f60-9b8e-0c3d7a6f1e28", actorDisplayName: "migrator", actorEmail: null },
+  } satisfies Record<string, Actor>;
+  // The three newest rows postdate #219; everything from the fourth down is
+  // older. Both shapes, and all three actors, are on the first page of twenty.
+  const writtenSince = 3;
   const userIds = [NINA_ID, OMAR_ID, LEO_ID, PRIYA_ID, TOM_ID];
-  type Template = Omit<AuditEntry, "id" | "actorUserId" | "actorLogin" | "createdAt" | "requestId" | "targetId">;
+  type Template = Omit<AuditEntry, "id" | keyof Actor | "createdAt" | "requestId" | "targetId">;
   const templates: Template[] = [
     {
       action: "BLOCK_USER",
@@ -1445,8 +1463,14 @@ function seedAuditEntries(): AuditEntry[] {
     const template = templates[index % templates.length];
     // Mark does most of it, as the only admin today; Vera's rows are the old
     // ones, from before she left; the migrator only ever retries events.
-    const actor =
-      template.action === "RETRY_OUTBOX_EVENT" && index % 3 === 0 ? actors[2] : index >= 22 ? actors[1] : actors[0];
+    const actor: Actor =
+      index < writtenSince
+        ? mark
+        : template.action === "RETRY_OUTBOX_EVENT" && index % 3 === 0
+          ? before.migrator
+          : index >= 15
+            ? before.vera
+            : before.mark;
     const targetId =
       template.targetTable === "outbox_events"
         ? `7f0c${String(index).padStart(4, "0")}-3b1a-4c2d-8e9f-0a1b2c3d4e5f`
@@ -1455,8 +1479,7 @@ function seedAuditEntries(): AuditEntry[] {
       ...template,
       // Reversed digits, so the ids do not sort the way the times do.
       id: `5e7a${String(index).padStart(4, "0").split("").reverse().join("")}-2c4b-4d1e-9f3a-6b8c0d2e4f1a`,
-      actorUserId: actor.id,
-      actorLogin: actor.login,
+      ...actor,
       targetId,
       // Every fifth row came from somewhere with no request id to keep.
       requestId: index % 5 === 4 ? null : `a0d1${String(index).padStart(4, "0")}-6c2e-4f3a-9b8d-1e2f3a4b5c6d`,
@@ -1767,7 +1790,6 @@ export class MockTaskaStore {
     this.users = [
       {
         id: ANNA_ID,
-        login: "anna",
         email: "anna@example.com",
         displayName: "Anna Ivanova",
         status: "ACTIVE",
@@ -1797,7 +1819,6 @@ export class MockTaskaStore {
       },
       {
         id: MARK_ID,
-        login: "mark",
         email: "mark@example.com",
         displayName: "Mark Lee",
         status: "ACTIVE",
@@ -1806,7 +1827,6 @@ export class MockTaskaStore {
       },
       {
         id: SOFIA_ID,
-        login: "sofia",
         email: "sofia@example.com",
         displayName: "Sofia Reyes",
         status: "ACTIVE",
@@ -1815,7 +1835,6 @@ export class MockTaskaStore {
       },
       {
         id: TOM_ID,
-        login: "tom",
         email: "tom@example.com",
         displayName: "Tom Becker",
         status: "ACTIVE",
@@ -1832,7 +1851,6 @@ export class MockTaskaStore {
       },
       {
         id: PRIYA_ID,
-        login: "priya",
         email: "priya@example.com",
         displayName: "Priya Nair",
         status: "ACTIVE",
@@ -1863,7 +1881,6 @@ export class MockTaskaStore {
       // one that cannot get in are exactly the people a board does not have.
       {
         id: LEO_ID,
-        login: "leo",
         email: "leo@example.com",
         displayName: "Leo Fischer",
         status: "INVITED",
@@ -1871,7 +1888,6 @@ export class MockTaskaStore {
       },
       {
         id: NINA_ID,
-        login: "nina",
         email: "nina@example.com",
         displayName: "Nina Kowal",
         status: "BLOCKED",
@@ -1885,18 +1901,14 @@ export class MockTaskaStore {
       // would be unreachable in the only environment an e2e run has.
       {
         id: OMAR_ID,
-        login: "omar",
         email: "omar@example.com",
         displayName: "Omar Haddad",
         status: "LOCKED",
         globalRole: "USER",
       },
-      // Invited and never activated, whose link has expired (TAS-297). The
-      // login is the shape auth-service gives an invited account
-      // (`"invited_" + UUID.randomUUID()`), which Leo predates.
+      // Invited and never activated, whose link has expired (TAS-297).
       {
         id: IVY_ID,
-        login: "invited_5b2e8d14-7a03-4c69-b1f5-2e9d0a7c4f38",
         email: "ivy@example.com",
         displayName: "Ivy Chen",
         status: "INVITED",
@@ -2818,7 +2830,6 @@ export class MockTaskaStore {
     if (!existing) {
       const user: StoredUser = {
         id: mockUuid(),
-        login: `invited_${mockUuid()}`,
         email,
         displayName: name,
         status: "INVITED",
@@ -5045,7 +5056,6 @@ export class MockTaskaStore {
               primaryKey: "id",
               columns: [
                 { name: "id", type: "uuid", sensitive: false },
-                { name: "login", type: "character varying", sensitive: false },
                 { name: "email", type: "character varying", sensitive: false },
                 { name: "display_name", type: "character varying", sensitive: false },
                 { name: "status", type: "character varying", sensitive: false },
@@ -5130,13 +5140,20 @@ export class MockTaskaStore {
               // of the log agree: the same ids, and each document's keys in
               // jsonb's one order, spaced as each route spaces them (see
               // `jsonbCompact` and the rows in `adminRowsFor`).
+              //
+              // The actor's two columns as changeset
+              // `0003-audit-actor-identity` (backend PR #219, TAS-388) leaves
+              // them, read at its merge: `actor_login` renamed in place to
+              // `actor_display_name` and retyped `text`, so it keeps the
+              // fourth position, and `actor_email varchar(320)` added — which
+              // puts it last, after `created_at`.
               name: "admin_audit_log",
               primaryKey: "id",
               columns: [
                 { name: "id", type: "uuid", sensitive: false },
                 { name: "request_id", type: "text", sensitive: false },
                 { name: "actor_user_id", type: "uuid", sensitive: false },
-                { name: "actor_login", type: "character varying", sensitive: false },
+                { name: "actor_display_name", type: "text", sensitive: false },
                 { name: "actor_roles", type: "jsonb", sensitive: false },
                 { name: "action", type: "text", sensitive: false },
                 { name: "target_service", type: "text", sensitive: false },
@@ -5146,6 +5163,7 @@ export class MockTaskaStore {
                 { name: "new_value", type: "jsonb", sensitive: false },
                 { name: "reason", type: "text", sensitive: false },
                 { name: "created_at", type: "timestamp with time zone", sensitive: false },
+                { name: "actor_email", type: "character varying", sensitive: false },
               ],
             },
           ],
@@ -5823,7 +5841,7 @@ export class MockTaskaStore {
           // the same rule as any other JSON — a masked document is still a
           // document, and giving it a special case would be the client deciding
           // what the server already decided.
-          payload: '{"userId":"16ad2404-96e3-4c51-b00d-55c5d1451d3c","email":"n****a@mail.ru","login":"s****a"}',
+          payload: '{"userId":"16ad2404-96e3-4c51-b00d-55c5d1451d3c","email":"n****a@mail.ru"}',
         },
         {
           eventType: "session.revoked",
@@ -6024,7 +6042,6 @@ export class MockTaskaStore {
     if (service === "auth" && table === "users") {
       return this.users.map((user, index) => ({
         id: user.id,
-        login: user.login,
         email: user.email,
         display_name: user.displayName,
         status: user.status,
@@ -6127,7 +6144,7 @@ export class MockTaskaStore {
         id: entry.id,
         request_id: entry.requestId,
         actor_user_id: entry.actorUserId,
-        actor_login: entry.actorLogin,
+        actor_display_name: entry.actorDisplayName,
         actor_roles: entry.action === "RETRY_OUTBOX_EVENT" ? jsonbText(["GLOBAL_ADMIN"]) : jsonbText("GLOBAL_ADMIN"),
         action: entry.action,
         target_service: entry.targetService,
@@ -6137,6 +6154,7 @@ export class MockTaskaStore {
         new_value: document(entry.newValue),
         reason: entry.reason,
         created_at: entry.createdAt,
+        actor_email: entry.actorEmail,
       }));
     }
 

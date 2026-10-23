@@ -79,7 +79,7 @@ describe("RestTaskaApi session expiry", () => {
       meCalls += 1;
       return meCalls === 1
         ? answer(401, { code: "UNAUTHENTICATED", message: "Access token expired" })
-        : answer(200, { id: "user-1", login: "anna", email: "anna@example.com", displayName: "Anna", status: "ACTIVE" });
+        : answer(200, { id: "user-1", email: "anna@example.com", displayName: "Anna", status: "ACTIVE" });
     });
     vi.stubGlobal("fetch", fetchStub);
 
@@ -227,7 +227,6 @@ describe("RestTaskaApi current user", () => {
 
   const me = (extra: Record<string, unknown>) => ({
     id: "user-1",
-    login: "anna",
     email: "anna@example.com",
     displayName: "Anna Ivanova",
     status: "ACTIVE",
@@ -254,13 +253,33 @@ describe("RestTaskaApi current user", () => {
   it("maps GLOBAL_ADMIN", async () => {
     await expect(getCurrentUserWith(me({ globalRole: "GLOBAL_ADMIN" }))).resolves.toEqual({
       id: "user-1",
-      login: "anna",
       email: "anna@example.com",
       displayName: "Anna Ivanova",
       status: "ACTIVE",
       color: undefined,
       globalRole: "GLOBAL_ADMIN",
     });
+  });
+
+  /**
+   * The account has no login since backend PR #219 (TAS-388):
+   * `ValidateAccessTokenResponseDto` drops it. A gateway that still sends one
+   * is not read — the profile is the same object with the field or without it.
+   */
+  it("does not carry a login a gateway still sends", async () => {
+    const user = await getCurrentUserWith(me({ login: "anna", globalRole: "USER" }));
+
+    expect(user).toEqual({
+      id: "user-1",
+      email: "anna@example.com",
+      displayName: "Anna Ivanova",
+      status: "ACTIVE",
+      color: undefined,
+      globalRole: "USER",
+    });
+    // `toEqual` passes over a key whose value is `undefined`; the key itself
+    // must not be there.
+    expect(user).not.toHaveProperty("login");
   });
 
   /**
@@ -362,7 +381,6 @@ describe("RestTaskaApi current user", () => {
     expect(user.globalRole).toBeUndefined();
     expect(user).toMatchObject({
       id: "user-1",
-      login: "anna",
       email: "anna@example.com",
       displayName: "Anna Ivanova",
       status: "ACTIVE",
@@ -1962,7 +1980,8 @@ describe("RestTaskaApi read-only admin", () => {
         {
           id: "5e7a0700-2c4b-4d1e-9f3a-6b8c0d2e4f1a",
           actorUserId: "e65186a2-b807-42ae-a66f-711be116a93b",
-          actorLogin: "mark",
+          actorDisplayName: "Mark Lee",
+          actorEmail: "mark@example.com",
           action: "BLOCK_USER",
           targetService: "auth",
           targetTable: "users",
@@ -2008,7 +2027,7 @@ describe("RestTaskaApi read-only admin", () => {
       // A page longer than the one asked for is the server's statement, and
       // nothing here slices it.
       const many = Array.from({ length: 25 }, () => auditBody.entries[0]);
-      const odd = { id: 42, actorLogin: 7, oldValue: { status: "ACTIVE" }, newValue: null };
+      const odd = { id: 42, actorDisplayName: 7, actorEmail: { address: "x" }, oldValue: { status: "ACTIVE" }, newValue: null };
       const fetchStub = vi.fn(async () => answer({ entries: [...many, odd] }));
       vi.stubGlobal("fetch", fetchStub);
 
@@ -2018,7 +2037,8 @@ describe("RestTaskaApi read-only admin", () => {
       expect(result.entries[25]).toEqual({
         id: null,
         actorUserId: null,
-        actorLogin: null,
+        actorDisplayName: null,
+        actorEmail: null,
         action: null,
         targetService: null,
         targetTable: null,
@@ -2031,6 +2051,54 @@ describe("RestTaskaApi read-only admin", () => {
       });
       // No pagination on the wire: the caller's own page, and one page of what came.
       expect(result.pagination).toMatchObject({ currentPage: 1, pageSize: 20, totalRows: 26, totalPages: 1 });
+    });
+
+    /**
+     * The actor since backend PR #219 (TAS-388): a snapshot of the name and the
+     * email. A historical entry has the old login in the name and no email —
+     * the gateway writes `"actorEmail": null`, and sets a field only when the
+     * record has it, so an omitted one reads the same. `""` names no one.
+     */
+    it("reads the actor's name and email, and an absent, null or empty one as none", async () => {
+      const { actorDisplayName: _name, actorEmail: _email, ...anonymous } = auditBody.entries[0];
+      const fetchStub = vi.fn(async () =>
+        answer({
+          entries: [
+            { ...anonymous, actorDisplayName: "mark", actorEmail: null },
+            { ...anonymous, actorDisplayName: "mark" },
+            { ...anonymous, actorEmail: "mark@example.com" },
+            { ...anonymous, actorDisplayName: "", actorEmail: "" },
+            anonymous,
+          ],
+        }),
+      );
+      vi.stubGlobal("fetch", fetchStub);
+
+      const { entries } = await new RestTaskaApi().listAuditEntries({});
+
+      expect(entries.map((entry) => [entry.actorDisplayName, entry.actorEmail])).toEqual([
+        ["mark", null],
+        ["mark", null],
+        [null, "mark@example.com"],
+        [null, null],
+        [null, null],
+      ]);
+      // The id stays whatever the name: it is what the detail and the filter use.
+      expect(entries.every((entry) => entry.actorUserId === "e65186a2-b807-42ae-a66f-711be116a93b")).toBe(true);
+    });
+
+    it("does not fall back to the retired actorLogin a gateway older than #219 sends", async () => {
+      // No compensation (AGENTS.md): the row says who acted in the fields the
+      // contract names, or it does not. Nor is the actor looked up by id.
+      const { actorDisplayName: _name, actorEmail: _email, ...anonymous } = auditBody.entries[0];
+      const fetchStub = vi.fn(async () => answer({ entries: [{ ...anonymous, actorLogin: "mark" }] }));
+      vi.stubGlobal("fetch", fetchStub);
+
+      const [entry] = (await new RestTaskaApi().listAuditEntries({})).entries;
+
+      expect(entry).toMatchObject({ actorDisplayName: null, actorEmail: null });
+      expect(entry).not.toHaveProperty("actorLogin");
+      expect(fetchStub).toHaveBeenCalledTimes(1);
     });
 
     it("carries the entry's id, and reads an absent or empty one as none", async () => {

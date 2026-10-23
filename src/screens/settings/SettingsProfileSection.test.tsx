@@ -11,7 +11,6 @@ import { SettingsProfileSection } from "./SettingsProfileSection";
 
 const anna: User = {
   id: "3f1f5a2e-0000-4000-8000-000000000001",
-  login: "anna",
   email: "anna@example.com",
   displayName: "Anna Ivanova",
   status: "ACTIVE",
@@ -822,7 +821,14 @@ describe("Settings → My profile", () => {
       const pending = document.querySelector(".settings-profile.is-skeleton");
       expect(pending).toHaveAttribute("aria-busy", "true");
       expect(pending?.querySelector(".avatar-xl.avatar-loading")).not.toBeNull();
-      expect(pending?.querySelectorAll(".value-skeleton")).toHaveLength(5);
+      // The name and the email under it, then one bar per value of the list —
+      // Status and Role, since the email stands in the header (TAS-389).
+      expect(pending?.querySelectorAll(".value-skeleton")).toHaveLength(4);
+      expect(pending?.querySelector(".settings-skeleton-email")).not.toBeNull();
+      expect([...(pending?.querySelectorAll(".settings-details dt") ?? [])].map((term) => term.textContent)).toEqual([
+        "Status",
+        "Role",
+      ]);
       expect(screen.queryByRole("button", { name: /photo/ })).not.toBeInTheDocument();
 
       release();
@@ -846,7 +852,7 @@ describe("Settings → My profile", () => {
       expect(screen.queryByRole("button", { name: /photo/ })).not.toBeInTheDocument();
     });
 
-    it("lists the email, the status and the role read-only, without repeating the name", async () => {
+    it("lists the status and the role read-only, without repeating the name or the email", async () => {
       renderOnProfile();
       await openOnProfile();
 
@@ -855,13 +861,17 @@ describe("Settings → My profile", () => {
         row.querySelector("dt")?.textContent,
         row.querySelector("dd")?.textContent,
       ]);
-      expect(pairs).toEqual([
-        ["Email", "anna@example.com"],
-        ["Status", "Active"],
-      ]);
+      expect(pairs).toEqual([["Status", "Active"]]);
       expect(details.querySelector("input, textarea, select")).toBeNull();
       expect(within(details).queryByText("Anna Ivanova")).toBeNull();
-      expect(screen.getByText("@anna")).toBeVisible();
+      expect(within(details).queryByText("anna@example.com")).toBeNull();
+
+      // The header carries both: the name, and the email under it in place of
+      // the handle the account no longer has (§5.9, TAS-389).
+      const head = document.querySelector<HTMLElement>(".settings-profile-head")!;
+      expect(within(head).getByText("Anna Ivanova")).toBeVisible();
+      expect(within(head).getByText("anna@example.com")).toHaveClass("settings-profile-email");
+      expect(head).not.toHaveTextContent("@anna");
     });
   });
 });

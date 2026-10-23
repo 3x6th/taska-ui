@@ -217,7 +217,8 @@ describe("the Audit section", () => {
         {
           id: null,
           actorUserId: null,
-          actorLogin: "mark",
+          actorDisplayName: "mark",
+          actorEmail: null,
           action: "CREATE_INVITATION",
           targetService: "auth",
           targetTable: "invitations",
@@ -240,6 +241,118 @@ describe("the Audit section", () => {
     const next = screen.getByRole("figure", { name: /New value/ });
     expect(next).toHaveTextContent("not JSON, shown as sent");
     expect(next.querySelector("pre")!.textContent).toBe("JsonByteArrayInput{token=***}");
+  });
+
+  /**
+   * Who acted (DESIGN.md §5.8, TAS-389), from the snapshot the log kept —
+   * `actorDisplayName` and `actorEmail`, backend PR #219. The seed has the
+   * stand's two shapes; the three the stand cannot produce but the DTO allows
+   * (no name: address, id, or nothing) are fixtures below.
+   */
+  describe("the actor", () => {
+    const ACTOR_ID = "e65186a2-b807-42ae-a66f-711be116a93b";
+    const actorCell = (row: HTMLElement) => within(row).getAllByRole("cell")[1];
+    const facts = (detail: HTMLElement) =>
+      [...detail.querySelectorAll(".admin-audit-facts > div")].map((pair) => [
+        pair.querySelector("dt")?.textContent,
+        pair.querySelector("dd"),
+      ]) as [string, HTMLElement][];
+    const fact = (detail: HTMLElement, term: string) => facts(detail).find(([name]) => name === term)![1];
+    const openDetail = (row: HTMLElement) => {
+      const toggle = within(row).getByRole("button", { name: /^Changes of / });
+      fireEvent.click(toggle);
+      return document.getElementById(toggle.getAttribute("aria-controls")!)!;
+    };
+
+    it("prints the name the log kept, the new shape and the historical one alike", async () => {
+      renderAudit();
+      const rows = bodyRows(await table());
+
+      // Since #219: the display name, with the address in the title.
+      const newest = actorCell(rows[0]);
+      expect(newest).toHaveTextContent(/^Mark Lee$/);
+      expect(newest).toHaveAttribute("title", "Mark Lee · mark@example.com");
+      expect(newest).toHaveClass("admin-audit-actor");
+      expect(newest).not.toHaveClass("admin-cell-mono");
+
+      // Before it: the old login the rename kept, as stored, and no address —
+      // the same account under its other label, not reconciled here.
+      const older = rows.map(actorCell).find((cell) => cell.textContent === "mark")!;
+      expect(older).toHaveAttribute("title", "mark");
+      const names = new Set(rows.map((row) => actorCell(row).textContent));
+      expect(names).toEqual(new Set(["Mark Lee", "mark", "migrator", "vera"]));
+    });
+
+    it("opens to the actor's name and address, and the full id as selectable text", async () => {
+      renderAudit();
+      const [row] = bodyRows(await table());
+
+      const detail = openDetail(row);
+
+      expect(facts(detail).map(([term]) => term)).toEqual(["actor", "actor id", "target id", "reason"]);
+      const actor = fact(detail, "actor");
+      expect(within(actor).getByText("Mark Lee")).toHaveClass("admin-user-name");
+      expect(within(actor).getByText("mark@example.com")).toHaveClass("admin-user-email");
+      const id = fact(detail, "actor id");
+      expect(id).toHaveTextContent(new RegExp(`^${ACTOR_ID}$`));
+      expect(id).toHaveClass("admin-cell-mono");
+    });
+
+    it("falls back to the address, then the start of the id, then a dash — and the detail says the same", async () => {
+      const base = (await (async () => {
+        const mock = new MockTaskaApi();
+        await mock.login({ email: "mark@example.com", password: "anything" });
+        return mock.listAuditEntries({ pageSize: 1 });
+      })()).entries[0];
+      const variant = (id: string, overrides: Partial<typeof base>) => ({ ...base, id, ...overrides });
+      setAnswer({
+        entries: [
+          variant("0000000a-0000-4000-8000-000000000000", { actorDisplayName: null, actorEmail: "ops@example.com" }),
+          variant("0000000b-0000-4000-8000-000000000000", { actorDisplayName: null, actorEmail: null }),
+          variant("0000000c-0000-4000-8000-000000000000", {
+            actorDisplayName: null,
+            actorEmail: null,
+            actorUserId: null,
+          }),
+        ],
+        pagination: { currentPage: 1, pageSize: 20, totalRows: 3, totalPages: 1, hasNext: false, hasPrev: false },
+      });
+      renderAudit();
+      const [emailOnly, idOnly, nothing] = bodyRows(await table());
+
+      const byEmail = actorCell(emailOnly);
+      expect(byEmail).toHaveTextContent(/^ops@example\.com$/);
+      expect(byEmail).toHaveAttribute("title", "ops@example.com");
+      expect(byEmail).not.toHaveClass("admin-cell-mono");
+
+      // Mono and cut like the target and request ids, said as an id, and whole
+      // in the title.
+      const byId = actorCell(idOnly);
+      expect(byId).toHaveClass("admin-cell-mono");
+      expect(byId).toHaveAttribute("title", ACTOR_ID);
+      expect(byId).toHaveTextContent(/^account id e65186a2$/);
+
+      // Nothing about the actor at all: the area's pale dash, and no title.
+      const blank = actorCell(nothing);
+      expect(blank).toHaveTextContent(/^—$/);
+      expect(blank).not.toHaveAttribute("title");
+      expect(blank.querySelector(".admin-card-null")).not.toBeNull();
+
+      // The address takes the name's line, with nothing under it.
+      let detail = openDetail(emailOnly);
+      expect(within(fact(detail, "actor")).getByText("ops@example.com")).toHaveClass("admin-user-name");
+      expect(fact(detail, "actor").querySelector(".admin-user-email")).toBeNull();
+
+      // No name and no address: a dash for the actor, and the id beside it is
+      // the whole UUID — the one way to the account from the keyboard.
+      detail = openDetail(idOnly);
+      expect(fact(detail, "actor")).toHaveTextContent(/^—$/);
+      expect(fact(detail, "actor id")).toHaveTextContent(new RegExp(`^${ACTOR_ID}$`));
+
+      detail = openDetail(nothing);
+      expect(fact(detail, "actor")).toHaveTextContent(/^—$/);
+      expect(fact(detail, "actor id")).toHaveTextContent(/^—$/);
+    });
   });
 
   it("keeps the same entry open when a refetch puts a newer one on top, even among entries that say the same thing", async () => {

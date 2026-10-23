@@ -12,6 +12,7 @@ import {
   actionGerunds,
   actionLabels,
   actionPendingLabels,
+  labelIsKey,
   personLabel,
   targetStatus,
   userStatusLabel,
@@ -125,12 +126,16 @@ export function AdminUserActionModal({
         }}
       >
         <div className="admin-write-target">
-          <p className="admin-write-target-name">{name}</p>
-          {/* Whichever of the two the name above is not, so the account is
-              identifiable from the dialog alone: a confirmation naming one
-              "Anna Ivanova" out of two people is not a confirmation. */}
+          {/* A name that fell all the way back to the row's key is a machine
+              value, and is set as one: mono, and free to wrap (§5.8). */}
+          <p className={labelIsKey(user) ? "admin-write-target-name admin-write-target-id" : "admin-write-target-name"}>
+            {name}
+          </p>
+          {/* The address, unless it is already the name above, so the account
+              is identifiable from the dialog alone: a confirmation naming one
+              "Anna Ivanova" out of two people is not a confirmation. Two
+              accounts can share a name and cannot share an email (§5.8). */}
           {user.email && user.email !== name ? <p className="admin-write-target-line">{user.email}</p> : null}
-          {user.login && user.login !== name ? <p className="admin-write-target-line">@{user.login}</p> : null}
           {/* The transition being asked for, in the server's own values. The
               arrow is punctuation and is hidden from the accessibility tree —
               read out, "ACTIVE → BLOCKED" is two words with a pause where a

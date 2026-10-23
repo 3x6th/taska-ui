@@ -98,7 +98,6 @@ const {
     getMeta: async () => ({ issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null }),
     getCurrentUser: async () => ({
       id: "user-anna",
-      login: "anna",
       email: "anna@example.com",
       displayName: "Anna Ivanova",
       status: "ACTIVE" as const,
