@@ -4011,12 +4011,19 @@ Frontend notes:
 - **The board's types are a constant, the context's come from the registry**
   (`api-contract-guard`, A4): `BoardServiceImpl.java:48` iterates TASK, BUG, STORY while the
   context reads the project's type registry (TAS-385). Latent until custom types can hold issues
-  (TAS-386); then a type outside the three lands in «Outside their workflow» on the board while
-  the panel offers its moves. Backend ask when TAS-386 lands.
+  (TAS-386); then an issue of a type outside the three is on no column and not in «Outside their workflow»
+  — it is not on the board at all (the mock shows it: an Epic filter gives "0 of 4", a created
+  Epic vanishes once its panel closes, the skeleton predicts EPIC's columns and jumps). Backend ask when TAS-386 lands.
 - **A project card counts issues the board does not draw** (`frontend-builder`, TAS-202):
   `issueCount` counts every type, while the board reads only TASK, BUG and STORY (A4), so in
   the mock the Web App card says "5 issues" and its board "4 of 4" (WEB-15 is an EPIC). The
   stand cannot hold such an issue until TAS-386; same backend ask as A4.
+- **The project card's footer has no fixed height** (`art-director`, TAS-202 post-build N1):
+  without faces it is 16.7 tall, with faces 24, so every card grows 142 → 145 when stats
+  arrive and a faceless card's title sits ~2px off its neighbours; «— members» keeps a 12px
+  indent with no stack. Fix: `.project-card-foot { min-height: 24px }` and
+  `.avatar-stack > .member-count:first-child { margin-left: 0 }`, plus the §4.8 line «Подвал
+  держит `min-height:24`…».
 - **Label chip order on a card is not stated**: `findLabelIdsByIssueIds`
   (`IssueRepositoryImpl.java:338`) has no ORDER BY.
 - **`listIssues` has no screen caller any more** (board, projects and the link picker moved off
