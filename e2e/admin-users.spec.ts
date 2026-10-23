@@ -133,7 +133,6 @@ test("invites a new address: queued, with the link's deadline in UTC, and the ne
   );
   await expect(trigger).toBeFocused();
   const row = page.getByRole("row").filter({ hasText: "zoe@example.com" });
-  // Exact: the login auth-service gives an invited account is `invited_<uuid>`.
   await expect(row.getByText("Invited", { exact: true })).toBeVisible();
   await expect(row.getByRole("button", { name: "Resend invite to zoe" })).toBeVisible();
 });

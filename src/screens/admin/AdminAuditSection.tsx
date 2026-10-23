@@ -187,6 +187,53 @@ function Absent() {
   return <span className="admin-card-null">—</span>;
 }
 
+/**
+ * Who acted, on one line in a row that stays 30 (§5.8, TAS-389): the name the
+ * log kept, else the address, else the start of the account's id in mono — the
+ * way target and request ids are cut — and a dash only when the entry says
+ * nothing about its actor at all. Cut by width like the reason; `title` holds
+ * what the cell cuts, as a pointer convenience. The way to identify the actor
+ * is the opened detail, which the row's chevron button reaches from the
+ * keyboard.
+ *
+ * The name is printed as stored. On an entry older than backend PR #219 it is
+ * the actor's old login (`mark`), and the same account appears under its
+ * display name on newer ones; nothing here looks the actor up by id to
+ * reconcile the two.
+ */
+function ActorCell({ entry }: { entry: AuditEntry }) {
+  const { actorDisplayName: name, actorEmail: email, actorUserId: id } = entry;
+  if (name !== null) {
+    return (
+      <td className="admin-audit-actor" title={email !== null ? `${name} · ${email}` : name}>
+        {name}
+      </td>
+    );
+  }
+  if (email !== null) {
+    return (
+      <td className="admin-audit-actor" title={email}>
+        {email}
+      </td>
+    );
+  }
+  if (id !== null) {
+    return (
+      <td className="admin-cell-mono admin-audit-actor" title={id}>
+        {/* Said as an id, not as a name: read aloud, a run of hex under
+            "actor" is otherwise indistinguishable from somebody called that. */}
+        <span className="visually-hidden">account id </span>
+        {shortKey(id)}
+      </td>
+    );
+  }
+  return (
+    <td className="admin-audit-actor">
+      <Absent />
+    </td>
+  );
+}
+
 function AuditRow({
   entry,
   expanded,
@@ -219,7 +266,7 @@ function AuditRow({
         <td className="admin-cell-mono">
           {time ? <time dateTime={entry.createdAt ?? undefined}>{time}</time> : <Absent />}
         </td>
-        <td title={entry.actorUserId ?? undefined}>{entry.actorLogin ?? <Absent />}</td>
+        <ActorCell entry={entry} />
         <td className="admin-cell-mono">{entry.action ?? <Absent />}</td>
         <td className="admin-cell-mono" title={entry.targetId ? `${target} · ${entry.targetId}` : undefined}>
           {target || entry.targetId ? (
@@ -282,6 +329,13 @@ function AuditDetail({ entry, id }: { entry: AuditEntry; id: string }) {
     <section aria-label={`Changes of ${entry.action ?? "entry"}`} className="admin-audit-detail" id={id}>
       <dl className="admin-audit-facts">
         <div>
+          <dt>actor</dt>
+          <dd>
+            <ActorFact email={entry.actorEmail} name={entry.actorDisplayName} />
+          </dd>
+        </div>
+        <div>
+          {/* Whole and selectable: exactly the value "Actor id is" filters by. */}
           <dt>actor id</dt>
           <dd className="admin-cell-mono">{entry.actorUserId ?? <Absent />}</dd>
         </div>
@@ -307,6 +361,23 @@ function AuditDetail({ entry, id }: { entry: AuditEntry; id: string }) {
         <AuditDocument label="New value" value={entry.newValue} />
       </div>
     </section>
+  );
+}
+
+/**
+ * The actor as the log kept them, on the Users person cell's recipe (§5.8): the
+ * name, and the address under it when there is one that is not the name. With
+ * no name the address takes the name's line; with neither, a dash — the id is
+ * the fact beside this one.
+ */
+function ActorFact({ name, email }: { name: string | null; email: string | null }) {
+  const label = name ?? email;
+  if (label === null) return <Absent />;
+  return (
+    <>
+      <span className="admin-user-name">{label}</span>
+      {email !== null && email !== label ? <span className="admin-user-email">{email}</span> : null}
+    </>
   );
 }
 

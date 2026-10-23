@@ -37,7 +37,6 @@ const { fakeApi, expireSession, signIn, signOut, metaReads, breakNotFound, notFo
     },
     getCurrentUser: async () => ({
       id: "3f1f5a2e-0000-4000-8000-000000000001",
-      login: "anna",
       email: "anna@example.com",
       displayName: "Anna Ivanova",
       status: "ACTIVE" as const,

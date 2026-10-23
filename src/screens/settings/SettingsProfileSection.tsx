@@ -70,12 +70,12 @@ export function SettingsProfileSection() {
                 <Avatar loading size="xl" />
                 <div className="settings-profile-identity">
                   <span className="value-skeleton settings-skeleton-name" />
-                  <span className="value-skeleton settings-skeleton-login" />
+                  <span className="value-skeleton settings-skeleton-email" />
                 </div>
               </div>
               <hr className="settings-divider" />
               <dl aria-hidden="true" className="settings-details">
-                {["Email", "Status", "Role"].map((term) => (
+                {["Status", "Role"].map((term) => (
                   <div key={term}>
                     <dt>{term}</dt>
                     <dd>
@@ -118,7 +118,7 @@ export function SettingsProfileSection() {
             <Avatar size="xl" user={user} />
             <div className="settings-profile-identity">
               <strong className="settings-profile-name">{user.displayName}</strong>
-              <span className="settings-profile-login">@{user.login}</span>
+              <span className="settings-profile-email">{user.email}</span>
               <div className="settings-photo">
                 {/* Driven by the button beside it rather than styled directly:
                     `::file-selector-button` keeps the browser's own "No file
@@ -209,12 +209,8 @@ export function SettingsProfileSection() {
             </div>
           </header>
           <hr className="settings-divider" />
-          {/* Name and login are not repeated: the header carries them. */}
+          {/* Name and email are not repeated: the header carries them. */}
           <dl className="settings-details">
-            <div>
-              <dt>Email</dt>
-              <dd>{user.email}</dd>
-            </div>
             <div>
               <dt>Status</dt>
               <dd>

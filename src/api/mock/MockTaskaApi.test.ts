@@ -2269,7 +2269,9 @@ describe("MockTaskaApi", () => {
         "id:uuid",
         "request_id:text",
         "actor_user_id:uuid",
-        "actor_login:character varying",
+        // Renamed in place from `actor_login` and retyped by changeset
+        // `0003-audit-actor-identity` (backend PR #219, TAS-388)…
+        "actor_display_name:text",
         "actor_roles:jsonb",
         "action:text",
         "target_service:text",
@@ -2279,6 +2281,8 @@ describe("MockTaskaApi", () => {
         "new_value:jsonb",
         "reason:text",
         "created_at:timestamp with time zone",
+        // …and added by it, so last.
+        "actor_email:character varying",
       ]);
 
       // One log, two views of it: every row here is an entry the audit read
@@ -2701,7 +2705,39 @@ describe("MockTaskaApi", () => {
       expect(entries.some((entry) => entry.newValue === null)).toBe(true);
       expect(entries.some((entry) => entry.requestId === null)).toBe(true);
       expect(entries.some((entry) => entry.newValue?.includes('"***"'))).toBe(true);
-      expect(new Set(entries.map((entry) => entry.actorLogin)).size).toBeGreaterThanOrEqual(3);
+    });
+
+    it("keeps the actor in the stand's two shapes since backend PR #219: name and email, or the old login alone", async () => {
+      const { entries } = await api.listAuditEntries({});
+      // Every row on the first page has a name — the column is NOT NULL and
+      // admin-service refuses a blank one — and both shapes are there.
+      expect(entries.every((entry) => typeof entry.actorDisplayName === "string" && entry.actorDisplayName !== "")).toBe(true);
+      const current = entries.filter((entry) => entry.actorEmail !== null);
+      const historical = entries.filter((entry) => entry.actorEmail === null);
+      expect(current.length).toBeGreaterThan(0);
+      expect(historical.length).toBeGreaterThan(0);
+      expect(current.every((entry) => entry.actorDisplayName === "Mark Lee" && entry.actorEmail === "mark@example.com")).toBe(
+        true,
+      );
+      // Newest first, and the rename is a moment: every row since it is newer
+      // than every row before it.
+      expect(entries.findIndex((entry) => entry.actorEmail === null)).toBe(current.length);
+      expect(new Set(historical.map((entry) => entry.actorDisplayName))).toEqual(new Set(["mark", "vera", "migrator"]));
+
+      // One account under two labels: the same id as "Mark Lee" and as "mark".
+      const labels = new Set(
+        entries.filter((entry) => entry.actorUserId === current[0].actorUserId).map((entry) => entry.actorDisplayName),
+      );
+      expect(labels).toEqual(new Set(["Mark Lee", "mark"]));
+
+      // The raw table says the same, column for column.
+      const { rows } = await api.listAdminRows({ service: "admin", table: "admin_audit_log", pageSize: 100 });
+      const all = (await api.listAuditEntries({ pageSize: 100 })).entries;
+      for (const entry of all) {
+        const row = rows.find((item) => item.id === entry.id)!;
+        expect([row.actor_display_name, row.actor_email]).toEqual([entry.actorDisplayName, entry.actorEmail]);
+        expect(row).not.toHaveProperty("actor_login");
+      }
     });
 
     it("matches every filter exactly, and takes a blank one as no filter", async () => {
@@ -3223,7 +3259,7 @@ describe("MockTaskaApi", () => {
         items: [{ email: "leo@example.com", displayName: "Leo Fischer" }],
         hasMore: false,
       });
-      // Exactly the four wire fields, and no status, login or role.
+      // Exactly the four wire fields, and no status or role.
       expect(Object.keys(page.items[0]).sort()).toEqual(["avatarUrl", "displayName", "email", "id"]);
     });
 

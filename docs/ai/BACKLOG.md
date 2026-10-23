@@ -295,8 +295,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   real directory, produce a byte-identical confirmation, and a `role="status"`
   whose text does not change is not re-announced. **Exactly the defect TAS-194
   fixed in Events, one heading away and already shipped.** The row already
-  carries the unique `@login`, so the fix is the same shape: put the
-  distinguishing token in the sentence. Out of TAS-194's scope; filed so the
+  carries the unique email (the `@login` this line first named left with
+  TAS-389), so the fix is the same shape: put the distinguishing token in the
+  sentence. Out of TAS-194's scope; filed so the
   lesson does not stay local to Events.
 - **Neither live region is ever cleared, so two identical announcements are
   heard once** (`art-director`, 2026-09-08). This is the residue TAS-194's fix
@@ -4003,11 +4004,38 @@ Frontend notes:
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
 
+### Left by TAS-389 (the user's login removed, frontend for backend #219, 2026-10-23)
+
+- **"Only this actor" beside the audit detail's actor id** (`art-director`, pre-build N1).
+  One person shows as `mark` in historical rows and `Mark Lee` in new ones; a link applying
+  `?actorUserId=` through the existing "Actor id is" filter is the real identification task.
+- **At 375 the Users person column scrolls fully out of view when a row's action has focus**
+  (`art-director`, post-build N3): the container scrolls 127 against a 120-wide person
+  column, so only the row tint marks the row (the dialog still names the account). Candidate:
+  the Data table's frozen-column recipe (`.admin-cell-frozen`) for the person cell at narrow
+  widths — a §5.8 change that needs its own ruling.
+- **No e2e covers the audit actor column or the email line under the profile name**
+  (`release-reviewer`): row height 30, the 180 cap and the 390 wrap rest on screenshots.
+- **Emails in the Data view are masked inconsistently** (`api-contract-guard`):
+  `auth.users.email` and `admin_audit_log.actor_email` are plain, while
+  `notification_preferences.email`, `invitation_email_deliveries.email` and
+  `email_delivery_attempts.to_email` are `MASK_PARTIAL` (admin-service
+  `sensitive-columns`). One policy for all — the owner's call; not filed.
+
 ### Left by TAS-387 (notification channels, frontend for backend #215, 2026-10-23)
 
 The code came from the backend developer's Codex run (PR #101); this repository's three
 roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
 
+- **Connect Telegram costs two requests where #218 made it one** (`api-contract-guard`,
+  TAS-389 pass, 2026-10-23). Backend #218 (develop `3a2644f7`) returns an optional
+  `preferences` snapshot on `POST /users/me/telegram/link`; `TelegramLink`
+  (`src/domain/types.ts`) has no such field and `RestTaskaApi` drops it, so the section
+  refetches preferences after every link. Map it through `toNotificationPreferences`,
+  `setQueryData` when present, invalidate only when absent (the contract calls it optional
+  during rolling upgrades, so that is not a compensation); the mock returns it too.
+  `telegramStatus` `UNKNOWN` and the open `telegramError` set from the same PR are already
+  handled (`toTelegramStatus` → `null`, generic "unavailable" text).
 - **"Open Telegram bot" could be the primary action in PENDING** — it is the one step the
   user must take (art-director). §5.9 keeps it secondary for now.
 - **`.settings-telegram-disconnect` duplicates `.settings-photo-remove`** with different

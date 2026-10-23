@@ -12,9 +12,11 @@ export const USERS_TABLE = "users";
 
 /**
  * The columns the section names, spelled as `auth.users` spells them — measured
- * on the deployed gateway 2026-08-25, where `meta.columns` is
+ * on the deployed gateway 2026-08-25, where `meta.columns` was
  * `[id, login, global_role, email, display_name, status, created_at,
- * updated_at]`.
+ * updated_at]`. `login` has since left the table (backend PR #219, TAS-388:
+ * changeset `0007-remove-user-login` drops it) and is not read: an account is
+ * named by its display name and told apart by its email.
  *
  * A column that is not in the response simply has no value, which is why every
  * field of `AdminUserRow` below is nullable: the mock's `auth.users` carries no
@@ -23,7 +25,6 @@ export const USERS_TABLE = "users";
  */
 const COLUMN = {
   id: "id",
-  login: "login",
   email: "email",
   displayName: "display_name",
   status: "status",
@@ -42,7 +43,6 @@ const COLUMN = {
 export interface AdminUserRow {
   /** `null` when the row has no usable key, which is the one case with no action. */
   id: string | null;
-  login: string | null;
   email: string | null;
   displayName: string | null;
   status: string | null;
@@ -53,7 +53,7 @@ export interface AdminUserRow {
  * A cell as text, or `null` for "nothing to show".
  *
  * `null`, `undefined` and the empty string all mean the same thing to a reader
- * here — there is no name, no login, no role — so they collapse. Numbers and
+ * here — there is no name, no address, no role — so they collapse. Numbers and
  * booleans are stringified because a column's type is runtime news and a
  * service is free to hold a status as something other than text; anything with
  * no printable form at all (an object, an array) is treated as absent rather
@@ -69,7 +69,6 @@ function cellText(value: unknown): string | null {
 export function readUserRow(row: AdminRow): AdminUserRow {
   return {
     id: cellText(row[COLUMN.id]),
-    login: cellText(row[COLUMN.login]),
     email: cellText(row[COLUMN.email]),
     displayName: cellText(row[COLUMN.displayName]),
     status: cellText(row[COLUMN.status]),
@@ -78,12 +77,22 @@ export function readUserRow(row: AdminRow): AdminUserRow {
 }
 
 /**
- * What to call this person. The display name if there is one, the login
- * otherwise, and the key as a last resort — a confirmation that named nobody
- * would be asking the reader to trust a row they cannot identify.
+ * What to call this person (DESIGN.md §5.8): the display name if there is one,
+ * the email otherwise — the one thing two accounts cannot share — and the key as
+ * a last resort, because a confirmation that named nobody would be asking the
+ * reader to trust a row they cannot identify. The same name feeds the dialog,
+ * the accessible names and the announcements.
  */
 export function personLabel(user: AdminUserRow): string {
-  return user.displayName ?? user.login ?? user.id ?? "this account";
+  return user.displayName ?? user.email ?? user.id ?? "this account";
+}
+
+/**
+ * Whether `personLabel` had nothing to go on but the row's key — which is then
+ * drawn as a key (mono, wrapping) rather than as a name.
+ */
+export function labelIsKey(user: AdminUserRow): boolean {
+  return user.displayName === null && user.email === null && user.id !== null;
 }
 
 const globalRoleLabels: Record<GlobalRole, string> = {

@@ -86,14 +86,13 @@ export function UserProfileMenu({ user, loading = false, loggingOut = false, onL
                 <Avatar user={person} size="lg" />
                 <div>
                   <strong>{person.displayName}</strong>
-                  <span>@{person.login}</span>
+                  {/* The address the account signs in with and the one thing
+                      a namesake cannot share (§4.16, TAS-389): whole, never
+                      cut, so it is not repeated in the list below. */}
+                  <span>{person.email}</span>
                 </div>
               </header>
               <dl className="user-profile-details">
-                <div>
-                  <dt>Email</dt>
-                  <dd>{person.email}</dd>
-                </div>
                 <div>
                   <dt>Status</dt>
                   <dd>

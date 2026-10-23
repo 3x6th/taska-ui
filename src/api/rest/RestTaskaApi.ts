@@ -165,7 +165,6 @@ interface ApiErrorBody {
 // here is what keeps an unrecognised string out of the UI.
 interface RestUser {
   id: string;
-  login: string;
   email: string;
   displayName: string;
   // Read as `unknown`: the contract types it as `UserStatusDto` since backend
@@ -829,9 +828,17 @@ export class ApiError extends Error {
  * Object]`. `oldValue` and `newValue` stay text: they are JSON documents *as
  * strings* on the wire, and parsing them is the screen's job.
  *
- * `id` is the one field read more narrowly than "a string": an empty one names
- * nothing, and a row keyed by `""` would collide with every other such row, so
- * it is `null` and the row falls back to being named by what it says.
+ * `id` is read more narrowly than "a string": an empty one names nothing, and
+ * a row keyed by `""` would collide with every other such row, so it is `null`
+ * and the row falls back to being named by what it says.
+ *
+ * The actor is `actorDisplayName` and `actorEmail` (backend PR #219, TAS-388),
+ * read the same narrow way, and for the same reason: an empty name, address or
+ * `actorUserId` names no one, and the section prints a dash for it rather than
+ * a blank cell. The gateway sets each name and address only when the record
+ * has it, so an absent field and an explicit `null` both read as `null`.
+ * Nothing here falls back to the retired `actorLogin`, and nothing looks the
+ * actor up by `actorUserId`: the row says who acted, or it does not.
  */
 function toAuditEntry(wire: RestAuditEntry): AuditEntry {
   const text = (value: unknown) => (typeof value === "string" ? value : null);
@@ -842,8 +849,9 @@ function toAuditEntry(wire: RestAuditEntry): AuditEntry {
     typeof value === "string" ? value : value !== null && typeof value === "object" ? JSON.stringify(value) : null;
   return {
     id: text(wire.id) || null,
-    actorUserId: text(wire.actorUserId),
-    actorLogin: text(wire.actorLogin),
+    actorUserId: text(wire.actorUserId) || null,
+    actorDisplayName: text(wire.actorDisplayName) || null,
+    actorEmail: text(wire.actorEmail) || null,
     action: text(wire.action),
     targetService: text(wire.targetService),
     targetTable: text(wire.targetTable),
@@ -2436,7 +2444,6 @@ export class RestTaskaApi implements TaskaApi {
     const avatar = user.avatar;
     return {
       id: user.id,
-      login: user.login,
       email: user.email,
       displayName: user.displayName,
       status: toUserStatus(user.status),

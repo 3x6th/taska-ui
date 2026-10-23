@@ -12,7 +12,6 @@ import { keepSignedAvatarLink, ME_QUERY_KEY, OWN_AVATAR_LINK_REUSE_MS } from "./
 describe("keeping the reader's own avatar link across re-reads", () => {
   const anna = (avatarUrl: string | null, avatarId: string | null, extra: Partial<User> = {}): User => ({
     id: "user-anna",
-    login: "anna",
     email: "anna@example.com",
     displayName: "Anna Ivanova",
     status: "ACTIVE",

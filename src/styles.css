@@ -1376,12 +1376,13 @@ h1 {
   white-space: nowrap;
 }
 
+/* The email (§4.16, TAS-389): `--fg-2`, because it is how the account signs
+   in and tells itself from a namesake rather than meta, and whole — a cut
+   address is a different address — so it wraps anywhere instead. */
 .user-profile-head > div > span {
-  overflow: hidden;
-  color: var(--fg-3);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
 }
 
 .user-profile-details {
@@ -1907,7 +1908,7 @@ h1 {
 }
 
 /* My profile (ruling 4): the menu header's structure at the page's scale —
-   §2.7's new 64 avatar, and the name and login in one text column that also
+   §2.7's new 64 avatar, and the name and email in one text column that also
    carries the photo controls. */
 .settings-profile-head {
   display: grid;
@@ -1932,12 +1933,12 @@ h1 {
   white-space: nowrap;
 }
 
-.settings-profile-login {
-  overflow: hidden;
-  color: var(--fg-3);
+/* The email, on the menu header's recipe (§4.16, §5.9, TAS-389): `--fg-2`
+   and whole, wrapping anywhere rather than cut. */
+.settings-profile-email {
+  color: var(--fg-2);
   font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* The containing block for the empty live region below, which is taken out
@@ -2045,7 +2046,7 @@ h1 {
 }
 
 /* The account, read-only: plain text in a `<dl>`, which does not invite
-   editing the way a field would. Name and login are not repeated here. */
+   editing the way a field would. Name and email are not repeated here. */
 .settings-details {
   margin: 0;
 }
@@ -2094,8 +2095,8 @@ h1 {
   height: 14px;
 }
 
-.settings-skeleton-login {
-  width: 70px;
+.settings-skeleton-email {
+  width: 140px;
   height: 11px;
 }
 
@@ -3518,6 +3519,15 @@ h1 {
   text-overflow: ellipsis;
 }
 
+/* Who acted, on the reason's recipe at 180 (§5.8, TAS-389): one line, so the
+   row stays 30, with the name, address or id cut by width and whole in the
+   opened detail. */
+.admin-audit-table .admin-audit-actor {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .admin-audit-sep {
   color: var(--fg-3);
 }
@@ -3632,19 +3642,24 @@ h1 {
 
 /* ---------- Users section (§5.8, TAS-186) ---------- */
 
-/* The readable band, not the whole plane. Five named columns of short values
+/* The readable band, not the whole plane. Named columns of short values
    spread across 1740px at 1920 put the person at one edge and the only button
    at the other, which is the complaint §5.8 already answers for the row card
-   ("without a cap the separators run across a thousand empty pixels"). 860 is
-   that same cap and for the same reason: unlike the Data grid, this table's
-   column set is known and finite, so it can be given a width.
+   ("without a cap the separators run across a thousand empty pixels"): unlike
+   the Data grid, this table's column set is known and finite, so it can be
+   given a width.
+
+   720 rather than the row card's 860 since TAS-389 (§5.8). With the login
+   column gone, 860 handed the freed width to the role and status columns and
+   left their pills hanging in empty cells — role 238 against a pill of about
+   80, measured at 1440; at 720 the four columns run 218 / 189 / 140 / 171.
 
    It is the scroll container that is capped rather than the table, so the
    sticky footer inside it stops at the same edge — a pager running the full
-   width under an 860px table would be the one element still crossing the
+   width under a 720px table would be the one element still crossing the
    plane. */
 .admin-users-plane .admin-table-scroll {
-  max-width: 860px;
+  max-width: 720px;
 }
 
 /* "There is more to the right", and nothing else says it. One declaration for
@@ -3656,7 +3671,7 @@ h1 {
 
    Measured on each region, client against scroll width:
 
-     Users, 390       360 / 471    the Block button is what is cut off
+     Users, 390       360 / 472    the Block button is what is cut off
      Problems, 1440  1226 / 1254   the `Open event` chevron is
      Problems, 390    360 / 1254   most of the table is, Retry included
 
@@ -3873,10 +3888,10 @@ h1 {
   white-space: nowrap;
 }
 
-/* "Invite user" and the line under it stop where the table stops (§5.8), so
-   the button sits over the table's right edge rather than the screen's. */
+/* The row with "Invite user" stops where the table stops (§5.8), so the
+   button sits over the table's right edge rather than the screen's. */
 .admin-users-plane .admin-plane-head {
-  max-width: 860px;
+  max-width: 720px;
 }
 
 .admin-users-invite:focus-visible {
@@ -3886,9 +3901,11 @@ h1 {
 
 /* The last invitation's outcome (§5.8): one standing line, `--fg-2` on `--bg`
    (6.73 / 7.35; `--fg-3` would be 2.91 in light), heightless until it says
-   something. Not a toast — this product has none (§5.6). */
+   something. Not a toast — this product has none (§5.6). It takes the band's
+   720, like the table and the row above it (§5.8), so a long outcome wraps
+   instead of running past the table's right edge. */
 .admin-users-status {
-  max-width: 860px;
+  max-width: 720px;
   margin: 0;
   color: var(--fg-2);
   font-size: 12.5px;
@@ -3971,7 +3988,7 @@ h1 {
    но не видит, к какой строке оно относится".
 
    It is not decoration here, it is identification. At 1440 the name sits at the
-   left of the 860 band and the button at the right, ~790px apart in a 42px lane
+   left of the 720 band and the button at the right, ~645px apart in a 42px lane
    separated only by hairlines; at 390 tabbing to a Block button scrolls the
    container sideways far enough to cut the person column down to the tail of an
    email, so the focus ring names the control and nothing on screen names the

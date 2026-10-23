@@ -34,7 +34,6 @@ const { fakeApi, state } = vi.hoisted(() => {
       if (state.profileFails) throw Object.assign(new Error("Auth service unavailable"), { status: 503 });
       return {
         id: "3f1f5a2e-0000-4000-8000-000000000001",
-        login: "tom",
         email: "tom@example.com",
         displayName: "Tom Becker",
         status: "ACTIVE" as const,

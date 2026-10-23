@@ -111,6 +111,12 @@ was written against it.
 | --- | --- | --- | --- |
 | `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
 
+`pr-219-TAS-388.yml` was here for TAS-389 and was deleted on 2026-10-23, the same day it
+was written: backend PR #219 merged unchanged at the pinned head `e9013d2a` as `ce189843`
+within the hour, and the snapshot was refreshed to it. The two schemas came through byte
+for byte; what the PR's migrations say that the yml does not (the audit column renamed
+rather than dropped, `NOT NULL` kept on the name) moved to `docs/ai/API-DIVERGENCE.md`.
+
 `pr-215-TAS-387.yml` was here for TAS-387 and was deleted on 2026-10-23, the same day
 it was written, when backend PR #215 merged (`9a735db`) and the snapshot was refreshed to it.
 The merge carried the extract's two hunks byte for byte; the only file whose change differs

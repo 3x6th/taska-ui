@@ -9,6 +9,7 @@ import {
   inviteDeadline,
   inviteFailure,
   invitedStatusText,
+  labelIsKey,
   personLabel,
   readUserRow,
   resentStatusText,
@@ -31,7 +32,6 @@ import {
 describe("admin users, reading a row", () => {
   const row = {
     id: "1cf0dc4e-0000-4000-8000-000000000001",
-    login: "nina",
     email: "nina@example.com",
     display_name: "Nina Kowal",
     status: "BLOCKED",
@@ -43,7 +43,6 @@ describe("admin users, reading a row", () => {
   it("reads the named columns and ignores the rest", () => {
     expect(readUserRow(row)).toEqual({
       id: "1cf0dc4e-0000-4000-8000-000000000001",
-      login: "nina",
       email: "nina@example.com",
       displayName: "Nina Kowal",
       status: "BLOCKED",
@@ -56,14 +55,22 @@ describe("admin users, reading a row", () => {
     // `password_hash`: a column that is simply not there is not an error.
     expect(readUserRow({ id: "x" })).toEqual({
       id: "x",
-      login: null,
       email: null,
       displayName: null,
       status: null,
       globalRole: null,
     });
-    expect(readUserRow({ id: "", display_name: null, login: "  " }).id).toBeNull();
-    expect(readUserRow({ login: "  " }).login).toBe("  ");
+    expect(readUserRow({ id: "", display_name: null, email: "  " }).id).toBeNull();
+    // Whitespace is a value, not an absence: only empty collapses.
+    expect(readUserRow({ display_name: "  " }).displayName).toBe("  ");
+  });
+
+  it("does not read a login, even from a table that still has the column", () => {
+    // `auth.users` drops it with backend PR #219 (TAS-388); a gateway still on
+    // the old schema sends it, and the row must come out the same either way.
+    const read = readUserRow({ ...row, login: "nina" });
+    expect(read).toEqual(readUserRow(row));
+    expect(read).not.toHaveProperty("login");
   });
 
   it("does not render a value that has no printable form", () => {
@@ -71,14 +78,25 @@ describe("admin users, reading a row", () => {
     // claim that the server sent something, and it is unreadable either way.
     expect(readUserRow({ display_name: { first: "Nina" } }).displayName).toBeNull();
     // A column a service holds as a number still prints.
-    expect(readUserRow({ login: 42 }).login).toBe("42");
+    expect(readUserRow({ status: 42 }).status).toBe("42");
   });
 
-  it("names a person by whatever it was given, in order", () => {
+  it("names a person by whatever it was given, in order: name, email, key, nothing", () => {
     expect(personLabel(readUserRow(row))).toBe("Nina Kowal");
-    expect(personLabel(readUserRow({ ...row, display_name: null }))).toBe("nina");
+    expect(personLabel(readUserRow({ ...row, display_name: null }))).toBe("nina@example.com");
     expect(personLabel(readUserRow({ id: "u-1" }))).toBe("u-1");
     expect(personLabel(readUserRow({}))).toBe("this account");
+    // Never a login, and never the `invited_<uuid>` auth-service used to give
+    // an invited account in its place, even when the column is still sent.
+    expect(personLabel(readUserRow({ id: "u-2", login: "invited_5b2e8d14-7a03-4c69-b1f5-2e9d0a7c4f38" }))).toBe("u-2");
+  });
+
+  it("knows when the name is only the row's key, which is then drawn as a key", () => {
+    expect(labelIsKey(readUserRow(row))).toBe(false);
+    expect(labelIsKey(readUserRow({ ...row, display_name: null }))).toBe(false);
+    expect(labelIsKey(readUserRow({ id: "u-1" }))).toBe(true);
+    // No key either: "this account" is words, not a machine value.
+    expect(labelIsKey(readUserRow({}))).toBe(false);
   });
 });
 

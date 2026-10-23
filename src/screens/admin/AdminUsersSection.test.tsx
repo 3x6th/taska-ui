@@ -121,21 +121,29 @@ describe("the admin Users section", () => {
   });
 
   /** The key of a seeded account, read out of the same table the section reads. */
-  const idOf = async (login: string) => {
+  const idOf = async (email: string) => {
     const { rows } = await mock.listAdminRows({ service: "auth", table: "users", pageSize: 100 });
-    return String(rows.find((row) => row.login === login)!.id);
+    return String(rows.find((row) => row.email === email)!.id);
   };
 
   it("names its columns and offers the actions each status allows", async () => {
     renderSection();
 
     expect(await screen.findByRole("columnheader", { name: "person" })).toBeVisible();
-    for (const column of ["login", "global role", "status"]) {
-      expect(screen.getByRole("columnheader", { name: column })).toBeVisible();
-    }
+    // Four: person, global role, status and the action. No login — the account
+    // has none (TAS-388), and a column of dashes is not a removal (§5.8).
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "person",
+      "global role",
+      "status",
+      "Action",
+    ]);
+    expect(screen.queryByRole("columnheader", { name: "login" })).not.toBeInTheDocument();
     // No sortable header and no filter: the gateway states neither for this
     // table, so offering either would send a request it refuses (§5.8).
-    expect(within(screen.getByRole("table")).queryAllByRole("button", { name: /^(id|login|status)/ })).toHaveLength(0);
+    expect(
+      within(screen.getByRole("table")).queryAllByRole("button", { name: /^(id|person|global role|status)/ }),
+    ).toHaveLength(0);
     expect(screen.queryByRole("button", { name: "Filter" })).not.toBeInTheDocument();
 
     // One account of each status, from the seed rather than from a fixture.
@@ -158,7 +166,6 @@ describe("the admin Users section", () => {
     setExtraRows([
       {
         id: "9d0c2f11-0000-4000-8000-000000000009",
-        login: "quinn",
         email: "quinn@example.com",
         display_name: "Quinn Ash",
         status: "QUARANTINED",
@@ -166,7 +173,7 @@ describe("the admin Users section", () => {
       },
       // A row the table gave no key for: nothing to put in the path, so no
       // action — and it must not throw on the way to deciding that.
-      { login: "keyless", display_name: "No Key", status: "ACTIVE", global_role: "USER" },
+      { email: "keyless@example.com", display_name: "No Key", status: "ACTIVE", global_role: "USER" },
     ]);
     renderSection();
 
@@ -184,7 +191,6 @@ describe("the admin Users section", () => {
     setExtraRows([
       {
         id: "9d0c2f11-0000-4000-8000-00000000000a",
-        login: "quinn",
         email: "quinn@example.com",
         display_name: "Quinn Ash",
         status: "QUARANTINED",
@@ -236,6 +242,78 @@ describe("the admin Users section", () => {
     expect(within(dialog).getByText("INVITED → BLOCKED")).toBeVisible();
     expect(within(dialog).getByText(/the invitation is not restored/i)).toBeVisible();
     expect(within(dialog).getByText("leo@example.com")).toBeVisible();
+  });
+
+  it("spans an empty list across every column the header has", async () => {
+    // The colSpan and the header come from one constant, so dropping a column
+    // cannot leave the message one cell short (§5.8).
+    const { meta } = await mock.listAdminRows({ service: "auth", table: "users" });
+    vi.spyOn(mock, "listAdminRows").mockResolvedValue({
+      rows: [],
+      pagination: { currentPage: 1, pageSize: 20, totalRows: 0, totalPages: 1, hasNext: false, hasPrev: false },
+      meta,
+    });
+    renderSection();
+
+    const empty = await screen.findByText("This gateway lists no accounts.");
+    expect(empty).toHaveAttribute("colspan", String(screen.getAllByRole("columnheader").length));
+    expect(empty).toHaveAttribute("colspan", "4");
+  });
+
+  it("names the account by its name and email, with no handle under them (TAS-389)", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Block Ivy Chen" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Block Ivy Chen" });
+    const target = dialog.querySelector<HTMLElement>(".admin-write-target")!;
+    expect([...target.querySelectorAll("p")].map((line) => line.textContent)).toEqual([
+      "Ivy Chen",
+      "ivy@example.com",
+      "INVITED → BLOCKEDfrom Invited to Blocked",
+    ]);
+    expect(target).not.toHaveTextContent("@ivy");
+    expect(target).not.toHaveTextContent("invited_");
+    expect(within(target).getByText("Ivy Chen")).not.toHaveClass("admin-write-target-id");
+  });
+
+  it("falls back from the name to the email, then to the key, which is then set as a key", async () => {
+    setExtraRows([
+      // No display name: the address is the name, said once.
+      { id: "9d0c2f11-0000-4000-8000-00000000000b", email: "nameless@example.com", status: "ACTIVE", global_role: "USER" },
+      // Neither: the key is all there is to name the account by.
+      { id: "9d0c2f11-0000-4000-8000-00000000000c", status: "ACTIVE", global_role: "USER" },
+    ]);
+    renderSection();
+    await screen.findByText("nameless@example.com");
+
+    // The table's own person cell: the address on the name's line, no second line.
+    const nameless = rowFor("nameless@example.com");
+    expect(within(nameless).getByText("nameless@example.com")).toHaveClass("admin-user-name");
+    expect(within(nameless).getByText("nameless@example.com")).not.toHaveClass("admin-cell-mono");
+    expect(nameless.querySelector(".admin-user-email")).toBeNull();
+
+    // A named row keeps the UI font; only a label that is the row's key is set
+    // as a key, in the table as in the dialog.
+    const named = within(rowFor("Anna Ivanova")).getByText("Anna Ivanova");
+    expect(named).toHaveClass("admin-user-name");
+    expect(named).not.toHaveClass("admin-cell-mono");
+    const rowKey = "9d0c2f11-0000-4000-8000-00000000000c";
+    expect(within(rowFor(rowKey)).getByText(rowKey)).toHaveClass("admin-user-name", "admin-cell-mono");
+
+    fireEvent.click(within(nameless).getByRole("button", { name: "Block nameless@example.com" }));
+    let dialog = await screen.findByRole("dialog", { name: "Block nameless@example.com" });
+    let target = dialog.querySelector<HTMLElement>(".admin-write-target")!;
+    expect(target.querySelectorAll(".admin-write-target-line")).toHaveLength(0);
+    expect(within(target).getByText("nameless@example.com")).not.toHaveClass("admin-write-target-id");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    const key = "9d0c2f11-0000-4000-8000-00000000000c";
+    fireEvent.click(screen.getByRole("button", { name: `Block ${key}` }));
+    dialog = await screen.findByRole("dialog", { name: `Block ${key}` });
+    target = dialog.querySelector<HTMLElement>(".admin-write-target")!;
+    // Mono and free to wrap, because it is a machine value and not a name.
+    expect(within(target).getByText(key)).toHaveClass("admin-write-target-name", "admin-write-target-id");
+    expect(target.querySelectorAll(".admin-write-target-line")).toHaveLength(0);
   });
 
   it("says when the account being blocked is the one you are signed in as", async () => {
@@ -340,7 +418,7 @@ describe("the admin Users section", () => {
     // a page change — and it must believe the list rather than the answer it
     // was given to a write two refetches ago.
     await act(async () => {
-      await mock.unblockUser(await idOf("anna"), "Reinstated by another admin");
+      await mock.unblockUser(await idOf("anna@example.com"), "Reinstated by another admin");
     });
     await act(async () => {
       await client.invalidateQueries({ queryKey: ["admin", "users"] });
