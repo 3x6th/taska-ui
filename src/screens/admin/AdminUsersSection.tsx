@@ -16,6 +16,7 @@ import {
   globalRoleLabel,
   hasKey,
   invitedStatusText,
+  labelIsKey,
   personLabel,
   readUserRow,
   resentStatusText,
@@ -370,7 +371,11 @@ export function AdminUsersSection() {
               return (
                 <tr className={marked ? "is-changed" : undefined} key={user.id ?? index}>
                   <td>
-                    <span className="admin-user-name">{name}</span>
+                    {/* A label that is only the row's key is set as a key (mono),
+                        as the confirmation dialog sets it, and not as a name. */}
+                    <span className={labelIsKey(user) ? "admin-user-name admin-cell-mono" : "admin-user-name"}>
+                      {name}
+                    </span>
                     {/* Only when it adds something: an account with no display
                         name is already named by its address one line up. */}
                     {user.email && user.email !== name ? (

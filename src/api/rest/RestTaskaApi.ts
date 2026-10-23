@@ -833,11 +833,12 @@ export class ApiError extends Error {
  * and the row falls back to being named by what it says.
  *
  * The actor is `actorDisplayName` and `actorEmail` (backend PR #219, TAS-388),
- * read the same narrow way, and for the same reason: an empty name names no
- * one. The gateway sets each only when the record has it, so an absent field
- * and an explicit `null` both read as `null`. Nothing here falls back to the
- * retired `actorLogin`, and nothing looks the actor up by `actorUserId`: the
- * row says who acted, or it does not.
+ * read the same narrow way, and for the same reason: an empty name, address or
+ * `actorUserId` names no one, and the section prints a dash for it rather than
+ * a blank cell. The gateway sets each name and address only when the record
+ * has it, so an absent field and an explicit `null` both read as `null`.
+ * Nothing here falls back to the retired `actorLogin`, and nothing looks the
+ * actor up by `actorUserId`: the row says who acted, or it does not.
  */
 function toAuditEntry(wire: RestAuditEntry): AuditEntry {
   const text = (value: unknown) => (typeof value === "string" ? value : null);
@@ -848,7 +849,7 @@ function toAuditEntry(wire: RestAuditEntry): AuditEntry {
     typeof value === "string" ? value : value !== null && typeof value === "object" ? JSON.stringify(value) : null;
   return {
     id: text(wire.id) || null,
-    actorUserId: text(wire.actorUserId),
+    actorUserId: text(wire.actorUserId) || null,
     actorDisplayName: text(wire.actorDisplayName) || null,
     actorEmail: text(wire.actorEmail) || null,
     action: text(wire.action),

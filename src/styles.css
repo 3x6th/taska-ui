@@ -3901,9 +3901,11 @@ h1 {
 
 /* The last invitation's outcome (§5.8): one standing line, `--fg-2` on `--bg`
    (6.73 / 7.35; `--fg-3` would be 2.91 in light), heightless until it says
-   something. Not a toast — this product has none (§5.6). */
+   something. Not a toast — this product has none (§5.6). It takes the band's
+   720, like the table and the row above it (§5.8), so a long outcome wraps
+   instead of running past the table's right edge. */
 .admin-users-status {
-  max-width: 860px;
+  max-width: 720px;
   margin: 0;
   color: var(--fg-2);
   font-size: 12.5px;

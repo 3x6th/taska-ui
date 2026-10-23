@@ -2057,7 +2057,8 @@ describe("RestTaskaApi read-only admin", () => {
      * The actor since backend PR #219 (TAS-388): a snapshot of the name and the
      * email. A historical entry has the old login in the name and no email —
      * the gateway writes `"actorEmail": null`, and sets a field only when the
-     * record has it, so an omitted one reads the same. `""` names no one.
+     * record has it, so an omitted one reads the same. `""` names no one — the
+     * id included, or the actor cell would draw an empty "account id".
      */
     it("reads the actor's name and email, and an absent, null or empty one as none", async () => {
       const { actorDisplayName: _name, actorEmail: _email, ...anonymous } = auditBody.entries[0];
@@ -2069,6 +2070,8 @@ describe("RestTaskaApi read-only admin", () => {
             { ...anonymous, actorEmail: "mark@example.com" },
             { ...anonymous, actorDisplayName: "", actorEmail: "" },
             anonymous,
+            // The id is the same: an empty one names no one, and is none.
+            { ...anonymous, actorUserId: "" },
           ],
         }),
       );
@@ -2082,9 +2085,13 @@ describe("RestTaskaApi read-only admin", () => {
         [null, "mark@example.com"],
         [null, null],
         [null, null],
+        [null, null],
       ]);
       // The id stays whatever the name: it is what the detail and the filter use.
-      expect(entries.every((entry) => entry.actorUserId === "e65186a2-b807-42ae-a66f-711be116a93b")).toBe(true);
+      expect(entries.slice(0, 5).every((entry) => entry.actorUserId === "e65186a2-b807-42ae-a66f-711be116a93b")).toBe(
+        true,
+      );
+      expect(entries[5].actorUserId).toBeNull();
     });
 
     it("does not fall back to the retired actorLogin a gateway older than #219 sends", async () => {

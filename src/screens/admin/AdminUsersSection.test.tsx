@@ -289,7 +289,16 @@ describe("the admin Users section", () => {
     // The table's own person cell: the address on the name's line, no second line.
     const nameless = rowFor("nameless@example.com");
     expect(within(nameless).getByText("nameless@example.com")).toHaveClass("admin-user-name");
+    expect(within(nameless).getByText("nameless@example.com")).not.toHaveClass("admin-cell-mono");
     expect(nameless.querySelector(".admin-user-email")).toBeNull();
+
+    // A named row keeps the UI font; only a label that is the row's key is set
+    // as a key, in the table as in the dialog.
+    const named = within(rowFor("Anna Ivanova")).getByText("Anna Ivanova");
+    expect(named).toHaveClass("admin-user-name");
+    expect(named).not.toHaveClass("admin-cell-mono");
+    const rowKey = "9d0c2f11-0000-4000-8000-00000000000c";
+    expect(within(rowFor(rowKey)).getByText(rowKey)).toHaveClass("admin-user-name", "admin-cell-mono");
 
     fireEvent.click(within(nameless).getByRole("button", { name: "Block nameless@example.com" }));
     let dialog = await screen.findByRole("dialog", { name: "Block nameless@example.com" });
