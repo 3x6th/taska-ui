@@ -1866,7 +1866,21 @@ Everything below is the entry as it stood, in the past tense.
   called it.
 - **Now:** the board reads `GET /projects/{id}/board?includeDone=true` in the #205 shape in rest,
   mock and hybrid, and draws `columns` and `unplacedIssues` as sent (DESIGN.md §4.9). What the
-  merged Java says that the yml does not is in the three board entries below.
+  merged Java says that the yml does not is in the four board entries below.
+
+### The yml and the server name different rules for the board's `unplacedIssues`
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/board`.
+- **Contract** (`docs/contract/openapi.yml`, `BoardResponseDto.unplacedIssues`): «Задачи, чей
+  statusKey не входит ни в один workflow, использованный для построения колонок» — a status in
+  none of the workflows.
+- **Server, read at develop `562d84de`** (`BoardServiceImpl.java:219`): an issue lands there when
+  its status is not in **its own type's** workflow — so a TASK in a status only BUG's workflow
+  has is unplaced, though that status is a column on the same board. Not probed.
+- **UI:** draws the group as sent and names it by the server's rule, «Outside their workflow»
+  (DESIGN.md §4.9); the mock follows the server. **Compensation:** none.
+- **Removal:** asked on TAS-213 on 2026-10-24 to correct the yml description to the own-type
+  rule (the code is the intended behaviour; the group's name depends on it).
 
 ### The board's card order inside a column depends on the issue type, and the contract does not state it
 
@@ -5256,7 +5270,7 @@ folding it to `null` fails a test rather than a review.
 
 ### Closed by TAS-202 (2026-10-24): the board route answered, and the board screen did not use it
 
-The board now reads `GET /projects/{projectId}/board?includeDone=true` beside `/context`, and `listIssues` and the board's server-search layer are gone from the screen. #205 answered the two reasons this entry kept alive: the card's fields are on `BoardIssueDto`, and a status outside the workflow lands in `unplacedIssues` instead of a 500. What the merged Java says that the yml does not is in the three board entries near the top of this section. The entry is kept below as it stood.
+The board now reads `GET /projects/{projectId}/board?includeDone=true` beside `/context`, and `listIssues` and the board's server-search layer are gone from the screen. #205 answered the two reasons this entry kept alive: the card's fields are on `BoardIssueDto`, and a status outside the workflow lands in `unplacedIssues` instead of a 500. What the merged Java says that the yml does not is in the four board entries near the top of this section. The entry is kept below as it stood.
 
 
 `GET /api/v1/projects/{projectId}/board` (TAS-125) merged into `develop` on
