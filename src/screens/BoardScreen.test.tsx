@@ -73,6 +73,7 @@ const {
   holdProject,
   failIssues,
   holdBoard,
+  releaseBoard,
   boardReads,
   holdTransition,
   settleTransition,
@@ -193,6 +194,8 @@ const {
     boardReads: number;
     /** The board read held open: the window before it answers. */
     boardHeld: boolean;
+    /** The held board reads, each answering with the state of the moment it is released. */
+    boardReleases: (() => void)[];
     /**
      * The board's drop moves (`transitionIssue`): every one that was sent, and
      * the ones held open — the optimistic window is one tick long against a
@@ -399,6 +402,7 @@ const {
     createCalls: [],
     boardReads: 0,
     boardHeld: false,
+    boardReleases: [],
     transitionCalls: [],
     transitionHeld: false,
     transitionSettlers: [],
@@ -615,7 +619,7 @@ const {
     // (backend A4). Cards carry the assignee the server joined in.
     getBoard: async (projectId: string) => {
       state.boardReads += 1;
-      if (state.boardHeld) return new Promise(() => {});
+      if (state.boardHeld) await new Promise<void>((resolve) => state.boardReleases.push(resolve));
       if (state.issuesFailure) throw state.issuesFailure;
       const types = ["TASK", "BUG", "STORY"];
       const statusesOf = (type: string) => contextWorkflow(type).statuses;
@@ -1019,6 +1023,13 @@ const {
     holdBoard: (held: boolean) => {
       state.boardHeld = held;
     },
+    /** Lets every held board read answer. A test that never calls it holds them for ever. */
+    releaseBoard: () => {
+      state.boardHeld = false;
+      const waiting = state.boardReleases;
+      state.boardReleases = [];
+      for (const release of waiting) release();
+    },
     boardReads: () => state.boardReads,
     holdTransition: (held: boolean) => {
       state.transitionHeld = held;
@@ -1255,6 +1266,7 @@ const {
       state.issuesFailure = undefined;
       state.boardReads = 0;
       state.boardHeld = false;
+      state.boardReleases = [];
       state.transitionCalls = [];
       state.transitionHeld = false;
       state.transitionSettlers = [];
@@ -1667,6 +1679,36 @@ describe("an archived project's board", () => {
       await waitFor(() => expect(dialog.queryByLabelText("New label")).not.toBeInTheDocument());
       expect(dialog.queryByText("This project is archived, so its labels cannot be changed.")).not.toBeInTheDocument();
       void queryClient;
+    });
+
+    // The order the PR #103 CI run lost. A refused label write settles by
+    // re-reading the context and the board before its refusal is dispatched, so
+    // a context that answers first turns the dialog read-only — line drawn,
+    // focus on it — and the refusal arrives a moment later, with the board's
+    // answer, to take the line's place. Focus goes with it, not to `<body>`.
+    it("moves focus from the Labels line to the refusal that takes its place after the turn", async () => {
+      renderBoard();
+      const dialog = await openLabels();
+      await screen.findByRole("button", { name: /TAS-102/ });
+      failNextCreate(archivedRefusal());
+      seedArchivedAt("2026-10-20T10:00:00Z");
+      holdBoard(true);
+      fireEvent.change(dialog.getByLabelText("New label"), { target: { value: "release" } });
+      const add = dialog.getByRole("button", { name: "Add label" });
+      add.focus();
+      fireEvent.click(add);
+
+      // The context has answered and the board has not: archived, no refusal yet.
+      const line = await dialog.findByText("This project is archived, so its labels cannot be changed.");
+      await waitFor(() => expect(line).toHaveFocus());
+      expect(dialog.queryByText("This project has been archived, so nothing in it can be changed.")).not.toBeInTheDocument();
+
+      releaseBoard();
+
+      const sentence = await dialog.findByText("This project has been archived, so nothing in it can be changed.");
+      expect(line).not.toBeInTheDocument();
+      await waitFor(() => expect(sentence.closest(".error-note")).toHaveFocus());
+      expect(boardLine()).not.toHaveFocus();
     });
 
     it("keeps the board's Edit project open with what was typed, without Save or the danger zone", async () => {

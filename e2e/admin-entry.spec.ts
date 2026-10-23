@@ -26,8 +26,11 @@ test("a global admin finds the administration entry in the profile menu and it o
   await entry.click();
 
   // /admin is an area, and a bare visit resolves into its first section
-  // (DESIGN.md §5.8) — visibly, in the address bar.
-  await expect(page).toHaveURL(/\/admin\/data/);
+  // (DESIGN.md §5.8) — visibly, in the address bar — and on into the catalog's
+  // first table. Waited for in full: "Back to projects" below is drawn before
+  // the catalog answers, and a click in between can be undone by Data's own
+  // redirect (see `openUsers` in admin-users.spec.ts).
+  await expect(page).toHaveURL(/\/admin\/data\/[^/]+\/[^/]+$/);
   await expect(page.getByRole("heading", { level: 1, name: "Data" })).toBeVisible();
   // The route changed, so this proves the previous screen — popover and all —
   // was replaced, not that selecting an item closes the popover (§4.16). That

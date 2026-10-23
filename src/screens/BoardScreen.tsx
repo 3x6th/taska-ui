@@ -692,7 +692,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    * and turn read-only, so their own effects — child effects, which run before
    * this one — have drawn the line or the refusal by the time this looks; and
    * Edit project places its own (it is opened from `/projects` too, where no
-   * board would), so it is never found without focus here.
+   * board would), so it is never found without focus here. Labels places its
+   * own as well, because it can change after the turn: its refusal may land
+   * after the context read that turned it, and take the place of the line
+   * focus was put on (see `ProjectLabelsModal`).
    */
   const archiveLineRef = useRef<HTMLParagraphElement>(null);
   const focusArchiveLine = useRef(false);
@@ -6009,6 +6012,36 @@ function ProjectLabelsModal({
    * says nothing about the archive, and the line stays.
    */
   const archiveRefused = isProjectArchived(failure);
+
+  /**
+   * Where focus goes when the archive takes the control that had it (§5.7):
+   * this dialog's `PROJECT_ARCHIVED` refusal, else its line — placed here, as
+   * Edit project places its own, and not left to the board's archive effect
+   * alone. That effect runs once, on the turn, and this dialog can change
+   * after it: every write here settles by re-reading the context and the
+   * board *before* its refusal is dispatched (`settle` is `onSettled`, which
+   * the mutation awaits), so a context answer that renders first turns the
+   * dialog read-only with the line, the board's effect focuses the line, and
+   * the refusal that lands with the board's answer then takes the line's place
+   * — and the focus with it, to `<body>` under the scrim (the PR #103 CI
+   * failure: context and board are two reads, and either may answer first).
+   *
+   * Only focus that was lost, and only once archived: a reader still in an
+   * open rename keeps their place, and before the turn the form is still there
+   * to be in.
+   */
+  const refusalRef = useRef<HTMLDivElement>(null);
+  const lineRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (!archived) return;
+    const target = archiveRefused ? refusalRef.current : lineRef.current;
+    if (!target) return;
+    const active = document.activeElement;
+    const lost =
+      !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
+    if (lost) target.focus();
+  }, [archived, archiveRefused]);
+
   const trimmed = name.trim();
   const badge = keyBadgeStyle(projectKey, projectColor);
 
@@ -6035,7 +6068,7 @@ function ProjectLabelsModal({
         // line stays — here, where the form stood, above it. A place focus is
         // put, never a Tab stop — see the board's archive effect.
         archiveRefused ? null : (
-          <p className="modal-archive-note" data-archive-note="modal" tabIndex={-1}>
+          <p className="modal-archive-note" data-archive-note="modal" ref={lineRef} tabIndex={-1}>
             This project is archived, so its labels cannot be changed.
           </p>
         )
@@ -6076,7 +6109,11 @@ function ProjectLabelsModal({
         </form>
       )}
 
-      {error ? <ErrorNote archiveNote={archiveRefused}>{error}</ErrorNote> : null}
+      {error ? (
+        <ErrorNote archiveNote={archiveRefused} ref={refusalRef}>
+          {error}
+        </ErrorNote>
+      ) : null}
 
       {labelsQuery.isPending ? <p className="issue-links-empty">Loading labels</p> : null}
       {labelsQuery.isSuccess && labels.length === 0 ? (
