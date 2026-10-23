@@ -44,12 +44,8 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   for whoever adds one.
 - **The audit table lacks the scroll fade Users and Events have** (TAS-251,
   builder's own note).
-- **`pr-155-TAS-145.yml` is stale**: backend PR #155's head moved from
-  `c4b8c2c` to `28f5fe1` (found by `npm run contract:pins`, 2026-10-10).
-  Re-extract and re-read TAS-148's edit dialog against it; the PR also
-  conflicts with `develop`. Re-extracted at `28f5fe1` in TAS-297; on
-  2026-10-21 (TAS-382) the head had moved again, to `f3be973`. The re-read
-  belongs to TAS-149's branch (PR #95), which is written against it.
+- ~~**`pr-155-TAS-145.yml` is stale**~~ — **closed by TAS-149** on 2026-10-23: #155 merged
+  (`ed064ade`), the extract was deleted and the dialog re-read against the merged Java.
 - ~~**Backend ask, not filed yet: issue-service creates an issue of a type the
   project does not allow.**~~ — **graduated to
   [TAS-386](https://jira.ozero.dev/browse/TAS-386)** on 2026-10-22 (the issue type
