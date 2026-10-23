@@ -105,7 +105,6 @@ import type {
   NotificationPage,
   NotificationPreferences,
   NotificationPreferencesPatch,
-  TelegramLink,
   OutboxRetryResult,
   Page,
   ProblematicOutboxCounts,
@@ -120,6 +119,7 @@ import type {
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
+  TelegramLink,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -920,7 +920,10 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   updateNotificationPreferences(input: NotificationPreferencesPatch): Promise<NotificationPreferences> {
-    return this.request<NotificationPreferences>("/users/me/notification-preferences", { method: "PATCH", body: input });
+    return this.request<NotificationPreferences>("/users/me/notification-preferences", {
+      method: "PATCH",
+      body: input,
+    });
   }
 
   createTelegramLink(): Promise<TelegramLink> {
@@ -928,7 +931,10 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
-    return this.request<NotificationPreferences>("/users/me/telegram/confirm", { method: "POST", body: { linkId } });
+    return this.request<NotificationPreferences>("/users/me/telegram/confirm", {
+      method: "POST",
+      body: { linkId },
+    });
   }
 
   disconnectTelegram(): Promise<NotificationPreferences> {

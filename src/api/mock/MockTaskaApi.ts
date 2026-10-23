@@ -1,4 +1,3 @@
-import { MockNotificationPreferences } from "./MockNotificationPreferences";
 import type {
   AcceptInvitationInput,
   AddIssueWorklogInput,
@@ -114,7 +113,6 @@ import type {
   NotificationPage,
   NotificationPreferences,
   NotificationPreferencesPatch,
-  TelegramLink,
   NotificationType,
   OutboxRetryResult,
   Page,
@@ -129,6 +127,7 @@ import type {
   ProjectMemberWriteResult,
   ProjectRole,
   ProjectWorkflowEntry,
+  TelegramLink,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -144,6 +143,7 @@ import { accountLockedMessage } from "../../lib/accountLock";
 import { addDays, localDateOnly } from "../../lib/worklog";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
 import { classifyColumnType } from "../../lib/adminColumnTypes";
+import { MockNotificationPreferences } from "./MockNotificationPreferences";
 
 /**
  * The seeded avatar's bytes, inline. A 48×48 two-tone PNG of a head and

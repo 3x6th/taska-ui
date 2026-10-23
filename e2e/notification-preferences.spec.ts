@@ -13,26 +13,125 @@ interface Fixture {
   reads: number;
 }
 
+type FixtureWindow = Window & { taskaNotificationFixture: Fixture };
+
 // This is a browser-only API fixture, injected in place of client.ts. No
 // production timer claims that /start occurred, and no test contacts Telegram.
+// It is served as plain JavaScript, so it carries no type annotations.
 const injectedClient = `
 import { MockTaskaApi } from "/src/api/mock/MockTaskaApi.ts";
+
 export const taskaApi = new MockTaskaApi();
-const base = () => ({ emailEnabled: true, telegramEnabled: false, email: "anna@example.com", telegramAvailable: true, telegramStatus: "NOT_CONNECTED", telegramUsername: null, telegramName: null, telegramLinkId: null, telegramLinkExpiresAt: null, telegramError: null });
-const f = window.taskaNotificationFixture = { row: base(), failPatch: false, failConfirm: false, failDisconnect: false, holdRead: false, failRead: false, patches: [], confirmations: [], reads: 0 };
-const failure = () => Object.assign(new Error("Fixture refusal"), { status: 503, code: "UNAVAILABLE", requestId: "fixture-request-id" });
-taskaApi.getNotificationPreferences = async () => { f.reads++; if (f.holdRead) await new Promise(() => {}); if (f.failRead) throw failure(); if (f.row.telegramLinkExpiresAt && Date.parse(f.row.telegramLinkExpiresAt) <= Date.now()) f.row = { ...base(), emailEnabled: f.row.emailEnabled }; return { ...f.row }; };
-taskaApi.updateNotificationPreferences = async (input) => { f.patches.push(input); await new Promise(resolve => setTimeout(resolve, 120)); if (f.failPatch) throw failure(); f.row = { ...f.row, ...input }; return { ...f.row }; };
-taskaApi.createTelegramLink = async () => { const linkId = crypto.randomUUID(); const expiresAt = new Date(Date.now() + 600000).toISOString(); f.row = { ...f.row, telegramStatus: "PENDING", telegramEnabled: false, telegramLinkId: linkId, telegramLinkExpiresAt: expiresAt }; return { linkId, url: "https://t.me/TaskaFixtureBot?start=fixture_opaque_token", expiresAt }; };
-taskaApi.confirmTelegramLink = async (id) => { f.confirmations.push(id); await new Promise(resolve => setTimeout(resolve, 120)); if (f.failConfirm) { f.row = { ...base(), emailEnabled: f.row.emailEnabled }; throw Object.assign(new Error("Link expired"), { status: 409, code: "ABORTED" }); } f.row = { ...f.row, telegramStatus: "CONNECTED", telegramEnabled: true, telegramLinkId: null, telegramLinkExpiresAt: null }; return { ...f.row }; };
-taskaApi.disconnectTelegram = async () => { if (f.failDisconnect) throw failure(); f.row = { ...base(), emailEnabled: f.row.emailEnabled }; return { ...f.row }; };
+
+const base = () => ({
+  emailEnabled: true,
+  telegramEnabled: false,
+  email: "anna@example.com",
+  telegramAvailable: true,
+  telegramStatus: "NOT_CONNECTED",
+  telegramUsername: null,
+  telegramName: null,
+  telegramLinkId: null,
+  telegramLinkExpiresAt: null,
+  telegramError: null,
+});
+
+const f = (window.taskaNotificationFixture = {
+  row: base(),
+  failPatch: false,
+  failConfirm: false,
+  failDisconnect: false,
+  holdRead: false,
+  failRead: false,
+  patches: [],
+  confirmations: [],
+  reads: 0,
+});
+
+const failure = () =>
+  Object.assign(new Error("Fixture refusal"), { status: 503, code: "UNAVAILABLE", requestId: "fixture-request-id" });
+// No binding and no link; the email choice is the reader's and survives.
+const unbound = () => ({ ...base(), emailEnabled: f.row.emailEnabled });
+const settle = () => new Promise((resolve) => setTimeout(resolve, 120));
+
+taskaApi.getNotificationPreferences = async () => {
+  f.reads++;
+  if (f.holdRead) await new Promise(() => {});
+  if (f.failRead) throw failure();
+  const expiresAt = f.row.telegramLinkExpiresAt;
+  if (expiresAt && Date.parse(expiresAt) <= Date.now()) f.row = unbound();
+  return { ...f.row };
+};
+
+taskaApi.updateNotificationPreferences = async (input) => {
+  f.patches.push(input);
+  await settle();
+  if (f.failPatch) throw failure();
+  f.row = { ...f.row, ...input };
+  return { ...f.row };
+};
+
+taskaApi.createTelegramLink = async () => {
+  const linkId = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + 600000).toISOString();
+  f.row = {
+    ...f.row,
+    telegramStatus: "PENDING",
+    telegramEnabled: false,
+    telegramLinkId: linkId,
+    telegramLinkExpiresAt: expiresAt,
+  };
+  return { linkId, url: "https://t.me/TaskaFixtureBot?start=fixture_opaque_token", expiresAt };
+};
+
+taskaApi.confirmTelegramLink = async (id) => {
+  f.confirmations.push(id);
+  await settle();
+  if (f.failConfirm) {
+    f.row = unbound();
+    throw Object.assign(new Error("Link expired"), { status: 409, code: "ABORTED" });
+  }
+  f.row = {
+    ...f.row,
+    telegramStatus: "CONNECTED",
+    telegramEnabled: true,
+    telegramLinkId: null,
+    telegramLinkExpiresAt: null,
+  };
+  return { ...f.row };
+};
+
+taskaApi.disconnectTelegram = async () => {
+  if (f.failDisconnect) throw failure();
+  f.row = unbound();
+  return { ...f.row };
+};
 `;
 
-const fixture = async (page: Page, input: Partial<Fixture>) => page.evaluate((input) => Object.assign((window as unknown as { taskaNotificationFixture: Fixture }).taskaNotificationFixture, input), input);
-const row = async (page: Page, input: Partial<NotificationPreferences>) => page.evaluate((input) => Object.assign((window as unknown as { taskaNotificationFixture: Fixture }).taskaNotificationFixture.row, input), input);
-const refresh = (page: Page) => page.evaluate(() => { window.dispatchEvent(new Event("blur")); window.dispatchEvent(new Event("visibilitychange")); window.dispatchEvent(new Event("focus")); });
+const fixture = async (page: Page, input: Partial<Fixture>) =>
+  page.evaluate((input) => Object.assign((window as unknown as FixtureWindow).taskaNotificationFixture, input), input);
+
+const row = async (page: Page, input: Partial<NotificationPreferences>) =>
+  page.evaluate(
+    (input) => Object.assign((window as unknown as FixtureWindow).taskaNotificationFixture.row, input),
+    input,
+  );
+
+/** What the fixture has recorded so far, read back from the page. */
+const recorded = (page: Page) => page.evaluate(() => (window as unknown as FixtureWindow).taskaNotificationFixture);
+
+/** A return to the tab: what makes TanStack Query read the choices again. */
+const refresh = (page: Page) =>
+  page.evaluate(() => {
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+  });
+
 async function signIn(page: Page, initialFixture?: Partial<Fixture>) {
-  await page.route("**/src/api/client.ts", (route) => route.fulfill({ contentType: "text/javascript", body: injectedClient }));
+  await page.route("**/src/api/client.ts", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: injectedClient }),
+  );
   await page.route("https://t.me/**", (route) => route.abort("blockedbyclient"));
   await page.goto("/login");
   await page.getByLabel("Email").fill("anna@example.com");
@@ -43,22 +142,27 @@ async function signIn(page: Page, initialFixture?: Partial<Fixture>) {
   // A client-side route keeps the in-memory test fixture and QueryClient.
   await page.getByRole("button", { name: /Open profile/ }).click();
   await page.getByRole("link", { name: "Settings" }).click();
-  if (!initialFixture?.holdRead && !initialFixture?.failRead) await expect(page.getByRole("switch", { name: "Email" })).toBeVisible();
+  if (!initialFixture?.holdRead && !initialFixture?.failRead) {
+    await expect(page.getByRole("switch", { name: "Email" })).toBeVisible();
+  }
 }
+
 const email = (page: Page) => page.getByRole("switch", { name: "Email" });
 const tg = (page: Page) => page.getByRole("switch", { name: "Telegram" });
+
 async function patch(page: Page, channel: "Email" | "Telegram", enabled: boolean) {
   const control = page.getByRole("switch", { name: channel });
   await control.click();
   await expect(control).toHaveAttribute("aria-checked", String(enabled));
   await expect(control).not.toHaveAttribute("aria-disabled");
 }
+
 async function candidate(page: Page) {
   await page.getByRole("button", { name: "Connect Telegram" }).click();
   const open = page.getByRole("link", { name: "Open Telegram bot" });
   await expect(open).toHaveAttribute("href", "https://t.me/TaskaFixtureBot?start=fixture_opaque_token");
   await expect(page.getByRole("button", { name: "Confirm Telegram account" })).toHaveCount(0);
-  const linkId = await page.evaluate(() => (window as unknown as { taskaNotificationFixture: Fixture }).taskaNotificationFixture.row.telegramLinkId);
+  const linkId = (await recorded(page)).row.telegramLinkId;
   // Explicit test event, standing for the bot webhook after /start.
   await row(page, { telegramStatus: "AWAITING_CONFIRMATION", telegramName: "Anna Telegram", telegramUsername: "anna_tg" });
   await refresh(page);
@@ -76,7 +180,7 @@ test("connects the candidate, selects all four channel combinations, and disconn
   await expect(tg(page)).toHaveAttribute("aria-checked", "true");
   await expect(email(page)).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("heading", { name: "Notifications" })).toBeFocused();
-  expect(await page.evaluate(() => (window as unknown as { taskaNotificationFixture: Fixture }).taskaNotificationFixture.confirmations)).toEqual([linkId]);
+  expect((await recorded(page)).confirmations).toEqual([linkId]);
   await patch(page, "Email", false);
   await expect(tg(page)).toHaveAttribute("aria-checked", "true");
   await patch(page, "Telegram", false);
@@ -93,7 +197,9 @@ test("rolls back failed toggles and keeps a refused disconnect connected", async
   await signIn(page);
   await fixture(page, { failPatch: true });
   await email(page).click();
-  await expect(page.getByText("Taska could not confirm the notification change. Check the current choices below.")).toBeVisible();
+  await expect(
+    page.getByText("Taska could not confirm the notification change. Check the current choices below."),
+  ).toBeVisible();
   await expect(email(page)).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("button", { name: "Copy request id fixture-request-id" })).toBeVisible();
   await fixture(page, { failPatch: false });
@@ -102,7 +208,9 @@ test("rolls back failed toggles and keeps a refused disconnect connected", async
   await expect(tg(page)).toHaveAttribute("aria-checked", "true");
   await fixture(page, { failDisconnect: true });
   await page.getByRole("button", { name: "Disconnect Telegram" }).click();
-  await expect(page.getByText("Taska could not confirm the Telegram disconnection. Check the current connection below.")).toBeVisible();
+  await expect(
+    page.getByText("Taska could not confirm the Telegram disconnection. Check the current connection below."),
+  ).toBeVisible();
   await expect(tg(page)).toHaveAttribute("aria-checked", "true");
 });
 
@@ -111,12 +219,14 @@ test("reconciles an expired candidate and stops polling once it is gone", async 
   await candidate(page);
   await fixture(page, { failConfirm: true });
   await page.getByRole("button", { name: "Confirm Telegram account" }).click();
-  await expect(page.getByText("Taska could not confirm the Telegram connection. Check the current connection below.")).toBeVisible();
+  await expect(
+    page.getByText("Taska could not confirm the Telegram connection. Check the current connection below."),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Connect Telegram" })).toBeVisible();
   await expect(tg(page)).toHaveAttribute("aria-checked", "false");
-  const reads = await page.evaluate(() => (window as unknown as { taskaNotificationFixture: Fixture }).taskaNotificationFixture.reads);
+  const reads = (await recorded(page)).reads;
   await page.waitForTimeout(3300);
-  expect(await page.evaluate(() => (window as unknown as { taskaNotificationFixture: Fixture }).taskaNotificationFixture.reads)).toBe(reads);
+  expect((await recorded(page)).reads).toBe(reads);
 });
 
 test("observes a link's expiry and /stop when returning to the profile", async ({ page }) => {
@@ -137,6 +247,7 @@ test("observes a link's expiry and /stop when returning to the profile", async (
 
 for (const theme of ["light", "dark"] as const) {
   test(`uses switches by keyboard, fits the viewport and captures ${theme} appearance`, async ({ page }, testInfo) => {
+    const evidence = (name: string) => `docs/ai/evidence/TAS-387/${testInfo.project.name}-${theme}-${name}.png`;
     await page.addInitScript((theme) => window.localStorage.setItem("taska.theme", theme), theme);
     await signIn(page);
     await email(page).focus();
@@ -151,19 +262,19 @@ for (const theme of ["light", "dark"] as const) {
     expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
     await candidate(page);
     await region.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `docs/ai/evidence/TAS-387/${testInfo.project.name}-${theme}-candidate.png`, fullPage: true });
+    await page.screenshot({ path: evidence("candidate"), fullPage: true });
     await page.getByRole("button", { name: "Confirm Telegram account" }).click();
     await expect(tg(page)).toHaveAttribute("aria-checked", "true");
     await patch(page, "Email", true);
     await region.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `docs/ai/evidence/TAS-387/${testInfo.project.name}-${theme}-connected.png`, fullPage: true });
+    await page.screenshot({ path: evidence("connected"), fullPage: true });
     await row(page, { telegramStatus: "UNAVAILABLE", telegramEnabled: false, telegramError: "TELEGRAM_DELIVERY_UNAVAILABLE" });
     await refresh(page);
     await expect(page.getByText(/The bot cannot reach your Telegram account/)).toBeVisible();
     await expect(page.getByText("TELEGRAM_DELIVERY_UNAVAILABLE", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Disconnect Telegram" })).toBeVisible();
     await region.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `docs/ai/evidence/TAS-387/${testInfo.project.name}-${theme}-unavailable.png`, fullPage: true });
+    await page.screenshot({ path: evidence("unavailable"), fullPage: true });
   });
 }
 
@@ -174,7 +285,9 @@ for (const theme of ["light", "dark"] as const) {
       await page.addInitScript((theme) => window.localStorage.setItem("taska.theme", theme), theme);
       await signIn(page, { holdRead: state === "loading", failRead: state === "read-error" });
       const region = page.getByRole("region", { name: "Notifications" });
-      if (state === "loading") await expect(region.getByRole("status")).toHaveText("Loading notification choices");
+      if (state === "loading") {
+        await expect(region.getByRole("status")).toHaveText("Loading notification choices");
+      }
       if (state === "read-error") {
         await expect(region.getByText("Your notification choices could not be loaded.")).toBeVisible();
         const retry = (await region.getByRole("button", { name: "Try again" }).boundingBox())!;
@@ -185,7 +298,9 @@ for (const theme of ["light", "dark"] as const) {
       if (state === "write-error") {
         await fixture(page, { failPatch: true });
         await email(page).click();
-        await expect(region.getByText("Taska could not confirm the notification change. Check the current choices below.")).toBeVisible();
+        await expect(
+          region.getByText("Taska could not confirm the notification change. Check the current choices below."),
+        ).toBeVisible();
         await expect(email(page)).toHaveAttribute("aria-checked", "true");
         await expect(email(page)).not.toHaveAttribute("aria-disabled");
       }

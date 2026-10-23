@@ -1,4 +1,3 @@
-import { SettingsNotificationsSection } from "./SettingsNotificationsSection";
 import { useQuery } from "@tanstack/react-query";
 import { ImageUp } from "lucide-react";
 import { useRef } from "react";
@@ -11,6 +10,7 @@ import { RequestId } from "../../components/RequestId";
 import { useMeta } from "../../hooks/useMeta";
 import { useOwnPhoto } from "../../hooks/useOwnPhoto";
 import { formatFileSize, globalRoleLabel, userStatusLabel } from "../../lib/format";
+import { SettingsNotificationsSection } from "./SettingsNotificationsSection";
 
 /**
  * Settings → My profile (TAS-380, art-director's ruling 4): who the reader is,

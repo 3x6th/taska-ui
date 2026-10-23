@@ -7,7 +7,10 @@ const tom = { id: "tom", email: "tom@example.com" } as User;
 
 describe("current-user delivery preferences", () => {
   let store: MockNotificationPreferences;
-  beforeEach(() => { store = new MockNotificationPreferences(); vi.useRealTimers(); });
+  beforeEach(() => {
+    store = new MockNotificationPreferences();
+    vi.useRealTimers();
+  });
 
   it("starts email-only, supports all four combinations and never changes the other channel", () => {
     expect(store.get(anna)).toMatchObject({ emailEnabled: true, telegramEnabled: false });
@@ -17,7 +20,11 @@ describe("current-user delivery preferences", () => {
     expect(store.get(anna).telegramEnabled).toBe(false);
     expect(store.confirm(anna, link.linkId)).toMatchObject({ emailEnabled: true, telegramEnabled: true });
     expect(store.update(anna, { emailEnabled: false })).toMatchObject({ emailEnabled: false, telegramEnabled: true });
-    expect(store.update(anna, { telegramEnabled: false })).toMatchObject({ emailEnabled: false, telegramEnabled: false, telegramStatus: "CONNECTED" });
+    expect(store.update(anna, { telegramEnabled: false })).toMatchObject({
+      emailEnabled: false,
+      telegramEnabled: false,
+      telegramStatus: "CONNECTED",
+    });
     expect(store.update(anna, { emailEnabled: true })).toMatchObject({ emailEnabled: true, telegramEnabled: false });
   });
 
@@ -27,7 +34,11 @@ describe("current-user delivery preferences", () => {
     expect(() => store.confirm(tom, link.linkId)).toThrow();
     store.update(anna, { emailEnabled: false });
     expect(store.get(tom)).toMatchObject({ emailEnabled: true, telegramStatus: "NOT_CONNECTED" });
-    expect(store.confirm(anna, link.linkId)).toMatchObject({ emailEnabled: false, telegramEnabled: true, telegramUsername: null });
+    expect(store.confirm(anna, link.linkId)).toMatchObject({
+      emailEnabled: false,
+      telegramEnabled: true,
+      telegramUsername: null,
+    });
   });
 
   it("replaces a pending link, expires the candidate, and cannot confirm stale links", () => {
@@ -37,7 +48,11 @@ describe("current-user delivery preferences", () => {
     expect(() => store.receiveStart(anna, old.linkId, "Wrong", null)).toThrow();
     store.receiveStart(anna, fresh.linkId, "Anna", null);
     vi.advanceTimersByTime(10 * 60 * 1000);
-    expect(store.get(anna)).toMatchObject({ telegramStatus: "NOT_CONNECTED", telegramName: null, telegramEnabled: false });
+    expect(store.get(anna)).toMatchObject({
+      telegramStatus: "NOT_CONNECTED",
+      telegramName: null,
+      telegramEnabled: false,
+    });
     expect(() => store.confirm(anna, fresh.linkId)).toThrow();
     vi.useRealTimers();
   });
@@ -48,7 +63,12 @@ describe("current-user delivery preferences", () => {
     store.receiveStart(anna, link.linkId, "Anna", "anna");
     store.confirm(anna, link.linkId);
     store.stop(anna);
-    expect(store.get(anna)).toMatchObject({ emailEnabled: false, telegramEnabled: false, telegramStatus: "NOT_CONNECTED", telegramUsername: null });
+    expect(store.get(anna)).toMatchObject({
+      emailEnabled: false,
+      telegramEnabled: false,
+      telegramStatus: "NOT_CONNECTED",
+      telegramUsername: null,
+    });
     expect(() => store.confirm(anna, link.linkId)).toThrow();
     expect(store.disconnect(anna).telegramStatus).toBe("NOT_CONNECTED");
   });
@@ -60,8 +80,9 @@ describe("current-user delivery preferences", () => {
     }
     store.available = false;
     expect(store.get(anna)).toMatchObject({ telegramAvailable: false, telegramStatus: "NOT_CONNECTED" });
-    expect(() => store.createLink(anna)).toThrowError(expect.objectContaining({ code: "UNAVAILABLE" }));
-    expect(() => store.confirm(anna, "any-link")).toThrowError(expect.objectContaining({ code: "UNAVAILABLE" }));
+    const unavailable = expect.objectContaining({ code: "UNAVAILABLE" });
+    expect(() => store.createLink(anna)).toThrowError(unavailable);
+    expect(() => store.confirm(anna, "any-link")).toThrowError(unavailable);
     expect(() => store.update(anna, { telegramEnabled: true })).toThrow();
     expect(store.update(anna, { emailEnabled: false }).emailEnabled).toBe(false);
   });
