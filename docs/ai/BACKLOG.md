@@ -4004,6 +4004,24 @@ Frontend notes:
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
 
+### Left by TAS-389 (the user's login removed, frontend for backend #219, 2026-10-23)
+
+- **"Only this actor" beside the audit detail's actor id** (`art-director`, pre-build N1).
+  One person shows as `mark` in historical rows and `Mark Lee` in new ones; a link applying
+  `?actorUserId=` through the existing "Actor id is" filter is the real identification task.
+- **At 375 the Users person column scrolls fully out of view when a row's action has focus**
+  (`art-director`, post-build N3): the container scrolls 127 against a 120-wide person
+  column, so only the row tint marks the row (the dialog still names the account). Candidate:
+  the Data table's frozen-column recipe (`.admin-cell-frozen`) for the person cell at narrow
+  widths — a §5.8 change that needs its own ruling.
+- **No e2e covers the audit actor column or the email line under the profile name**
+  (`release-reviewer`): row height 30, the 180 cap and the 390 wrap rest on screenshots.
+- **Emails in the Data view are masked inconsistently** (`api-contract-guard`):
+  `auth.users.email` and `admin_audit_log.actor_email` are plain, while
+  `notification_preferences.email`, `invitation_email_deliveries.email` and
+  `email_delivery_attempts.to_email` are `MASK_PARTIAL` (admin-service
+  `sensitive-columns`). One policy for all — the owner's call; not filed.
+
 ### Left by TAS-387 (notification channels, frontend for backend #215, 2026-10-23)
 
 The code came from the backend developer's Codex run (PR #101); this repository's three
