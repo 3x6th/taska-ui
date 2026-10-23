@@ -563,20 +563,20 @@ export const keyBadgeStyle = (projectKey: string, color?: string | null) => {
   return { background: keyTint(computedProjectColor(key)) };
 };
 
-/** Safe delivery codes are diagnostic data, never words to print in a profile. */
+/**
+ * The sentence for `NotificationPreferencesDto.telegramError` (TAS-387). The
+ * code is diagnostic data and never printed itself. On the wire it is only
+ * `BOT_CHANGED` or `TELEGRAM_DELIVERY_UNAVAILABLE` (backend #215): the other
+ * `TELEGRAM_*` codes belong to individual deliveries and never reach this
+ * field, and a set `telegramError` stops delivery rather than retrying it — so
+ * no sentence here promises a retry. Any other code gets the general one.
+ */
 export function telegramDeliveryErrorText(code: string): string {
   switch (code) {
     case "BOT_CHANGED":
       return "Taska uses a different bot now. Disconnect the old account before connecting the new bot.";
     case "TELEGRAM_DELIVERY_UNAVAILABLE":
       return "The bot cannot reach your Telegram account. Check that the bot is not blocked, then disconnect and connect your account again.";
-    case "TELEGRAM_DISABLED":
-      return "Telegram notifications are not available right now.";
-    case "TELEGRAM_RATE_LIMIT":
-      return "Telegram is limiting messages right now. Delivery will retry automatically.";
-    case "TELEGRAM_TEMPORARY":
-    case "TELEGRAM_INVALID_RESPONSE":
-      return "Telegram delivery is temporarily unavailable. Delivery will retry automatically.";
     default:
       return "Telegram delivery is unavailable. You can disconnect Telegram and connect again when it is available.";
   }

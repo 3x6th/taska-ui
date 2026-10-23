@@ -1701,13 +1701,20 @@ export interface OutboxRetryResult {
   attempts: number | null;
 }
 
+/** Where the reader's Telegram binding stands, as `NotificationPreferencesDto` lists it (TAS-387). */
+export type TelegramStatus = "NOT_CONNECTED" | "PENDING" | "AWAITING_CONFIRMATION" | "CONNECTED" | "UNAVAILABLE";
+
 /** Current-user delivery channels (TAS-387). The in-app inbox is independent. */
 export interface NotificationPreferences {
   emailEnabled: boolean;
   telegramEnabled: boolean;
   email: string;
   telegramAvailable: boolean;
-  telegramStatus: "NOT_CONNECTED" | "PENDING" | "AWAITING_CONFIRMATION" | "CONNECTED" | "UNAVAILABLE";
+  /**
+   * `null`: the server stated a status this build does not know (TAS-173);
+   * only Disconnect is offered.
+   */
+  telegramStatus: TelegramStatus | null;
   telegramUsername: string | null;
   telegramName: string | null;
   telegramLinkId: string | null;

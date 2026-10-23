@@ -58,7 +58,7 @@ export class MockNotificationPreferences {
   createLink(user: User): TelegramLink {
     if (!this.available) throw failure("UNAVAILABLE", "Telegram is unavailable");
     const current = this.get(user);
-    if (["CONNECTED", "UNAVAILABLE"].includes(current.telegramStatus)) {
+    if (current.telegramStatus === "CONNECTED" || current.telegramStatus === "UNAVAILABLE") {
       throw failure("ABORTED", "Disconnect the previous Telegram account first");
     }
     const linkId = crypto.randomUUID();

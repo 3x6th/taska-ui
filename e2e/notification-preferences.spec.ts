@@ -161,6 +161,8 @@ async function candidate(page: Page) {
   await page.getByRole("button", { name: "Connect Telegram" }).click();
   const open = page.getByRole("link", { name: "Open Telegram bot" });
   await expect(open).toHaveAttribute("href", "https://t.me/TaskaFixtureBot?start=fixture_opaque_token");
+  // An <a> in the secondary recipe (§4.1): no link underline.
+  await expect(open).toHaveCSS("text-decoration-line", "none");
   await expect(page.getByRole("button", { name: "Confirm Telegram account" })).toHaveCount(0);
   const linkId = (await recorded(page)).row.telegramLinkId;
   // Explicit test event, standing for the bot webhook after /start.
@@ -198,7 +200,7 @@ test("rolls back failed toggles and keeps a refused disconnect connected", async
   await fixture(page, { failPatch: true });
   await email(page).click();
   await expect(
-    page.getByText("Taska could not confirm the notification change. Check the current choices below."),
+    page.getByText("Taska could not confirm the notification change. Check the current choices."),
   ).toBeVisible();
   await expect(email(page)).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("button", { name: "Copy request id fixture-request-id" })).toBeVisible();
@@ -209,7 +211,7 @@ test("rolls back failed toggles and keeps a refused disconnect connected", async
   await fixture(page, { failDisconnect: true });
   await page.getByRole("button", { name: "Disconnect Telegram" }).click();
   await expect(
-    page.getByText("Taska could not confirm the Telegram disconnection. Check the current connection below."),
+    page.getByText("Taska could not confirm the Telegram disconnection. Check the current connection."),
   ).toBeVisible();
   await expect(tg(page)).toHaveAttribute("aria-checked", "true");
 });
@@ -220,7 +222,7 @@ test("reconciles an expired candidate and stops polling once it is gone", async 
   await fixture(page, { failConfirm: true });
   await page.getByRole("button", { name: "Confirm Telegram account" }).click();
   await expect(
-    page.getByText("Taska could not confirm the Telegram connection. Check the current connection below."),
+    page.getByText("Taska could not confirm the Telegram connection. Check the current connection."),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Connect Telegram" })).toBeVisible();
   await expect(tg(page)).toHaveAttribute("aria-checked", "false");
@@ -245,71 +247,110 @@ test("observes a link's expiry and /stop when returning to the profile", async (
   await expect(tg(page)).toHaveAttribute("aria-checked", "false");
 });
 
+// The screenshots go to each test's own output directory, never into the
+// repository; motion is reduced so a frame is never caught mid-transition.
 for (const theme of ["light", "dark"] as const) {
-  test(`uses switches by keyboard, fits the viewport and captures ${theme} appearance`, async ({ page }, testInfo) => {
-    const evidence = (name: string) => `docs/ai/evidence/TAS-387/${testInfo.project.name}-${theme}-${name}.png`;
-    await page.addInitScript((theme) => window.localStorage.setItem("taska.theme", theme), theme);
-    await signIn(page);
-    await email(page).focus();
-    await page.keyboard.press("Space");
-    await expect(email(page)).toHaveAttribute("aria-checked", "false");
-    await expect(email(page)).not.toHaveAttribute("aria-disabled");
-    await expect(email(page)).toBeFocused();
-    await expect(email(page)).toHaveCSS("outline-style", "solid");
-    const region = page.getByRole("region", { name: "Notifications" });
-    const box = (await region.boundingBox())!;
-    expect(box.x).toBeGreaterThanOrEqual(0);
-    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
-    await candidate(page);
-    await region.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: evidence("candidate"), fullPage: true });
-    await page.getByRole("button", { name: "Confirm Telegram account" }).click();
-    await expect(tg(page)).toHaveAttribute("aria-checked", "true");
-    await patch(page, "Email", true);
-    await region.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: evidence("connected"), fullPage: true });
-    await row(page, { telegramStatus: "UNAVAILABLE", telegramEnabled: false, telegramError: "TELEGRAM_DELIVERY_UNAVAILABLE" });
-    await refresh(page);
-    await expect(page.getByText(/The bot cannot reach your Telegram account/)).toBeVisible();
-    await expect(page.getByText("TELEGRAM_DELIVERY_UNAVAILABLE", { exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Disconnect Telegram" })).toBeVisible();
-    await region.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: evidence("unavailable"), fullPage: true });
-  });
-}
-
-for (const theme of ["light", "dark"] as const) {
-  for (const state of ["loading", "read-error", "write-error"] as const) {
-    test(`captures mobile ${theme} ${state} notification choices`, async ({ page }, testInfo) => {
-      test.skip(testInfo.project.name !== "mobile", "additional mobile state evidence");
+  test.describe(`in the ${theme} theme`, () => {
+    test.beforeEach(async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
       await page.addInitScript((theme) => window.localStorage.setItem("taska.theme", theme), theme);
-      await signIn(page, { holdRead: state === "loading", failRead: state === "read-error" });
+    });
+
+    test("keeps the notification switches operable by keyboard and inside the viewport", async ({ page }, testInfo) => {
+      await signIn(page);
+      await email(page).focus();
+      await page.keyboard.press("Space");
+      await expect(email(page)).toHaveAttribute("aria-checked", "false");
+      await expect(email(page)).not.toHaveAttribute("aria-disabled");
+      await expect(email(page)).toBeFocused();
+      await expect(email(page)).toHaveCSS("outline-style", "solid");
       const region = page.getByRole("region", { name: "Notifications" });
-      if (state === "loading") {
-        await expect(region.getByRole("status")).toHaveText("Loading notification choices");
-      }
-      if (state === "read-error") {
-        await expect(region.getByText("Your notification choices could not be loaded.")).toBeVisible();
-        const retry = (await region.getByRole("button", { name: "Try again" }).boundingBox())!;
-        const notice = (await region.locator(".api-notice").boundingBox())!;
-        expect(retry.height).toBeGreaterThanOrEqual(44);
-        expect(retry.y).toBeGreaterThanOrEqual(notice.y + notice.height + 8);
-      }
-      if (state === "write-error") {
-        await fixture(page, { failPatch: true });
-        await email(page).click();
-        await expect(
-          region.getByText("Taska could not confirm the notification change. Check the current choices below."),
-        ).toBeVisible();
-        await expect(email(page)).toHaveAttribute("aria-checked", "true");
-        await expect(email(page)).not.toHaveAttribute("aria-disabled");
-      }
-      if (state !== "loading") {
+      const box = (await region.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+      await candidate(page);
+      await region.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("candidate.png"), fullPage: true });
+      await page.getByRole("button", { name: "Confirm Telegram account" }).click();
+      await expect(tg(page)).toHaveAttribute("aria-checked", "true");
+      await patch(page, "Email", true);
+      await region.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("connected.png"), fullPage: true });
+      await row(page, {
+        telegramStatus: "UNAVAILABLE",
+        telegramEnabled: false,
+        telegramError: "TELEGRAM_DELIVERY_UNAVAILABLE",
+      });
+      await refresh(page);
+      // One note, the code's sentence; the description stays the account.
+      await expect(page.getByText(/The bot cannot reach your Telegram account/)).toBeVisible();
+      await expect(page.getByText(/The connected bot cannot deliver notifications/)).toHaveCount(0);
+      await expect(page.getByText("TELEGRAM_DELIVERY_UNAVAILABLE", { exact: true })).toHaveCount(0);
+      await expect(region.locator(".settings-row-description", { hasText: "Anna Telegram · @anna_tg" })).toBeVisible();
+      await expect(tg(page)).toHaveAttribute("data-unavailable", "true");
+      await expect(tg(page)).toHaveCSS("opacity", "0.58");
+      await expect(page.getByRole("button", { name: "Disconnect Telegram" })).toBeVisible();
+      await region.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("unavailable.png"), fullPage: true });
+    });
+
+    test("shows a shaped loading state on mobile", async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== "mobile", "phone evidence");
+      await signIn(page, { holdRead: true });
+      const region = page.getByRole("region", { name: "Notifications" });
+      await expect(region.getByRole("status")).toHaveText("Loading notification choices");
+      await region.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("loading.png"), fullPage: true });
+    });
+
+    test("spaces a failed read, its request id and Try again at every width", async ({ page }, testInfo) => {
+      const mobile = testInfo.project.name === "mobile";
+      await signIn(page, { failRead: true });
+      const region = page.getByRole("region", { name: "Notifications" });
+      await expect(region.getByText("Your notification choices could not be loaded.")).toBeVisible();
+      // The request id is the page's first mono text, and its web font swaps
+      // in late enough to re-wrap the notice: wait for it, then take every
+      // rectangle in one pass so nothing can reflow between two reads.
+      await page.evaluate(async () => {
+        await document.fonts.ready;
+      });
+      const layout = await region.evaluate((section) => {
+        const rect = (selector: string) => section.querySelector(selector)!.getBoundingClientRect();
+        const lead = rect(".settings-lead");
+        const notice = rect(".api-notice");
+        const retry = rect(".settings-notification-retry");
+        return {
+          underLead: notice.top - lead.bottom,
+          underNotice: retry.top - notice.bottom,
+          retryHeight: retry.height,
+        };
+      });
+      expect(layout.underLead).toBeCloseTo(14, 0);
+      expect(layout.underNotice).toBeCloseTo(8, 0);
+      if (mobile) {
+        expect(layout.retryHeight).toBeGreaterThanOrEqual(44);
         const copy = (await region.getByRole("button", { name: "Copy request id fixture-request-id" }).boundingBox())!;
         expect(copy.height).toBeGreaterThanOrEqual(44);
       }
       await region.scrollIntoViewIfNeeded();
-      await page.screenshot({ path: `docs/ai/evidence/TAS-387/mobile-${theme}-${state}.png`, fullPage: true });
+      await page.screenshot({ path: testInfo.outputPath("read-error.png"), fullPage: true });
     });
-  }
+
+    test("rolls back a refused switch and keeps its request id reachable on mobile", async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== "mobile", "phone evidence");
+      await signIn(page);
+      const region = page.getByRole("region", { name: "Notifications" });
+      await fixture(page, { failPatch: true });
+      await email(page).click();
+      await expect(
+        region.getByText("Taska could not confirm the notification change. Check the current choices."),
+      ).toBeVisible();
+      await expect(email(page)).toHaveAttribute("aria-checked", "true");
+      await expect(email(page)).not.toHaveAttribute("aria-disabled");
+      const copy = (await region.getByRole("button", { name: "Copy request id fixture-request-id" }).boundingBox())!;
+      expect(copy.height).toBeGreaterThanOrEqual(44);
+      await region.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("write-error.png"), fullPage: true });
+    });
+  });
 }

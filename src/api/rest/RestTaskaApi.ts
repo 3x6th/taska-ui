@@ -120,6 +120,7 @@ import type {
   ProjectMemberWriteResult,
   ProjectRole,
   TelegramLink,
+  TelegramStatus,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -915,30 +916,38 @@ export class RestTaskaApi implements TaskaApi {
     return this.toUser(response);
   }
 
-  getNotificationPreferences(): Promise<NotificationPreferences> {
-    return this.request<NotificationPreferences>("/users/me/notification-preferences");
+  async getNotificationPreferences(): Promise<NotificationPreferences> {
+    return toNotificationPreferences(
+      await this.request<RestNotificationPreferences>("/users/me/notification-preferences"),
+    );
   }
 
-  updateNotificationPreferences(input: NotificationPreferencesPatch): Promise<NotificationPreferences> {
-    return this.request<NotificationPreferences>("/users/me/notification-preferences", {
-      method: "PATCH",
-      body: input,
-    });
+  async updateNotificationPreferences(input: NotificationPreferencesPatch): Promise<NotificationPreferences> {
+    return toNotificationPreferences(
+      await this.request<RestNotificationPreferences>("/users/me/notification-preferences", {
+        method: "PATCH",
+        body: input,
+      }),
+    );
   }
 
   createTelegramLink(): Promise<TelegramLink> {
     return this.request<TelegramLink>("/users/me/telegram/link", { method: "POST" });
   }
 
-  confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
-    return this.request<NotificationPreferences>("/users/me/telegram/confirm", {
-      method: "POST",
-      body: { linkId },
-    });
+  async confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
+    return toNotificationPreferences(
+      await this.request<RestNotificationPreferences>("/users/me/telegram/confirm", {
+        method: "POST",
+        body: { linkId },
+      }),
+    );
   }
 
-  disconnectTelegram(): Promise<NotificationPreferences> {
-    return this.request<NotificationPreferences>("/users/me/telegram", { method: "DELETE" });
+  async disconnectTelegram(): Promise<NotificationPreferences> {
+    return toNotificationPreferences(
+      await this.request<RestNotificationPreferences>("/users/me/telegram", { method: "DELETE" }),
+    );
   }
 
   hasSession(): boolean {
@@ -2889,6 +2898,29 @@ function toGlobalRole(value: unknown): GlobalRole | undefined {
  */
 function toProjectRole(value: unknown): ProjectRole | null {
   return value === "ADMIN" || value === "MEMBER" || value === "VIEWER" ? value : null;
+}
+
+/**
+ * `NotificationPreferencesDto` as it arrives (TAS-387): `telegramStatus` is
+ * read as `unknown`, so a status the enum grows later reaches the profile as
+ * "this build does not know it" rather than as a value it was never written
+ * for (TAS-173).
+ */
+type RestNotificationPreferences = Omit<NotificationPreferences, "telegramStatus"> & { telegramStatus?: unknown };
+
+/** One of the five statuses the contract lists, or `null` for anything else. */
+function toTelegramStatus(value: unknown): TelegramStatus | null {
+  return value === "NOT_CONNECTED" ||
+    value === "PENDING" ||
+    value === "AWAITING_CONFIRMATION" ||
+    value === "CONNECTED" ||
+    value === "UNAVAILABLE"
+    ? value
+    : null;
+}
+
+function toNotificationPreferences(wire: RestNotificationPreferences): NotificationPreferences {
+  return { ...wire, telegramStatus: toTelegramStatus(wire.telegramStatus) };
 }
 
 /**

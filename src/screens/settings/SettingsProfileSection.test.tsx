@@ -105,7 +105,8 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
       telegramEnabled: false,
       email: "anna@example.com",
       telegramAvailable: false,
-      telegramStatus: "UNAVAILABLE",
+      // No binding with the integration off: what the backend answers.
+      telegramStatus: "NOT_CONNECTED",
       telegramUsername: null,
       telegramName: null,
       telegramLinkId: null,

@@ -5,7 +5,12 @@ import { taskaApi } from "../../api/client";
 import { apiErrorFacts } from "../../api/errors";
 import { ApiNotice } from "../../components/ApiNotice";
 import { RequestId } from "../../components/RequestId";
-import type { NotificationPreferences, NotificationPreferencesPatch, TelegramLink } from "../../domain/types";
+import type {
+  NotificationPreferences,
+  NotificationPreferencesPatch,
+  TelegramLink,
+  TelegramStatus,
+} from "../../domain/types";
 import { telegramDeliveryErrorText } from "../../lib/format";
 import { notificationPreferencesKey, telegramBotUrl } from "./notificationPreferencesQuery";
 
@@ -15,31 +20,46 @@ type Action =
   | { type: "confirm"; linkId: string }
   | { type: "disconnect" };
 type Result = { preferences?: NotificationPreferences; link?: TelegramLink };
+type Notice = {
+  text: string;
+  error?: unknown;
+  /** The status a success sentence describes; a failure carries none (§5.9). */
+  announced?: TelegramStatus | null;
+};
 
-/** The live region's sentence when a write is refused or its answer is lost. */
+/**
+ * The live region's sentence when a write is refused or its answer is lost.
+ * No direction words: the region is always last in the section, and a screen
+ * reader has no "below" (§5.9).
+ */
 const WRITE_FAILURE_TEXT: Record<Action["type"], string> = {
-  patch: "Taska could not confirm the notification change. Check the current choices below.",
-  link: "Taska could not confirm the new Telegram link. Check the current connection below.",
-  confirm: "Taska could not confirm the Telegram connection. Check the current connection below.",
-  disconnect: "Taska could not confirm the Telegram disconnection. Check the current connection below.",
+  patch: "Taska could not confirm the notification change. Check the current choices.",
+  link: "Taska could not confirm the new Telegram link. Check the current connection.",
+  confirm: "Taska could not confirm the Telegram connection. Check the current connection.",
+  disconnect: "Taska could not confirm the Telegram disconnection. Check the current connection.",
 };
 
 /** A request that waits for Start in Telegram or for the reader's confirmation. */
 const WAITING_STATUSES = ["PENDING", "AWAITING_CONFIRMATION"];
+
+/** The UNAVAILABLE note, which the Telegram switch also points at for its reason. */
+const TELEGRAM_NOTE_ID = "notification-telegram-note";
 
 /** Personal delivery choices. Inbox remains independent of both channels. */
 export function SettingsNotificationsSection({ userId }: { userId: string }) {
   const client = useQueryClient();
   const key = notificationPreferencesKey(userId);
   const [link, setLink] = useState<TelegramLink | null>(null);
-  const [notice, setNotice] = useState<{ text: string; error?: unknown } | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const writing = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const query = useQuery({
     queryKey: key,
     queryFn: () => taskaApi.getNotificationPreferences(),
     staleTime: 0,
-    refetchOnWindowFocus: "always",
+    // Not while a write is out: a read that starts during it and lands after
+    // its answer would put the row from before the write back.
+    refetchOnWindowFocus: () => (writing.current ? false : "always"),
     refetchInterval: (current) => {
       const waiting = WAITING_STATUSES.includes(current.state.data?.telegramStatus ?? "");
       return !writing.current && waiting ? 3000 : false;
@@ -61,7 +81,11 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
       return { previous };
     },
     onSuccess: async (result, action) => {
-      if (result.preferences) client.setQueryData(key, result.preferences);
+      if (result.preferences) {
+        // The write's answer is the newest row: any read still out is older.
+        await client.cancelQueries({ queryKey: key });
+        client.setQueryData(key, result.preferences);
+      }
       if (result.link) {
         setLink(result.link);
         // A successful link POST says nothing about the binding state. A failed
@@ -78,6 +102,7 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
             action.type === "confirm"
               ? "Telegram account connected. Your email choice is unchanged."
               : "Telegram disconnected. Your email choice is unchanged.",
+          announced: result.preferences?.telegramStatus ?? null,
         });
       }
     },
@@ -100,12 +125,24 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
     mutation.mutate(action);
   };
   const data = query.data;
-  const available = data?.telegramAvailable === true && data.telegramStatus !== "UNAVAILABLE";
-  const connected = data?.telegramStatus === "CONNECTED";
-  const bound = connected || data?.telegramStatus === "UNAVAILABLE";
+  // §5.9: a success sentence leaves as soon as a read returns another status
+  // than the one it described — cleared, not hidden, so it cannot come back.
+  if (notice?.announced !== undefined && data && data.telegramStatus !== notice.announced) setNotice(null);
+
+  const status = data?.telegramStatus;
+  // A status this build does not know (TAS-173): only Disconnect is offered.
+  const unknownStatus = data !== undefined && status === null;
+  const connected = status === "CONNECTED";
+  const unavailable = status === "UNAVAILABLE";
+  const bound = connected || unavailable;
+  const awaiting = status === "AWAITING_CONFIRMATION";
+  const pending = status === "PENDING" || awaiting;
+  const available = data?.telegramAvailable === true && !unavailable;
+  // On can always be turned off; it can be turned on only for a connected,
+  // available binding.
   const canToggleTelegram = data?.telegramEnabled || (available && connected);
-  const awaiting = data?.telegramStatus === "AWAITING_CONFIRMATION";
-  const pending = data?.telegramStatus === "PENDING" || awaiting;
+  // Connect, the bot link and Confirm only for a state this build knows.
+  const canLink = available && !bound && !unknownStatus;
   const safeUrl = link && link.linkId === data?.telegramLinkId ? telegramBotUrl(link.url) : null;
   const facts = apiErrorFacts(notice?.error);
   const account = data?.telegramName || (data?.telegramUsername ? `@${data.telegramUsername}` : "Telegram account");
@@ -113,18 +150,28 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
   const accountSuffix = data?.telegramName && data.telegramUsername ? ` · @${data.telegramUsername}` : "";
 
   const telegramDescription = () => {
+    if (bound) return `${account}${accountSuffix}`;
+    if (unknownStatus) return "Taska cannot read the state of this Telegram connection.";
     if (!available) return "Telegram notifications are not available right now.";
-    if (connected) return `${account}${accountSuffix}`;
     return "Connect your account before turning Telegram notifications on.";
   };
 
-  const boundNote = () =>
-    data?.telegramStatus === "UNAVAILABLE"
-      ? "The connected bot cannot deliver notifications right now. You can disconnect Telegram and connect again when it is available."
-      : "Turning Telegram off keeps the account connected. To stop from Telegram, send /stop to the bot.";
+  // With the integration off the backend reports every binding as BOT_CHANGED,
+  // so the code's sentence is used only while Telegram is available.
+  const unavailableNote = (current: NotificationPreferences) =>
+    current.telegramAvailable && current.telegramError
+      ? telegramDeliveryErrorText(current.telegramError)
+      : "The connected bot cannot deliver notifications right now. You can disconnect Telegram and connect again when it is available.";
 
-  /** The notes that say where the connection stands, before its actions. */
+  /** The one note that says where the connection stands, before its actions. */
   const telegramStateNotes = (current: NotificationPreferences) => {
+    if (unknownStatus) {
+      return (
+        <p className="settings-telegram-note">
+          Taska does not recognise the state of this Telegram connection. You can disconnect Telegram and connect again.
+        </p>
+      );
+    }
     if (!available && pending) {
       return (
         <p className="settings-telegram-note">
@@ -132,7 +179,20 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
         </p>
       );
     }
-    if (bound) return <p className="settings-telegram-note">{boundNote()}</p>;
+    if (unavailable) {
+      return (
+        <p className="settings-telegram-note" id={TELEGRAM_NOTE_ID}>
+          {unavailableNote(current)}
+        </p>
+      );
+    }
+    if (connected) {
+      return (
+        <p className="settings-telegram-note">
+          Turning Telegram off keeps the account connected. To stop from Telegram, send /stop to the bot.
+        </p>
+      );
+    }
     if (pending) {
       const expiresAt = current.telegramLinkExpiresAt
         ? new Date(current.telegramLinkExpiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -232,13 +292,19 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
             {telegramDescription()}
           </p>
         </div>
+        {/* §4.29: in flight is `aria-disabled` alone; steadily unavailable
+            (nothing to turn on) adds `data-unavailable`, which carries the
+            dimming, so a write on the Email switch neither adds nor removes it. */}
         <button
           aria-checked={current.telegramEnabled}
-          aria-describedby="notification-telegram-description"
+          aria-describedby={
+            unavailable ? `notification-telegram-description ${TELEGRAM_NOTE_ID}` : "notification-telegram-description"
+          }
           aria-disabled={!canToggleTelegram || mutation.isPending || undefined}
           aria-labelledby="notification-telegram-title"
           className="notification-switch"
           data-busy={mutation.isPending || undefined}
+          data-unavailable={!canToggleTelegram || undefined}
           onClick={() => {
             if (canToggleTelegram) act({ type: "patch", input: { telegramEnabled: !current.telegramEnabled } });
           }}
@@ -248,10 +314,10 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
           <span aria-hidden="true" />
         </button>
       </div>
-      {available || bound || pending ? (
+      {available || bound || pending || unknownStatus ? (
         <div className="settings-telegram-connection">
           {telegramStateNotes(current)}
-          {current.telegramError ? (
+          {current.telegramError && !unavailable && !unknownStatus ? (
             <p className="settings-telegram-note">{telegramDeliveryErrorText(current.telegramError)}</p>
           ) : null}
           <div className="settings-telegram-actions">
@@ -265,12 +331,12 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
                 Confirm Telegram account
               </button>
             ) : null}
-            {available && !bound && !awaiting && safeUrl ? (
+            {canLink && !awaiting && safeUrl ? (
               <a className="secondary-button" href={safeUrl} rel="noreferrer" target="_blank">
                 Open Telegram bot <ExternalLink aria-hidden="true" size={13} strokeWidth={1.5} />
               </a>
             ) : null}
-            {available && !bound ? (
+            {canLink ? (
               <button
                 aria-disabled={mutation.isPending || undefined}
                 className="secondary-button"
@@ -280,14 +346,16 @@ export function SettingsNotificationsSection({ userId }: { userId: string }) {
                 {pending ? "Get a new link" : "Connect Telegram"}
               </button>
             ) : null}
-            {bound || pending ? (
+            {bound || pending || unknownStatus ? (
+              // DELETE never refuses, whatever the state, so it is the way out
+              // of a state this build cannot read as well.
               <button
                 aria-disabled={mutation.isPending || undefined}
                 className="settings-telegram-disconnect"
                 onClick={() => act({ type: "disconnect" })}
                 type="button"
               >
-                {bound ? "Disconnect Telegram" : "Cancel connection"}
+                {pending ? "Cancel connection" : "Disconnect Telegram"}
               </button>
             ) : null}
           </div>
