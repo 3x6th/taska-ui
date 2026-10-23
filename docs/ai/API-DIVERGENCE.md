@@ -1859,15 +1859,62 @@ Everything below is the entry as it stood, in the past tense.
 - **Not seen live:** nothing has been archived on the stand; an archive is a mutation and
   needs the owner's word.
 
-### `RestTaskaApi.getBoard` maps the board shape from before backend #205
+### Closed by TAS-202 (2026-10-24): `RestTaskaApi.getBoard` mapped the board shape from before backend #205
 
-- **Endpoint:** `GET /api/v1/projects/{projectId}/board` (`BoardResponseDto`).
-- **What changed:** backend #205 (TAS-213, merged `d20ba0bc` on 2026-10-23) dropped
-  `issueType` from the board request, turned labels into objects and made `unplacedIssues`
-  required; the snapshot carries it since TAS-149's refresh.
-- **Client:** `getBoard` / `toBoardIssue` still map the old shape. No screen calls `getBoard`
-  today, so nothing a reader sees is wrong.
-- **Removal:** the TAS-213 frontend catch-up, which moves the board onto the one read.
+- **Was:** after backend #205 (TAS-213, merged `d20ba0bc`) the client's `getBoard` / `toBoardIssue`
+  still sent `issueType` as required, read labels as ids and had no `unplacedIssues`; no screen
+  called it.
+- **Now:** the board reads `GET /projects/{id}/board?includeDone=true` in the #205 shape in rest,
+  mock and hybrid, and draws `columns` and `unplacedIssues` as sent (DESIGN.md §4.9). What the
+  merged Java says that the yml does not is in the three board entries below.
+
+### The board's card order inside a column depends on the issue type, and the contract does not state it
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/board`.
+- **Read at develop `562d84de`, not probed:** inside a column the issues come grouped by type —
+  TASK, then BUG, then STORY — each `createdAt` ascending, with no `id` tiebreak
+  (`flatMapSequential` in `BoardServiceImpl` over issue-service's `status_key, created_at` sort,
+  `IssueRepositoryImpl.java:303`).
+- **Compensation:** none. The board draws the server's order; the optimistic move and the mock
+  place a card with the same comparator (type rank, `createdAt`, `id`) so the re-read after a
+  move does not reorder it (DESIGN.md §5.3).
+- **Removal:** asked on TAS-213 on 2026-10-24 — `createdAt ASC, id ASC` across types, stated in
+  the yml. Then only the comparator changes.
+
+### A failed enrichment on the board arrives as "no labels" and "no name"
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/board`.
+- **Read, not probed:** when label-service or the profile read fails, `BoardServiceImpl`
+  (lines 173 and 198, `onErrorResume`) sends every card with `labels: []` and the assignee's
+  `displayName: null` — indistinguishable from "no labels" and "unnamed".
+- **Compensation:** none. The card draws what is sent; a null name is a filled circle labelled
+  "Unknown assignee", never the dashed "Unassigned" (DESIGN.md §4.4, TAS-202).
+- **Removal:** asked on TAS-213 on 2026-10-24 — fail the read with a 5xx and a request id, or
+  make both fields nullable with "null = not loaded" in the yml.
+
+### The board read is unbounded, and the board filters it locally because it is complete
+
+- **Endpoint:** `GET /api/v1/projects/{projectId}/board?includeDone=true`.
+- **Read, not probed:** the gateway never passes issue-service's page size per column, so the
+  answer is every issue of the project, closed ones included, each with its full description.
+  `includeDone=true` is required: without it the DONE-category columns come back empty.
+- **Client:** all four filters (type, assignee, label, text) run locally over that read and send
+  nothing (DESIGN.md §5.4). That is correct only while the read is complete.
+- **Removal:** asked on TAS-213 on 2026-10-24 — a `pageSizePerColumn` parameter and per-column
+  `totalCount` / `hasMore`; then the filters move to server parameters.
+
+### `GET /project-stats`: what the yml does not say
+
+- **Read at develop `562d84de`, not probed** (`ProjectStatsService`): the answer covers
+  `listMyProjects` (archived projects excluded) and comes in its order; there is no `projectIds`
+  parameter. A project whose membership vanished between the two internal calls is left out,
+  not zeroed. `issueCount` counts every issue of any type and status (`deleted_at IS NULL`);
+  `memberCount` is the full count; `members` is the first five by `addedAt`, then `userId`. One
+  failing service fails the whole read.
+- **Client:** cards take numbers by `projectId`; a project missing from a settled answer reads
+  Unknown, never 0 (DESIGN.md §4.8). The face stack is the first four of the five.
+- **Compensation:** none. Each read presigns up to 5×N avatar links (BACKLOG, "Member reads
+  re-sign every face").
 
 ### The avatar routes deployed hours after they merged
 
@@ -5088,7 +5135,10 @@ re-sending resolved values can never trip the check by itself.
   field has been made against the deployed gateway yet, so every "code read"
   caveat in the three entries above stays as written.
 
-### `storyPoints` is `double` on the issue DTOs and `int32` on `BoardIssueDto`, and the column settles it
+### Closed by contract (backend #205, 2026-10-23): `storyPoints` was `double` on the issue DTOs and `int32` on `BoardIssueDto`
+
+#205 declares `BoardIssueDto.storyPoints` as `double`, the same as the issue DTOs; the entry below is kept as it stood.
+
 
 Backend PR #148 declares `storyPoints` as `number` / `format: double` on the
 issue DTOs, and merged on 2026-09-11. `BoardIssueDto` declares the same field as
@@ -5204,7 +5254,10 @@ message about it is wrong. The client uses its own wording and never shows the
 server's for this case; `0` is seeded in the mock precisely so that a mapper
 folding it to `null` fails a test rather than a review.
 
-### The board route answers now, and the board screen still does not use it
+### Closed by TAS-202 (2026-10-24): the board route answered, and the board screen did not use it
+
+The board now reads `GET /projects/{projectId}/board?includeDone=true` beside `/context`, and `listIssues` and the board's server-search layer are gone from the screen. #205 answered the two reasons this entry kept alive: the card's fields are on `BoardIssueDto`, and a status outside the workflow lands in `unplacedIssues` instead of a 500. What the merged Java says that the yml does not is in the three board entries near the top of this section. The entry is kept below as it stood.
+
 
 `GET /api/v1/projects/{projectId}/board` (TAS-125) merged into `develop` on
 2026-09-09 and is deployed. `TaskaApi.getBoard` exists in all three
