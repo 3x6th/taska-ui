@@ -144,17 +144,15 @@ export function IssueWorklogSection({
     );
 
   /**
-   * After a write: the issue (its version and remaining estimate moved) and the
-   * board's page (which holds the same issue). Only the issue's own re-read is
-   * awaited, so a queued edit leaves with the version it brought; the board's
-   * page is invalidated without waiting. Then the list, but only once no other
-   * worklog write of this issue is in flight — a re-read landing between two
-   * optimistic writes would take the second one's row off the screen.
+   * After a write: the issue, whose version and remaining estimate moved — and
+   * only the issue. The board is not read again: a card draws nothing a worklog
+   * changes (TAS-202), and its `version` is never sent anywhere. The issue's
+   * re-read is awaited, so a queued edit leaves with the version it brought.
+   * Then the list, but only once no other worklog write of this issue is in
+   * flight — a re-read landing between two optimistic writes would take the
+   * second one's row off the screen.
    */
-  const settleIssue = () => {
-    void queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
-    return queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] });
-  };
+  const settleIssue = () => queryClient.invalidateQueries({ queryKey: ["issue", projectId, issueId] });
   const settleList = () => {
     if (queryClient.isMutating({ mutationKey: worklogMutationKey(issueId) }) > 1) return;
     void queryClient.invalidateQueries({ queryKey: read.queryKey });

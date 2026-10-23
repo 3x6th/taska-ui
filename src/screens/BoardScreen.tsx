@@ -33,9 +33,9 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import type { CreateIssueLinkInput, CreateProjectLabelInput, IssueWriteAnswer, UpdateIssueInput } from "../api/TaskaApi";
-import { SEARCH_QUERY_MIN_LENGTH } from "../api/TaskaApi";
+import { compareBoardIssues } from "../api/boardOrder";
 import {
   ATTACHMENT_ACCEPTED_SUMMARY,
   ATTACHMENT_ACCEPT_ATTRIBUTE,
@@ -73,15 +73,18 @@ import { RequestId } from "../components/RequestId";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
-import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useMeta } from "../hooks/useMeta";
 import { carriesFiles, closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
 import { tabbables } from "../lib/focusTrap";
-import { personFor, type NamedBy } from "../lib/people";
+import { personFor, type NamedBy, type Person } from "../lib/people";
+import { boardKey, boardQueryOptions } from "../lib/boardQuery";
 import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
 import { archivedOnDay, PROJECT_ARCHIVED_SENTENCE, refusalWords, rereadContextIfArchived } from "../lib/projectArchive";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
+  Board,
+  BoardColumn as BoardColumnData,
+  BoardIssue,
   DictionaryEntry,
   Issue,
   IssueAttachment,
@@ -90,11 +93,9 @@ import type {
   IssueHistoryEvent,
   IssueLink,
   IssueLinkTypeCode,
-  IssueSearchHit,
   IssueWatcher,
   IssueWatchers,
   Label,
-  Page,
   IssuePriorityCode,
   IssueStatusKey,
   IssueTypeCode,
@@ -171,13 +172,6 @@ const retryUnlessMissing = (failureCount: number, error: Error) =>
   !isMissingOrForbidden(error) && failureCount < 1;
 // The gateway caps `pageSize` for comments at 50.
 const commentsPageSize = 50;
-// DESIGN.md §4.14. The box itself is instant; only the request waits.
-const SEARCH_DEBOUNCE_MS = 200;
-// The endpoint's ceiling is 100 and the board already holds a page of that
-// size, so this is about the *extra* group: how many matches from outside the
-// loaded page are worth listing before the number itself is the answer. The
-// counter states the whole total either way.
-const boardSearchPageSize = 50;
 
 /*
  * The issue panel's reads (TAS-246): one for the issue and everything drawn
@@ -442,22 +436,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryFn: () => taskaApi.getProjectContext(projectId),
     retry: retryUnlessMissing,
   });
-  // The one filter the *server* applies, so it belongs in the key rather than
-  // in the predicate below with the other three. With `pageSize: 100` a
-  // client-side label filter would quietly only filter the hundred issues this
-  // page happens to hold, and answer "the ones carrying this label among those"
-  // to a question that asked about the project.
-  const issuesKey = useMemo(() => ["issues", projectId, labelFilter], [projectId, labelFilter]);
-  const issuesQuery = useQuery({
-    queryKey: issuesKey,
-    enabled: Boolean(projectId),
-    queryFn: () =>
-      taskaApi.listIssues(projectId, {
-        pageSize: 100,
-        labelId: labelFilter === "ALL" ? undefined : labelFilter,
-      }),
-    retry: retryUnlessMissing,
-  });
+  // The board's issues in one read since TAS-202 (backend #205, TAS-213), in
+  // parallel with the context: the columns, the cards in them and the cards
+  // outside their own type's workflow, complete — no page, no cap — so every
+  // filter below is local and asks nothing. The context still brings the
+  // name, the role, the people, the labels and the workflows the moves are
+  // resolved against; the columns are the board's.
+  const boardQuery = useQuery({ ...boardQueryOptions(projectId), enabled: Boolean(projectId) });
   const meQuery = useQuery({
     queryKey: ["me"],
     queryFn: () => taskaApi.getCurrentUser(),
@@ -468,7 +453,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // Memoized so the `?? []` fallback does not produce a new array identity on
   // every render and invalidate the memos below.
   const members = useMemo(() => context?.members ?? [], [context]);
-  const issues = useMemo(() => issuesQuery.data?.items ?? [], [issuesQuery.data]);
+  const board = boardQuery.data;
+  // Every card the board read holds — the columns' and the group's — which is
+  // what `Y` counts and what a card is looked up in.
+  const cards = useMemo(() => (board ? [...board.columns.flatMap((column) => column.issues), ...board.unplacedIssues] : []), [board]);
   const projectLabels = useMemo(() => context?.labels ?? [], [context]);
   const workflows = context?.workflows;
   // The types this project allows — the ones the context sent a workflow for.
@@ -530,7 +518,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // `398285cde074`). The board does not second-guess either answer.
   const projectGone = contextUnread.unanswered && isMissingOrForbidden(contextUnread.error);
   const roleUnread = contextUnread;
-  const issuesUnread = useUnanswered(issuesQuery);
+  const issuesUnread = useUnanswered(boardQuery);
   const workflowUnread = contextUnread;
   const labelsUnread = contextUnread;
   // Read by the watchers section and by nothing else so far. Everywhere else a
@@ -556,145 +544,94 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // Not on an archived project: the banner says "not a read-only project", and
   // that one is exactly that (§5.7).
   const roleUnstated = role === null && !archived;
-  // Failure is not zero. With no issue list, "0" in a column head, "0 of 0" in
+  // Failure is not zero. With no board read, "0" in a column head, "0 of 0" in
   // the filter bar and "Drop issues here" in every column are three claims
   // about the project made by a request that never answered — the last of them
   // an invitation to drop a card into a column whose contents are unknown
-  // (§5.6: empty and error have to be distinguishable).
+  // (§5.6: empty and error have to be distinguishable). A 404 from the board
+  // is this failure too: only the context's 403 or 404 is the not-found screen
+  // (§4.9).
   const issuesUnknown = issuesUnread.unanswered;
-  // The fallback workflow below is a *loading* default and would be a lie as a
-  // *failure* default: its transition ids are this repository's own mock seed,
-  // so a board whose workflow could not be read would present three columns as
-  // if the server had described them and post a transition id the gateway has
-  // never heard of. The columns stay — their keys are the contract's own
-  // statuses and the issues have to go somewhere — but nothing may be moved on
-  // a workflow nobody sent, and this is what says so.
+  // A board whose workflow could not be read still has its columns — they come
+  // from the board read (TAS-202) — but no transition this repository could
+  // name is one the server described, so nothing may be moved on a workflow
+  // nobody sent, and this is what says so.
   const workflowUnknown = workflowUnread.unanswered;
 
   const userById = useMemo(() => toUserMap(members), [members]);
-  const statuses = useMemo(() => mergeWorkflowStatuses(workflows, offeredIssueTypes), [workflows, offeredIssueTypes]);
+  // The columns on screen: the board's own, as sent (§4.9) — or, until it has
+  // answered and after it failed, the ones predicted from the context, never
+  // used to place a card.
+  const columns = useMemo<ColumnStatus[]>(
+    () => board?.columns ?? predictColumns(workflows, offeredIssueTypes),
+    [board, workflows, offeredIssueTypes],
+  );
   // Names for codes this build does not know (TAS-173). `undefined` while
   // `GET /meta` is on the way or after it failed, and every reader then falls
   // back to the build's own words — nothing waits for it.
   const meta = useMeta();
 
-  const filteredIssues = useMemo(() => {
+  // The four filters, ANDed, all local over the complete read (§5.4): no
+  // filter and no keystroke asks the server anything. Three text fields, the
+  // ones the route's own `query` matches; a card with no description matches
+  // on the other two.
+  const matches = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return issues.filter((issue) => {
+    return (issue: BoardIssue) => {
       if (typeFilter !== null && issue.issueType !== typeFilter) return false;
-      if (assigneeFilter !== "ALL" && issue.assigneeId !== assigneeFilter) return false;
+      if (assigneeFilter !== "ALL" && issue.assignee?.id !== assigneeFilter) return false;
+      if (labelFilter !== "ALL" && !issue.labels.some((label) => label.id === labelFilter)) return false;
       if (!normalized) return true;
-      // Three fields, the same three `GET /issues/search` matches on. The
-      // description is on every issue this page holds — the list DTO carries
-      // it — and simply was not consulted, so a card the server would return
-      // for a word in its body was filtered out of the board by the box above
-      // it: the local and the server halves of one search disagreeing about
-      // what the question was.
       return (
         issue.summary.toLowerCase().includes(normalized) ||
         issue.issueKey.toLowerCase().includes(normalized) ||
-        issue.description.toLowerCase().includes(normalized)
+        (issue.description ?? "").toLowerCase().includes(normalized)
       );
-    });
-  }, [assigneeFilter, issues, query, typeFilter]);
-
-  // The server's half of the same question, and only ever a supplement: the box
-  // above stays local and instant, and nothing below is allowed to blank what
-  // it has already put on screen.
-  //
-  // Two things come out of it — the honest total, because `issues.length`
-  // counts one loaded page and silently stops being the project's issue count
-  // past 100, and the matches that page does not hold (a description beyond it,
-  // an issue beyond it).
-  const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
-  // The label filter is the one filter this endpoint cannot take — there is no
-  // `labelId` parameter on it — so with a label chosen the server would answer
-  // a wider question than the bar is asking and the counter would quietly
-  // report the unlabelled total. Not asking is the honest option; the board
-  // falls back to counting its own page, which is what it did before.
-  const serverSearchEnabled =
-    Boolean(projectId) && labelFilter === "ALL" && debouncedQuery.length >= SEARCH_QUERY_MIN_LENGTH;
-  const searchQuery = useQuery({
-    queryKey: ["issue-search", projectId, debouncedQuery, typeFilter, assigneeFilter],
-    enabled: serverSearchEnabled,
-    queryFn: () =>
-      taskaApi.searchIssues({
-        projectId,
-        query: debouncedQuery,
-        // The two filters the bar shares with the endpoint, so its answer is
-        // about the same set the columns are showing rather than a wider one.
-        issueType: typeFilter ?? undefined,
-        assigneeId: assigneeFilter === "ALL" ? undefined : assigneeFilter,
-        pageSize: boardSearchPageSize,
-      }),
-    retry: retryUnlessMissing,
-  });
-  const searchUnread = useUnanswered(searchQuery);
-  // Whether the server's answer is about the question currently in the box.
-  // For the 200ms after a keystroke it is not, and the two halves of "X of Y"
-  // are then measured against different queries — deleting a character makes
-  // the local half grow while the server's total still describes the longer
-  // word, which is how a counter comes to read "8 of 3". Y waits instead; the
-  // cards do not, because they are the half that must stay instant.
-  const searchInStep = debouncedQuery === query.trim();
-  // The hits the columns do not already hold. Compared against what is on
-  // screen *now* rather than against the debounced answer, so a card can never
-  // be drawn twice while the two are half a keystroke apart.
-  const extraHits = useMemo(() => {
-    if (!serverSearchEnabled) return [];
-    const shown = new Set(filteredIssues.map((issue) => issue.id));
-    return (searchQuery.data?.items ?? []).filter((hit) => !shown.has(hit.id));
-  }, [filteredIssues, searchQuery.data, serverSearchEnabled]);
-  // The issues no column holds (TAS-173): a status no workflow of this project
-  // lists, no status at all, or — while the columns are the fallback three — a
-  // status other than those. Drawn in one trailing group rather than dropped,
-  // so every issue counted in "X of Y" is an issue on screen.
-  const orphanIssues = useMemo(() => {
-    const columnKeys = new Set(statuses.map((status) => status.statusKey));
-    return filteredIssues.filter((issue) => !columnKeys.has(issue.status));
-  }, [filteredIssues, statuses]);
+    };
+  }, [assigneeFilter, labelFilter, query, typeFilter]);
+  /** Each column's cards that pass the filters, by status key. */
+  const filteredByColumn = useMemo(
+    () => new Map((board?.columns ?? []).map((column) => [column.statusKey, column.issues.filter(matches)])),
+    [board, matches],
+  );
+  // The server's `unplacedIssues` (§4.9, «Outside their workflow»): drawn as
+  // sent, never recomputed here.
+  const outsideIssues = useMemo(() => (board?.unplacedIssues ?? []).filter(matches), [board, matches]);
+  /** Every card drawn: `X` in "X of Y". */
+  const shownCount = useMemo(
+    () => [...filteredByColumn.values()].reduce((total, issues) => total + issues.length, 0) + outsideIssues.length,
+    [filteredByColumn, outsideIssues],
+  );
 
   const transitionIssue = useMutation({
     mutationFn: ({ movedIssueId, transitionId }: { movedIssueId: string; nextStatus: IssueStatusKey; transitionId: string }) =>
       taskaApi.transitionIssue(projectId, movedIssueId, transitionId),
     onMutate: async ({ nextStatus, movedIssueId }) => {
-      // Captured, not read again in `onError`. Since TAS-169 `issuesKey`
-      // carries the label filter, and react-query hands a pending mutation the
-      // options object of the *latest* render — so a filter changed mid-flight
-      // would roll back under a key this snapshot never came from: the new
-      // filter's page overwritten with cards that need not carry its label,
-      // and the old page left holding the optimistic move. `staleTime` is
-      // 20_000 (src/main.tsx), so neither corrects itself promptly.
-      const key = issuesKey;
+      // Captured, not read again in `onError`: react-query hands a pending
+      // mutation the options of the *latest* render, and the rollback must land
+      // on the board this snapshot came from.
+      const key = boardKey(projectId);
       await queryClient.cancelQueries({ queryKey: key });
-      const previousIssues = queryClient.getQueryData<Page<Issue>>(key);
-
-      queryClient.setQueryData<Page<Issue>>(key, (current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          items: current.items.map((item) =>
-            item.id === movedIssueId
-              ? {
-                  ...item,
-                  status: nextStatus,
-                  updatedAt: new Date().toISOString(),
-                  // No version: nothing optimistic may invent one. Since
-                  // TAS-246 a version is what an edit sends back as
-                  // `If-Match`, and a guessed one is a claim about the server
-                  // nobody made. The re-read after the move brings the real one.
-                }
-              : item,
-          ),
-        };
-      });
-
-      return { previousIssues, key };
+      const previousBoard = queryClient.getQueryData<Board>(key);
+      // The card goes where the server will put it (§5.3, art-director's B1):
+      // into the target column at the place `compareBoardIssues` gives it, so
+      // the re-read after a successful move does not reorder it. No version:
+      // nothing optimistic may invent one — the re-read brings the real one.
+      queryClient.setQueryData<Board>(key, (current) =>
+        current ? moveCard(current, movedIssueId, nextStatus, new Date().toISOString()) : current,
+      );
+      return { previousBoard, key };
     },
     onError: (_error, _variables, context) => {
-      if (context?.previousIssues) {
-        queryClient.setQueryData(context.key, context.previousIssues);
+      if (context?.previousBoard) {
+        queryClient.setQueryData(context.key, context.previousBoard);
       }
+      // And the board is read again (release-reviewer, TAS-202): a refusal says
+      // the move was not made, a timeout does not — the server may have applied
+      // it and lost the answer. On return to the tab only a read that failed is
+      // made again (`refetchFailedOnFocus`), so nothing else would heal that;
+      // the snapshot stands until this read answers.
+      void queryClient.invalidateQueries({ queryKey: context?.key ?? boardKey(projectId) });
     },
     onSuccess: async () => {
       await invalidateBoard(queryClient, projectId);
@@ -755,7 +692,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    * and turn read-only, so their own effects — child effects, which run before
    * this one — have drawn the line or the refusal by the time this looks; and
    * Edit project places its own (it is opened from `/projects` too, where no
-   * board would), so it is never found without focus here.
+   * board would), so it is never found without focus here. Labels places its
+   * own as well, because it can change after the turn: its refusal may land
+   * after the context read that turned it, and take the place of the line
+   * focus was put on (see `ProjectLabelsModal`).
    */
   const archiveLineRef = useRef<HTMLParagraphElement>(null);
   const focusArchiveLine = useRef(false);
@@ -820,14 +760,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    * with it — and the panel closes by replacing its route, so Back does not
    * open a 404. Focus lands where the card stood: the card that takes its
    * place in the same column, else the one before it, else the column's "+",
-   * else "New". The list and the search are read again behind it.
+   * else "New". The board is read again behind it.
    */
-  const issueDeleted = (deleted: Pick<Issue, "id" | "issueKey" | "status">, alreadyGone: boolean) => {
-    // The column as the board draws it, which is the board list's status for
-    // the issue rather than the panel's, if the two are a re-read apart.
-    const status = issues.find((item) => item.id === deleted.id)?.status ?? deleted.status;
-    const inColumn = statuses.some((column) => column.statusKey === status);
-    const siblings = inColumn ? filteredIssues.filter((item) => item.status === status) : orphanIssues;
+  const issueDeleted = (deleted: Pick<Issue, "id" | "issueKey">, alreadyGone: boolean) => {
+    // Where the board draws it — a column, the group, or nowhere (filtered
+    // out, or a re-read apart from the panel).
+    const column = [...filteredByColumn.entries()].find(([, issues]) => issues.some((item) => item.id === deleted.id));
+    const siblings = column ? column[1] : outsideIssues;
     const index = siblings.findIndex((item) => item.id === deleted.id);
     const chain: DeleteFocusStep[] = [];
     if (index !== -1) {
@@ -836,7 +775,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       if (next) chain.push({ card: next.id });
       if (previous) chain.push({ card: previous.id });
     }
-    if (inColumn) chain.push({ add: status });
+    if (column) chain.push({ add: column[0] });
     chain.push("new");
     // Only while its panel is still the one open (release-reviewer, TAS-299
     // round 1): a panel the reader closed, or left for another issue, while
@@ -844,21 +783,11 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     const stillOpen = shownIssueId.current === deleted.id;
     if (stillOpen) deleteFocusChain.current = chain;
 
-    queryClient.setQueriesData<Page<Issue>>({ queryKey: ["issues", projectId] }, (page) => {
-      if (!page?.items.some((item) => item.id === deleted.id)) return page;
-      return {
-        ...page,
-        items: page.items.filter((item) => item.id !== deleted.id),
-        ...(page.totalCount !== undefined ? { totalCount: Math.max(0, page.totalCount - 1) } : {}),
-      };
-    });
+    queryClient.setQueryData<Board>(boardKey(projectId), (current) => (current ? withoutCard(current, deleted.id) : current));
     setBoardStatus(alreadyGone ? `${deleted.issueKey} was already deleted.` : `${deleted.issueKey} deleted.`);
     if (stillOpen) navigate(`/projects/${projectId}/board`, { replace: true });
-    // The search is the other half of the counter and moves with the list:
-    // measured against the mock, a deleted match otherwise stayed in the
-    // search answer and came back as a row below the board, linking to a
-    // panel that no longer opens.
-    void queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
+    void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
+    // The top bar's search, if it is open, may be holding the issue as a hit.
     void queryClient.invalidateQueries({ queryKey: ["issue-search"] });
   };
 
@@ -890,13 +819,18 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   }, [issueId]);
 
   const hasFilters = Boolean(query || typeFilter !== null || assigneeFilter !== "ALL" || labelFilter !== "ALL");
-  // Only once the issues are in and only when something is in it: not while
+  // The skeleton stands until both reads have arrived (§4.9). Not after a
+  // failed board read: a retry goes back to `isLoading`, and without the
+  // first clause the "Not loaded" columns the banner explains would swap
+  // themselves for skeletons on a timer.
+  const columnsLoading = !issuesUnknown && (contextQuery.isLoading || boardQuery.isLoading);
+  // Only once the board is drawn and only when something is in it: not while
   // the columns are skeletons, and not on a failed read, where every column
   // already says it does not know.
-  const otherStatusesShown = !issuesUnknown && !contextQuery.isLoading && !issuesQuery.isLoading && orphanIssues.length > 0;
-  /** The key off the board's own page, when it holds the open issue — the read error's head names it. */
-  const boardIssueKey = issueId ? knownKey(issues.find((item) => item.id === issueId)?.issueKey) : undefined;
-  const activeIssue = activeIssueId ? issues.find((item) => item.id === activeIssueId) : undefined;
+  const outsideShown = !issuesUnknown && !columnsLoading && board !== undefined && outsideIssues.length > 0;
+  /** The key off the board's own read, when it holds the open issue — the read error's head names it. */
+  const boardIssueKey = issueId ? knownKey(cards.find((item) => item.id === issueId)?.issueKey) : undefined;
+  const activeIssue = activeIssueId ? cards.find((item) => item.id === activeIssueId) : undefined;
 
   const handleDragStart = (event: DragStartEvent) => {
     // Both event notices are about the drag that came before this one. Picking
@@ -916,8 +850,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       return;
     }
     const nextStatus: IssueStatusKey = String(overId);
-    const issue = issues.find((item) => item.id === activeId);
-    if (!issue || issue.status === nextStatus) {
+    const issue = cards.find((item) => item.id === activeId);
+    if (!issue || issue.statusKey === nextStatus) {
       setActiveIssueId(null);
       return;
     }
@@ -952,15 +886,15 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       setActiveIssueId(null);
       return;
     }
-    const transition = findTransition(issue.status, nextStatus, workflow.statuses, workflow.transitions);
+    const transition = findTransition(issue.statusKey, nextStatus, workflow.statuses, workflow.transitions);
     if (transition) {
       transitionIssue.mutate({ movedIssueId: issue.id, nextStatus, transitionId: transition.id });
     } else {
       // Named by the issue's own workflow first, then by the columns on screen
       // — the target may be a column another type's workflow put there.
-      const named = [...workflow.statuses, ...statuses];
+      const named = [...workflow.statuses, ...columns];
       setDragNotice(
-        `${issue.issueKey}: no transition from ${statusLabel(issue.status, named)} to ${statusLabel(nextStatus, named)} in this workflow`,
+        `${issue.issueKey}: no transition from ${statusLabel(issue.statusKey, named)} to ${statusLabel(nextStatus, named)} in this workflow`,
       );
     }
     setActiveIssueId(null);
@@ -1040,9 +974,13 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           <WorkflowIcon size={15} />
         </button>
         <div className="topbar-spacer" />
+        {/* A filter of this board, not a search of the product (§4.13, §5.4):
+            local, on the first character, over the board already read. The
+            product's search is the top bar's on /projects (§4.20). */}
         <label className="search-box">
-          <Search size={15} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search issues" />
+          <Search aria-hidden="true" size={15} />
+          <span className="visually-hidden">Filter issues by key, summary or description</span>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter issues" />
         </label>
         {/* The bar's trailing controls, held together as one unwrappable group.
             Below 820 this bar wraps, and wrapped flex lines pack at
@@ -1209,36 +1147,22 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
             failed read is `pending` again, and the failure is the stabler
             statement of the two.
 
-            While a search is running, Y is the *server's* total rather than the
-            size of the loaded page — the one number here that was previously a
-            quiet lie past 100 issues — and it carries the same three states,
-            because a search that has not answered has not answered. */}
+            X is every card drawn — the columns and «Outside their workflow»
+            together, the sum of their count pills; Y is every card the board
+            read holds, whatever the filters (§5.4). The read is complete, so Y
+            is the board's total and no longer the size of a page. */}
         <span className="counter">
           {issuesUnknown ? (
             <>
               <Unknown /> of <Unknown />
             </>
-          ) : issuesQuery.isPending ? (
+          ) : boardQuery.isPending ? (
             <>
               <PendingValue /> of <PendingValue />
             </>
           ) : (
             <>
-              {filteredIssues.length + extraHits.length} of{" "}
-              {!serverSearchEnabled ? (
-                issues.length
-              ) : searchUnread.unanswered ? (
-                <Unknown />
-              ) : searchQuery.data && searchInStep ? (
-                // No `?? issues.length` behind this. Both implementations
-                // always state a total, so that branch was unreachable — and
-                // had it ever been reached it would have printed the size of
-                // one loaded page where a project total belongs, which is the
-                // exact substitution this counter was changed to stop making.
-                (searchQuery.data.totalCount ?? <Unknown />)
-              ) : (
-                <PendingValue />
-              )}
+              {shownCount} of {cards.length}
             </>
           )}
         </span>
@@ -1316,21 +1240,19 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       <DndContext sensors={sensors} onDragCancel={() => setActiveIssueId(null)} onDragEnd={handleDragEnd} onDragStart={handleDragStart}>
         {/* The two counts the centred alignment is computed from (Settings →
             Appearance → Board columns, §5.2, art-director's ruling 2): the
-            workflow columns — the three skeletons while loading — and the
-            same plus "Other statuses" when that group is drawn. The stylesheet
-            centres the first set and hangs the group to its right; in the
-            default Left alignment, and at 820 and below, nothing reads them. */}
-        <section className="columns-area" style={boardColumnCounts(statuses.length, otherStatusesShown)}>
-          {/* A read that has already failed goes back to `isLoading` on every
-              retry, so without the first clause the columns explained by the
-              banner above would swap themselves for skeletons on a timer. */}
-          {!issuesUnknown && (contextQuery.isLoading || issuesQuery.isLoading)
-            ? statuses.map((status) => <ColumnSkeleton key={status.statusKey} status={status} />)
-            : statuses.map((status) => (
+            board's columns — the predicted ones while loading and after a
+            failed read — and the same plus «Outside their workflow» when that
+            group is drawn. The stylesheet centres the first set and hangs the
+            group to its right; in the default Left alignment, and at 820 and
+            below, nothing reads them. */}
+        <section className="columns-area" style={boardColumnCounts(columns.length, outsideShown)}>
+          {columnsLoading
+            ? columns.map((status) => <ColumnSkeleton key={status.statusKey} status={status} />)
+            : columns.map((status) => (
                 <BoardColumn
                   key={status.statusKey}
                   status={status}
-                  issues={filteredIssues.filter((issue) => issue.status === status.statusKey)}
+                  issues={filteredByColumn.get(status.statusKey) ?? []}
                   issuesUnknown={issuesUnknown}
                   userById={userById}
                   canEdit={canEdit}
@@ -1340,34 +1262,23 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
                 />
               ))}
-          {otherStatusesShown ? (
-            <OtherStatusesGroup
-              issues={orphanIssues}
+          {outsideShown ? (
+            <OutsideWorkflowGroup
+              columns={columns}
+              issues={outsideIssues}
               onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
               userById={userById}
-              workflows={workflows}
             />
           ) : null}
         </section>
         <DragOverlay dropAnimation={null} zIndex={1000}>
           {activeIssue ? (
             <div className="issue-card drag-overlay-card">
-              <IssueCardContent issue={activeIssue} user={activeIssue.assigneeId ? userById.get(activeIssue.assigneeId) : null} />
+              <IssueCardContent issue={activeIssue} userById={userById} />
             </div>
           ) : null}
         </DragOverlay>
       </DndContext>
-
-      {serverSearchEnabled ? (
-        <SearchHitsGroup
-          error={searchUnread.unanswered ? searchUnread.error : null}
-          hits={extraHits}
-          loading={searchQuery.isFetching && !searchQuery.data}
-          projectId={projectId}
-          query={debouncedQuery}
-          userById={userById}
-        />
-      ) : null}
 
       {issueId ? (
         // One frame for every state of the panel (TAS-380, art-director's
@@ -1430,9 +1341,8 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           projectKey={project?.projectKey ?? ""}
           projectColor={project?.color}
           onClose={() => setManagingLabels(false)}
-          // A filter pointing at a label that no longer exists would ask the
-          // gateway for the issues of a deleted label and get an empty board
-          // back — an answer indistinguishable from "nothing carries it".
+          // A filter pointing at a label that no longer exists would match
+          // nothing, and an empty board under it reads as "nothing carries it".
           onLabelDeleted={(labelId) => setLabelFilter((current) => (current === labelId ? "ALL" : current))}
         />
       ) : null}
@@ -1538,11 +1448,53 @@ function knownKey(value: unknown): string | undefined {
  * what the centred alignment's formula in the stylesheet reads. Strings, so
  * React writes them as they are rather than guessing at a unit.
  */
-function boardColumnCounts(workflowColumns: number, otherStatusesShown: boolean): CSSProperties {
+function boardColumnCounts(boardColumns: number, outsideShown: boolean): CSSProperties {
   return {
-    "--board-cols": String(workflowColumns),
-    "--board-cols-all": String(workflowColumns + (otherStatusesShown ? 1 : 0)),
+    "--board-cols": String(boardColumns),
+    "--board-cols-all": String(boardColumns + (outsideShown ? 1 : 0)),
   } as CSSProperties;
+}
+
+/** What a column is drawn from: a board column's status, or a predicted one (§4.9). */
+type ColumnStatus = Pick<BoardColumnData, "statusKey" | "name" | "category" | "sortOrder">;
+
+/**
+ * `board` with the card `issueId` moved to `statusKey`: out of wherever it is,
+ * into that column at the place `compareBoardIssues` gives it — the server's
+ * order (§5.3) — with `updatedAt` stamped. A board with no such card, or no
+ * such column, is answered unchanged.
+ */
+function moveCard(board: Board, issueId: string, statusKey: string, updatedAt: string): Board {
+  const card = [...board.columns.flatMap((column) => column.issues), ...board.unplacedIssues].find(
+    (issue) => issue.id === issueId,
+  );
+  if (!card || !board.columns.some((column) => column.statusKey === statusKey)) return board;
+  const moved: BoardIssue = { ...card, statusKey, updatedAt };
+  return {
+    ...board,
+    columns: board.columns.map((column) => {
+      const issues = column.issues.filter((issue) => issue.id !== issueId);
+      return column.statusKey === statusKey
+        ? { ...column, issues: [...issues, moved].sort(compareBoardIssues) }
+        : issues.length === column.issues.length
+          ? column
+          : { ...column, issues };
+    }),
+    unplacedIssues: board.unplacedIssues.filter((issue) => issue.id !== issueId),
+  };
+}
+
+/** `board` without the card `issueId`, wherever it stood. */
+function withoutCard(board: Board, issueId: string): Board {
+  return {
+    ...board,
+    columns: board.columns.map((column) =>
+      column.issues.some((issue) => issue.id === issueId)
+        ? { ...column, issues: column.issues.filter((issue) => issue.id !== issueId) }
+        : column,
+    ),
+    unplacedIssues: board.unplacedIssues.filter((issue) => issue.id !== issueId),
+  };
 }
 
 /**
@@ -1556,12 +1508,11 @@ function isIssueGone(error: unknown): boolean {
 }
 
 /**
- * The columns to draw before the workflow has been read, and after a read that
- * failed. These are safe to invent because they are not inventions: the three
- * keys are `IssueStatus` from the contract, and most issues carry one of them.
- * One that carries anything else goes to the "Other statuses" group rather
- * than into a column it is not in (TAS-173). Only the labels and the order are
- * ours.
+ * The predicted columns of last resort (§4.9): before the context and the
+ * board have answered, and after both failed. Skeletons and "Not loaded"
+ * columns only — never a place a card is put, since every card is placed by
+ * the board read. The three keys are `IssueStatus` from the contract; only the
+ * labels and the order are ours.
  *
  * There is deliberately no matching `fallbackTransitions` any more. It used to
  * sit beside this and carry four ids copied from the mock's seed, which the
@@ -1588,11 +1539,11 @@ function BoardColumn({
   onAdd,
   onOpenIssue,
 }: {
-  status: WorkflowStatus;
-  issues: Issue[];
-  /** The issue list never arrived: this column knows nothing about its contents. */
+  status: ColumnStatus;
+  issues: BoardIssue[];
+  /** The board read never arrived: this column knows nothing about its contents. */
   issuesUnknown: boolean;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
+  userById: ReadonlyMap<string, Person>;
   canEdit: boolean;
   /** `canEdit`, and a project that allows at least one issue type. */
   canCreate: boolean;
@@ -1630,12 +1581,7 @@ function BoardColumn({
             key={issue.id}
             resetKey={issue}
           >
-            <IssueCard
-              issue={issue}
-              user={issue.assigneeId ? userById.get(issue.assigneeId) : null}
-              canEdit={canEdit}
-              onOpen={onOpenIssue}
-            />
+            <IssueCard issue={issue} userById={userById} canEdit={canEdit} onOpen={onOpenIssue} />
           </ErrorBoundary>
         ))}
         {/* Three different empty columns. A column whose contents are unknown
@@ -1669,29 +1615,30 @@ function StatusDot({ status }: { status: Pick<WorkflowStatus, "statusKey" | "cat
 }
 
 /**
- * The issues no column holds (TAS-173, art-director's ruling 3): one trailing
- * group after the last column, never a column per status — a status that is in
- * no workflow is not a place an issue can be moved to, so this is the §9
- * `plain` variant with no dot and no "+", and it is not a drop target. Its
- * cards do not lift for anyone; they open the issue, whose panel says why no
- * move is offered. Each card names its status in the footer, since the group
- * heading cannot.
+ * «Outside their workflow» (§4.9, TAS-173, TAS-202): exactly the board read's
+ * `unplacedIssues` — the issues whose status is not in their own type's
+ * workflow, even where it stands as a column for another type. One trailing
+ * group after the last column, never a column per status: §9's `plain`
+ * variant with no dot and no "+", and not a drop target. Its cards do not lift
+ * for anyone; they open the issue, whose panel says why no move is offered.
+ * Each card names its status in the footer, since the group heading cannot —
+ * by the column of that key on this board when there is one, else by §6.
  */
-function OtherStatusesGroup({
+function OutsideWorkflowGroup({
+  columns,
   issues,
   userById,
-  workflows,
   onOpenIssue,
 }: {
-  issues: Issue[];
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
-  workflows?: WorkflowsByIssueType;
+  columns: readonly ColumnStatus[];
+  issues: BoardIssue[];
+  userById: ReadonlyMap<string, Person>;
   onOpenIssue: (issueId: string) => void;
 }) {
   return (
-    <section aria-label="Other statuses" className="board-column is-plain other-statuses">
+    <section aria-label="Outside their workflow" className="board-column is-plain other-statuses">
       <div className="column-head">
-        <strong>Other statuses</strong>
+        <strong>Outside their workflow</strong>
         <span className="count-pill">{issues.length}</span>
       </div>
       <div className="issue-list">
@@ -1705,8 +1652,8 @@ function OtherStatusesGroup({
               canEdit={false}
               issue={issue}
               onOpen={onOpenIssue}
-              statusNote={statusLabel(issue.status, workflowFor(workflows, issue.issueType)?.statuses)}
-              user={issue.assigneeId ? userById.get(issue.assigneeId) : null}
+              statusNote={statusLabel(issue.statusKey, columns)}
+              userById={userById}
             />
           </ErrorBoundary>
         ))}
@@ -1723,7 +1670,7 @@ function OtherStatusesGroup({
  * does not lift; the boundary tries the real card again when the issue's data
  * changes.
  */
-function IssueCardFailure({ issue, onOpen }: { issue: Pick<Issue, "id" | "issueKey">; onOpen: (issueId: string) => void }) {
+function IssueCardFailure({ issue, onOpen }: { issue: Pick<BoardIssue, "id" | "issueKey">; onOpen: (issueId: string) => void }) {
   return (
     <button
       className="issue-card is-static issue-card-failure"
@@ -1739,13 +1686,13 @@ function IssueCardFailure({ issue, onOpen }: { issue: Pick<Issue, "id" | "issueK
 
 function IssueCard({
   issue,
-  user,
+  userById,
   canEdit,
   onOpen,
   statusNote,
 }: {
-  issue: Issue;
-  user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
+  issue: BoardIssue;
+  userById: ReadonlyMap<string, Person>;
   canEdit: boolean;
   onOpen: (issueId: string) => void;
   /** The status in words, beside the date — for a card that sits in no column of its status. */
@@ -1771,18 +1718,48 @@ function IssueCard({
       {...(canEdit ? listeners : null)}
       {...(canEdit ? attributes : null)}
     >
-      <IssueCardContent issue={issue} statusNote={statusNote} user={user} />
+      <IssueCardContent issue={issue} statusNote={statusNote} userById={userById} />
     </button>
+  );
+}
+
+/**
+ * A card's face (§4.8, art-director's N3): the assignee the board read joined
+ * in, drawn from that answer — the name and the picture the server sent — with
+ * the colour of the context's member row of the same id when there is one, so
+ * a person's circle does not change colour between the card and the filter
+ * row; else the id's palette colour.
+ *
+ * An assignee the server could not name (`displayName: null`, backend A2) is
+ * still somebody: a filled circle in the id's palette, no initials, called
+ * "Unknown assignee" — never the dashed empty circle, which says nobody is
+ * assigned. No card is ever named from anywhere but the board read.
+ */
+function CardFace({ assignee, userById }: { assignee: BoardIssue["assignee"]; userById: ReadonlyMap<string, Person> }) {
+  if (!assignee) return <Avatar size="sm" />;
+  if (assignee.displayName === null) {
+    return <Avatar hideInitials label="Unknown assignee" size="sm" user={{ id: assignee.id, displayName: "Unknown assignee", avatarUrl: null }} />;
+  }
+  return (
+    <Avatar
+      size="sm"
+      user={{
+        id: assignee.id,
+        displayName: assignee.displayName,
+        color: userById.get(assignee.id)?.color,
+        avatarUrl: assignee.avatarUrl,
+      }}
+    />
   );
 }
 
 function IssueCardContent({
   issue,
-  user,
+  userById,
   statusNote,
 }: {
-  issue: Issue;
-  user?: Pick<User, "id" | "displayName" | "color" | "avatarUrl"> | null;
+  issue: BoardIssue;
+  userById: ReadonlyMap<string, Person>;
   statusNote?: string;
 }) {
   const served = useMeta()?.issueTypes;
@@ -1798,7 +1775,7 @@ function IssueCardContent({
         <PriorityBars priority={issue.priority} />
       </span>
       <strong>{issue.summary}</strong>
-      <p>{issue.description}</p>
+      <p>{issue.description ?? ""}</p>
       {issue.labels.length ? (
         <span className="issue-card-labels">
           {issue.labels.map((label) => (
@@ -1814,137 +1791,13 @@ function IssueCardContent({
             {formatDay(issue.createdAt)} · <span className="issue-card-status">{statusNote}</span>
           </span>
         )}
-        <Avatar user={user} size="sm" />
+        <CardFace assignee={issue.assignee} userById={userById} />
       </span>
     </>
   );
 }
 
-/**
- * What the server found that the columns above do not hold (DESIGN.md §5.4).
- *
- * Its own group, below the board and outside the `DndContext`, because a hit is
- * an `IssueSearchHit` and not an issue. It has carried a `statusKey` since
- * backend TAS-218, but no labels, no dates and no version, so a card built from
- * it in a column would draw less than its neighbours and could not be edited
- * like them; DESIGN.md §5.2 keeps hits out of the columns. So these rows do not
- * lift, do not drag, and say in words what they are.
- *
- * Four states, and they are four different sentences: a search still running, a
- * search that failed, a search that found nothing else, and the rows
- * themselves. The board's own filtered cards are on screen throughout — nothing
- * here blanks them, and there is no spinner over anything (§5.6).
- */
-function SearchHitsGroup({
-  error,
-  hits,
-  loading,
-  projectId,
-  query,
-  userById,
-}: {
-  error: Error | null;
-  hits: IssueSearchHit[];
-  loading: boolean;
-  projectId: string;
-  query: string;
-  userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
-}) {
-  return (
-    <section aria-label="Other matches from the server" className="search-hits">
-      {/* The heading explains the rows, so it comes with them. The other three
-          answers are one sentence each: a header over an empty group would be
-          a band of prose explaining nothing.
-
-          One sentence rather than two. The second used to explain *why* these
-          are not in a column — a design decision, told to a reader who did not
-          ask, in a paragraph that ran 188 characters and cost a phone 70px of
-          the group's whole budget before the first result. The heading and this
-          line carry what a reader needs; the reason lives in the comment above
-          this component. */}
-      {!error && !loading && hits.length > 0 ? (
-        <div className="search-hits-head">
-          <strong>More matches for “{query}”</strong>
-          <span>
-            Found by the server across the whole project: matches in descriptions, and issues beyond the page this board
-            loaded.
-          </span>
-        </div>
-      ) : null}
-
-      {error ? (
-        // Not "nothing else was found". A search that never answered is not an
-        // empty result, and the counter above says <Unknown /> for the same
-        // reason.
-        <ApiNotice error={error} live="polite">
-          The rest of this project could not be searched.
-        </ApiNotice>
-      ) : loading ? (
-        <p className="search-hits-state" role="status">
-          Searching the rest of this project for “{query}”…
-        </p>
-      ) : hits.length === 0 ? (
-        <p className="search-hits-state" role="status">
-          Nothing else in this project matches “{query}”.
-        </p>
-      ) : (
-        <ul className="search-hits-list">
-          {hits.map((hit) => {
-            const assignee = hit.assigneeId ? userById.get(hit.assigneeId) : null;
-            const to = `/projects/${projectId}/issues/${hit.id}`;
-            return (
-              <li key={hit.id}>
-                {/* One hit that cannot be drawn costs that card (TAS-173). */}
-                <ErrorBoundary
-                  fallback={() => (
-                    <Link className="search-hit search-hit-failure" to={to}>
-                      {typeof hit.issueKey === "string" && hit.issueKey ? (
-                        <span className="issue-key">{hit.issueKey}</span>
-                      ) : null}
-                      <span className="issue-card-failure-text">This card could not be shown.</span>
-                    </Link>
-                  )}
-                  resetKey={hit}
-                >
-                  {/* A link, not a button: it navigates and nothing about it
-                      drags, so it has to be middle-clickable and copyable like
-                      every other address in this app. */}
-                  <Link className="search-hit" to={to}>
-                    <span className="search-hit-meta">
-                      <TypeChip type={hit.issueType} />
-                      <span className="issue-key">{hit.issueKey}</span>
-                      <SearchHitTypeLabel type={hit.issueType} />
-                      <PriorityBars priority={hit.priority} />
-                    </span>
-                    <strong>{hit.summary}</strong>
-                    {/* Nothing a hit does not carry — no labels, no dates, because
-                        the server sent none of them. */}
-                    <span className="search-hit-foot">
-                      <Avatar user={assignee} size="sm" />
-                    </span>
-                  </Link>
-                </ErrorBoundary>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-/** A hit's type in words, by the one label rule. Its own component so it can read the dictionaries. */
-function SearchHitTypeLabel({ type }: { type: string }) {
-  const served = useMeta()?.issueTypes;
-  const name = issueTypeLabel(type, served);
-  return (
-    <span className="issue-type-label" title={name}>
-      {name}
-    </span>
-  );
-}
-
-function ColumnSkeleton({ status }: { status: WorkflowStatus }) {
+function ColumnSkeleton({ status }: { status: ColumnStatus }) {
   return (
     <div className="board-column">
       <div className="column-head">
@@ -2033,7 +1886,7 @@ function IssuePanelSkeleton() {
  * The panel when the issue it holds could not be drawn (TAS-173, art-director's
  * ruling 4), inside the same frame as every other state (TAS-380): the head
  * keeps its Close and shows only what is safe to read — the key, when the
- * panel's cache or the board's page holds it as a string. The sentence sits
+ * panel's cache or the board's read holds it as a string. The sentence sits
  * where §4.10's read failure sits, with the error's message as its detail.
  * Polite rather than an alert: the reader asked to open something, nothing
  * they did was refused.
@@ -2046,7 +1899,7 @@ function IssuePanelFailure({
 }: {
   error: Error;
   issueId: string;
-  /** The key off the board's page, if it holds this issue. */
+  /** The key off the board's read, if it holds this issue. */
   issueKey?: string;
   projectId: string;
 }) {
@@ -2086,7 +1939,7 @@ function IssuePanel({
 }: {
   projectId: string;
   issueId: string;
-  /** The key off the board's page, if it holds this issue: what the head shows when the read fails. */
+  /** The key off the board's read, if it holds this issue: what the head shows when the read fails. */
   boardIssueKey?: string;
   members: ProjectMember[];
   /**
@@ -2518,8 +2371,8 @@ function IssuePanel({
    *
    * A 404 is the issue already gone — deleted elsewhere in the meantime — and
    * takes the success path with its own sentence. Not `invalidateBoard`, and
-   * not here at all: the board removes the card and re-reads its list and its
-   * search, and this path deliberately leaves `["issue", projectId, issueId]`
+   * not here at all: the board removes the card and reads itself again, and
+   * this path deliberately leaves `["issue", projectId, issueId]`
    * alone, because this panel is still mounted for one more tick and a re-read
    * of the issue just deleted would put a 404 on screen on the way out.
    */
@@ -2550,10 +2403,9 @@ function IssuePanel({
       // was deleted — issue-service checks the role before the soft delete, in
       // one transaction with the history and outbox writes (backend PR #206,
       // TAS-300) — but a timeout, a 5xx or a dropped connection leaves the
-      // outcome unknown, so on any failure the list and the search — the two
-      // halves of the counter — are read again, as on success.
-      void queryClient.invalidateQueries({ queryKey: ["issues", projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["issue-search", projectId] });
+      // outcome unknown, so on any failure the board is read again, as on
+      // success.
+      void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
     },
     onSuccess: ({ alreadyGone }) => {
       const deleted = queryClient.getQueryData(issueKey)?.issue ?? issue;
@@ -2605,7 +2457,7 @@ function IssuePanel({
    * focus while the panel loads, so that first name is the one a screen reader
    * announces, and a later rename is not announced again. Loading: a skeleton
    * of the key beside the real Close. A read that failed: the key if the
-   * board's page holds it. Share and Delete only once the issue has loaded.
+   * board's read holds it. Share and Delete only once the issue has loaded.
    */
   const head = useIssuePanelHead({
     label: issue ? `${issue.issueKey} issue` : boardIssueKey ? `${boardIssueKey} issue` : "Issue",
@@ -3025,7 +2877,7 @@ function IssuePanel({
             <span className="transition-note">This issue has no status, so no move is offered.</span>
           ) : workflow && !workflowStatus ? (
             // A status the issue's own workflow does not list — the card sits
-            // in "Other statuses" — so no transition can start from it.
+            // in «Outside their workflow» — so no transition can start from it.
             <span className="transition-note">
               {statusName} is not in this project&rsquo;s {typeWord} workflow, so no move is offered.
             </span>
@@ -4301,12 +4153,15 @@ function IssueLabelsSection({
   const unavailable = labelsQuery.data === null;
   // The board's own context read, so the board, this picker and the manage
   // modal draw one list from one request (TAS-251) — the board behind the
-  // panel has already asked, and this observer only reads its answer.
+  // panel has already asked, and this observer only reads its answer — which
+  // `refetchOnMount: false` makes true past `staleTime` as well, so opening a
+  // panel does not read the context again (release-reviewer, TAS-202).
   const projectLabelsQuery = useQuery({
     queryKey: projectContextKey(projectId),
     queryFn: () => taskaApi.getProjectContext(projectId),
     retry: retryUnlessMissing,
     select: (context: ProjectContext) => context.labels,
+    refetchOnMount: false,
   });
 
   const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
@@ -4317,9 +4172,9 @@ function IssueLabelsSection({
   );
 
   // One write, two stale caches: the panel's issue, which carries this list,
-  // and the board cards that draw `issue.labels` from the list read behind them.
+  // and the board cards that draw their labels from the board read behind them.
   const settle = () =>
-    Promise.all([labelsCache.settle(), queryClient.invalidateQueries({ queryKey: ["issues", projectId] })]);
+    Promise.all([labelsCache.settle(), queryClient.invalidateQueries({ queryKey: boardKey(projectId) })]);
 
   const addLabel = useMutation({
     mutationFn: (labelId: string) => taskaApi.addIssueLabel(projectId, issueId, labelId),
@@ -4500,21 +4355,25 @@ function IssueLinksSection({
   // Refused before the request goes out; the server stays the authority.
   const [localError, setLocalError] = useState<string | null>(null);
 
-  // Its own read of the project, deliberately not the board's page behind the
-  // panel. Since TAS-169 the board's key carries its label filter and the
-  // server applies it, so borrowing that page would let a filter decide which
-  // issues may be linked to and turn every existing link pointing outside it
-  // into a bare id. `"ALL"` is the *same cache entry* the board already holds
-  // whenever no filter is set, so this costs nothing in the common case and
-  // one extra read only while a filter is on and a panel is open. The page is
-  // still a page: an issue beyond `pageSize` resolves to its id (see the row
-  // below), which is the honest answer on a project this large.
-  const projectIssuesQuery = useQuery({
-    queryKey: ["issues", projectId, "ALL"],
-    queryFn: () => taskaApi.listIssues(projectId, { pageSize: 100 }),
-    retry: retryUnlessMissing,
-  });
-  const issues = useMemo(() => projectIssuesQuery.data?.items ?? [], [projectIssuesQuery.data]);
+  // The board's own read behind the panel (TAS-202): one cache entry, and no
+  // filter is in it — the board filters locally — so every issue of the board
+  // may be linked to, whatever the bar shows. It costs nothing: the board has
+  // already asked. The read is complete, so an issue missing from it is one of
+  // a type the board does not read (backend A4) or of another project, and
+  // its row resolves to the server's own `target` or to its id.
+  //
+  // `refetchOnMount: false`: opening a panel past `staleTime` must not read the
+  // whole board again for a picker (release-reviewer, TAS-202). This observer
+  // takes whatever board the screen holds; the screen's own read, the reader's
+  // writes and the focus policy are what keep it current.
+  const projectIssuesQuery = useQuery({ ...boardQueryOptions(projectId), refetchOnMount: false });
+  const issues = useMemo(
+    () =>
+      projectIssuesQuery.data
+        ? [...projectIssuesQuery.data.columns.flatMap((column) => column.issues), ...projectIssuesQuery.data.unplacedIssues]
+        : [],
+    [projectIssuesQuery.data],
+  );
 
   const linksCache = issuePartCache(queryClient, projectId, issueId, "links");
   const linksQuery = useIssuePart(projectId, issueId, "links");
@@ -4688,7 +4547,7 @@ function IssueLinksSection({
                 >
                   <span className="issue-link-relation">{issueLinkTypeLabel(link.viewLinkType, meta?.linkViewTypes)}</span>
                   {/* The key is what a person recognises; an issue outside the
-                      loaded page has none, and its raw id is still truer than a
+                      board's read has none, and its raw id is still truer than a
                       blank row — it just has to be allowed to ellipsize. */}
                   <span className={`issue-key ${other ? "" : "is-unresolved"}`}>
                     {other?.issueKey ?? otherId}
@@ -6072,13 +5931,13 @@ function ProjectLabelsModal({
 
   // A rename or a recolour changes every chip drawn from these labels, and a
   // delete takes the label off every issue that carried it (the contract's
-  // soft delete), so the issue lists and the board go with them.
+  // soft delete), so the issue reads and the board go with them.
   const settle = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: labelsKey }),
       // The open panel's chips come from its issue read since TAS-246.
       queryClient.invalidateQueries({ queryKey: ["issue", projectId] }),
-      queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
+      queryClient.invalidateQueries({ queryKey: boardKey(projectId) }),
     ]);
 
   const createLabel = useMutation({
@@ -6153,6 +6012,36 @@ function ProjectLabelsModal({
    * says nothing about the archive, and the line stays.
    */
   const archiveRefused = isProjectArchived(failure);
+
+  /**
+   * Where focus goes when the archive takes the control that had it (§5.7):
+   * this dialog's `PROJECT_ARCHIVED` refusal, else its line — placed here, as
+   * Edit project places its own, and not left to the board's archive effect
+   * alone. That effect runs once, on the turn, and this dialog can change
+   * after it: every write here settles by re-reading the context and the
+   * board *before* its refusal is dispatched (`settle` is `onSettled`, which
+   * the mutation awaits), so a context answer that renders first turns the
+   * dialog read-only with the line, the board's effect focuses the line, and
+   * the refusal that lands with the board's answer then takes the line's place
+   * — and the focus with it, to `<body>` under the scrim (the PR #103 CI
+   * failure: context and board are two reads, and either may answer first).
+   *
+   * Only focus that was lost, and only once archived: a reader still in an
+   * open rename keeps their place, and before the turn the form is still there
+   * to be in.
+   */
+  const refusalRef = useRef<HTMLDivElement>(null);
+  const lineRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (!archived) return;
+    const target = archiveRefused ? refusalRef.current : lineRef.current;
+    if (!target) return;
+    const active = document.activeElement;
+    const lost =
+      !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
+    if (lost) target.focus();
+  }, [archived, archiveRefused]);
+
   const trimmed = name.trim();
   const badge = keyBadgeStyle(projectKey, projectColor);
 
@@ -6179,7 +6068,7 @@ function ProjectLabelsModal({
         // line stays — here, where the form stood, above it. A place focus is
         // put, never a Tab stop — see the board's archive effect.
         archiveRefused ? null : (
-          <p className="modal-archive-note" data-archive-note="modal" tabIndex={-1}>
+          <p className="modal-archive-note" data-archive-note="modal" ref={lineRef} tabIndex={-1}>
             This project is archived, so its labels cannot be changed.
           </p>
         )
@@ -6220,7 +6109,11 @@ function ProjectLabelsModal({
         </form>
       )}
 
-      {error ? <ErrorNote archiveNote={archiveRefused}>{error}</ErrorNote> : null}
+      {error ? (
+        <ErrorNote archiveNote={archiveRefused} ref={refusalRef}>
+          {error}
+        </ErrorNote>
+      ) : null}
 
       {labelsQuery.isPending ? <p className="issue-links-empty">Loading labels</p> : null}
       {labelsQuery.isSuccess && labels.length === 0 ? (
@@ -7119,29 +7012,26 @@ function sentWithoutStatuses(workflow: ProjectWorkflow) {
 }
 
 /**
- * The board's columns: every status of every workflow the context sent, once
- * each, in `sortOrder`. Walks the types the project allows in the order the
- * board offers them (`allowedIssueTypes`), which includes a type this build has
- * no name for (TAS-173) — walking only the three it knows is how an unknown
- * type's workflow never became columns.
+ * The columns predicted from the context, for the skeleton and for a board
+ * read that failed (§4.9) — never for placing a card. The server's own rule
+ * (`BoardServiceImpl.mergeStatusesByKey`): every status of every workflow, the
+ * first type to state a key winning, walked in the order the board offers the
+ * types (`allowedIssueTypes`), then sorted stably by `sortOrder`. A type this
+ * build has no name for is walked too (TAS-173); where the board read differs
+ * — it reads TASK, BUG and STORY only (backend A4) — its answer replaces this
+ * once, like "3 → N" in §5.2.
  */
-function mergeWorkflowStatuses(workflows: WorkflowsByIssueType | undefined, issueTypes: readonly IssueTypeCode[]) {
+function predictColumns(workflows: WorkflowsByIssueType | undefined, issueTypes: readonly IssueTypeCode[]): ColumnStatus[] {
   if (!workflows) return fallbackStatuses;
 
   const statusByKey = new Map<string, WorkflowStatus>();
   issueTypes.forEach((issueType) => {
     workflowFor(workflows, issueType)?.statuses.forEach((status) => {
-      const current = statusByKey.get(status.statusKey);
-      if (!current || status.sortOrder < current.sortOrder) {
-        statusByKey.set(status.statusKey, status);
-      }
+      if (!statusByKey.has(status.statusKey)) statusByKey.set(status.statusKey, status);
     });
   });
 
-  // A project that allows no issue type sends no workflow at all, and its
-  // issues — created before the types were taken away — still need columns.
-  // The fallback's keys are the contract's statuses, and nothing can be moved
-  // between them: the drop path refuses a type with no workflow.
+  // A project that allows no issue type sends no workflow at all.
   if (statusByKey.size === 0) return fallbackStatuses;
   return [...statusByKey.values()].sort((a, b) => a.sortOrder - b.sortOrder);
 }
@@ -7267,7 +7157,7 @@ function writeFailureText(error: Error, sent: UpdateIssueInput | undefined): str
 
 async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, projectId: string) {
   await Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["issues", projectId] }),
+    queryClient.invalidateQueries({ queryKey: boardKey(projectId) }),
     // Every issue read of the project, the open one among them. Since TAS-246
     // an issue read carries its links, and a link row prints the other end's
     // key, summary and status (`LinkedIssue`) — so an edit or a move of one
@@ -7283,18 +7173,9 @@ async function invalidateBoard(queryClient: ReturnType<typeof useQueryClient>, p
     // pinned in IssuePanelRequests.test.tsx.
     queryClient.invalidateQueries({ queryKey: ["issue", projectId] }),
     queryClient.invalidateQueries({ queryKey: ["notifications"] }),
-    // The bare prefix, deliberately: it catches the board's own search — whose
-    // key carries the query text and the active filters — and the top bar's
-    // global one, which has no `projectId` in it at all and can therefore be
-    // changed by a mutation in any project.
-    //
-    // Without this the two halves of "X of Y" come from different moments. X is
-    // read live off the issues query, which every caller here invalidates; Y is
-    // `totalCount` off a search answer nothing invalidated, held for
-    // `staleTime` (src/main.tsx) and keyed by a query string the reader has not
-    // changed — so re-typing the same query cannot correct it either. Measured
-    // against the mock: creating a matching issue printed "2 of 1" and still
-    // said "2 of 1" four seconds later.
+    // The top bar's search (`GlobalSearch`), whose key has no `projectId` in
+    // it and whose hits a write in any project can change. Only re-read while
+    // it is open; the board itself has no search layer since TAS-202.
     queryClient.invalidateQueries({ queryKey: ["issue-search"] }),
   ]);
 }

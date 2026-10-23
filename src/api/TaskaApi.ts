@@ -41,6 +41,7 @@ import type {
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
+  ProjectStats,
   ProjectWorkflowEntry,
   TelegramLink,
   UnwatchIssueResult,
@@ -195,33 +196,33 @@ export interface ListIssuesParams {
 }
 
 /**
- * Everything `GET /projects/{projectId}/board` takes, all AND-combined by the
- * server.
+ * Everything `GET /projects/{projectId}/board` takes since backend #205
+ * (TAS-213): six filters, every one optional and all ANDed by the server.
  *
- * `issueType` is **required and has no default**, because the route requires it:
- * a board is one issue type's board, and the gateway answers `400` when the
- * parameter is missing. There is deliberately no `ALL` — the contract's enum is
- * `TASK | BUG | STORY`, and `EPIC` and `SUBTASK` were both `400 INVALID_ARGUMENT`
- * (measured 2026-09-09). The type is open anyway (TAS-173): the codes a caller
- * holds are the ones a project context sent, and the server stays the judge of
- * them.
+ * Without `issueType` the board is about TASK, BUG and STORY together (see
+ * `Board`); with it, about that one type. `assigneeId`, `labelId` and
+ * `priority` narrow the issues and never the columns. `query` is a literal,
+ * case-insensitive substring over the key, the summary and the description,
+ * `minLength: 1` in the contract — a blank one is not sent.
  *
- * `assigneeId` and `labelId` filter server-side, and an id nobody holds is a
- * `200` with every column empty rather than an error.
+ * `includeDone` filters **issues, not columns**: omitted or `false`, the
+ * issues whose status the workflow of their own type files under the `DONE`
+ * category are left out while the columns stay. The board screen always sends
+ * `true` (TAS-202): `false` would empty every done column of a board that is
+ * meant to be complete. `false` and `undefined` are the same request, which is
+ * why the implementations send the parameter only when it is `true`.
  *
- * `includeDone` filters **issues, not columns**: omitted or `false`, every
- * column of the workflow's `DONE` category still arrives with an empty
- * `issues` array. Since backend #202 (TAS-241, develop `e8a8d316b326`) the
- * gateway reads the workflow first and excludes the status keys whose
- * `category` is `DONE` — whatever they are called — and a workflow with no
- * such status excludes nothing. `false` and `undefined` are the same request,
- * which is why the implementations send the parameter only when it is `true`.
+ * The board screen sends `includeDone` and nothing else: its four filters are
+ * local over the complete read (DESIGN.md §5.4) until the route pages (backend
+ * A3).
  */
 export interface BoardParams {
-  issueType: IssueTypeCode;
+  issueType?: IssueTypeCode;
   assigneeId?: string;
   labelId?: string;
   includeDone?: boolean;
+  priority?: IssuePriorityCode;
+  query?: string;
 }
 
 /**
@@ -693,7 +694,7 @@ export interface WorkflowTransitionInput {
  * `CreateWorkflowRequestDto` (backend PR #208). The server checks no minimum —
  * a workflow with no status or no visible transition is accepted and then makes
  * the project context answer 404, and one with no `TODO` puts new issues of its
- * types in Other statuses (docs/ai/API-DIVERGENCE.md) — so the one caller sends
+ * types outside their workflow on the board (docs/ai/API-DIVERGENCE.md) — so the one caller sends
  * a verbatim copy of the shared default.
  */
 export interface CreateProjectWorkflowInput {
@@ -1110,29 +1111,44 @@ export interface TaskaApi {
 
   listIssues(projectId: string, params?: ListIssuesParams): Promise<Page<Issue>>;
   /**
-   * `GET /projects/{projectId}/board` — the server's own grouping of one issue
-   * type's issues into the project workflow's columns, ordered by the
-   * workflow's `sortOrder`.
+   * `GET /projects/{projectId}/board` — the board screen's one issue read since
+   * TAS-202 (backend #205, TAS-213): the columns, the issues placed in them and
+   * the issues outside their own type's workflow (`Board`).
    *
-   * **The board screen does not call this yet**, and that is not an oversight:
-   * `BoardIssueDto` carries six fields, while a card in DESIGN.md §4.8 draws a
-   * priority indicator, a type chip and label chips with their names and
-   * colours — none of which this route sends. Until the DTO grows them, the
-   * screen keeps building its columns from the project context's workflow and
-   * `listIssues`, which do carry them, and this method is the contract-shaped
-   * read that replaces that pair the day it can (TAS-191).
+   * **Complete and unbounded.** The route has no paging and no cap, so the
+   * answer holds every issue of the three types the gateway reads — which is
+   * what lets the board filter locally and count `Y` from it (backend A3 is the
+   * day that changes).
    *
-   * A workflow that does not list a status one of its own issues is sitting in
-   * is a 500 coded `INTERNAL_SERVER_ERROR` — the gateway's `BoardServiceImpl`
-   * throws "Inconsistent state: issues found with statuses not present in
-   * workflow" — and the mock reproduces it rather than dropping the card,
-   * because a silently missing issue is the one failure a board cannot show.
-   * There is no exception for a stray issue in a status keyed `DONE` since
-   * backend #202: `includeDone` off excludes only the keys the workflow files
-   * under the `DONE` category, so a key the workflow does not list is never
-   * among them and reaches the check whatever the flag says.
+   * Order inside a column, as read from the merged Java and not stated by the
+   * contract: grouped by type — TASK, BUG, STORY — and by `createdAt` ascending
+   * inside each, with no tiebreak (backend A1). `compareBoardIssues`
+   * (src/api/boardOrder.ts) is that order, with `id` as the tiebreak the server
+   * lacks; the mock sorts with it and the board's optimistic move places a card
+   * with it.
+   *
+   * Enrichment fails silently on the server (backend A2): a label read that
+   * fails sends every card's `labels` as `[]`, and a profile read that fails
+   * sends every `assignee.displayName` as `null`, with a 200 either way.
+   *
+   * Access: a missing project is 404 "Project not found", then a reader who is
+   * not a member is 403 "Access denied"; an archived project is read like any
+   * other.
    */
-  getBoard(projectId: string, params: BoardParams): Promise<Board>;
+  getBoard(projectId: string, params?: BoardParams): Promise<Board>;
+  /**
+   * `GET /project-stats` (backend TAS-211): one entry per project the reader
+   * lists — the projects of `GET /projects`, archived ones left out — with its
+   * issue count, member count and first five members (`ProjectStats`).
+   *
+   * What the contract does not say, read from the merged Java: the order
+   * follows `GET /projects`; a project whose membership vanished between the
+   * two internal calls is dropped rather than zeroed, so a listed project can
+   * be missing; and the read is all or nothing — any failure is the whole
+   * answer's, with the gateway's `{code, message, requestId}`. An empty list is
+   * `{items: []}`.
+   */
+  getProjectStats(): Promise<ProjectStats[]>;
   /**
    * `GET /issues/search` — substring, case-insensitive, over `issueKey` OR
    * `summary` OR `description`, with every other parameter ANDed onto it.

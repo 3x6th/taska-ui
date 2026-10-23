@@ -6,9 +6,10 @@ import { expect, test, type Page } from "@playwright/test";
  * and what each does to the board and the issue panel.
  *
  * Mock-backed like every spec here (playwright.config.ts): any seeded user
- * signs in with any password. Taska Platform's board has three workflow
- * columns and no "Other statuses"; Web App's has four and the group, which a
- * Bug filter takes away (`unknown-values.spec.ts`).
+ * signs in with any password. Taska Platform's board has three columns and no
+ * "Outside their workflow"; Web App's has three and the group, which a Bug
+ * filter takes away (`unknown-values.spec.ts`). Since TAS-202 the columns are
+ * the board read's, which leaves the epic's In Review out (backend A4).
  */
 
 async function signIn(page: Page) {
@@ -129,34 +130,41 @@ test.describe("on a wide screen", () => {
     expect(back.x).toBeCloseTo(18, 0);
   });
 
-  test("hangs Other statuses to the right of the workflow columns, moving them only to keep it on screen", async ({
+  test("hangs «Outside their workflow» to the right of the columns, moving them only to keep it on screen", async ({
     page,
   }) => {
     await signIn(page);
     await openBoard(page, "Web App");
-    const others = page.getByRole("region", { name: "Other statuses" });
+    const others = page.getByRole("region", { name: "Outside their workflow" });
     await expect(others).toBeVisible();
-    const workflow = page.locator(".columns-area > .board-column:not(.other-statuses)");
-    await expect(workflow).toHaveCount(4);
+    const columns = page.locator(".columns-area > .board-column:not(.other-statuses)");
+    await expect(columns).toHaveCount(3);
 
-    // The formula of art-director's ruling 2, at 1920: four columns of flow,
-    // five with the group.
-    const flow = 4 * 312 + 3 * 14;
-    const all = 5 * 312 + 4 * 14;
-    const withGroup = Math.max(18, Math.min((1920 - flow) / 2, 1920 - all - 18));
-    const withoutGroup = Math.max(18, (1920 - flow) / 2);
-    expect((await workflow.first().boundingBox())!.x).toBeCloseTo(withGroup, 0);
-    const lastWorkflow = (await workflow.last().boundingBox())!;
+    // The formula of art-director's ruling 2: three columns of flow, four with
+    // the group. At 1920 there is room, so the group hangs off the centred
+    // columns and moves nothing.
+    const flow = 3 * 312 + 2 * 14;
+    const all = 4 * 312 + 3 * 14;
+    const placed = (width: number, group: boolean) =>
+      group ? Math.max(18, Math.min((width - flow) / 2, width - all - 18)) : Math.max(18, (width - flow) / 2);
+    expect((await columns.first().boundingBox())!.x).toBeCloseTo(placed(1920, true), 0);
+    expect(placed(1920, true)).toBeCloseTo(placed(1920, false), 0);
+    const last = (await columns.last().boundingBox())!;
     const group = (await others.boundingBox())!;
-    expect(group.x).toBeCloseTo(lastWorkflow.x + 312 + 14, 0);
+    expect(group.x).toBeCloseTo(last.x + 312 + 14, 0);
     expect(group.x + group.width).toBeLessThanOrEqual(1920 - 18 + 0.5);
 
-    // The group goes with a Bug filter; the columns move by what the group had
-    // pushed them, and no further.
+    // At 1440 there is not: the columns move left by exactly what keeps the
+    // group on screen, and come back by that much when a Bug filter takes the
+    // group away.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect.poll(async () => (await columns.first().boundingBox())!.x).toBeCloseTo(placed(1440, true), 0);
+    const group1440 = (await others.boundingBox())!;
+    expect(group1440.x + group1440.width).toBeCloseTo(1440 - 18, 0);
     await page.locator(".filterbar .segmented").getByRole("button", { name: "Bug" }).click();
     await expect(others).toHaveCount(0);
-    expect((await workflow.first().boundingBox())!.x).toBeCloseTo(withoutGroup, 0);
-    expect(withoutGroup - withGroup).toBeCloseTo(29, 0);
+    expect((await columns.first().boundingBox())!.x).toBeCloseTo(placed(1440, false), 0);
+    expect(placed(1440, false) - placed(1440, true)).toBeCloseTo(106, 0);
   });
 });
 

@@ -119,8 +119,11 @@ function renderDialog(project: Project, onArchived?: (archivedAt: string) => voi
   const other: Project = { ...project, id: "project-2", projectKey: "WEB", name: "Web App" };
   queryClient.setQueryData<Project[]>(["projects"], [project, other]);
   queryClient.setQueryData(projectContextKey(project.id), { project, role: "ADMIN" } as unknown as ProjectContext);
-  queryClient.setQueryData(["issues", project.id, "ALL"], { items: [], page: 0, pageSize: 100, totalCount: 0 });
-  queryClient.setQueryData(["project-summaries", project.id], { count: 3, members: [], failure: null });
+  queryClient.setQueryData(["board", project.id], { projectId: project.id, columns: [], unplacedIssues: [] });
+  queryClient.setQueryData(["project-stats"], [
+    { projectId: project.id, issueCount: 3, memberCount: 1, members: [] },
+    { projectId: other.id, issueCount: 5, memberCount: 2, members: [] },
+  ]);
   const onClose = vi.fn();
   render(
     <QueryClientProvider client={queryClient}>
@@ -415,9 +418,14 @@ describe("archiving a project from the dialog", () => {
     // `GET /projects` no longer lists it, so neither does the cache — no
     // archived row of our own making.
     expect(queryClient.getQueryData<Project[]>(["projects"])?.map((row) => row.id)).toEqual(["project-2"]);
-    expect(queryClient.getQueryData(["project-summaries", "project-1"])).toBeUndefined();
+    // Its card's entry leaves the stats answer, without a request; the
+    // others stay as they were.
+    expect(queryClient.getQueryData<{ projectId: string }[]>(["project-stats"])?.map((entry) => entry.projectId)).toEqual([
+      "project-2",
+    ]);
+    expect(queryClient.getQueryState(["project-stats"])?.isInvalidated).toBe(false);
     // An archived project's reads stay open, so the board keeps what it holds.
-    expect(queryClient.getQueryData(["issues", "project-1", "ALL"])).toBeDefined();
+    expect(queryClient.getQueryData(["board", "project-1"])).toBeDefined();
     // And the context and the list go stale, to be read again by whoever
     // shows them — the board does at once — and agree with the server.
     expect(queryClient.getQueryState(projectContextKey("project-1"))?.isInvalidated).toBe(true);

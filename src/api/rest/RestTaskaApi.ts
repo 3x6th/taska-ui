@@ -90,6 +90,7 @@ import type {
   IssueAttachment,
   IssueComment,
   IssueLink,
+  IssuePriorityCode,
   IssueSearchHit,
   IssueTypeCode,
   IssueWatcher,
@@ -119,6 +120,7 @@ import type {
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
+  ProjectStats,
   TelegramLink,
   TelegramStatus,
   UnwatchIssueResult,
@@ -542,39 +544,39 @@ interface RestSearchIssuesResponse {
 }
 
 /**
- * `BoardUserDto`. `id` is the schema's one required property; `displayName` is
- * optional there and has been `null` on every assigned issue measured against
- * the deployed gateway (2026-09-09), so both spellings of "no name" arrive.
+ * `BoardUserDto`. `id` is the schema's one required property; `displayName`
+ * and `avatarUrl` are nullable, and the gateway leaves both unset when its
+ * profile read fails or does not know the id (`BoardServiceImpl.enrichIssue`,
+ * backend #205), so every spelling of "no name" arrives.
  */
 interface RestBoardUser {
-  id: string;
+  id?: string;
   displayName?: string | null;
+  avatarUrl?: string | null;
 }
 
 /**
- * `BoardIssueDto`. The three required properties are stated as required; the
- * other three are optional exactly as the schema has them.
+ * `BoardIssueDto` since backend #205 (TAS-213). Nine properties are required
+ * by the schema; every field is still read defensively below, because a
+ * malformed card has to be drawn as a card that could not be shown rather than
+ * fail the whole board with a `TypeError` carrying no code and no request id.
  *
- * `labels` is a list of **label ids** — `["760798da-9e59-4c54-aaac-4c93de82e68a"]`
- * on the deployed gateway, matching rows of `GET /projects/{id}/labels` — which
- * is why `toBoardIssue` renames it to `labelIds` rather than passing the wire's
- * own name through into the domain.
- *
- * `storyPoints` is declared `int32` and cannot arrive at all today:
- * `IssueBoardResponse` in the backend's `v1/issue-service.proto` has no
- * `story_points` field and `IssueMapper.toRestBoardIssue` never calls
- * `setStoryPoints`, so every board card is `null` by construction rather than
- * by estimate. The property is still typed as the schema declares it, and read
- * with `??` rather than `||` below, so that the day the field is filled a `0`
- * arrives as an estimate of nothing instead of as no estimate.
+ * `storyPoints`, `dueDate`, `commentCount` and `attachmentCount` are on the
+ * wire too and are not read: no screen draws them on a card (TAS-202).
  */
 interface RestBoardIssue {
   id: string;
   issueKey: string;
   summary: string;
-  storyPoints?: number | null;
+  issueType: IssueTypeCode;
+  priority: IssuePriorityCode;
+  statusKey: string;
+  description?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
   assignee?: RestBoardUser | null;
-  labels?: string[];
+  labels?: RestLabel[] | null;
 }
 
 /** `BoardColumnDto`. All five properties are in the schema's `required` block. */
@@ -587,16 +589,34 @@ interface RestBoardColumn {
 }
 
 /**
- * `BoardResponseDto`. All three properties are required by the schema and are
- * typed that way — and the two arrays are still read with `?? []` below, for
- * the same reason `RestSearchIssuesResponse` is: a missing array rejects with a
- * `TypeError` carrying no code and no request id, which reaches a caller as an
- * unreadable failure where an empty board was meant.
+ * `BoardResponseDto` since backend #205: `projectId`, `columns` and
+ * `unplacedIssues`, all three required — and the two arrays are still read
+ * with `?? []` below, for the same reason `RestSearchIssuesResponse` is: a
+ * missing array rejects with a `TypeError` carrying no code and no request id,
+ * which reaches a caller as an unreadable failure where an empty board was
+ * meant. The `issueType` echo the route answered with before #205 is gone.
  */
 interface RestBoardResponse {
   projectId: string;
-  issueType: IssueTypeCode;
   columns: RestBoardColumn[];
+  unplacedIssues?: RestBoardIssue[];
+}
+
+/**
+ * `ProjectStatsDto` (backend TAS-211). Every field is required by the schema
+ * and read as optional all the same: a count the wire did not carry becomes
+ * `null`, which a card draws as `Unknown`, never as `0`.
+ */
+interface RestProjectStats {
+  projectId?: string;
+  issueCount?: number | null;
+  memberCount?: number | null;
+  members?: RestProjectMember[] | null;
+}
+
+/** `ListProjectStatsDto`. */
+interface RestProjectStatsList {
+  items?: RestProjectStats[] | null;
 }
 
 /**
@@ -1356,26 +1376,45 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
-   * `GET /projects/{projectId}/board`, measured against the deployed gateway on
-   * 2026-09-09.
-   *
-   * `issueType` goes on every request because the route requires it. The two
-   * id filters go only when set — the server ANDs whatever it is given, and an
-   * empty value is not the same question as an absent one. `includeDone` goes
-   * only when it is `true`: `false` is the server's own default and the flag
-   * filters issues rather than columns, so sending `includeDone=false` in every
-   * URL would add a parameter that never changes an answer.
+   * `GET /projects/{projectId}/board` (backend #205, TAS-213). Every parameter
+   * is optional and goes only when it says something: an id filter only when
+   * set, `includeDone` only when `true` — `false` is the server's default, so
+   * sending it would add a parameter that never changes an answer — and `query`
+   * only when it is not blank, because the contract's `minLength: 1` refuses
+   * an empty one. The board screen sends `includeDone=true` and nothing else.
    */
-  async getBoard(projectId: string, params: BoardParams): Promise<Board> {
+  async getBoard(projectId: string, params: BoardParams = {}): Promise<Board> {
     const search = new URLSearchParams();
-    search.set("issueType", params.issueType);
+    if (params.issueType) search.set("issueType", params.issueType);
     if (params.assigneeId) search.set("assigneeId", params.assigneeId);
     if (params.labelId) search.set("labelId", params.labelId);
     if (params.includeDone) search.set("includeDone", "true");
+    if (params.priority) search.set("priority", params.priority);
+    if (params.query?.trim()) search.set("query", params.query);
     const response = await this.request<RestBoardResponse>(
       `/projects/${this.segment(projectId)}/board${this.query(search)}`,
     );
     return this.toBoard(response);
+  }
+
+  /**
+   * `GET /project-stats` (backend TAS-211). `items ?? []` like every other
+   * collection read here; members through `toProjectMember`, the mapper the
+   * member list uses, and **in the server's order** — the first five by
+   * `addedAt`, then `userId` — not re-sorted by name the way `listMembers` is:
+   * the card's faces are the server's first four. A count that is not a number
+   * is `null`, never `0`.
+   */
+  async getProjectStats(): Promise<ProjectStats[]> {
+    const response = await this.request<RestProjectStatsList>("/project-stats");
+    return (response.items ?? [])
+      .filter((entry) => typeof entry.projectId === "string" && entry.projectId !== "")
+      .map((entry) => ({
+        projectId: entry.projectId as string,
+        issueCount: typeof entry.issueCount === "number" ? entry.issueCount : null,
+        memberCount: typeof entry.memberCount === "number" ? entry.memberCount : null,
+        members: (entry.members ?? []).filter((member) => Boolean(member.userId)).map((member) => toProjectMember(member)),
+      }));
   }
 
   /**
@@ -2561,46 +2600,61 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
-   * `BoardResponseDto` → `Board`. The columns arrive in the workflow's own
-   * `sortOrder` — 10/20/30 for TODO/IN_PROGRESS/DONE on the deployed gateway —
-   * and are passed through in the order the server sent them rather than
-   * re-sorted here: the server decides the board's shape, and a client that
-   * quietly re-ordered would hide the day it stops agreeing.
+   * `BoardResponseDto` → `Board`. The columns and the cards inside them are
+   * passed through in the order the server sent them rather than re-sorted
+   * here: the server decides the board's shape, and a client that quietly
+   * re-ordered would hide the day it stops agreeing.
    */
   private toBoard(response: RestBoardResponse): Board {
     return {
       projectId: response.projectId,
-      issueType: response.issueType,
       columns: (response.columns ?? []).map((column) => ({
         statusKey: column.statusKey,
         name: column.name,
         category: column.category,
         sortOrder: column.sortOrder,
-        // Empty rather than absent is the ordinary case here: without
-        // `includeDone` every column of the workflow's DONE category arrives
-        // with no issues at all (backend #202).
         issues: (column.issues ?? []).map((issue) => this.toBoardIssue(issue)),
       })),
+      unplacedIssues: (response.unplacedIssues ?? []).map((issue) => this.toBoardIssue(issue)),
     };
   }
 
   /**
    * `BoardIssueDto` → `BoardIssue`, field by field like `toIssueSearchHit` and
    * for the same reason: a spread would widen a card the day the DTO grows a
-   * property, and the one thing this type must keep proving is that it carries
-   * no status, no priority and no project.
+   * property, and four of its properties are deliberately not read.
+   *
+   * Values pass through as sent — a card that cannot be drawn is the board's
+   * to contain (`IssueCardFailure`), not this mapper's to repair. Two
+   * normalisations only: a blank `displayName` is `null`, as on every other
+   * summary of a person (the gateway answers `""` when auth-service is down),
+   * and a label with no id is dropped, because a chip nobody can address is
+   * worse than no chip.
    */
   private toBoardIssue(issue: RestBoardIssue): BoardIssue {
+    const assignee = issue.assignee;
     return {
       id: issue.id,
       issueKey: issue.issueKey,
       summary: issue.summary,
-      // `??`, not `||`: an issue estimated at zero points has been estimated.
-      storyPoints: issue.storyPoints ?? null,
-      assignee: issue.assignee ? { id: issue.assignee.id, displayName: issue.assignee.displayName ?? null } : null,
-      // `labels` on the wire, ids in it. `[]` when the key is absent, so no
-      // caller has to ask whether the gateway sent the field.
-      labelIds: issue.labels ?? [],
+      issueType: issue.issueType,
+      priority: issue.priority,
+      statusKey: issue.statusKey,
+      description: issue.description ?? null,
+      createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
+      version: issue.version,
+      assignee:
+        assignee && typeof assignee.id === "string" && assignee.id !== ""
+          ? {
+              id: assignee.id,
+              displayName: assignee.displayName?.trim() ? assignee.displayName : null,
+              avatarUrl: assignee.avatarUrl || null,
+            }
+          : null,
+      labels: (Array.isArray(issue.labels) ? issue.labels : [])
+        .filter((label) => typeof label?.id === "string" && label.id !== "")
+        .map((label) => toLabel(label)),
     };
   }
 

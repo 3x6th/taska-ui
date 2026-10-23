@@ -3,7 +3,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isProjectArchived } from "../api/errors";
 import type { UpdateProjectInput } from "../api/TaskaApi";
-import type { Project, ProjectContext } from "../domain/types";
+import type { Project, ProjectContext, ProjectStats } from "../domain/types";
+import { PROJECT_STATS_KEY } from "../lib/boardQuery";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import { refusalWords } from "../lib/projectArchive";
 import { projectContextKey } from "../lib/projectContext";
@@ -219,7 +220,8 @@ export function EditProjectModal({
    * - only `archivedAt` is taken from the answer, into the board's context
    *   project if that is cached — never the role, which is the reads' to state;
    * - the row leaves `["projects"]`, because `GET /projects` no longer lists
-   *   it, and its card's counts (`["project-summaries", id]`) go with it;
+   *   it, and its card's entry leaves the stats answer (`["project-stats"]`) with
+   *   it — filtered out of the cache, not read again;
    * - the board's other queries are kept: an archived project's reads stay
    *   open (backend PR #159), so nothing here has gone stale except the
    *   project itself;
@@ -240,7 +242,9 @@ export function EditProjectModal({
         current ? { ...current, project: { ...current.project, archivedAt } } : current,
       );
       queryClient.setQueryData<Project[]>(["projects"], (current) => current?.filter((item) => item.id !== project.id));
-      queryClient.removeQueries({ queryKey: ["project-summaries", project.id], exact: true });
+      queryClient.setQueryData<ProjectStats[]>(PROJECT_STATS_KEY, (current) =>
+        current?.filter((entry) => entry.projectId !== project.id),
+      );
       onArchived?.(archivedAt);
       onClose();
       void queryClient.invalidateQueries({ queryKey: contextKey });

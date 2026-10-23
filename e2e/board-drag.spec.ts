@@ -58,12 +58,15 @@ async function dragCardTo(page: Page, card: Locator, target: Locator) {
  * - `drop-every-workflow` — the context answers without any issue type.
  * - `empty-every-workflow` — every workflow stays, with no statuses and no
  *   transitions: what the stand sent on 2026-10-15 (backend TAS-261).
+ * - `drop-moves-into-todo` — every workflow keeps its statuses and loses the
+ *   transitions that lead into `TODO`: a workflow with statuses and without
+ *   one particular move.
  * - `count-drop-moves` — how many drop moves the board has started. A drop
  *   that finds a transition calls `mutate` with `{ movedIssueId, nextStatus,
  *   transitionId }`, and only then does a mutation enter the cache, so zero
  *   means no transition request was even begun.
  */
-type QueryClientOp = "drop-every-workflow" | "empty-every-workflow" | "count-drop-moves";
+type QueryClientOp = "drop-every-workflow" | "empty-every-workflow" | "drop-moves-into-todo" | "count-drop-moves";
 
 /**
  * The mock seeds no board in these states, so the tests below reach the live
@@ -79,8 +82,12 @@ async function onQueryClient(page: Page, op: QueryClientOp): Promise<number> {
       alternate?: Fiber;
       memoizedProps?: { value?: unknown };
     }
+    interface Workflowish {
+      statuses: { id: string; statusKey: string }[];
+      transitions: { toStatusId: string }[];
+    }
     interface Queryish {
-      state: { data?: { workflows?: Record<string, object> } };
+      state: { data?: { workflows?: Record<string, Workflowish> } };
       setState: (state: unknown) => void;
     }
     interface QueryClientish {
@@ -113,10 +120,11 @@ async function onQueryClient(page: Page, op: QueryClientOp): Promise<number> {
             op === "drop-every-workflow"
               ? {}
               : Object.fromEntries(
-                  Object.entries(query.state.data?.workflows ?? {}).map(([type, workflow]) => [
-                    type,
-                    { ...workflow, statuses: [], transitions: [] },
-                  ]),
+                  Object.entries(query.state.data?.workflows ?? {}).map(([type, workflow]) => {
+                    if (op === "empty-every-workflow") return [type, { ...workflow, statuses: [], transitions: [] }];
+                    const todo = new Set(workflow.statuses.filter((status) => status.statusKey === "TODO").map((status) => status.id));
+                    return [type, { ...workflow, transitions: workflow.transitions.filter((move) => !todo.has(move.toStatusId)) }];
+                  }),
                 );
           query.setState({ ...query.state, data: { ...query.state.data, workflows }, dataUpdatedAt: Date.now() });
         }
@@ -174,6 +182,24 @@ test.describe("dragging a card with a mouse", () => {
       await inProgress.getByRole("button", { name: CARD }).click();
       await expect(page.getByRole("button", { name: "Complete" })).toBeVisible({ timeout: 1000 });
     }).toPass();
+  });
+
+  // §5.3, art-director's B1 (TAS-202): the column's order is the server's —
+  // TASK, BUG, STORY, each oldest first — and the dropped card goes where the
+  // server will put it, so the re-read after the move does not reorder it.
+  test("places a dropped card in the server's order, which the re-read keeps", async ({ page }) => {
+    await openBoard(page);
+    const done = column(page, "Done");
+    const keys = () => done.locator("button.issue-card .issue-key").allInnerTexts();
+    await expect.poll(keys).toEqual(["TAS-104", "TAS-109"]);
+
+    await dragCardTo(page, column(page, "In Progress").getByRole("button", { name: /TAS-107/ }), done);
+
+    // TAS-107 is a task created after TAS-104: after it, and before the story.
+    await expect.poll(keys).toEqual(["TAS-104", "TAS-107", "TAS-109"]);
+    await page.waitForLoadState("networkidle");
+    await page.waitForTimeout(500);
+    expect(await keys()).toEqual(["TAS-104", "TAS-107", "TAS-109"]);
   });
 
   test("leaves the card where it was when it is dropped outside every column", async ({ page }) => {
@@ -314,31 +340,26 @@ test.describe("a board whose workflow came without statuses", () => {
   test("still names the missing move when the workflow has statuses but not that transition", async ({ page }) => {
     // Since TAS-382 the mock's default workflow carries backend PR #208's six
     // transitions, which join every pair of its three statuses — so the
-    // missing move is found in WEB's EPIC workflow instead, untouched: WEB-15
-    // sits in its In Review, and nothing goes from there back to To Do.
-    await page.goto("/login");
-    await page.getByLabel("Email").fill("anna@example.com");
-    await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
-    await page.locator("form button[type=submit]").click();
-    await expect(page).toHaveURL(/\/projects$/);
-    await page.locator(".project-card", { hasText: "Web App" }).click();
-    await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
-    const EPIC = /WEB-15/;
+    // missing move is made here: every workflow keeps its statuses and loses
+    // the moves back into To Do.
+    await openBoard(page);
+    await onQueryClient(page, "drop-moves-into-todo");
+    const TASK = /TAS-107/;
+    const doing = column(page, "In Progress");
+    await expect(doing.getByRole("button", { name: TASK })).toBeVisible();
 
-    const review = column(page, "In Review");
-    await expect(review.getByRole("button", { name: EPIC })).toBeVisible();
-    await dragCardTo(page, review.getByRole("button", { name: EPIC }), column(page, "To Do"));
+    await dragCardTo(page, doing.getByRole("button", { name: TASK }), column(page, "To Do"));
 
     await expect(
-      page.getByRole("alert").filter({ hasText: "WEB-15: no transition from In Review to To Do in this workflow" }),
+      page.getByRole("alert").filter({ hasText: "TAS-107: no transition from In Progress to To Do in this workflow" }),
     ).toBeVisible();
     await expect(page.getByText(/without statuses/)).toHaveCount(0);
-    await expect(review.getByRole("button", { name: EPIC })).toBeVisible();
+    await expect(doing.getByRole("button", { name: TASK })).toBeVisible();
     expect(await onQueryClient(page, "count-drop-moves")).toBe(0);
 
     // The probe can see a move: the one legal drop from here starts exactly one.
-    await dragCardTo(page, review.getByRole("button", { name: EPIC }), column(page, "Done"));
-    await expect(column(page, "Done").getByRole("button", { name: EPIC })).toBeVisible();
+    await dragCardTo(page, doing.getByRole("button", { name: TASK }), column(page, "Done"));
+    await expect(column(page, "Done").getByRole("button", { name: TASK })).toBeVisible();
     expect(await onQueryClient(page, "count-drop-moves")).toBe(1);
   });
 });

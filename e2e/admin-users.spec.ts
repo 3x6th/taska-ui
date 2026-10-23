@@ -23,6 +23,13 @@ async function openUsers(page: Page) {
   await expect(page).toHaveURL(/\/projects$/);
 
   await page.goto("/admin");
+  // `/admin` settles in two redirects — into Data, then, once the catalog has
+  // answered, into its first table — and the rail is drawn before the second.
+  // A rail click in between can be undone by it: the catalog answer renders
+  // the Data section under the address the click has just left, and its
+  // redirect replaces the click's history entry (the PR #103 CI flake). So the
+  // address settles first.
+  await expect(page).toHaveURL(/\/admin\/data\/[^/]+\/[^/]+$/);
   await page.getByRole("navigation", { name: "Administration" }).getByRole("link", { name: "Users" }).click();
   await expect(page).toHaveURL(/\/admin\/users$/);
   await expect(page.getByRole("heading", { level: 1, name: "Users" })).toBeVisible();

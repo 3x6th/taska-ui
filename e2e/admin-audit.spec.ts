@@ -17,6 +17,10 @@ async function signIn(page: Page, email: string) {
 async function openAudit(page: Page) {
   await signIn(page, "mark@example.com");
   await page.goto("/admin");
+  // Settled into Data's first table before the rail is used: a click made
+  // while the catalog is still out can be undone by Data's own redirect
+  // (see `openUsers` in admin-users.spec.ts).
+  await expect(page).toHaveURL(/\/admin\/data\/[^/]+\/[^/]+$/);
   await page.getByRole("navigation", { name: "Administration" }).getByRole("link", { name: "Audit" }).click();
   await expect(page).toHaveURL(/\/admin\/audit$/);
   await expect(page.getByRole("table", { name: "Audit entries" })).toBeVisible();

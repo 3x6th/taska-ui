@@ -22,6 +22,10 @@ async function openConsole(page: Page) {
   // /admin is an area with sections now (DESIGN.md §5.8): it redirects into
   // Data, and the heading is the section's.
   await expect(page.getByRole("heading", { level: 1, name: "Data" })).toBeVisible();
+  // And on into the catalog's first table, once the catalog has answered. The
+  // rail is drawn before that, and a rail click in between can be undone by
+  // Data's redirect (see `openUsers` in admin-users.spec.ts).
+  await expect(page).toHaveURL(/\/admin\/data\/[^/]+\/[^/]+$/);
 }
 
 test("walks the catalog from a service down to a table's rows", async ({ page }) => {

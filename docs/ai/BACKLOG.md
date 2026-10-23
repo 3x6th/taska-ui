@@ -105,9 +105,11 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   retry half of this is **done**: a rescue now restores focus to the list when a
   late answer's refetch removes the trigger focus was sitting on, and only then,
   so it cannot steal from an operator who moved. What is left is the wider case,
-  which no write reaches: `src/main.tsx` sets only `staleTime` and `retry`, so
-  `refetchOnWindowFocus` is on, and any blur-and-return after twenty seconds can
-  drop a row under a focused control. **The configuration half graduated to
+  which no write reaches. **Updated 2026-10-24 (TAS-202):** focus return now
+  re-reads only failed queries (`createQueryClient()` in `src/lib/queryClient.ts`),
+  measured in `src/screens/ScreenRequests.test.tsx` — 0 requests on the happy path.
+  What remains: a failed read's refetch on return, and write invalidations, can
+  still drop a row under a focused control. **The configuration half graduated to
   [TAS-202](https://jira.ozero.dev/browse/TAS-202) on 2026-09-09** — that story
   turns the refetch off globally, because the same line multiplies a
   twenty-seven-request fan-out on the projects screen. This entry stays open for
@@ -3701,7 +3703,8 @@ read here; each is unchanged in the snapshot at develop `7d4f7395565c`.
   Candidate fixes: the hit carries the status name (gateway, search DTO), or
   search resolves it from a cached project context when one is present
   (client, no request). Recorded in DESIGN.md §4.20.
-- **The board's one read cannot express "Other statuses"**
+- ~~**The board's one read cannot express "Other statuses"**~~ — **closed by backend #205**
+  (`unplacedIssues`), used by TAS-202 on 2026-10-24.
   (`api-contract-guard`, TAS-173 verdict, ask A2). `BoardServiceImpl` answers
   500 for any issue whose status the workflow does not list (develop
   `398285c`). When TAS-213's board replaces client composition it needs an
@@ -4002,6 +4005,43 @@ Frontend notes:
   soft delete, or `issue_comments.body: HIDE`); the contract declares only 204 and
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
+
+### Left by TAS-202 (projects from /project-stats, board from /board, 2026-10-24)
+
+- **The board's types are a constant, the context's come from the registry**
+  (`api-contract-guard`, A4): `BoardServiceImpl.java:48` iterates TASK, BUG, STORY while the
+  context reads the project's type registry (TAS-385). Latent until custom types can hold issues
+  (TAS-386); then an issue of a type outside the three is on no column and not in «Outside their workflow»
+  — it is not on the board at all (the mock shows it: an Epic filter gives "0 of 4", a created
+  Epic vanishes once its panel closes, the skeleton predicts EPIC's columns and jumps). Backend ask when TAS-386 lands.
+- **A project card counts issues the board does not draw** (`frontend-builder`, TAS-202):
+  `issueCount` counts every type, while the board reads only TASK, BUG and STORY (A4), so in
+  the mock the Web App card says "5 issues" and its board "4 of 4" (WEB-15 is an EPIC). The
+  stand cannot hold such an issue until TAS-386; same backend ask as A4.
+- **The project card's footer has no fixed height** (`art-director`, TAS-202 post-build N1):
+  without faces it is 16.7 tall, with faces 24, so every card grows 142 → 145 when stats
+  arrive and a faceless card's title sits ~2px off its neighbours; «— members» keeps a 12px
+  indent with no stack. Fix: `.project-card-foot { min-height: 24px }` and
+  `.avatar-stack > .member-count:first-child { margin-left: 0 }`, plus the §4.8 line «Подвал
+  держит `min-height:24`…».
+- **An admin rail click during the catalog load can be undone** (`frontend-builder`, TAS-202 CI
+  diagnosis): `/admin` redirects to `/admin/data`, then into the first table once the catalog
+  answers (`<Navigate replace>`); a click that pushed `/admin/users` before React Router commits
+  it is replaced by that second redirect. A few ms in production; reproduced deterministically.
+  Fix: guard the Data section's redirect, or `useTransitions={false}` on the router. The four
+  admin e2e helpers now wait for the settled address.
+- **Labels' Add label is natively `disabled` while its write is in flight** (`art-director`,
+  TAS-202 narrow check): `disabled={!trimmed || createLabel.isPending}`, so after a mouse press
+  or Enter on the button focus sits on `<body>` for about one round trip. Harmless in Chromium
+  (a Tab lands inside the dialog), but §4.1 wants the in-flight case `aria-disabled` without
+  dimming and `cursor:progress`: keep `disabled={!trimmed}`, add
+  `aria-disabled={createLabel.isPending || undefined}`, refuse in the submit handler.
+- **The lost-focus check lives in three places** (board archive effect, `EditProjectModal`,
+  `ProjectLabelsModal`); a shared helper could replace them.
+- **Label chip order on a card is not stated**: `findLabelIdsByIssueIds`
+  (`IssueRepositoryImpl.java:338`) has no ORDER BY.
+- **`listIssues` has no screen caller any more** (board, projects and the link picker moved off
+  it). Keep or delete with TAS-209.
 
 ### Left by TAS-149 (archive and the read-only archived board, frontend for backend #155/#159, 2026-10-23)
 

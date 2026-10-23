@@ -20,6 +20,12 @@ interface AvatarProps {
   size?: "sm" | "md" | "lg" | "xl";
   className?: string;
   loading?: boolean;
+  /**
+   * A person the server did not name (TAS-202, art-director's N3): the fill
+   * says somebody is there, `label` says who is unknown, and no initials are
+   * drawn — the label's own letters would read as a person's.
+   */
+  hideInitials?: boolean;
 }
 
 const sizeClass = {
@@ -29,7 +35,7 @@ const sizeClass = {
   xl: "avatar-xl",
 };
 
-export function Avatar({ user, label, size = "md", className = "", loading = false }: AvatarProps) {
+export function Avatar({ user, label, size = "md", className = "", loading = false, hideInitials = false }: AvatarProps) {
   /**
    * The one link this component has decided not to trust again.
    *
@@ -82,7 +88,7 @@ export function Avatar({ user, label, size = "md", className = "", loading = fal
           is still arriving deliberately shows the bare fill instead: letters
           that appear and are then covered a moment later are a flicker, and a
           transparent PNG would leave them showing through underneath. */}
-      {user && !loading && !src ? initials(name) : ""}
+      {user && !loading && !src && !hideInitials ? initials(name) : ""}
     </span>
   );
 }

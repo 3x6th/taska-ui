@@ -300,7 +300,8 @@ test("keeps focus on the button that started an upload, so Tab continues from it
  * the confirm succeeds and answers with its link, then the object is dropped.
  * Nothing is wrong until the profile is read again, so the case reads it again
  * the way the app does on its own: past the twenty-second stale time, on the
- * tab becoming visible.
+ * next screen that reads it. Not on the tab becoming visible — since TAS-202 a
+ * return to the tab re-reads only what failed (DESIGN.md §6).
  */
 test("says the photo could not be loaded when the profile read fails, and an upload clears it", async ({ page }) => {
   // Before the first navigation, so the page's own timers run on this clock
@@ -316,10 +317,16 @@ test("says the photo could not be loaded when the profile read fails, and an upl
   const note = profile(page).getByText("Your photo could not be loaded.");
   await expect(note).toHaveCount(0);
 
-  // Back to the tab after the profile went stale: `["me"]` is read again, and
-  // this time the read fails.
+  // A return to the tab after the profile went stale reads nothing (TAS-202)…
   await page.clock.fastForward(21_000);
   await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+  await expect(trigger(page).locator("img")).toHaveCount(1);
+  // …and the next screen does: Projects reads `["me"]` again on its way in,
+  // and this time the read fails. Back on My profile, the face is gone.
+  await page.goBack();
+  await expect(page).toHaveURL(/\/projects$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/settings\/profile$/);
 
   await expect(trigger(page).locator("img")).toHaveCount(0);
   await expect(trigger(page).locator(".avatar")).toHaveText("AI");

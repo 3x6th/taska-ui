@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskaApi } from "../../api/TaskaApi";
 import { UserProfileMenu } from "../../components/UserProfileMenu";
-import type { ProjectMember, User } from "../../domain/types";
+import type { Board, BoardIssue, ProjectMember, ProjectStats, User } from "../../domain/types";
 import { keepSignedAvatarLink, ME_QUERY_KEY } from "../../lib/ownAvatarLink";
 import { SettingsProfileSection } from "./SettingsProfileSection";
 
@@ -266,11 +266,11 @@ const undeployed = (path: string) =>
   });
 
 /**
- * The two caches that draw member faces, as their screens hold them: the
- * board's `["members", projectId]` is the list itself, and the project cards'
- * `["project-summaries", projectId]` is `ProjectsScreen`'s summary — `count`,
- * `members`, and `members: null` with a `failure` when that half of the card
- * did not load.
+ * The caches that draw member faces, as their screens hold them: the members
+ * dialog's `["members", projectId]` is the list itself; the project cards'
+ * `["project-stats"]` holds a five-person preview under every project's entry
+ * (TAS-202); and the board's `["board", projectId]` holds the assignee the
+ * server joined into each card — named, or, when its profile read failed, not.
  */
 const PROJECT = "project-tas";
 const OTHER_PROJECT = "project-web";
@@ -289,15 +289,50 @@ const memberRows = (annaFace: string | null): ProjectMember[] => [
   },
 ];
 
+const statsOf = (annaFace: string | null): ProjectStats[] => [
+  { projectId: PROJECT, issueCount: 9, memberCount: 2, members: memberRows(annaFace) },
+  // A project the reader is not previewed on: nothing in it is theirs to rewrite.
+  { projectId: OTHER_PROJECT, issueCount: 2, memberCount: 1, members: memberRows(annaFace).slice(1) },
+];
+
+const boardCard = (id: string, assignee: BoardIssue["assignee"]): BoardIssue => ({
+  id,
+  issueKey: id.toUpperCase(),
+  summary: id,
+  issueType: "TASK",
+  priority: "MEDIUM",
+  statusKey: "TODO",
+  description: null,
+  createdAt: "2026-09-01T09:00:00Z",
+  updatedAt: "2026-09-01T09:00:00Z",
+  version: 1,
+  assignee,
+  labels: [],
+});
+
+const boardOf = (annaFace: string | null): Board => ({
+  projectId: PROJECT,
+  columns: [
+    {
+      statusKey: "TODO",
+      name: "To Do",
+      category: "TODO",
+      sortOrder: 10,
+      issues: [
+        boardCard("tas-1", { id: anna.id, displayName: anna.displayName, avatarUrl: annaFace }),
+        boardCard("tas-2", { id: "user-tom", displayName: "Tom Berg", avatarUrl: TOM_FACE }),
+      ],
+    },
+  ],
+  // The server could not name the assignee here: no face is drawn, and none is written.
+  unplacedIssues: [boardCard("tas-3", { id: anna.id, displayName: null, avatarUrl: null })],
+});
+
 const seededClient = (annaFace: string | null) => {
   const client = appClient();
   client.setQueryData(["members", PROJECT], memberRows(annaFace));
-  client.setQueryData(["project-summaries", PROJECT], { count: 9, members: memberRows(annaFace), failure: null });
-  client.setQueryData(["project-summaries", OTHER_PROJECT], {
-    count: 2,
-    members: null,
-    failure: new Error("Members unavailable"),
-  });
+  client.setQueryData(["project-stats"], statsOf(annaFace));
+  client.setQueryData(["board", PROJECT], boardOf(annaFace));
   return client;
 };
 
@@ -306,8 +341,13 @@ const faceIn = (client: QueryClient, userId: string) => ({
   members: client.getQueryData<ProjectMember[]>(["members", PROJECT])?.find((row) => row.userId === userId)?.user
     ?.avatarUrl,
   summary: client
-    .getQueryData<{ members: ProjectMember[] | null }>(["project-summaries", PROJECT])
-    ?.members?.find((row) => row.userId === userId)?.user?.avatarUrl,
+    .getQueryData<ProjectStats[]>(["project-stats"])
+    ?.find((entry) => entry.projectId === PROJECT)
+    ?.members.find((row) => row.userId === userId)?.user?.avatarUrl,
+  board: client
+    .getQueryData<Board>(["board", PROJECT])
+    ?.columns.flatMap((column) => column.issues)
+    .find((card) => card.assignee?.id === userId)?.assignee?.avatarUrl,
 });
 
 /**
@@ -320,13 +360,18 @@ const faceIn = (client: QueryClient, userId: string) => ({
 function MemberFaceHolders() {
   useQuery({ queryKey: ["members", PROJECT], queryFn: () => fakeApi.listMembers(PROJECT), staleTime: Infinity });
   useQuery({
-    queryKey: ["project-summaries", PROJECT],
-    queryFn: async () => ({ count: 9, members: await fakeApi.listMembers(PROJECT), failure: null }),
+    queryKey: ["project-stats"],
+    queryFn: async () => [{ projectId: PROJECT, issueCount: 9, memberCount: 2, members: await fakeApi.listMembers(PROJECT) }],
     staleTime: Infinity,
   });
   useQuery({
-    queryKey: ["project-summaries", OTHER_PROJECT],
-    queryFn: async () => ({ count: 2, members: await fakeApi.listMembers(OTHER_PROJECT), failure: null }),
+    queryKey: ["board", PROJECT],
+    // Counted as a member read if it ever ran, so a re-read of the board shows
+    // up where every other re-read does.
+    queryFn: async () => {
+      await fakeApi.listMembers(PROJECT);
+      return boardOf(null);
+    },
     staleTime: Infinity,
   });
   return null;
@@ -511,7 +556,7 @@ describe("Settings → My profile", () => {
       await waitFor(() => expect(state.reads).toEqual(["me", "me"]));
       expect(await screen.findByText("Your photo could not be loaded.")).toBeVisible();
       await settle();
-      expect(faceIn(client, anna.id)).toEqual({ members: FACE, summary: FACE });
+      expect(faceIn(client, anna.id)).toEqual({ members: FACE, summary: FACE, board: FACE });
       expect(state.memberReads).toBe(0);
     });
 
@@ -577,14 +622,14 @@ describe("Settings → My profile", () => {
 
     it("writes the new face into every cached member row, without reading a member list again", async () => {
       const client = seededClient(null);
-      const failedSummary = client.getQueryData(["project-summaries", OTHER_PROJECT]);
+      const otherEntry = client.getQueryData<ProjectStats[]>(["project-stats"])?.[1];
       renderOnProfile({ client, children: <MemberFaceHolders /> });
       const trigger = await openOnProfile();
 
       pick(imageFile());
 
       await waitFor(() => expect(trigger.querySelector("img")).not.toBeNull());
-      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: state.confirmedUrl, summary: state.confirmedUrl }));
+      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: state.confirmedUrl, summary: state.confirmedUrl, board: state.confirmedUrl }));
       await waitFor(() => expect(screen.getByRole("button", { name: "Replace photo" })).toBeEnabled());
       await settle();
 
@@ -594,12 +639,13 @@ describe("Settings → My profile", () => {
       // for every card on `/projects`, to change one face.
       expect(state.memberReads).toBe(0);
       expect(state.reads).toEqual(["me"]);
-      // Only the reader's row moved: a neighbour keeps their face, a summary keeps
-      // its count, and a card whose member half had failed is left exactly as it
-      // was rather than given a list.
-      expect(faceIn(client, "user-tom")).toEqual({ members: TOM_FACE, summary: TOM_FACE });
-      expect(client.getQueryData(["project-summaries", PROJECT])).toMatchObject({ count: 9, failure: null });
-      expect(client.getQueryData(["project-summaries", OTHER_PROJECT])).toBe(failedSummary);
+      // Only the reader's rows moved: a neighbour keeps their face, an entry
+      // keeps its counts, an entry the reader is not in is left exactly as it
+      // was, and a card whose assignee the server did not name gets no face.
+      expect(faceIn(client, "user-tom")).toEqual({ members: TOM_FACE, summary: TOM_FACE, board: TOM_FACE });
+      expect(client.getQueryData<ProjectStats[]>(["project-stats"])?.[0]).toMatchObject({ issueCount: 9, memberCount: 2 });
+      expect(client.getQueryData<ProjectStats[]>(["project-stats"])?.[1]).toBe(otherEntry);
+      expect(client.getQueryData<Board>(["board", PROJECT])?.unplacedIssues[0].assignee?.avatarUrl).toBeNull();
     });
 
     it("re-reads the profile only when the confirm answered without a link", async () => {
@@ -614,7 +660,7 @@ describe("Settings → My profile", () => {
       // states the avatar: the answer did not say where the picture is.
       await waitFor(() => expect(state.reads).toEqual(["me", "me"]));
       await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", state.confirmedUrl));
-      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: state.confirmedUrl, summary: state.confirmedUrl }));
+      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: state.confirmedUrl, summary: state.confirmedUrl, board: state.confirmedUrl }));
       await settle();
       expect(state.memberReads).toBe(0);
     });
@@ -632,7 +678,7 @@ describe("Settings → My profile", () => {
       state.holdDelete = true;
       fireEvent.click(screen.getByRole("button", { name: "Remove photo" }));
 
-      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null }));
+      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null, board: null }));
       expect(trigger.querySelector("img")).toBeNull();
       expect(client.getQueryData<User>(["me"])).toMatchObject({ avatarUrl: null, avatarId: null, avatarUnavailable: false });
 
@@ -641,8 +687,8 @@ describe("Settings → My profile", () => {
       await waitFor(() => expect(state.deletes).toBe(1));
       await waitFor(() => expect(screen.getByRole("button", { name: "Upload a photo" })).toBeEnabled());
       await settle();
-      expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null });
-      expect(faceIn(client, "user-tom")).toEqual({ members: TOM_FACE, summary: TOM_FACE });
+      expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null, board: null });
+      expect(faceIn(client, "user-tom")).toEqual({ members: TOM_FACE, summary: TOM_FACE, board: TOM_FACE });
       expect(state.memberReads).toBe(0);
       expect(state.reads).toEqual(["me"]);
     });
@@ -664,14 +710,14 @@ describe("Settings → My profile", () => {
       // Optimistic: the picture goes, here and on the member rows, before the
       // answer does.
       await waitFor(() => expect(trigger.querySelector("img")).toBeNull());
-      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null }));
+      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: null, summary: null, board: null }));
 
       release();
 
       // And comes back everywhere it went, with the reason — a rollback nobody is
       // told about is what §5.6 calls out.
       await waitFor(() => expect(trigger.querySelector("img")).toHaveAttribute("src", FACE));
-      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: FACE, summary: FACE }));
+      await waitFor(() => expect(faceIn(client, anna.id)).toEqual({ members: FACE, summary: FACE, board: FACE }));
       expect(screen.getByText(/Your photo was not removed\. Something went wrong/)).toBeVisible();
       await settle();
       expect(state.deletes).toBe(1);
