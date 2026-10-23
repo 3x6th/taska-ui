@@ -4030,6 +4030,12 @@ Frontend notes:
   it is replaced by that second redirect. A few ms in production; reproduced deterministically.
   Fix: guard the Data section's redirect, or `useTransitions={false}` on the router. The four
   admin e2e helpers now wait for the settled address.
+- **Labels' Add label is natively `disabled` while its write is in flight** (`art-director`,
+  TAS-202 narrow check): `disabled={!trimmed || createLabel.isPending}`, so after a mouse press
+  or Enter on the button focus sits on `<body>` for about one round trip. Harmless in Chromium
+  (a Tab lands inside the dialog), but §4.1 wants the in-flight case `aria-disabled` without
+  dimming and `cursor:progress`: keep `disabled={!trimmed}`, add
+  `aria-disabled={createLabel.isPending || undefined}`, refuse in the submit handler.
 - **The lost-focus check lives in three places** (board archive effect, `EditProjectModal`,
   `ProjectLabelsModal`); a shared helper could replace them.
 - **Label chip order on a card is not stated**: `findLabelIdsByIssueIds`
