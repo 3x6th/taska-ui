@@ -4014,6 +4014,8 @@ Frontend notes:
 - **Several write surfaces show a refusal without its request id** — comments, labels,
   links, attachment toasts, the create-issue form (`api-contract-guard`); predates TAS-149,
   but archived and rollout 503 refusals now land there too.
+- **Typing at the end of an issue's summary scrolls `.issue-panel-body` by 44–81px**
+  (`art-director`, TAS-149 pass; measured 44px on main too, so not from TAS-149).
 - **Nothing has been archived on the stand.** The DELETE answer and the refusal shape are
   read from the Java; the first smoke (archive a throwaway project, one write → 400 with
   `details.reason` and a request id) needs the owner's word.
