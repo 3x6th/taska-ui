@@ -66,9 +66,24 @@ describe("where a notification goes when it is pressed", () => {
     expect(notificationRoute(about("ISSUE_ATTACHMENT_ADDED", ISSUE_ID, null))).toBeNull();
     expect(notificationRoute(about("ISSUE_ATTACHMENT_DELETED", ISSUE_ID, null))).toBeNull();
     expect(notificationRoute(about("ISSUE_ASSIGNED", ISSUE_ID, null))).toBeNull();
-    expect(notificationRoute(about("ISSUE_ASSIGNED", null, PROJECT_ID))).toBeNull();
     // An empty string is not an id either.
-    expect(notificationRoute(about("ISSUE_ASSIGNED", "", PROJECT_ID))).toBeNull();
     expect(notificationRoute(about("ISSUE_ASSIGNED", ISSUE_ID, ""))).toBeNull();
+  });
+
+  it("opens the board of a project a notification names without an issue", () => {
+    // `PROJECT_ARCHIVED` (backend PR #159, TAS-149): the project, no issue. An
+    // archived project's board still opens, read-only (DESIGN.md §5.7).
+    expect(notificationRoute(about("PROJECT_ARCHIVED", null, PROJECT_ID))).toBe(`/projects/${PROJECT_ID}/board`);
+    // By the ids, not the kind: any kind that names only a project goes there.
+    expect(notificationRoute(about("MEMBER_ADDED", null, PROJECT_ID))).toBe(`/projects/${PROJECT_ID}/board`);
+    expect(notificationRoute(about("ISSUE_ASSIGNED", null, PROJECT_ID))).toBe(`/projects/${PROJECT_ID}/board`);
+    // An empty issue id is no issue id.
+    expect(notificationRoute(about("ISSUE_ASSIGNED", "", PROJECT_ID))).toBe(`/projects/${PROJECT_ID}/board`);
+  });
+
+  it("opens nothing for a removal from the project it names", () => {
+    // The reader is no longer on that project, so its board would end on the
+    // not-found screen (§4.18).
+    expect(notificationRoute(about("MEMBER_REMOVED", null, PROJECT_ID))).toBeNull();
   });
 });

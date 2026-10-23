@@ -182,7 +182,7 @@ const refusal = (code: string, status: number, message: string, requestId = "req
  * `GET /users/me` for the first, the board's membership read for the second —
  * which is a state of its own and not a default.
  */
-type PanelProps = { readerRole?: ProjectRole | null; currentUserId?: string; globalRole?: GlobalRole };
+type PanelProps = { readerRole?: ProjectRole | null; currentUserId?: string; globalRole?: GlobalRole; archived?: boolean };
 
 function renderPanel(props: PanelProps = {}) {
   const queryClient = new QueryClient({
@@ -202,6 +202,7 @@ function renderPanel(props: PanelProps = {}) {
       projectId={PROJECT}
       projectKey="TAS"
       readerRole={"readerRole" in next ? next.readerRole : "ADMIN"}
+      archived={next.archived}
     />
   );
   const tree = (next: PanelProps) => (
@@ -283,6 +284,18 @@ describe("ProjectMembersModal", () => {
     ).toBeVisible();
     expect(within(dialog()).queryByText("Only a project admin can add, change or remove members.")).toBeNull();
     expect(within(dialog()).queryByRole("textbox")).toBeNull();
+    expect(within(dialog()).queryByRole("combobox")).toBeNull();
+    expect(within(dialog()).queryByRole("button", { name: /^Remove/ })).toBeNull();
+  });
+
+  // An archived project (TAS-149, DESIGN.md §5.7): the list stays, the admin's
+  // controls go for every role, and the archive is the reason given.
+  it("shows an archived project's ADMIN the list, no control, and the archive as the reason", async () => {
+    renderPanel({ archived: true });
+
+    expect(await within(dialog()).findByText("Mark Lee")).toBeVisible();
+    expect(within(dialog()).getByText("This project is archived, so its members cannot be changed.")).toBeVisible();
+    expect(within(dialog()).queryByText("Only a project admin can add, change or remove members.")).toBeNull();
     expect(within(dialog()).queryByRole("combobox")).toBeNull();
     expect(within(dialog()).queryByRole("button", { name: /^Remove/ })).toBeNull();
   });
@@ -632,6 +645,27 @@ describe("ProjectMembersModal", () => {
     expect(within(dialog()).getByRole("combobox", { name: "Role of Mark Lee" })).toHaveValue("ADMIN");
     expect(within(dialog()).getByText(`Can't modify last admin: ${MARK} in project: ${PROJECT}`)).toBeVisible();
     expect(within(dialog()).getByRole("button", { name: "Copy request id req-last-admin" })).toBeVisible();
+  });
+
+  // Backend PR #159: an archived project refuses with the last-admin
+  // refusal's code. `details.reason` tells them apart, and nothing else may.
+  it("does not read an archived project's refusal as the last-admin one", async () => {
+    state.roleFailure = Object.assign(
+      refusal("FAILED_PRECONDITION", 400, "Project is archived", "req-archived"),
+      { details: { reason: "PROJECT_ARCHIVED" } },
+    );
+    renderPanel();
+
+    fireEvent.change(await within(dialog()).findByRole("combobox", { name: "Role of Mark Lee" }), {
+      target: { value: "VIEWER" },
+    });
+
+    expect(await within(dialog()).findByText("The role did not change for Mark Lee.")).toBeVisible();
+    expect(within(dialog()).queryByText(/only admin, so the role did not change/)).toBeNull();
+    // Our words in place of the server's (§5.7), and the id as usual.
+    expect(within(dialog()).getByText("This project has been archived, so nothing in it can be changed.")).toBeVisible();
+    expect(within(dialog()).queryByText("Project is archived")).toBeNull();
+    expect(within(dialog()).getByRole("button", { name: "Copy request id req-archived" })).toBeVisible();
   });
 
   it("asks before removing, removes at once, and puts the row back with the reason when the server refuses", async () => {

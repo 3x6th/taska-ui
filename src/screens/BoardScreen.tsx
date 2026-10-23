@@ -48,8 +48,8 @@ import { taskaApi } from "../api/client";
 import {
   apiErrorFacts,
   isIssueVersionConflict,
-  isClientRefusal,
   isMissingOrForbidden,
+  isProjectArchived,
   IssueVersionConflictError,
 } from "../api/errors";
 import { isDatesOutOfOrderRefusal } from "../api/issuePatch";
@@ -78,6 +78,7 @@ import { useMeta } from "../hooks/useMeta";
 import { carriesFiles, closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
 import { personFor, type NamedBy } from "../lib/people";
 import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
+import { archivedOnDay, PROJECT_ARCHIVED_SENTENCE, refusalWords, rereadContextIfArchived } from "../lib/projectArchive";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   DictionaryEntry,
@@ -157,17 +158,16 @@ type AssigneeFilter = string | "ALL";
 /** A project label's id, or every issue whatever it carries. */
 type LabelFilter = string | "ALL";
 type WorkflowsByIssueType = ProjectContext["workflows"];
-// A 4xx is an answer, not a transient failure. Without this, the app-wide
-// `retry: 1` (src/main.tsx) spends a full retryDelay re-asking a question
-// already answered: for "missing or not yours" the board showed a second of
-// plausible chrome — project name, filters, empty columns — for a project the
-// viewer must not see, before §4.18 replaced it; for an archived project's 400
-// `FAILED_PRECONDITION` (backend PR #159, TAS-149) it asked twice to be refused
-// twice. `failureCount < 1` reproduces the global budget, so genuine failures
-// (network, 5xx) still get their one retry.
+// "Missing or not yours" is an answer, not a transient failure. Without this,
+// the app-wide `retry: 1` (src/main.tsx) spends a full retryDelay re-asking a
+// question already answered, and the board shows a second of plausible chrome —
+// project name, filters, empty columns — for a project the viewer must not see,
+// before §4.18 replaces it. `failureCount < 1` reproduces the global budget, so
+// genuine failures (network, 5xx) still get their one retry.
 // `error: Error` is not decoration: react-query infers each query's TError from
 // this signature, and `unknown` here would make every `query.error` unknown.
-const retryUnlessRefused = (failureCount: number, error: Error) => !isClientRefusal(error) && failureCount < 1;
+const retryUnlessMissing = (failureCount: number, error: Error) =>
+  !isMissingOrForbidden(error) && failureCount < 1;
 // The gateway caps `pageSize` for comments at 50.
 const commentsPageSize = 50;
 // DESIGN.md §4.14. The box itself is instant; only the request waits.
@@ -439,7 +439,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     queryKey: projectContextKey(projectId),
     enabled: Boolean(projectId),
     queryFn: () => taskaApi.getProjectContext(projectId),
-    retry: retryUnlessRefused,
+    retry: retryUnlessMissing,
   });
   // The one filter the *server* applies, so it belongs in the key rather than
   // in the predicate below with the other three. With `pageSize: 100` a
@@ -455,7 +455,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         pageSize: 100,
         labelId: labelFilter === "ALL" ? undefined : labelFilter,
       }),
-    retry: retryUnlessRefused,
+    retry: retryUnlessMissing,
   });
   const meQuery = useQuery({
     queryKey: ["me"],
@@ -478,19 +478,27 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // with no role this build can act on (`ProjectContext.role`). Every
   // permission below and the unstated-role banner read this one value.
   const role = context?.role;
-  const canEdit = role === "ADMIN" || role === "MEMBER";
+  // The project was archived (backend PR #159, TAS-149): read off the same
+  // context read as the role, and the only signal — a refusal never stands in
+  // for it (§5.7, «Архивный проект»). Every role, ADMIN included, then gets the
+  // VIEWER's board: each permission below is off, and the controls a VIEWER
+  // has hidden are hidden. An archived project's reads stay open, so nothing
+  // else on the board changes.
+  const archivedAt = project?.archivedAt ?? null;
+  const archived = archivedAt !== null;
+  const canEdit = !archived && (role === "ADMIN" || role === "MEMBER");
   // Creating needs a type to create, and a project that allows none has none.
   const canCreate = canEdit && offeredIssueTypes.length > 0;
   // Narrower than `canEdit` on purpose: TAS-119 lets a MEMBER put labels on an
   // issue but reserves creating, renaming and deleting the project's labels for
   // its ADMIN. The server enforces both; this only decides what is offered.
-  const isProjectAdmin = role === "ADMIN";
+  const isProjectAdmin = !archived && role === "ADMIN";
   // issue-service's `watch-issue-roles` (ADMIN, MEMBER), which it checks against
   // the reader's own role when they watch or unwatch themselves — a rule the
   // contract does not state (TAS-226). The same two roles as `canEdit` today,
   // and a name of its own because it is a separate rule on the server that can
   // move without the other.
-  const canWatch = role === "ADMIN" || role === "MEMBER";
+  const canWatch = !archived && (role === "ADMIN" || role === "MEMBER");
   // A reader the server *named* a VIEWER, as against one it named nothing. Only
   // this reader may be told that their role is the reason a control is off —
   // and only this reader's write controls are hidden rather than switched off
@@ -498,6 +506,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // A role that is unknown or unstated (TAS-226) is not a VIEWER, so those
   // stay on screen, disabled, under the board's banner.
   const isProjectViewer = role === "VIEWER";
+  // Whose write controls are hidden rather than switched off: a VIEWER's, and
+  // anybody's on an archived project — there is nothing to wait for there.
+  const hidesWrites = isProjectViewer || archived;
   // Each of these is the same single fact as the behaviour beside it, never a
   // second opinion about the same query: `canEdit` is "the membership answer
   // says so", and `roleUnread.unanswered` is "there is no membership answer and
@@ -541,7 +552,9 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   // `role`, the value `canEdit` reads, so no refetch can put the banner and the
   // controls out of step: a refetch keeps `data`, and both with it, and an
   // answer that states a role moves both in the same render.
-  const roleUnstated = role === null;
+  // Not on an archived project: the banner says "not a read-only project", and
+  // that one is exactly that (§5.7).
+  const roleUnstated = role === null && !archived;
   // Failure is not zero. With no issue list, "0" in a column head, "0 of 0" in
   // the filter bar and "Drop issues here" in every column are three claims
   // about the project made by a request that never answered — the last of them
@@ -613,7 +626,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         assigneeId: assigneeFilter === "ALL" ? undefined : assigneeFilter,
         pageSize: boardSearchPageSize,
       }),
-    retry: retryUnlessRefused,
+    retry: retryUnlessMissing,
   });
   const searchUnread = useUnanswered(searchQuery);
   // Whether the server's answer is about the question currently in the box.
@@ -709,6 +722,49 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   useEffect(() => {
     shownIssueId.current = issueId;
   }, [issueId]);
+
+  /**
+   * A write refused because the project was archived meanwhile (§5.7, «Архив
+   * пришёл отказом записи») makes the board read its context again, and the
+   * board turns read-only from the `archivedAt` that read brings — never from
+   * the refusal. Heard here, once, for every mutation the board, its panel and
+   * its dialogs make, by `details.reason` and nothing else; the writes that are
+   * not mutations (the attachment legs) call `rereadContextIfArchived`.
+   */
+  useEffect(() => {
+    if (!projectId) return;
+    return queryClient.getMutationCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "error") return;
+      rereadContextIfArchived(queryClient, projectId, event.action.error);
+    });
+  }, [projectId, queryClient]);
+
+  /**
+   * The board's archive line, and where focus goes when the board turns
+   * read-only under the reader (§4.11, §5.7): after archiving from Edit
+   * project, always — the line's reading is the announcement; after a refusal
+   * brought the archive, only if the control in focus went or was switched
+   * off, and then to the open panel's own line before the board's.
+   */
+  const archiveLineRef = useRef<HTMLParagraphElement>(null);
+  const focusArchiveLine = useRef(false);
+  // `null` until the context has answered: a board that opens archived has not
+  // turned read-only under anybody, and its opening takes no focus.
+  const archiveState = project ? (archived ? "archived" : "open") : null;
+  const previousArchiveState = useRef(archiveState);
+  useEffect(() => {
+    const turned = previousArchiveState.current === "open" && archiveState === "archived";
+    previousArchiveState.current = archiveState;
+    if (!turned) return;
+    const asked = focusArchiveLine.current;
+    focusArchiveLine.current = false;
+    const active = document.activeElement;
+    const lost =
+      !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
+    if (!asked && !lost) return;
+    const panelLine = asked ? null : document.querySelector<HTMLElement>("[data-archive-note='panel']");
+    (panelLine ?? archiveLineRef.current)?.focus();
+  }, [archiveState]);
 
   /**
    * The panel deleted an issue, or found it already gone (§4.10). The card
@@ -951,7 +1007,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         <div className="topbar-actions">
           <NotificationsBell bar={topbarRef} />
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
-          {isProjectViewer ? null : (
+          {hidesWrites ? null : (
             <button className="primary-button board-new" disabled={!canCreate} onClick={() => setCreating(true)} type="button">
               <Plus size={15} />
               New
@@ -1140,6 +1196,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
         </span>
       </section>
 
+      {/* The archive line (§5.7): above the notices and outside them — an
+          archived project is not a failure. A state found on opening, not an
+          answer to anything, so not a live region; `tabIndex=-1` makes it the
+          place focus is put when the board turns read-only under the reader. */}
+      {archivedAt ? (
+        <p className="board-archive-line" ref={archiveLineRef} tabIndex={-1}>
+          <strong>Archived on {archivedOnDay(archivedAt)}.</strong> This board and its issues are read-only.
+        </p>
+      ) : null}
+
       {/* One container, capped, so the board keeps most of the plane whatever
           fails. As five loose siblings these took 54% of a 900px viewport and
           75% of a 640px one, and at 390x640 the columns collapsed to 24px
@@ -1221,7 +1287,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
                   userById={userById}
                   canEdit={canEdit}
                   canCreate={canCreate}
-                  offersCreate={!isProjectViewer}
+                  offersCreate={!hidesWrites}
                   onAdd={() => setCreating(true)}
                   onOpenIssue={(id) => navigate(`/projects/${projectId}/issues/${id}`)}
                 />
@@ -1299,6 +1365,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
               isProjectAdmin={isProjectAdmin}
               canWatch={canWatch}
               isProjectViewer={isProjectViewer}
+              archivedAt={archivedAt}
               currentUserId={meQuery.data?.id}
               workflows={workflows}
               workflowUnknown={workflowUnknown}
@@ -1333,6 +1400,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // folded into `null`: the dialog tells a role nobody stated from a
           // role the server named, as the board's two banners do.
           readerRole={roleUnknown ? null : role}
+          archived={archived}
         />
       ) : null}
 
@@ -1346,6 +1414,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           // Members' reading of the role: a failed context read folded into
           // `null`, so the dialog says the role is unknown rather than nothing.
           readerRole={roleUnknown ? null : role}
+          archived={archived}
         />
       ) : null}
 
@@ -1355,7 +1424,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
           fields nobody can vouch for. */}
       {editingProject && project ? (
         <EditProjectModal
-          onArchived={() => navigate("/projects", { replace: true })}
+          // The reader stays: an archived project's board still reads, and in
+          // this frame it turns read-only from the context the dialog has just
+          // patched. Focus then goes to the archive line (the effect above).
+          onArchived={() => {
+            focusArchiveLine.current = true;
+          }}
           onClose={() => setEditingProject(false)}
           project={project}
         />
@@ -1954,6 +2028,7 @@ function IssuePanel({
   isProjectAdmin,
   canWatch,
   isProjectViewer,
+  archivedAt,
   currentUserId,
   workflows,
   workflowUnknown,
@@ -1997,6 +2072,13 @@ function IssuePanel({
   canWatch: boolean;
   /** The server named this reader a VIEWER, the one case the toggle's hint may give the role as its reason. */
   isProjectViewer: boolean;
+  /**
+   * When the project was archived, off the board's context, or `null` (§5.7).
+   * Every write here is then off through the flags above; this hides the
+   * VIEWER's set besides — the moves and Delete — and puts the transition
+   * slot's line in their place.
+   */
+  archivedAt: string | null;
   currentUserId?: string;
   workflows?: WorkflowsByIssueType;
   /** The workflow read failed; these buttons are the keyboard path a drag has. */
@@ -2181,8 +2263,12 @@ function IssuePanel({
   // A VIEWER is offered none (§5.7, TAS-236), so the arrow goes with them; the
   // notes below about why no move is offered are about the issue, not the
   // reader, and stay for every role.
+  //
+  // On an archived project nobody is offered one either, ADMIN included
+  // (§5.7), and the slot's own line says why instead of the notes below.
+  const hidesWrites = isProjectViewer || archivedAt !== null;
   const availableTransitions =
-    issue && workflow && !isProjectViewer ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
+    issue && workflow && !hidesWrites ? resolveTransitions(issue.status, workflow.statuses, workflow.transitions) : [];
   // The issue's status as its own workflow describes it, when it does: the name
   // the project chose and the category its colour comes from (TAS-173).
   const workflowStatus = issue ? workflow?.statuses.find((status) => status.statusKey === issue.status) : undefined;
@@ -2460,7 +2546,7 @@ function IssuePanel({
   const head = useIssuePanelHead({
     label: issue ? `${issue.issueKey} issue` : boardIssueKey ? `${boardIssueKey} issue` : "Issue",
     busy: loading,
-    asking: Boolean(issue) && asking,
+    asking: Boolean(issue) && asking && !hidesWrites,
   });
 
   if (!issue) {
@@ -2740,7 +2826,7 @@ function IssuePanel({
               §4.1's ghost-destructive: `--danger` under the pointer and while
               its question is open. A second press closes the question; Esc
               closes it too, from anywhere in the panel (above). */}
-          {isProjectViewer ? null : (
+          {hidesWrites ? null : (
             <button
               aria-controls={asking ? deleteConfirmId : undefined}
               aria-expanded={asking}
@@ -2761,7 +2847,9 @@ function IssuePanel({
           )}
         </>,
       )}
-      {asking ? (
+      {/* Not once the project is archived under an open question: its answer
+          is a write nothing here offers any more. */}
+      {asking && !hidesWrites ? (
         // Between the head and the body and outside the scroll (§4.10): the
         // head is one row of 52 and cannot take a sentence, and at the top of
         // a scrolled body the question would be off screen. The body gives up
@@ -2843,7 +2931,15 @@ function IssuePanel({
               covers the notice stack, and an empty row beside a status pill
               reads as "this issue has nowhere to go" rather than "we do not
               know where it can go". */}
-          {workflowUnknown ? (
+          {archivedAt ? (
+            // The archive displaces every other line of the slot (§5.7): it is
+            // the reason for every one of them. Focusable from script only —
+            // where focus goes when the panel turns read-only under the
+            // reader and the control they were on went with it.
+            <span className="transition-note" data-archive-note="panel" tabIndex={-1}>
+              This project was archived on {archivedOnDay(archivedAt)}, so this issue is read-only.
+            </span>
+          ) : workflowUnknown ? (
             <span className="transition-note">The workflow could not be loaded, so no move is offered.</span>
           ) : workflows && !workflow ? (
             // The context answered without this issue's type: the project no
@@ -3199,6 +3295,7 @@ function IssuePanel({
           issueId={issueId}
           canLog={canEdit}
           isProjectAdmin={isProjectAdmin}
+          archived={archivedAt !== null}
           currentUserId={currentUserId}
           userById={userById}
           prefetched={worklogsPrefetched}
@@ -3209,6 +3306,7 @@ function IssuePanel({
           projectId={projectId}
           issueId={issueId}
           canComment={canEdit}
+          archived={archivedAt !== null}
           currentUserId={currentUserId}
           userById={userById}
           prefetched={commentsPrefetched}
@@ -4068,7 +4166,9 @@ function watcherSubject(
  * answer for an error that is not an `ApiError` at all.
  */
 function WatcherNoteDetail({ error, sentence }: { error: unknown; sentence?: string }) {
-  const { message, requestId } = apiErrorFacts(error);
+  const { requestId } = apiErrorFacts(error);
+  // The same words `watcherFailureText` prefers, so the two compare equal.
+  const message = refusalWords(error);
   const gatewayWords = message && message !== sentence ? message : null;
   if (!gatewayWords && !requestId) return null;
 
@@ -4100,7 +4200,9 @@ function WatcherNoteDetail({ error, sentence }: { error: unknown; sentence?: str
  * things and are worth different sentences.
  */
 function watcherFailureText(error: unknown, fallback: string): string {
-  const { message, status, code } = apiErrorFacts(error);
+  const { status, code } = apiErrorFacts(error);
+  // The server's words, or ours for an archived project's refusal (§5.7).
+  const message = refusalWords(error);
   if (message) return message;
   if (status === 403 || code === "PERMISSION_DENIED") {
     return "The server refused: only a project admin may change who else watches this issue.";
@@ -4136,7 +4238,7 @@ function IssueLabelsSection({
   const projectLabelsQuery = useQuery({
     queryKey: projectContextKey(projectId),
     queryFn: () => taskaApi.getProjectContext(projectId),
-    retry: retryUnlessRefused,
+    retry: retryUnlessMissing,
     select: (context: ProjectContext) => context.labels,
   });
 
@@ -4196,8 +4298,8 @@ function IssueLabelsSection({
   // would otherwise be explained by whatever the refetch said instead. A
   // mutation error is always about the action just taken; a query error is
   // about the background.
-  const error =
-    (addLabel.error ?? removeLabel.error ?? projectLabelsQuery.error)?.message;
+  const failure = addLabel.error ?? removeLabel.error ?? projectLabelsQuery.error;
+  const error = failure ? (refusalWords(failure) ?? failure.message) : undefined;
 
   return (
     <section className="issue-labels">
@@ -4343,7 +4445,7 @@ function IssueLinksSection({
   const projectIssuesQuery = useQuery({
     queryKey: ["issues", projectId, "ALL"],
     queryFn: () => taskaApi.listIssues(projectId, { pageSize: 100 }),
-    retry: retryUnlessRefused,
+    retry: retryUnlessMissing,
   });
   const issues = useMemo(() => projectIssuesQuery.data?.items ?? [], [projectIssuesQuery.data]);
 
@@ -4420,9 +4522,8 @@ function IssueLinksSection({
   // `IssueLabelsSection`: with a cached page plus a failed background refetch
   // the picker is still populated, so a refused link would be explained by the
   // refetch rather than by the refusal.
-  const error =
-    localError ??
-    (createLink.error ?? deleteLink.error ?? projectIssuesQuery.error)?.message;
+  const failure = createLink.error ?? deleteLink.error ?? projectIssuesQuery.error;
+  const error = localError ?? (failure ? (refusalWords(failure) ?? failure.message) : undefined);
 
   return (
     <section className="issue-links">
@@ -4711,7 +4812,7 @@ function IssueAttachmentsSection({
     },
     onError: (error, _attachmentId, context) => {
       attachmentsCache.restore(context?.previous);
-      say({ tone: "error", text: apiErrorFacts(error).message ?? "The attachment could not be removed." });
+      say({ tone: "error", text: refusalWords(error) ?? "The attachment could not be removed." });
     },
     onSettled: settle,
   });
@@ -4849,9 +4950,11 @@ function IssueAttachmentsSection({
       ticket = await taskaApi.createAttachmentUploadUrl(projectId, issueId, candidate);
     } catch (error) {
       setPending(null);
+      // Not a mutation, so the board's listener does not hear it (§5.7).
+      rereadContextIfArchived(queryClient, projectId, error);
       addNotice({
         tone: "error",
-        text: `${file.name} was not attached. ${apiErrorFacts(error).message ?? "The upload could not be prepared."}`,
+        text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be prepared."}`,
       });
       return;
     }
@@ -4925,9 +5028,10 @@ function IssueAttachmentsSection({
         });
         return;
       }
+      rereadContextIfArchived(queryClient, projectId, error);
       addNotice({
         tone: "error",
-        text: `${file.name} was not attached. ${apiErrorFacts(error).message ?? "The upload could not be confirmed."}`,
+        text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be confirmed."}`,
       });
     }
   };
@@ -5316,6 +5420,7 @@ function CommentsSection({
   projectId,
   issueId,
   canComment,
+  archived,
   currentUserId,
   userById,
   prefetched,
@@ -5323,6 +5428,12 @@ function CommentsSection({
   projectId: string;
   issueId: string;
   canComment: boolean;
+  /**
+   * The project is archived (§5.7). Writing is off through `canComment`; this
+   * only keeps a comment the reader had typed and not sent on screen, read-only,
+   * when the archive lands under them — their words are work (§5.5).
+   */
+  archived: boolean;
   currentUserId?: string;
   userById: Map<string, Pick<User, "id" | "displayName" | "color" | "avatarUrl">>;
   /**
@@ -5375,6 +5486,10 @@ function CommentsSection({
   const comments = commentsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const totalCount = commentsQuery.data?.pages[0]?.totalCount ?? comments.length;
   const mutationError = addComment.error ?? updateComment.error ?? deleteComment.error;
+  const mutationWords = mutationError ? (refusalWords(mutationError) ?? mutationError.message) : "";
+  // The composer stays for a draft the archive caught unsent, read-only and
+  // without its button; otherwise it goes with the right to comment.
+  const keepsDraft = !canComment && archived && draft !== "";
 
   /**
    * Delete asks first (TAS-259), in §4.22's strip under the row, as the work
@@ -5403,12 +5518,12 @@ function CommentsSection({
         {totalCount ? <span className="count-pill">{totalCount}</span> : null}
       </h3>
 
-      {canComment ? (
+      {canComment || keepsDraft ? (
         <form
           className="comment-composer"
           onSubmit={(event) => {
             event.preventDefault();
-            if (draft.trim()) addComment.mutate(draft.trim());
+            if (canComment && draft.trim()) addComment.mutate(draft.trim());
           }}
         >
           <textarea
@@ -5416,14 +5531,17 @@ function CommentsSection({
             data-unsaved-text={draft !== "" ? "true" : undefined}
             onChange={(event) => setDraft(event.target.value)}
             placeholder="Leave a comment"
+            readOnly={!canComment}
             rows={3}
             value={draft}
           />
-          <div className="comment-composer-actions">
-            <button className="primary-button compact-button" disabled={!draft.trim() || addComment.isPending} type="submit">
-              Comment
-            </button>
-          </div>
+          {canComment ? (
+            <div className="comment-composer-actions">
+              <button className="primary-button compact-button" disabled={!draft.trim() || addComment.isPending} type="submit">
+                Comment
+              </button>
+            </div>
+          ) : null}
         </form>
       ) : null}
 
@@ -5438,7 +5556,7 @@ function CommentsSection({
           space. */}
       <div className={mutationError ? "error-note" : undefined}>
         <p aria-live="polite" className="error-note-sentence">
-          {mutationError?.message ?? ""}
+          {mutationWords}
         </p>
       </div>
 
@@ -5454,6 +5572,8 @@ function CommentsSection({
           comment={comment}
           author={personFor(comment.authorUserId, comment.author, userById)}
           canManage={canComment && comment.authorUserId === currentUserId}
+          // An edit the archive caught open stays open, read-only (§5.7):
+          // `canManage` goes, `editing` does not.
           editing={editingId === comment.id}
           confirming={confirmingId === comment.id}
           confirmId={`${sectionId}-confirm-${comment.id}`}
@@ -5560,19 +5680,24 @@ function CommentItem({
               // A comment being edited holds the panel open on Esc (§4.10).
               data-unsaved-text={body !== "" ? "true" : undefined}
               onChange={(event) => setBody(event.target.value)}
+              // Only after an archive landed mid-edit (§5.7): the reader's
+              // text stays, and nothing can send it.
+              readOnly={!canManage}
               rows={3}
               value={body}
               autoFocus
             />
             <div className="comment-actions">
-              <button
-                className="primary-button compact-button"
-                disabled={!body.trim() || body.trim() === comment.body || pending}
-                onClick={() => onSave(body.trim())}
-                type="button"
-              >
-                Save
-              </button>
+              {canManage ? (
+                <button
+                  className="primary-button compact-button"
+                  disabled={!body.trim() || body.trim() === comment.body || pending}
+                  onClick={() => onSave(body.trim())}
+                  type="button"
+                >
+                  Save
+                </button>
+              ) : null}
               <button className="secondary-button compact-button" onClick={onCancelEdit} type="button">
                 Cancel
               </button>
@@ -5858,7 +5983,7 @@ function ProjectLabelsModal({
   const labelsQuery = useQuery({
     queryKey: labelsKey,
     queryFn: () => taskaApi.getProjectContext(projectId),
-    retry: retryUnlessRefused,
+    retry: retryUnlessMissing,
     select: (context: ProjectContext) => context.labels,
   });
   const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
@@ -5941,7 +6066,8 @@ function ProjectLabelsModal({
     onSettled: settle,
   });
 
-  const error = (labelsQuery.error ?? createLabel.error ?? updateLabel.error ?? deleteLabel.error)?.message;
+  const failure = labelsQuery.error ?? createLabel.error ?? updateLabel.error ?? deleteLabel.error;
+  const error = failure ? (refusalWords(failure) ?? failure.message) : undefined;
   const trimmed = name.trim();
   const badge = keyBadgeStyle(projectKey, projectColor);
 
@@ -6412,7 +6538,7 @@ function CreateIssueModal({
   const formNotice = dateNotice
     ? PLANNING_DATE_INCOMPLETE_CREATE_MESSAGE
     : createIssue.isError
-      ? createIssue.error.message
+      ? (refusalWords(createIssue.error) ?? createIssue.error.message)
       : null;
 
   return (
@@ -6938,6 +7064,9 @@ function issueConflictText(fields: (keyof UpdateIssueInput)[]): string {
  * here, so this is the guard for whatever reads a write's error next.
  */
 function writeFailureText(error: Error, sent: UpdateIssueInput | undefined): string {
+  // An archive that landed while the panel was open (§5.7): our sentence in
+  // place of the server's, the request id beside it as usual.
+  if (isProjectArchived(error)) return PROJECT_ARCHIVED_SENTENCE;
   if (isIssueVersionConflict(error)) return issueConflictText(sent ? (Object.keys(sent) as (keyof UpdateIssueInput)[]) : []);
   if (sent && isDatesOutOfOrderRefusal(error)) {
     if (sent.startDate !== undefined && sent.dueDate === undefined) return planningDateOrderAdvice("startDate");

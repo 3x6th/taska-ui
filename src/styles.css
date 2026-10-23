@@ -1671,18 +1671,6 @@ h1 {
   white-space: nowrap;
 }
 
-/* "Archived" on a project card and in the board header (TAS-149), from the
-   row's `archivedAt` — DESIGN.md §4.5's neutral pill. It shares
-   `.admin-pill`'s rule (below, in the admin section) rather than copying it:
-   `--fg-2` on `--surface-2`, 6.38:1 light / 7.03:1 dark, no `--danger` and no
-   hue, because archiving is a state the reader chose, not a fault (§1). Only
-   what a pill in a name row needs is added here: `flex: none` so a long name
-   ellipsises before the pill does. */
-.project-archived-badge {
-  flex: none;
-  white-space: nowrap;
-}
-
 .project-card p {
   min-height: 34px;
   margin: 0 0 16px;
@@ -3766,12 +3754,8 @@ h1 {
 
    ACTIVE has no modifier of its own and neither does a status this build does
    not recognise: both wear exactly this, so a class for either would be a hook
-   with no rule behind it — which reads like a style and is not one.
-
-   `.project-archived-badge` (TAS-149) is the same neutral pill on a project
-   card and the board header, so it takes this rule rather than a copy. */
-.admin-pill,
-.project-archived-badge {
+   with no rule behind it — which reads like a style and is not one. */
+.admin-pill {
   display: inline-flex;
   align-items: center;
   height: 20px;
@@ -4940,6 +4924,27 @@ h1 {
    whatever fails, the board keeps two thirds of the plane, and the stack
    scrolls within itself. Everything inside it is reachable by keyboard —
    dismiss buttons and the request id — so the scroll has a keyboard path. */
+/* An archived project's board (TAS-149, DESIGN.md §5.7): one line above the
+   notices and outside them, with nothing behind it — no fill, edge, stripe or
+   icon, because archiving is a state of the project and not a failure. The
+   fact in `--fg` 600 (16.56:1 light / 17.13:1 dark on `--bg`), the consequence
+   in `--fg-2` (6.73 / 7.35). The notices' own inset, so the two align. Focus
+   lands here by script when the board turns read-only under the reader, and
+   wears the product's ring from the `[tabindex]` rule at the top. */
+.board-archive-line {
+  flex: none;
+  margin: 12px 18px 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.board-archive-line strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 .board-notices {
   display: flex;
   max-height: 34vh;
@@ -5735,17 +5740,12 @@ h1 {
 }
 
 .project-archive-note {
+  flex: 1 1 220px;
   margin: 0;
   color: var(--fg-2);
   font-size: 12px;
   line-height: 1.45;
   text-wrap: pretty;
-}
-
-/* The basis only in the row. The archived project's note is a child of the
-   column `.project-archive` itself, where a basis would be a 220px height. */
-.project-archive-row > .project-archive-note {
-  flex: 1 1 220px;
 }
 
 .project-archive-trigger {

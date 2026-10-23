@@ -1074,17 +1074,18 @@ export class RestTaskaApi implements TaskaApi {
   }
 
   /**
-   * `PATCH /projects/{projectId}` — see `TaskaApi.updateProject` for the four
+   * `PATCH /projects/{projectId}` — see `TaskaApi.updateProject` for the
    * behaviours of this route that its schema does not state.
    *
    * Only the keys the caller actually named are sent, and the test for "named"
    * is `!== undefined` rather than truthiness. That distinction is the whole
-   * of the clearing story since PR #155's head `28f5fe1`: an explicit `null`
-   * has to survive this spread as `"color": null` / `"description": null`,
-   * because that is what clears the field, while `undefined` must not become
-   * one — an absent key is "keep", and a stray `null` would wipe a colour the
-   * reader never touched. `description: ""` survives too and is stored as a
-   * blank; the dialog sends `null` instead when it means "remove".
+   * of the clearing story (backend PR #155): an explicit `null` has to survive
+   * this spread as `"color": null` / `"description": null`, because that is
+   * what clears the field, while `undefined` must not become one — an absent
+   * key is "keep", and a stray `null` would wipe a colour the reader never
+   * touched. `description: ""` survives too, as written; the server stores a
+   * blank one as `null`, the same clear the dialog sends explicitly. And no key
+   * beyond the three: the gateway answers an unknown one with a 400.
    */
   updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {
     return this.request<Project>(`/projects/${this.segment(projectId)}`, {
@@ -1100,8 +1101,9 @@ export class RestTaskaApi implements TaskaApi {
   /**
    * `DELETE /projects/{projectId}` — see `TaskaApi.archiveProject`. No body:
    * the route takes none. The answer is the archived project as stored, passed
-   * through as the reads pass theirs, `currentUserRole: null` included — the
-   * caller decides what to keep from its own cache.
+   * through as the reads pass theirs, `currentUserRole: "ADMIN"` included —
+   * the caller decides what to keep from it, and the edit dialog keeps only
+   * `archivedAt`.
    */
   archiveProject(projectId: string): Promise<Project> {
     return this.request<Project>(`/projects/${this.segment(projectId)}`, { method: "DELETE" });
@@ -1223,7 +1225,7 @@ export class RestTaskaApi implements TaskaApi {
    * develop `398285cde074`); until then a missing object failed the whole read
    * with **404**, the status this route gives a missing project. A read that
    * fails for its own reasons is still mostly silent: the board's
-   * `retryUnlessRefused` does not retry a 4xx, only the watcher
+   * `retryUnlessMissing` does not retry a 404 or a 403, only the watcher
    * section of an open issue says the members could not be read, and only to
    * an ADMIN. Everywhere else there are simply no assignee chips and no people
    * in the assignee filter, and the reporter reads "Unknown".

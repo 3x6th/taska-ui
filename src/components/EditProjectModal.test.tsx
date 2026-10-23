@@ -8,22 +8,22 @@ import { EditProjectModal } from "./EditProjectModal";
 
 /**
  * The dialog's two writes, read off the calls it makes rather than off a
- * store: `PATCH` (backend PR #155 at `28f5fe1`, where an explicit `null`
- * clears) and `DELETE` (backend PR #159 at `97464fe`, the archive). Both are
- * undeployed on 2026-10-20, so these pin what the UI sends and does with the
- * answer, not what any gateway has said.
+ * store: `PATCH` (backend PR #155, where an explicit `null` clears) and
+ * `DELETE` (backend PR #159, the archive), both merged and deployed.
  */
-const { fakeApi, calls, reset, refuseArchive } = vi.hoisted(() => {
+const { fakeApi, calls, reset, refuseArchive, refuseUpdate } = vi.hoisted(() => {
   const state: {
     updates: { projectId: string; input: Record<string, unknown> }[];
     archives: string[];
     contextReads: string[];
     archiveFailure: Error | null;
-  } = { updates: [], archives: [], contextReads: [], archiveFailure: null };
+    updateFailure: Error | null;
+  } = { updates: [], archives: [], contextReads: [], archiveFailure: null, updateFailure: null };
 
   const api = {
     updateProject: async (projectId: string, input: Record<string, unknown>) => {
       state.updates.push({ projectId, input });
+      if (state.updateFailure) throw state.updateFailure;
       return {
         id: projectId,
         projectKey: "TAS",
@@ -35,7 +35,7 @@ const { fakeApi, calls, reset, refuseArchive } = vi.hoisted(() => {
         description: null,
         color: null,
         ...input,
-        currentUserRole: null,
+        currentUserRole: "ADMIN",
       };
     },
     archiveProject: async (projectId: string) => {
@@ -51,14 +51,32 @@ const { fakeApi, calls, reset, refuseArchive } = vi.hoisted(() => {
         archivedAt: "2026-10-20T10:00:00Z",
         description: "Gateway and services",
         color: "#0052cc",
-        // The entity mapper sets no role on this answer.
-        currentUserRole: null,
+        // A role a caller must not take from a write answer: the reads state
+        // the reader's role, and this is not the one the cache holds.
+        currentUserRole: "VIEWER",
       };
     },
     getProjectContext: async (projectId: string) => {
       state.contextReads.push(projectId);
-      throw Object.assign(new Error("Project archived"), { status: 400, code: "FAILED_PRECONDITION" });
+      // An archived project's reads stay open (backend PR #159).
+      return {
+        project: {
+          id: projectId,
+          projectKey: "TAS",
+          name: "Taska Platform",
+          createdBy: "user-anna",
+          createdAt: "2026-08-01T09:00:00Z",
+          updatedAt: "2026-08-01T09:00:00Z",
+          archivedAt: "2026-10-20T10:00:00Z",
+          currentUserRole: "ADMIN",
+        },
+        role: "ADMIN",
+        members: [],
+        labels: [],
+        workflows: {},
+      };
     },
+    listProjects: async () => [],
   };
 
   return {
@@ -69,9 +87,13 @@ const { fakeApi, calls, reset, refuseArchive } = vi.hoisted(() => {
       state.archives = [];
       state.contextReads = [];
       state.archiveFailure = null;
+      state.updateFailure = null;
     },
     refuseArchive: (error: Error) => {
       state.archiveFailure = error;
+    },
+    refuseUpdate: (error: Error) => {
+      state.updateFailure = error;
     },
   };
 });
@@ -92,10 +114,11 @@ const baseProject = (extra: Partial<Project> = {}): Project => ({
   ...extra,
 });
 
-function renderDialog(project: Project, onArchived?: () => void) {
+function renderDialog(project: Project, onArchived?: (archivedAt: string) => void) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData<Project[]>(["projects"], [project]);
-  queryClient.setQueryData(projectContextKey(project.id), { project } as unknown as ProjectContext);
+  const other: Project = { ...project, id: "project-2", projectKey: "WEB", name: "Web App" };
+  queryClient.setQueryData<Project[]>(["projects"], [project, other]);
+  queryClient.setQueryData(projectContextKey(project.id), { project, role: "ADMIN" } as unknown as ProjectContext);
   queryClient.setQueryData(["issues", project.id, "ALL"], { items: [], page: 0, pageSize: 100, totalCount: 0 });
   queryClient.setQueryData(["project-summaries", project.id], { count: 3, members: [], failure: null });
   const onClose = vi.fn();
@@ -140,11 +163,45 @@ describe("editing a project's colour and description", () => {
     expect(calls.updates[0].input).toEqual({ description: null });
   });
 
-  it("does not rewrite a legacy blank description to null behind the reader's back", () => {
-    const { dialog } = renderDialog(baseProject({ description: "" }));
+  it("sends nothing for an empty box on a project that has no description", () => {
+    const { dialog } = renderDialog(baseProject({ description: null }));
 
     expect(within(dialog).getByLabelText("Description")).toHaveValue("");
     expect(within(dialog).getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  // Backend PR #155 deployed (401 without a token on 2026-10-23), so a 405 has
+  // no line of its own any more: it is a refusal like any other.
+  it("shows a 405 as the ordinary refusal, with the server's words", async () => {
+    refuseUpdate(
+      Object.assign(new Error("Request method 'PATCH' is not supported."), { status: 405, code: "METHOD_NOT_ALLOWED" }),
+    );
+    const { dialog } = renderDialog(baseProject());
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Renamed" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(await within(dialog).findByText("Request method 'PATCH' is not supported.")).toBeVisible();
+    expect(within(dialog).queryByText(/not on this gateway yet/)).not.toBeInTheDocument();
+  });
+
+  // Archived while the dialog was open (§5.7): our sentence in place of the
+  // server's, the request id as usual — and keyed on `details.reason` alone.
+  it("says a save was refused because the project was archived, with the request id", async () => {
+    refuseUpdate(
+      Object.assign(new Error("Project is archived"), {
+        status: 400,
+        code: "FAILED_PRECONDITION",
+        details: { reason: "PROJECT_ARCHIVED" },
+        requestId: "4b2e9a10-archived",
+      }),
+    );
+    const { dialog } = renderDialog(baseProject());
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Renamed" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(await within(dialog).findByText("This project has been archived, so nothing in it can be changed.")).toBeVisible();
+    expect(within(dialog).queryByText("Project is archived")).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Copy request id 4b2e9a10-archived" })).toBeVisible();
   });
 });
 
@@ -161,7 +218,13 @@ describe("archiving a project from the dialog", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Archive TAS" }));
   };
 
-  it("asks first, sends one DELETE, keeps the reader's role and drops the board's queries without a refetch", async () => {
+  it("says what archiving does, beside the control that does it", () => {
+    const { dialog } = renderDialog(baseProject());
+
+    expect(within(dialog).getByText("Archiving hides TAS from Projects and makes its board read-only.")).toBeVisible();
+  });
+
+  it("asks first, sends one DELETE, and takes only archivedAt from the answer", async () => {
     const onArchived = vi.fn();
     const { dialog, queryClient, onClose } = renderDialog(baseProject(), onArchived);
 
@@ -170,19 +233,33 @@ describe("archiving a project from the dialog", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(calls.archives).toEqual(["project-1"]);
     expect(onArchived).toHaveBeenCalledTimes(1);
+    expect(onArchived).toHaveBeenCalledWith("2026-10-20T10:00:00Z");
+    // Told before the dialog closes, so the caller's next render draws both.
+    expect(onArchived.mock.invocationCallOrder[0]).toBeLessThan(onClose.mock.invocationCallOrder[0]);
 
-    const row = queryClient.getQueryData<Project[]>(["projects"])?.[0];
-    expect(row?.archivedAt).toBe("2026-10-20T10:00:00Z");
-    // The answer carries `currentUserRole: null`; the card keeps its pencil.
-    expect(row?.currentUserRole).toBe("ADMIN");
+    // Into the board's context, and nothing else from the answer: not its role.
+    const context = queryClient.getQueryData<ProjectContext>(projectContextKey("project-1"));
+    expect(context?.project.archivedAt).toBe("2026-10-20T10:00:00Z");
+    expect(context?.project.currentUserRole).toBe("ADMIN");
+    expect(context?.project.name).toBe("Taska Platform");
+  });
 
-    // Removed rather than invalidated: nothing here asks the context again,
-    // which the server would refuse.
-    expect(queryClient.getQueryCache().find({ queryKey: projectContextKey("project-1") })).toBeUndefined();
-    expect(queryClient.getQueryCache().find({ queryKey: ["issues", "project-1", "ALL"] })).toBeUndefined();
-    expect(calls.contextReads).toEqual([]);
-    // The card's own counts stay, true as of a moment ago.
-    expect(queryClient.getQueryData(["project-summaries", "project-1"])).toBeDefined();
+  it("drops the row and its counts from Projects, and keeps the board's own reads", async () => {
+    const { dialog, queryClient, onClose } = renderDialog(baseProject(), vi.fn());
+
+    askAndAnswer(dialog);
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+
+    // `GET /projects` no longer lists it, so neither does the cache — no
+    // archived row of our own making.
+    expect(queryClient.getQueryData<Project[]>(["projects"])?.map((row) => row.id)).toEqual(["project-2"]);
+    expect(queryClient.getQueryData(["project-summaries", "project-1"])).toBeUndefined();
+    // An archived project's reads stay open, so the board keeps what it holds.
+    expect(queryClient.getQueryData(["issues", "project-1", "ALL"])).toBeDefined();
+    // And the context and the list go stale, to be read again by whoever
+    // shows them — the board does at once — and agree with the server.
+    expect(queryClient.getQueryState(projectContextKey("project-1"))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(["projects"])?.isInvalidated).toBe(true);
   });
 
   it("wears the strip's danger edge on the trigger while its question is open", () => {
@@ -193,12 +270,6 @@ describe("archiving a project from the dialog", () => {
     fireEvent.click(trigger);
     // `aria-expanded="true"` is what `.project-archive-trigger[aria-expanded="true"]` paints.
     expect(trigger).toHaveAttribute("aria-expanded", "true");
-  });
-
-  it("names the year of an archive from another year", () => {
-    const { dialog } = renderDialog(baseProject({ archivedAt: "2024-03-05T12:00:00Z" }));
-
-    expect(within(dialog).getByText(/^Archived on Mar 5, 2024\./)).toBeVisible();
   });
 
   it("closes the question on Cancel without sending anything", () => {
@@ -213,26 +284,23 @@ describe("archiving a project from the dialog", () => {
     expect(calls.archives).toEqual([]);
   });
 
-  it("reads a 405 as this gateway not shipping the archive yet, and changes nothing", async () => {
-    refuseArchive(
-      Object.assign(new Error("Request method 'DELETE' is not supported."), { status: 405, code: "METHOD_NOT_ALLOWED" }),
-    );
+  it("changes nothing on a refusal", async () => {
+    refuseArchive(Object.assign(new Error("Project ADMIN role is required"), { status: 403, code: "PERMISSION_DENIED" }));
     const onArchived = vi.fn();
     const { dialog, queryClient, onClose } = renderDialog(baseProject(), onArchived);
 
     askAndAnswer(dialog);
 
-    expect(await within(dialog).findByText(/Archiving is not on this gateway yet/)).toBeVisible();
-    expect(within(dialog).queryByText(/not supported/)).not.toBeInTheDocument();
+    expect(await within(dialog).findByText("This project was not archived.")).toBeVisible();
     expect(onClose).not.toHaveBeenCalled();
     expect(onArchived).not.toHaveBeenCalled();
-    expect(queryClient.getQueryData<Project[]>(["projects"])?.[0].archivedAt).toBeNull();
-    expect(queryClient.getQueryCache().find({ queryKey: projectContextKey("project-1") })).toBeDefined();
+    expect(queryClient.getQueryData<Project[]>(["projects"])).toHaveLength(2);
+    expect(queryClient.getQueryData<ProjectContext>(projectContextKey("project-1"))?.project.archivedAt).toBeNull();
   });
 
   it("shows any other refusal with the server's words and the request id", async () => {
     refuseArchive(
-      Object.assign(new Error("User must have the role ADMIN"), {
+      Object.assign(new Error("Project ADMIN role is required"), {
         status: 403,
         code: "PERMISSION_DENIED",
         requestId: "8a1d3f20-archive",
@@ -243,7 +311,7 @@ describe("archiving a project from the dialog", () => {
     askAndAnswer(dialog);
 
     expect(await within(dialog).findByText("This project was not archived.")).toBeVisible();
-    expect(within(dialog).getByText("User must have the role ADMIN")).toBeVisible();
+    expect(within(dialog).getByText("Project ADMIN role is required")).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "Copy request id 8a1d3f20-archive" })).toBeVisible();
     expect(within(dialog).getByRole("button", { name: "Archive project" })).toHaveFocus();
   });
@@ -257,13 +325,11 @@ describe("archiving a project from the dialog", () => {
     },
   );
 
-  it("states an archived project as archived and does not offer it again", () => {
-    const { dialog } = renderDialog(baseProject({ archivedAt: new Date().toISOString() }));
+  // Neither caller opens the dialog for one; said here so a third cannot offer it.
+  it("offers no archive for a project already archived", () => {
+    const { dialog } = renderDialog(baseProject({ archivedAt: "2026-10-20T10:00:00Z" }));
 
-    // No year for this year's date (`formatDayWithYearIfOther`).
-    expect(
-      within(dialog).getByText(/^Archived on [A-Z][a-z]{2} \d{1,2}\. Its board and issues no longer open, and Taska cannot restore it\.$/),
-    ).toBeVisible();
+    expect(within(dialog).queryByRole("region", { name: "Archive project" })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: /Archive/ })).not.toBeInTheDocument();
   });
 });

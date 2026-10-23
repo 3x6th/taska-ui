@@ -12,8 +12,8 @@ import { readableTextOn } from "../lib/format";
  * extra option whose value is `null` ("Automatic", meaning the project states
  * no colour of its own and the client computes one). It used to mark that
  * option `disabled` once the server held a colour, because the contract had no
- * way to take one back; backend PR #155's head `28f5fe1` clears a colour with
- * an explicit `null`, so nothing here is refused any more and the prop went.
+ * way to take one back; backend PR #155 clears a colour with an explicit
+ * `null`, so nothing here is refused any more and the prop went.
  *
  * A group of `aria-pressed` buttons rather than an ARIA radio group. `role=
  * "radio"` would announce a keyboard contract this does not implement — arrow

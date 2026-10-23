@@ -9,11 +9,11 @@ import { expect, test, type Page } from "@playwright/test";
 // what puts the edit control on the card and in the board header.
 //
 // What this file is NOT: a statement about the gateway.
-// `PATCH /api/v1/projects/{id}` is backend PR #155 and was **open and
-// undeployed** on 2026-10-20, where the path answers 405. Every rule leaned on
-// here — ADMIN only, an explicit null clears the description and the colour —
-// is `MockTaskaStore` reading that PR's Java at `28f5fe1`, not observed
-// behaviour. Read these as pinning what the UI does.
+// `PATCH /api/v1/projects/{id}` is backend PR #155, merged and deployed (401
+// without a token on 2026-10-23). Every rule leaned on here — ADMIN only, an
+// explicit null clears the description and the colour — is `MockTaskaStore`
+// reading that PR's Java, not observed behaviour. Read these as pinning what
+// the UI does.
 
 async function signIn(page: Page) {
   await page.goto("/login");
@@ -76,8 +76,8 @@ test("clears a description, and the card falls back to its placeholder rather th
   await dialog.getByRole("button", { name: "Save changes" }).click();
   await expect(dialog).toBeHidden();
 
-  // Clearing sends `description: null` since PR #155's head `28f5fe1`, and the
-  // card draws its placeholder for that as it does for a legacy `""`.
+  // Clearing sends `description: null` (backend PR #155), and the card draws
+  // its placeholder for it.
   await expect(card).toContainText("Project workspace");
   await expect(card).not.toContainText("Customer-facing web client");
 });
@@ -86,8 +86,8 @@ test("puts a coloured project back on its automatic colour, and the badge follow
   await signIn(page);
   await expect(page.locator(".skeleton-card")).toHaveCount(0);
 
-  // Taska Platform states #0052cc in the seed. Since PR #155's head `28f5fe1`
-  // an explicit `null` clears that, so Automatic is offered and works.
+  // Taska Platform states #0052cc in the seed. An explicit `null` clears that
+  // (backend PR #155), so Automatic is offered and works.
   const badge = projectCard(page, "Taska Platform").locator(".key-badge");
   const coloured = await badge.evaluate((node) => getComputedStyle(node).backgroundColor);
 

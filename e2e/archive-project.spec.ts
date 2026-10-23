@@ -1,29 +1,30 @@
 import { expect, test, type Page } from "@playwright/test";
 
 // Archiving a project (TAS-149): `DELETE /api/v1/projects/{id}`, backend PR #159
-// (TAS-146) at head `97464fe`.
+// (TAS-146), merged and deployed on 2026-10-23. An archived project leaves
+// `GET /projects`, stays readable — board, issues, comments — and refuses every
+// write with 400 FAILED_PRECONDITION, `details.reason: "PROJECT_ARCHIVED"`.
+// The board reads `archivedAt` off its context and offers no write to anybody
+// (DESIGN.md §4.11 «Опасная зона диалога», §5.7 «Архивный проект»).
 //
 // Mock-backed like every spec here (playwright.config.ts): any seeded user signs
 // in with any password. On Taska Platform, Anna is the ADMIN, Mark a MEMBER and
 // Tom the VIEWER; Anna is also the ADMIN of Web App and Infra and Ops.
 //
-// What this file is NOT: a statement about the gateway. The route was **open
-// and undeployed** on 2026-10-20, where the method answers 405, and that 405
-// path cannot be reached against the mock at all (`isUndeployedRoute` needs an
-// HTTP status) — it is pinned in src/components/EditProjectModal.test.tsx. So
-// are two things this suite cannot see without a wire: the request id on an
-// archived board's refusal (`MockApiError` carries none —
-// src/screens/BoardScreen.test.tsx has it), and that nothing asks for the
-// project's context after archiving (the mock makes no network request for a
-// listener to count — EditProjectModal.test.tsx counts the calls instead).
+// The mock's store lives in the page, so a reload forgets an archive: every
+// step after one stays in the app — the board is reached by link
+// (`openInApp`), and a second account signs in through the app's own Log out.
 //
-// The mock refuses an archived project's board the way the PR's head does: the
-// context composes issue-service's labels read, which refuses with
-// FAILED_PRECONDITION "Project archived". TAS-146 asks whether reads should be
-// allowed; this file changes when it answers.
+// What this file cannot see without a wire: a request id. `MockApiError`
+// carries none, so the id beside the refusal is pinned in
+// src/screens/BoardScreen.test.tsx and src/components/EditProjectModal.test.tsx.
 
 async function signIn(page: Page, email = "anna@example.com") {
   await page.goto("/login");
+  await submitSignIn(page, email);
+}
+
+async function submitSignIn(page: Page, email: string) {
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password", { exact: true }).fill("mock-accepts-anything");
   await page.locator("form button[type=submit]").click();
@@ -31,16 +32,62 @@ async function signIn(page: Page, email = "anna@example.com") {
   await expect(page.locator(".skeleton-card")).toHaveCount(0);
 }
 
+/** Another account, in the same page and so the same mock store. */
+async function switchAccount(page: Page, from: string, to: string) {
+  await page.getByRole("button", { name: `Open profile for ${from}` }).click();
+  await page.getByRole("button", { name: "Log out" }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await submitSignIn(page, to);
+}
+
+/** A link followed inside the app — what a notification, a search hit or a pasted address does without a reload. */
+async function openInApp(page: Page, path: string) {
+  await page.evaluate((target) => {
+    window.history.pushState({}, "", target);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, path);
+}
+
 /** The card is a button and so is its edit control, so name them apart. */
 const projectCard = (page: Page, name: string) => page.locator(".project-card", { hasText: name });
 
-test("an ADMIN archives a project after confirming, and its card says Archived", async ({ page }) => {
+/** A project's board path, read off its card. */
+async function boardPathOf(page: Page, name: string) {
+  await projectCard(page, name).click();
+  await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
+  const path = new URL(page.url()).pathname;
+  await page.getByRole("button", { name: "Back to projects" }).click();
+  await expect(page).toHaveURL(/\/projects$/);
+  await expect(page.locator(".skeleton-card")).toHaveCount(0);
+  return path;
+}
+
+async function archiveFromCard(page: Page, name: string, key: string) {
+  await page.getByRole("button", { name: `Edit ${name}` }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit project" });
+  await dialog.getByRole("button", { name: "Archive project" }).click();
+  await dialog.getByRole("button", { name: `Archive ${key}` }).click();
+  await expect(dialog).toBeHidden();
+}
+
+/** Every write control the board and an open issue could offer, absent for whoever is reading. */
+async function expectNoWrites(page: Page) {
+  await expect(page.getByRole("button", { name: "New", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Edit project" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Manage labels" })).toHaveCount(0);
+  await expect(page.locator(".column-head button")).toHaveCount(0);
+  await expect(page.locator(".issue-card").first()).toHaveClass(/is-static/);
+}
+
+test("an ADMIN archives a project from its card: the card leaves, focus moves on, and the page says so", async ({
+  page,
+}) => {
   await signIn(page);
-  const card = projectCard(page, "Web App");
-  await expect(card.locator(".project-archived-badge")).toHaveCount(0);
+  await expect(page.getByText(/^3\s+projects/)).toBeVisible();
 
   await page.getByRole("button", { name: "Edit Web App" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit project" });
+  await expect(dialog.getByText("Archiving hides WEB from Projects and makes its board read-only.")).toBeVisible();
   const trigger = dialog.getByRole("button", { name: "Archive project" });
   await trigger.click();
 
@@ -60,49 +107,133 @@ test("an ADMIN archives a project after confirming, and its card says Archived",
   await dialog.getByRole("button", { name: /^Archive WEB$/ }).click();
   await expect(dialog).toBeHidden();
 
-  // Still listed — nothing hides an archived project — and marked as one.
-  await expect(card).toBeVisible();
-  await expect(card.locator(".project-archived-badge")).toHaveText("Archived");
-  // The reader is still its ADMIN: the answer's `currentUserRole: null` was not
-  // spread over the row.
-  await expect(page.getByRole("button", { name: "Edit Web App" })).toBeVisible();
+  // `GET /projects` no longer lists it: the card is gone, and the count with it.
+  await expect(projectCard(page, "Web App")).toHaveCount(0);
+  await expect(page.getByText(/^2\s+projects/)).toBeVisible();
+  await expect(page.getByText("Archived", { exact: true })).toHaveCount(0);
+  // The card that took its place has focus, and the page said what happened.
+  await expect(projectCard(page, "Infra and Ops")).toBeFocused();
+  await expect(page.getByRole("status").filter({ hasText: "WEB archived" })).toHaveText(
+    "WEB archived. It no longer appears in Projects.",
+  );
 });
 
-test("opening an archived project's board shows the refusal, not a blank board", async ({ page }) => {
-  await signIn(page);
-  await page.getByRole("button", { name: "Edit Web App" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit project" });
-  await dialog.getByRole("button", { name: "Archive project" }).click();
-  await dialog.getByRole("button", { name: /^Archive WEB$/ }).click();
-  await expect(dialog).toBeHidden();
-
-  await projectCard(page, "Web App").click();
-  await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
-
-  // The generic frame-read failure, carrying the server's own sentence. The UI
-  // matches on neither the code nor the words.
-  const notices = page.getByRole("region", { name: "Board problems" });
-  await expect(notices.getByText(/This project could not be loaded/)).toBeVisible();
-  await expect(notices.getByText("Project archived").first()).toBeVisible();
-});
-
-test("archiving from the board leaves for the project list", async ({ page }) => {
+test("archiving from the board stays on it, read-only, with focus on the archive line", async ({ page }) => {
   await signIn(page);
   await projectCard(page, "Infra and Ops").click();
   await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
+  const boardUrl = page.url();
   await expect(page.locator(".board-project-name")).toHaveText("Infra and Ops");
+  await expect(page.locator(".issue-card").first()).not.toHaveClass(/is-static/);
 
   await page.getByRole("button", { name: "Edit project" }).click();
   const dialog = page.getByRole("dialog", { name: "Edit project" });
   await dialog.getByRole("button", { name: "Archive project" }).click();
   await dialog.getByRole("button", { name: /^Archive OPS$/ }).click();
+  await expect(dialog).toBeHidden();
 
-  // Every read the board would make next is refused, so it does not stay.
+  // Still here: an archived project's board reads.
+  expect(page.url()).toBe(boardUrl);
+  const line = page.locator(".board-archive-line");
+  await expect(line).toHaveText(/^Archived on [A-Z][a-z]{2} \d{1,2}\. This board and its issues are read-only\.$/);
+  await expect(line).toBeFocused();
+  // Not a problem of the board's, and no pill beside the name.
+  await expect(page.getByRole("region", { name: "Board problems" })).toHaveCount(0);
+  await expect(page.locator(".board-topbar").getByText("Archived")).toHaveCount(0);
+  await expectNoWrites(page);
+
+  // An issue opens, read-only, with the archive in the transition slot.
+  await page.locator(".issue-card", { hasText: "OPS-3" }).click();
+  const panel = page.getByRole("dialog", { name: "OPS-3 issue" });
+  await expect(panel.getByText(/^This project was archived on [A-Z][a-z]{2} \d{1,2}, so this issue is read-only\.$/)).toBeVisible();
+  await expect(panel.getByRole("button", { name: /Delete issue/ })).toHaveCount(0);
+  await expect(panel.getByPlaceholder("Leave a comment")).toHaveCount(0);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+
+  // And it has left Projects.
+  await page.getByRole("button", { name: "Back to projects" }).click();
   await expect(page).toHaveURL(/\/projects$/);
-  await expect(projectCard(page, "Infra and Ops").locator(".project-archived-badge")).toHaveText("Archived");
-  // `replace`: Back does not reopen the board that would now be refused.
-  await page.goBack();
-  await expect(page).not.toHaveURL(/\/board$/);
+  await expect(page.locator(".skeleton-card")).toHaveCount(0);
+  await expect(projectCard(page, "Infra and Ops")).toHaveCount(0);
+});
+
+test("a link to an archived project opens a read-only board with its issues", async ({ page }) => {
+  await signIn(page);
+  const webBoard = await boardPathOf(page, "Web App");
+  await archiveFromCard(page, "Web App", "WEB");
+  await expect(projectCard(page, "Web App")).toHaveCount(0);
+
+  await openInApp(page, webBoard);
+
+  await expect(page.locator(".board-project-name")).toHaveText("Web App");
+  await expect(page.locator(".board-archive-line")).toBeVisible();
+  // Arriving on it is not a change under anybody: the line does not take focus.
+  await expect(page.locator(".board-archive-line")).not.toBeFocused();
+  await expect(page.locator(".issue-card", { hasText: "WEB-" }).first()).toBeVisible();
+  await expectNoWrites(page);
+});
+
+test("an archived project offers no write to a MEMBER or a VIEWER either", async ({ page }) => {
+  await signIn(page);
+  const taskaBoard = await boardPathOf(page, "Taska Platform");
+  await archiveFromCard(page, "Taska Platform", "TAS");
+
+  for (const [from, email] of [
+    ["Anna Ivanova", "mark@example.com"],
+    ["Mark Lee", "tom@example.com"],
+  ] as const) {
+    await switchAccount(page, from, email);
+    // Gone from their Projects too.
+    await expect(projectCard(page, "Taska Platform")).toHaveCount(0);
+
+    await openInApp(page, taskaBoard);
+    await expect(page.locator(".board-archive-line")).toBeVisible();
+    await expectNoWrites(page);
+    // No "role is unstated" banner and no role sentence: the archive is the reason.
+    await expect(page.getByRole("region", { name: "Board problems" })).toHaveCount(0);
+
+    await page.locator(".issue-card", { hasText: "TAS-102" }).click();
+    const panel = page.getByRole("dialog", { name: "TAS-102 issue" });
+    await expect(panel.getByText(/so this issue is read-only\.$/)).toBeVisible();
+    await expect(panel.getByRole("group", { name: "Status" }).getByRole("button")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: /Delete issue/ })).toHaveCount(0);
+    await expect(panel.getByPlaceholder("Leave a comment")).toHaveCount(0);
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+
+    await page.getByRole("button", { name: "Back to projects" }).click();
+    await expect(page).toHaveURL(/\/projects$/);
+    await expect(page.locator(".skeleton-card")).toHaveCount(0);
+  }
+});
+
+test("a write refused because the project was archived meanwhile says so, keeps the text and turns the board read-only", async ({
+  page,
+}) => {
+  await signIn(page);
+  await projectCard(page, "Taska Platform").click();
+  await page.locator(".issue-card", { hasText: "TAS-102" }).click();
+  const panel = page.getByRole("dialog", { name: "TAS-102 issue" });
+
+  // The mock's stand-in for another ADMIN archiving it a moment before
+  // (`MOCK_PROJECT_TRIGGERS.archivedMeanwhile`).
+  const text = "Ready for review [archived meanwhile]";
+  const composer = panel.getByPlaceholder("Leave a comment");
+  await composer.fill(text);
+  await panel.getByRole("button", { name: "Comment", exact: true }).click();
+
+  // Our sentence where the reader acted, not the server's.
+  await expect(panel.getByText("This project has been archived, so nothing in it can be changed.")).toBeVisible();
+  await expect(panel.getByText("Project is archived")).toHaveCount(0);
+  // The board read its context again and turned read-only from it.
+  await expect(page.locator(".board-archive-line")).toBeAttached();
+  const note = panel.getByText(/^This project was archived on [A-Z][a-z]{2} \d{1,2}, so this issue is read-only\.$/);
+  await expect(note).toBeVisible();
+  // The reader's words stay, read-only; the button that could send them went,
+  // and focus went to the panel's archive line rather than to the page.
+  await expect(composer).toHaveValue(text);
+  await expect(composer).not.toBeEditable();
+  await expect(panel.getByRole("button", { name: "Comment", exact: true })).toHaveCount(0);
+  await expect(note).toBeFocused();
 });
 
 for (const [role, email] of [

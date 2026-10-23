@@ -7,6 +7,7 @@ import {
   isConflict,
   isIssueVersionConflict,
   isMissingOrForbidden,
+  isProjectArchived,
   isUndeployedRoute,
 } from "./errors";
 import type { IssueWriteAnswer } from "./TaskaApi";
@@ -21,6 +22,7 @@ class MockLikeError extends Error {
   constructor(
     public readonly code: string,
     message: string,
+    public readonly details: Readonly<Record<string, string>> | null = null,
   ) {
     super(message);
   }
@@ -228,6 +230,59 @@ describe("isAccountLocked", () => {
     expect(isAccountLocked("PERMISSION_DENIED")).toBe(false);
     expect(isAccountLocked({ code: "PERMISSION_DENIED" })).toBe(false);
     expect(isAccountLocked(null)).toBe(false);
+  });
+});
+
+/**
+ * The archived-project refusal (backend PR #159, TAS-146, as merged): HTTP 400
+ * `{"code":"FAILED_PRECONDITION","message":"Project is archived",
+ * "details":{"reason":"PROJECT_ARCHIVED"}}` on every write of an archived
+ * project. `details.reason` is the key; the code alone is shared with refusals
+ * that have nothing to do with archiving.
+ */
+describe("isProjectArchived", () => {
+  const archivedDetails = { reason: "PROJECT_ARCHIVED" };
+
+  it("accepts the gateway's archived refusal", () => {
+    expect(
+      isProjectArchived(new ApiError("Project is archived", "FAILED_PRECONDITION", 400, "req-1", undefined, archivedDetails)),
+    ).toBe(true);
+  });
+
+  it("accepts the mock's status-less version of it", () => {
+    expect(isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Project is archived", archivedDetails))).toBe(true);
+  });
+
+  // The last-admin refusal of a member write is a 400 FAILED_PRECONDITION with
+  // no details — read by code alone it would be an archive nobody made.
+  it("refuses a FAILED_PRECONDITION that carries no reason, the last-admin refusal included", () => {
+    expect(
+      isProjectArchived(new ApiError("Can't modify last admin: u in project: p", "FAILED_PRECONDITION", 400)),
+    ).toBe(false);
+    expect(isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Can't modify last admin: u in project: p"))).toBe(
+      false,
+    );
+    expect(
+      isProjectArchived(new ApiError("Project is archived", "FAILED_PRECONDITION", 400, "req-1", undefined, null)),
+    ).toBe(false);
+  });
+
+  it("refuses another reason, and the reason on another code", () => {
+    expect(
+      isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Locked", { reason: "SOMETHING_ELSE" })),
+    ).toBe(false);
+    expect(isProjectArchived(new MockLikeError("PERMISSION_DENIED", "Project is archived", archivedDetails))).toBe(false);
+  });
+
+  // The words are never consulted.
+  it("ignores the message", () => {
+    expect(isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Проект в архиве", archivedDetails))).toBe(true);
+    expect(isProjectArchived(new MockLikeError("FAILED_PRECONDITION", "Project is archived"))).toBe(false);
+  });
+
+  it("refuses values that are not errors", () => {
+    expect(isProjectArchived({ code: "FAILED_PRECONDITION", details: archivedDetails })).toBe(false);
+    expect(isProjectArchived(null)).toBe(false);
   });
 });
 

@@ -5,7 +5,14 @@ import { ATTACHMENT_MAX_SIZE_BYTES, attachmentSizeRefusalMessage } from "../atta
 import { AVATAR_GATEWAY_REFUSAL_MESSAGE, AVATAR_MAX_SIZE_BYTES } from "../avatars";
 import { ObjectStoreError } from "../objectStore";
 import { issueLinkTypeLabel } from "../../lib/format";
-import { IssueVersionConflictError, apiErrorFacts, isConflict, isMissingOrForbidden, isUndeployedRoute } from "../errors";
+import {
+  IssueVersionConflictError,
+  apiErrorFacts,
+  isConflict,
+  isMissingOrForbidden,
+  isProjectArchived,
+  isUndeployedRoute,
+} from "../errors";
 import { ESTIMATE_MAX_MESSAGE, STORY_POINTS_RANGE_MESSAGE } from "../planningFields";
 import type { UpdateIssueInput } from "../TaskaApi";
 
@@ -1168,12 +1175,9 @@ describe("RestTaskaApi project members", () => {
 });
 
 /**
- * Creating, editing and archiving a project (TAS-148, TAS-149), written
- * against backend PR #155 at head `28f5fe1` and PR #159 at head `97464fe` —
- * **both open and undeployed on 2026-10-20**, where `PATCH` and `DELETE
- * /api/v1/projects/{id}` answer 405 because only GET is mapped on that path. So
- * these cases pin routes this leg has never spoken to, and they are the only
- * check on them until the PRs merge.
+ * Creating, editing and archiving a project (TAS-148, TAS-149), backend PRs
+ * #155 and #159 as merged — both deployed, answering 401 without a token on
+ * 2026-10-23 where they answered 405 before.
  *
  * What the edit cases are really about is the body: which keys are on it and
  * which are not. Absent is "keep", an explicit `null` is "clear", so an extra
@@ -1271,8 +1275,8 @@ describe("RestTaskaApi project writes", () => {
 
   it("sends an empty description as written", async () => {
     // The test for "named" is `!== undefined`, not truthiness. The server
-    // stores `""` as a blank; whether to send it is the caller's call, and
-    // this leg does not tidy it away.
+    // stores a blank description as `null`; whether to send one is the
+    // caller's call, and this leg does not tidy it away.
     const { fetchStub } = await call(project(), (api) => api.updateProject("project-1", { description: "" }));
 
     expect(sentBody(fetchStub)).toEqual({ description: "" });
@@ -1344,8 +1348,8 @@ describe("RestTaskaApi project writes", () => {
   });
 
   it("archives with a DELETE on the project path, no body, and answers the row", async () => {
-    const archivedAt = "2026-10-20T10:00:00Z";
-    const { result, fetchStub } = await call(project({ archivedAt, currentUserRole: null }), (api) =>
+    const archivedAt = "2026-10-23T10:00:00Z";
+    const { result, fetchStub } = await call(project({ archivedAt, currentUserRole: "ADMIN" }), (api) =>
       api.archiveProject("project-1"),
     );
 
@@ -1353,36 +1357,27 @@ describe("RestTaskaApi project writes", () => {
     const init = fetchStub.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe("DELETE");
     expect(init.body).toBeUndefined();
-    expect(result).toMatchObject({ id: "project-1", archivedAt, currentUserRole: null });
+    expect(result).toMatchObject({ id: "project-1", archivedAt, currentUserRole: "ADMIN" });
   });
 
-  it("keeps the request id on an archived project's refusal", async () => {
-    // What every issue-service read answers once a project is archived (PR
-    // #159 head `97464fe`). The UI matches on neither the code nor the
-    // sentence; it shows them, with the id that finds them in the log.
+  it("carries an archived project's refusal with its reason and its request id", async () => {
+    // What every write of an archived project answers (backend PR #159 as
+    // merged). `details.reason` is what the UI keys on, never the sentence.
     const failure = await call(
-      { code: "FAILED_PRECONDITION", message: "Project archived" },
-      (api) => api.getProjectContext("project-1"),
+      { code: "FAILED_PRECONDITION", message: "Project is archived", details: { reason: "PROJECT_ARCHIVED" } },
+      (api) => api.updateProject("project-1", { name: "Too late" }),
       400,
     ).catch((error: unknown) => error);
 
     expect(apiErrorFacts(failure)).toMatchObject({
       status: 400,
       code: "FAILED_PRECONDITION",
-      message: "Project archived",
+      message: "Project is archived",
       requestId: "req-1",
+      details: { reason: "PROJECT_ARCHIVED" },
     });
+    expect(isProjectArchived(failure)).toBe(true);
     expect(isMissingOrForbidden(failure)).toBe(false);
-  });
-
-  it("reads a 405 on the archive as a route this gateway has not shipped", async () => {
-    const failure = await call(
-      { code: "METHOD_NOT_ALLOWED", message: "Request method 'DELETE' is not supported." },
-      (api) => api.archiveProject("project-1"),
-      405,
-    ).catch((error: unknown) => error);
-
-    expect(isUndeployedRoute(failure, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
   });
 
   it("carries a null description and a null colour through untouched", async () => {

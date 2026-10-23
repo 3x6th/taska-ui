@@ -78,9 +78,10 @@ export interface ApiErrorFacts {
 
 /**
  * `RestErrorResponse.details` (backend PR #199, TAS-239, merged and deployed
- * 2026-10-19): `{string: string}`, nullable, filled by exactly one refusal
- * today — the account lock's `lockedUntil` (`src/lib/accountLock.ts`) — and
- * `null` on every other error the gateway answers.
+ * 2026-10-19): `{string: string}`, nullable, filled by two refusals today —
+ * the account lock's `lockedUntil` (`src/lib/accountLock.ts`) and an archived
+ * project's `reason` (`isProjectArchived`, backend PR #159) — and `null` on
+ * every other error the gateway answers.
  */
 export type ErrorDetails = Readonly<Record<string, string>>;
 
@@ -131,37 +132,36 @@ export function isMissingOrForbidden(error: unknown): boolean {
   return code === "NOT_FOUND" || code === "PERMISSION_DENIED" || status === 404 || status === 403;
 }
 
-/**
- * The gRPC codes `RestErrorMapper.mapGrpcCodeToHttpStatus` turns into a 4xx,
- * read at backend `develop` `e8a8d316b326`: INVALID_ARGUMENT and OUT_OF_RANGE
- * and FAILED_PRECONDITION → 400, UNAUTHENTICATED → 401, PERMISSION_DENIED →
- * 403, NOT_FOUND → 404, ALREADY_EXISTS and ABORTED → 409, RESOURCE_EXHAUSTED →
- * 429. The mock carries only the code, so this is how its refusals are read the
- * same way as the gateway's statuses.
- */
-const CLIENT_REFUSAL_CODES = new Set([
-  "INVALID_ARGUMENT",
-  "OUT_OF_RANGE",
-  "FAILED_PRECONDITION",
-  "UNAUTHENTICATED",
-  "PERMISSION_DENIED",
-  "NOT_FOUND",
-  "ALREADY_EXISTS",
-  "ABORTED",
-  "RESOURCE_EXHAUSTED",
-]);
+/** `details.reason` on the archived-project refusal (backend PR #159, TAS-146). */
+export const PROJECT_ARCHIVED_REASON = "PROJECT_ARCHIVED";
 
 /**
- * Whether the server answered with a 4xx — a refusal it will give again,
- * rather than a failure worth one retry. Read off the status when there is one
- * (rest, hybrid), off the code when there is not (mock). A 400
- * `FAILED_PRECONDITION` "Project archived" (backend PR #159) is the case that
- * made this a question: the board used to spend its one retry re-asking it.
+ * Whether a write was refused because its project is archived — backend PR
+ * #159 (TAS-146), merged and deployed 2026-10-23: HTTP 400,
+ * `{"code":"FAILED_PRECONDITION","message":"Project is archived",
+ * "details":{"reason":"PROJECT_ARCHIVED"}}`, from every write on an archived
+ * project — issues, comments, attachments, labels, links, work log, watchers,
+ * workflows, members and `PATCH /projects/{id}` — and from no read.
+ *
+ * **`details.reason` is the key, and the only one.** `FAILED_PRECONDITION` by
+ * itself is not: the last-admin refusal of a member write is a 400
+ * `FAILED_PRECONDITION` too, and so are a label's and a transition's refusals.
+ * The message is prose and never matched. The code is checked beside the
+ * reason only because the two arrive together and a `reason` on any other code
+ * is not this refusal. Read as an own property, as `errorDetails` asks.
+ *
+ * Not a signal that the project is archived — the board reads that off
+ * `archivedAt` in its context, and a refusal only makes it read the context
+ * again (DESIGN.md §5.7, «Архив пришёл отказом записи»).
  */
-export function isClientRefusal(error: unknown): boolean {
-  const { code, status } = apiErrorFacts(error);
-  if (status !== null) return status >= 400 && status < 500;
-  return code !== null && CLIENT_REFUSAL_CODES.has(code);
+export function isProjectArchived(error: unknown): boolean {
+  const { code, details } = apiErrorFacts(error);
+  return (
+    code === "FAILED_PRECONDITION" &&
+    details !== null &&
+    Object.hasOwn(details, "reason") &&
+    details.reason === PROJECT_ARCHIVED_REASON
+  );
 }
 
 /**
@@ -225,9 +225,12 @@ export function isClientRefusal(error: unknown): boolean {
  * body. `GET /projects/{id}/members` met this signature first, while backend
  * PR #152 was undeployed and only `POST` was mapped on that path — it answers
  * `401` without a token since TAS-137 deployed (measured 2026-09-16) — and PR
- * #155's `PATCH /projects/{id}` meets it a second time, for the same reason.
- * The second is what this predicate was widened for; nothing ever called it
- * for the first.
+ * #155's `PATCH /projects/{id}` met it a second time, for the same reason,
+ * until it deployed (401 without a token on 2026-10-23, TAS-149). The second is
+ * what this predicate was widened for; nothing ever called it for the first,
+ * and nothing calls this arm today. It stays because it is the gateway's own
+ * signature and costs nothing; a reader that meets it takes the ordinary
+ * refusal.
  *
  * What the `code` conjunct buys is narrower than it looks, and worth stating
  * exactly because the obvious reading of it is false. It is **not** that this

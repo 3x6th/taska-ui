@@ -5,6 +5,7 @@ import type { CreateProjectWorkflowInput, WorkflowStatusInput, WorkflowTransitio
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
+import { refusalWords } from "../lib/projectArchive";
 import type {
   DictionaryEntry,
   IssueTypeCode,
@@ -129,6 +130,12 @@ interface ProjectWorkflowsModalProps {
    * presentation only — the server refuses all three writes for anybody else.
    */
   readerRole: ProjectRole | null | undefined;
+  /**
+   * The project is archived (backend PR #159, DESIGN.md §5.7): the cards and
+   * diagrams stay, every form and trigger goes for every role, and one line
+   * says why in place of the role's.
+   */
+  archived?: boolean;
   /** The board's issue types in its own order (`allowedIssueTypes`), which orders the project's own cards. */
   issueTypeOrder: readonly IssueTypeCode[];
   onClose: () => void;
@@ -164,6 +171,7 @@ export function ProjectWorkflowsModal({
   projectKey,
   projectColor,
   readerRole,
+  archived = false,
   issueTypeOrder,
   onClose,
 }: ProjectWorkflowsModalProps) {
@@ -176,7 +184,7 @@ export function ProjectWorkflowsModal({
   const entries = useMemo(() => orderWorkflowEntries(listed ?? [], issueTypeOrder), [listed, issueTypeOrder]);
   const categories = useMemo(() => statusCategoriesOf(listed ?? []), [listed]);
   const shared = entries.find((entry) => entry.shared);
-  const isAdmin = readerRole === "ADMIN";
+  const isAdmin = readerRole === "ADMIN" && !archived;
   const canCreate = isAdmin && Boolean(shared?.issueTypes.length);
 
   const [form, setForm] = useState<OpenForm | null>(null);
@@ -301,7 +309,7 @@ export function ProjectWorkflowsModal({
   }, []);
 
   const badge = keyBadgeStyle(projectKey, projectColor);
-  const readOnlyReader = readerRole === "MEMBER" || readerRole === "VIEWER" || readerRole === null;
+  const readOnlyReader = archived || readerRole === "MEMBER" || readerRole === "VIEWER" || readerRole === null;
   /** The refusal of the open form's write, if the last write was this form's. */
   const formError = write.isError ? write.error : null;
 
@@ -331,7 +339,10 @@ export function ProjectWorkflowsModal({
             (§4.22's rule, TAS-226): the admin rule for a role it named, an
             unknown role for none — and nothing while the role is still being
             read. */}
-        {readerRole === "MEMBER" || readerRole === "VIEWER" ? (
+        {archived ? (
+          // Every role, ADMIN included, and in place of the role's line (§5.7).
+          <p className="workflows-note">This project is archived, so its workflows cannot be changed.</p>
+        ) : readerRole === "MEMBER" || readerRole === "VIEWER" ? (
           <p className="workflows-note">Only a project admin can change workflows.</p>
         ) : readerRole === null ? (
           <p className="workflows-note">Your role on this project is unknown, so workflows cannot be changed here.</p>
@@ -711,7 +722,7 @@ function FormFoot({
             Workflow changes are not on this gateway yet, so this was not saved.
           </p>
         ) : (
-          <ErrorNote live="alert" requestId={facts.requestId} serverWords={facts.message}>
+          <ErrorNote live="alert" requestId={facts.requestId} serverWords={refusalWords(error)}>
             {refusedSentence}
           </ErrorNote>
         )

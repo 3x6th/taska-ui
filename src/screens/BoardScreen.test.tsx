@@ -66,6 +66,7 @@ const {
   seedIssueVersion,
   emptyPartsOnRead,
   setMembership,
+  seedArchivedAt,
   seedAssignee,
   assignCalls,
   failMembership,
@@ -152,6 +153,8 @@ const {
   const state: {
     /** `role: null` is an answered read that named no role this build knows — not a failure, and not a VIEWER. */
     membership: { role: "ADMIN" | "MEMBER" | "VIEWER" | null; isMember: boolean; projectExists: boolean };
+    /** `project.archivedAt` on the context read (backend PR #159, TAS-149). */
+    archivedAt: string | null;
     membershipFailure?: Error;
     membershipHeld: boolean;
     projectFailure?: Error;
@@ -363,6 +366,7 @@ const {
     commentDeleteFailure?: Error;
   } = {
     membership: { role: "ADMIN", isMember: true, projectExists: true },
+    archivedAt: null,
     membershipHeld: false,
     projectHeld: false,
     issueTypes: ["TASK", "BUG", "STORY"],
@@ -528,7 +532,7 @@ const {
           createdBy: "user-anna",
           createdAt: now,
           updatedAt: now,
-          archivedAt: null,
+          archivedAt: state.archivedAt,
           currentUserRole: state.membership.role,
         },
         role: state.membership.role,
@@ -885,6 +889,10 @@ const {
     setMembership: (role: "ADMIN" | "MEMBER" | "VIEWER" | null) => {
       state.membership = { role, isMember: true, projectExists: true };
     },
+    /** What the next context read says about the archive. */
+    seedArchivedAt: (archivedAt: string | null) => {
+      state.archivedAt = archivedAt;
+    },
     seedAssignee: (assigneeId: string | null) => {
       state.assigneeId = assigneeId;
     },
@@ -1141,6 +1149,7 @@ const {
       state.createCalls = [];
       state.contextWorkflowParts = undefined;
       state.membership = { role: "ADMIN", isMember: true, projectExists: true };
+      state.archivedAt = null;
       state.membershipFailure = undefined;
       state.membershipHeld = false;
       state.projectFailure = undefined;
@@ -1277,7 +1286,7 @@ function renderBoard(initialPath = `/projects/${PROJECT_ID}/board`) {
 }
 
 /**
- * The board gives a genuine failure one retry (`retryUnlessRefused`), so a
+ * The board gives a genuine failure one retry (`retryUnlessMissing`), so a
  * banner is a second away rather than a tick away. That budget is deliberate,
  * so the tests wait it out instead of taking it off the screen.
  */
@@ -1285,6 +1294,137 @@ const AFTER_RETRY = { timeout: 3000 };
 
 /** The board's one frame read since TAS-251: project, role, members, labels and workflows. */
 const membershipKey = ["project-context", PROJECT_ID];
+
+/**
+ * An archived project's board (TAS-149, backend PR #159; DESIGN.md §5.7,
+ * «Архивный проект»): readable by every member, writable by none. The signal
+ * is `archivedAt` on the context read and nothing else; a refusal only makes
+ * the board read the context again.
+ */
+describe("an archived project's board", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+  const archivedRefusal = () =>
+    Object.assign(new Error("Project is archived"), {
+      status: 400,
+      code: "FAILED_PRECONDITION",
+      details: { reason: "PROJECT_ARCHIVED" },
+      requestId: "7c41e2d9-archived",
+    });
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  it.each([["ADMIN" as const], ["MEMBER" as const], ["VIEWER" as const]])(
+    "reads, and offers no write, to a %s",
+    async (role) => {
+      setMembership(role);
+      seedArchivedAt("2026-10-20T10:00:00Z");
+      renderBoard();
+
+      const line = await screen.findByText(/^Archived on Oct 20\./);
+      expect(line.closest("p")).toHaveTextContent("Archived on Oct 20. This board and its issues are read-only.");
+      // Outside the problems region: an archived project is not a failure.
+      expect(screen.queryByRole("region", { name: "Board problems" })).not.toBeInTheDocument();
+      // Its issues are there, and none of them can be dragged.
+      expect(await screen.findByRole("button", { name: /TAS-102/ })).toHaveClass("is-static");
+      // The VIEWER's set, for every role, ADMIN included.
+      expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Edit project" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Manage labels" })).not.toBeInTheDocument();
+      // The reads stay.
+      expect(screen.getByRole("button", { name: "Members" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "Workflows" })).toBeVisible();
+    },
+  );
+
+  it("names the year of an archive from another year", async () => {
+    seedArchivedAt("2024-03-05T12:00:00Z");
+    renderBoard();
+
+    expect(await screen.findByText("Archived on Mar 5, 2024.")).toBeVisible();
+  });
+
+  it("does not say the role is unstated on an archived project", async () => {
+    setMembership(null);
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    renderBoard();
+
+    await screen.findByText(/^Archived on/);
+    expect(screen.queryByText(/Your role came back empty or unrecognised/)).not.toBeInTheDocument();
+  });
+
+  it("opens an issue read-only, with the archive in the transition slot", async () => {
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    const note = panel.getByText("This project was archived on Oct 20, so this issue is read-only.");
+    expect(note).toHaveAttribute("tabindex", "-1");
+    expect(panel.queryByRole("button", { name: /Delete issue/ })).not.toBeInTheDocument();
+    expect(panel.queryByPlaceholderText("Leave a comment")).not.toBeInTheDocument();
+    expect(panel.queryByRole("form", { name: "Log work" })).not.toBeInTheDocument();
+    // The text stays readable, selectable and copyable (§4.3): `readOnly`.
+    expect(document.querySelector("textarea.summary-textarea")).toHaveAttribute("readonly");
+    expect(panel.getByRole("button", { name: /Watch/ })).toBeDisabled();
+  });
+
+  it("turns read-only from a re-read after a refused write, and says so with the request id", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    expect(screen.queryByText(/^Archived on/)).not.toBeInTheDocument();
+
+    // Archived elsewhere while the panel was open: the server refuses, and its
+    // next context read says so.
+    failNextUpdate(archivedRefusal());
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+
+    expect(await panel.findByRole("alert")).toHaveTextContent(
+      "This project has been archived, so nothing in it can be changed.",
+    );
+    expect(panel.queryByText("Project is archived")).not.toBeInTheDocument();
+    expect(panel.getByRole("button", { name: "Copy request id 7c41e2d9-archived" })).toBeVisible();
+    // The board turned read-only from the context it read again.
+    expect(await screen.findByText(/^Archived on Oct 20\./)).toBeVisible();
+    expect(await panel.findByText("This project was archived on Oct 20, so this issue is read-only.")).toBeVisible();
+  });
+
+  it("keeps a comment the archive caught unsent, read-only", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    const composer = panel.getByPlaceholderText("Leave a comment");
+    fireEvent.change(composer, { target: { value: "Half a thought" } });
+
+    failNextUpdate(archivedRefusal());
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    await screen.findByText(/^Archived on/);
+
+    const kept = await panel.findByDisplayValue("Half a thought");
+    expect(kept).toHaveAttribute("readonly");
+    expect(panel.queryByRole("button", { name: "Comment" })).not.toBeInTheDocument();
+  });
+
+  it("does not read a refusal without the reason as an archive", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    failNextUpdate(
+      Object.assign(new Error("Transition is not available for the current issue status"), {
+        status: 400,
+        code: "FAILED_PRECONDITION",
+      }),
+    );
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+
+    expect(await panel.findByRole("alert")).toHaveTextContent("Transition is not available for the current issue status");
+    // Nothing asked the context again, so nothing on screen says archived.
+    expect(screen.queryByText(/^Archived on/)).not.toBeInTheDocument();
+  });
+});
 
 describe("board failures the user can see", () => {
   beforeEach(() => {
@@ -1416,38 +1556,6 @@ describe("board failures the user can see", () => {
     // The fallback title is still there — the banner is what stops it reading
     // as the project's actual name.
     expect(screen.getByText("Project")).toBeVisible();
-  });
-
-  // A deep link to an archived project's board (backend PR #159 head
-  // `97464fe`): every issue-service read refuses it, and the context composes
-  // one, so the frame read is a 400. The board says so in the generic words
-  // with the server's sentence and the id — nothing matches on "Project
-  // archived", and nothing is blank.
-  it("shows an archived project's refusal as the generic failure, with its request id", async () => {
-    const archived = () =>
-      Object.assign(new Error("Project archived"), {
-        status: 400,
-        code: "FAILED_PRECONDITION",
-        requestId: "5d0c2e7a-archived",
-      });
-    failProject(archived());
-    failIssues(archived());
-    renderBoard();
-
-    const alerts = await screen.findAllByRole("alert", undefined, AFTER_RETRY);
-    expect(alerts.some((alert) => /project could not be loaded/i.test(alert.textContent ?? ""))).toBe(true);
-    expect(screen.getAllByText("Project archived").length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("button", { name: "Copy request id 5d0c2e7a-archived" }).length).toBeGreaterThan(0);
-    // A 4xx is final: the board asked once and did not spend its retry.
-    expect(memberReads()).toBe(1);
-  });
-
-  it("still gives a 5xx its one retry", async () => {
-    failProject(Object.assign(new Error("Internal error"), { status: 500 }));
-    renderBoard();
-
-    await screen.findAllByRole("alert", undefined, AFTER_RETRY);
-    expect(memberReads()).toBe(2);
   });
 
   it("leaves an editor's board alone", async () => {

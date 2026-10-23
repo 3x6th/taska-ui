@@ -83,7 +83,7 @@ const sharedEntry: ProjectWorkflowEntry = { workflow: sharedWorkflow, issueTypes
 const ownWorkflow: WorkflowDefinition = { ...sharedWorkflow, id: "wf-own", name: "Development" };
 const ownEntry: ProjectWorkflowEntry = { workflow: ownWorkflow, issueTypes: ["STORY"], shared: false };
 
-function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN") {
+function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN", archived = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const onClose = vi.fn();
   render(
@@ -94,6 +94,7 @@ function renderDialog(readerRole: ProjectRole | null | undefined = "ADMIN") {
         projectId={PROJECT}
         projectKey="TAS"
         readerRole={readerRole}
+        archived={archived}
       />
     </QueryClientProvider>,
   );
@@ -210,6 +211,16 @@ describe("what each role is offered", () => {
       expect(screen.getByRole("region", { name: "Workflows" })).toHaveAttribute("tabindex", "0");
     });
   }
+
+  // TAS-149, DESIGN.md §5.7: an archived project's ADMIN gets a reader's dialog.
+  it("gives an archived project's ADMIN the list, the archive as the reason, and no write control", async () => {
+    renderDialog("ADMIN", true);
+
+    expect(screen.getByText("This project is archived, so its workflows cannot be changed.")).toBeVisible();
+    expect(await screen.findByText(/Shared by every Taska project, so it cannot be changed here\.$/)).toBeVisible();
+    expect(screen.queryByText("Only a project admin can change workflows.")).toBeNull();
+    expect(screen.queryByRole("button", { name: /New workflow|Add status|Add transition/ })).toBeNull();
+  });
 
   it("says the role is unknown rather than that it is not an admin's, and offers nothing", async () => {
     renderDialog(null);

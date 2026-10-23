@@ -62,7 +62,7 @@ import {
   avatarRefusal,
   avatarSizeRefusalMessage,
 } from "../avatars";
-import { IssueVersionConflictError, type ErrorDetails } from "../errors";
+import { IssueVersionConflictError, PROJECT_ARCHIVED_REASON, type ErrorDetails } from "../errors";
 import { blankSummaryRefusal, datesOutOfOrderServerMessage, issueVersionRefusal } from "../issuePatch";
 import {
   OBJECT_STORE_REJECTED_CODE,
@@ -333,6 +333,7 @@ const META: EnumDictionaries = {
     pair("USER_INVITED", "User invited"),
     pair("USER_ACTIVATED", "User activated"),
     pair("PROJECT_CREATED", "Project created"),
+    pair("PROJECT_ARCHIVED", "Project archived"),
     pair("MEMBER_ADDED", "Member added"),
     pair("MEMBER_UPDATED", "Member role changed"),
     pair("MEMBER_REMOVED", "Member removed"),
@@ -376,8 +377,8 @@ function requireListed(dictionary: readonly DictionaryEntry[] | null, value: str
 
 /**
  * File names that steer this mock down a failure branch, matched
- * case-insensitively as a substring of the name. **A mock-only seam**, and the
- * only one in this file — but the alternative was a feature whose four
+ * case-insensitively as a substring of the name. **A mock-only seam** — one of
+ * two in this file, with `MOCK_PROJECT_TRIGGERS` below — but the alternative was a feature whose four
  * interesting failures could not be reached by anybody, in the one environment
  * where the feature can be reached at all.
  *
@@ -580,6 +581,21 @@ const mockChecksum = (bytes: Uint8Array) => {
 };
 
 /**
+ * A second actor for a single-page store (TAS-149). A comment whose body holds
+ * this text makes the store archive the comment's project first — as another
+ * ADMIN of it would, in another session, a moment before — and then answer the
+ * comment as the server answers any write on an archived project: the archived
+ * refusal. It is the only way to see, in mock mode, a board that turns
+ * read-only under its reader (DESIGN.md §5.7, «Архив пришёл отказом записи»):
+ * this store's every archive otherwise comes from the reader's own Edit
+ * project, which tells the board at once. Same seam as the attachment triggers
+ * above — text the reader can type, nothing on `TaskaApi`.
+ */
+export const MOCK_PROJECT_TRIGGERS = {
+  archivedMeanwhile: "[archived meanwhile]",
+} as const;
+
+/**
  * The bytes that were PUT, as something an `<img>` can actually draw — see
  * `MockAvatar` for why this store hands back a `data:` URL where the gateway
  * signs an `https` one.
@@ -612,7 +628,8 @@ class MockApiError extends Error {
     message: string,
     /**
      * `RestErrorResponse.details` (backend PR #199): `null` on every refusal
-     * but the one the server fills it for — the account lock's `lockedUntil`.
+     * but the two the server fills it for — the account lock's `lockedUntil`,
+     * and an archived project's `reason: "PROJECT_ARCHIVED"` (backend PR #159).
      */
     public readonly details: ErrorDetails | null = null,
   ) {
@@ -621,6 +638,13 @@ class MockApiError extends Error {
 }
 
 const now = () => new Date().toISOString();
+
+/**
+ * The archived refusal's sentence as the merged backend PR #159 words it. Kept
+ * for fidelity only: no reader matches it — `details.reason` is the key
+ * (`isProjectArchived`), and the UI prints its own sentence in its place.
+ */
+const PROJECT_ARCHIVED_MESSAGE = "Project is archived";
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -2901,10 +2925,21 @@ export class MockTaskaStore {
     };
   }
 
+  /**
+   * `GET /projects`: the reader's own projects, and since backend PR #159
+   * (TAS-146) **not the archived ones** — `archived_at IS NULL` in the
+   * repository's query, for every caller. Nothing lists an archived project;
+   * it is still read by id (`getProject`, `getProjectContext`).
+   */
   listProjects(): Project[] {
-    return this.projects
-      .filter((project) => project.memberIds?.includes(this.currentUserId))
+    return this.memberProjects()
+      .filter((project) => !project.archivedAt)
       .map((project) => this.withCurrentUserRole(project));
+  }
+
+  /** Every project the reader is on, archived ones included — what a project-scoped read checks against. */
+  private memberProjects(): Project[] {
+    return this.projects.filter((project) => project.memberIds?.includes(this.currentUserId));
   }
 
   createProject(input: CreateProjectInput): Project {
@@ -2969,17 +3004,21 @@ export class MockTaskaStore {
   }
 
   /**
-   * `PATCH /projects/{projectId}` — backend PR #155 (TAS-145). Reproduces what
-   * `ProjectServiceImpl.updateProject` does at head `28f5fe1`, including the
+   * `PATCH /projects/{projectId}` — backend PR #155 (TAS-145), merged.
+   * Reproduces what `ProjectServiceImpl.updateProject` does, including the
    * answers the yml does not state: the refusal is ADMIN-only and
-   * `PERMISSION_DENIED`, a missing project is `NOT_FOUND`, a body with nothing
-   * in it is a **success** that changes nothing, and an explicit `null` clears
-   * `description` or `color` while an absent key keeps it.
+   * `PERMISSION_DENIED`, a missing project is `NOT_FOUND`, an archived one is
+   * the archived refusal (backend PR #159) — after the role, so only its ADMIN
+   * is told —, a body with nothing in it is a **success** that changes nothing,
+   * an explicit `null` clears `description` or `color` while an absent key
+   * keeps it, and a blank description is stored as `null`.
    *
-   * The order of the two checks is the server's own and is load-bearing for
-   * §4.18: a project this reader cannot see must answer the same way as one
+   * The order of the first two checks is the server's own and is load-bearing
+   * for §4.18: a project this reader cannot see must answer the same way as one
    * that does not exist, so the existence check runs first and a non-member of
-   * a real project then takes the 403.
+   * a real project then takes the 403. One order differs: the gateway judges
+   * the body before it looks the project up, and this store judges it after
+   * the role and the archive. No UI path sends a body the gateway refuses.
    *
    * `updatedAt` moves only when something actually changed, which is what makes
    * the "nothing to update" case observable rather than merely quiet.
@@ -3000,6 +3039,7 @@ export class MockTaskaStore {
     if (this.getMembership(projectId).role !== "ADMIN") {
       throw new MockApiError("PERMISSION_DENIED", "Only a project admin can edit this project");
     }
+    this.refuseArchivedProject(project);
 
     if (input.name !== undefined) {
       const name = input.name.trim();
@@ -3025,11 +3065,10 @@ export class MockTaskaStore {
     // `null` is stored as `null`, so the answer carries `"color": null` the
     // way the gateway's Jackson does rather than dropping the key. A string
     // description is trimmed on the way in, like `createProject` above, and a
-    // blank one survives as `""` — still stored, a legacy blank rather than a
-    // clear.
+    // blank one is stored as `null` — the same clear, as PR #155 merged it.
     const changes: Partial<Project> = {};
     if (input.name !== undefined) changes.name = input.name.trim();
-    if (input.description !== undefined) changes.description = input.description === null ? null : input.description.trim();
+    if (input.description !== undefined) changes.description = input.description?.trim() || null;
     if (input.color !== undefined) changes.color = input.color;
 
     if (Object.keys(changes).length === 0) {
@@ -3044,26 +3083,25 @@ export class MockTaskaStore {
   }
 
   /**
-   * `DELETE /projects/{projectId}` — backend PR #159 (TAS-146), reproducing
-   * `ProjectServiceImpl.softDeleteProject` at head `97464fe`
-   * (`docs/contract/pending/pr-159-TAS-146.yml`):
+   * `DELETE /projects/{projectId}` — backend PR #159 (TAS-146), merged and
+   * deployed 2026-10-23, reproducing `ProjectServiceImpl` as merged:
    *
    * - a missing project is `NOT_FOUND` "Project not found";
-   * - a caller who is not a member is `NOT_FOUND` **"User not found"** —
-   *   mirrored from the backend head as it stands, where `GET /projects/{id}`
-   *   answers the same caller 403. Raised as a bug; when the backend changes
-   *   it, this changes with it;
-   * - a member below ADMIN is `PERMISSION_DENIED` "User must have the role
-   *   ADMIN";
+   * - a caller who is not a member, and a member below ADMIN, are both
+   *   `PERMISSION_DENIED` "Project ADMIN role is required";
    * - otherwise `archivedAt` is set once, and a second call answers with the
-   *   original instant and writes nothing.
+   *   original instant and writes nothing. This route never answers the
+   *   archived refusal.
    *
-   * The answer comes from the entity mapper on the server, which sets no role,
-   * so it carries `currentUserRole: null` — like `POST /projects` — rather than
-   * the reader's role. `updatedAt` moves with the first archive and only then:
-   * `Project.updatedAt` is `@LastModifiedDate` under `@EnableR2dbcAuditing` at
-   * that head, so the save that sets `archivedAt` stamps it, and the second
+   * The answer carries `currentUserRole: "ADMIN"` — the only role the route
+   * lets through. `updatedAt` moves with the first archive and only then: the
+   * save that sets `archivedAt` stamps it (`@LastModifiedDate`), and the second
    * call saves nothing.
+   *
+   * No `PROJECT_ARCHIVED` notification is put in the inbox. The server sends
+   * one to every member but the one who archived, and this store's inbox is
+   * one list read by whoever is signed in — so the archiver would read their
+   * own, which the server never sends them.
    */
   archiveProject(projectId: string): Project {
     const project = this.projects.find((item) => item.id === projectId);
@@ -3071,55 +3109,52 @@ export class MockTaskaStore {
       throw new MockApiError("NOT_FOUND", "Project not found");
     }
     const member = this.membersByProject[projectId]?.find((item) => item.userId === this.currentUserId);
-    if (!member) {
-      throw new MockApiError("NOT_FOUND", "User not found");
-    }
-    if (member.role !== "ADMIN") {
-      throw new MockApiError("PERMISSION_DENIED", "User must have the role ADMIN");
+    if (member?.role !== "ADMIN") {
+      throw new MockApiError("PERMISSION_DENIED", "Project ADMIN role is required");
     }
     if (!project.archivedAt) {
       const at = now();
       project.archivedAt = at;
       project.updatedAt = at;
     }
-    return { ...project, currentUserRole: null };
+    return { ...project, currentUserRole: "ADMIN" };
   }
 
   /**
-   * What an archived project answers to everything issue-service owns, at
-   * backend PR #159's head `97464fe`: every `ProjectAccessibility.check` there
-   * refuses it — reads included — with `FAILED_PRECONDITION` "Project archived"
-   * (400 on the wire). Called from `findIssue` and from the project-scoped
-   * issue-service methods (issues, board, labels, scoped search), so the board,
-   * the context (which composes the labels read), comments, links, work log,
-   * watchers and attachments all refuse together. `getProject`,
-   * `listProjects`, the members read and the unscoped search do not call it,
-   * because on the server they do not refuse.
+   * The archived refusal (backend PR #159 as merged), the same on every write
+   * of every service: 400 `FAILED_PRECONDITION` "Project is archived" with
+   * `details.reason: "PROJECT_ARCHIVED"` — the one field a reader may key on
+   * (`isProjectArchived`). No read calls this: an archived project is read
+   * like any other.
+   */
+  private refuseArchivedProject(project: Project | undefined): void {
+    if (project?.archivedAt) {
+      throw new MockApiError("FAILED_PRECONDITION", PROJECT_ARCHIVED_MESSAGE, { reason: PROJECT_ARCHIVED_REASON });
+    }
+  }
+
+  /**
+   * The archived refusal for the writes that check membership before the
+   * archive and the role after it — issue-service's writes, workflow-service's
+   * and project-service's member writes (`ProjectWriteGuard`), all three in
+   * that order as merged. An outsider is never told a project is archived: on
+   * an archived project a non-member is refused as one ("Access denied", the
+   * sentence `ProjectRoleChecker` gives), and a member — whatever their role —
+   * gets the archived refusal before the role is looked at.
    *
-   * This mirrors the *pending* contract, not a settled one: whether an archived
-   * project's reads should answer is the open question on TAS-146, and this
-   * method changes when it is answered. One known difference in order: the
-   * server checks the role before the archive, and the few writes here that
-   * check a role do so after `findIssue`, so a refused role on an archived
-   * project answers "Project archived" here where the gateway would answer 403.
+   * Called after the lookups that answer 404 and before every role check a
+   * write makes. Most issue writes here check no role and no membership at all
+   * on a project that is *not* archived (the looser half `membersByProject`
+   * documents), and they keep that; only the archived project is held to the
+   * server's order.
    */
-  private refuseArchived(projectId: string): void {
-    if (this.projects.find((item) => item.id === projectId)?.archivedAt) {
-      throw new MockApiError("FAILED_PRECONDITION", "Project archived");
+  private refuseArchivedWrite(projectId: string): void {
+    const project = this.projects.find((item) => item.id === projectId);
+    if (!project?.archivedAt) return;
+    if (!this.membersByProject[projectId]?.some((member) => member.userId === this.currentUserId)) {
+      throw new MockApiError("PERMISSION_DENIED", "Access denied");
     }
-  }
-
-  /**
-   * project-service's member writes on an archived project, in its own
-   * sentence (PR #159 head `97464fe`). Checked **first**, before the rows are
-   * read and before the actor's role: the Java runs
-   * `projectValidator.isArchived(...).then(validateBefore…)`, so an archived
-   * project answers this to an ADMIN and a non-admin alike.
-   */
-  private refuseArchivedMemberWrite(projectId: string): void {
-    if (this.projects.find((item) => item.id === projectId)?.archivedAt) {
-      throw new MockApiError("FAILED_PRECONDITION", `Project ${projectId} has been archived`);
-    }
+    this.refuseArchivedProject(project);
   }
 
   /**
@@ -3201,8 +3236,8 @@ export class MockTaskaStore {
    */
   addProjectMember(projectId: string, userId: string, role: ProjectRole): ProjectMemberWriteResult {
     const id = memberWriteId(userId);
-    this.refuseArchivedMemberWrite(projectId);
     const rows = this.memberRowsForWrite(projectId);
+    this.refuseArchivedWrite(projectId);
     if (rows.find((member) => member.userId === this.currentUserId)?.role !== "ADMIN") {
       throw new MockApiError(
         "PERMISSION_DENIED",
@@ -3278,14 +3313,16 @@ export class MockTaskaStore {
    * target who is not on the project. Then the last-admin rule, which is
    * `FAILED_PRECONDITION` (a 400 on the wire) and counts every ADMIN row the
    * project has, the actor's own included. A project with no rows at all is
-   * still `NOT_FOUND` from `memberRowsForWrite` — after one earlier check, the
-   * archived refusal (`refuseArchivedMemberWrite`), which the server runs
-   * before any of these.
+   * still `NOT_FOUND`, first, from `memberRowsForWrite`. An archived project
+   * answers the archived refusal to any member before the role is checked
+   * (`refuseArchivedWrite`, `ProjectWriteGuard` as merged in backend PR #159),
+   * so its last ADMIN is told it is archived rather than that they are the
+   * last admin.
    */
   private memberForModify(projectId: string, userId: string): ProjectMember {
     const id = memberWriteId(userId);
-    this.refuseArchivedMemberWrite(projectId);
     const rows = this.memberRowsForWrite(projectId);
+    this.refuseArchivedWrite(projectId);
     if (rows.find((member) => member.userId === this.currentUserId)?.role !== "ADMIN") {
       throw new MockApiError(
         "PERMISSION_DENIED",
@@ -3517,12 +3554,16 @@ export class MockTaskaStore {
   /**
    * `ProjectRoleChecker` with `create-workflow-roles` / `edit-workflow-roles`
    * (both `[ADMIN]`), in its three sentences: a missing project, a reader who
-   * is not a member, a member whose role is not in the set.
+   * is not a member, a member whose role is not in the set — and, between the
+   * last two, an archived project's refusal.
    */
   private requireWorkflowRole(projectId: string): void {
     this.getProject(projectId);
     const role = this.membersByProject[projectId]?.find((member) => member.userId === this.currentUserId)?.role;
     if (!role) throw new MockApiError("PERMISSION_DENIED", "Access denied");
+    // Between the membership and the role, as workflow-service checks it since
+    // backend PR #159.
+    this.refuseArchivedWrite(projectId);
     if (role !== "ADMIN") throw new MockApiError("PERMISSION_DENIED", "Not allowed role");
   }
 
@@ -3617,7 +3658,6 @@ export class MockTaskaStore {
 
   listIssues(projectId: string, params: ListIssuesParams = {}): Page<Issue> {
     this.getProject(projectId);
-    this.refuseArchived(projectId);
     const page = params.page ?? 0;
     const pageSize = params.pageSize ?? 100;
     const filtered = this.issues
@@ -3652,7 +3692,6 @@ export class MockTaskaStore {
    */
   getBoard(projectId: string, params: BoardParams): Board {
     this.getProject(projectId);
-    this.refuseArchived(projectId);
     const issues = this.issues
       .filter((item) => item.projectId === projectId && item.deletedAt === null)
       .filter((item) => item.issueType === params.issueType)
@@ -3701,13 +3740,17 @@ export class MockTaskaStore {
     // non-member every issue in a project they are not in — a reference
     // implementation stating an access rule in its own comment and not keeping
     // it, and an e2e case that could pass here and be refused by the gateway.
-    const visible = new Set(this.listProjects().map((project) => project.id));
+    //
+    // Unscoped, the search covers `listProjects` — which leaves archived
+    // projects out since backend PR #159, so their issues do not appear in it.
+    // Scoped, an archived project of the reader's is searched like any other:
+    // its reads stay open.
+    const visible = new Set(
+      (params.projectId === undefined ? this.listProjects() : this.memberProjects()).map((project) => project.id),
+    );
     if (params.projectId !== undefined && !visible.has(params.projectId)) {
       throw new MockApiError("NOT_FOUND", "Project not found");
     }
-    // Scoped to an archived project, issue-service refuses; unscoped, the
-    // archived project's issues still appear (PR #159 head `97464fe`).
-    if (params.projectId !== undefined) this.refuseArchived(params.projectId);
 
     const matched = this.issues
       .filter((item) => item.deletedAt === null)
@@ -3797,18 +3840,13 @@ export class MockTaskaStore {
     if (!this.membersByProject[issue.projectId]?.some((member) => member.userId === this.currentUserId)) {
       throw new MockApiError("PERMISSION_DENIED", "Access denied");
     }
-    // A guess about the rebased state, not a reading: PR #159's head
-    // `97464fe` predates `GET /issues/by-key/{issueKey}`, so no Java says what
-    // this route answers for an archived project. Refused like the issue read
-    // it sits beside, after the membership check (role before archived), until
-    // the rebased PR can be read.
-    this.refuseArchived(issue.projectId);
+    // An archived project's issue answers like any other (backend PR #159).
     return this.issueView(issue);
   }
 
   createIssue(projectId: string, input: CreateIssueInput): Issue {
     const project = this.getProject(projectId);
-    this.refuseArchived(projectId);
+    this.refuseArchivedWrite(projectId);
     // The mock models the *intended* rule, not the server's behaviour: at
     // develop `fa90b51` (backend #169 merged) issue-service `createIssue` checks only the role
     // and saves any issueType (201, an issue with no workflow). The UI never
@@ -3895,6 +3933,7 @@ export class MockTaskaStore {
     if (input.priority !== undefined) requireListed(META.priorities, input.priority);
 
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     if (expectedVersion !== issue.version) {
       throw new IssueVersionConflictError(this.writeAnswer(issue), expectedVersion);
     }
@@ -3996,6 +4035,7 @@ export class MockTaskaStore {
 
   transitionIssue(projectId: string, issueId: string, transitionId: string): Issue {
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     const workflow = this.workflowFor(projectId, issue.issueType);
     const fromStatus = workflow.statuses.find((status) => status.statusKey === issue.status);
     const transition = workflow.transitions.find(
@@ -4018,6 +4058,7 @@ export class MockTaskaStore {
 
   deleteIssue(projectId: string, issueId: string): void {
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     issue.deletedAt = now();
     issue.updatedAt = now();
     issue.version += 1;
@@ -4038,6 +4079,7 @@ export class MockTaskaStore {
   createIssueLink(projectId: string, issueId: string, input: CreateIssueLinkInput): IssueLink {
     requireListed(META.linkTypes, input.linkType);
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     if (input.targetIssueId === issue.id) {
       throw new MockApiError("INVALID_ARGUMENT", "An issue cannot be linked to itself");
     }
@@ -4068,6 +4110,7 @@ export class MockTaskaStore {
 
   deleteIssueLink(projectId: string, issueId: string, linkId: string): void {
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     // Either end may remove the link: the route is issue-scoped, and the issue
     // on the receiving side of a BLOCKS sees the link just as much.
     const link = this.links.find(
@@ -4081,7 +4124,6 @@ export class MockTaskaStore {
 
   listProjectLabels(projectId: string): ProjectLabel[] {
     this.getProject(projectId);
-    this.refuseArchived(projectId);
     return this.projectLabels
       .filter((label) => label.projectId === projectId && label.deletedAt === null)
       .sort(byLabelName);
@@ -4089,7 +4131,7 @@ export class MockTaskaStore {
 
   createProjectLabel(projectId: string, input: CreateProjectLabelInput): ProjectLabel {
     this.getProject(projectId);
-    this.refuseArchived(projectId);
+    this.refuseArchivedWrite(projectId);
     const name = this.validLabelName(input.name);
     const color = this.validLabelColor(input.color);
     if (this.findLabelByName(projectId, name)) {
@@ -4109,6 +4151,7 @@ export class MockTaskaStore {
   }
 
   updateProjectLabel(projectId: string, labelId: string, input: UpdateProjectLabelInput): ProjectLabel {
+    this.refuseArchivedWrite(projectId);
     const label = this.findProjectLabel(projectId, labelId);
     const name = this.validLabelName(input.name);
     const color = this.validLabelColor(input.color);
@@ -4129,6 +4172,7 @@ export class MockTaskaStore {
    * through this list, so nothing has to walk the issues and unpick them.
    */
   deleteProjectLabel(projectId: string, labelId: string): void {
+    this.refuseArchivedWrite(projectId);
     const label = this.findProjectLabel(projectId, labelId);
     label.deletedAt = now();
   }
@@ -4140,6 +4184,7 @@ export class MockTaskaStore {
 
   addIssueLabel(projectId: string, issueId: string, labelId: string): void {
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     const label = this.findProjectLabel(projectId, labelId);
     const attached = (this.labelIdsByIssue[issue.id] ??= []);
     if (attached.includes(label.id)) {
@@ -4154,6 +4199,7 @@ export class MockTaskaStore {
 
   removeIssueLabel(projectId: string, issueId: string, labelId: string): void {
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     const attached = this.labelIdsByIssue[issue.id] ?? [];
     if (!attached.includes(labelId)) {
       throw new MockApiError("NOT_FOUND", "This issue does not carry that label");
@@ -4204,6 +4250,7 @@ export class MockTaskaStore {
    * built on.
    */
   watchIssue(projectId: string, issueId: string): WatchIssueResult {
+    this.refuseArchivedWrite(projectId);
     this.requireWatchRole(projectId);
     return this.subscribe(projectId, issueId, this.currentUserId, this.currentUserId);
   }
@@ -4214,11 +4261,13 @@ export class MockTaskaStore {
    * ADMIN's or a MEMBER's answer here.
    */
   unwatchIssue(projectId: string, issueId: string): UnwatchIssueResult {
+    this.refuseArchivedWrite(projectId);
     this.requireWatchRole(projectId);
     return this.unsubscribe(projectId, issueId, this.currentUserId);
   }
 
   addIssueWatcher(projectId: string, issueId: string, userId: string): WatchIssueResult {
+    this.refuseArchivedWrite(projectId);
     this.requireWatcherRoleFor(projectId, userId);
     // A user this deployment has never heard of is a 404, not a subscription to
     // a ghost. `getUser` is the store's own "does this person exist" check and
@@ -4228,6 +4277,7 @@ export class MockTaskaStore {
   }
 
   removeIssueWatcher(projectId: string, issueId: string, userId: string): UnwatchIssueResult {
+    this.refuseArchivedWrite(projectId);
     this.requireWatcherRoleFor(projectId, userId);
     // No `getUser` here, on purpose, and it is not an oversight. The whole
     // point of `removed` is that unsubscribing somebody who is not subscribed
@@ -4395,6 +4445,7 @@ export class MockTaskaStore {
       throw new MockApiError("INVALID_ARGUMENT", refusal);
     }
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     this.requireUploadRole(projectId);
 
     const objectKey = makeId("object");
@@ -4495,6 +4546,7 @@ export class MockTaskaStore {
     input: ConfirmAttachmentUploadInput,
   ): IssueAttachment {
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     this.requireUploadRole(projectId);
     const ticket = [...this.uploadTickets.values()].find((item) => item.objectKey === input.objectKey);
     if (ticket?.behaviour === "confirmFails") {
@@ -4639,6 +4691,9 @@ export class MockTaskaStore {
    * The object in the bucket is untouched, like the server's.
    */
   deleteAttachment(projectId: string, issueId: string, attachmentId: string): void {
+    // An archived project refuses this before anything is looked up — even the
+    // lookup below that answers 204 for a row that is not there.
+    this.refuseArchivedWrite(projectId);
     // Resolved by hand rather than through `findAttachment`, because every way
     // this can come up empty — no such issue, no such attachment, deleted
     // already — is a 204 on the server and none of them reaches the role check.
@@ -4946,6 +5001,7 @@ export class MockTaskaStore {
       throw new MockApiError("INVALID_ARGUMENT", `comment: size must be between 0 and ${WORKLOG_COMMENT_MAX_LENGTH}`);
     }
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     this.requireWorklogRole(projectId, ["ADMIN", "MEMBER"]);
 
     if (issue.remainingEstimateMinutes !== null) {
@@ -4993,6 +5049,7 @@ export class MockTaskaStore {
     }
     const issue = this.findIssue(projectId, issueId);
     const worklog = this.worklogOfIssue(issue, worklogId);
+    this.refuseArchivedWrite(projectId);
     this.requireWorklogRole(projectId, worklog.authorUserId === this.currentUserId ? ["ADMIN", "MEMBER"] : ["ADMIN"]);
 
     if (spentMinutes !== null && issue.remainingEstimateMinutes !== null) {
@@ -5023,6 +5080,7 @@ export class MockTaskaStore {
     if (!issue || worklog.issueId !== issue.id) {
       throw new MockApiError("NOT_FOUND", "Issue doesnt belongs to worklog");
     }
+    this.refuseArchivedWrite(projectId);
     this.requireWorklogRole(projectId, worklog.authorUserId === this.currentUserId ? ["ADMIN", "MEMBER"] : ["ADMIN"]);
 
     worklog.deletedAt = now();
@@ -5054,6 +5112,13 @@ export class MockTaskaStore {
 
   addComment(projectId: string, issueId: string, body: string): IssueComment {
     const issue = this.findIssue(projectId, issueId);
+    // `MOCK_PROJECT_TRIGGERS.archivedMeanwhile`: somebody else archived it.
+    const project = this.projects.find((item) => item.id === projectId);
+    if (project && !project.archivedAt && body.toLowerCase().includes(MOCK_PROJECT_TRIGGERS.archivedMeanwhile)) {
+      project.archivedAt = now();
+      project.updatedAt = project.archivedAt;
+    }
+    this.refuseArchivedWrite(projectId);
     const comment = this.comment(issue, this.currentUserId, this.commentBody(body), now());
     this.pushHistory(issue.id, "COMMENT_CREATED", this.currentUserId, { commentId: comment.id });
     return this.commentView(comment, false);
@@ -6269,19 +6334,16 @@ export class MockTaskaStore {
     name: string,
     /**
      * Undefined for a project that has none — which is now a state anything
-     * created at runtime can be in. Clearing the box stores `null` (PR #155's
-     * head `28f5fe1`), and a legacy `""` can still be stored; all three draw
-     * the card's placeholder, because §5.6's "no description" has to cover the
-     * blank one too.
+     * created at runtime can be in. Clearing the box stores `null`, and so
+     * does a blank one (backend PR #155 as merged); both draw the card's
+     * placeholder (§5.6).
      */
     description: string | undefined,
     /**
-     * Absent from `docs/contract/openapi.yml`, which is still the authority:
-     * backend PR #155 (TAS-145) adds `color` to all three project DTOs and was
-     * open and undeployed on 2026-10-20. The seeded projects state one so the
-     * mock keeps showing the palette DESIGN.md §2.2 chose; OPS states none and
-     * is coloured from its key, which is the path a gateway without the PR
-     * takes for every project.
+     * `color` on all three project DTOs since backend PR #155 (TAS-145),
+     * merged. The seeded projects state one so the mock keeps showing the
+     * palette DESIGN.md §2.2 chose; OPS states none and is coloured from its
+     * key, the path every project without a chosen colour takes.
      */
     color: string | undefined,
     memberIds: string[],
@@ -6426,7 +6488,6 @@ export class MockTaskaStore {
 
   private findProjectLabel(projectId: string, labelId: string): ProjectLabel {
     this.getProject(projectId);
-    this.refuseArchived(projectId);
     const label = this.projectLabels.find(
       (item) => item.projectId === projectId && item.id === labelId && item.deletedAt === null,
     );
@@ -6465,7 +6526,6 @@ export class MockTaskaStore {
   }
 
   private findIssue(projectId: string, issueId: string): Issue {
-    this.refuseArchived(projectId);
     const issue = this.issues.find((item) => item.projectId === projectId && item.id === issueId && item.deletedAt === null);
     if (!issue) {
       throw new MockApiError("NOT_FOUND", "Issue not found");
@@ -6609,6 +6669,7 @@ export class MockTaskaStore {
   // The gateway rejects edits and deletes from anyone but the comment author.
   private findOwnComment(projectId: string, issueId: string, commentId: string): StoredIssueComment {
     const issue = this.findIssue(projectId, issueId);
+    this.refuseArchivedWrite(projectId);
     const comment = this.commentsByIssue[issue.id]?.find((item) => item.id === commentId);
     if (!comment) {
       throw new MockApiError("NOT_FOUND", "Comment not found");

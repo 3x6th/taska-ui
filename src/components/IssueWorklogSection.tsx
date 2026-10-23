@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
+import { refusalWords } from "../lib/projectArchive";
 import type { AddIssueWorklogInput, UpdateIssueWorklogInput } from "../api/TaskaApi";
 import { UNDEPLOYED_ROUTE_MESSAGE, WORKLOG_COMMENT_MAX_LENGTH } from "../api/TaskaApi";
 import { taskaApi } from "../api/client";
@@ -68,6 +69,7 @@ export function IssueWorklogSection({
   issueId,
   canLog,
   isProjectAdmin,
+  archived = false,
   currentUserId,
   userById,
   prefetched,
@@ -79,6 +81,13 @@ export function IssueWorklogSection({
   canLog: boolean;
   /** `manage-worklog-roles`: changing somebody else's entry, ADMIN only. */
   isProjectAdmin: boolean;
+  /**
+   * The project is archived (DESIGN.md §5.7). Logging is off through the two
+   * flags above; this only keeps an entry the reader had typed and not saved —
+   * the add form's, or an open editor's — on screen, read-only, when the
+   * archive lands under them: their words are work (§5.5).
+   */
+  archived?: boolean;
   currentUserId?: string;
   userById: Map<string, Person>;
   /** The panel started this read before the section mounted; whatever it answered is not asked again on mount. */
@@ -122,7 +131,9 @@ export function IssueWorklogSection({
   });
 
   const noticeOf = (sentence: string, error: unknown): WorklogNotice => {
-    const { message, requestId } = apiErrorFacts(error);
+    const { requestId } = apiErrorFacts(error);
+    // The server's words, or ours for an archived project's refusal (§5.7).
+    const message = refusalWords(error);
     return { text: message ? `${sentence} ${message}` : sentence, requestId };
   };
   const failed = (sentence: string, error: unknown) => setNotice(noticeOf(sentence, error));
@@ -290,7 +301,10 @@ export function IssueWorklogSection({
     deleteWorklog.mutate(worklog);
   };
 
-  const showForm = canLog && !undeployed;
+  // An entry the archive caught half typed stays, read-only and without its
+  // button (§5.7); with nothing typed the form goes with the right to log.
+  const keepsDraft = !canLog && archived && (draft.duration.trim() !== "" || draft.comment.trim() !== "");
+  const showForm = (canLog || keepsDraft) && !undeployed;
   // The panel's one error box (TAS-192), worded the way this section's write
   // refusals are: its sentence, then the server's. No live region: a failed
   // read is the section's state on opening, not an answer to something the
@@ -316,7 +330,7 @@ export function IssueWorklogSection({
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
-            submitAdd();
+            if (canLog) submitAdd();
           }}
         >
           <WorklogFields
@@ -324,23 +338,26 @@ export function IssueWorklogSection({
             idPrefix={`${formId}-add`}
             onChange={setDraft}
             problems={shownAddProblems}
+            readOnly={!canLog}
             today={today}
             // A typed duration or comment holds the issue panel open on Esc
             // (§4.10, TAS-380). The date alone is not the reader's text: it
             // starts at today.
             unsaved={draft.duration.trim() !== "" || draft.comment.trim() !== ""}
           />
-          <div className="worklog-form-actions">
-            {/* `aria-disabled`, never `disabled` (§4.22): an empty duration reads as
-                unavailable, and a click still shows what is missing. */}
-            <button
-              aria-disabled={draft.duration.trim() === "" || undefined}
-              className="primary-button compact-button"
-              type="submit"
-            >
-              Log work
-            </button>
-          </div>
+          {canLog ? (
+            <div className="worklog-form-actions">
+              {/* `aria-disabled`, never `disabled` (§4.22): an empty duration reads as
+                  unavailable, and a click still shows what is missing. */}
+              <button
+                aria-disabled={draft.duration.trim() === "" || undefined}
+                className="primary-button compact-button"
+                type="submit"
+              >
+                Log work
+              </button>
+            </div>
+          ) : null}
         </form>
       ) : null}
 
@@ -379,7 +396,8 @@ export function IssueWorklogSection({
             const mine = Boolean(currentUserId) && worklog.authorUserId === currentUserId;
             const canManage = !pending && (mine ? canLog : isProjectAdmin);
             const author = personFor(worklog.authorUserId, null, userById);
-            const isEditing = canManage && editing?.id === worklog.id;
+            // An editor the archive caught open stays open, read-only (§5.7).
+            const isEditing = (canManage || archived) && !pending && editing?.id === worklog.id;
             const confirming = canManage && confirmingId === worklog.id;
             return (
               <WorklogRow
@@ -388,6 +406,7 @@ export function IssueWorklogSection({
                 confirmId={`${formId}-confirm-${worklog.id}`}
                 confirming={confirming}
                 editing={isEditing ? editing : null}
+                readOnly={!canManage}
                 idPrefix={`${formId}-edit`}
                 key={worklog.id}
                 onAcceptConfirm={() => acceptConfirm(worklog)}
@@ -415,6 +434,7 @@ function WorklogRow({
   author,
   pending,
   canManage,
+  readOnly,
   editing,
   confirming,
   confirmId,
@@ -433,6 +453,8 @@ function WorklogRow({
   author: Person | undefined;
   pending: boolean;
   canManage: boolean;
+  /** An open editor that can no longer save: the archive landed under it (§5.7). */
+  readOnly: boolean;
   editing: { draft: WorklogDraft; attempted: boolean } | null;
   confirming: boolean;
   confirmId: string;
@@ -492,7 +514,7 @@ function WorklogRow({
             }}
             onSubmit={(event) => {
               event.preventDefault();
-              onSave();
+              if (!readOnly) onSave();
             }}
           >
             <WorklogFields
@@ -501,15 +523,18 @@ function WorklogRow({
               idPrefix={idPrefix}
               onChange={onDraftChange}
               problems={problems}
+              readOnly={readOnly}
               today={today}
             />
             <div className="worklog-form-actions">
               <button className="secondary-button compact-button" onClick={onCancelEdit} type="button">
                 Cancel
               </button>
-              <button className="primary-button compact-button" type="submit">
-                Save
-              </button>
+              {readOnly ? null : (
+                <button className="primary-button compact-button" type="submit">
+                  Save
+                </button>
+              )}
             </div>
           </form>
         ) : (
@@ -587,6 +612,7 @@ function WorklogFields({
   today,
   autoFocus = false,
   unsaved = false,
+  readOnly = false,
   onChange,
 }: {
   draft: WorklogDraft;
@@ -595,6 +621,8 @@ function WorklogFields({
   today: string;
   autoFocus?: boolean;
   unsaved?: boolean;
+  /** The draft stays on screen and cannot change: the project was archived under it (§5.7). */
+  readOnly?: boolean;
   onChange: (draft: WorklogDraft) => void;
 }) {
   const set = (field: WorklogDraftField) => (value: string) => onChange({ ...draft, [field]: value });
@@ -615,6 +643,7 @@ function WorklogFields({
             id={`${idPrefix}-duration`}
             onChange={(event) => set("duration")(event.target.value)}
             placeholder="1h 30m"
+            readOnly={readOnly}
             type="text"
             value={draft.duration}
           />
@@ -632,6 +661,7 @@ function WorklogFields({
             // The reader's today: work not yet done is not work to log.
             max={today}
             onChange={(event) => set("workDate")(event.target.value)}
+            readOnly={readOnly}
             type="date"
             value={draft.workDate}
           />
@@ -653,6 +683,7 @@ function WorklogFields({
           id={`${idPrefix}-comment`}
           maxLength={WORKLOG_COMMENT_MAX_LENGTH}
           onChange={(event) => set("comment")(event.target.value)}
+          readOnly={readOnly}
           rows={2}
           value={draft.comment}
         />

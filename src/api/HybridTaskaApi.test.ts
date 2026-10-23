@@ -302,12 +302,9 @@ describe("HybridTaskaApi", () => {
    * The project write (TAS-148) goes down untouched, body and all, and whatever
    * comes back comes back.
    *
-   * Sharper here than for the reads around it, because the route is **not
-   * deployed**: `PATCH /api/v1/projects/{id}` answered 405 on 2026-09-12, not
-   * the static-resource 404 — backend PR #155 maps a method on a path that
-   * already exists for GET. A class that compensated would be reporting a
-   * rename to a gateway that never took one, and the next `GET /projects` would
-   * contradict it.
+   * A class that compensated — `PATCH /api/v1/projects/{id}` answered 405
+   * until backend PR #155 deployed — would be reporting a rename to a gateway
+   * that never took one, and the next `GET /projects` would contradict it.
    */
   it("passes a project edit straight to the live api, empty bodies and refusals included", async () => {
     const live = liveApi();
@@ -318,7 +315,8 @@ describe("HybridTaskaApi", () => {
     const input = { name: "Taska Core", description: "", color: "#8b5cf6" };
     await expect(hybrid.updateProject(project.id, input)).resolves.toMatchObject({
       name: "Taska Core",
-      description: "",
+      // The server stores a blank description as `null` (backend PR #155 as merged).
+      description: null,
       color: "#8b5cf6",
     });
     // The body arrives as written — a leg that tidied the empty description
@@ -338,8 +336,8 @@ describe("HybridTaskaApi", () => {
     expect(updateProject).toHaveBeenLastCalledWith(project.id, { color: null });
   });
 
-  // Backend PR #159 is undeployed (405 on 2026-10-20). A class that built an
-  // archived row of its own would report an archive no server took.
+  // Backend PR #159. A class that built an archived row of its own would
+  // report an archive no server took.
   it("passes an archive straight to the live api, refusals included", async () => {
     const live = liveApi();
     const hybrid = new HybridTaskaApi(live);
@@ -350,8 +348,10 @@ describe("HybridTaskaApi", () => {
     expect(archiveProject).toHaveBeenCalledWith(project.id);
     expect(archived).toEqual(await archiveProject.mock.results[0].value);
 
-    archiveProject.mockRejectedValueOnce(new Error("Request method 'DELETE' is not supported."));
-    await expect(hybrid.archiveProject(project.id)).rejects.toThrow("not supported");
+    archiveProject.mockRejectedValueOnce(
+      Object.assign(new Error("Project ADMIN role is required"), { code: "PERMISSION_DENIED", status: 403 }),
+    );
+    await expect(hybrid.archiveProject(project.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
   });
 
   // The 409 this class must not swallow. `ABORTED` on the server maps to 409,
