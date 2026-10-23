@@ -1770,6 +1770,36 @@ Everything below is the entry as it stood, in the past tense.
   [TAS-387](https://jira.ozero.dev/browse/TAS-387) with the review's other backend asks.
 
 
+### TAS-389: written ahead of TAS-388 — `login` leaves `GET /users/me`, `actorLogin` leaves the audit log
+
+- **Endpoints:** `GET /api/v1/users/me` (`ValidateAccessTokenResponseDto`);
+  `GET /api/v1/readonly/audit-entries` (`AuditEntryDto`); the raw `auth.users` and
+  `admin_audit_log` through `GET /api/v1/readonly/catalog` and
+  `GET /api/v1/readonly/{service}/{table}`.
+- **Contract today** (snapshot develop `3a2644f7`): `ValidateAccessTokenResponseDto.login:
+  string`; `AuditEntryDto.actorLogin: string`. `auth.users.login varchar(64) NOT NULL
+  UNIQUE` (`0000-init.sql`); `admin_audit_log.actor_login varchar(64) NOT NULL`
+  (`0001-admin-audit-log.sql`).
+- **Contract after TAS-388**, pinned as `docs/contract/pending/pr-219-TAS-388.yml` (backend
+  PR #219 @ `e9013d2a8a69`): `/users/me` without `login`; `AuditEntryDto` without
+  `actorLogin`, with `actorDisplayName` and `actorEmail`, both nullable; `actorUserId`
+  unchanged. `actor_login` is renamed to `actor_display_name` (so historical rows show the
+  old login there) and `actor_email` is added, empty for historical rows; `auth.users.login`
+  is dropped. The gateway sets each audit field only when the gRPC entry has it, so an
+  absent value may arrive omitted rather than `null`; the adapter reads both as `null`.
+- **Compensation:** none. Nothing reads `login` or `actorLogin`, and there is no fallback
+  to either; the audit actor is never resolved client-side from `actorUserId`.
+- **Against today's gateway:** every audit actor cell falls to the actor id's short key
+  (DESIGN.md §5.8 Audit), the detail still names the full UUID. Nothing else visibly changes.
+- **Today's `main` against a TAS-388 gateway:** a bare "@" under the name in the profile
+  menu and on My profile, a `login` column of "—" in Users, and "—" in every audit actor cell.
+- **Merge gate:** #219 merged and deployed; snapshot refreshed to that commit and both
+  schemas diffed against the extract; the mock's raw column names checked against the
+  merged changesets; stand probed after deploy (`GET /users/me` has no `login`; an audit row
+  carries `actorDisplayName`), request ids recorded here.
+- **Removal:** TAS-388 merged and deployed. Rename the heading to "Closed by TAS-388 (backend
+  PR #219, …)" and delete the extract.
+
 ### `PATCH /projects/{id}` is not in the contract, so editing a project runs on the mock
 
 - **Endpoint:** `PATCH /api/v1/projects/{projectId}`, and with it `description`

@@ -295,8 +295,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   real directory, produce a byte-identical confirmation, and a `role="status"`
   whose text does not change is not re-announced. **Exactly the defect TAS-194
   fixed in Events, one heading away and already shipped.** The row already
-  carries the unique `@login`, so the fix is the same shape: put the
-  distinguishing token in the sentence. Out of TAS-194's scope; filed so the
+  carries the unique email (the `@login` this line first named left with
+  TAS-389), so the fix is the same shape: put the distinguishing token in the
+  sentence. Out of TAS-194's scope; filed so the
   lesson does not stay local to Events.
 - **Neither live region is ever cleared, so two identical announcements are
   heard once** (`art-director`, 2026-09-08). This is the residue TAS-194's fix
