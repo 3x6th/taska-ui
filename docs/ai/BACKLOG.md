@@ -4016,6 +4016,13 @@ Frontend notes:
   but archived and rollout 503 refusals now land there too.
 - **Typing at the end of an issue's summary scrolls `.issue-panel-body` by 44–81px**
   (`art-director`, TAS-149 pass; measured 44px on main too, so not from TAS-149).
+- **A half-typed panel date (`badInput`) survives the archive** (`frontend-builder`,
+  TAS-149 round 2): the planning reset puts story points and estimates back to the stored
+  values, but a date box holding partial segments keeps them visible, read-only, until the
+  panel closes — clearing it needs the DOM value written directly, as `commitDate` does.
+- **Read-only dialogs can only be left by Cancel or ✕** (`art-director`, TAS-149 round 3):
+  `Modal` has no Esc handler at all — the TAS-142 gap DESIGN.md already lists; the archived
+  read-only state of Edit project, New issue and Labels makes it more visible.
 - **Nothing has been archived on the stand.** The DELETE answer and the refusal shape are
   read from the Java; the first smoke (archive a throwaway project, one write → 400 with
   `details.reason` and a request id) needs the owner's word.
