@@ -105,9 +105,11 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   retry half of this is **done**: a rescue now restores focus to the list when a
   late answer's refetch removes the trigger focus was sitting on, and only then,
   so it cannot steal from an operator who moved. What is left is the wider case,
-  which no write reaches: `src/main.tsx` sets only `staleTime` and `retry`, so
-  `refetchOnWindowFocus` is on, and any blur-and-return after twenty seconds can
-  drop a row under a focused control. **The configuration half graduated to
+  which no write reaches. **Updated 2026-10-24 (TAS-202):** focus return now
+  re-reads only failed queries (`createQueryClient()` in `src/lib/queryClient.ts`),
+  measured in `src/screens/ScreenRequests.test.tsx` — 0 requests on the happy path.
+  What remains: a failed read's refetch on return, and write invalidations, can
+  still drop a row under a focused control. **The configuration half graduated to
   [TAS-202](https://jira.ozero.dev/browse/TAS-202) on 2026-09-09** — that story
   turns the refetch off globally, because the same line multiplies a
   twenty-seven-request fan-out on the projects screen. This entry stays open for

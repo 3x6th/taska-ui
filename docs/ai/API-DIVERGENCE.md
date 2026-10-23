@@ -1889,11 +1889,13 @@ Everything below is the entry as it stood, in the past tense.
   TASK, then BUG, then STORY — each `createdAt` ascending, with no `id` tiebreak
   (`flatMapSequential` in `BoardServiceImpl` over issue-service's `status_key, created_at` sort,
   `IssueRepositoryImpl.java:303`).
-- **Compensation:** none. The board draws the server's order; the optimistic move and the mock
-  place a card with the same comparator (type rank, `createdAt`, `id`) so the re-read after a
-  move does not reorder it (DESIGN.md §5.3).
+- **Compensation:** one, narrow. The board draws the server's order, but the optimistic move
+  places a dropped card with `compareBoardIssues` (`src/api/boardOrder.ts`, `TYPE_RANK` copies the
+  gateway's TASK, BUG, STORY constant; any other type ranks last), so the one re-read after the
+  move does not reorder it (DESIGN.md §5.3). It affects only where a card sits until that
+  re-read; if the server's order changes, a dropped card jumps once.
 - **Removal:** asked on TAS-213 on 2026-10-24 — `createdAt ASC, id ASC` across types, stated in
-  the yml. Then only the comparator changes.
+  the yml. Then the comparator drops its type rank.
 
 ### A failed enrichment on the board arrives as "no labels" and "no name"
 
@@ -1920,7 +1922,9 @@ Everything below is the entry as it stood, in the past tense.
 ### `GET /project-stats`: what the yml does not say
 
 - **Read at develop `562d84de`, not probed** (`ProjectStatsService`): the answer covers
-  `listMyProjects` (archived projects excluded) and comes in its order; there is no `projectIds`
+  `listMyProjects` (archived projects excluded) and, like `GET /projects`, is unordered (no ORDER
+  BY in `findAllByMemberUserId`; the two endpoints run separate queries); cards match by
+  `projectId`, so nothing on screen depends on it. There is no `projectIds`
   parameter. A project whose membership vanished between the two internal calls is left out,
   not zeroed. `issueCount` counts every issue of any type and status (`deleted_at IS NULL`);
   `memberCount` is the full count; `members` is the first five by `addedAt`, then `userId`. One
