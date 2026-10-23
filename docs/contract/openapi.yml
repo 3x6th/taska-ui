@@ -1,8 +1,16 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: 2e053fa6d2beae35077a636e842f2f9b08ace062 (develop, 2026-10-23)
+# Backend commit: 9a735db53545c39e717b490014e19afc704ff3d2 (develop, 2026-10-23)
 # Fetched: 2026-10-23
-# Backend develop is authoritative. Pending TAS-387 additions live under pending/.
+#
+# The backend repository is the single source of truth for this contract.
+# This copy exists so read-only reviewers without network access can audit
+# against it and so the audited version is pinned in history. When it drifts
+# from develop, develop wins - refresh this file and update the commit above.
+#
+# Endpoints on open backend pull requests are NOT here, because they are not the
+# contract yet. They are extracted under docs/contract/pending/ - see the README
+# there for what that directory is and is not.
 openapi: 3.0.3
 info:
   title: Taska API Gateway Contract
@@ -17,6 +25,148 @@ servers:
     description: Current host
 
 paths:
+  /api/v1/users/me/notification-preferences:
+    get:
+      summary: getNotificationPreferences
+      description: Настройки только текущего пользователя. Email берётся из проверенного auth-контекста. Telegram включается после подтверждения привязки. Выключение отменяет ожидающие отправки; уже отправленный HTTP/SMTP запрос может завершиться.
+      operationId: getNotificationPreferences
+      tags: [notification-settings]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Успешно
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferencesDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    patch:
+      summary: updateNotificationPreferences
+      description: Настройки только текущего пользователя. Email берётся из проверенного auth-контекста. Telegram включается после подтверждения привязки. Выключение отменяет ожидающие отправки; уже отправленный HTTP/SMTP запрос может завершиться.
+      operationId: updateNotificationPreferences
+      tags: [notification-settings]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferencesPatchDto'
+      responses:
+        '200':
+          description: Успешно
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferencesDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/users/me/telegram/link:
+    post:
+      summary: createTelegramLink
+      description: Настройки только текущего пользователя. Email берётся из проверенного auth-контекста. Telegram включается после подтверждения привязки. Выключение отменяет ожидающие отправки; уже отправленный HTTP/SMTP запрос может завершиться.
+      operationId: createTelegramLink
+      tags: [notification-settings]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Успешно
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TelegramLinkDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/users/me/telegram/confirm:
+    post:
+      summary: confirmTelegramLink
+      description: Настройки только текущего пользователя. Email берётся из проверенного auth-контекста. Telegram включается после подтверждения привязки. Выключение отменяет ожидающие отправки; уже отправленный HTTP/SMTP запрос может завершиться.
+      operationId: confirmTelegramLink
+      tags: [notification-settings]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmTelegramLinkDto'
+      responses:
+        '200':
+          description: Успешно
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferencesDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/users/me/telegram:
+    delete:
+      summary: disconnectTelegram
+      description: Настройки только текущего пользователя. Email берётся из проверенного auth-контекста. Telegram включается после подтверждения привязки. Выключение отменяет ожидающие отправки; уже отправленный HTTP/SMTP запрос может завершиться.
+      operationId: disconnectTelegram
+      tags: [notification-settings]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Успешно
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferencesDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/integrations/telegram/webhook:
+    post:
+      summary: Telegram updates
+      description: Отдельный webhook, проверяет secret header; bearer token не нужен. Body до 32 KiB. Дедупликация update_id, private chat only. 200 только после commit. Некорректный секрет — 403, выключенная интеграция — 503.
+      operationId: processTelegramWebhook
+      tags: [telegram-webhook]
+      parameters:
+        - in: header
+          name: X-Telegram-Bot-Api-Secret-Token
+          required: true
+          schema: {type: string, maxLength: 256}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [update_id]
+              properties:
+                update_id: {type: integer, format: int64, minimum: 0}
+              additionalProperties: true
+      responses:
+        '200':
+          description: Обработано или уже было обработано
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
   /api/v1/auth/login:
     post:
       summary: Аутентификация пользователя
@@ -399,6 +549,118 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/issue-types:
+    get:
+      operationId: listProjectIssueTypes
+      summary: Типы задач проекта, по sortOrder и code; первый тип используется по умолчанию
+      tags: [project-issue-type]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProjectIssueTypesDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    post:
+      operationId: createProjectIssueType
+      summary: Добавить тип задачи — только ADMIN проекта
+      tags: [project-issue-type]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectIssueTypeRequestDto'
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIssueTypeDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/projects/{projectId}/issue-types/{code}:
+    patch:
+      operationId: updateProjectIssueType
+      summary: Изменить подпись, цвет, значок или порядок типа — только ADMIN проекта
+      tags: [project-issue-type]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z][A-Z0-9_]{1,31}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchProjectIssueTypeRequestDto'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectIssueTypeDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    delete:
+      operationId: deleteProjectIssueType
+      summary: Удалить неиспользуемый тип — только ADMIN; последний тип удалить нельзя
+      tags: [project-issue-type]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z][A-Z0-9_]{1,31}$'
+      responses:
+        '204':
+          description: Success
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -3250,6 +3512,44 @@ components:
             $ref: '#/components/schemas/RestErrorResponse'
 
   schemas:
+    NotificationPreferencesDto:
+      type: object
+      required: [emailEnabled, telegramEnabled, email, telegramAvailable, telegramStatus]
+      properties:
+        emailEnabled: {type: boolean}
+        telegramEnabled: {type: boolean}
+        email: {type: string, format: email}
+        telegramAvailable: {type: boolean}
+        telegramStatus:
+          type: string
+          enum: [NOT_CONNECTED, PENDING, AWAITING_CONFIRMATION, CONNECTED, UNAVAILABLE]
+        telegramUsername: {type: string, nullable: true}
+        telegramName: {type: string, nullable: true}
+        telegramLinkId: {type: string, format: uuid, nullable: true}
+        telegramLinkExpiresAt: {type: string, format: date-time, nullable: true}
+        telegramError: {type: string, nullable: true}
+    NotificationPreferencesPatchDto:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Независимые переключатели. Оба false оставляют inbox. Включение неподтверждённого/недоступного Telegram — 409. null не допускается.
+      properties:
+        emailEnabled: {type: boolean}
+        telegramEnabled: {type: boolean}
+    TelegramLinkDto:
+      type: object
+      required: [linkId, url, expiresAt]
+      properties:
+        linkId: {type: string, format: uuid}
+        url: {type: string, format: uri}
+        expiresAt: {type: string, format: date-time}
+    ConfirmTelegramLinkDto:
+      type: object
+      additionalProperties: false
+      required: [linkId]
+      description: Подтверждает именно текущую заявку и включает Telegram. Не меняет выбор email. Повторная/просроченная заявка — 409.
+      properties:
+        linkId: {type: string, format: uuid}
     LoginRequestDto:
       type: object
       required: [email, password]
@@ -4502,9 +4802,83 @@ components:
       type: string
       enum: [ ADMIN, MEMBER, VIEWER ]
 
+    ProjectIssueTypeColorDto:
+      type: string
+      enum: [blue, red, green, amber, purple, teal, slate]
+    ProjectIssueTypeIconDto:
+      type: string
+      enum: [check-square, bug, book-open, headset, megaphone, file-text, flag, layers]
+    ProjectIssueTypeDto:
+      type: object
+      required: [code, name, color, icon, sortOrder]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{1,31}$'
+          description: Неизменяемый ключ типа внутри проекта.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        color:
+          $ref: '#/components/schemas/ProjectIssueTypeColorDto'
+        icon:
+          $ref: '#/components/schemas/ProjectIssueTypeIconDto'
+        sortOrder:
+          type: integer
+          format: int32
+          minimum: 0
+    ListProjectIssueTypesDto:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectIssueTypeDto'
+    CreateProjectIssueTypeRequestDto:
+      type: object
+      additionalProperties: false
+      required: [code, name, color, icon]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{1,31}$'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        color:
+          $ref: '#/components/schemas/ProjectIssueTypeColorDto'
+        icon:
+          $ref: '#/components/schemas/ProjectIssueTypeIconDto'
+        sortOrder:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 100
+    PatchProjectIssueTypeRequestDto:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Пропущенное поле не меняется; явный null запрещён. code неизменяем.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        color:
+          $ref: '#/components/schemas/ProjectIssueTypeColorDto'
+        icon:
+          $ref: '#/components/schemas/ProjectIssueTypeIconDto'
+        sortOrder:
+          type: integer
+          format: int32
+          minimum: 0
+
     ProjectContextResponseDto:
       type: object
-      required: [ project, members, labels, workflows ]
+      required: [ project, members, labels, workflows, issueTypes ]
       properties:
         project:
           $ref: '#/components/schemas/ProjectResponseDto'
@@ -4517,9 +4891,14 @@ components:
           description: Порядок — name asc, id asc (сравнение строк по collation БД).
           items:
             $ref: '#/components/schemas/ProjectLabelResponseDto'
+        issueTypes:
+          type: array
+          description: Реестр типов проекта по sortOrder и code; первый тип — по умолчанию.
+          items:
+            $ref: '#/components/schemas/ProjectIssueTypeDto'
         workflows:
           type: array
-          description: Все типы задач проекта
+          description: Workflows поддерживаемых типов проекта
           items:
             $ref: '#/components/schemas/ProjectWorkflowEntryDto'
 

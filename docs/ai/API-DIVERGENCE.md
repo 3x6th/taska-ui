@@ -29,25 +29,6 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ## Runtime differs from the contract
 
-### TAS-387: notification channels require backend PR #215
-
-- **Endpoints:** GET/PATCH `/api/v1/users/me/notification-preferences`, POST
-  `/api/v1/users/me/telegram/link`, POST `/api/v1/users/me/telegram/confirm`,
-  DELETE `/api/v1/users/me/telegram`.
-- **Evidence 2026-10-23:** source comparison against backend develop `2e053fa6d2be`
-  and [backend PR #215](https://github.com/VladislavYurin/taska-backend/pull/215),
-  head `34589adf5fce`. These are added operations in the linked full-stack story,
-  extracted under `docs/contract/pending/pr-215-TAS-387.yml`; they are not claimed
-  as deployed. The live gateway was not probed during this implementation.
-- **Compensation: none.** REST uses these exact operations and reports a failed
-  read/write honestly if the matching backend has not shipped. There is no fallback
-  from REST into mock data, no automatic Telegram `/start` and no guessed binding.
-  Mock mode provides the same contract as an isolated test fixture.
-- **Removal:** deploy the backend and UI TAS-387 together, refresh the develop
-  snapshot and remove the pending extract after #215 merges. Real delivery smoke
-  additionally requires the owner's test bot and configured webhook; the code tests
-  use mock Telegram/SMTP. Tracked by [TAS-387](https://jira.ozero.dev/browse/TAS-387).
-
 Headings starting with "Closed by" are settled and kept for their history;
 everything else here is live. A closed entry may still carry a live sub-fact —
 it says so in its own first paragraph when it does, because closing a heading
@@ -1743,6 +1724,48 @@ Everything below is the entry as it stood, in the past tense.
 - **Removal:** the CORS half of [TAS-141](https://jira.ozero.dev/browse/TAS-141)
   is **done** — narrow that story to whatever else it still carries. The UI half
   is ours and is what the backlog line names.
+
+### TAS-387: what the notification-channel Java says that the contract does not
+
+- **Endpoints:** `GET`/`PATCH /api/v1/users/me/notification-preferences`,
+  `POST /api/v1/users/me/telegram/link`, `POST /api/v1/users/me/telegram/confirm`,
+  `DELETE /api/v1/users/me/telegram`. In the contract since backend PR #215 merged as
+  develop `9a735db` (2026-10-23); the merged change is the reviewed head `34589adf`
+  except for `api-gateway/pom.xml`. Deployed: `deploy-stage` finished 11:50:45Z, and a
+  probe without a token at 11:51Z answered **401** "Authorization header is missing" on
+  all five UI operations (request id `56df05fe-…` for the `GET`) while a control path
+  under `/users/me` answered the static-resource 404.
+- **Contract:** each operation states only `200` and `default: ErrorResponse`;
+  `telegramError` is a bare string; `telegramStatus` is a closed five-value enum.
+- **Java, read at `34589adf` by api-contract-guard (2026-10-23):**
+  - Every `GET` upserts the caller's row (`ensure` in `NotificationSettingsService`), so
+    the read writes; `email_enabled` defaults to true, `telegram_enabled` to false.
+  - `PATCH`: `{}` is 400 `INVALID_ARGUMENT` "Specify a notification channel"; a null,
+    non-boolean or unknown key is 400 "Invalid request parameters"; turning Telegram on
+    while not `CONNECTED` or while the integration is off is 409 `ABORTED`. Turning a
+    channel off is never refused.
+  - Link: integration off is 503 `UNAVAILABLE`; a `CONNECTED` or `UNAVAILABLE` binding is
+    409 (disconnect first); `PENDING` or `AWAITING_CONFIRMATION` is replaced.
+  - Confirm: integration off is 503; not started, expired, replaced or another bot is
+    409; a Telegram account bound to another Taska user is 409; a non-UUID id is 400.
+  - `DELETE` never refuses and is idempotent.
+  - `UNAVAILABLE` means bound, and either the integration is off or the binding carries a
+    delivery error. On the wire `telegramError` is only `BOT_CHANGED` or
+    `TELEGRAM_DELIVERY_UNAVAILABLE`; the other `TELEGRAM_*` codes are delivery-row errors
+    and never reach this DTO.
+  - An unknown `telegram_status` is a 500: the proto field is an open string and the
+    gateway maps it with a throwing `fromValue`.
+  - `GET /users/me` now waits on notification-service's `GetPreferences` before it answers.
+- **Compensation: none.** The UI calls these routes as they are, in `rest` and `hybrid`
+  alike, and shows a refusal with the server's words and the request id. The mock
+  reproduces the refusal codes and the states that refuse, but never sets
+  `telegramError` and reaches `UNAVAILABLE` only with the integration off; the bot's
+  `/start` and `/stop` exist in it only as test fixtures, so mock mode cannot reach a
+  confirmed binding by clicking.
+- **Removal:** when the backend states the refusals and the `telegramError` set in
+  `openapi.yml`, and the status mapping stops failing on an unknown value. Raised on
+  [TAS-387](https://jira.ozero.dev/browse/TAS-387) with the review's other backend asks.
+
 
 ### `PATCH /projects/{id}` is not in the contract, so editing a project runs on the mock
 

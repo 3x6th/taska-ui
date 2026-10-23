@@ -111,6 +111,12 @@ was written against it.
 | --- | --- | --- | --- |
 | `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
 
+`pr-215-TAS-387.yml` was here for TAS-387 and was deleted on 2026-10-23, the same day
+it was written, when backend PR #215 merged (`9a735db`) and the snapshot was refreshed to it.
+The merge carried the extract's two hunks byte for byte; the only file whose change differs
+from the reviewed head `34589adf` is `api-gateway/pom.xml`, the conflict with #212. What the
+PR's Java says that the yml does not moved to `docs/ai/API-DIVERGENCE.md`.
+
 `pr-118-TAS-125.yml` was here for TAS-125 / TAS-191 and was deleted on 2026-09-09
 when backend PR #118 merged and the snapshot was refreshed to develop
 `5941499203ae`.

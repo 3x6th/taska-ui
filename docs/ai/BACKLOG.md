@@ -18,12 +18,6 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   before merging work that depends on it. TAS-387's own PR #215 pin is current;
   no project-editing implementation was changed here.
 
-- **TAS-387 art notes, 2026-10-23 (non-blocking):** remove the directional
-  “below” from notification write-error copy (the controls are above it);
-  combine duplicated reconnect advice in UNAVAILABLE; capture its evidence after
-  the switch transition settles. The 44px mobile error targets are fixed and
-  independently re-reviewed, not a new design-system exception.
-
 - ~~**`VITE_TASKA_ASSUME_PROJECT_ADMIN=true` is a deploy variable.** Every
   signed-in user gets the ADMIN surface of the UI. Accepted by the owner while
   the stand has no external users; falls away with TAS-137. Until then, no
@@ -2018,6 +2012,13 @@ The 2026-08-05 refresh of `docs/contract/openapi.yml` (backend develop
 `globalRole` by TAS-151, the `/readonly` endpoints by TAS-155, issue links by
 TAS-157.
 
+The 2026-10-23 refresh (TAS-387, develop `9a735db`) brought two surfaces no frontend
+story has claimed yet: `GET /api/v1/project-stats` (TAS-211, backend #209) — the read
+that removes the projects screen's 1 + 2N, TAS-202's to adopt — and the project
+issue-type registry under `/api/v1/projects/{projectId}/issue-types` with
+`ProjectContextDto.issueTypes` now required (TAS-385, backend #212). TAS-387's own five
+routes are delivered by TAS-387.
+
 - ~~**Issue links.** `GET`/`POST /issues/{issueId}/links` and
   `DELETE /issues/{issueId}/links/{linkId}`.~~ Delivered by
   [TAS-157](https://jira.ozero.dev/browse/TAS-157). The `viewLinkType` /
@@ -4002,3 +4003,36 @@ Frontend notes:
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
 
+### Left by TAS-387 (notification channels, frontend for backend #215, 2026-10-23)
+
+The code came from the backend developer's Codex run (PR #101); this repository's three
+roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
+
+- **"Open Telegram bot" could be the primary action in PENDING** — it is the one step the
+  user must take (art-director). §5.9 keeps it secondary for now.
+- **`.settings-telegram-disconnect` duplicates `.settings-photo-remove`** with different
+  values (32 / radius 9 against 29 / radius 8); one ghost-destructive class (art-director).
+- **The switch has no hover look of its own**; decide in §4.29 (art-director).
+- **The loading skeleton is two bars** while the loaded section is ~130px taller; nothing
+  sits below it, so nothing shifts (art-director).
+- **Copy:** lead "Notifications in Taska are always kept" → "Your Taska inbox always gets
+  every notification."; "Your email choice is unchanged" → "Telegram connected." /
+  "Telegram disconnected." (art-director).
+- **Sticky hover after a tap on touch** on secondary and ghost buttons — product-wide.
+- **The mock never reaches a confirmed binding by clicking**: `/start` and `/stop` exist
+  only as fixture methods, and the e2e spec replaces all five methods with its own fixture,
+  which has drifted from `MockNotificationPreferences` (no linkId check, no 409 on enabling
+  an unbound channel); the store's `receiveStart`/`stop` are used only by unit tests
+  (release-reviewer, api-contract-guard).
+- **One mock error shape:** export and reuse `MockApiError` instead of
+  `Object.assign(new Error(), { code })` in `MockNotificationPreferences.ts`; renders the
+  same today (api-contract-guard).
+- **No test asserts exactly one `/auth/refresh` for N concurrent same-account 401s**; the
+  existing test counts expiries (release-reviewer).
+- **Backend asks raised on TAS-387** (api-contract-guard, verified at `34589adf`): `GET
+  /users/me` waits on `GetPreferences` (`UserServiceImpl`, deadline 3 s) — the identity read
+  behind every first paint; an unknown `telegram_status` is a 500 (throwing `fromValue`);
+  the refusals and the `telegramError` set are not in `openapi.yml`; the preferences `GET`
+  writes the row on every read while the UI polls it every 3 s; the link answer carries no
+  preferences, so Connect costs two requests; with the integration off and the bot username
+  empty, every bound user is reported `BOT_CHANGED`.
