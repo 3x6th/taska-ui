@@ -110,6 +110,7 @@ was written against it.
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
 | `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148 |
+| `pr-219-TAS-388.yml` | [#219](https://github.com/VladislavYurin/taska-backend/pull/219) | TAS-388 | TAS-389 |
 
 `pr-215-TAS-387.yml` was here for TAS-387 and was deleted on 2026-10-23, the same day
 it was written, when backend PR #215 merged (`9a735db`) and the snapshot was refreshed to it.
