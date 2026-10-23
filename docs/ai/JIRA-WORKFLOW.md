@@ -11,6 +11,7 @@ states are not.
 
 | Key | Story | Jira status | In this repo |
 | --- | --- | --- | --- |
+| [TAS-387](https://jira.ozero.dev/browse/TAS-387) | Independent Email/Telegram notification channels and confirmed bot connection in My profile | In Review | implemented on `codex/feature/TAS-387`; linked backend [PR #215](https://github.com/VladislavYurin/taska-backend/pull/215); release/contract/art review blockers closed; owner test-bot smoke pending; not merged or deployed |
 | [TAS-114](https://jira.ozero.dev/browse/TAS-114) | Connect the frontend to gateway auth endpoints | Done | shipped |
 | [TAS-134](https://jira.ozero.dev/browse/TAS-134) | Connect the current-user profile | To Do | shipped (`UserProfileMenu.tsx`) |
 | [TAS-135](https://jira.ozero.dev/browse/TAS-135) | Add logout | Done | shipped |

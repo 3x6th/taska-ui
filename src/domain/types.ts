@@ -1700,3 +1700,29 @@ export interface OutboxRetryResult {
   status: string;
   attempts: number | null;
 }
+
+/** Current-user delivery channels (TAS-387). The in-app inbox is independent. */
+export interface NotificationPreferences {
+  emailEnabled: boolean;
+  telegramEnabled: boolean;
+  email: string;
+  telegramAvailable: boolean;
+  telegramStatus: "NOT_CONNECTED" | "PENDING" | "AWAITING_CONFIRMATION" | "CONNECTED" | "UNAVAILABLE";
+  telegramUsername: string | null;
+  telegramName: string | null;
+  telegramLinkId: string | null;
+  telegramLinkExpiresAt: string | null;
+  telegramError: string | null;
+}
+
+export interface NotificationPreferencesPatch {
+  emailEnabled?: boolean;
+  telegramEnabled?: boolean;
+}
+
+/** A short-lived bearer link: keep it in memory, never in browser storage. */
+export interface TelegramLink {
+  linkId: string;
+  url: string;
+  expiresAt: string;
+}

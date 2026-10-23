@@ -29,6 +29,25 @@ it. Entries are deleted only when the compensating code is deleted.
 
 ## Runtime differs from the contract
 
+### TAS-387: notification channels require backend PR #215
+
+- **Endpoints:** GET/PATCH `/api/v1/users/me/notification-preferences`, POST
+  `/api/v1/users/me/telegram/link`, POST `/api/v1/users/me/telegram/confirm`,
+  DELETE `/api/v1/users/me/telegram`.
+- **Evidence 2026-10-23:** source comparison against backend develop `2e053fa6d2be`
+  and [backend PR #215](https://github.com/VladislavYurin/taska-backend/pull/215),
+  head `34589adf5fce`. These are added operations in the linked full-stack story,
+  extracted under `docs/contract/pending/pr-215-TAS-387.yml`; they are not claimed
+  as deployed. The live gateway was not probed during this implementation.
+- **Compensation: none.** REST uses these exact operations and reports a failed
+  read/write honestly if the matching backend has not shipped. There is no fallback
+  from REST into mock data, no automatic Telegram `/start` and no guessed binding.
+  Mock mode provides the same contract as an isolated test fixture.
+- **Removal:** deploy the backend and UI TAS-387 together, refresh the develop
+  snapshot and remove the pending extract after #215 merges. Real delivery smoke
+  additionally requires the owner's test bot and configured webhook; the code tests
+  use mock Telegram/SMTP. Tracked by [TAS-387](https://jira.ozero.dev/browse/TAS-387).
+
 Headings starting with "Closed by" are settled and kept for their history;
 everything else here is live. A closed entry may still carry a live sub-fact —
 it says so in its own first paragraph when it does, because closing a heading

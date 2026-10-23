@@ -1,3 +1,4 @@
+import { SettingsNotificationsSection } from "./SettingsNotificationsSection";
 import { useQuery } from "@tanstack/react-query";
 import { ImageUp } from "lucide-react";
 import { useRef } from "react";
@@ -234,6 +235,7 @@ export function SettingsProfileSection() {
               </div>
             ) : null}
           </dl>
+          <SettingsNotificationsSection key={user.id} userId={user.id} />
         </div>
       </div>
     </div>

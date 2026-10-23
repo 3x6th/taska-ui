@@ -12,6 +12,18 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Conscious decisions to revisit
 
+- **Existing TAS-145 pending pin is stale (observed during TAS-387, 2026-10-23):**
+  `pr-155-TAS-145.yml` still records `28f5fe1af002`, while open backend PR #155
+  now points to `f3be9738b848`. Re-extract that separate project's pending contract
+  before merging work that depends on it. TAS-387's own PR #215 pin is current;
+  no project-editing implementation was changed here.
+
+- **TAS-387 art notes, 2026-10-23 (non-blocking):** remove the directional
+  “below” from notification write-error copy (the controls are above it);
+  combine duplicated reconnect advice in UNAVAILABLE; capture its evidence after
+  the switch transition settles. The 44px mobile error targets are fixed and
+  independently re-reviewed, not a new design-system exception.
+
 - ~~**`VITE_TASKA_ASSUME_PROJECT_ADMIN=true` is a deploy variable.** Every
   signed-in user gets the ADMIN surface of the UI. Accepted by the owner while
   the stand has no external users; falls away with TAS-137. Until then, no

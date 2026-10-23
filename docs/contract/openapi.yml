@@ -1,16 +1,8 @@
 # Vendored snapshot of the API Gateway contract.
 # Source: https://github.com/VladislavYurin/taska-backend/blob/develop/api-gateway/src/main/resources/static/openapi.yml
-# Backend commit: 594f63791565 (develop, 2026-10-22)
-# Fetched: 2026-10-22
-#
-# The backend repository is the single source of truth for this contract.
-# This copy exists so read-only reviewers without network access can audit
-# against it and so the audited version is pinned in history. When it drifts
-# from develop, develop wins - refresh this file and update the commit above.
-#
-# Endpoints on open backend pull requests are NOT here, because they are not the
-# contract yet. They are extracted under docs/contract/pending/ - see the README
-# there for what that directory is and is not.
+# Backend commit: 2e053fa6d2beae35077a636e842f2f9b08ace062 (develop, 2026-10-23)
+# Fetched: 2026-10-23
+# Backend develop is authoritative. Pending TAS-387 additions live under pending/.
 openapi: 3.0.3
 info:
   title: Taska API Gateway Contract
@@ -360,6 +352,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListMyProjectResponseDto'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+
+  /api/v1/project-stats:
+    get:
+      summary: Счётчики и первые пять участников всех проектов пользователя
+      operationId: getProjectStats
+      tags: [project-stats]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Статистика доступных проектов; пустой items, если проектов нет
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-RequestId-Header'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProjectStatsDto'
         default:
           $ref: '#/components/responses/ErrorResponse'
 
@@ -4364,6 +4376,36 @@ components:
           nullable: true
         currentUserRole:
           type: string
+
+    ListProjectStatsDto:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectStatsDto'
+
+    ProjectStatsDto:
+      type: object
+      required: [projectId, issueCount, memberCount, members]
+      properties:
+        projectId:
+          type: string
+        issueCount:
+          type: integer
+          format: int64
+          minimum: 0
+        memberCount:
+          type: integer
+          format: int64
+          minimum: 0
+        members:
+          type: array
+          maxItems: 5
+          description: Первые пять участников по addedAt, затем userId
+          items:
+            $ref: '#/components/schemas/ProjectMemberDetailsDto'
 
     ListMyProjectResponseDto:
       type: object

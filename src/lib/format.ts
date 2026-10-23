@@ -562,3 +562,22 @@ export const keyBadgeStyle = (projectKey: string, color?: string | null) => {
   if (!key) return undefined;
   return { background: keyTint(computedProjectColor(key)) };
 };
+
+/** Safe delivery codes are diagnostic data, never words to print in a profile. */
+export function telegramDeliveryErrorText(code: string): string {
+  switch (code) {
+    case "BOT_CHANGED":
+      return "Taska uses a different bot now. Disconnect the old account before connecting the new bot.";
+    case "TELEGRAM_DELIVERY_UNAVAILABLE":
+      return "The bot cannot reach your Telegram account. Check that the bot is not blocked, then disconnect and connect your account again.";
+    case "TELEGRAM_DISABLED":
+      return "Telegram notifications are not available right now.";
+    case "TELEGRAM_RATE_LIMIT":
+      return "Telegram is limiting messages right now. Delivery will retry automatically.";
+    case "TELEGRAM_TEMPORARY":
+    case "TELEGRAM_INVALID_RESPONSE":
+      return "Telegram delivery is temporarily unavailable. Delivery will retry automatically.";
+    default:
+      return "Telegram delivery is unavailable. You can disconnect Telegram and connect again when it is available.";
+  }
+}

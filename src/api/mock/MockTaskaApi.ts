@@ -1,3 +1,4 @@
+import { MockNotificationPreferences } from "./MockNotificationPreferences";
 import type {
   AcceptInvitationInput,
   AddIssueWorklogInput,
@@ -111,6 +112,9 @@ import type {
   Label,
   Notification,
   NotificationPage,
+  NotificationPreferences,
+  NotificationPreferencesPatch,
+  TelegramLink,
   NotificationType,
   OutboxRetryResult,
   Page,
@@ -1658,6 +1662,7 @@ function outboxProblem(row: AdminRow, nowMs: number): keyof typeof OUTBOX_REASON
 }
 
 export class MockTaskaStore {
+  readonly notificationPreferences = new MockNotificationPreferences();
   private users: StoredUser[];
   private projects: Project[];
   private membersByProject: Record<string, ProjectMember[]>;
@@ -6697,6 +6702,26 @@ export class MockTaskaApi implements TaskaApi {
 
   async getCurrentUser(): Promise<User> {
     return wait(this.store.currentUserProfile());
+  }
+
+  async getNotificationPreferences(): Promise<NotificationPreferences> {
+    return wait(this.store.notificationPreferences.get(this.store.currentUser()));
+  }
+
+  async updateNotificationPreferences(input: NotificationPreferencesPatch): Promise<NotificationPreferences> {
+    return wait(this.store.notificationPreferences.update(this.store.currentUser(), input));
+  }
+
+  async createTelegramLink(): Promise<TelegramLink> {
+    return wait(this.store.notificationPreferences.createLink(this.store.currentUser()));
+  }
+
+  async confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
+    return wait(this.store.notificationPreferences.confirm(this.store.currentUser(), linkId));
+  }
+
+  async disconnectTelegram(): Promise<NotificationPreferences> {
+    return wait(this.store.notificationPreferences.disconnect(this.store.currentUser()));
   }
 
   hasSession(): boolean {
