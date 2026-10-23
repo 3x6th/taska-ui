@@ -955,8 +955,7 @@ describe("ProjectMembersModal", () => {
     // cache's lifetime, these would draw the board as ADMIN with controls whose
     // every write is a 403.
     queryClient.setQueryData(["project-context", PROJECT], { project: { id: PROJECT }, role: "ADMIN" });
-    queryClient.setQueryData(["issues", PROJECT, "ALL"], { items: [], page: 0, pageSize: 100, totalCount: 0 });
-    queryClient.setQueryData(["project-summaries", PROJECT], { count: 0, members: [], failure: null });
+    queryClient.setQueryData(["board", PROJECT], { projectId: PROJECT, columns: [], unplacedIssues: [] });
     queryClient.setQueryData(["project", OTHER_PROJECT], { id: OTHER_PROJECT });
     queryClient.setQueryData(["issue-search", "all-projects", "login"], { items: [], totalCount: 0 });
 
@@ -967,8 +966,7 @@ describe("ProjectMembersModal", () => {
     for (const key of [
       ["project-context", PROJECT],
       ["members", PROJECT],
-      ["issues", PROJECT, "ALL"],
-      ["project-summaries", PROJECT],
+      ["board", PROJECT],
     ]) {
       expect(queryClient.getQueryState(key), JSON.stringify(key)).toBeUndefined();
     }

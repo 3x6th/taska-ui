@@ -67,6 +67,7 @@ import type {
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
+  ProjectStats,
   ProjectWorkflowEntry,
   TelegramLink,
   UnwatchIssueResult,
@@ -209,8 +210,12 @@ export class HybridTaskaApi implements TaskaApi {
     return this.live.listIssues(projectId, params);
   }
 
-  getBoard(projectId: string, params: BoardParams): Promise<Board> {
+  getBoard(projectId: string, params?: BoardParams): Promise<Board> {
     return this.live.getBoard(projectId, params);
+  }
+
+  getProjectStats(): Promise<ProjectStats[]> {
+    return this.live.getProjectStats();
   }
 
   searchIssues(params: SearchIssuesParams): Promise<Page<IssueSearchHit>> {

@@ -17,6 +17,7 @@ import type {
 import { useMeta } from "../hooks/useMeta";
 import { useUnanswered } from "../hooks/useUnanswered";
 import { issueTypeInSentence, issueTypeLabel, keyBadgeStyle, statusLabel } from "../lib/format";
+import { boardKey } from "../lib/boardQuery";
 import { projectContextKey } from "../lib/projectContext";
 import {
   STATUS_KEY_MAX_LENGTH,
@@ -155,8 +156,8 @@ interface ProjectWorkflowsModalProps {
  * **A new workflow is a verbatim copy of the shared default**, not editable
  * before it is sent: the server accepts a workflow with no status or no visible
  * transition, and then the project's context answers 404 to every member; one
- * with no `TODO` puts new issues of its types in Other statuses
- * (docs/ai/API-DIVERGENCE.md). Statuses and transitions are added afterwards,
+ * with no `TODO` puts new issues of its types outside their workflow on the
+ * board (docs/ai/API-DIVERGENCE.md). Statuses and transitions are added afterwards,
  * one at a time, and every add is re-validated whole on the server.
  *
  * **No write is optimistic**, deliberately against §1's rule (§4.28 "В
@@ -238,6 +239,9 @@ export function ProjectWorkflowsModal({
       const id = madeId(answer, sent);
       const listKey = projectWorkflowsKey(projectId);
       void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+      // The board's columns and its «Outside their workflow» group come from
+      // the workflows too, so the board is read again with the context (TAS-202).
+      void queryClient.invalidateQueries({ queryKey: boardKey(projectId) });
       const asked = Date.now();
       await queryClient.invalidateQueries({ queryKey: listKey });
       const state = queryClient.getQueryState(listKey);
@@ -552,7 +556,7 @@ function WorkflowCard({
         <p className="workflow-fact">
           {`New issues always start in TODO, which this workflow does not have, so new ${
             issueTypes.length ? `${andList(issueTypes.map((code) => issueTypeInSentence(code, served)))} ` : ""
-          }issues will land in Other statuses on the board.`}
+          }issues will land outside their workflow on the board.`}
         </p>
       ) : null}
       {editable ? (

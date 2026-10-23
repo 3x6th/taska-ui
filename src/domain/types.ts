@@ -886,59 +886,60 @@ export interface IssueSearchHit {
 }
 
 /**
- * Who a board card is assigned to — `BoardUserDto`, and two fields is all of
- * it. Not a `User` and not a `ProjectMember`: the board route is told an id and
- * a name and nothing else, so typing this as a person would put an email, a
- * status and a colour in scope for a card that was never sent them.
+ * Who a board card is assigned to — `BoardUserDto`: an id, and the name and the
+ * face the gateway joins in from auth-service since backend #205 (TAS-213).
+ * Not a `User` and not a `ProjectMember`: the board route states these three
+ * and nothing else, so typing it as a person would put an email, a status and
+ * a colour in scope for a card that was never sent them.
  *
- * `displayName` is `string | null`. The deployed gateway answered
- * `{"id":"275417fd-…","displayName":null}` for **every** assigned issue on
- * 2026-09-09 — not by chance: `IssueBoardResponse` in the backend's
- * `v1/issue-service.proto` carries `assignee_id` (field 6) and no name field
- * of any kind, and `IssueMapper.toRestBoardIssue` builds `BoardUserDto` with
- * `setId` alone — `setDisplayName` appears nowhere in the gateway. So it is
- * null on every branch that exists today, exactly like `storyPoints` ten
- * lines below: a caller that wants to print a person's name resolves the id
- * against the members it already holds.
+ * `displayName` is `string | null` and `null` is a real answer: the gateway's
+ * `BoardServiceImpl` leaves it unset when the profile read fails or does not
+ * know the id (it logs a warning and keeps the board), so a card draws such an
+ * assignee as unknown rather than looking the id up anywhere else. The same
+ * for `avatarUrl`, which is also `null` for somebody with no picture.
  */
 export interface BoardAssignee {
   id: string;
   displayName: string | null;
+  avatarUrl: string | null;
 }
 
 /**
- * One card on the board — `BoardIssueDto`, and deliberately not an `Issue`.
- * Six fields is everything this route is ever told: no `status` (the column
- * carries it), no `priority`, no `projectId`, no `description`, no dates and no
- * estimates. Same rule as `IssueSearchHit` above — do not widen it into an
- * issue it never was.
+ * One card on the board — `BoardIssueDto` since backend #205 (TAS-213), and
+ * still deliberately not an `Issue`: no `projectId`, no reporter, no watchers
+ * and no planning fields beyond what a card draws. `storyPoints`, `dueDate`,
+ * `commentCount` and `attachmentCount` are on the wire and are left out here
+ * until a screen draws them — a field nobody reads is a field nobody checks.
+ *
+ * `issueType`, `priority` and `statusKey` stay open codes (TAS-173): the
+ * board draws what it was sent, and a code this build has no word for is a
+ * value to print, not a case to deny.
  */
 export interface BoardIssue {
   id: string;
   issueKey: string;
   summary: string;
-  /**
-   * `??`, never `||`, at every reader: an issue estimated at zero points has
-   * been estimated. Absent on the wire is `null`, and the deployed gateway
-   * answered `null` for every issue measured on 2026-09-09 — not by chance:
-   * `IssueBoardResponse` in the backend's `v1/issue-service.proto` has no
-   * `story_points` field, and `IssueMapper.toRestBoardIssue` never sets one, so
-   * the field cannot be filled by any branch that exists today.
-   */
-  storyPoints: number | null;
+  issueType: IssueTypeCode;
+  priority: IssuePriorityCode;
+  statusKey: IssueStatusKey;
+  /** Nullable on the wire; the rest leg keeps `null` rather than inventing `""`. */
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
   assignee: BoardAssignee | null;
   /**
-   * The wire field is `labels` and it carries label **ids**, not names —
-   * measured against the deployed gateway on 2026-09-09, where every value was
-   * a uuid matching a row of `GET /projects/{projectId}/labels`. Renamed here
-   * for what it holds, so nothing can print it as a chip by mistake.
+   * `IssueLabelResponseDto` rows — `id`, `name`, `color` — in the order the
+   * gateway lists them. A label the gateway could not resolve is left out by
+   * the server; when its whole label read fails the server sends `[]` and says
+   * nothing (backend A2, docs/ai/API-DIVERGENCE.md).
    */
-  labelIds: string[];
+  labels: Label[];
 }
 
 /**
- * One column — `BoardColumnDto`. A workflow status of the asked-for issue type,
- * plus the issues sitting in it.
+ * One column — `BoardColumnDto`: a workflow status, plus the issues sitting in
+ * it.
  *
  * **`statusKey` and `category` are plain strings and must stay that way.**
  * `WorkflowStatus` narrowed both to `IssueStatus` until TAS-173 opened it,
@@ -957,22 +958,48 @@ export interface BoardColumn {
 }
 
 /**
- * `GET /projects/{projectId}/board` — `BoardResponseDto`. One issue type's
- * columns, in the workflow's own `sortOrder` (10/20/30 for TODO/IN_PROGRESS/DONE
- * on the deployed gateway, measured 2026-09-09).
+ * `GET /projects/{projectId}/board` — `BoardResponseDto` since backend #205
+ * (TAS-213), the board screen's one issue read (TAS-202).
  *
- * `issueType` is the echo of what the caller asked for: the route requires the
- * parameter, so a board is always about exactly one type and there is no "all".
+ * Without `issueType` the gateway reads the workflows of TASK, BUG and STORY —
+ * a constant in `BoardServiceImpl`, not the project's allowed types (backend
+ * A4) — skips a type whose workflow is not found, and merges their statuses
+ * into `columns` by key, the first type to state a key winning, then stably by
+ * `sortOrder`. It reads the issues of those three types only.
  *
- * The `includeDone` filter drops *issues*, never columns: without it every
- * column of the workflow's `DONE` category still arrives, carrying an empty
- * `issues` array. Which statuses count as done is the workflow's `category`
- * since backend #202 (TAS-241), not the literal key `DONE`.
+ * `unplacedIssues` holds every issue read whose status is not in **its own
+ * type's** workflow — a status that stands as a column only because another
+ * type's workflow has it included, a status no workflow has, and every issue
+ * of a type whose workflow was not found. The board draws it as the group
+ * «Outside their workflow» (DESIGN.md §4.9) and never recomputes it.
+ *
+ * No paging and no cap: the answer is the whole board, which is what lets the
+ * screen filter locally (backend A3 is the day that changes).
  */
 export interface Board {
   projectId: string;
-  issueType: IssueTypeCode;
   columns: BoardColumn[];
+  unplacedIssues: BoardIssue[];
+}
+
+/**
+ * One project's entry in `GET /project-stats` — `ProjectStatsDto`, backend
+ * TAS-211: the counts and the first faces a project card draws, for every
+ * project the reader lists, in one read (TAS-202).
+ *
+ * `issueCount` is every live issue of any type and status; `memberCount` every
+ * member. Both are `null` only when the wire did not carry a number — the
+ * schema requires both, so that is a malformed answer rather than a state the
+ * server means, and a card says `Unknown` for it rather than `0`.
+ *
+ * `members` is the first five by `addedAt`, then `userId` — a preview, never
+ * the whole list, and kept in the server's order.
+ */
+export interface ProjectStats {
+  projectId: string;
+  issueCount: number | null;
+  memberCount: number | null;
+  members: ProjectMember[];
 }
 
 export type IssueEventType =

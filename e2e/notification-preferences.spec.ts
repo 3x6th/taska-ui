@@ -354,3 +354,46 @@ for (const theme of ["light", "dark"] as const) {
     });
   });
 }
+
+// §4.29 (TAS-202, art-director on the owner's remark): the switch is drawn at
+// the pill's scale, 32×18, and below 820 its `::before` widens what a finger
+// can hit to 44×44 without changing what is drawn. The zone is measured, and
+// then hit: each of its corners, asked of the page, has to land on the switch
+// rather than on the row around it.
+test("gives each switch a 44×44 target on a phone while drawing it at 32×18", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "the ≤820 touch target");
+  await signIn(page);
+  for (const control of [email(page), tg(page)]) {
+    await control.scrollIntoViewIfNeeded();
+    const measured = await control.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const before = getComputedStyle(element, "::before");
+      const border = parseFloat(style.borderTopWidth);
+      // `inset` on an absolute `::before` is measured from the padding box.
+      const zone = {
+        left: rect.left + border + parseFloat(before.left),
+        top: rect.top + border + parseFloat(before.top),
+        right: rect.right - border - parseFloat(before.right),
+        bottom: rect.bottom - border - parseFloat(before.bottom),
+      };
+      const inside = 0.5;
+      const corners = [
+        [zone.left + inside, zone.top + inside],
+        [zone.right - inside, zone.top + inside],
+        [zone.left + inside, zone.bottom - inside],
+        [zone.right - inside, zone.bottom - inside],
+      ];
+      return {
+        drawn: { width: rect.width, height: rect.height },
+        zone: { width: zone.right - zone.left, height: zone.bottom - zone.top },
+        cornersHit: corners.map(([x, y]) => document.elementFromPoint(x, y)?.closest("[role='switch']") === element),
+      };
+    });
+    expect(measured.drawn.width).toBeCloseTo(32, 0);
+    expect(measured.drawn.height).toBeCloseTo(18, 0);
+    expect(measured.zone.width).toBeGreaterThanOrEqual(44);
+    expect(measured.zone.height).toBeGreaterThanOrEqual(44);
+    expect(measured.cornersHit).toEqual([true, true, true, true]);
+  }
+});

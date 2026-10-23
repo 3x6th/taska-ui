@@ -141,6 +141,31 @@ function respond(url: string, init?: RequestInit): unknown {
     };
   }
   if (path === `/projects/${PROJECT}/issues`) return { items: [issue], totalCount: 1 };
+  if (path === `/projects/${PROJECT}/board`) {
+    // The board read (backend #205): the issue as a card, in its status's column.
+    const card = {
+      id: issue.id,
+      issueKey: issue.issueKey,
+      summary: issue.summary,
+      issueType: issue.issueType,
+      priority: issue.priority,
+      statusKey: issue.status,
+      description: issue.description,
+      createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
+      version: issue.version,
+      assignee: null,
+      labels: [],
+    };
+    return {
+      projectId: PROJECT,
+      columns: [
+        { statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10, issues: issue.status === "TODO" ? [card] : [] },
+        { statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20, issues: issue.status === "IN_PROGRESS" ? [card] : [] },
+      ],
+      unplacedIssues: [],
+    };
+  }
   if (path === `/projects/${PROJECT}/labels`) return { items: [], totalCount: 0 };
   if (path === "/notifications") return { items: [], unreadCount: 0 };
   if (path === `/issues/${ISSUE}`) {
@@ -259,14 +284,16 @@ describe("the issue panel's request budget against the REST implementation", () 
   /**
    * The board's own frame since TAS-251: one context read where it used to make
    * seven — the project, the project again for the role, the members, a
-   * workflow per issue type and the labels. Beside it the issue page, the
-   * reader's profile — which carries their avatar since TAS-223, so the top
-   * bar's own avatar read is gone — the notifications, which are not the
-   * board's, and `GET /meta`, once per session (TAS-173). In the app the
-   * session guard starts that one; this harness has no guard, so the board's
-   * first type chip does — in the same round either way.
+   * workflow per issue type and the labels. Beside it the board read since
+   * TAS-202 (`includeDone=true` and nothing else), the reader's profile —
+   * which carries their avatar since TAS-223, so the top bar's own avatar read
+   * is gone — the notifications, which are not the board's, and `GET /meta`,
+   * once per session (TAS-173). In the app the session guard starts that one;
+   * this harness has no guard, so the board's first type chip does — in the
+   * same round either way. ScreenRequests.test.tsx pins the same budget with
+   * the app's own query client.
    */
-  it("loads the board with one context read, and none of the reads it replaced", async () => {
+  it("loads the board with one context read and one board read, and none of the reads they replaced", async () => {
     const queryClient = renderBoard();
     await screen.findByRole("button", { name: /TAS-102/ });
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
@@ -275,13 +302,13 @@ describe("the issue panel's request budget against the REST implementation", () 
     expect(paths.sort()).toEqual(
       [
         `/api/v1/projects/${PROJECT}/context`,
-        `/api/v1/projects/${PROJECT}/issues`,
+        `/api/v1/projects/${PROJECT}/board`,
         "/api/v1/users/me",
         "/api/v1/notifications",
         "/api/v1/meta",
       ].sort(),
     );
-    for (const replaced of ["", "/members", "/workflow", "/labels"]) {
+    for (const replaced of ["", "/members", "/workflow", "/labels", "/issues"]) {
       expect(paths).not.toContain(`/api/v1/projects/${PROJECT}${replaced}`);
     }
     expect(paths).not.toContain(`/api/v1/users/${ANNA}/avatar`);
@@ -403,11 +430,10 @@ describe("the issue panel's request budget against the REST implementation", () 
     const edit = sent.slice(beforeEdit);
     expect(edit[0]).toEqual({ path: `/api/v1/issues/${ISSUE}`, method: "PATCH", ifMatch: '"1"' });
     expect(edit.filter((request) => request.method !== "GET")).toHaveLength(1);
-    // The settle, after the write and never before it: the issue, the board's
-    // page and the notifications. (A search would be re-read too, had one been
-    // on screen.)
+    // The settle, after the write and never before it: the issue, the board
+    // and the notifications.
     expect(edit.slice(1).map((request) => request.path)).toEqual(
-      expect.arrayContaining([`/api/v1/issues/${ISSUE}`, `/api/v1/projects/${PROJECT}/issues`, "/api/v1/notifications"]),
+      expect.arrayContaining([`/api/v1/issues/${ISSUE}`, `/api/v1/projects/${PROJECT}/board`, "/api/v1/notifications"]),
     );
     expect(issueReads(edit.slice(1))).toBe(1);
   });

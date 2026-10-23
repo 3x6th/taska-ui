@@ -5,7 +5,8 @@ import { AVATAR_ACCEPTED_SUMMARY, AVATAR_MAX_SIZE_BYTES, avatarRefusalKind, type
 import { apiErrorFacts, isUndeployedRoute } from "../api/errors";
 import { objectStoreUploadFailure } from "../api/objectStore";
 import { UNDEPLOYED_ROUTE_MESSAGE } from "../api/TaskaApi";
-import type { ProjectMember, User } from "../domain/types";
+import type { Board, BoardIssue, ProjectContext, ProjectMember, ProjectStats, User } from "../domain/types";
+import { PROJECT_STATS_KEY } from "../lib/boardQuery";
 import { formatFileSize } from "../lib/format";
 import { ME_QUERY_KEY } from "../lib/ownAvatarLink";
 
@@ -26,20 +27,121 @@ export interface PhotoNotice {
 }
 
 /**
- * The cached shapes that draw somebody's face on a member row, as their
- * screens hold them: the members dialog's `["members", projectId]` is the list
- * itself; the board's `["project-context", projectId]` (TAS-251) and the
- * project cards' `["project-summaries", projectId]` hold it under `members` —
- * the summary's `null` when that half of the card did not load. Only `members`
- * is read here; the rest of either holder is spread through untouched.
+ * One cached shape that draws the reader's face from a row the server sent: how
+ * to find the face the reader's row carries in it, and how to write a new one
+ * over every such row. Each family is read and written by its own pair, because
+ * the four hold people in four different places.
  */
-type MemberFaceHolder = ProjectMember[] | { members: ProjectMember[] | null };
+interface FaceFamily<T> {
+  queryKey: QueryKey;
+  /** The face on the reader's first named row in `data`, or `NO_ROW` when no row there is theirs. */
+  faceIn: (data: T, userId: string) => string | null | undefined | typeof NO_ROW;
+  /**
+   * `data` with every named row of the reader's showing `avatarUrl` — or
+   * `undefined` when nothing would change, which `setQueryData` reads as
+   * "leave this query alone". A list the reader is not on and a row that
+   * already shows this face are therefore not touched at all, rather than
+   * rewritten with themselves and marked fresh.
+   */
+  withFace: (data: T, userId: string, avatarUrl: string | null | undefined) => T | undefined;
+}
 
-const MEMBER_FACE_FAMILIES: readonly QueryKey[] = [["members"], ["project-context"], ["project-summaries"]];
+const NO_ROW = Symbol("no row of the reader's");
 
-/** One cached list the reader's row was rewritten in, and the face it carried before. */
+/** The reader's named row in a member list, rewritten; the same array when nothing changed. */
+function membersWithFace(members: ProjectMember[], userId: string, avatarUrl: string | null | undefined) {
+  let changed = false;
+  const next = members.map((member) => {
+    if (member.userId !== userId || !member.user || member.user.avatarUrl === avatarUrl) return member;
+    changed = true;
+    return { ...member, user: { ...member.user, avatarUrl } };
+  });
+  return changed ? next : members;
+}
+
+function memberFaceIn(members: ProjectMember[], userId: string) {
+  const row = members.find((member) => member.userId === userId && member.user);
+  return row?.user ? row.user.avatarUrl : NO_ROW;
+}
+
+/** The members dialog's `["members", projectId]`: the list itself. */
+const membersFamily: FaceFamily<ProjectMember[]> = {
+  queryKey: ["members"],
+  faceIn: memberFaceIn,
+  withFace: (members, userId, avatarUrl) => {
+    const next = membersWithFace(members, userId, avatarUrl);
+    return next === members ? undefined : next;
+  },
+};
+
+/** The board's `["project-context", projectId]` (TAS-251): the list under `members`. */
+const contextFamily: FaceFamily<ProjectContext> = {
+  queryKey: ["project-context"],
+  faceIn: (context, userId) => memberFaceIn(context.members, userId),
+  withFace: (context, userId, avatarUrl) => {
+    const members = membersWithFace(context.members, userId, avatarUrl);
+    return members === context.members ? undefined : { ...context, members };
+  },
+};
+
+/** The project cards' `["project-stats"]` (TAS-202): a five-person preview under every entry. */
+const statsFamily: FaceFamily<ProjectStats[]> = {
+  queryKey: PROJECT_STATS_KEY,
+  faceIn: (entries, userId) => {
+    for (const entry of entries) {
+      const face = memberFaceIn(entry.members, userId);
+      if (face !== NO_ROW) return face;
+    }
+    return NO_ROW;
+  },
+  withFace: (entries, userId, avatarUrl) => {
+    let changed = false;
+    const next = entries.map((entry) => {
+      const members = membersWithFace(entry.members, userId, avatarUrl);
+      if (members === entry.members) return entry;
+      changed = true;
+      return { ...entry, members };
+    });
+    return changed ? next : undefined;
+  },
+};
+
+/**
+ * The board's `["board", projectId]` (TAS-202): the assignee the server joined
+ * into every card. Only an assignee the server named — a card whose
+ * `displayName` is `null` draws nobody's face, and gets none here.
+ */
+const boardFamily: FaceFamily<Board> = {
+  queryKey: ["board"],
+  faceIn: (board, userId) => {
+    const cards = [...board.columns.flatMap((column) => column.issues), ...board.unplacedIssues];
+    const card = cards.find((issue) => issue.assignee?.id === userId && issue.assignee.displayName !== null);
+    return card?.assignee ? card.assignee.avatarUrl : NO_ROW;
+  },
+  withFace: (board, userId, avatarUrl) => {
+    let changed = false;
+    const withCard = (issue: BoardIssue): BoardIssue => {
+      const assignee = issue.assignee;
+      if (!assignee || assignee.id !== userId || assignee.displayName === null) return issue;
+      if (assignee.avatarUrl === (avatarUrl ?? null)) return issue;
+      changed = true;
+      return { ...issue, assignee: { ...assignee, avatarUrl: avatarUrl ?? null } };
+    };
+    const next: Board = {
+      ...board,
+      columns: board.columns.map((column) => ({ ...column, issues: column.issues.map(withCard) })),
+      unplacedIssues: board.unplacedIssues.map(withCard),
+    };
+    return changed ? next : undefined;
+  },
+};
+
+const FACE_FAMILIES = [membersFamily, contextFamily, statsFamily, boardFamily] as readonly FaceFamily<unknown>[];
+
+/** One cache the reader's rows were rewritten in, the family that reads it, and the face it carried before. */
 interface OwnFaceWrite {
   queryKey: QueryKey;
+  family: FaceFamily<unknown>;
   avatarUrl: string | null | undefined;
 }
 
@@ -231,47 +333,17 @@ export function useOwnPhoto(user: User | undefined) {
   };
 }
 
-/** The members `holder` carries, or `null` for a list that is not there. */
-function membersIn(holder: MemberFaceHolder | undefined): ProjectMember[] | null {
-  if (!holder) return null;
-  return Array.isArray(holder) ? holder : holder.members;
-}
-
 /**
- * `holder` with the row for `userId` showing `avatarUrl` — or `undefined` when
- * nothing in it would change, which `setQueryData` reads as "leave this query
- * alone". A list the reader is not on, a summary whose member half failed, and
- * a row that already shows this face are therefore not touched at all, rather
- * than rewritten with themselves and marked fresh.
- */
-function withOwnFace(
-  holder: MemberFaceHolder | undefined,
-  userId: string,
-  avatarUrl: string | null | undefined,
-): MemberFaceHolder | undefined {
-  const members = membersIn(holder);
-  if (!holder || !members) return undefined;
-  let changed = false;
-  const next = members.map((member) => {
-    if (member.userId !== userId || !member.user || member.user.avatarUrl === avatarUrl) return member;
-    changed = true;
-    return { ...member, user: { ...member.user, avatarUrl } };
-  });
-  if (!changed) return undefined;
-  return Array.isArray(holder) ? next : { ...holder, members: next };
-}
-
-/**
- * Writes `avatarUrl` onto the reader's own row in every cached member list, and
- * answers with what each of those rows carried before, so a refusal can put it
- * back.
+ * Writes `avatarUrl` onto the reader's own rows in every cached list that draws
+ * them — the member lists, the board's context, the project cards' stats and
+ * the board's cards — and answers with what each of those caches carried
+ * before, so a refusal can put it back.
  *
  * **A cache write and not an invalidation**, and the cost is the reason.
- * Invalidating `["project-summaries"]` on `/projects` re-runs `listIssues` *and*
- * `listMembers` for every project on the page — 2N requests — to
- * change one face on a write the reader made themselves. Everything the rows
- * need is already in hand: the confirm's `downloadUrl` for an upload, `null`
- * for a removal.
+ * Invalidating `["project-stats"]` on `/projects` and `["board", …]` behind a
+ * board re-reads whole screens to change one face on a write the reader made
+ * themselves. Everything the rows need is already in hand: the confirm's
+ * `downloadUrl` for an upload, `null` for a removal.
  *
  * Reads already in flight for these lists are cancelled first, so one that left
  * before the write cannot land after it and draw the old face — but only for a
@@ -286,27 +358,30 @@ async function writeOwnFace(
   avatarUrl: string | null,
 ): Promise<OwnFaceWrite[]> {
   const before: OwnFaceWrite[] = [];
-  for (const family of MEMBER_FACE_FAMILIES) {
-    await queryClient.cancelQueries({ queryKey: family, predicate: (query) => query.state.data !== undefined });
-    for (const [queryKey, holder] of queryClient.getQueriesData<MemberFaceHolder>({ queryKey: family })) {
-      const row = membersIn(holder)?.find((member) => member.userId === userId && member.user);
-      if (row?.user && row.user.avatarUrl !== avatarUrl) before.push({ queryKey, avatarUrl: row.user.avatarUrl });
+  for (const family of FACE_FAMILIES) {
+    await queryClient.cancelQueries({ queryKey: family.queryKey, predicate: (query) => query.state.data !== undefined });
+    for (const [queryKey, data] of queryClient.getQueriesData({ queryKey: family.queryKey })) {
+      if (data === undefined) continue;
+      const face = family.faceIn(data, userId);
+      if (face !== NO_ROW && face !== avatarUrl) before.push({ queryKey, family, avatarUrl: face });
     }
-    queryClient.setQueriesData<MemberFaceHolder>({ queryKey: family }, (holder) =>
-      withOwnFace(holder, userId, avatarUrl),
+    queryClient.setQueriesData({ queryKey: family.queryKey }, (data: unknown) =>
+      data === undefined ? undefined : family.withFace(data, userId, avatarUrl),
     );
   }
   return before;
 }
 
 /**
- * Puts back what `writeOwnFace` replaced: the reader's face in each list it
- * changed, and nothing else — so a list that has been refreshed since keeps
+ * Puts back what `writeOwnFace` replaced: the reader's face in each cache it
+ * changed, and nothing else — so a cache that has been refreshed since keeps
  * everything its newer answer brought.
  */
 function restoreOwnFaces(queryClient: QueryClient, userId: string, before: OwnFaceWrite[]) {
-  for (const { queryKey, avatarUrl } of before) {
-    queryClient.setQueryData<MemberFaceHolder>(queryKey, (holder) => withOwnFace(holder, userId, avatarUrl));
+  for (const { queryKey, family, avatarUrl } of before) {
+    queryClient.setQueryData(queryKey, (data: unknown) =>
+      data === undefined ? undefined : family.withFace(data, userId, avatarUrl),
+    );
   }
 }
 

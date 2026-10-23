@@ -2575,13 +2575,11 @@ describe("RestTaskaApi issue list", () => {
 });
 
 /**
- * `GET /projects/{projectId}/board`, pinned against the gateway probe of
- * 2026-09-09 rather than against the contract where the two say different
- * things — the `labels` array carries label **ids**, and `displayName` came
- * back `null` for a real assignee on every row.
- *
- * The board screen does not call this yet (see `TaskaApi.getBoard`), so these
- * cases are the only thing standing between the mapping and the day it does.
+ * `GET /projects/{projectId}/board` since backend #205 (TAS-213), the board
+ * screen's one issue read (TAS-202): every parameter optional, `columns` and
+ * `unplacedIssues`, and cards that carry their type, priority, status,
+ * description, dates, version, the assignee's name and face, and their labels
+ * as names and colours.
  */
 describe("RestTaskaApi board", () => {
   const answer = (status: number, body: unknown) =>
@@ -2600,7 +2598,7 @@ describe("RestTaskaApi board", () => {
     return fetchStub;
   };
 
-  const emptyBoard = { projectId: "project-1", issueType: "TASK", columns: [] };
+  const emptyBoard = { projectId: "project-1", columns: [], unplacedIssues: [] };
 
   beforeEach(() => {
     window.localStorage.clear();
@@ -2611,18 +2609,25 @@ describe("RestTaskaApi board", () => {
     vi.unstubAllGlobals();
   });
 
-  it("asks for one issue type and nothing else when nothing else is stated", async () => {
+  it("asks for the whole board with nothing on the URL when nothing is stated", async () => {
     const fetchStub = stubFetch(emptyBoard);
 
-    await new RestTaskaApi().getBoard("project-1", { issueType: "TASK" });
+    await new RestTaskaApi().getBoard("project-1");
 
-    // The whole URL, not a substring: the required parameter is the only one on
-    // it, and `includeDone=false` — the server's own default — is not.
-    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board?issueType=TASK");
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board");
     expect(fetchStub.mock.calls[0][1]).toMatchObject({ method: "GET" });
   });
 
-  it("sends every filter the route takes, and `includeDone` only when it is true", async () => {
+  it("sends `includeDone=true` and nothing else for the board screen's read", async () => {
+    const fetchStub = stubFetch(emptyBoard);
+
+    await new RestTaskaApi().getBoard("project-1", { includeDone: true });
+
+    // The whole URL, not a substring: no type, no filter.
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board?includeDone=true");
+  });
+
+  it("sends every filter the route takes, `includeDone` only when true and `query` only when not blank", async () => {
     const fetchStub = stubFetch(emptyBoard);
 
     await new RestTaskaApi().getBoard("project-1", {
@@ -2630,6 +2635,8 @@ describe("RestTaskaApi board", () => {
       assigneeId: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b",
       labelId: "760798da-9e59-4c54-aaac-4c93de82e68a",
       includeDone: true,
+      priority: "HIGH",
+      query: "Board",
     });
 
     const url = new URL(String(fetchStub.mock.calls[0][0]), "http://localhost");
@@ -2638,124 +2645,220 @@ describe("RestTaskaApi board", () => {
       assigneeId: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b",
       labelId: "760798da-9e59-4c54-aaac-4c93de82e68a",
       includeDone: "true",
+      priority: "HIGH",
+      query: "Board",
     });
 
-    // `false` is the same request as saying nothing, so it is not sent — the
-    // flag filters issues rather than columns and the DONE column arrives
-    // either way.
+    // `false` is the same request as saying nothing, and a blank `query` is one
+    // the contract's `minLength: 1` would refuse.
     vi.unstubAllGlobals();
     const second = stubFetch(emptyBoard);
-    await new RestTaskaApi().getBoard("project-1", { issueType: "BUG", includeDone: false });
-    expect(String(second.mock.calls[0][0])).not.toContain("includeDone");
+    await new RestTaskaApi().getBoard("project-1", { includeDone: false, query: "  " });
+    expect(second.mock.calls[0][0]).toBe("/api/v1/projects/project-1/board");
   });
 
-  it("maps label ids, both spellings of nobody, and a missing estimate", async () => {
+  it("maps the columns, the cards outside their workflow, the joined people and the labels", async () => {
+    const card = {
+      id: "issue-1",
+      issueKey: "API-1",
+      summary: "Board endpoint",
+      issueType: "TASK",
+      priority: "HIGH",
+      statusKey: "TODO",
+      description: "Columns from the server",
+      createdAt: "2026-10-20T09:00:00Z",
+      updatedAt: "2026-10-21T09:00:00Z",
+      version: 3,
+      // On the wire and not read: no card draws them.
+      storyPoints: 2.5,
+      dueDate: "2026-11-01",
+      commentCount: 4,
+      attachmentCount: 1,
+      assignee: { id: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b", displayName: "Anna Ivanova", avatarUrl: "https://store.example/a.png" },
+      labels: [
+        { id: "760798da-9e59-4c54-aaac-4c93de82e68a", name: "backend", color: "#0052cc" },
+        // A label with no id is no chip anybody can address.
+        { name: "orphan", color: "#ff0000" },
+      ],
+    };
     stubFetch({
       projectId: "c9594240-4c60-478d-8eb1-9c8986cd39c1",
-      issueType: "TASK",
       columns: [
-        {
-          statusKey: "TODO",
-          name: "To Do",
-          category: "TODO",
-          sortOrder: 10,
-          issues: [
-            {
-              id: "issue-1",
-              issueKey: "API-1",
-              summary: "Board endpoint",
-              // What the gateway actually answers: label ids, and an assignee
-              // object whose name is null.
-              storyPoints: null,
-              assignee: { id: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b", displayName: null },
-              labels: ["760798da-9e59-4c54-aaac-4c93de82e68a", "8f1c2b3d-4e5f-4061-9a2b-3c4d5e6f7a8b"],
-            },
-            // Every optional property absent: no estimate, no assignee, no
-            // labels at all.
-            { id: "issue-2", issueKey: "API-2", summary: "Unassigned and unlabelled" },
-          ],
-        },
-        {
-          statusKey: "IN_PROGRESS",
-          name: "In Progress",
-          category: "IN_PROGRESS",
-          sortOrder: 20,
-          issues: [
-            {
-              id: "issue-3",
-              issueKey: "API-3",
-              summary: "Estimated at nought",
-              // Zero, which no board card can carry today — `IssueBoardResponse`
-              // has no `story_points` field and `toRestBoardIssue` never sets
-              // one — and which must never read as "not set" the day one can.
-              // The mapping is what is pinned here, not an answer measured.
-              storyPoints: 0,
-              assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: "Anna Ivanova" },
-              labels: [],
-            },
-          ],
-        },
-        // Present and empty, which is what `includeDone` unset answers with.
+        { statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10, issues: [card] },
+        // Present and empty.
         { statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30, issues: [] },
+      ],
+      unplacedIssues: [
+        {
+          ...card,
+          id: "issue-2",
+          issueKey: "API-2",
+          issueType: "BUG",
+          statusKey: "BLOCKED_BY_QA",
+          description: null,
+          // What the gateway sends when its profile read fails: an id and no name.
+          assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: null, avatarUrl: null },
+          // And when its label read fails: nothing, silently (backend A2).
+          labels: [],
+        },
+        // A blank name is "not named", and an absent assignee is nobody.
+        { ...card, id: "issue-3", issueKey: "API-3", assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: " " } },
+        { ...card, id: "issue-4", issueKey: "API-4", assignee: null, labels: undefined },
       ],
     });
 
-    const board = await new RestTaskaApi().getBoard("c9594240-4c60-478d-8eb1-9c8986cd39c1", { issueType: "TASK" });
+    const board = await new RestTaskaApi().getBoard("c9594240-4c60-478d-8eb1-9c8986cd39c1", { includeDone: true });
 
+    const mapped = {
+      id: "issue-1",
+      issueKey: "API-1",
+      summary: "Board endpoint",
+      issueType: "TASK",
+      priority: "HIGH",
+      statusKey: "TODO",
+      description: "Columns from the server",
+      createdAt: "2026-10-20T09:00:00Z",
+      updatedAt: "2026-10-21T09:00:00Z",
+      version: 3,
+      assignee: { id: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b", displayName: "Anna Ivanova", avatarUrl: "https://store.example/a.png" },
+      labels: [{ id: "760798da-9e59-4c54-aaac-4c93de82e68a", name: "backend", color: "#0052cc" }],
+    };
     expect(board).toEqual({
       projectId: "c9594240-4c60-478d-8eb1-9c8986cd39c1",
-      issueType: "TASK",
       columns: [
-        {
-          statusKey: "TODO",
-          name: "To Do",
-          category: "TODO",
-          sortOrder: 10,
-          issues: [
-            {
-              id: "issue-1",
-              issueKey: "API-1",
-              summary: "Board endpoint",
-              storyPoints: null,
-              assignee: { id: "275417fd-2b3c-4a1d-9f60-1c2d3e4f5a6b", displayName: null },
-              // Renamed for what it holds. Nothing may print these.
-              labelIds: ["760798da-9e59-4c54-aaac-4c93de82e68a", "8f1c2b3d-4e5f-4061-9a2b-3c4d5e6f7a8b"],
-            },
-            {
-              id: "issue-2",
-              issueKey: "API-2",
-              summary: "Unassigned and unlabelled",
-              storyPoints: null,
-              assignee: null,
-              labelIds: [],
-            },
-          ],
-        },
-        {
-          statusKey: "IN_PROGRESS",
-          name: "In Progress",
-          category: "IN_PROGRESS",
-          sortOrder: 20,
-          issues: [
-            {
-              id: "issue-3",
-              issueKey: "API-3",
-              summary: "Estimated at nought",
-              // `0`, not `null`: an issue estimated at nought has been
-              // estimated, and `||` anywhere near this field erases that.
-              storyPoints: 0,
-              // A name, if the gateway ever sends one — it has not, on any row
-              // measured (see the board doc above), so like `storyPoints: 0`
-              // above, this pins the mapping rather than an answer observed:
-              // the type is `string | null` and both halves have to survive
-              // it.
-              assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: "Anna Ivanova" },
-              labelIds: [],
-            },
-          ],
-        },
+        { statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10, issues: [mapped] },
         { statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30, issues: [] },
       ],
+      unplacedIssues: [
+        {
+          ...mapped,
+          id: "issue-2",
+          issueKey: "API-2",
+          issueType: "BUG",
+          statusKey: "BLOCKED_BY_QA",
+          description: null,
+          assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: null, avatarUrl: null },
+          labels: [],
+        },
+        { ...mapped, id: "issue-3", issueKey: "API-3", assignee: { id: "3b9a1f22-0c4d-4e5f-8a1b-2c3d4e5f6a7b", displayName: null, avatarUrl: null } },
+        { ...mapped, id: "issue-4", issueKey: "API-4", assignee: null, labels: [] },
+      ],
+    });
+    // Four fields are not read at all.
+    expect(Object.keys(board.columns[0].issues[0])).not.toContain("storyPoints");
+  });
+
+  it("reads a board with no `unplacedIssues` key as one with none", async () => {
+    stubFetch({ projectId: "project-1", columns: [] });
+
+    await expect(new RestTaskaApi().getBoard("project-1")).resolves.toEqual({
+      projectId: "project-1",
+      columns: [],
+      unplacedIssues: [],
+    });
+  });
+});
+
+/**
+ * `GET /project-stats` (backend TAS-211): the project cards' one read.
+ */
+describe("RestTaskaApi project stats", () => {
+  const answer = (status: number, body: unknown) =>
+    ({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: () => null },
+      json: async () => body,
+    }) as unknown as Response;
+  const stubFetch = (body: unknown, status = 200) => {
+    const fetchStub = vi.fn(async (_input: string, _init?: { method?: string }) => answer(status, body));
+    vi.stubGlobal("fetch", fetchStub);
+    return fetchStub;
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.localStorage.setItem("taska.accessToken", "valid-access");
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("maps counts, keeps the preview in the server's order, and never reads a missing count as zero", async () => {
+    const fetchStub = stubFetch({
+      items: [
+        {
+          projectId: "project-1",
+          issueCount: 9,
+          memberCount: 7,
+          members: [
+            // Zed before Anna: the server's `addedAt` order, not a name order.
+            { userId: "user-z", role: "MEMBER", displayName: "Zed", email: "zed@example.com", avatar: { downloadUrl: "https://store.example/z.png" }, addedAt: "2026-01-01T00:00:00Z" },
+            { userId: "user-a", role: "ADMIN", displayName: "Anna", email: "anna@example.com", avatar: null, addedAt: "2026-02-01T00:00:00Z" },
+            // A row with no id is dropped, as on the member list.
+            { role: "VIEWER", displayName: "Nobody" },
+          ],
+        },
+        { projectId: "project-2", issueCount: 0, memberCount: null },
+        // An entry naming no project draws no card.
+        { issueCount: 3, memberCount: 1, members: [] },
+      ],
+    });
+
+    const stats = await new RestTaskaApi().getProjectStats();
+
+    expect(fetchStub.mock.calls[0][0]).toBe("/api/v1/project-stats");
+    expect(stats).toEqual([
+      {
+        projectId: "project-1",
+        issueCount: 9,
+        memberCount: 7,
+        members: [
+          {
+            userId: "user-z",
+            role: "MEMBER",
+            addedAt: "2026-01-01T00:00:00Z",
+            user: { displayName: "Zed", email: "zed@example.com", avatarUrl: "https://store.example/z.png" },
+          },
+          {
+            userId: "user-a",
+            role: "ADMIN",
+            addedAt: "2026-02-01T00:00:00Z",
+            user: { displayName: "Anna", email: "anna@example.com", avatarUrl: null },
+          },
+        ],
+      },
+      // `0` is a count; `null` is the server not saying.
+      { projectId: "project-2", issueCount: 0, memberCount: null, members: [] },
+    ]);
+  });
+
+  it("answers an empty list for `{items: []}` and for no `items` at all", async () => {
+    stubFetch({ items: [] });
+    await expect(new RestTaskaApi().getProjectStats()).resolves.toEqual([]);
+    vi.unstubAllGlobals();
+    stubFetch({});
+    await expect(new RestTaskaApi().getProjectStats()).resolves.toEqual([]);
+  });
+
+  it("rejects with the gateway's code and request id, all or nothing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        ({
+          status: 503,
+          ok: false,
+          headers: { get: (name: string) => (name === "X-Request-Id" ? "5f1a-req" : null) },
+          json: async () => ({ code: "UNAVAILABLE", message: "project-service is unavailable" }),
+        }) as unknown as Response,
+      ),
+    );
+
+    await expect(new RestTaskaApi().getProjectStats()).rejects.toMatchObject({
+      code: "UNAVAILABLE",
+      message: "project-service is unavailable",
+      requestId: "5f1a-req",
     });
   });
 });

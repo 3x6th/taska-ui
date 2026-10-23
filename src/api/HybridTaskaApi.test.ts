@@ -256,21 +256,23 @@ describe("HybridTaskaApi", () => {
     });
   });
 
-  // The board route is deployed and measured (TAS-191). Both halves matter:
-  // the call reaches live with the filters untouched, and a failure comes back
-  // as a failure rather than as a board — one invented here would be a board
-  // nobody could tell from the server's.
-  it("delegates the board read to live, filters and all", async () => {
+  // The board route is deployed (backend #205, TAS-213) and the board screen's
+  // one issue read (TAS-202). Both halves matter: the call reaches live with
+  // the parameters untouched, and a failure comes back as a failure rather
+  // than as a board — one invented here would be a board nobody could tell
+  // from the server's.
+  it("delegates the board read to live, parameters and all", async () => {
     const live = liveApi();
     const getBoard = vi.spyOn(live, "getBoard");
     const hybrid = new HybridTaskaApi(live);
     const [project] = await hybrid.listProjects();
 
-    const params = { issueType: "TASK", includeDone: true } as const;
+    const params = { includeDone: true } as const;
     const board = await hybrid.getBoard(project.id, params);
 
     expect(getBoard).toHaveBeenCalledWith(project.id, params);
     expect(board.columns.map((column) => column.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
+    expect(board.unplacedIssues).toEqual([]);
   });
 
   it("lets a failing board read fail", async () => {
@@ -279,7 +281,22 @@ describe("HybridTaskaApi", () => {
     const [project] = await live.listProjects();
     vi.spyOn(live, "getBoard").mockRejectedValue(new Error("Internal error"));
 
-    await expect(hybrid.getBoard(project.id, { issueType: "TASK" })).rejects.toThrow("Internal error");
+    await expect(hybrid.getBoard(project.id, { includeDone: true })).rejects.toThrow("Internal error");
+  });
+
+  // `GET /project-stats` (backend TAS-211): a pure pass-through, and its
+  // all-or-nothing failure stays one.
+  it("delegates the project stats to live, and lets a failure fail", async () => {
+    const live = liveApi();
+    const getProjectStats = vi.spyOn(live, "getProjectStats");
+    const hybrid = new HybridTaskaApi(live);
+
+    const stats = await hybrid.getProjectStats();
+    expect(getProjectStats).toHaveBeenCalledTimes(1);
+    expect(stats.map((entry) => entry.projectId)).toEqual((await live.listProjects()).map((item) => item.id));
+
+    getProjectStats.mockRejectedValue(new Error("Service unavailable"));
+    await expect(hybrid.getProjectStats()).rejects.toThrow("Service unavailable");
   });
 
   // The global role has to arrive from the wrapped implementation exactly as

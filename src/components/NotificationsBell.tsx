@@ -8,6 +8,7 @@ import type { Notification, NotificationPage } from "../domain/types";
 import { useDismissOnOutside } from "../hooks/useDismissOnOutside";
 import { useTriggerAnchor } from "../hooks/useTriggerAnchor";
 import { relativeTime } from "../lib/format";
+import { STALE_TIME_MS } from "../lib/queryClient";
 import { ApiNotice } from "./ApiNotice";
 
 const NOTIFICATIONS_KEY = ["notifications"];
@@ -114,7 +115,17 @@ export function NotificationsBell({
         // the name.
         aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"}
         className="icon-button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          // Opening re-reads the inbox when the answer is older than the
+          // app's 20 s (DESIGN.md §4.12): since TAS-202 a return to the tab
+          // does not, so this is where somebody else's notification arrives.
+          // The rows on screen stay and are replaced in place — no spinner,
+          // no skeleton. A read that never answered is asked again too.
+          if (!open && !notificationsQuery.isFetching && Date.now() - notificationsQuery.dataUpdatedAt > STALE_TIME_MS) {
+            void notificationsQuery.refetch();
+          }
+          setOpen((value) => !value);
+        }}
         ref={bellRef}
         title="Notifications"
         type="button"

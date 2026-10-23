@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MOCK_ATTACHMENT_TRIGGERS, MOCK_INVITE_TOKENS, MOCK_PROJECT_TRIGGERS, MockTaskaApi, buildMockBoard } from "./MockTaskaApi";
-import type { BoardParams, UpdateIssueInput } from "../TaskaApi";
+import type { UpdateIssueInput } from "../TaskaApi";
 import { DIRECTORY_QUERY_REFUSAL_MESSAGE } from "../TaskaApi";
-import type { Board, Issue, NotificationType, Project, Workflow } from "../../domain/types";
+import type { Board, BoardIssue, Issue, NotificationType, Project } from "../../domain/types";
 import {
   ATTACHMENT_MAX_SIZE_BYTES,
   attachmentSizeRefusalMessage,
@@ -1399,258 +1399,278 @@ describe("MockTaskaApi", () => {
   });
 
   /**
-   * `GET /projects/{projectId}/board` (TAS-191). The mock builds it out of its
-   * own workflow and its own issues rather than from a fixture, so these cases
-   * are about the *semantics* the deployed gateway was measured with on
-   * 2026-09-09 — column order, what `includeDone` does and does not remove, the
-   * two server-side filters, and the failure a workflow that has lost a status
-   * produces — not about the seed.
+   * `GET /projects/{projectId}/board` since backend #205 (TAS-213). The mock
+   * builds it out of its own workflows and its own issues rather than from a
+   * fixture, so these cases are about the *semantics* read off the merged
+   * `BoardServiceImpl` (develop 562d84de) — the types it reads, how it merges
+   * their columns, where it puts an issue outside its own type's workflow,
+   * what `includeDone` does and does not remove, the order inside a column,
+   * what it joins into a card, and its access rule — not about the seed.
    *
-   * `RestTaskaApi.test.ts` pins the same semantics on the wire. Between them
-   * they are what "mock, rest and hybrid are interchangeable" means for this
-   * route.
+   * `RestTaskaApi.test.ts` pins the same shape on the wire. Between them they
+   * are what "mock, rest and hybrid are interchangeable" means for this route.
    */
   describe("board", () => {
     const columnShape = (board: Board) =>
       board.columns.map((column) => [column.statusKey, column.category, column.sortOrder]);
+    const cardsOf = (board: Board) => [...board.columns.flatMap((column) => column.issues), ...board.unplacedIssues];
+    const card = (fields: Partial<BoardIssue> & Pick<BoardIssue, "id" | "issueType" | "statusKey">): BoardIssue => ({
+      issueKey: fields.id.toUpperCase(),
+      summary: "",
+      priority: "MEDIUM",
+      description: null,
+      createdAt: "2026-06-08T09:10:00Z",
+      updatedAt: "2026-06-08T09:10:00Z",
+      version: 1,
+      assignee: null,
+      labels: [],
+      ...fields,
+    });
+    const status = (statusKey: string, category: string, sortOrder: number, name = statusKey) => ({
+      statusKey,
+      name,
+      category,
+      sortOrder,
+    });
 
-    it("answers one issue type's columns in the workflow's own sortOrder", async () => {
-      const board = await api.getBoard(project.id, { issueType: "TASK" });
+    it("answers the columns of TASK, BUG and STORY merged, in sortOrder, with no issue type asked", async () => {
+      const board = await api.getBoard(project.id);
 
       expect(board.projectId).toBe(project.id);
-      expect(board.issueType).toBe("TASK");
       expect(columnShape(board)).toEqual([
         ["TODO", "TODO", 10],
         ["IN_PROGRESS", "IN_PROGRESS", 20],
         ["DONE", "DONE", 30],
       ]);
       expect(board.columns.map((column) => column.name)).toEqual(["To Do", "In Progress", "Done"]);
+      expect(board.unplacedIssues).toEqual([]);
     });
 
-    it("keeps the DONE column and empties it unless includeDone is asked for", async () => {
-      const without = await api.getBoard(project.id, { issueType: "TASK" });
-      const with_ = await api.getBoard(project.id, { issueType: "TASK", includeDone: true });
+    it("holds every live issue of the three types, each in its status's column, with includeDone", async () => {
+      const board = await api.getBoard(project.id, { includeDone: true });
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
 
-      // The flag filters issues, never columns: the same three columns either
-      // way, in the same order.
+      expect(cardsOf(board).map((issue) => issue.id).sort()).toEqual(items.map((issue) => issue.id).sort());
+      for (const column of board.columns) {
+        expect(column.issues.every((issue) => issue.statusKey === column.statusKey)).toBe(true);
+      }
+    });
+
+    it("keeps every column and leaves out done issues unless includeDone is asked for", async () => {
+      const without = await api.getBoard(project.id);
+      const with_ = await api.getBoard(project.id, { includeDone: true });
+
+      // The flag filters issues, never columns.
       expect(columnShape(with_)).toEqual(columnShape(without));
-
       const done = (board: Board) => board.columns.find((column) => column.category === "DONE");
       expect(done(without)?.issues).toEqual([]);
       expect(done(with_)?.issues.length).toBeGreaterThan(0);
-
-      // And nothing else moved — the flag is about the DONE column alone.
       const open = (board: Board) =>
         board.columns.filter((column) => column.category !== "DONE").map((column) => column.issues);
       expect(open(with_)).toEqual(open(without));
     });
 
-    it("carries the issue type it was asked for and no other", async () => {
+    it("reads one type when it is asked for one", async () => {
       const board = await api.getBoard(project.id, { issueType: "BUG", includeDone: true });
-      const keys = board.columns.flatMap((column) => column.issues.map((issue) => issue.issueKey));
       const { items } = await api.listIssues(project.id, { pageSize: 100 });
       const bugs = items.filter((issue) => issue.issueType === "BUG").map((issue) => issue.issueKey);
 
-      expect(keys.length).toBeGreaterThan(0);
-      expect([...keys].sort()).toEqual([...bugs].sort());
+      expect(bugs.length).toBeGreaterThan(0);
+      expect(cardsOf(board).map((issue) => issue.issueKey).sort()).toEqual([...bugs].sort());
     });
 
-    it("filters by assignee server-side, down to every column empty", async () => {
+    it("orders a column by type — TASK, BUG, STORY — then oldest first, then id", async () => {
+      const board = await api.getBoard(project.id, { includeDone: true });
+      const rank: Record<string, number> = { TASK: 0, BUG: 1, STORY: 2 };
+
+      for (const column of board.columns) {
+        const sorted = [...column.issues].sort(
+          (a, b) =>
+            rank[a.issueType] - rank[b.issueType] ||
+            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
+            (a.id < b.id ? -1 : 1),
+        );
+        expect(column.issues.map((issue) => issue.id)).toEqual(sorted.map((issue) => issue.id));
+      }
+      // The seed's To Do holds all three types, so the order is not vacuous.
+      const todo = board.columns.find((column) => column.statusKey === "TODO")!;
+      expect(new Set(todo.issues.map((issue) => issue.issueType)).size).toBeGreaterThan(1);
+    });
+
+    it("joins in the assignee's name and face and the labels' names and colours", async () => {
+      const board = await api.getBoard(project.id, { includeDone: true });
       const { items } = await api.listIssues(project.id, { pageSize: 100 });
-      const assigned = items.find((issue) => issue.issueType === "TASK" && issue.assigneeId !== null);
-      if (!assigned?.assigneeId) throw new Error("the seed has no assigned TASK");
+      const members = await api.listMembers(project.id);
+      const assigned = cardsOf(board).filter((issue) => issue.assignee !== null);
+      const labelled = items.find((issue) => issue.labels.length > 0)!;
 
-      const board = await api.getBoard(project.id, {
-        issueType: "TASK",
-        assigneeId: assigned.assigneeId,
-        includeDone: true,
-      });
-      const cards = board.columns.flatMap((column) => column.issues);
+      expect(assigned.length).toBeGreaterThan(0);
+      for (const issue of assigned) {
+        const member = members.find((row) => row.userId === issue.assignee!.id);
+        expect(issue.assignee).toEqual({
+          id: issue.assignee!.id,
+          displayName: member?.user?.displayName ?? expect.any(String),
+          avatarUrl: member?.user?.avatarUrl ?? null,
+        });
+      }
+      const cardOfLabelled = cardsOf(board).find((issue) => issue.id === labelled.id)!;
+      expect(cardOfLabelled.labels).toEqual(labelled.labels.map(({ id, name, color }) => ({ id, name, color })));
+    });
 
-      expect(cards.some((issue) => issue.issueKey === assigned.issueKey)).toBe(true);
-      expect(cards.every((issue) => issue.assignee?.id === assigned.assigneeId)).toBe(true);
+    it("filters server-side by assignee, label, priority and query, down to every column empty", async () => {
+      const { items } = await api.listIssues(project.id, { pageSize: 100 });
+      const assigned = items.find((issue) => issue.assigneeId !== null)!;
+      const labelled = items.find((issue) => issue.labels.length > 0)!;
 
-      // An id nobody holds is a board, not an error: every column, all empty —
-      // measured on the deployed gateway.
+      const byAssignee = cardsOf(await api.getBoard(project.id, { assigneeId: assigned.assigneeId!, includeDone: true }));
+      expect(byAssignee.map((issue) => issue.id)).toContain(assigned.id);
+      expect(byAssignee.every((issue) => issue.assignee?.id === assigned.assigneeId)).toBe(true);
+
+      const byLabel = cardsOf(await api.getBoard(project.id, { labelId: labelled.labels[0].id, includeDone: true }));
+      expect(byLabel.map((issue) => issue.id)).toContain(labelled.id);
+      expect(byLabel.every((issue) => issue.labels.some((label) => label.id === labelled.labels[0].id))).toBe(true);
+
+      const byPriority = cardsOf(await api.getBoard(project.id, { priority: "HIGH", includeDone: true }));
+      expect(byPriority.every((issue) => issue.priority === "HIGH")).toBe(true);
+
+      // A literal substring, any case, over the key, the summary and the description.
+      const byQuery = cardsOf(await api.getBoard(project.id, { query: assigned.issueKey.toLowerCase(), includeDone: true }));
+      expect(byQuery.map((issue) => issue.id)).toEqual([assigned.id]);
+
       const nobody = await api.getBoard(project.id, {
-        issueType: "TASK",
         assigneeId: "00000000-0000-4000-8000-000000000000",
         includeDone: true,
       });
-      expect(columnShape(nobody)).toEqual(columnShape(board));
-      expect(nobody.columns.every((column) => column.issues.length === 0)).toBe(true);
+      expect(columnShape(nobody)).toEqual(columnShape(await api.getBoard(project.id)));
+      expect(cardsOf(nobody)).toEqual([]);
     });
 
-    it("filters by label, and states the label as an id rather than a name", async () => {
-      const labels = await api.listProjectLabels(project.id);
-      const { items } = await api.listIssues(project.id, { pageSize: 100 });
-      const labelled = items.find((issue) => issue.issueType === "TASK" && issue.labels.length > 0);
-      if (!labelled) throw new Error("the seed has no labelled TASK");
-      const label = labelled.labels[0];
-      expect(labels.some((item) => item.id === label.id)).toBe(true);
+    it("leaves an issue whose own workflow lacks its status outside, and reads no type but the three (backend A4)", async () => {
+      const web = (await api.listProjects()).find((item) => item.projectKey === "WEB")!;
+      const board = await api.getBoard(web.id, { includeDone: true });
+      const context = await api.getProjectContext(web.id);
 
-      const board = await api.getBoard(project.id, { issueType: "TASK", labelId: label.id, includeDone: true });
-      const cards = board.columns.flatMap((column) => column.issues);
-
-      expect(cards.map((issue) => issue.issueKey)).toContain(labelled.issueKey);
-      expect(cards.every((issue) => issue.labelIds.includes(label.id))).toBe(true);
-      // The wire field is `labels` and it carries ids. Nothing on a board card
-      // knows this label is called "frontend".
-      expect(cards.every((issue) => !issue.labelIds.includes(label.name))).toBe(true);
+      // The context offers EPIC, whose workflow adds In Review; the board reads
+      // TASK, BUG and STORY only, so neither the column nor the epic is on it.
+      expect(context.workflows.EPIC?.statuses.map((item) => item.statusKey)).toContain("IN_REVIEW");
+      expect(board.columns.map((column) => column.statusKey)).toEqual(["TODO", "IN_PROGRESS", "DONE"]);
+      expect(cardsOf(board).some((issue) => issue.issueKey === "WEB-15")).toBe(false);
+      // A task in a status no workflow of its own lists.
+      expect(board.unplacedIssues.map((issue) => [issue.issueKey, issue.statusKey])).toEqual([["WEB-16", "BLOCKED_BY_QA"]]);
     });
 
-    it("names nobody: an assignee is an id and a null display name", async () => {
-      const board = await api.getBoard(project.id, { issueType: "TASK", includeDone: true });
-      const assignees = board.columns
-        .flatMap((column) => column.issues)
-        .map((issue) => issue.assignee)
-        .filter((assignee) => assignee !== null);
-
-      expect(assignees.length).toBeGreaterThan(0);
-      // The gateway answered `displayName: null` for every assigned issue
-      // measured on 2026-09-09, so the mock states no name either — otherwise a
-      // card built here would draw a name that vanishes in production.
-      expect(assignees.every((assignee) => assignee.displayName === null)).toBe(true);
-    });
-
-    it("states no estimate on any card, however the issue behind it is estimated", async () => {
-      const { items } = await api.listIssues(project.id, { pageSize: 100 });
-      expect(items.some((issue) => issue.issueType === "TASK" && issue.storyPoints !== null)).toBe(true);
-
-      const board = await api.getBoard(project.id, { issueType: "TASK", includeDone: true });
-      const cards = board.columns.flatMap((column) => column.issues);
-
-      expect(cards.length).toBeGreaterThan(0);
-      // `IssueBoardResponse` in the backend's `v1/issue-service.proto` has no
-      // `story_points` field and `IssueMapper.toRestBoardIssue` never calls
-      // `setStoryPoints`, so no board card the gateway sends can carry an
-      // estimate. A mock that copied the seed's would draw a badge that is
-      // blank in production.
-      expect(cards.every((issue) => issue.storyPoints === null)).toBe(true);
-    });
-
-    it("keys includeDone on the workflow's DONE category, whatever the status is called (backend #202)", async () => {
-      const { items } = await api.listIssues(project.id, { pageSize: 100 });
-      const done = items.find((issue) => issue.status === "DONE");
-      if (!done) throw new Error("the seed has no DONE issue");
-      const resolved: Issue = { ...done, id: "55555555-5555-4555-8555-555555555555", status: "RESOLVED" };
-
-      // Two columns that split the old rule from the new one: `DONE` filed
-      // under IN_PROGRESS, and `RESOLVED` filed under DONE. Since #202 the
-      // gateway reads the workflow and excludes the DONE-category keys, so the
-      // category decides and the key does not — the opposite of the literal
-      // `status_key <> 'DONE'` before it.
-      const workflow: Workflow = {
-        id: "33333333-3333-3333-3333-333333333333",
-        name: "Workflow whose done column is called something else",
-        version: 1,
-        createdAt: "2026-06-08T09:10:00Z",
-        updatedAt: "2026-06-08T09:10:00Z",
-        statuses: [
-          { id: "44444444-4444-4444-4444-444444444444", statusKey: "DONE", name: "Done", category: "IN_PROGRESS", sortOrder: 10 },
-          { id: "45454545-4545-4545-4545-454545454545", statusKey: "RESOLVED", name: "Resolved", category: "DONE", sortOrder: 20 },
+    it("places by the issue's own type: a status another type has is a column, and still outside for this one", () => {
+      const types = [
+        { issueType: "TASK", statuses: [status("TODO", "TODO", 10), status("DONE", "DONE", 30)] },
+        { issueType: "BUG", statuses: [status("TODO", "TODO", 10), status("TRIAGE", "IN_PROGRESS", 20)] },
+        // A type whose workflow was not found: every issue of it is outside.
+        { issueType: "STORY", statuses: undefined },
+      ];
+      const board = buildMockBoard(
+        project.id,
+        types,
+        [
+          card({ id: "a", issueType: "TASK", statusKey: "TRIAGE" }),
+          card({ id: "b", issueType: "BUG", statusKey: "TRIAGE" }),
+          card({ id: "c", issueType: "TASK", statusKey: "" }),
+          card({ id: "d", issueType: "STORY", statusKey: "TODO" }),
+          card({ id: "e", issueType: "TASK", statusKey: "TODO" }),
         ],
-        transitions: [],
-      };
+        { includeDone: true },
+      );
 
-      const hidden = buildMockBoard(project.id, workflow, [done, resolved], { issueType: done.issueType });
+      expect(board.columns.map((column) => [column.statusKey, column.issues.map((issue) => issue.id)])).toEqual([
+        ["TODO", ["e"]],
+        ["TRIAGE", ["b"]],
+        ["DONE", []],
+      ]);
+      expect(board.unplacedIssues.map((issue) => issue.id)).toEqual(["a", "c", "d"]);
+    });
+
+    it("merges columns by key, the first type's status winning, then stably by sortOrder", () => {
+      const board = buildMockBoard(project.id, [
+        { issueType: "TASK", statuses: [status("TODO", "TODO", 10, "To Do"), status("REVIEW", "IN_PROGRESS", 20, "Review")] },
+        { issueType: "BUG", statuses: [status("TODO", "TODO", 5, "Bug inbox"), status("FIXING", "IN_PROGRESS", 20, "Fixing")] },
+      ], []);
+
+      // TASK's To Do keeps its name and its 10; REVIEW and FIXING tie at 20
+      // and stay in the order they were met.
+      expect(board.columns.map((column) => [column.statusKey, column.name, column.sortOrder])).toEqual([
+        ["TODO", "To Do", 10],
+        ["REVIEW", "Review", 20],
+        ["FIXING", "Fixing", 20],
+      ]);
+    });
+
+    it("keys includeDone on the DONE category of the issue's own type, whatever the status is called (backend #202)", () => {
+      // `DONE` filed under IN_PROGRESS for TASK, and `RESOLVED` filed under
+      // DONE: the category decides, never the key — and only for the type
+      // whose workflow says so.
+      const types = [
+        { issueType: "TASK", statuses: [status("DONE", "IN_PROGRESS", 10), status("RESOLVED", "DONE", 20)] },
+        { issueType: "BUG", statuses: [status("DONE", "IN_PROGRESS", 10), status("RESOLVED", "IN_PROGRESS", 20)] },
+      ];
+      const issues = [
+        card({ id: "task-done", issueType: "TASK", statusKey: "DONE" }),
+        card({ id: "task-resolved", issueType: "TASK", statusKey: "RESOLVED" }),
+        card({ id: "bug-resolved", issueType: "BUG", statusKey: "RESOLVED" }),
+      ];
+
+      const hidden = buildMockBoard(project.id, types, issues);
+      expect(cardsOf(hidden).map((issue) => issue.id).sort()).toEqual(["bug-resolved", "task-done"]);
       expect(hidden.columns.map((column) => column.statusKey)).toEqual(["DONE", "RESOLVED"]);
-      expect(hidden.columns[0].issues.map((issue) => issue.issueKey)).toEqual([done.issueKey]);
-      expect(hidden.columns[1].issues).toEqual([]);
 
-      const shown = buildMockBoard(project.id, workflow, [done, resolved], {
-        issueType: done.issueType,
-        includeDone: true,
-      });
-      expect(shown.columns.map((column) => column.issues.length)).toEqual([1, 1]);
+      const shown = buildMockBoard(project.id, types, issues, { includeDone: true });
+      expect(cardsOf(shown)).toHaveLength(3);
     });
 
-    it("excludes nothing for a workflow with no DONE-category status", async () => {
-      const { items } = await api.listIssues(project.id, { pageSize: 100 });
-      const done = items.find((issue) => issue.status === "DONE");
-      if (!done) throw new Error("the seed has no DONE issue");
-      const workflow: Workflow = {
-        id: "33333333-3333-3333-3333-333333333333",
-        name: "Workflow with nothing done",
-        version: 1,
-        createdAt: "2026-06-08T09:10:00Z",
-        updatedAt: "2026-06-08T09:10:00Z",
-        statuses: [
-          { id: "44444444-4444-4444-4444-444444444444", statusKey: "DONE", name: "Done", category: "TODO", sortOrder: 10 },
-        ],
-        transitions: [],
-      };
-
-      const board = buildMockBoard(project.id, workflow, [done], { issueType: done.issueType });
-      expect(board.columns[0].issues.map((issue) => issue.issueKey)).toEqual([done.issueKey]);
-    });
-
-    it("refuses a project that does not exist", async () => {
-      await expect(
-        api.getBoard("11111111-2222-4333-8444-555555555555", { issueType: "TASK" }),
-      ).rejects.toMatchObject({ code: "NOT_FOUND" });
-    });
-
-    /**
-     * The gateway's `BoardServiceImpl` throws a 500 when an issue sits in a
-     * status the workflow does not list, and a board that quietly dropped that
-     * card would hide an issue with nothing on screen to say so.
-     *
-     * Reached through `buildMockBoard` because the store cannot produce it: the
-     * seeded workflow lists every status the seeded issues use, and
-     * `IssueStatus` narrows both sides to the same three values. A workflow
-     * that has lost `DONE` is the same inconsistency from the other end.
-     *
-     * `includeDone` no longer decides whether it fails. Until backend #202 the
-     * flag was a literal `status_key <> 'DONE'`, so with it off a stray keyed
-     * `DONE` never reached the gateway's leftover-status check and the read
-     * answered 200. Since #202 it excludes only the keys the workflow files
-     * under `DONE`, and a key the workflow does not list is never one of them —
-     * so the stray reaches the check and fails the read, flag or no flag.
-     */
-    it("fails a read that keeps an issue whose status the workflow does not list", async () => {
-      const { items } = await api.listIssues(project.id, { pageSize: 100 });
-      const stray = items.find((issue) => issue.status === "DONE");
-      if (!stray) throw new Error("the seed has no DONE issue");
-
-      const shortWorkflow: Workflow = {
-        id: "11111111-1111-1111-1111-111111111111",
-        name: "Workflow that lost a status",
-        version: 2,
-        createdAt: "2026-06-08T09:10:00Z",
-        updatedAt: "2026-06-08T09:10:00Z",
-        statuses: [{ id: "22222222-2222-2222-2222-222222222222", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 }],
-        transitions: [],
-      };
-
-      const failure = (params: BoardParams) => {
-        try {
-          buildMockBoard(project.id, shortWorkflow, [stray], params);
-        } catch (error) {
-          return error;
-        }
-        return null;
-      };
-
-      // `INTERNAL_SERVER_ERROR`, not `INTERNAL`: `BoardServiceImpl` raises a
-      // `ResponseStatusException`, which is not a gRPC status, so
-      // `GatewayErrorHandler` sets the code from the HTTP status' name.
-      expect(failure({ issueType: stray.issueType, includeDone: true })).toMatchObject({
-        code: "INTERNAL_SERVER_ERROR",
-        message: "Inconsistent state: issues found with statuses not present in workflow",
+    it("refuses a project that is not there before a reader who is not on it", async () => {
+      await expect(api.getBoard("11111111-2222-4333-8444-555555555555")).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "Project not found",
       });
 
-      // And with the flag off — including its default, absent — the same 500:
-      // the workflow names no DONE-category key, so nothing is excluded, and
-      // the stray arrives at the check like any other row.
-      for (const params of [
-        { issueType: stray.issueType },
-        { issueType: stray.issueType, includeDone: false },
-      ]) {
-        expect(failure(params)).toMatchObject({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Inconsistent state: issues found with statuses not present in workflow",
-        });
+      await api.login({ email: "mark@example.com", password: "mock-accepts-anything" });
+      const notAnnas = (await api.listProjects()).find((item) => !["TAS", "WEB", "OPS"].includes(item.projectKey))!;
+      await api.login({ email: "anna@example.com", password: "mock-accepts-anything" });
+      await expect(api.getBoard(notAnnas.id)).rejects.toMatchObject({ code: "PERMISSION_DENIED", message: "Access denied" });
+    });
+  });
+
+  /**
+   * `GET /project-stats` (backend TAS-211): one entry per listed project, in
+   * the list's order, with counts and a five-person preview.
+   */
+  describe("project stats", () => {
+    it("answers one entry per listed project, in the list's order, archived ones left out", async () => {
+      const projects = await api.listProjects();
+      await api.archiveProject(projects[0].id);
+      const listed = await api.listProjects();
+      const stats = await api.getProjectStats();
+
+      expect(stats.map((entry) => entry.projectId)).toEqual(listed.map((item) => item.id));
+    });
+
+    it("counts every live issue of any type and status, and every member", async () => {
+      const stats = await api.getProjectStats();
+      for (const item of await api.listProjects()) {
+        const entry = stats.find((row) => row.projectId === item.id)!;
+        const { totalCount } = await api.listIssues(item.id, { pageSize: 100 });
+        expect(entry.issueCount).toBe(totalCount);
+        expect(entry.memberCount).toBe((await api.listMembers(item.id)).length);
+      }
+    });
+
+    it("previews the first five members by addedAt, then userId", async () => {
+      const stats = await api.getProjectStats();
+      for (const entry of stats) {
+        const members = await api.listMembers(entry.projectId);
+        const expected = [...members]
+          .sort((a, b) => (a.addedAt ?? "").localeCompare(b.addedAt ?? "") || (a.userId < b.userId ? -1 : 1))
+          .slice(0, 5)
+          .map((member) => member.userId);
+        expect(entry.members.map((member) => member.userId)).toEqual(expected);
+        expect(entry.members.length).toBeLessThanOrEqual(5);
       }
     });
   });
@@ -2212,10 +2232,11 @@ describe("MockTaskaApi", () => {
         [...labels].reverse().slice(0, 3).map((label) => label.name).sort((a, b) => a.localeCompare(b, "en")),
       );
 
-      // `BoardIssueDto.labels` is ids in id order, not the names' order.
+      // The board's card carries the same labels, in the issue's own order,
+      // with their names and colours (backend #205).
       const board = await api.getBoard(project.id, { issueType: "TASK", includeDone: true });
       const card = board.columns.flatMap((column) => column.issues).find((issue) => issue.id === bare.id)!;
-      expect(card.labelIds).toEqual(onIssue.map((label) => label.id).sort());
+      expect(card.labels).toEqual(onIssue.map(({ id, name, color }) => ({ id, name, color })));
     });
 
     it("creates a label, trimming the name the caller typed", async () => {

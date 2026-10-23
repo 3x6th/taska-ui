@@ -8,33 +8,45 @@ import { ProjectsScreen } from "./ProjectsScreen";
 
 /**
  * Every card on this screen states two numbers it did not fetch itself, and
- * the failure mode that shipped (TAS-163) was that both numbers lied: one
- * project the gateway would not answer for rejected the batch that fetched all
- * of them, and each card then printed "0 issues" — a claim about the project,
- * not an admission about the request. So these tests are entirely about which
- * project's failure reaches which card, and about zero never standing in for
- * unknown.
+ * the failure mode that shipped (TAS-163) was that both numbers lied: a read
+ * that did not answer was printed as "0 issues" — a claim about the project,
+ * not an admission about the request. Since TAS-202 every card's numbers come
+ * from one `GET /project-stats`, all or nothing, so these tests are about which
+ * answer reaches which card, and about zero never standing in for unknown.
  */
 const {
+  addProject,
   archiveElsewhere,
+  dropFromStats,
   fakeApi,
-  failIssuesFor,
-  failMembersFor,
+  failStats,
   holdProjectsList,
-  holdSummaries,
+  holdStats,
+  previewFor,
   projectsRefetchStarted,
   refuseEdits,
   refuseEditsAsArchived,
   refuseEditsAsUndeployed,
   releaseProjectsList,
-  releaseSummaries,
+  releaseStats,
   reset,
   roleFor,
   statesNoRoleFor,
+  statsCountsFor,
+  statsReads,
 } = vi.hoisted(() => {
   const state: {
-    issueFailures: Set<string>;
-    memberFailures: Set<string>;
+    /** The stats read fails as a whole with this — the server's all-or-nothing. */
+    statsFailure?: Error;
+    /** Projects the stats answer leaves out, as a membership that vanished between its two calls would. */
+    statsDropped: Set<string>;
+    /** Counts by project, `null` where the answer carries none; a count not stated here is the default. */
+    counts: Record<string, { issueCount?: number | null; memberCount?: number | null }>;
+    /** The member preview by project, when a test needs other than one row. */
+    previews: Record<string, { userId: string; displayName: string }[]>;
+    statsReads: number;
+    /** Projects added after the first read, as a create would. */
+    added: string[];
     /** Rows the list answers without a `currentUserRole` — the gateway today. */
     roleless: Set<string>;
     roles: Record<string, ProjectRole>;
@@ -51,7 +63,7 @@ const {
      * longer lists it.
      */
     refuseEditAsArchived: boolean;
-    /** A gate the summary reads wait behind, so the pending state can be looked at. */
+    /** A gate the stats read waits behind, so the pending state can be looked at. */
     gate?: Promise<void>;
     openGate?: () => void;
     /**
@@ -78,8 +90,11 @@ const {
     listGateEntered?: Promise<void>;
     resolveListGateEntered?: () => void;
   } = {
-    issueFailures: new Set<string>(),
-    memberFailures: new Set<string>(),
+    statsDropped: new Set<string>(),
+    counts: {},
+    previews: {},
+    statsReads: 0,
+    added: [],
     roleless: new Set<string>(),
     roles: {},
     edits: {},
@@ -123,6 +138,7 @@ const {
         project("project-a", "AAA", "Alpha"),
         project("project-b", "BBB", "Beta"),
         project("project-c", "CCC", "Gamma"),
+        ...state.added.map((id) => project(id, "DDD", "Delta")),
       ]
         .filter((row) => !state.archived.has(row.id))
         .map((row) => ({
@@ -135,27 +151,25 @@ const {
         ...(state.edits[row.id] ?? {}),
       }));
     },
-    listIssues: async (projectId: string) => {
+    // `GET /project-stats` (backend TAS-211): one entry per listed project, in
+    // the list's order, all or nothing.
+    getProjectStats: async () => {
+      state.statsReads += 1;
       if (state.gate) await state.gate;
-      if (state.issueFailures.has(projectId)) {
-        throw Object.assign(new Error(`Internal error for ${projectId}`), {
-          status: 500,
-          requestId: "c85c0694-7909-4a8a",
-        });
-      }
-      return { items: [], page: 0, pageSize: 100, totalCount: issueCounts[projectId] ?? 0 };
-    },
-    listMembers: async (projectId: string) => {
-      if (state.memberFailures.has(projectId)) throw new Error(`Internal error for ${projectId}`);
-      return [
-        {
-          userId: "user-anna",
-          role: "ADMIN" as const,
-          addedAt: now,
-          addedBy: "user-anna",
-          user: { displayName: "Anna Ivanova", email: "anna@example.com" },
-        },
-      ];
+      if (state.statsFailure) throw state.statsFailure;
+      return ["project-a", "project-b", "project-c", ...state.added]
+        .filter((id) => !state.archived.has(id) && !state.statsDropped.has(id))
+        .map((projectId) => ({
+          projectId,
+          issueCount: state.counts[projectId]?.issueCount !== undefined ? state.counts[projectId].issueCount : (issueCounts[projectId] ?? 0),
+          memberCount: state.counts[projectId]?.memberCount !== undefined ? state.counts[projectId].memberCount : 1,
+          members: (state.previews[projectId] ?? [{ userId: "user-anna", displayName: "Anna Ivanova" }]).map((row) => ({
+            userId: row.userId,
+            role: "MEMBER" as const,
+            addedAt: now,
+            user: { displayName: row.displayName, email: `${row.userId}@example.com`, avatarUrl: null },
+          })),
+        }));
     },
     updateProject: async (projectId: string, input: Record<string, unknown>) => {
       if (state.refuseEditAsArchived) {
@@ -209,8 +223,20 @@ const {
 
   return {
     fakeApi: api as unknown as TaskaApi,
-    failIssuesFor: (projectId: string) => state.issueFailures.add(projectId),
-    failMembersFor: (projectId: string) => state.memberFailures.add(projectId),
+    failStats: (error: Error | undefined) => {
+      state.statsFailure = error;
+    },
+    dropFromStats: (projectId: string) => state.statsDropped.add(projectId),
+    statsCountsFor: (projectId: string, counts: { issueCount?: number | null; memberCount?: number | null }) => {
+      state.counts[projectId] = { ...state.counts[projectId], ...counts };
+    },
+    previewFor: (projectId: string, rows: { userId: string; displayName: string }[]) => {
+      state.previews[projectId] = rows;
+    },
+    statsReads: () => state.statsReads,
+    addProject: (projectId: string) => {
+      state.added.push(projectId);
+    },
     statesNoRoleFor: (projectId: string) => state.roleless.add(projectId),
     refuseEdits: () => {
       state.refuseEdit = true;
@@ -228,12 +254,12 @@ const {
     roleFor: (projectId: string, role: ProjectRole) => {
       state.roles[projectId] = role;
     },
-    holdSummaries: () => {
+    holdStats: () => {
       state.gate = new Promise<void>((resolve) => {
         state.openGate = resolve;
       });
     },
-    releaseSummaries: () => {
+    releaseStats: () => {
       const open = state.openGate;
       state.gate = undefined;
       state.openGate = undefined;
@@ -255,8 +281,12 @@ const {
     },
     projectsRefetchStarted: () => state.listGateEntered ?? Promise.resolve(),
     reset: () => {
-      state.issueFailures.clear();
-      state.memberFailures.clear();
+      state.statsFailure = undefined;
+      state.statsDropped.clear();
+      state.counts = {};
+      state.previews = {};
+      state.statsReads = 0;
+      state.added = [];
       state.roleless.clear();
       state.roles = {};
       state.edits = {};
@@ -315,59 +345,94 @@ describe("project cards state what they know", () => {
     window.localStorage.clear();
   });
 
-  it("keeps one project's failure out of every other project's card", async () => {
-    failIssuesFor("project-b");
+  const statsFailure = () =>
+    Object.assign(new Error("project-service is unavailable"), { status: 503, code: "UNAVAILABLE", requestId: "c85c0694-7909-4a8a" });
+
+  it("draws every card's counts from one stats read, each found by its project", async () => {
     renderProjects();
 
-    // The project that answered still shows its own count.
     expect(await within(await findCard("Alpha")).findByText("9")).toBeVisible();
+    expect(within(card("Beta")).getByText("4")).toBeVisible();
     expect(within(card("Gamma")).getByText("0")).toBeVisible();
-
-    // And the one that did not is the only card missing a number.
-    const beta = card("Beta");
-    expect(within(beta).getByText("—")).toBeVisible();
-    expect(within(beta).queryByText("0")).not.toBeInTheDocument();
+    expect(statsReads()).toBe(1);
   });
 
-  it("says unknown rather than zero, in words a screen reader can hear", async () => {
-    failIssuesFor("project-a");
-    failMembersFor("project-a");
+  it("says unknown rather than zero when the read failed, in words a screen reader can hear", async () => {
+    failStats(statsFailure());
     renderProjects();
 
     const alpha = await findCard("Alpha");
-    // Not "0 issues" and not "0 members": the accessible name carries the word.
-    expect(alpha).toHaveAccessibleName(/unknown issues/);
+    await waitFor(() => expect(alpha).toHaveAccessibleName(/unknown issues/));
     expect(alpha).toHaveAccessibleName(/unknown members/);
     expect(alpha).not.toHaveAccessibleName(/0 issues/);
     expect(alpha).not.toHaveAccessibleName(/0 members/);
+    // All or nothing: every card at once, and no faces.
+    expect(card("Gamma")).toHaveAccessibleName(/unknown issues/);
+    expect(alpha.querySelectorAll(".avatar")).toHaveLength(0);
   });
 
-  it("still counts the issues when only the member list failed", async () => {
-    // The shape TAS-162 had on the stand: the member read, synthesised then
-    // from GET /projects/{id}, 500ed while the issue list answered fine.
-    // Joining the two used to throw the good answer away with the bad one.
-    failMembersFor("project-a");
+  it("says unknown for a project the answer left out, and for a count it did not carry", async () => {
+    dropFromStats("project-b");
+    statsCountsFor("project-a", { memberCount: null });
     renderProjects();
 
     const alpha = await findCard("Alpha");
-    expect(within(alpha).getByText("9")).toBeVisible();
+    expect(await within(alpha).findByText("9")).toBeVisible();
     expect(alpha).toHaveAccessibleName(/unknown members/);
+    expect(card("Beta")).toHaveAccessibleName(/unknown issues/);
+    expect(card("Beta")).toHaveAccessibleName(/unknown members/);
+    // A settled answer is not a failure: no banner.
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
   });
 
   it("prints a real zero for a project that genuinely has no issues", async () => {
     renderProjects();
 
     const gamma = await findCard("Gamma");
-    expect(gamma).toHaveAccessibleName(/0 issues/);
+    await waitFor(() => expect(gamma).toHaveAccessibleName(/0 issues/));
     expect(within(gamma).queryByText("—")).not.toBeInTheDocument();
   });
 
+  it("says one member and one issue in the singular", async () => {
+    statsCountsFor("project-b", { issueCount: 1, memberCount: 1 });
+    statsCountsFor("project-a", { memberCount: 7 });
+    renderProjects();
+
+    const beta = await findCard("Beta");
+    await waitFor(() => expect(beta).toHaveAccessibleName(/1 member\b(?!s)/));
+    expect(beta).toHaveAccessibleName(/1 issue\b(?!s)/);
+    expect(card("Alpha")).toHaveAccessibleName(/7 members/);
+    expect(card("Alpha")).toHaveAccessibleName(/9 issues/);
+  });
+
+  it("shows the first four of the server's faces, in its order, beside the true count", async () => {
+    previewFor("project-a", [
+      { userId: "user-zed", displayName: "Zed Young" },
+      { userId: "user-anna", displayName: "Anna Ivanova" },
+      { userId: "user-tom", displayName: "Tom Baker" },
+      { userId: "user-mia", displayName: "Mia Lee" },
+      { userId: "user-ola", displayName: "Ola Nord" },
+    ]);
+    statsCountsFor("project-a", { memberCount: 12 });
+    renderProjects();
+
+    const alpha = await findCard("Alpha");
+    await waitFor(() => expect(alpha.querySelectorAll(".avatar-stack .avatar")).toHaveLength(4));
+    expect([...alpha.querySelectorAll(".avatar-stack .avatar")].map((face) => face.getAttribute("aria-label"))).toEqual([
+      "Zed Young",
+      "Anna Ivanova",
+      "Tom Baker",
+      "Mia Lee",
+    ]);
+    expect(alpha).toHaveAccessibleName(/12 members/);
+    expect(within(alpha).queryByText(/\+\d/)).not.toBeInTheDocument();
+  });
+
   // Loading and unknown were the same em dash, so every visit began by telling
-  // the reader that four requests still in flight had already failed — and the
-  // `title="Not loaded"` behind it said so in words (§5.6: loading is a
-  // skeleton).
+  // the reader that requests still in flight had already failed (§5.6: loading
+  // is a skeleton).
   it("waits with a skeleton rather than declaring the numbers unknown", async () => {
-    holdSummaries();
+    holdStats();
     renderProjects();
 
     const alpha = await findCard("Alpha");
@@ -376,25 +441,56 @@ describe("project cards state what they know", () => {
     expect(within(alpha).queryByText("—")).not.toBeInTheDocument();
 
     // And it gives way to the real number rather than staying.
-    releaseSummaries();
+    releaseStats();
     expect(await within(alpha).findByText("9")).toBeVisible();
     expect(alpha).not.toHaveAccessibleName(/loading/);
+  });
+
+  it("draws a new project's card pending until the stats answer has it, and keeps the others' numbers", async () => {
+    const queryClient = renderProjects();
+    await within(await findCard("Alpha")).findByText("9");
+
+    addProject("project-d");
+    holdStats();
+    void queryClient.invalidateQueries({ queryKey: ["projects"] });
+    void queryClient.invalidateQueries({ queryKey: ["project-stats"] });
+
+    const delta = await findCard("Delta");
+    expect(delta).toHaveAccessibleName(/loading issues/);
+    // A re-read keeps the numbers it already drew.
+    expect(within(card("Alpha")).getByText("9")).toBeVisible();
+
+    releaseStats();
+    await waitFor(() => expect(delta).toHaveAccessibleName(/0 issues/));
   });
 
   // The only trace of a failure used to be a `title` attribute — hover-only, so
   // unreachable from a touch screen and from a keyboard — and neither the
   // gateway's message nor its request id reached the reader at all.
-  it("says once, in reachable text, why a number is missing", async () => {
-    failIssuesFor("project-b");
+  it("says once, in reachable text, why the numbers are missing", async () => {
+    failStats(statsFailure());
     renderProjects();
 
-    const notice = await screen.findByText(/Some project details could not be loaded/i);
+    const notice = await screen.findByText(
+      "Members and issue counts could not be loaded, so the cards show them as unknown.",
+    );
     expect(notice).toBeVisible();
-    expect(screen.getByText("Internal error for project-b")).toBeVisible();
+    expect(screen.getByText("project-service is unavailable")).toBeVisible();
     expect(screen.getByRole("button", { name: /Copy request id c85c0694-7909-4a8a/ })).toBeVisible();
   });
 
-  it("keeps quiet when every project answered", async () => {
+  it("keeps the numbers it drew, and says nothing, when a re-read fails", async () => {
+    const queryClient = renderProjects();
+    await within(await findCard("Alpha")).findByText("9");
+
+    failStats(statsFailure());
+    await queryClient.invalidateQueries({ queryKey: ["project-stats"] });
+
+    expect(within(card("Alpha")).getByText("9")).toBeVisible();
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps quiet when the read answered", async () => {
     renderProjects();
 
     await within(await findCard("Alpha")).findByText("9");
@@ -519,13 +615,10 @@ describe("editing a project from its card", () => {
     await within(await findCard("Alpha")).findByText("9");
 
     // A row that states no role is not a role, and this screen does not go
-    // looking for one. The counts arriving is what proves the second half: the
-    // fake has no `getMembership`, so a fallback returning to `loadSummary`
-    // would throw on the call itself and reject the whole summary — this card
-    // would then say "unknown" where it says nine, instead of quietly costing
-    // one request per card the way it did against the gateway.
+    // looking for one: the fake has no `getMembership`, so a call to it would
+    // fail loudly here rather than quietly cost one request per card.
     expect(editButton("Alpha")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Some project details could not be loaded/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not be loaded/)).not.toBeInTheDocument();
   });
 
   it("opens the dialog on the project that was clicked, with the key read-only", async () => {

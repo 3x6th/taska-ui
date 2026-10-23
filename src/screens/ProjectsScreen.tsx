@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Search } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -12,54 +12,11 @@ import { Modal } from "../components/Modal";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { TopBar } from "../components/TopBar";
 import { PendingValue, Unknown } from "../components/Unknown";
-import type { Project, ProjectMember } from "../domain/types";
+import type { Project, ProjectStats } from "../domain/types";
 import { useUnanswered } from "../hooks/useUnanswered";
+import { PROJECT_STATS_KEY, projectStatsQueryOptions } from "../lib/boardQuery";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
 import type { ScreenProps } from "./App";
-
-/** `null` is "the server did not say", which a card must never round down to 0. */
-interface ProjectSummary {
-  count: number | null;
-  members: ProjectMember[] | null;
-  /**
-   * Why a `null` above is `null`. The query itself resolves either way — one
-   * half of a card is worth drawing without the other — so this is the only
-   * route the gateway's own words and its request id have out of here, and
-   * without it the screen could say "unknown" and nothing more.
-   */
-  failure: Error | null;
-}
-
-async function loadSummary(projectId: string): Promise<ProjectSummary> {
-  // `allSettled`, not `all`: the issue count and the member list are two
-  // independent facts about one project, and they do not fail together. When
-  // `GET /projects/{id}` was a 500 (TAS-162), the member read that `hybrid`
-  // then synthesised from it failed while the issue list answered perfectly
-  // well — so joining them is how a card ends up claiming zero issues for a
-  // project that has nine. They are two separate gateway reads now, and still
-  // fail apart: on the stand one unreadable avatar object fails the whole member
-  // read with a 404, 403 or 503 (see `TaskaApi.listMembers`) while the issue
-  // list answers.
-  //
-  // Two legs and no third. A `getMembership` fallback used to sit here for
-  // rows that state no `currentUserRole` — every row, before backend TAS-137
-  // deployed — so it fired once per card rather than never, and in `rest` it
-  // turned 1 + 2N requests into 1 + 3N. No mode should pay a request to decide
-  // whether to offer a control, all of it to draw a pencil opening a dialog
-  // whose Save could not succeed until PR #155 deployed either. The row's own
-  // field is the only source.
-  const [issues, members] = await Promise.allSettled([
-    taskaApi.listIssues(projectId, { pageSize: 100 }),
-    taskaApi.listMembers(projectId),
-  ]);
-  const rejection = [issues, members].find((result) => result.status === "rejected")?.reason;
-
-  return {
-    count: issues.status === "fulfilled" ? (issues.value.totalCount ?? issues.value.items.length) : null,
-    members: members.status === "fulfilled" ? members.value : null,
-    failure: rejection instanceof Error ? rejection : null,
-  };
-}
 
 export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: ScreenProps) {
   const navigate = useNavigate();
@@ -110,26 +67,20 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   }, [filter, projects]);
   const filtering = filter.trim().length > 0;
 
-  // One query per project rather than a single `Promise.all` across all of
-  // them. The batch rejected as a whole, so one project the gateway would not
-  // answer for erased the counts of every other project in the list — and each
-  // card then stated "0 issues", which is a claim about the project rather than
-  // an admission about the request (TAS-163). The `project-summaries` prefix is
-  // kept so the existing invalidation after a create still matches.
-  const summaryQueries = useQueries({
-    queries: projects.map((project) => ({
-      queryKey: ["project-summaries", project.id],
-      queryFn: () => loadSummary(project.id),
-    })),
-  });
-
-  // Position-free access to the per-project queries. `summaryQueries` is built
-  // over the *unfiltered* list, so once the grid can render a subset an index
-  // into it is one project's counts printed on another project's card.
-  const summaryByProject = useMemo(
-    () => new Map(projects.map((project, index) => [project.id, summaryQueries[index]])),
-    [projects, summaryQueries],
+  // The cards' counts and faces, for every card at once (TAS-202, backend
+  // TAS-211): one `GET /project-stats` beside `GET /projects`, in parallel —
+  // the grid is drawn from the list and never waits for the numbers. It
+  // replaced an issue read and a member read per card, 2N requests that were
+  // all asked again on every return to the tab.
+  const statsQuery = useQuery(projectStatsQueryOptions());
+  // Position-free: an entry is found by its project, never by its index —
+  // the answer may leave a listed project out (a membership that vanished
+  // between the server's two calls is dropped, not zeroed).
+  const statsByProject = useMemo(
+    () => new Map((statsQuery.data ?? []).map((entry) => [entry.projectId, entry])),
+    [statsQuery.data],
   );
+  const statsUnread = useUnanswered(statsQuery);
 
   /**
    * The open dialog's row, resolved against the live list every render, so
@@ -159,14 +110,6 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   const editingUnlisted = editing !== null && listedRow === undefined && projectsQuery.data !== undefined;
 
   const projectsUnread = useUnanswered(projectsQuery);
-  // One line for the whole grid, not one per card: a gateway that is failing
-  // fails for every project at once, and the reader needs the reason once. The
-  // cards carry which fact is missing; this carries why. Until now the only
-  // trace of a failure here was a `title` attribute — invisible to a touch
-  // screen and to a keyboard, and it never carried the message or the request
-  // id at all.
-  const summaryFailure = summaryQueries.find((query) => query.data?.failure)?.data?.failure;
-
   /**
    * An archived project leaves the grid in the frame the dialog closes in —
    * the dialog takes it out of `["projects"]` before it closes — so this only
@@ -260,9 +203,14 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
 
         {projectsUnread.unanswered ? (
           <ApiNotice error={projectsUnread.error}>The project list could not be loaded.</ApiNotice>
-        ) : summaryFailure ? (
-          <ApiNotice error={summaryFailure} live="polite">
-            Some project details could not be loaded, so their counts show as unknown.
+        ) : statsUnread.unanswered ? (
+          // One line for the whole grid, not one per card: the read is all or
+          // nothing, so it fails for every card at once and the reader needs
+          // the reason once — with the server's words and the request id. Only
+          // while there is no answer at all: a failed re-read over one keeps
+          // the numbers it has and says nothing (DESIGN.md §4.8).
+          <ApiNotice error={statsUnread.error} live="polite">
+            Members and issue counts could not be loaded, so the cards show them as unknown.
           </ApiNotice>
         ) : null}
 
@@ -285,14 +233,14 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
               <ProjectCard
                 key={project.id}
                 project={project}
-                // Keyed by project id rather than by position: the queries were
-                // built over the unfiltered list, so a filtered index would put
-                // one project's counts on another's card.
-                summary={summaryByProject.get(project.id)?.data}
-                // Loading is not unknown (§5.6). Without this the numbers spent
-                // every visit as em dashes before appearing, which said a
-                // request that was about to succeed had already failed.
-                pending={summaryByProject.get(project.id)?.isPending ?? true}
+                stats={statsByProject.get(project.id)}
+                // Loading is not unknown (§5.6): a card whose entry has not
+                // arrived while the read is out — the first visit, or a project
+                // just created — draws pending values. Not during the retry of
+                // a read that failed with nothing to show, where the banner
+                // already says the numbers are unknown and they stay that way.
+                // A refetch keeps the numbers it has: an entry in hand wins.
+                pending={!statsByProject.has(project.id) && statsQuery.isFetching && !statsUnread.unanswered}
                 onEdit={() => setEditing({ row: project, index: visibleProjects.indexOf(project) })}
                 onOpen={() => navigate(`/projects/${project.id}/board`)}
               />
@@ -318,19 +266,25 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
 
 function ProjectCard({
   project,
-  summary,
+  stats,
   pending,
   onEdit,
   onOpen,
 }: {
   project: Project;
-  summary?: ProjectSummary;
+  /** This project's entry in `GET /project-stats`, or nothing when the answer has none (yet). */
+  stats?: ProjectStats;
   pending: boolean;
   onEdit: () => void;
   onOpen: () => void;
 }) {
-  const members = summary?.members ?? null;
-  const count = summary?.count ?? null;
+  // `null` is "the server did not say", which a card must never round down to 0.
+  const memberCount = stats?.memberCount ?? null;
+  const issueCount = stats?.issueCount ?? null;
+  // The first four of the server's five, in its order (`addedAt`, then
+  // `userId`) — never re-sorted. No "+N": the full count stands beside them
+  // (DESIGN.md §4.8, the exception to §4.4's stack).
+  const faces = (stats?.members ?? []).slice(0, 4);
   /**
    * ADMIN only, and from the list row alone: `currentUserRole` on
    * `GET /projects` (backend TAS-137, PR #152). A row that states no role is
@@ -367,7 +321,7 @@ function ProjectCard({
         <p>{project.description?.trim() || "Project workspace"}</p>
         <div className="project-card-foot">
           <div className="avatar-stack">
-            {(members ?? []).slice(0, 4).map((member) => (
+            {faces.map((member) => (
               <Avatar
                 key={member.userId}
                 user={
@@ -377,8 +331,8 @@ function ProjectCard({
                         displayName: member.user.displayName,
                         color: member.user.color,
                         // Declared inline on the member row (backend TAS-137),
-                        // so a card showing four faces still costs one member
-                        // read. The server fills it since TAS-225 (see
+                        // so the faces of every card on the page cost the one
+                        // stats read. The server fills it since TAS-225 (see
                         // `User.avatarUrl`); a member without one draws initials.
                         avatarUrl: member.user.avatarUrl,
                       }
@@ -392,11 +346,13 @@ function ProjectCard({
                 third was hover-only — unreachable from a touch screen and from a
                 keyboard — and it called a pending read "Not loaded" as well. */}
             <span className="member-count">
-              {pending ? <PendingValue /> : members ? members.length : <Unknown />} members
+              {pending ? <PendingValue /> : memberCount === null ? <Unknown /> : memberCount}{" "}
+              {memberCount === 1 && !pending ? "member" : "members"}
             </span>
           </div>
           <span className="issue-count">
-            <strong>{pending ? <PendingValue /> : count === null ? <Unknown /> : count}</strong> issues
+            <strong>{pending ? <PendingValue /> : issueCount === null ? <Unknown /> : issueCount}</strong>{" "}
+            {issueCount === 1 && !pending ? "issue" : "issues"}
           </span>
         </div>
       </button>
@@ -466,7 +422,9 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       }),
     onSuccess: async () => {
       onCreated();
-      await queryClient.invalidateQueries({ queryKey: ["project-summaries"] });
+      // The new project's card draws pending values until the stats read
+      // answers with its entry (DESIGN.md §4.8).
+      await queryClient.invalidateQueries({ queryKey: PROJECT_STATS_KEY });
       onClose();
     },
   });

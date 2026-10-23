@@ -46,8 +46,6 @@ const {
   holdDelete,
   releaseDelete,
   heldDeleteCount,
-  seedSearch,
-  failSearch,
   seedNotifications,
   seedUnreadCount,
   readNotifications,
@@ -74,6 +72,9 @@ const {
   failProject,
   holdProject,
   failIssues,
+  holdBoard,
+  boardReads,
+  seedBoardNames,
   failWorkflow,
   seedLabels,
   holdLabelCreate,
@@ -184,14 +185,20 @@ const {
     /** What every create asked for. */
     createCalls: Record<string, unknown>[];
     issuesFailure?: Error;
+    /** Every board read that went out, answered or not. */
+    boardReads: number;
+    /** The board read held open: the window before it answers. */
+    boardHeld: boolean;
+    /**
+     * The names the board read joins in, by user id (backend #205). An id not
+     * here is an assignee the server could not name — `displayName: null`.
+     */
+    boardNames: Record<string, string>;
     workflowFailure?: Error;
     labels: { id: string; name: string; color: string }[];
     labelCreateHeld: boolean;
     /** The next issue or label create is refused with this error, and creates nothing. */
     createFailure?: Error;
-    searchHits: { id: string; issueKey: string; issueType: "TASK" | "BUG" | "STORY"; summary: string; priority: "LOW" | "MEDIUM" | "HIGH"; assigneeId: string | null; storyPoints: number | null }[];
-    searchTotal: number;
-    searchFailure?: Error;
     /** The notifications popover: what the bell lists, what it managed to mark read, and the two writes failing or waiting. */
     notifications: Notification[];
     /** The server's unread total when a test needs it to differ from the rows — it counts the whole inbox, not the page. */
@@ -378,10 +385,11 @@ const {
     metaReads: 0,
     extraIssues: [],
     createCalls: [],
+    boardReads: 0,
+    boardHeld: false,
+    boardNames: {},
     labels: [],
     labelCreateHeld: false,
-    searchHits: [],
-    searchTotal: 0,
     notifications: [],
     readNotifications: [],
     notificationWritesHeld: false,
@@ -479,6 +487,35 @@ const {
     labels: state.issueLabels,
   });
 
+  /**
+   * The issues as this fixture's server holds them. The description of the
+   * seeded one is not empty: the board's own box filters descriptions too,
+   * and a fixture with none could not tell whether it does. The others are
+   * built from a neutral base and laid over with the test's fields, so a
+   * deliberately malformed one (a key that is not a string) reaches the board
+   * rather than failing in this fixture.
+   */
+  const storedIssues = () => {
+    const seeded = makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", "Point the columns at the deployed gateway.");
+    const extras = state.extraIssues.map((extra) => ({ ...makeIssue(extra.id, "TAS-0", "", ""), ...extra }));
+    return [seeded, ...extras, ...state.created]
+      .filter((issue) => !state.deleted.has(issue.id))
+      .map((issue) => ({ ...issue, ...(state.edits[issue.id] ?? {}) }) as ReturnType<typeof makeIssue> & Record<string, unknown>);
+  };
+
+  /** The workflow this fixture's context sends for a type: the default one status, or the test's own. */
+  const contextWorkflow = (issueType: string) => {
+    const workflow = {
+      id: "workflow",
+      name: "Default",
+      version: 1,
+      statuses: [{ id: "s1", statusKey: "TODO" as string, name: "To Do", category: "TODO" as string, sortOrder: 10 }],
+      transitions: [] as { id: string; fromStatusId: string; toStatusId: string; name: string; sortOrder: number }[],
+      ...state.contextWorkflowParts,
+    };
+    return Object.hasOwn(state.workflowsByType, issueType) ? { ...workflow, ...state.workflowsByType[issueType] } : workflow;
+  };
+
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
@@ -519,14 +556,6 @@ const {
       if (state.projectHeld || state.membershipHeld || state.membersHeld) return new Promise(() => {});
       const failure = state.projectFailure ?? state.membershipFailure ?? state.membersFailure ?? state.workflowFailure;
       if (failure) throw failure;
-      const workflow = {
-        id: "workflow",
-        name: "Default",
-        version: 1,
-        statuses: [{ id: "s1", statusKey: "TODO" as const, name: "To Do", category: "TODO" as const, sortOrder: 10 }],
-        transitions: [] as { id: string; fromStatusId: string; toStatusId: string; name: string; sortOrder: number }[],
-        ...state.contextWorkflowParts,
-      };
       return {
         project: {
           id: projectId,
@@ -541,12 +570,7 @@ const {
         role: state.membership.role,
         members: state.members,
         labels: state.labels,
-        workflows: Object.fromEntries(
-          state.issueTypes.map((issueType) => [
-            issueType,
-            Object.hasOwn(state.workflowsByType, issueType) ? { ...workflow, ...state.workflowsByType[issueType] } : workflow,
-          ]),
-        ),
+        workflows: Object.fromEntries(state.issueTypes.map((issueType) => [issueType, contextWorkflow(issueType)])),
       };
     },
     getMembership: async () => {
@@ -564,22 +588,55 @@ const {
     },
     listIssues: async () => {
       if (state.issuesFailure) throw state.issuesFailure;
-      // The description is not empty: the board's own box searches descriptions
-      // too, and a fixture with none could not tell whether it does.
-      const seeded = makeIssue("issue-1", "TAS-102", "Wire the board to the gateway", "Point the columns at the deployed gateway.");
-      // Built from a neutral base and laid over with the test's fields, so a
-      // deliberately malformed one (a key that is not a string) reaches the
-      // board rather than failing in this fixture.
-      const extras = state.extraIssues.map((extra) => ({ ...makeIssue(extra.id, "TAS-0", "", ""), ...extra }));
-      const items = [seeded, ...extras, ...state.created]
-        .filter((issue) => !state.deleted.has(issue.id))
-        .map((issue) => ({ ...issue, ...(state.edits[issue.id] ?? {}) }));
+      const items = storedIssues();
       return { items, page: 0, pageSize: 100, totalCount: items.length };
     },
-    // Both of these move the issue list *and* the server's own match count, the
-    // way a server would. That pairing is the whole point: a fixture where only
-    // one of them moved could not tell a counter that invalidates its search
-    // from one that strands it.
+    // The board's one issue read since TAS-202, built the way the gateway
+    // builds it (backend #205): the workflows of TASK, BUG and STORY — the
+    // ones this fixture's context sends, whatever the project allows, since
+    // workflow-service ignores that — merged by key, first type winning, then
+    // by `sortOrder`; an issue in a status its own type's workflow lacks goes
+    // to `unplacedIssues`; an issue of any other type is not read at all
+    // (backend A4). Cards carry the assignee the server joined in.
+    getBoard: async (projectId: string) => {
+      state.boardReads += 1;
+      if (state.boardHeld) return new Promise(() => {});
+      if (state.issuesFailure) throw state.issuesFailure;
+      const types = ["TASK", "BUG", "STORY"];
+      const statusesOf = (type: string) => contextWorkflow(type).statuses;
+      const byKey = new Map<string, { statusKey: string; name: string; category: string; sortOrder: number }>();
+      for (const type of types) for (const status of statusesOf(type)) if (!byKey.has(status.statusKey)) byKey.set(status.statusKey, status);
+      const columns = [...byKey.values()]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map(({ statusKey, name, category, sortOrder }) => ({ statusKey, name, category, sortOrder, issues: [] as unknown[] }));
+      const unplacedIssues: unknown[] = [];
+      for (const issue of storedIssues()) {
+        if (typeof issue.issueType === "string" && !types.includes(issue.issueType)) continue;
+        const assigneeId = issue.assigneeId as string | null;
+        const card = {
+          id: issue.id,
+          issueKey: issue.issueKey,
+          summary: issue.summary,
+          issueType: issue.issueType,
+          priority: issue.priority,
+          statusKey: issue.status,
+          description: issue.description,
+          createdAt: issue.createdAt,
+          updatedAt: issue.updatedAt,
+          version: issue.version,
+          assignee: assigneeId
+            ? { id: assigneeId, displayName: state.boardNames[assigneeId] ?? null, avatarUrl: null }
+            : null,
+          labels: issue.labels ?? [],
+        };
+        const own = statusesOf(String(issue.issueType)).some((status) => status.statusKey === issue.status);
+        const column = own ? columns.find((item) => item.statusKey === issue.status) : undefined;
+        if (column) column.issues.push(card);
+        else unplacedIssues.push(card);
+      }
+      return { projectId, columns, unplacedIssues };
+    },
+    // Both of these move the board the next read answers, the way a server would.
     createIssue: async (_projectId: string, input: { summary: string; description: string }) => {
       state.createCalls.push({ ...input });
       if (state.createFailure) {
@@ -589,7 +646,6 @@ const {
       }
       const created = makeIssue(`issue-${state.created.length + 2}`, `TAS-20${state.created.length}`, input.summary, input.description);
       state.created = [...state.created, created];
-      state.searchTotal += 1;
       return created;
     },
     deleteIssue: async (_projectId: string, issueId: string) => {
@@ -599,15 +655,7 @@ const {
         throw failure;
       }
       state.deleted.add(issueId);
-      state.searchTotal = Math.max(0, state.searchTotal - 1);
     },
-    // The third way match membership moves, and the one most likely to be
-    // re-broken: editing a summary or a description in or out of a match. It is
-    // safe today only because the panel's edit routes through `invalidateBoard`
-    // — nothing about the edit itself knows the search exists. Written here so
-    // that stops being luck. Every case below edits an issue *out* of its
-    // match, so the hit goes with it.
-    //
     // A PATCH since TAS-246: it takes the version the panel is editing, answers
     // a stale one with a conflict carrying the issue as it stands, bumps the
     // version on every change, and answers with the issue as the read draws it
@@ -641,19 +689,11 @@ const {
         ...("description" in fields ? { description: fields.description ?? "" } : {}),
       };
       state.version += 1;
-      state.searchHits = state.searchHits.filter((hit) => hit.id !== issueId);
-      state.searchTotal = Math.max(0, state.searchTotal - 1);
       return answer();
     },
-    // The search route answers with the short DTO — no labels, no dates, no
-    // version — so the fixture cannot accidentally hand the board an issue
-    // where the gateway would hand it a hit.
-    searchIssues: async () => {
-      if (state.searchFailure) throw state.searchFailure;
-      // A deleted issue stops being a hit, the way it stops being a row.
-      const items = state.searchHits.filter((hit) => !state.deleted.has(hit.id));
-      return { items, page: 0, pageSize: 50, totalCount: state.searchTotal };
-    },
+    // The board has no search layer since TAS-202; this is here so a test can
+    // say it is never asked.
+    searchIssues: async () => ({ items: [], page: 0, pageSize: 50, totalCount: 0 }),
     // Copies, like a server's answer: the cache must never hold the objects
     // the writes below replace.
     listNotifications: async () => ({
@@ -944,8 +984,16 @@ const {
     holdProject: (held: boolean) => {
       state.projectHeld = held;
     },
-    failIssues: (error: Error) => {
+    failIssues: (error: Error | undefined) => {
       state.issuesFailure = error;
+    },
+    holdBoard: (held: boolean) => {
+      state.boardHeld = held;
+    },
+    boardReads: () => state.boardReads,
+    /** The names the board read joins in for these assignees. */
+    seedBoardNames: (names: Record<string, string>) => {
+      state.boardNames = names;
     },
     failWorkflow: (error: Error) => {
       state.workflowFailure = error;
@@ -1063,13 +1111,6 @@ const {
       state.unwatchRemoved = removed;
     },
     watchedUserIds: () => state.watchers.map((watcher) => watcher.userId),
-    seedSearch: (hits: typeof state.searchHits, totalCount: number) => {
-      state.searchHits = hits;
-      state.searchTotal = totalCount;
-    },
-    failSearch: (error: Error) => {
-      state.searchFailure = error;
-    },
     seedNotifications: (items: typeof state.notifications) => {
       state.notifications = items;
     },
@@ -1172,13 +1213,13 @@ const {
       state.projectFailure = undefined;
       state.projectHeld = false;
       state.issuesFailure = undefined;
+      state.boardReads = 0;
+      state.boardHeld = false;
+      state.boardNames = {};
       state.workflowFailure = undefined;
       state.labels = [];
       state.labelCreateHeld = false;
       state.createFailure = undefined;
-      state.searchHits = [];
-      state.searchTotal = 0;
-      state.searchFailure = undefined;
       state.notifications = [];
       state.unreadCount = undefined;
       state.readNotifications = [];
@@ -1938,249 +1979,237 @@ describe("a board that could not read its issues", () => {
 });
 
 /**
- * The board asks two searches at once and they answer different questions. The
- * box filters the page already loaded — instantly, with no request, which is
- * the thing that must not be traded away — and `GET /issues/search` answers
- * about the whole project underneath it.
- *
- * What these pin is the seam between them: that the local half consults the
- * description it always had, that a server hit is never placed in a status
- * column it has no status for, that the counter stops counting one loaded page,
- * and that a search which failed is not presented as a search that found
- * nothing.
+ * The board read itself (TAS-202, DESIGN.md §4.9): the columns are the board's
+ * own; until it has answered, and after it failed, the columns are predicted
+ * from the context; a failed board read — a 404 included — is a banner over
+ * "Not loaded" columns, never the not-found screen; and a card's face is the
+ * assignee the server joined in.
  */
-describe("the board's search and the server's", () => {
+describe("the board read", () => {
   beforeEach(() => {
     reset();
     window.localStorage.clear();
   });
 
-  const search = async (text: string) => {
-    const box = await screen.findByPlaceholderText("Search issues");
-    fireEvent.change(box, { target: { value: text } });
-    return box;
+  const twoStatuses = {
+    statuses: [
+      { id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+      { id: "s2", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
+    ],
+    transitions: [],
   };
 
-  it("keeps a card whose description matches, with nothing on the wire", async () => {
+  it("keeps the skeleton, in the context's predicted columns, until the board has answered", async () => {
+    seedContextWorkflowParts(twoStatuses);
+    holdBoard(true);
     renderBoard();
-    await screen.findByRole("region", { name: "To Do column" });
 
-    // "deployed" is in TAS-102's description and in neither its summary nor its
-    // key — the field the predicate used to have and never read.
-    await search("deployed");
-
-    expect(screen.getByRole("button", { name: /TAS-102/ })).toBeVisible();
-    // Still instant: no server answer is needed for the card to stay.
-    expect(within(screen.getByRole("region", { name: "To Do column" })).getByText(/TAS-102/)).toBeVisible();
-  });
-
-  it("puts a hit the loaded page does not hold in its own group, never in a column", async () => {
-    seedSearch(
-      [
-        {
-          id: "issue-900",
-          issueKey: "TAS-900",
-          issueType: "BUG",
-          summary: "Deployed gateway rejects an empty query",
-          priority: "HIGH",
-          assigneeId: null,
-          storyPoints: null,
-        },
-      ],
-      7,
+    await screen.findByText("Taska Platform");
+    await waitFor(() =>
+      expect([...document.querySelectorAll(".columns-area .board-column strong")].map((node) => node.textContent)).toEqual([
+        "To Do",
+        "In Progress",
+      ]),
     );
-    renderBoard();
-    await screen.findByRole("region", { name: "To Do column" });
-
-    await search("deployed");
-
-    const group = await screen.findByRole("region", { name: "Other matches from the server" });
-    expect(await within(group).findByText("TAS-900")).toBeVisible();
-    // A hit is not an issue, so no column may claim it (DESIGN.md §5.2) — even
-    // since TAS-218 gave it a status key.
-    expect(within(screen.getByRole("region", { name: "To Do column" })).queryByText("TAS-900")).not.toBeInTheDocument();
-    // And the group says what it is rather than appearing unexplained.
-    expect(within(group).getByText(/matches in descriptions/i)).toBeVisible();
+    expect(document.querySelectorAll(".skeleton-card").length).toBeGreaterThan(0);
+    // Pending, not zero.
+    expect(screen.queryByText("0 of 0")).not.toBeInTheDocument();
   });
 
-  it("counts the server's total instead of the page it happens to have loaded", async () => {
-    seedSearch(
-      [
-        {
-          id: "issue-900",
-          issueKey: "TAS-900",
-          issueType: "BUG",
-          summary: "Deployed gateway rejects an empty query",
-          priority: "HIGH",
-          assigneeId: null,
-          storyPoints: null,
-        },
-      ],
-      7,
-    );
+  it("draws the predicted columns not loaded, one banner and Unknown of Unknown when the board read fails", async () => {
+    seedContextWorkflowParts(twoStatuses);
+    seedExtraIssues([{ id: "issue-2", issueKey: "TAS-160", summary: "Waiting on QA", status: "BLOCKED_BY_QA" }]);
+    failIssues(Object.assign(new Error("Internal error"), { status: 500, requestId: "9b1e-board" }));
     renderBoard();
-    // Before the search, Y is the loaded page, which is all the board knows.
-    expect(await screen.findByText("1 of 1")).toBeVisible();
 
-    await search("deployed");
-
-    // One card on the board plus one hit beside it, out of the seven the server
-    // says match. `1 of 1` here would have been the old quiet lie.
-    expect(await screen.findByText("2 of 7")).toBeVisible();
+    const alert = await screen.findByRole("alert", undefined, AFTER_RETRY);
+    expect(alert).toHaveTextContent("The issues on this board could not be loaded.");
+    expect(screen.getByRole("button", { name: /Copy request id 9b1e-board/ })).toBeVisible();
+    expect(screen.getByRole("region", { name: "To Do column" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "In Progress column" })).toBeVisible();
+    expect(screen.getAllByText("Not loaded")).toHaveLength(2);
+    expect(screen.getAllByText("unknown").length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByRole("region", { name: "Outside their workflow" })).not.toBeInTheDocument();
   });
 
-  it("asks nothing until the query reaches the minimum the gateway enforces", async () => {
-    seedSearch([{ id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Short", priority: "LOW", assigneeId: null, storyPoints: null }], 7);
+  it("takes a 404 from the board as that failure, and not as a project that is not there", async () => {
+    failIssues(Object.assign(new Error("Project not found"), { status: 404, code: "NOT_FOUND" }));
     renderBoard();
-    await screen.findByRole("region", { name: "To Do column" });
 
-    // Two characters is below the contract's `minLength: 3`, which the gateway
-    // refuses with a 400 before sign-in.
-    await search("zz");
-
-    await waitFor(() => expect(screen.getByText("0 of 1")).toBeVisible());
-    expect(screen.queryByRole("region", { name: "Other matches from the server" })).not.toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The issues on this board could not be loaded.");
+    expect(screen.getByText("Taska Platform")).toBeVisible();
+    expect(screen.getByText("Not loaded")).toBeVisible();
   });
 
-  it("says a search failed rather than showing it as nothing found", async () => {
-    failSearch(Object.assign(new Error("Internal error"), { status: 500, requestId: "3a1f0b22-91cd-4e77" }));
+  it("draws a card's assignee as the server named them, in the colour of their member row", async () => {
+    seedMembers([
+      { userId: "user-tom", role: "MEMBER", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Tom Baker", email: "tom@example.com" } },
+    ]);
+    seedBoardNames({ "user-tom": "Tom Baker" });
+    seedExtraIssues([
+      { id: "issue-2", issueKey: "TAS-103", summary: "Named", assigneeId: "user-tom" },
+      // A person the server could not name — its profile read failed.
+      { id: "issue-3", issueKey: "TAS-104", summary: "Unnamed", assigneeId: "user-ghost" },
+    ]);
     renderBoard();
-    await screen.findByRole("region", { name: "To Do column" });
 
-    await search("deployed");
+    const named = await screen.findByRole("button", { name: /TAS-103/ });
+    const face = within(named).getByLabelText("Tom Baker");
+    expect(face).toHaveTextContent("TB");
 
-    const group = await screen.findByRole("region", { name: "Other matches from the server" }, AFTER_RETRY);
-    expect(await within(group).findByText(/could not be searched/i, undefined, AFTER_RETRY)).toBeVisible();
-    // Not "nothing else matches", which is a different answer entirely.
-    expect(within(group).queryByText(/Nothing else in this project matches/i)).not.toBeInTheDocument();
-    // The gateway's own words and the id its log knows this by.
-    expect(within(group).getByText("Internal error")).toBeVisible();
-    // And Y admits it does not know, rather than falling back to a number that
-    // would read as an answer.
-    expect(screen.getByText("unknown")).toBeVisible();
-    // The local result is still on screen throughout: the failure of the
-    // supplement never blanks the board.
-    expect(screen.getByRole("button", { name: /TAS-102/ })).toBeVisible();
+    const unnamed = screen.getByRole("button", { name: /TAS-104/ });
+    const ghost = within(unnamed).getByLabelText("Unknown assignee");
+    // Somebody is assigned: a filled circle, not the dashed empty one, and no
+    // initials of a name nobody sent.
+    expect(ghost).not.toHaveClass("avatar-empty");
+    expect(ghost).toHaveTextContent("");
+    expect(ghost.getAttribute("style")).toContain("background-color");
+
+    // Nobody assigned is still the dashed circle.
+    const seeded = screen.getByRole("button", { name: /TAS-102/ });
+    expect(within(seeded).getByLabelText("Unassigned")).toHaveClass("avatar-empty");
   });
 });
 
 /**
- * The two halves of "X of Y" are read from two caches, and only one of them was
- * ever invalidated. X comes live off the issues query, which every mutation
- * here refreshes; Y is `totalCount` off a search answer held for `staleTime`
- * under a key made of the query text and the filters — none of which a mutation
- * changes. So creating a matching issue moved X and stranded Y at "2 of 1", and
- * re-typing the same query could not correct it, because the key was already
- * the one in the cache.
- *
- * The fix is one line in `invalidateBoard` and will be re-broken by the next
- * person who adds a mutation, so what these two cases pin is the invariant
- * rather than the line: **a mutation that changes what the search would match
- * must move both halves of the counter, or neither.** The delete is here
- * because it is the mirror image and the worse of the two — a stranded Y over a
- * fallen X reads "0 of 1", which looks like a working empty state.
+ * The board's four filters since TAS-202 (DESIGN.md §5.4): all local, over one
+ * complete board read — no request for any filter or keystroke, a result on
+ * the first character with no debounce and no minimum length — and "X of Y"
+ * with X every card drawn, columns and «Outside their workflow» together, and
+ * Y every card the read holds.
  */
-describe("the counter after a mutation", () => {
+describe("the board's filters", () => {
   beforeEach(() => {
     reset();
     window.localStorage.clear();
   });
 
-  const search = async (text: string) => {
-    const box = await screen.findByPlaceholderText("Search issues");
+  const filter = async (text: string) => {
+    const box = await screen.findByRole("textbox", { name: "Filter issues by key, summary or description" });
     fireEvent.change(box, { target: { value: text } });
     return box;
   };
 
-  /**
-   * The server's answer has to be *distinguishable* from the local fallback, or
-   * the precondition cannot be established at all: with a total equal to the
-   * loaded page's, "1 of 1" is what the counter reads both before the search
-   * has answered and after, and the first draft of this test asserted the
-   * before-state and then measured nothing. Two hits and a total of two — one
-   * of them a card already on the board, one of them not — make the answered
-   * counter read "2 of 2" and the unanswered one "1 of 1".
-   */
-  const seedAnsweredSearch = () =>
-    seedSearch(
-      [
-        // The card the board already holds: the search finds it too, and the
-        // group must not draw it twice.
-        { id: "issue-1", issueKey: "TAS-102", issueType: "TASK", summary: "Wire the board to the gateway", priority: "MEDIUM", assigneeId: null, storyPoints: null },
-        // And one it does not.
-        { id: "issue-900", issueKey: "TAS-900", issueType: "BUG", summary: "Deployed gateway rejects an empty query", priority: "HIGH", assigneeId: null, storyPoints: null },
-      ],
-      2,
-    );
-
-  it("moves both halves when a matching issue is created, and does not strand the total", async () => {
-    seedAnsweredSearch();
+  it("is a filter of this board, named as one", async () => {
     renderBoard();
-    await screen.findByRole("region", { name: "To Do column" });
-    await search("deployed");
-    // One card plus one hit, out of the two the server says match. Reaching
-    // this string is what proves the server's answer is in the cache.
-    expect(await screen.findByText("2 of 2")).toBeVisible();
+
+    const box = await screen.findByRole("textbox", { name: "Filter issues by key, summary or description" });
+    expect(box).toHaveAttribute("placeholder", "Filter issues");
+  });
+
+  it("keeps a card whose description matches, on the first character, with nothing on the wire", async () => {
+    const searches = vi.spyOn(fakeApi, "searchIssues");
+    renderBoard();
+    await screen.findByRole("button", { name: /TAS-102/ });
+    const reads = boardReads();
+
+    // "deployed" is in TAS-102's description and in neither its summary nor
+    // its key.
+    await filter("deployed");
+    expect(screen.getByRole("button", { name: /TAS-102/ })).toBeVisible();
+    expect(screen.getByText("1 of 1")).toBeVisible();
+    // One character is a question too: no minimum length.
+    await filter("z");
+    expect(screen.queryByRole("button", { name: /TAS-102/ })).not.toBeInTheDocument();
+    expect(screen.getByText("0 of 1")).toBeVisible();
+
+    expect(boardReads()).toBe(reads);
+    expect(searches).not.toHaveBeenCalled();
+    searches.mockRestore();
+  });
+
+  it("combines type, assignee, label and text, locally, and counts what it draws out of the whole board", async () => {
+    seedMembers([
+      { userId: "user-tom", role: "MEMBER", addedAt: "2026-08-01T09:00:00Z", addedBy: "user-anna", user: { displayName: "Tom Baker", email: "tom@example.com" } },
+    ]);
+    seedBoardNames({ "user-tom": "Tom Baker" });
+    seedLabels([{ id: "label-ui", name: "ui", color: "#0052cc" }]);
+    seedExtraIssues([
+      { id: "issue-2", issueKey: "TAS-103", issueType: "BUG", summary: "Chip contrast", assigneeId: "user-tom", labels: [{ id: "label-ui", name: "ui", color: "#0052cc" }] },
+      { id: "issue-3", issueKey: "TAS-104", issueType: "BUG", summary: "Chip spacing", assigneeId: "user-tom", labels: [] },
+      // No description at all: matched on its key and its summary only.
+      { id: "issue-4", issueKey: "TAS-105", issueType: "STORY", summary: "Board chips", description: null },
+    ]);
+    renderBoard();
+    await screen.findByRole("button", { name: /TAS-103/ });
+    const reads = boardReads();
+    expect(screen.getByText("4 of 4")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Bug" }));
+    expect(screen.getByText("2 of 4")).toBeVisible();
+    fireEvent.click(within(document.querySelector(".assignee-row") as HTMLElement).getByRole("button", { name: "Tom Baker" }));
+    expect(screen.getByText("2 of 4")).toBeVisible();
+    fireEvent.change(screen.getByRole("combobox", { name: "Label" }), { target: { value: "label-ui" } });
+    expect(screen.getByText("1 of 4")).toBeVisible();
+    expect(screen.getByRole("button", { name: /TAS-103/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /TAS-104/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await filter("chips");
+    expect(screen.getByText("1 of 4")).toBeVisible();
+    expect(screen.getByRole("button", { name: /TAS-105/ })).toBeVisible();
+
+    expect(boardReads()).toBe(reads);
+  });
+
+  it("counts «Outside their workflow» in X and the whole read in Y", async () => {
+    seedExtraIssues([{ id: "issue-2", issueKey: "TAS-160", summary: "Waiting on QA", status: "BLOCKED_BY_QA" }]);
+    renderBoard();
+
+    const group = await screen.findByRole("region", { name: "Outside their workflow" });
+    expect(within(group).getByRole("button", { name: /TAS-160/ })).toBeVisible();
+    expect(screen.getByText("2 of 2")).toBeVisible();
+
+    await filter("qa");
+    expect(screen.getByText("1 of 2")).toBeVisible();
+    // The group leaves with the last card the filters keep in it.
+    await filter("wire");
+    expect(screen.getByText("1 of 2")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Outside their workflow" })).not.toBeInTheDocument();
+  });
+
+  it("moves both halves when a matching issue is created", async () => {
+    renderBoard();
+    await screen.findByRole("button", { name: /TAS-102/ });
+    await filter("deployed");
+    expect(screen.getByText("1 of 1")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     // Scoped to the modal: each column head carries a "+" whose title is also
     // "Create issue".
     const dialog = await screen.findByRole("dialog", { name: "New issue" });
-    fireEvent.change(within(dialog).getByLabelText("Summary"), {
-      target: { value: "Second deployed gateway task" },
-    });
+    fireEvent.change(within(dialog).getByLabelText("Summary"), { target: { value: "Second deployed gateway task" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Create issue" }));
 
-    // Two cards and one hit, out of three. Before the fix this read "3 of 2"
-    // and stayed there: X is live off the issues query, Y was held for
-    // `staleTime` under a key the reader had not changed, so even re-typing the
-    // same query could not correct it.
-    expect(await screen.findByText("3 of 3")).toBeVisible();
-    expect(screen.queryByText("3 of 2")).not.toBeInTheDocument();
+    // The board is read again after the create, and both halves come from it.
+    expect(await screen.findByText("2 of 2")).toBeVisible();
   });
 
-  it("moves both halves when a summary is edited out of its match", async () => {
-    seedAnsweredSearch();
+  it("moves X when a summary is edited out of its match, and keeps Y", async () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
     await screen.findByRole("region", { name: "To Do column" });
-    // "wire" is in the seeded summary and in neither its description nor its
-    // key, so editing the summary is the only thing that can take this issue
-    // out of the match — with "deployed" the description would hold it in, now
-    // that the local predicate reads descriptions too.
-    await search("wire");
-    expect(await screen.findByText("2 of 2")).toBeVisible();
+    // "wire" is in the seeded summary and in neither its description nor its key.
+    await filter("wire");
+    expect(await screen.findByText("1 of 1")).toBeVisible();
 
-    // The panel's summary commits on blur (§5.5). This is the third way match
-    // membership moves and the one nothing in the edit path knows about: it is
-    // safe only because it routes through `invalidateBoard`, and this is what
-    // says so if someone gives it its own invalidation later.
     const summary = document.querySelector(".summary-textarea") as HTMLTextAreaElement;
     fireEvent.change(summary, { target: { value: "Connect the board to the live gateway" } });
     fireEvent.blur(summary);
 
-    // No cards and one hit, out of one — the same arithmetic as the delete,
-    // reached by editing a word rather than by removing a row.
-    expect(await screen.findByText("1 of 1")).toBeVisible();
-    expect(screen.queryByText("2 of 2")).not.toBeInTheDocument();
+    expect(await screen.findByText("0 of 1")).toBeVisible();
   });
 
-  it("moves both halves when the matching issue is deleted, rather than leaving a total behind an emptier board", async () => {
-    seedAnsweredSearch();
-    // Straight at the issue route, which is how the app opens the panel: the
-    // board is underneath it with the search box still holding the query.
+  it("moves both halves when the matching issue is deleted", async () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-1`);
     await screen.findByRole("region", { name: "To Do column" });
-    await search("deployed");
-    expect(await screen.findByText("2 of 2")).toBeVisible();
+    await filter("deployed");
+    expect(await screen.findByText("1 of 1")).toBeVisible();
 
     fireEvent.click(await screen.findByRole("button", { name: "Delete issue TAS-102" }));
     fireEvent.click(await screen.findByRole("button", { name: "Delete issue" }));
 
-    // No cards and one hit, out of one. The mirror image of the create and the
-    // more dangerous of the two: a stale total over a board that has lost a
-    // card reads as a result set, not as a stale number.
-    expect(await screen.findByText("1 of 1")).toBeVisible();
-    expect(screen.queryByText("2 of 2")).not.toBeInTheDocument();
+    expect(await screen.findByText("0 of 0")).toBeVisible();
   });
 });
 
@@ -2513,7 +2542,7 @@ describe("a board that could not read its workflow", () => {
     window.localStorage.clear();
   });
 
-  it("says so, and still draws the columns the issues need", async () => {
+  it("says so, and still draws the board's own columns and cards", async () => {
     failWorkflow(Object.assign(new Error("Internal error"), { status: 500, requestId: "0b41d8a2-77c4-4a1f" }));
     renderBoard();
 
@@ -2523,11 +2552,20 @@ describe("a board that could not read its workflow", () => {
     expect(alerts.some((alert) => /labels and workflow are missing/i.test(alert.textContent ?? ""))).toBe(true);
     expect(screen.getByRole("button", { name: /Copy request id 0b41d8a2-77c4-4a1f/ })).toBeVisible();
 
-    // The board is still a board: three contract statuses, and the issue in the
-    // column its own `status` names.
-    expect(screen.getByRole("region", { name: "To Do column" })).toBeVisible();
-    expect(screen.getByRole("region", { name: "In Progress column" })).toBeVisible();
+    // The board is still a board: its columns come from its own read since
+    // TAS-202, and the issue sits where that read put it.
     expect(within(screen.getByRole("region", { name: "To Do column" })).getByText(/TAS-102/)).toBeVisible();
+    expect(screen.getByText("1 of 1")).toBeVisible();
+  });
+
+  it("draws the three contract statuses, not loaded, when the board read failed too", async () => {
+    failWorkflow(Object.assign(new Error("Internal error"), { status: 500 }));
+    failIssues(Object.assign(new Error("Internal error"), { status: 500 }));
+    renderBoard();
+
+    await screen.findAllByRole("alert", undefined, AFTER_RETRY);
+    await waitFor(() => expect(screen.getByRole("region", { name: "In Progress column" })).toBeVisible(), AFTER_RETRY);
+    expect(screen.getAllByText("Not loaded")).toHaveLength(3);
   });
 
   // The refusal of the drop itself, and the keyboard half of the same defect —
@@ -2577,9 +2615,10 @@ describe("a project that allows fewer issue types", () => {
     seedIssueTypes([]);
     renderBoard();
 
-    // The fallback's three contract statuses, so the issues still have a place.
+    // The board's own columns: the server builds them from the workflows of
+    // TASK, BUG and STORY whatever the project allows, so the issues still have
+    // a place.
     expect(await screen.findByRole("region", { name: "To Do column" })).toBeVisible();
-    expect(screen.getByRole("region", { name: "Done column" })).toBeVisible();
     await waitFor(() => expect(within(screen.getByRole("region", { name: "To Do column" })).getByText(/TAS-102/)).toBeVisible());
     expect(screen.getByRole("button", { name: "New" })).toBeDisabled();
     // Nothing failed, so nothing says it did.
@@ -2593,6 +2632,10 @@ describe("a project that allows fewer issue types", () => {
  * project below allows EPIC — a type with no name or colour here — with a
  * workflow that adds IN_REVIEW, and holds three issues: the seeded task, an
  * URGENT epic in review, and a task in BLOCKED_BY_QA, which no workflow lists.
+ *
+ * Since TAS-202 the board is the server's read, and the server reads TASK, BUG
+ * and STORY only (backend A4): the epic is in the context and in its own
+ * panel, and on no column of the board.
  */
 describe("values this build does not know", () => {
   const epicWorkflow = {
@@ -2631,21 +2674,16 @@ describe("values this build does not know", () => {
     seedMeta(stand);
   });
 
-  it("draws an unknown type and priority on a card, in its own workflow's column, named and coloured by the rule", async () => {
+  it("offers an unknown type in the filter, and leaves its issues and its workflow's columns to the server's read", async () => {
     renderBoard();
 
-    const review = await screen.findByRole("region", { name: "In Review column" });
-    // Category IN_PROGRESS, so the dot takes that colour though the key is new.
-    expect(review.querySelector(".status-dot")?.getAttribute("style")).toContain("var(--accent)");
-    const card = await within(review).findByRole("button", { name: /TAS-150/ });
-    // The type by its English /meta name; the chip neutral, named in `title`.
-    expect(await within(card).findByText("Epic")).toBeVisible();
-    expect(card.querySelector(".type-chip")).toHaveClass("is-unknown");
-    expect(card.querySelector(".type-chip")).toHaveAttribute("title", "Epic");
-    // The priority by its code — its /meta name is Russian — before three empty bars.
-    expect(within(card).getByText("URGENT")).toHaveClass("priority-name");
-    expect(within(card).getByTitle("URGENT priority")).toHaveClass("priority-bars");
-    // An unknown type's issues are not dropped from the type filter either.
+    await screen.findByRole("button", { name: /TAS-151/ });
+    // The board reads TASK, BUG and STORY (backend A4): no In Review column,
+    // no epic on it, and Y counts what the read holds.
+    expect(screen.queryByRole("region", { name: "In Review column" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /TAS-150/ })).not.toBeInTheDocument();
+    expect(screen.getByText("2 of 2")).toBeVisible();
+    // The type is still the project's, by its English /meta name.
     const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
     expect(within(filter).getAllByRole("button").map((button) => button.textContent)).toEqual([
       "All",
@@ -2656,20 +2694,31 @@ describe("values this build does not know", () => {
     ]);
   });
 
-  it("prints a type code verbatim when /meta names it in Russian, and when /meta failed", async () => {
+  it("draws an unknown priority on a card by its code, before three empty bars", async () => {
+    seedExtraIssues([{ id: "issue-urgent", issueKey: "TAS-152", summary: "Hotfix", priority: "URGENT" }]);
+    renderBoard();
+
+    const card = await screen.findByRole("button", { name: /TAS-152/ });
+    // Its /meta name is Russian, so the code it came as.
+    expect(within(card).getByText("URGENT")).toHaveClass("priority-name");
+    expect(within(card).getByTitle("URGENT priority")).toHaveClass("priority-bars");
+  });
+
+  it("prints a type code verbatim when /meta failed", async () => {
     seedMeta(new Error("Internal error"));
     renderBoard();
 
-    const card = await screen.findByRole("button", { name: /TAS-150/ });
-    expect(within(card).getByText("EPIC")).toBeVisible();
+    await screen.findByRole("button", { name: /TAS-151/ });
+    const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
+    expect(within(filter).getByRole("button", { name: "EPIC" })).toBeVisible();
     // Silent (D5): a failed /meta raises no notice anywhere.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("puts an issue no column holds in one trailing group, and counts what it draws", async () => {
+  it("puts an issue outside its own workflow in one trailing group, and counts what it draws", async () => {
     renderBoard();
 
-    const group = await screen.findByRole("region", { name: "Other statuses" });
+    const group = await screen.findByRole("region", { name: "Outside their workflow" });
     const card = within(group).getByRole("button", { name: /TAS-151/ });
     // Its status in words, beside the date, since the group's head cannot say it.
     expect(within(card).getByText("BLOCKED_BY_QA")).toHaveClass("issue-card-status");
@@ -2684,24 +2733,48 @@ describe("values this build does not know", () => {
       .getAllByRole("region")
       .filter((region) => region.classList.contains("board-column"))
       .map((region) => Number(region.querySelector(".count-pill")?.textContent));
-    expect(pills.reduce((sum, count) => sum + count, 0)).toBe(3);
-    expect(screen.getByText("3 of 3")).toBeVisible();
-    // The draggable card in the epic's column is still draggable.
-    const epicCard = within(screen.getByRole("region", { name: "In Review column" })).getByRole("button", { name: /TAS-150/ });
-    await waitFor(() => expect(epicCard).toHaveAttribute("aria-roledescription", "draggable"));
+    expect(pills.reduce((sum, count) => sum + count, 0)).toBe(2);
+    expect(screen.getByText("2 of 2")).toBeVisible();
+    // A card in a column is still draggable.
+    const placed = within(screen.getByRole("region", { name: "To Do column" })).getByRole("button", { name: /TAS-102/ });
+    await waitFor(() => expect(placed).toHaveAttribute("aria-roledescription", "draggable"));
+  });
+
+  it("names a card's status by this board's column when another type has it, and keeps it outside", async () => {
+    // BUG's workflow has In Review; TASK's does not. A task in IN_REVIEW is
+    // outside its own workflow though the board draws the column.
+    seedWorkflowsByType({
+      BUG: {
+        statuses: [
+          { id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+          { id: "s-review", statusKey: "IN_REVIEW", name: "In Review", category: "IN_PROGRESS", sortOrder: 25 },
+        ],
+        transitions: [],
+      },
+    });
+    seedExtraIssues([{ id: "issue-review", issueKey: "TAS-153", summary: "Reviewed task", status: "IN_REVIEW" }]);
+    renderBoard();
+
+    const group = await screen.findByRole("region", { name: "Outside their workflow" });
+    const card = within(group).getByRole("button", { name: /TAS-153/ });
+    expect(within(card).getByText("In Review")).toHaveClass("issue-card-status");
+    expect(within(screen.getByRole("region", { name: "In Review column" })).queryByRole("button", { name: /TAS-153/ })).toBeNull();
   });
 
   it("does not draw the group when no issue needs it, or when the filters leave it empty", async () => {
     seedExtraIssues([epic]);
     renderBoard();
-    await screen.findByRole("region", { name: "In Review column" });
-    expect(screen.queryByRole("region", { name: "Other statuses" })).not.toBeInTheDocument();
+    await screen.findByRole("button", { name: /TAS-102/ });
+    expect(screen.queryByRole("region", { name: "Outside their workflow" })).not.toBeInTheDocument();
   });
 
   it("draws a hollow dot for a status whose key and category are both unknown", async () => {
     seedWorkflowsByType({
-      EPIC: {
-        statuses: [{ id: "s-qa", statusKey: "QA", name: "Проверка", category: "REVIEW", sortOrder: 15 }],
+      TASK: {
+        statuses: [
+          { id: "s1", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+          { id: "s-qa", statusKey: "QA", name: "Проверка", category: "REVIEW", sortOrder: 15 },
+        ],
         transitions: [],
       },
     });
@@ -2851,7 +2924,7 @@ describe("values this build does not know", () => {
   it("asks for the dictionaries once, however many chips and pickers read them", async () => {
     renderBoard(`/projects/${PROJECT_ID}/issues/issue-epic`);
     await screen.findByRole("dialog", { name: "TAS-150 issue" });
-    await screen.findByRole("region", { name: "Other statuses" });
+    await screen.findByRole("region", { name: "Outside their workflow" });
     expect(metaReads()).toBe(1);
   });
 
@@ -2862,32 +2935,31 @@ describe("values this build does not know", () => {
   it("does not ask again for dictionaries that failed, as cards and the panel mount", async () => {
     seedMeta(new Error("Internal error"));
     renderBoard();
-    await screen.findByRole("button", { name: /TAS-150/ });
+    await screen.findByRole("button", { name: /TAS-151/ });
     await waitFor(() => expect(metaReads()).toBe(1));
 
     const filter = screen.getAllByRole("button", { name: "All" })[0].parentElement as HTMLElement;
     fireEvent.click(within(filter).getByRole("button", { name: "Bug" }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: /TAS-150/ })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("button", { name: /TAS-151/ })).not.toBeInTheDocument());
     fireEvent.click(within(filter).getByRole("button", { name: "All" }));
-    fireEvent.click(await screen.findByRole("button", { name: /TAS-150/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /TAS-151/ }));
 
-    const panel = await screen.findByRole("dialog", { name: "TAS-150 issue" });
-    expect(await within(panel).findByRole("button", { name: "URGENT" })).toHaveClass("is-active");
+    const panel = await screen.findByRole("dialog", { name: "TAS-151 issue" });
+    expect(await within(panel).findByRole("button", { name: "Medium" })).toHaveClass("is-active");
     expect(metaReads()).toBe(1);
   });
 
-  // The group waits for the columns (release-reviewer F2 on 64742b3): while the
-  // context read is out the columns are skeletons, and an issue that only looks
-  // orphaned against the fallback three must not be drawn in a group the
-  // project's own workflow may yet give a column to.
-  it("draws no group while the context read is still out, though the issues are in", async () => {
+  // The group waits for the columns (release-reviewer F2 on 64742b3): the
+  // skeleton stands until both the context and the board have answered
+  // (§4.9), and the group with it.
+  it("draws no group while the context read is still out, though the board is in", async () => {
     holdProject(true);
     renderBoard();
 
-    // X of Y is drawn from the issue read alone, so this is the issues landing.
-    expect(await screen.findByText("3 of 3")).toBeVisible();
+    // X of Y is drawn from the board read alone, so this is the board landing.
+    expect(await screen.findByText("2 of 2")).toBeVisible();
     expect(document.querySelectorAll(".skeleton-card").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("region", { name: "Other statuses" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Outside their workflow" })).not.toBeInTheDocument();
   });
 });
 
@@ -3321,14 +3393,14 @@ describe("deleting an issue from its panel", () => {
     await waitFor(() => expect(screen.getByTestId("whereabouts")).toHaveTextContent(`/projects/${PROJECT_ID}/board`));
   });
 
-  it("takes the card off in the same frame, before any re-read of the list has answered", async () => {
+  it("takes the card off in the same frame, before any re-read of the board has answered", async () => {
     seedExtraIssues(neighbours);
     renderBoard(ISSUE_PATH);
     const panel = await openPanel();
     await waitFor(() => expect(cardOf("issue-7")).not.toBeNull());
-    // From here every read of the list waits for ever, so a card that goes can
+    // From here every read of the board waits for ever, so a card that goes can
     // only have gone from the cache the delete wrote itself.
-    spies.push(vi.spyOn(fakeApi, "listIssues").mockImplementation(() => new Promise(() => {})));
+    holdBoard(true);
 
     fireEvent.click(panel.getByRole("button", { name: "Delete issue TAS-102" }));
     fireEvent.click(within(zone()!).getByRole("button", { name: "Delete issue" }));
@@ -3422,7 +3494,7 @@ describe("deleting an issue from its panel", () => {
 
   it("on a refusal closes the strip, gives focus to Delete, says why in the panel's slot and reads the board again", async () => {
     const scrolls = vi.spyOn(Element.prototype, "scrollIntoView");
-    const reads = vi.spyOn(fakeApi, "listIssues");
+    const reads = vi.spyOn(fakeApi, "getBoard");
     spies.push(scrolls, reads);
     failIssueDelete(
       Object.assign(new Error("User doesn't have permission"), {

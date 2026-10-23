@@ -1,20 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 
-// The board's "X of Y" reads its two halves from two caches. X is live off the
-// issues query, which every mutation invalidates; Y is `totalCount` off a
-// search answer keyed by the query text and the filters — none of which a
-// mutation changes, and which `staleTime` (src/main.tsx) then holds. Creating a
-// matching issue printed "2 of 1" and stayed there for as long as anyone
-// watched, and re-typing the same query could not correct it, because the key
-// was already the one in the cache.
+// The board's "X of Y" since TAS-202 (DESIGN.md §5.4): both halves come from one
+// complete board read — X every card the filters leave drawn, Y every card the
+// read holds — and the field is a local filter of this board, answered on the
+// first character with no request. A write re-reads the board, and both halves
+// move together.
 //
 // There are unit tests for this in BoardScreen.test.tsx. This spec exists
-// anyway, and the reason is worth writing down: the first version of those unit
-// tests passed against the bug, because the test harness built its QueryClient
-// without the app's `staleTime` and react-query's default of 0 refetches
-// everything the moment it is observed again. A defect that only exists inside
-// a cache window cannot be seen from a harness that has no cache window. This
-// one runs the real app.
+// anyway, because a defect that only exists inside a cache window cannot be
+// seen from a harness that has none: it runs the real app, with its own
+// query client and its `staleTime`.
 
 async function signIn(page: Page) {
   await page.goto("/login");
@@ -33,19 +28,40 @@ async function openBoard(page: Page) {
   await expect(page.locator(".counter")).toHaveText(/^\d+ of \d+$/);
 }
 
-// Viewport-independent: this is about which cache a number came from. Run once,
+const filterField = (page: Page) => page.getByRole("textbox", { name: "Filter issues by key, summary or description" });
+
+// Viewport-independent: this is about which read a number came from. Run once,
 // the same way the filter bar's wrap band picks a single project.
 test.describe("the board counter after a mutation", () => {
-  test("a created match moves both halves and does not strand the total", async ({ page }, testInfo) => {
+  test("filters locally, asking the server nothing", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "laptop", "runs once; the counter's honesty does not depend on the viewport");
+
+    await signIn(page);
+    await openBoard(page);
+    await expect(filterField(page)).toHaveAttribute("placeholder", "Filter issues");
+
+    const asked: string[] = [];
+    page.on("request", (request) => asked.push(request.url()));
+    // One character is enough, and "ro" matches a description word too.
+    await filterField(page).fill("r");
+    await filterField(page).fill("rotation");
+    await expect(page.locator(".counter")).toHaveText("1 of 10");
+    await page.waitForTimeout(500);
+    // The mock answers in-process, so a request here is anything that left
+    // the page for the dev server's API proxy — none should.
+    expect(asked.filter((url) => url.includes("/api/"))).toEqual([]);
+  });
+
+  test("a created match moves both halves", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "laptop", "runs once; the counter's honesty does not depend on the viewport");
 
     await signIn(page);
     await openBoard(page);
 
     const counter = page.locator(".counter");
-    await page.getByPlaceholder("Search issues").fill("rotation");
-    // One seeded issue matches, and the server agrees.
-    await expect(counter).toHaveText("1 of 1");
+    await filterField(page).fill("rotation");
+    // One seeded issue matches, out of the board's ten.
+    await expect(counter).toHaveText("1 of 10");
 
     await page.getByRole("button", { name: "New" }).click();
     const dialog = page.getByRole("dialog", { name: "New issue" });
@@ -53,23 +69,22 @@ test.describe("the board counter after a mutation", () => {
     await dialog.getByRole("button", { name: "Create issue" }).click();
     await expect(page).toHaveURL(/\/issues\//);
 
-    // Both halves, immediately. Measured against the bug this read "2 of 1".
-    await expect(counter).toHaveText("2 of 2");
-    // And it is not a number on its way through: `staleTime` is 20s, so a
-    // total that was going to strand is still stranded well after this.
+    // Both halves, from the board read again after the create.
+    await expect(counter).toHaveText("2 of 11");
+    // And it is not a number on its way through: `staleTime` is 20s.
     await page.waitForTimeout(2500);
-    await expect(counter).toHaveText("2 of 2");
+    await expect(counter).toHaveText("2 of 11");
   });
 
-  test("a deleted match takes its own row out of the results with it", async ({ page }, testInfo) => {
+  test("a deleted match takes its card and its count with it", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "laptop", "runs once; the counter's honesty does not depend on the viewport");
 
     await signIn(page);
     await openBoard(page);
 
     const counter = page.locator(".counter");
-    await page.getByPlaceholder("Search issues").fill("rotation");
-    await expect(counter).toHaveText("1 of 1");
+    await filterField(page).fill("rotation");
+    await expect(counter).toHaveText("1 of 10");
 
     await page.getByRole("button", { name: /TAS-105/ }).click();
     await expect(page.locator(".issue-panel")).toBeVisible();
@@ -77,12 +92,8 @@ test.describe("the board counter after a mutation", () => {
     await page.getByRole("button", { name: "Delete issue TAS-105" }).click();
     await page.getByRole("button", { name: "Delete issue", exact: true }).click();
 
-    // The mirror image, and the worse of the two: against the bug this read
-    // "1 of 1" over an empty board — the deleted issue survived as a search hit
-    // in the group below, linking to a panel that no longer opens. Exact, so
-    // the board's own "TAS-105 deleted." for a screen reader is not counted.
-    await expect(counter).toHaveText("0 of 0");
+    // Exact, so the board's own "TAS-105 deleted." for a screen reader is not counted.
+    await expect(counter).toHaveText("0 of 9");
     await expect(page.getByText("TAS-105", { exact: true })).toHaveCount(0);
-    await expect(page.getByText(/Nothing else in this project matches/)).toBeVisible();
   });
 });

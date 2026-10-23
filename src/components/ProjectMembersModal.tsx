@@ -11,6 +11,7 @@ import { PROJECT_ROLES } from "../api/members";
 import type { DirectoryUser, GlobalRole, Project, ProjectMember, ProjectRole } from "../domain/types";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useUnanswered } from "../hooks/useUnanswered";
+import { PROJECT_STATS_KEY } from "../lib/boardQuery";
 import { keyBadgeStyle } from "../lib/format";
 import { projectContextKey } from "../lib/projectContext";
 import { shortKey } from "../screens/admin/columns";
@@ -325,8 +326,8 @@ export function ProjectMembersModal({
    * Everything that draws members goes stale with a write: this dialog reads
    * `["members", projectId]`, the board reads its members — and the reader's
    * role, which a write about the reader's own row changes — from its context
-   * read (TAS-251), and the project card on `/projects` reads
-   * `["project-summaries", projectId]`. A write about the reader's own row also
+   * read (TAS-251), and the project card on `/projects` reads its count and
+   * faces from `["project-stats"]` (TAS-202). A write about the reader's own row also
    * changes the list rows whose edit control depends on the role.
    *
    * `mayBeSelf` rather than `self`: before `GET /users/me` has answered, no row
@@ -338,7 +339,7 @@ export function ProjectMembersModal({
     Promise.all([
       queryClient.invalidateQueries({ queryKey: membersKey }),
       queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) }),
-      queryClient.invalidateQueries({ queryKey: ["project-summaries", projectId] }),
+      queryClient.invalidateQueries({ queryKey: PROJECT_STATS_KEY }),
       ...(mayBeSelf ? [queryClient.invalidateQueries({ queryKey: ["projects"] })] : []),
     ]);
 
@@ -547,13 +548,13 @@ export function ProjectMembersModal({
    * meets its own no-access state (§4.18), as on a first visit.
    *
    * Matched by position rather than listed by name: every board-scoped key puts
-   * the project id second — `project`, `membership`, `members`, `workflows`,
-   * `project-labels`, `issues`, `issue-search`, `issue`, `issue-watchers`,
-   * `issue-labels`, `issue-links`, `issue-attachments`, `comments`, and the
-   * projects screen's `project-summaries` — and a list would be one more thing
-   * to keep in step with BoardScreen. The global search's own key puts
-   * `"all-projects"` there instead, and `["projects"]` has no second element, so
-   * neither is touched.
+   * the project id second — `project-context`, `members`, `board`,
+   * `project-workflows`, `issue`, `comments`, `worklogs` — and a list would be
+   * one more thing to keep in step with BoardScreen. The global search's own key
+   * puts `"all-projects"` there instead, and `["projects"]` and
+   * `["project-stats"]` have no second element, so neither is touched: the
+   * list is rewritten above and re-read, and the stats answer is only ever drawn
+   * for a project the list holds.
    *
    * After `navigate`, which only schedules the route change: nothing re-renders
    * the board between the two calls, and a query dropped from under a mounted
