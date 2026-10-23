@@ -10,6 +10,7 @@ import { RequestId } from "../../components/RequestId";
 import { useMeta } from "../../hooks/useMeta";
 import { useOwnPhoto } from "../../hooks/useOwnPhoto";
 import { formatFileSize, globalRoleLabel, userStatusLabel } from "../../lib/format";
+import { SettingsNotificationsSection } from "./SettingsNotificationsSection";
 
 /**
  * Settings → My profile (TAS-380, art-director's ruling 4): who the reader is,
@@ -234,6 +235,7 @@ export function SettingsProfileSection() {
               </div>
             ) : null}
           </dl>
+          <SettingsNotificationsSection key={user.id} userId={user.id} />
         </div>
       </div>
     </div>

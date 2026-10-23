@@ -100,6 +100,19 @@ const { fakeApi, state, reset, release } = vi.hoisted(() => {
   };
 
   const fakeApi = {
+    getNotificationPreferences: async () => ({
+      emailEnabled: true,
+      telegramEnabled: false,
+      email: "anna@example.com",
+      telegramAvailable: false,
+      // No binding with the integration off: what the backend answers.
+      telegramStatus: "NOT_CONNECTED",
+      telegramUsername: null,
+      telegramName: null,
+      telegramLinkId: null,
+      telegramLinkExpiresAt: null,
+      telegramError: null,
+    }),
     getMeta: async () => ({
       issueTypes: null,
       priorities: null,

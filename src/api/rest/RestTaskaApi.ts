@@ -103,6 +103,8 @@ import type {
   Label,
   Notification,
   NotificationPage,
+  NotificationPreferences,
+  NotificationPreferencesPatch,
   OutboxRetryResult,
   Page,
   ProblematicOutboxCounts,
@@ -117,6 +119,8 @@ import type {
   ProjectMembership,
   ProjectMemberWriteResult,
   ProjectRole,
+  TelegramLink,
+  TelegramStatus,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -855,7 +859,7 @@ function toAuditEntry(wire: RestAuditEntry): AuditEntry {
 export class RestTaskaApi implements TaskaApi {
   private accessToken = window.localStorage.getItem("taska.accessToken");
   private refreshTokenValue = window.localStorage.getItem("taska.refreshToken");
-  private refreshInFlight: Promise<boolean> | null = null;
+  private refreshInFlight: { authVersion: number; promise: Promise<boolean> } | null = null;
   private authVersion = 0;
   private readonly sessionExpired = new SessionExpiredSignal();
 
@@ -910,6 +914,40 @@ export class RestTaskaApi implements TaskaApi {
   async getCurrentUser(): Promise<User> {
     const response = await this.request<RestUser>("/users/me");
     return this.toUser(response);
+  }
+
+  async getNotificationPreferences(): Promise<NotificationPreferences> {
+    return toNotificationPreferences(
+      await this.request<RestNotificationPreferences>("/users/me/notification-preferences"),
+    );
+  }
+
+  async updateNotificationPreferences(input: NotificationPreferencesPatch): Promise<NotificationPreferences> {
+    return toNotificationPreferences(
+      await this.request<RestNotificationPreferences>("/users/me/notification-preferences", {
+        method: "PATCH",
+        body: input,
+      }),
+    );
+  }
+
+  createTelegramLink(): Promise<TelegramLink> {
+    return this.request<TelegramLink>("/users/me/telegram/link", { method: "POST" });
+  }
+
+  async confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
+    return toNotificationPreferences(
+      await this.request<RestNotificationPreferences>("/users/me/telegram/confirm", {
+        method: "POST",
+        body: { linkId },
+      }),
+    );
+  }
+
+  async disconnectTelegram(): Promise<NotificationPreferences> {
+    return toNotificationPreferences(
+      await this.request<RestNotificationPreferences>("/users/me/telegram", { method: "DELETE" }),
+    );
   }
 
   hasSession(): boolean {
@@ -2321,16 +2359,20 @@ export class RestTaskaApi implements TaskaApi {
 
   private tryRefresh(): Promise<boolean> {
     const authVersion = this.authVersion;
-    this.refreshInFlight ??= this.refresh()
+    if (this.refreshInFlight?.authVersion === authVersion) return this.refreshInFlight.promise;
+    const promise = this.refresh()
       .then(() => true)
       .catch(() => {
         this.expireSession(authVersion);
         return false;
       })
       .finally(() => {
-        this.refreshInFlight = null;
+        // A completed refresh from an earlier account must not clear a newer
+        // account's flight or make its requests join the old result.
+        if (this.refreshInFlight?.promise === promise) this.refreshInFlight = null;
       });
-    return this.refreshInFlight;
+    this.refreshInFlight = { authVersion, promise };
+    return promise;
   }
 
   private query(search: URLSearchParams) {
@@ -2783,7 +2825,11 @@ export class RestTaskaApi implements TaskaApi {
     // retry that came back 401 again. Each of those used to fall through
     // silently and leave the UI signed out with no way to say so.
     if (response.status === 401 && !options.skipAuth) {
-      if (!isRetry && this.refreshTokenValue && (await this.tryRefresh())) {
+      // Retrying a current-user mutation with a different account's credentials
+      // would apply the old account's action to the newly signed-in one. Check
+      // both sides of the refresh await: the account can change at either wait.
+      if (!isRetry && authVersion === this.authVersion && this.refreshTokenValue
+          && (await this.tryRefresh()) && authVersion === this.authVersion) {
         return this.exchange<T>(path, options, true);
       }
       this.expireSession(authVersion);
@@ -2852,6 +2898,29 @@ function toGlobalRole(value: unknown): GlobalRole | undefined {
  */
 function toProjectRole(value: unknown): ProjectRole | null {
   return value === "ADMIN" || value === "MEMBER" || value === "VIEWER" ? value : null;
+}
+
+/**
+ * `NotificationPreferencesDto` as it arrives (TAS-387): `telegramStatus` is
+ * read as `unknown`, so a status the enum grows later reaches the profile as
+ * "this build does not know it" rather than as a value it was never written
+ * for (TAS-173).
+ */
+type RestNotificationPreferences = Omit<NotificationPreferences, "telegramStatus"> & { telegramStatus?: unknown };
+
+/** One of the five statuses the contract lists, or `null` for anything else. */
+function toTelegramStatus(value: unknown): TelegramStatus | null {
+  return value === "NOT_CONNECTED" ||
+    value === "PENDING" ||
+    value === "AWAITING_CONFIRMATION" ||
+    value === "CONNECTED" ||
+    value === "UNAVAILABLE"
+    ? value
+    : null;
+}
+
+function toNotificationPreferences(wire: RestNotificationPreferences): NotificationPreferences {
+  return { ...wire, telegramStatus: toTelegramStatus(wire.telegramStatus) };
 }
 
 /**

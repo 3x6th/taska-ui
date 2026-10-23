@@ -111,6 +111,8 @@ import type {
   Label,
   Notification,
   NotificationPage,
+  NotificationPreferences,
+  NotificationPreferencesPatch,
   NotificationType,
   OutboxRetryResult,
   Page,
@@ -125,6 +127,7 @@ import type {
   ProjectMemberWriteResult,
   ProjectRole,
   ProjectWorkflowEntry,
+  TelegramLink,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -140,6 +143,7 @@ import { accountLockedMessage } from "../../lib/accountLock";
 import { addDays, localDateOnly } from "../../lib/worklog";
 import type { AdminColumnClass } from "../../lib/adminColumnTypes";
 import { classifyColumnType } from "../../lib/adminColumnTypes";
+import { MockNotificationPreferences } from "./MockNotificationPreferences";
 
 /**
  * The seeded avatar's bytes, inline. A 48×48 two-tone PNG of a head and
@@ -1658,6 +1662,7 @@ function outboxProblem(row: AdminRow, nowMs: number): keyof typeof OUTBOX_REASON
 }
 
 export class MockTaskaStore {
+  readonly notificationPreferences = new MockNotificationPreferences();
   private users: StoredUser[];
   private projects: Project[];
   private membersByProject: Record<string, ProjectMember[]>;
@@ -6697,6 +6702,26 @@ export class MockTaskaApi implements TaskaApi {
 
   async getCurrentUser(): Promise<User> {
     return wait(this.store.currentUserProfile());
+  }
+
+  async getNotificationPreferences(): Promise<NotificationPreferences> {
+    return wait(this.store.notificationPreferences.get(this.store.currentUser()));
+  }
+
+  async updateNotificationPreferences(input: NotificationPreferencesPatch): Promise<NotificationPreferences> {
+    return wait(this.store.notificationPreferences.update(this.store.currentUser(), input));
+  }
+
+  async createTelegramLink(): Promise<TelegramLink> {
+    return wait(this.store.notificationPreferences.createLink(this.store.currentUser()));
+  }
+
+  async confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
+    return wait(this.store.notificationPreferences.confirm(this.store.currentUser(), linkId));
+  }
+
+  async disconnectTelegram(): Promise<NotificationPreferences> {
+    return wait(this.store.notificationPreferences.disconnect(this.store.currentUser()));
   }
 
   hasSession(): boolean {

@@ -12,6 +12,12 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Conscious decisions to revisit
 
+- **Existing TAS-145 pending pin is stale (observed during TAS-387, 2026-10-23):**
+  `pr-155-TAS-145.yml` still records `28f5fe1af002`, while open backend PR #155
+  now points to `f3be9738b848`. Re-extract that separate project's pending contract
+  before merging work that depends on it. TAS-387's own PR #215 pin is current;
+  no project-editing implementation was changed here.
+
 - ~~**`VITE_TASKA_ASSUME_PROJECT_ADMIN=true` is a deploy variable.** Every
   signed-in user gets the ADMIN surface of the UI. Accepted by the owner while
   the stand has no external users; falls away with TAS-137. Until then, no
@@ -2006,6 +2012,13 @@ The 2026-08-05 refresh of `docs/contract/openapi.yml` (backend develop
 `globalRole` by TAS-151, the `/readonly` endpoints by TAS-155, issue links by
 TAS-157.
 
+The 2026-10-23 refresh (TAS-387, develop `9a735db`) brought two surfaces no frontend
+story has claimed yet: `GET /api/v1/project-stats` (TAS-211, backend #209) — the read
+that removes the projects screen's 1 + 2N, TAS-202's to adopt — and the project
+issue-type registry under `/api/v1/projects/{projectId}/issue-types` with
+`ProjectContextDto.issueTypes` now required (TAS-385, backend #212). TAS-387's own five
+routes are delivered by TAS-387.
+
 - ~~**Issue links.** `GET`/`POST /issues/{issueId}/links` and
   `DELETE /issues/{issueId}/links/{linkId}`.~~ Delivered by
   [TAS-157](https://jira.ozero.dev/browse/TAS-157). The `viewLinkType` /
@@ -3990,3 +4003,55 @@ Frontend notes:
   the default error for `DELETE /issues/{issueId}` — an ask to declare its 403
   ("Access denied" / "Not allowed role") and 404, contract text only.
 
+### Left by TAS-387 (notification channels, frontend for backend #215, 2026-10-23)
+
+The code came from the backend developer's Codex run (PR #101); this repository's three
+roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fixes.
+
+- **"Open Telegram bot" could be the primary action in PENDING** — it is the one step the
+  user must take (art-director). §5.9 keeps it secondary for now.
+- **`.settings-telegram-disconnect` duplicates `.settings-photo-remove`** with different
+  values (32 / radius 9 against 29 / radius 8); one ghost-destructive class (art-director).
+- **The switch has no hover look of its own**; decide in §4.29 (art-director).
+- **The loading skeleton is two bars** while the loaded section is ~130px taller; nothing
+  sits below it, so nothing shifts (art-director).
+- **Copy:** lead "Notifications in Taska are always kept" → "Your Taska inbox always gets
+  every notification."; "Your email choice is unchanged" → "Telegram connected." /
+  "Telegram disconnected." (art-director).
+- **Sticky hover after a tap on touch** on secondary and ghost buttons — product-wide.
+- **The mock never reaches a confirmed binding by clicking**: `/start` and `/stop` exist
+  only as fixture methods, and the e2e spec replaces all five methods with its own fixture,
+  which has drifted from `MockNotificationPreferences` (no linkId check, no 409 on enabling
+  an unbound channel); the store's `receiveStart`/`stop` are used only by unit tests
+  (release-reviewer, api-contract-guard).
+- **One mock error shape:** export and reuse `MockApiError` instead of
+  `Object.assign(new Error(), { code })` in `MockNotificationPreferences.ts`; renders the
+  same today (api-contract-guard).
+- **No test asserts exactly one `/auth/refresh` for N concurrent same-account 401s**; the
+  existing test counts expiries (release-reviewer).
+- **Dimmed focus ring on a steadily unavailable control.** `opacity: .58` on a switch with
+  `data-unavailable` dims its focus ring too (≈2.6:1 light, 2.2:1 dark); §4.1's "Send new link"
+  does the same. WCAG 1.4.11 exempts inactive controls; if it is ever fixed, it is a §7 rule
+  for all such controls, e.g. opacity on track and thumb instead of the button (art-director).
+- **An empty 200/204 on a preferences route would surface a raw TypeError.**
+  `toNotificationPreferences` reads `wire.telegramStatus` unguarded, so a body-less answer
+  shows "Cannot read properties of undefined…" through `apiErrorFacts`. Only if the server
+  breaks the contract; before TAS-387's fix the same case silently drew "not connected"
+  (release-reviewer).
+- **Three e2e flakes on retry in CI run 39953655781, none in this diff:**
+  `admin-users.spec.ts:90` [desktop] (the "Users" heading not visible within 5 s after sign-in),
+  `admin-users.spec.ts:57` [mobile], `admin-console.spec.ts:555` [laptop] — the CPU-contention
+  class recorded above under "The e2e suite flakes under CPU contention" (release-reviewer).
+- **Stale after the 2026-10-23 snapshot refresh, no false behaviour** (api-contract-guard):
+  `API-DIVERGENCE.md` still gives `ProjectContextResponseDto` as project, members, labels,
+  workflows — the snapshot now requires `issueTypes`, and since #212 `workflows` comes from the
+  registry filtered to the three known types; `JIRA-WORKFLOW.md` still has TAS-211 in progress
+  (#209 merged) and TAS-385 waiting for its backend PR (#212 merged). The board's type order
+  ignores the registry's `sortOrder` and default — TAS-385's frontend story.
+- **Backend asks raised on TAS-387** (api-contract-guard, verified at `34589adf`): `GET
+  /users/me` waits on `GetPreferences` (`UserServiceImpl`, deadline 3 s) — the identity read
+  behind every first paint; an unknown `telegram_status` is a 500 (throwing `fromValue`);
+  the refusals and the `telegramError` set are not in `openapi.yml`; the preferences `GET`
+  writes the row on every read while the UI polls it every 3 s; the link answer carries no
+  preferences, so Connect costs two requests; with the integration off and the bot username
+  empty, every bound user is reported `BOT_CHANGED` (one-line `isEnabled()` guard).

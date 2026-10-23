@@ -16,6 +16,19 @@ const { fakeApi, state } = vi.hoisted(() => {
   const api = {
     hasSession: () => true,
     onSessionExpired: () => () => {},
+    getNotificationPreferences: async () => ({
+      emailEnabled: true,
+      telegramEnabled: false,
+      email: "anna@example.com",
+      telegramAvailable: false,
+      // No binding with the integration off: what the backend answers.
+      telegramStatus: "NOT_CONNECTED",
+      telegramUsername: null,
+      telegramName: null,
+      telegramLinkId: null,
+      telegramLinkExpiresAt: null,
+      telegramError: null,
+    }),
     getMeta: async () => ({ issueTypes: null, priorities: null, linkTypes: null, notificationTypes: null, userStatuses: null }),
     getCurrentUser: async () => {
       if (state.profileFails) throw Object.assign(new Error("Auth service unavailable"), { status: 503 });

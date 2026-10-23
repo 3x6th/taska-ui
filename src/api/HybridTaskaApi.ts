@@ -55,6 +55,8 @@ import type {
   Label,
   Notification,
   NotificationPage,
+  NotificationPreferences,
+  NotificationPreferencesPatch,
   OutboxRetryResult,
   Page,
   ProblematicOutboxSummary,
@@ -66,6 +68,7 @@ import type {
   ProjectMemberWriteResult,
   ProjectRole,
   ProjectWorkflowEntry,
+  TelegramLink,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -113,6 +116,26 @@ export class HybridTaskaApi implements TaskaApi {
 
   getCurrentUser(): Promise<User> {
     return this.live.getCurrentUser();
+  }
+
+  getNotificationPreferences(): Promise<NotificationPreferences> {
+    return this.live.getNotificationPreferences();
+  }
+
+  updateNotificationPreferences(input: NotificationPreferencesPatch): Promise<NotificationPreferences> {
+    return this.live.updateNotificationPreferences(input);
+  }
+
+  createTelegramLink(): Promise<TelegramLink> {
+    return this.live.createTelegramLink();
+  }
+
+  confirmTelegramLink(linkId: string): Promise<NotificationPreferences> {
+    return this.live.confirmTelegramLink(linkId);
+  }
+
+  disconnectTelegram(): Promise<NotificationPreferences> {
+    return this.live.disconnectTelegram();
   }
 
   hasSession(): boolean {

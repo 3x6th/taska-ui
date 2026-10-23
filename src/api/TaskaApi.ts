@@ -29,6 +29,8 @@ import type {
   Label,
   Notification,
   NotificationPage,
+  NotificationPreferences,
+  NotificationPreferencesPatch,
   OutboxRetryResult,
   Page,
   ProblematicOutboxSummary,
@@ -40,6 +42,7 @@ import type {
   ProjectMemberWriteResult,
   ProjectRole,
   ProjectWorkflowEntry,
+  TelegramLink,
   UnwatchIssueResult,
   User,
   UserAvatar,
@@ -751,6 +754,13 @@ export interface TaskaApi {
    * that cost a request of its own; nothing calls that route any more.
    */
   getCurrentUser(): Promise<User>;
+
+  /** TAS-387: authenticated current-user routes; never accept a target user id. */
+  getNotificationPreferences(): Promise<NotificationPreferences>;
+  updateNotificationPreferences(input: NotificationPreferencesPatch): Promise<NotificationPreferences>;
+  createTelegramLink(): Promise<TelegramLink>;
+  confirmTelegramLink(linkId: string): Promise<NotificationPreferences>;
+  disconnectTelegram(): Promise<NotificationPreferences>;
 
   /**
    * Synchronous by design: the route guard reads it during render, so it cannot
