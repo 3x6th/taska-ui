@@ -43,6 +43,7 @@ export function ColorSwatches({
   groupLabel,
   onPick,
   selected,
+  unavailable = false,
 }: {
   choices: ColorChoice[];
   /** The id of a line about the group, announced on entering it (the create form's "first swatch is Automatic"). */
@@ -50,11 +51,20 @@ export function ColorSwatches({
   groupLabel: string;
   onPick: (value: string | null) => void;
   selected: string | null;
+  /**
+   * Nothing may be picked any more — the project was archived under an open
+   * dialog (DESIGN.md §5.7, «Архив пришёл отказом записи»). `aria-disabled`
+   * rather than `disabled`, §4.1's steadily-unavailable kind: the swatches stay
+   * in the Tab order and keep saying which colour is chosen, and a press does
+   * nothing.
+   */
+  unavailable?: boolean;
 }) {
   return (
     <div aria-describedby={describedBy} aria-label={groupLabel} className="color-swatches" role="group">
       {choices.map((choice) => (
         <button
+          aria-disabled={unavailable || undefined}
           aria-label={choice.label}
           aria-pressed={selected === choice.value}
           // `is-automatic` draws a dashed inner ring, which is the only thing
@@ -68,7 +78,9 @@ export function ColorSwatches({
             selected === choice.value ? "is-active" : ""
           }`}
           key={choice.value ?? "automatic"}
-          onClick={() => onPick(choice.value)}
+          onClick={() => {
+            if (!unavailable) onPick(choice.value);
+          }}
           // The fill and the ink that reads on it, set together in one place.
           // The dashed ring above is drawn in `--swatch-ink`, so anything laid
           // over this fill is chosen *from* it by §2.2's own rule rather than

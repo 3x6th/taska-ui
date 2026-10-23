@@ -205,6 +205,96 @@ describe("editing a project's colour and description", () => {
   });
 });
 
+/**
+ * Archived by somebody else while the dialog is open (DESIGN.md §4.11, §5.7,
+ * «Архив пришёл отказом записи» and «…отказом Save на `/projects`»): it stays
+ * open, read-only, with what was typed — Save and the danger zone go, Cancel
+ * and ✕ stay, and one line says why unless the dialog's own refusal does.
+ */
+describe("a project archived under the open dialog", () => {
+  beforeEach(() => reset());
+
+  const archivedRefusal = () =>
+    Object.assign(new Error("Project is archived"), {
+      status: 400,
+      code: "FAILED_PRECONDITION",
+      details: { reason: "PROJECT_ARCHIVED" },
+      requestId: "4b2e9a10-archived",
+    });
+
+  /** The dialog, and a way to hand it the project and the flag its caller would. */
+  function renderLive(project: Project) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = (next: Project, unlisted = false) => (
+      <QueryClientProvider client={queryClient}>
+        <EditProjectModal onClose={vi.fn()} project={next} unlisted={unlisted} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(view(project));
+    return {
+      dialog: screen.getByRole("dialog", { name: "Edit project" }),
+      update: (next: Project, unlisted = false) => rerender(view(next, unlisted)),
+    };
+  }
+
+  const expectReadOnly = (dialog: HTMLElement, typed: string) => {
+    expect(within(dialog).getByLabelText("Name")).toHaveValue(typed);
+    expect(within(dialog).getByLabelText("Name")).toHaveAttribute("readonly");
+    expect(within(dialog).getByLabelText("Description")).toHaveAttribute("readonly");
+    expect(within(dialog).queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("region", { name: "Archive project" })).not.toBeInTheDocument();
+    for (const swatch of within(within(dialog).getByRole("group", { name: "Project colour" })).getAllByRole("button")) {
+      expect(swatch).toHaveAttribute("aria-disabled", "true");
+    }
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Close" })).toBeVisible();
+  };
+
+  it("on the board: keeps what was typed, read-only, and says the project is archived", () => {
+    const { dialog, update } = renderLive(baseProject());
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Typed on" } });
+
+    update(baseProject({ archivedAt: "2026-10-20T10:00:00Z" }));
+
+    expectReadOnly(dialog, "Typed on");
+    const line = within(dialog).getByText("This project is archived, so it cannot be edited.");
+    expect(line).toHaveAttribute("tabindex", "-1");
+    // A press of a swatch picks nothing, and Enter in a box sends nothing.
+    fireEvent.click(within(dialog).getByRole("button", { name: /Automatic colour/ }));
+    expect(within(dialog).getByRole("button", { name: /Automatic colour/ })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.submit(within(dialog).getByLabelText("Name").closest("form")!);
+    expect(calls.updates).toEqual([]);
+  });
+
+  it("on /projects: says the project no longer appears there once its row has left", () => {
+    const { dialog, update } = renderLive(baseProject());
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Typed on" } });
+
+    update(baseProject(), true);
+
+    expectReadOnly(dialog, "Typed on");
+    expect(
+      within(dialog).getByText("This project no longer appears in Projects, so it cannot be edited here."),
+    ).toBeVisible();
+  });
+
+  it("lets its own refusal say it, with the request id, and draws no line beside it", async () => {
+    refuseUpdate(archivedRefusal());
+    const { dialog, update } = renderLive(baseProject());
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Renamed" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    const sentence = await within(dialog).findByText("This project has been archived, so nothing in it can be changed.");
+
+    update(baseProject(), true);
+
+    expectReadOnly(dialog, "Renamed");
+    expect(sentence).toBeVisible();
+    expect(sentence.closest(".error-note")).toHaveAttribute("tabindex", "-1");
+    expect(within(dialog).getByRole("button", { name: "Copy request id 4b2e9a10-archived" })).toBeVisible();
+    expect(within(dialog).queryByText(/so it cannot be edited/)).not.toBeInTheDocument();
+  });
+});
+
 describe("archiving a project from the dialog", () => {
   beforeEach(() => reset());
 

@@ -4933,6 +4933,9 @@ h1 {
    wears the product's ring from the `[tabindex]` rule at the top. */
 .board-archive-line {
   flex: none;
+  /* Its own width rather than the row's, so the ring drawn when focus is put
+     here hugs the sentence instead of spanning the board (art-director). */
+  align-self: flex-start;
   margin: 12px 18px 0;
   color: var(--fg-2);
   font-size: 12.5px;
@@ -7612,6 +7615,50 @@ button.attachment-open:hover:not(:disabled) {
   gap: 10px;
 }
 
+/* Why a dialog the project was archived under no longer writes (TAS-149,
+   DESIGN.md §5.7, «Архив пришёл отказом записи»): one sentence above the
+   footer — in Labels, where the New label form stood. `--fg-2`, not `--fg-3`:
+   it is the only explanation for the controls that went (7.26:1 light /
+   6.75:1 dark on `--surface`), the members and workflows dialogs' own line.
+   `fit-content` so the ring drawn when focus is put here hugs the words, in
+   the form's flex column and in the labels dialog's plain body alike. */
+.modal-archive-note {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* In the labels dialog it takes the form's place, and the form's 16 below. */
+.modal-body > .modal-archive-note {
+  margin-bottom: 16px;
+}
+
+/* A field the archive made read-only keeps the reader's words at full
+   contrast and its Tab stop (§4.3); what goes is the invitation to type. */
+.modal .field input:read-only,
+.modal .field textarea:read-only,
+.modal .label-edit-form input:read-only {
+  cursor: default;
+}
+
+.modal .field textarea:read-only {
+  resize: none;
+}
+
+/* §4.1's steadily-unavailable `aria-disabled`, for the choices of a dialog
+   the project was archived under: the type and priority segments and the
+   colour swatches keep their pressed state and their Tab stop, and look and
+   act like `button:disabled`. */
+.modal .segmented button[aria-disabled="true"],
+.color-swatch[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .form-two {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -7937,7 +7984,7 @@ button.attachment-open:hover:not(:disabled) {
   border-radius: 50%;
 }
 
-.color-swatch:not(:disabled):hover {
+.color-swatch:not(:disabled):not([aria-disabled="true"]):hover {
   transform: scale(1.12);
 }
 
@@ -7993,7 +8040,9 @@ button.attachment-open:hover:not(:disabled) {
   font-size: 12.5px;
 }
 
-.label-edit-form input:focus {
+/* Not on a rename the archive caught open (TAS-149), which is read-only and
+   takes the global ring instead: the accent frame says "type here" (§4.3). */
+.label-edit-form input:focus:not(:read-only) {
   border-color: var(--accent);
 }
 

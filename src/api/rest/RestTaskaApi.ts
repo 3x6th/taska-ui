@@ -1823,9 +1823,9 @@ export class RestTaskaApi implements TaskaApi {
    * it answered Spring's static-resource 404 while `GET /users/me` answered
    * 401 in the same run, and the routes still answered it on 2026-09-14 at
    * 11:14 UTC, after the merge. Probed again at 13:53 UTC, this route answered
-   * 405 rather than that 404 — the first arm of `isUndeployedRoute` no longer
-   * matches on this gateway, though it is still what `UserProfileMenu` reads
-   * before it offers a control or prints a refusal.
+   * 405 rather than that 404 — `isUndeployedRoute`, whose one arm is that
+   * 404, no longer matches on this gateway, though it is still what
+   * `UserProfileMenu` reads before it offers a control or prints a refusal.
    *
    * Refused before the request by `refuseAvatar` below, with the answers the
    * gateway would give. The

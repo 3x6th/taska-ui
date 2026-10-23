@@ -1140,7 +1140,11 @@ export function ProjectMembersModal({
               this dialog's scrim. Nothing while the role is still being read. */}
           {archived ? (
             // Every role, ADMIN included, and in place of the role's line (§5.7).
-            <p className="member-readonly-note">This project is archived, so its members cannot be changed.</p>
+            // `tabIndex=-1`: where the board puts focus if the archive took the
+            // control that had it — focus never leaves an open dialog.
+            <p className="member-readonly-note" data-archive-note="modal" tabIndex={-1}>
+              This project is archived, so its members cannot be changed.
+            </p>
           ) : readerRole === "MEMBER" || readerRole === "VIEWER" ? (
             <p className="member-readonly-note">Only a project admin can add, change or remove members.</p>
           ) : readerRole === null ? (

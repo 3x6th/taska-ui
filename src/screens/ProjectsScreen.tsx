@@ -65,8 +65,12 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
-  /** The project whose edit dialog is open, by id — see the render below. */
-  const [editing, setEditing] = useState<string | null>(null);
+  /**
+   * The project whose edit dialog is open: the last row the list held for it,
+   * and where its card stood in the grid then. Kept up to date below while the
+   * row is listed, and kept as it was once the row has gone — see the render.
+   */
+  const [editing, setEditing] = useState<{ row: Project; index: number } | null>(null);
   /**
    * The page's one status line (DESIGN.md §4.11, «Успех» from `/projects`):
    * "{KEY} archived. It no longer appears in Projects." Mounted from the first
@@ -74,7 +78,11 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
    * Held until the next archive or until the reader leaves the page.
    */
   const [status, setStatus] = useState("");
-  /** The project focus goes to once an archived card has left the grid; `null` for "New project". */
+  /**
+   * The project focus goes to once an archived card has left the grid — after
+   * this page's archive, or after the dialog of a card somebody else archived
+   * is closed; `null` for "New project".
+   */
   const focusAfterArchive = useRef<{ id: string | null } | null>(null);
   const newProjectButton = useRef<HTMLButtonElement>(null);
 
@@ -123,13 +131,32 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
     [projects, summaryQueries],
   );
 
-  // Resolved against the live list every render, and `null` when the row is
-  // gone: a project that disappeared between the click and the answer has no
-  // dialog to draw, and one that was renamed has a new name to draw with.
-  const editingProject = useMemo(
-    () => (editing ? (projects.find((project) => project.id === editing) ?? null) : null),
-    [editing, projects],
-  );
+  /**
+   * The open dialog's row, resolved against the live list every render, so
+   * its own optimistic patch and a rename from elsewhere both reach it.
+   *
+   * When the row leaves `["projects"]` under the open dialog — somebody else
+   * archived the project, and a refetch (this dialog's own refused Save
+   * included) no longer lists it — the dialog does not vanish under the
+   * reader. It stays on the last row seen, read-only, until it is closed
+   * (DESIGN.md §4.11, «Архив пришёл отказом Save на `/projects`»). Looked up in
+   * the unfiltered list, so a rename that takes the card out of the filter is
+   * not mistaken for that; its place in the grid is the filtered one, which is
+   * where focus has to go on close. Updated during render — the pattern
+   * `GlobalSearch` uses — so no frame draws the stale row.
+   */
+  const listedRow = editing ? projects.find((project) => project.id === editing.row.id) : undefined;
+  const listedIndex = editing ? visibleProjects.findIndex((project) => project.id === editing.row.id) : -1;
+  if (
+    editing &&
+    listedRow &&
+    (listedRow !== editing.row || (listedIndex >= 0 && listedIndex !== editing.index))
+  ) {
+    setEditing({ row: listedRow, index: listedIndex >= 0 ? listedIndex : editing.index });
+  }
+  const editingProject = editing ? (listedRow ?? editing.row) : null;
+  // Only against a list that answered: no data is not "the row left".
+  const editingUnlisted = editing !== null && listedRow === undefined && projectsQuery.data !== undefined;
 
   const projectsUnread = useUnanswered(projectsQuery);
   // One line for the whole grid, not one per card: a gateway that is failing
@@ -153,6 +180,19 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
     const next = index < 0 ? undefined : (remaining[index] ?? remaining[index - 1]);
     focusAfterArchive.current = { id: next?.id ?? null };
     setStatus(`${archived.projectKey} archived. It no longer appears in Projects.`);
+  };
+  /**
+   * Closing the dialog. Over a row that has left the list, focus goes where it
+   * goes after an archive — the card now in that card's place, else the one
+   * before it, else "New project" — and nothing is said: the dialog already
+   * said it (§4.11). Otherwise the dialog hands focus back to its opener itself.
+   */
+  const closeEditor = () => {
+    if (editing && editingUnlisted) {
+      const next = visibleProjects[editing.index] ?? visibleProjects[editing.index - 1];
+      focusAfterArchive.current = { id: next?.id ?? null };
+    }
+    setEditing(null);
   };
   // After the commit that took the card away, and after the dialog's own
   // cleanup, which hands focus to its opener only when focus fell to <body> —
@@ -253,7 +293,7 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
                 // every visit as em dashes before appearing, which said a
                 // request that was about to succeed had already failed.
                 pending={summaryByProject.get(project.id)?.isPending ?? true}
-                onEdit={() => setEditing(project.id)}
+                onEdit={() => setEditing({ row: project, index: visibleProjects.indexOf(project) })}
                 onOpen={() => navigate(`/projects/${project.id}/board`)}
               />
             ))}
@@ -261,14 +301,15 @@ export function ProjectsScreen({ theme, toggleTheme, onLogout, logoutPending }: 
         )}
       </section>
       {creating ? <NewProjectModal onClose={() => setCreating(false)} onCreated={() => queryClient.invalidateQueries({ queryKey: ["projects"] })} /> : null}
-      {/* Held by id rather than by object, so the dialog reads the row the list
-          currently holds: its own optimistic patch lands in `["projects"]`, and
-          a captured object would go on showing the name it opened with. */}
+      {/* The row the list currently holds, while it holds one: the dialog's own
+          optimistic patch lands in `["projects"]`, and a captured object would
+          go on showing the name it opened with. */}
       {editingProject ? (
         <EditProjectModal
           onArchived={() => projectArchived(editingProject)}
-          onClose={() => setEditing(null)}
+          onClose={closeEditor}
           project={editingProject}
+          unlisted={editingUnlisted}
         />
       ) : null}
     </main>

@@ -341,7 +341,11 @@ export function ProjectWorkflowsModal({
             read. */}
         {archived ? (
           // Every role, ADMIN included, and in place of the role's line (§5.7).
-          <p className="workflows-note">This project is archived, so its workflows cannot be changed.</p>
+          // `tabIndex=-1`: where the board puts focus if the archive took the
+          // control that had it — focus never leaves an open dialog.
+          <p className="workflows-note" data-archive-note="modal" tabIndex={-1}>
+            This project is archived, so its workflows cannot be changed.
+          </p>
         ) : readerRole === "MEMBER" || readerRole === "VIEWER" ? (
           <p className="workflows-note">Only a project admin can change workflows.</p>
         ) : readerRole === null ? (

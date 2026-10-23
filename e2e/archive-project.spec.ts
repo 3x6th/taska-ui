@@ -48,6 +48,31 @@ async function openInApp(page: Page, path: string) {
   }, path);
 }
 
+/**
+ * Another ADMIN archiving a project in another session, a moment before: the
+ * archive goes straight into this page's mock store, through the module the
+ * app itself loaded (the suite runs the Vite dev server, so `/src/api/client.ts`
+ * is the app's own instance), and nothing on screen is told. The board learns
+ * of it the way it would against the gateway — from the refusal of its next
+ * write and the context read that follows.
+ */
+async function archiveElsewhere(page: Page, projectKey: string) {
+  await page.evaluate(async (key) => {
+    const clientModule = "/src/api/client.ts";
+    const { taskaApi } = (await import(/* @vite-ignore */ clientModule)) as {
+      taskaApi: {
+        listProjects(): Promise<{ id: string; projectKey: string }[]>;
+        archiveProject(projectId: string): Promise<unknown>;
+      };
+    };
+    const project = (await taskaApi.listProjects()).find((item) => item.projectKey === key);
+    if (!project) throw new Error(`No project ${key} to archive`);
+    await taskaApi.archiveProject(project.id);
+  }, projectKey);
+}
+
+const ARCHIVED_REFUSAL = "This project has been archived, so nothing in it can be changed.";
+
 /** The card is a button and so is its edit control, so name them apart. */
 const projectCard = (page: Page, name: string) => page.locator(".project-card", { hasText: name });
 
@@ -255,3 +280,142 @@ for (const [role, email] of [
     await expect(page.getByRole("button", { name: /Archive/ })).toHaveCount(0);
   });
 }
+
+// A dialog open when somebody else archives the project (DESIGN.md §4.11, §5.7,
+// «Архив пришёл отказом записи»; art-director B1–B4 on TAS-149). The dialog
+// stays open and goes read-only; its own refusal says why; and focus, when the
+// control that had it goes, stays inside the dialog — never on the board's
+// line under the scrim.
+test.describe("a dialog open when the project is archived elsewhere", () => {
+  test.beforeEach(async ({ page }) => {
+    await signIn(page);
+  });
+
+  async function openTaskaBoard(page: Page) {
+    await projectCard(page, "Taska Platform").click();
+    await expect(page).toHaveURL(/\/projects\/[^/]+\/board$/);
+    await expect(page.locator(".issue-card").first()).toBeVisible();
+  }
+
+  test("New issue keeps the draft read-only, says the refusal, and keeps focus inside", async ({ page }) => {
+    await openTaskaBoard(page);
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "New issue" });
+    const summary = dialog.getByLabel("Summary");
+    await summary.fill("A drafted issue");
+
+    await archiveElsewhere(page, "TAS");
+    await dialog.getByRole("button", { name: "Create issue" }).click();
+
+    const refusal = dialog.locator(".error-note");
+    await expect(refusal).toContainText(ARCHIVED_REFUSAL);
+    await expect(page.locator(".board-archive-line")).toBeAttached();
+    await expect(dialog.getByRole("button", { name: "Create issue" })).toHaveCount(0);
+    await expect(summary).toHaveValue("A drafted issue");
+    await expect(summary).not.toBeEditable();
+    await expect(dialog.getByRole("button", { name: "High", exact: true })).toHaveAttribute("aria-disabled", "true");
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeVisible();
+    // One fact, one place: the refusal says it, so the line does not.
+    await expect(dialog.getByText("This project is archived, so issues cannot be created in it.")).toHaveCount(0);
+    await expect(refusal).toBeFocused();
+    await expect(page.locator(".board-archive-line")).not.toBeFocused();
+  });
+
+  test("Labels loses its form and row actions, and keeps focus on its refusal", async ({ page }) => {
+    await openTaskaBoard(page);
+    await page.getByRole("button", { name: "Manage labels" }).click();
+    const dialog = page.getByRole("dialog", { name: "Labels" });
+    await expect(dialog.locator(".label-manage-row").first()).toBeVisible();
+    await dialog.getByLabel("New label").fill("release");
+
+    await archiveElsewhere(page, "TAS");
+    await dialog.getByRole("button", { name: "Add label" }).click();
+
+    const refusal = dialog.locator(".error-note");
+    await expect(refusal).toContainText(ARCHIVED_REFUSAL);
+    await expect(dialog.getByLabel("New label")).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Add label" })).toHaveCount(0);
+    await expect(dialog.locator(".label-manage-row .icon-button")).toHaveCount(0);
+    await expect(dialog.locator(".label-manage-row").first()).toBeVisible();
+    await expect(dialog.getByText("This project is archived, so its labels cannot be changed.")).toHaveCount(0);
+    await expect(refusal).toBeFocused();
+
+    // Closed, it has no opener left to hand focus back to: the board's line takes it.
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.locator(".board-archive-line")).toBeFocused();
+  });
+
+  test("the board's Edit project keeps what was typed, loses Save and the danger zone, and keeps focus", async ({
+    page,
+  }) => {
+    await openTaskaBoard(page);
+    await page.getByRole("button", { name: "Edit project" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit project" });
+    const description = dialog.getByLabel("Description");
+    await description.fill("Typed and kept");
+
+    await archiveElsewhere(page, "TAS");
+    await dialog.getByRole("button", { name: "Save changes" }).click();
+
+    const refusal = dialog.locator(".error-note");
+    await expect(refusal).toContainText(ARCHIVED_REFUSAL);
+    await expect(dialog.getByRole("button", { name: "Save changes" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Archive project" })).toHaveCount(0);
+    await expect(description).toHaveValue("Typed and kept");
+    await expect(description).not.toBeEditable();
+    await expect(dialog.getByLabel("Name")).not.toBeEditable();
+    await expect(dialog.getByRole("button", { name: /Automatic colour/ })).toHaveAttribute("aria-disabled", "true");
+    await expect(dialog.getByText("This project is archived, so it cannot be edited.")).toHaveCount(0);
+    await expect(refusal).toBeFocused();
+  });
+
+  test("on Projects, the Edit dialog outlives the refetch that drops its row, then hands focus on", async ({ page }) => {
+    await page.getByRole("button", { name: "Edit Web App" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit project" });
+    const name = dialog.getByLabel("Name");
+    await name.fill("Web App Renamed");
+
+    await archiveElsewhere(page, "WEB");
+    await dialog.getByRole("button", { name: "Save changes" }).click();
+
+    await expect(dialog.locator(".error-note")).toContainText(ARCHIVED_REFUSAL);
+    // The list read again and no longer lists it: the card goes, the dialog stays.
+    await expect(projectCard(page, "Web App")).toHaveCount(0);
+    await expect(page.getByText(/^2\s+projects/)).toBeVisible();
+    await expect(dialog).toBeVisible();
+    await expect(name).toHaveValue("Web App Renamed");
+    await expect(name).not.toBeEditable();
+    await expect(dialog.getByRole("button", { name: "Save changes" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Archive project" })).toHaveCount(0);
+    await expect(dialog.getByText(/no longer appears in Projects/)).toHaveCount(0);
+
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(projectCard(page, "Infra and Ops")).toBeFocused();
+    // The dialog said it; the page does not say it again.
+    await expect(page.getByRole("status").filter({ hasText: "archived" })).toHaveCount(0);
+  });
+
+  test("summary text the archive caught unsaved keeps the panel open on Esc", async ({ page }) => {
+    await openTaskaBoard(page);
+    await page.locator(".issue-card", { hasText: "TAS-102" }).click();
+    const panel = page.getByRole("dialog", { name: "TAS-102 issue" });
+    const summary = panel.locator("textarea.summary-textarea");
+    await summary.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" typed on");
+
+    await archiveElsewhere(page, "TAS");
+    // Leaving the box sends it; the refusal makes the board read its context again.
+    await page.keyboard.press("Tab");
+    await expect(panel.getByText(/^This project was archived on [A-Z][a-z]{2} \d{1,2}, so this issue is read-only\.$/)).toBeVisible();
+    await expect(summary).toHaveValue(/ typed on$/);
+    await expect(summary).not.toBeEditable();
+
+    await summary.focus();
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeVisible();
+    await expect(summary).toHaveValue(/ typed on$/);
+  });
+});

@@ -4691,9 +4691,6 @@ export class MockTaskaStore {
    * The object in the bucket is untouched, like the server's.
    */
   deleteAttachment(projectId: string, issueId: string, attachmentId: string): void {
-    // An archived project refuses this before anything is looked up — even the
-    // lookup below that answers 204 for a row that is not there.
-    this.refuseArchivedWrite(projectId);
     // Resolved by hand rather than through `findAttachment`, because every way
     // this can come up empty — no such issue, no such attachment, deleted
     // already — is a 204 on the server and none of them reaches the role check.
@@ -4705,6 +4702,12 @@ export class MockTaskaStore {
     );
     if (!attachment) return;
 
+    // The server looks the attachment up first — a missing one is the 204
+    // above, with no check made, archived project or not — and only then the
+    // active issue and `checkProjectWriteRole`: membership, then the archive,
+    // then the role (backend PR #159, api-contract-guard on TAS-149). So the
+    // archived refusal comes here, after the lookup and before the role.
+    this.refuseArchivedWrite(projectId);
     const role = this.getMembership(projectId).role;
     const allowed = attachment.uploadedBy === this.currentUserId ? role === "ADMIN" || role === "MEMBER" : role === "ADMIN";
     if (!allowed) {

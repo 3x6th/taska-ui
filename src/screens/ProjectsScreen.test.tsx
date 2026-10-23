@@ -16,6 +16,7 @@ import { ProjectsScreen } from "./ProjectsScreen";
  * unknown.
  */
 const {
+  archiveElsewhere,
   fakeApi,
   failIssuesFor,
   failMembersFor,
@@ -23,6 +24,7 @@ const {
   holdSummaries,
   projectsRefetchStarted,
   refuseEdits,
+  refuseEditsAsArchived,
   refuseEditsAsUndeployed,
   releaseProjectsList,
   releaseSummaries,
@@ -43,6 +45,12 @@ const {
     archived: Set<string>;
     /** The 405 signature `PATCH /projects/{id}` answers with on a gateway that has not deployed backend PR #155. */
     refuseEditAsUndeployed: boolean;
+    /**
+     * Somebody else archived the project a moment before the save: the PATCH
+     * answers the archived refusal (backend PR #159), and `GET /projects` no
+     * longer lists it.
+     */
+    refuseEditAsArchived: boolean;
     /** A gate the summary reads wait behind, so the pending state can be looked at. */
     gate?: Promise<void>;
     openGate?: () => void;
@@ -78,6 +86,7 @@ const {
     refuseEdit: false,
     archived: new Set<string>(),
     refuseEditAsUndeployed: false,
+    refuseEditAsArchived: false,
   };
   const now = "2026-08-01T09:00:00Z";
 
@@ -149,16 +158,25 @@ const {
       ];
     },
     updateProject: async (projectId: string, input: Record<string, unknown>) => {
+      if (state.refuseEditAsArchived) {
+        state.archived.add(projectId);
+        throw Object.assign(new Error("Project is archived"), {
+          code: "FAILED_PRECONDITION",
+          status: 400,
+          details: { reason: "PROJECT_ARCHIVED" },
+          requestId: "5d0e7c31-archived",
+        });
+      }
       // Recorded before the possible throw below: a refusal that never wrote
       // this would let `listProjects` answer the old name on its own, and the
       // rollback test could pass on that coincidence with `onError` deleted.
       // Recording it first means a refetch answers the *new* name, so only a
       // real rollback can show the old one.
       state.edits[projectId] = { ...(state.edits[projectId] ?? {}), ...input };
-      // The 405 signature `isUndeployedRoute`'s second arm matches (TAS-148):
-      // the path exists for GET, so this is not the static-resource 404, and
-      // it carries the code the real gateway names rather than a message the
-      // predicate would have to parse.
+      // The 405 `PATCH /projects/{id}` answered before backend PR #155
+      // deployed: the path existed for GET, so not the static-resource 404.
+      // `isUndeployedRoute` read it as "not deployed yet" until TAS-149 took
+      // that arm out; the dialog now shows it as the refusal it is.
       if (state.refuseEditAsUndeployed) {
         throw Object.assign(new Error("Request method 'PATCH' is not supported."), {
           code: "METHOD_NOT_ALLOWED",
@@ -200,6 +218,13 @@ const {
     refuseEditsAsUndeployed: () => {
       state.refuseEditAsUndeployed = true;
     },
+    refuseEditsAsArchived: () => {
+      state.refuseEditAsArchived = true;
+    },
+    /** Another session archives the project: the next `GET /projects` leaves it out. */
+    archiveElsewhere: (projectId: string) => {
+      state.archived.add(projectId);
+    },
     roleFor: (projectId: string, role: ProjectRole) => {
       state.roles[projectId] = role;
     },
@@ -238,6 +263,7 @@ const {
       state.refuseEdit = false;
       state.archived.clear();
       state.refuseEditAsUndeployed = false;
+      state.refuseEditAsArchived = false;
       state.gate = undefined;
       state.openGate = undefined;
       state.listGate = undefined;
@@ -687,5 +713,75 @@ describe("archiving a project from its card", () => {
     await archiveFromCard("Beta", "BBB");
     await archiveFromCard("Alpha", "AAA");
     expect(screen.getByRole("button", { name: "New project" })).toHaveFocus();
+  });
+});
+
+/**
+ * Archived by somebody else while its Edit dialog is open (DESIGN.md §4.11,
+ * «Архив пришёл отказом Save на `/projects`»; art-director B2, api-contract-
+ * guard L1, release-reviewer N3 on TAS-149). The row leaves `["projects"]` on
+ * the next read, and the dialog stays on the last row seen, read-only, until
+ * the reader closes it; then focus goes where it goes after an archive, and the
+ * page says nothing — the dialog did.
+ */
+describe("a project archived under its open Edit dialog", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const openEditor = async (name: string) => {
+    const queryClient = renderProjects();
+    await findCard("Gamma");
+    fireEvent.click(await screen.findByRole("button", { name: `Edit ${name}` }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit project" });
+    return { dialog, queryClient };
+  };
+
+  const expectReadOnly = (dialog: HTMLElement, typed: string) => {
+    expect(within(dialog).getByLabelText("Name")).toHaveValue(typed);
+    expect(within(dialog).getByLabelText("Name")).toHaveAttribute("readonly");
+    expect(within(dialog).queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Archive project" })).not.toBeInTheDocument();
+  };
+
+  it("survives its refused Save and the refetch that drops the row, then hands focus to the next card", async () => {
+    refuseEditsAsArchived();
+    const { dialog } = await openEditor("Beta");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Beta Renamed" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(await within(dialog).findByText("This project has been archived, so nothing in it can be changed.")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "Copy request id 5d0e7c31-archived" })).toBeVisible();
+    // The refetch no longer lists it: the card goes, the dialog does not.
+    await waitFor(() => expect(screen.queryByRole("button", { name: cardName("Beta") })).not.toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Edit project" })).toBe(dialog);
+    expectReadOnly(dialog, "Beta Renamed");
+    // Its own refusal says it, so no second line.
+    expect(within(dialog).queryByText(/no longer appears in Projects/)).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(card("Gamma")).toHaveFocus());
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("says why when the row left without a refusal, and falls back to the card before it", async () => {
+    const { dialog, queryClient } = await openEditor("Gamma");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Gamma typed" } });
+
+    archiveElsewhere("project-c");
+    await queryClient.invalidateQueries({ queryKey: ["projects"] });
+
+    expect(
+      await within(dialog).findByText("This project no longer appears in Projects, so it cannot be edited here."),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: cardName("Gamma") })).not.toBeInTheDocument();
+    expectReadOnly(dialog, "Gamma typed");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(card("Beta")).toHaveFocus());
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 });

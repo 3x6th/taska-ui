@@ -861,6 +861,22 @@ describe("MockTaskaApi", () => {
       );
     });
 
+    // The server looks the attachment up before anything else: a missing one
+    // is a 204 with no check made, archived or not; a present one meets
+    // `checkProjectWriteRole` — membership, archive, role (api-contract-guard).
+    it("looks an attachment up before refusing its delete on an archived project", async () => {
+      const issue = (await api.listIssues(project.id)).items.find((item) => item.issueKey === "TAS-101")!;
+      const [attachment] = await api.listAttachments(project.id, issue.id);
+      expect(attachment).toBeDefined();
+      await api.archiveProject(project.id);
+
+      await expect(
+        api.deleteAttachment(project.id, issue.id, "00000000-0000-0000-0000-000000000000"),
+      ).resolves.toBeUndefined();
+      await expect(api.deleteAttachment(project.id, issue.id, attachment.id)).rejects.toMatchObject(archivedRefusal);
+      expect((await api.listAttachments(project.id, issue.id)).map((item) => item.id)).toContain(attachment.id);
+    });
+
     it("tells the last ADMIN it is archived, not that they are the last admin", async () => {
       await api.archiveProject(project.id);
 

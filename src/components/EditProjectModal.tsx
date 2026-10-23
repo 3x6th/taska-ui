@@ -34,16 +34,29 @@ import { Modal } from "./Modal";
  * their say in what follows, called in the same frame as `onClose`: the board
  * turns read-only and puts focus on its archive line, the projects screen hands
  * focus to the card that took the archived one's place and says what happened.
+ *
+ * Somebody else can archive the project while this dialog is open (§4.11,
+ * §5.7, «Архив пришёл отказом записи»). It stays open, read-only: the fields
+ * keep what was typed, Save and the danger zone go, Cancel and ✕ stay. The
+ * board says so through `project.archivedAt`, which its context read brings;
+ * the projects screen through `unlisted`, because an archived project leaves
+ * `GET /projects` and its row never carries the date.
  */
 export function EditProjectModal({
   project,
   onClose,
   onArchived,
+  unlisted = false,
 }: {
   project: Project;
   onClose: () => void;
   /** The archive went through; `archivedAt` is the one field taken from its answer. */
   onArchived?: (archivedAt: string) => void;
+  /**
+   * The row this dialog was opened on has left `["projects"]` — archived, or
+   * the reader is no longer a member — and `project` is the last one seen.
+   */
+  unlisted?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState(project.name);
@@ -106,6 +119,9 @@ export function EditProjectModal({
 
   const hasChanges = Object.keys(changes).length > 0;
   const nameIsBlank = name.trim().length === 0;
+  /** Archived under the dialog, or gone from the list it was opened from: nothing here writes any more. */
+  const archived = Boolean(project.archivedAt);
+  const readOnly = archived || unlisted;
 
   const contextKey = projectContextKey(project.id);
   const save = useMutation({
@@ -183,9 +199,11 @@ export function EditProjectModal({
    *
    * Never for a project already archived: neither caller opens this dialog for
    * one (the board offers no Edit project on it, `/projects` does not list it),
-   * and archiving again is a 200 that changes nothing.
+   * and archiving again is a 200 that changes nothing. Nor once the dialog has
+   * gone read-only under the reader — archived, or gone from the list — when
+   * the zone leaves with Save (§4.11).
    */
-  const canArchive = project.currentUserRole === "ADMIN" && !project.archivedAt;
+  const canArchive = project.currentUserRole === "ADMIN" && !readOnly;
   const [askingArchive, setAskingArchive] = useState(false);
   const archiveTrigger = useRef<HTMLButtonElement>(null);
   const archiveConfirmId = useId();
@@ -266,8 +284,9 @@ export function EditProjectModal({
           // An all-absent body is a 200 that changes nothing, so this is not a
           // guard against a refusal — it is a request not worth sending. The
           // button is disabled for the same reason and this is the keyboard
-          // path's copy of it.
-          if (hasChanges && !nameIsBlank) save.mutate();
+          // path's copy of it. Read-only, there is no Save, and Enter in a
+          // field is the one way left to ask for it.
+          if (!readOnly && hasChanges && !nameIsBlank) save.mutate();
         }}
       >
         {/* Read-only, and said in words rather than implied by a greyed-out
@@ -293,6 +312,7 @@ export function EditProjectModal({
             autoFocus
             maxLength={255}
             onChange={(event) => setName(event.target.value)}
+            readOnly={readOnly}
             value={name}
           />
         </label>
@@ -303,6 +323,7 @@ export function EditProjectModal({
             maxLength={2000}
             onChange={(event) => setDescription(event.target.value)}
             placeholder="What this project is for"
+            readOnly={readOnly}
             rows={3}
             value={description}
           />
@@ -310,7 +331,13 @@ export function EditProjectModal({
 
         <div className="field">
           <span>Colour</span>
-          <ColorSwatches choices={choices} groupLabel="Project colour" onPick={setColor} selected={color} />
+          <ColorSwatches
+            choices={choices}
+            groupLabel="Project colour"
+            onPick={setColor}
+            selected={color}
+            unavailable={readOnly}
+          />
         </div>
 
         {save.isError ? (
@@ -320,7 +347,21 @@ export function EditProjectModal({
           // sentence, as it does in every other failure block in this product.
           // A 405 is not special any more: PR #155 deployed (401 without a
           // token on 2026-10-23), so one would be a refusal like any other.
-          <ErrorNote requestId={requestId}>{message ?? "The gateway refused this change."}</ErrorNote>
+          // A focus target: where focus goes when the archive this refusal
+          // brought takes Save away from under it (§5.7).
+          <ErrorNote focusTarget requestId={requestId}>
+            {message ?? "The gateway refused this change."}
+          </ErrorNote>
+        ) : readOnly ? (
+          // Why nothing here writes any more, said once: only while no refusal
+          // of this dialog's is on screen, because then that one says it
+          // (§5.7, one fact, one place). Where focus goes when the change took
+          // the control that had it, like the board's own line.
+          <p className="modal-archive-note" data-archive-note="modal" tabIndex={-1}>
+            {archived
+              ? "This project is archived, so it cannot be edited."
+              : "This project no longer appears in Projects, so it cannot be edited here."}
+          </p>
         ) : null}
 
         {/* Why Save is off, said where the reader is looking rather than left
@@ -329,15 +370,19 @@ export function EditProjectModal({
             product already wrote for exactly this. Only for the blank name —
             "nothing has changed yet" is self-evident from the form and does not
             need a sentence under it. */}
-        {nameIsBlank ? <p className="admin-write-hint">A project needs a name, so Save is off until there is one.</p> : null}
+        {nameIsBlank && !readOnly ? (
+          <p className="admin-write-hint">A project needs a name, so Save is off until there is one.</p>
+        ) : null}
 
         <div className="modal-actions">
           <button className="secondary-button" onClick={onClose} type="button">
             Cancel
           </button>
-          <button className="primary-button" disabled={!hasChanges || nameIsBlank || save.isPending} type="submit">
-            Save changes
-          </button>
+          {readOnly ? null : (
+            <button className="primary-button" disabled={!hasChanges || nameIsBlank || save.isPending} type="submit">
+              Save changes
+            </button>
+          )}
         </div>
       </form>
 

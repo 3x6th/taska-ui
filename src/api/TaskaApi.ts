@@ -1515,10 +1515,9 @@ export interface TaskaApi {
    * /users/{id}/avatar` answered 400 `INVALID_ARGUMENT` and `POST
    * /users/me/avatar/upload-url` answered 405 — the routes had deployed, and
    * neither answer is the signature `isUndeployedRoute` in src/api/errors.ts
-   * matches on its first arm. A caller must still read that predicate before
-   * printing a raw failure, because the mechanism stays: `UserProfileMenu`
-   * reads it on each write, the way `EditProjectModal` still does for the
-   * still-undeployed project PATCH. Since TAS-223 this interface carries three
+   * matches (its one arm is the 404; the 405 arm went in TAS-149). A caller
+   * must still read that predicate before printing a raw failure, because the
+   * mechanism stays: `UserProfileMenu` reads it on each write. Since TAS-223 this interface carries three
    * of the four: the reader's own avatar arrives on `GET /users/me`, and
    * `GET /users/{userId}/avatar` has no caller and no method here.
    *
@@ -1992,9 +1991,9 @@ export interface TaskaApi {
  * `UserProfileMenu` passes it for the avatar routes — deployed on 2026-09-14,
  * so this 404 no longer comes back for them. `EditProjectModal` used to, for
  * `PATCH` and `DELETE /projects/{id}` (backend PRs #155 and #159), which
- * answered with the 405 that `isUndeployedRoute`'s other arm reads; both
+ * answered with the 405 that `isUndeployedRoute` had a second arm for; both
  * deployed — 401 without a token on 2026-10-23 — and TAS-149 took the dialog's
- * two branches out. Two older callers are gone too. The admin user writes were the original
+ * two branches out, and that arm with them. Two older callers are gone too. The admin user writes were the original
  * one — PR #146
  * deployed all three, so `POST /api/v1/admin/users/not-a-uuid/block` answers
  * `400 INVALID_ARGUMENT` as of 2026-09-08 where it answered this 404 on

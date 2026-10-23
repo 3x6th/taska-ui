@@ -34,6 +34,7 @@ export function ErrorNote({
   live,
   id,
   ref,
+  focusTarget = false,
 }: {
   children: ReactNode;
   /** The gateway's `X-Request-Id`, on its own line under the sentence. Mock mode never carries one. */
@@ -49,9 +50,16 @@ export function ErrorNote({
   id?: string;
   /** The box, for a caller that scrolls it into view when it lands (the issue panel's delete, TAS-299). */
   ref?: Ref<HTMLDivElement>;
+  /**
+   * `tabIndex=-1` on the box: a place script may put focus and Tab never
+   * stops. For a dialog's refusal, where the board sends focus when an archive
+   * takes the control that had it (DESIGN.md §5.7, «Архив пришёл отказом
+   * записи»): focus never leaves an open dialog.
+   */
+  focusTarget?: boolean;
 }) {
   return (
-    <div className="error-note" ref={ref}>
+    <div className="error-note" ref={ref} tabIndex={focusTarget ? -1 : undefined}>
       <p className="error-note-sentence" id={id} role={live === "alert" ? "alert" : live === "polite" ? "status" : undefined}>
         {children}
       </p>
