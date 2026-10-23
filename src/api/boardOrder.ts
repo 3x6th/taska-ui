@@ -38,3 +38,28 @@ export function compareBoardIssues(
   if (byCreated !== 0 && !Number.isNaN(byCreated)) return byCreated;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
+
+/**
+ * The order the gateway reads the issues of a board in, for the mock that has
+ * to stand in for the read (TAS-202, release-reviewer): the type's rank, then
+ * `statusKey`, then `createdAt` from the oldest, then `id`. `BoardServiceImpl`
+ * reads one type at a time and issue-service sorts each read by
+ * `status_key, created_at`; the columns and `unplacedIssues` are filled from
+ * that sequence as it comes.
+ *
+ * Inside a column the status is one value, so this is `compareBoardIssues`
+ * there. `unplacedIssues` is where the two differ: its cards are of many
+ * statuses, and the server groups them by status before it looks at the date.
+ * Not for the board's optimistic move, which only ever places a card in a
+ * column. The status keys are compared as code units; the database's collation
+ * is not stated, and the keys are upper-case ASCII.
+ */
+export function compareBoardReadOrder(
+  a: Pick<BoardIssue, "issueType" | "statusKey" | "createdAt" | "id">,
+  b: Pick<BoardIssue, "issueType" | "statusKey" | "createdAt" | "id">,
+): number {
+  const byType = typeRank(a.issueType) - typeRank(b.issueType);
+  if (byType !== 0) return byType;
+  if (a.statusKey !== b.statusKey) return a.statusKey < b.statusKey ? -1 : 1;
+  return compareBoardIssues(a, b);
+}

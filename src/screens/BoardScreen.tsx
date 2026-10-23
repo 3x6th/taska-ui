@@ -626,6 +626,12 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       if (context?.previousBoard) {
         queryClient.setQueryData(context.key, context.previousBoard);
       }
+      // And the board is read again (release-reviewer, TAS-202): a refusal says
+      // the move was not made, a timeout does not — the server may have applied
+      // it and lost the answer. On return to the tab only a read that failed is
+      // made again (`refetchFailedOnFocus`), so nothing else would heal that;
+      // the snapshot stands until this read answers.
+      void queryClient.invalidateQueries({ queryKey: context?.key ?? boardKey(projectId) });
     },
     onSuccess: async () => {
       await invalidateBoard(queryClient, projectId);
@@ -4144,12 +4150,15 @@ function IssueLabelsSection({
   const unavailable = labelsQuery.data === null;
   // The board's own context read, so the board, this picker and the manage
   // modal draw one list from one request (TAS-251) — the board behind the
-  // panel has already asked, and this observer only reads its answer.
+  // panel has already asked, and this observer only reads its answer — which
+  // `refetchOnMount: false` makes true past `staleTime` as well, so opening a
+  // panel does not read the context again (release-reviewer, TAS-202).
   const projectLabelsQuery = useQuery({
     queryKey: projectContextKey(projectId),
     queryFn: () => taskaApi.getProjectContext(projectId),
     retry: retryUnlessMissing,
     select: (context: ProjectContext) => context.labels,
+    refetchOnMount: false,
   });
 
   const labels = useMemo(() => labelsQuery.data ?? [], [labelsQuery.data]);
@@ -4349,7 +4358,12 @@ function IssueLinksSection({
   // already asked. The read is complete, so an issue missing from it is one of
   // a type the board does not read (backend A4) or of another project, and
   // its row resolves to the server's own `target` or to its id.
-  const projectIssuesQuery = useQuery(boardQueryOptions(projectId));
+  //
+  // `refetchOnMount: false`: opening a panel past `staleTime` must not read the
+  // whole board again for a picker (release-reviewer, TAS-202). This observer
+  // takes whatever board the screen holds; the screen's own read, the reader's
+  // writes and the focus policy are what keep it current.
+  const projectIssuesQuery = useQuery({ ...boardQueryOptions(projectId), refetchOnMount: false });
   const issues = useMemo(
     () =>
       projectIssuesQuery.data

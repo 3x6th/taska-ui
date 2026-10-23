@@ -74,6 +74,10 @@ const {
   failIssues,
   holdBoard,
   boardReads,
+  holdTransition,
+  settleTransition,
+  heldTransitionCount,
+  transitionCalls,
   seedBoardNames,
   failWorkflow,
   seedLabels,
@@ -189,6 +193,14 @@ const {
     boardReads: number;
     /** The board read held open: the window before it answers. */
     boardHeld: boolean;
+    /**
+     * The board's drop moves (`transitionIssue`): every one that was sent, and
+     * the ones held open — the optimistic window is one tick long against a
+     * fake that answers at once, and nothing can be asserted inside it.
+     */
+    transitionCalls: { issueId: string; transitionId: string }[];
+    transitionHeld: boolean;
+    transitionSettlers: { resolve: () => void; reject: (error: Error) => void }[];
     /**
      * The names the board read joins in, by user id (backend #205). An id not
      * here is an assignee the server could not name — `displayName: null`.
@@ -387,6 +399,9 @@ const {
     createCalls: [],
     boardReads: 0,
     boardHeld: false,
+    transitionCalls: [],
+    transitionHeld: false,
+    transitionSettlers: [],
     boardNames: {},
     labels: [],
     labelCreateHeld: false,
@@ -635,6 +650,20 @@ const {
         else unplacedIssues.push(card);
       }
       return { projectId, columns, unplacedIssues };
+    },
+    // The board's drop move. Held, it settles when the test says so; landed, it
+    // moves the issue to the status the transition leads to, the way the next
+    // board read would find it on a server.
+    transitionIssue: async (_projectId: string, issueId: string, transitionId: string) => {
+      state.transitionCalls.push({ issueId, transitionId });
+      if (state.transitionHeld) {
+        await new Promise<void>((resolve, reject) => state.transitionSettlers.push({ resolve, reject }));
+      }
+      const workflow = contextWorkflow("TASK");
+      const to = workflow.transitions.find((item) => item.id === transitionId)?.toStatusId;
+      const target = workflow.statuses.find((item) => item.id === to);
+      if (target) state.edits[issueId] = { ...state.edits[issueId], status: target.statusKey };
+      return panelIssue(PROJECT_ID, issueId);
     },
     // Both of these move the board the next read answers, the way a server would.
     createIssue: async (_projectId: string, input: { summary: string; description: string }) => {
@@ -991,6 +1020,17 @@ const {
       state.boardHeld = held;
     },
     boardReads: () => state.boardReads,
+    holdTransition: (held: boolean) => {
+      state.transitionHeld = held;
+    },
+    /** Lands the oldest held drop move, or refuses it with `error`. */
+    settleTransition: (error?: Error) => {
+      const held = state.transitionSettlers.shift();
+      if (error) held?.reject(error);
+      else held?.resolve();
+    },
+    heldTransitionCount: () => state.transitionSettlers.length,
+    transitionCalls: () => state.transitionCalls.map((call) => ({ ...call })),
     /** The names the board read joins in for these assignees. */
     seedBoardNames: (names: Record<string, string>) => {
       state.boardNames = names;
@@ -1215,6 +1255,9 @@ const {
       state.issuesFailure = undefined;
       state.boardReads = 0;
       state.boardHeld = false;
+      state.transitionCalls = [];
+      state.transitionHeld = false;
+      state.transitionSettlers = [];
       state.boardNames = {};
       state.workflowFailure = undefined;
       state.labels = [];
@@ -2572,6 +2615,141 @@ describe("a board that could not read its workflow", () => {
   // the panel's transition buttons — are in e2e/board-drag.spec.ts: both need a
   // real drag or the whole issue panel, and both are only meaningful against an
   // API that would accept the invented id, which the mock does.
+});
+
+/**
+ * The board's own drop move (TAS-202, DESIGN.md §5.3): the card goes to its
+ * place in the target column the moment it is dropped, by the comparator the
+ * server's order is modelled on, and goes back to the board it came from if the
+ * server refuses — with the board read again, because a move that timed out may
+ * have been applied. Both live in the window between the drop and the answer,
+ * which a fake that answers on the next tick has none of: the move is held open
+ * here, and the board read stays held after it so that what is on screen is the
+ * cache's doing and not a re-read's.
+ *
+ * The drop is a real gesture — press, cross the activation distance, travel,
+ * release — over rectangles of our own, since jsdom has no layout for dnd-kit
+ * to find a column in. Moves out of the panel, with their buttons, are
+ * e2e/board-drag.spec.ts's.
+ */
+describe("a card dropped on another column", () => {
+  const workflow = {
+    statuses: [
+      { id: "s-todo", statusKey: "TODO", name: "To Do", category: "TODO", sortOrder: 10 },
+      { id: "s-progress", statusKey: "IN_PROGRESS", name: "In Progress", category: "IN_PROGRESS", sortOrder: 20 },
+      { id: "s-done", statusKey: "DONE", name: "Done", category: "DONE", sortOrder: 30 },
+    ],
+    transitions: [{ id: "t-start", fromStatusId: "s-todo", toStatusId: "s-progress", name: "Start Progress", sortOrder: 10 }],
+  };
+  /**
+   * In Progress holds, in the order the server sends it, two tasks and a bug.
+   * The seeded TAS-102 is a task made on 2026-08-01, so by the comparator it
+   * belongs between the two tasks and ahead of the bug — neither first nor
+   * last, which is the only place a placement by the comparator is told from
+   * an append or a prepend.
+   */
+  const inProgress = [
+    { id: "issue-old", issueKey: "TAS-201", summary: "Oldest task", status: "IN_PROGRESS", createdAt: "2026-07-01T09:00:00Z" },
+    { id: "issue-new", issueKey: "TAS-203", summary: "Newest task", status: "IN_PROGRESS", createdAt: "2026-09-01T09:00:00Z" },
+    { id: "issue-bug", issueKey: "TAS-204", summary: "A bug", issueType: "BUG", status: "IN_PROGRESS", createdAt: "2026-06-01T09:00:00Z" },
+  ];
+  const BEFORE = ["TAS-201", "TAS-203", "TAS-204"];
+  const AFTER = ["TAS-201", "TAS-102", "TAS-203", "TAS-204"];
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+    seedContextWorkflowParts(workflow);
+    seedExtraIssues(inProgress);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    // dnd-kit keeps a capturing `click` listener on the document for 50 ms
+    // after a drag ends, so the click that would follow a drop is not read as a
+    // press. Out-waited here, or it swallows the first click of the next test.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  });
+
+  const column = (name: string) => screen.getByRole("region", { name: `${name} column` });
+  /** The keys of the cards a column draws, top to bottom. */
+  const keysIn = (name: string) =>
+    within(column(name))
+      .queryAllByRole("button", { name: /TAS-\d+/ })
+      .map((card) => /TAS-\d+/.exec(card.textContent ?? "")![0]);
+
+  /**
+   * Drags `card` onto the In Progress column. The rectangles are ours: the
+   * card at the left edge, the columns side by side, a drop at the middle of
+   * In Progress.
+   */
+  async function dropOnInProgress(card: HTMLElement) {
+    const rect = (left: number, width: number) =>
+      ({ x: left, y: 0, left, top: 0, right: left + width, bottom: 600, width, height: 600, toJSON: () => ({}) }) as DOMRect;
+    const columns: Record<string, DOMRect> = { TODO: rect(0, 250), IN_PROGRESS: rect(300, 250), DONE: rect(600, 250) };
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      // The card, and the overlay copy of it that dnd-kit measures while the
+      // drag is on: the wrapper it renders, and the card inside.
+      if (this === card || this.matches(".drag-overlay-card") || this.firstElementChild?.matches(".drag-overlay-card")) {
+        return rect(10, 100);
+      }
+      const key = this.getAttribute("data-status-key");
+      return key !== null && Object.hasOwn(columns, key) ? columns[key] : rect(0, 0);
+    });
+
+    fireEvent.mouseDown(card, { button: 0, clientX: 60, clientY: 30 });
+    // Past the activation distance, then to the middle of In Progress.
+    fireEvent.mouseMove(document, { clientX: 80, clientY: 30 });
+    await waitFor(() => expect(document.querySelector(".drag-overlay-card")).not.toBeNull());
+    fireEvent.mouseMove(document, { clientX: 420, clientY: 30 });
+    await waitFor(() => expect(column("In Progress")).toHaveClass("is-over"));
+    fireEvent.mouseUp(document, { clientX: 420, clientY: 30 });
+  }
+
+  const refusal = () => Object.assign(new Error("Transition is not available for the current issue status"), { status: 409 });
+
+  it("puts the card where the comparator gives it in the target column, before any re-read", async () => {
+    holdTransition(true);
+    renderBoard();
+    const card = await screen.findByRole("button", { name: /TAS-102/ });
+    expect(keysIn("In Progress")).toEqual(BEFORE);
+    const reads = boardReads();
+
+    await dropOnInProgress(card);
+
+    // The move is out and unanswered; nothing has re-read the board.
+    await waitFor(() => expect(heldTransitionCount()).toBe(1));
+    expect(transitionCalls()).toEqual([{ issueId: "issue-1", transitionId: "t-start" }]);
+    expect(keysIn("In Progress")).toEqual(AFTER);
+    expect(keysIn("To Do")).toEqual([]);
+    expect(boardReads()).toBe(reads);
+
+    // Landed, the board is read again and the card stays where it was put.
+    settleTransition();
+    await waitFor(() => expect(boardReads()).toBe(reads + 1));
+    await waitFor(() => expect(keysIn("In Progress")).toContain("TAS-102"));
+  });
+
+  it("puts the board back as it was when the server refuses, and reads it again", async () => {
+    holdTransition(true);
+    renderBoard();
+    const card = await screen.findByRole("button", { name: /TAS-102/ });
+    await dropOnInProgress(card);
+    await waitFor(() => expect(heldTransitionCount()).toBe(1));
+    expect(keysIn("In Progress")).toEqual(AFTER);
+    const reads = boardReads();
+    // The re-read the refusal starts must not answer: what is on screen next is
+    // the snapshot the cache was given back, not a fresh board.
+    holdBoard(true);
+
+    settleTransition(refusal());
+
+    await waitFor(() => expect(keysIn("To Do")).toEqual(["TAS-102"]));
+    expect(keysIn("In Progress")).toEqual(BEFORE);
+    // And the board was asked for again: the refusal says the move was not
+    // made, a timeout would not.
+    await waitFor(() => expect(boardReads()).toBe(reads + 1));
+  });
 });
 
 /**

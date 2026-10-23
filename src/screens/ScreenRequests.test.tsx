@@ -404,4 +404,29 @@ describe("the request budget of /projects and the board, and of coming back to t
     expect(since(mark)).toEqual([]);
     expect(requested.filter((request) => request.includes("/board"))).toHaveLength(1);
   });
+
+  it("opens a panel a minute after the board loaded for the panel's own reads, and none of the board's", async () => {
+    const queryClient = renderAt(`/projects/${PROJECT}/board`);
+    const open = await screen.findByRole("button", { name: /TAS-101/ });
+    await settled(queryClient);
+    const mark = requested.length;
+    // Past `staleTime`: the board and the context, which the panel's link
+    // picker and label picker read beside the screen, are stale when it
+    // mounts. It reuses what the screen holds and asks for neither again
+    // (release-reviewer, TAS-202); the reader's own writes and the focus
+    // policy are what refresh them.
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 60_000);
+
+    fireEvent.click(open);
+    expect(await screen.findByRole("dialog", { name: "TAS-101 issue" })).toBeVisible();
+    await settled(queryClient);
+
+    expect([...since(mark)].sort()).toEqual(
+      [
+        `GET /issues/${ISSUE}`,
+        `GET /projects/${PROJECT}/issues/${ISSUE}/comments?page=0&pageSize=50`,
+        `GET /projects/${PROJECT}/issues/${ISSUE}/worklogs`,
+      ].sort(),
+    );
+  });
 });

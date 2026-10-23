@@ -51,7 +51,7 @@ import {
   attachmentRefusal,
   attachmentSizeRefusalMessage,
 } from "../attachments";
-import { compareBoardIssues } from "../boardOrder";
+import { compareBoardReadOrder } from "../boardOrder";
 import { toViewLinkType } from "../linkViewTypes";
 import { MEMBER_USER_ID_REFUSAL_MESSAGE, isUserId } from "../members";
 import {
@@ -893,9 +893,12 @@ export interface MockBoardType {
  *   because another type has it, a status nobody has, or a type whose workflow
  *   was not found — it goes into `unplacedIssues`. The inconsistent-state 500
  *   that stood here before #205 is gone from the server, and from here;
- * - inside a column, and in `unplacedIssues`, the cards are in
- *   `compareBoardIssues` order (src/api/boardOrder.ts) — the server's type
- *   groups by `createdAt`, with the `id` tiebreak it lacks (backend A1).
+ * - the issues are read in `compareBoardReadOrder` (src/api/boardOrder.ts), the
+ *   server's order: one type after another, each by `statusKey` and then
+ *   `createdAt`, with the `id` tiebreak it lacks (backend A1). Inside a column
+ *   the status is one value, so a column is in `compareBoardIssues` order — the
+ *   type groups, each by `createdAt`. `unplacedIssues` holds cards of many
+ *   statuses, so there each type's cards are grouped by status before the date.
  *
  * A module-level function rather than a method so a test can hand it workflows
  * the seeded store never holds. `issues` arrive already narrowed to the types
@@ -925,7 +928,7 @@ export function buildMockBoard(
   const byStatusKey = new Map(columns.map((column) => [column.statusKey, column]));
   const unplacedIssues: BoardIssue[] = [];
 
-  for (const issue of [...issues].sort(compareBoardIssues)) {
+  for (const issue of [...issues].sort(compareBoardReadOrder)) {
     const own = types.find((type) => type.issueType === issue.issueType)?.statuses;
     if (
       !params.includeDone &&

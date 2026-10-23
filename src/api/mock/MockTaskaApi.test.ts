@@ -1584,7 +1584,58 @@ describe("MockTaskaApi", () => {
         ["TRIAGE", ["b"]],
         ["DONE", []],
       ]);
-      expect(board.unplacedIssues.map((issue) => issue.id)).toEqual(["a", "c", "d"]);
+      // By type, then status ("" before "TRIAGE" for the two tasks).
+      expect(board.unplacedIssues.map((issue) => issue.id)).toEqual(["c", "a", "d"]);
+    });
+
+    it("orders unplacedIssues by type, then status, then oldest first, then id — as the server reads them", () => {
+      const types = [
+        { issueType: "TASK", statuses: [status("TODO", "TODO", 10)] },
+        { issueType: "BUG", statuses: [status("TODO", "TODO", 10)] },
+      ];
+      const board = buildMockBoard(
+        project.id,
+        types,
+        [
+          // The older task is in the later status: by date alone it would lead.
+          card({ id: "task-zeta", issueType: "TASK", statusKey: "ZETA", createdAt: "2026-06-01T00:00:00Z" }),
+          card({ id: "task-alpha-new", issueType: "TASK", statusKey: "ALPHA", createdAt: "2026-06-09T00:00:00Z" }),
+          card({ id: "task-alpha-old", issueType: "TASK", statusKey: "ALPHA", createdAt: "2026-06-08T00:00:00Z" }),
+          // Oldest of all, and in the first status, yet after the tasks: the type leads.
+          card({ id: "bug-alpha", issueType: "BUG", statusKey: "ALPHA", createdAt: "2026-05-01T00:00:00Z" }),
+          card({ id: "task-tie-b", issueType: "TASK", statusKey: "BETA", createdAt: "2026-06-02T00:00:00Z" }),
+          card({ id: "task-tie-a", issueType: "TASK", statusKey: "BETA", createdAt: "2026-06-02T00:00:00Z" }),
+        ],
+        { includeDone: true },
+      );
+
+      expect(board.unplacedIssues.map((issue) => issue.id)).toEqual([
+        "task-alpha-old",
+        "task-alpha-new",
+        "task-tie-a",
+        "task-tie-b",
+        "task-zeta",
+        "bug-alpha",
+      ]);
+    });
+
+    it("keeps a column in type, then oldest-first order whatever order the issues arrive in", () => {
+      const types = [
+        { issueType: "TASK", statuses: [status("TODO", "TODO", 10)] },
+        { issueType: "BUG", statuses: [status("TODO", "TODO", 10)] },
+      ];
+      const board = buildMockBoard(
+        project.id,
+        types,
+        [
+          card({ id: "bug", issueType: "BUG", statusKey: "TODO", createdAt: "2026-05-01T00:00:00Z" }),
+          card({ id: "task-new", issueType: "TASK", statusKey: "TODO", createdAt: "2026-06-09T00:00:00Z" }),
+          card({ id: "task-old", issueType: "TASK", statusKey: "TODO", createdAt: "2026-06-08T00:00:00Z" }),
+        ],
+        { includeDone: true },
+      );
+
+      expect(board.columns[0].issues.map((issue) => issue.id)).toEqual(["task-old", "task-new", "bug"]);
     });
 
     it("merges columns by key, the first type's status winning, then stably by sortOrder", () => {

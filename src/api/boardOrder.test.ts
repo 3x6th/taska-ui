@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareBoardIssues } from "./boardOrder";
+import { compareBoardIssues, compareBoardReadOrder } from "./boardOrder";
 
 /**
  * The one order a card is placed in without the server (TAS-202,
@@ -36,5 +36,40 @@ describe("compareBoardIssues", () => {
     );
 
     expect(sorted.map((item) => item.id)).toEqual(["a", "b"]);
+  });
+});
+
+/**
+ * The order the gateway reads a board in, which the mock reproduces: the type's
+ * rank, then the status key, then the oldest first, then the id.
+ */
+describe("compareBoardReadOrder", () => {
+  const card = (id: string, issueType: string, statusKey: string, createdAt: string) => ({
+    id,
+    issueType,
+    statusKey,
+    createdAt,
+  });
+
+  it("puts the type first, the status second and the date third", () => {
+    const sorted = [
+      card("bug", "BUG", "A", "2026-01-01T00:00:00Z"),
+      card("task-b-old", "TASK", "B", "2026-01-01T00:00:00Z"),
+      card("task-a-new", "TASK", "A", "2026-06-01T00:00:00Z"),
+      card("task-a-old", "TASK", "A", "2026-02-01T00:00:00Z"),
+    ].sort(compareBoardReadOrder);
+
+    expect(sorted.map((item) => item.id)).toEqual(["task-a-old", "task-a-new", "task-b-old", "bug"]);
+  });
+
+  it("is compareBoardIssues inside one status, and breaks a tie on the id", () => {
+    const cards = [
+      card("b", "TASK", "A", "2026-06-01T00:00:00Z"),
+      card("c", "BUG", "A", "2026-01-01T00:00:00Z"),
+      card("a", "TASK", "A", "2026-06-01T00:00:00Z"),
+    ];
+
+    expect([...cards].sort(compareBoardReadOrder)).toEqual([...cards].sort(compareBoardIssues));
+    expect([...cards].sort(compareBoardReadOrder).map((item) => item.id)).toEqual(["a", "b", "c"]);
   });
 });
