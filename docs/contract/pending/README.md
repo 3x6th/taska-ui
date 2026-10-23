@@ -109,8 +109,17 @@ was written against it.
 
 | File | Backend PR | Story | Frontend story |
 | --- | --- | --- | --- |
-| `pr-155-TAS-145.yml` | [#155](https://github.com/VladislavYurin/taska-backend/pull/155) | TAS-145 | TAS-148, TAS-149 |
-| `pr-159-TAS-146.yml` | [#159](https://github.com/VladislavYurin/taska-backend/pull/159) | TAS-146 | TAS-149 |
+| — | — | — | — |
+
+`pr-155-TAS-145.yml` and `pr-159-TAS-146.yml` were here for TAS-148 / TAS-149 and were
+deleted on 2026-10-23 when backend PRs #155 (`ed064ade`) and #159 (`fcbbaac8`) merged and
+the snapshot was refreshed. Neither merged as extracted: #155 moved from `28f5fe1` to
+`971bcad4` (a blank description now becomes `null`, the answer carries the role) and #159
+from `97464fe` to `919c1d6d`, which turned the archive around — an archived project leaves
+`GET /projects` but stays readable, and writes answer 400 with `details.reason`
+`PROJECT_ARCHIVED`. The frontend written against the old #159 head (PR #95) was reworked
+before it shipped; what the Java says that the yml does not is in
+`docs/ai/API-DIVERGENCE.md`.
 
 `pr-219-TAS-388.yml` was here for TAS-389 and was deleted on 2026-10-23, the same day it
 was written: backend PR #219 merged unchanged at the pinned head `e9013d2a` as `ce189843`
