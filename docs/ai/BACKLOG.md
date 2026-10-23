@@ -4024,6 +4024,14 @@ Frontend notes:
   indent with no stack. Fix: `.project-card-foot { min-height: 24px }` and
   `.avatar-stack > .member-count:first-child { margin-left: 0 }`, plus the §4.8 line «Подвал
   держит `min-height:24`…».
+- **An admin rail click during the catalog load can be undone** (`frontend-builder`, TAS-202 CI
+  diagnosis): `/admin` redirects to `/admin/data`, then into the first table once the catalog
+  answers (`<Navigate replace>`); a click that pushed `/admin/users` before React Router commits
+  it is replaced by that second redirect. A few ms in production; reproduced deterministically.
+  Fix: guard the Data section's redirect, or `useTransitions={false}` on the router. The four
+  admin e2e helpers now wait for the settled address.
+- **The lost-focus check lives in three places** (board archive effect, `EditProjectModal`,
+  `ProjectLabelsModal`); a shared helper could replace them.
 - **Label chip order on a card is not stated**: `findLabelIdsByIssueIds`
   (`IssueRepositoryImpl.java:338`) has no ORDER BY.
 - **`listIssues` has no screen caller any more** (board, projects and the link picker moved off
