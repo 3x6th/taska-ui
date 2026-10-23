@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { taskaApi } from "../api/client";
-import { apiErrorFacts } from "../api/errors";
+import { apiErrorFacts, isProjectArchived } from "../api/errors";
 import type { UpdateProjectInput } from "../api/TaskaApi";
 import type { Project, ProjectContext } from "../domain/types";
 import { computedProjectColor, keyBadgeStyle, labelColorChoices } from "../lib/format";
@@ -274,6 +274,36 @@ export function EditProjectModal({
   // project archived while this dialog was open, ours (§5.7).
   const { requestId } = apiErrorFacts(save.error);
   const message = refusalWords(save.error);
+  /**
+   * The refused Save said the project was archived (§5.7): that refusal says
+   * what the archive line would, so it stands in for the line and is where
+   * focus goes. A refusal of any other kind — a 409, a 403 — says nothing
+   * about the archive, and the line stays under it.
+   */
+  const archiveRefused = isProjectArchived(save.error);
+
+  /**
+   * Where focus goes when the dialog turns read-only, or its Save is refused,
+   * and the control that had it went with that — Save leaves with the write
+   * (DESIGN.md §4.11, «Архив пришёл отказом Save на `/projects`»; §5.7): the
+   * `PROJECT_ARCHIVED` refusal, else the archive line. The dialog does this
+   * itself because on `/projects` there is no board behind it that would, and
+   * a focus left on `<body>` under the scrim is one the next Tab starts over
+   * from the top of the page with. On the board this runs first — a child's
+   * effect — and the board's own finds focus already inside and leaves it.
+   *
+   * Only focus that was lost: a reader still in a field keeps their place.
+   */
+  const refusalRef = useRef<HTMLDivElement>(null);
+  const lineRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    const target = archiveRefused ? refusalRef.current : lineRef.current;
+    if (!target) return;
+    const active = document.activeElement;
+    const lost =
+      !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
+    if (lost) target.focus();
+  }, [archiveRefused, readOnly, save.isError]);
 
   return (
     <Modal title="Edit project" onClose={onClose}>
@@ -347,17 +377,19 @@ export function EditProjectModal({
           // sentence, as it does in every other failure block in this product.
           // A 405 is not special any more: PR #155 deployed (401 without a
           // token on 2026-10-23), so one would be a refusal like any other.
-          // A focus target: where focus goes when the archive this refusal
-          // brought takes Save away from under it (§5.7).
-          <ErrorNote focusTarget requestId={requestId}>
+          // A `PROJECT_ARCHIVED` one is a focus target: where focus goes when
+          // the archive it brought takes Save away from under it (§5.7).
+          <ErrorNote archiveNote={archiveRefused} ref={refusalRef} requestId={requestId}>
             {message ?? "The gateway refused this change."}
           </ErrorNote>
-        ) : readOnly ? (
-          // Why nothing here writes any more, said once: only while no refusal
-          // of this dialog's is on screen, because then that one says it
-          // (§5.7, one fact, one place). Where focus goes when the change took
+        ) : null}
+        {readOnly && !archiveRefused ? (
+          // Why nothing here writes any more, said once: not while this
+          // dialog's `PROJECT_ARCHIVED` refusal is on screen, because then that
+          // one says it (§5.7, one fact, one place); under a refusal of any
+          // other kind, which does not. Where focus goes when the change took
           // the control that had it, like the board's own line.
-          <p className="modal-archive-note" data-archive-note="modal" tabIndex={-1}>
+          <p className="modal-archive-note" data-archive-note="modal" ref={lineRef} tabIndex={-1}>
             {archived
               ? "This project is archived, so it cannot be edited."
               : "This project no longer appears in Projects, so it cannot be edited here."}

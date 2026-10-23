@@ -34,7 +34,7 @@ export function ErrorNote({
   live,
   id,
   ref,
-  focusTarget = false,
+  archiveNote = false,
 }: {
   children: ReactNode;
   /** The gateway's `X-Request-Id`, on its own line under the sentence. Mock mode never carries one. */
@@ -51,15 +51,23 @@ export function ErrorNote({
   /** The box, for a caller that scrolls it into view when it lands (the issue panel's delete, TAS-299). */
   ref?: Ref<HTMLDivElement>;
   /**
-   * `tabIndex=-1` on the box: a place script may put focus and Tab never
-   * stops. For a dialog's refusal, where the board sends focus when an archive
-   * takes the control that had it (DESIGN.md §5.7, «Архив пришёл отказом
-   * записи»): focus never leaves an open dialog.
+   * This refusal is a dialog's `PROJECT_ARCHIVED` one, standing in for the
+   * dialog's archive line (DESIGN.md §5.7, «Архив пришёл отказом записи»): it
+   * carries the line's `data-archive-note="modal"` and its `tabIndex=-1`, a
+   * place script puts focus and Tab never stops — where focus goes when the
+   * archive takes the control that had it, because focus never leaves an open
+   * dialog. Only that refusal: one of another kind says nothing about the
+   * archive, the line stays under it, and the line is the target.
    */
-  focusTarget?: boolean;
+  archiveNote?: boolean;
 }) {
   return (
-    <div className="error-note" ref={ref} tabIndex={focusTarget ? -1 : undefined}>
+    <div
+      className="error-note"
+      data-archive-note={archiveNote ? "modal" : undefined}
+      ref={ref}
+      tabIndex={archiveNote ? -1 : undefined}
+    >
       <p className="error-note-sentence" id={id} role={live === "alert" ? "alert" : live === "polite" ? "status" : undefined}>
         {children}
       </p>

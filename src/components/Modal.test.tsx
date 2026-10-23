@@ -131,6 +131,64 @@ describe("Modal", () => {
     expect(screen.getByLabelText("Summary")).toHaveFocus();
   });
 
+  it("wraps from a place script put focus that is not a stop, when no stop lies that way", () => {
+    // The archive line and refusal of §5.7 are `tabIndex=-1`: focus is put
+    // there, Tab never stops. With no stop after the line (a Members dialog
+    // whose form went with the archive), the browser's next was the page under
+    // the scrim (art-director, TAS-149); with none before the eyebrow, its
+    // previous was.
+    render(
+      <>
+        <button type="button">Behind the scrim</button>
+        <Modal
+          eyebrow={
+            <span data-testid="eyebrow" tabIndex={-1}>
+              TAS
+            </span>
+          }
+          onClose={() => {}}
+          title="Members"
+        >
+          <input aria-label="Search" />
+          <p data-testid="archive-line" tabIndex={-1}>
+            This project is archived, so its members cannot be changed.
+          </p>
+        </Modal>
+        <button type="button">After the scrim</button>
+      </>,
+    );
+    const close = screen.getByRole("button", { name: "Close" });
+    const search = screen.getByLabelText("Search");
+    const line = screen.getByTestId("archive-line");
+    const eyebrow = screen.getByTestId("eyebrow");
+
+    line.focus();
+    expect(fireEvent.keyDown(line, { key: "Tab" })).toBe(false);
+    expect(close).toHaveFocus();
+
+    eyebrow.focus();
+    expect(fireEvent.keyDown(eyebrow, { key: "Tab", shiftKey: true })).toBe(false);
+    expect(search).toHaveFocus();
+  });
+
+  it("leaves Tab from such a place to the browser while a stop lies that way", () => {
+    render(
+      <Modal onClose={() => {}} title="Labels">
+        <p data-testid="archive-line" tabIndex={-1}>
+          This project is archived, so its labels cannot be changed.
+        </p>
+        <button type="button">Cancel</button>
+      </Modal>,
+    );
+    const line = screen.getByTestId("archive-line");
+
+    line.focus();
+    // Close is behind it and Cancel ahead: the browser's own order goes either way.
+    expect(fireEvent.keyDown(line, { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(line, { key: "Tab", shiftKey: true })).toBe(true);
+    expect(line).toHaveFocus();
+  });
+
   it("leaves Tab between the ends to the browser", () => {
     renderModal();
     const field = screen.getByLabelText("Email");

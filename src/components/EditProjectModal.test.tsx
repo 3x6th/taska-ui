@@ -293,6 +293,78 @@ describe("a project archived under the open dialog", () => {
     expect(within(dialog).getByRole("button", { name: "Copy request id 4b2e9a10-archived" })).toBeVisible();
     expect(within(dialog).queryByText(/so it cannot be edited/)).not.toBeInTheDocument();
   });
+
+  // The dialog places its own focus when Save goes from under it (§4.11, «Архив
+  // пришёл отказом Save на `/projects`»; art-director's round 2 on TAS-149):
+  // on `/projects` there is no board behind it that would, and `<body>` under
+  // the scrim is where the next Tab starts over from the top of the page.
+  it("on /projects: puts focus lost with Save on its archived refusal", async () => {
+    refuseUpdate(archivedRefusal());
+    const { dialog, update } = renderLive(baseProject());
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Renamed" } });
+    const save = within(dialog).getByRole("button", { name: "Save changes" });
+    save.focus();
+    fireEvent.click(save);
+    const sentence = await within(dialog).findByText("This project has been archived, so nothing in it can be changed.");
+    // Refused, still listed: Save is back and still has focus.
+    expect(save).toHaveFocus();
+
+    update(baseProject(), true);
+
+    const refusal = sentence.closest(".error-note");
+    expect(refusal).toHaveAttribute("data-archive-note", "modal");
+    expect(refusal).toHaveFocus();
+  });
+
+  it("on /projects: puts focus lost with Save on the line when no refusal says it", () => {
+    const { dialog, update } = renderLive(baseProject());
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Renamed" } });
+    within(dialog).getByRole("button", { name: "Save changes" }).focus();
+
+    update(baseProject(), true);
+
+    const line = within(dialog).getByText("This project no longer appears in Projects, so it cannot be edited here.");
+    expect(line).toHaveAttribute("data-archive-note", "modal");
+    expect(line).toHaveFocus();
+  });
+
+  it("leaves focus where a reader still is", () => {
+    const { dialog, update } = renderLive(baseProject());
+    const name = within(dialog).getByLabelText("Name");
+    name.focus();
+
+    update(baseProject({ archivedAt: "2026-10-20T10:00:00Z" }));
+
+    expect(name).toHaveFocus();
+  });
+
+  // Only a `PROJECT_ARCHIVED` refusal stands in for the line (§5.7, decision 4
+  // refused): a refusal of another kind says nothing about the archive.
+  it("keeps the line under a refusal of another kind, and the line takes focus lost with Save", async () => {
+    refuseUpdate(
+      Object.assign(new Error("Project was changed by someone else"), {
+        status: 409,
+        code: "CONFLICT",
+        requestId: "9e0c-conflict",
+      }),
+    );
+    const { dialog, update } = renderLive(baseProject());
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Renamed" } });
+    const save = within(dialog).getByRole("button", { name: "Save changes" });
+    save.focus();
+    fireEvent.click(save);
+    const sentence = await within(dialog).findByText("Project was changed by someone else");
+
+    update(baseProject({ archivedAt: "2026-10-20T10:00:00Z" }));
+
+    expectReadOnly(dialog, "Renamed");
+    const refusal = sentence.closest(".error-note")!;
+    expect(refusal).not.toHaveAttribute("data-archive-note");
+    expect(refusal).not.toHaveAttribute("tabindex");
+    const line = within(dialog).getByText("This project is archived, so it cannot be edited.");
+    expect(refusal.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(line).toHaveFocus();
+  });
 });
 
 describe("archiving a project from the dialog", () => {

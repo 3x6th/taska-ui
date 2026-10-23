@@ -339,6 +339,11 @@ test.describe("a dialog open when the project is archived elsewhere", () => {
     await expect(dialog.locator(".label-manage-row").first()).toBeVisible();
     await expect(dialog.getByText("This project is archived, so its labels cannot be changed.")).toHaveCount(0);
     await expect(refusal).toBeFocused();
+    // The refusal is a place focus was put, not a stop, and no stop follows it
+    // now that the row actions went: Tab wraps to the dialog's first stop
+    // rather than walking out to the board under the scrim (§5.7, §7).
+    await page.keyboard.press("Tab");
+    await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
 
     // Closed, it has no opener left to hand focus back to: the board's line takes it.
     await dialog.getByRole("button", { name: "Close" }).click();
@@ -389,6 +394,9 @@ test.describe("a dialog open when the project is archived elsewhere", () => {
     await expect(dialog.getByRole("button", { name: "Save changes" })).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "Archive project" })).toHaveCount(0);
     await expect(dialog.getByText(/no longer appears in Projects/)).toHaveCount(0);
+    // Save went from under focus, and with no board behind it the dialog put
+    // focus on its own refusal rather than leaving it on the page (§4.11).
+    await expect(dialog.locator(".error-note")).toBeFocused();
 
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(dialog).toBeHidden();

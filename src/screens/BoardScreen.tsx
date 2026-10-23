@@ -746,14 +746,16 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    * project, always — the line's reading is the announcement; after a refusal
    * brought the archive, only if the control in focus went or was switched
    * off, and then to the nearest open layer: inside an open dialog, its
-   * refusal, else its own archive line; else the open panel's line; else the
-   * board's.
+   * `PROJECT_ARCHIVED` refusal, else its own archive line, else its first
+   * stop; else the open panel's line; else the board's.
    *
    * **Focus never leaves an open dialog** (art-director, TAS-149). Under its
    * scrim the board's ring cannot be seen, and the next Tab would walk the
    * board while the dialog still stands over it. The dialogs here stay open
    * and turn read-only, so their own effects — child effects, which run before
-   * this one — have drawn the line or the refusal by the time this looks.
+   * this one — have drawn the line or the refusal by the time this looks; and
+   * Edit project places its own (it is opened from `/projects` too, where no
+   * board would), so it is never found without focus here.
    */
   const archiveLineRef = useRef<HTMLParagraphElement>(null);
   const focusArchiveLine = useRef(false);
@@ -780,7 +782,10 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     const dialog = document.querySelector<HTMLElement>(".modal[aria-modal='true']");
     if (dialog) {
       const inside =
-        dialog.querySelector<HTMLElement>(".error-note[tabindex='-1']") ??
+        // The dialog's `PROJECT_ARCHIVED` refusal or, without one, its archive
+        // line: one of the two, never both, carries the mark. A refusal of
+        // another kind does not — it is about something else, and may be one
+        // the reader has already read.
         dialog.querySelector<HTMLElement>("[data-archive-note='modal']") ??
         // A dialog with neither: its first stop, rather than anything behind it.
         tabbables(dialog)[0];
@@ -2298,6 +2303,20 @@ function IssuePanel({
       setDescription(serverDescription);
     }
     setPlanning((current) => reseedPlanningDrafts(current, previous?.planning ?? null, serverPlanning));
+  }
+  /**
+   * The project was archived while the panel was open (DESIGN.md §5.7): the
+   * planning boxes go `readOnly`, and a value typed into one and not yet sent
+   * would then stand there as if the issue held it — and nothing can send it
+   * any more. So the turn puts every planning draft back to the stored value,
+   * as a refused write puts its own field back (§5.5). Free text is not
+   * touched: the reader's words are work and stay, read-only, marked
+   * `data-unsaved-text`. During render, for the reseed's reason above.
+   */
+  const [planningArchived, setPlanningArchived] = useState(archivedAt !== null);
+  if (planningArchived !== (archivedAt !== null)) {
+    setPlanningArchived(archivedAt !== null);
+    if (archivedAt !== null) setPlanning(serverPlanning);
   }
 
   const workflow = issue ? workflowFor(workflows, issue.issueType) : undefined;
@@ -6127,6 +6146,13 @@ function ProjectLabelsModal({
   const refusal = createLabel.error ?? updateLabel.error ?? deleteLabel.error;
   const failure = labelsQuery.error ?? refusal;
   const error = failure ? (refusalWords(failure) ?? failure.message) : undefined;
+  /**
+   * The note on screen is this dialog's `PROJECT_ARCHIVED` refusal, which says
+   * what the archive line would (§5.7): then it stands in for the line, and is
+   * where focus goes. A refusal of any other kind — a duplicate name, a 403 —
+   * says nothing about the archive, and the line stays.
+   */
+  const archiveRefused = isProjectArchived(failure);
   const trimmed = name.trim();
   const badge = keyBadgeStyle(projectKey, projectColor);
 
@@ -6147,11 +6173,12 @@ function ProjectLabelsModal({
       onClose={onClose}
     >
       {archived ? (
-        // In the New label form's place, and only while no refusal of this
-        // dialog's is on screen: then that one says it (§5.7, one fact, one
-        // place). A place focus is put, never a Tab stop — see the board's
-        // archive effect.
-        refusal ? null : (
+        // In the New label form's place, and only while no `PROJECT_ARCHIVED`
+        // refusal of this dialog's is on screen: then that one says it (§5.7,
+        // one fact, one place). A refusal of another kind does not, and the
+        // line stays — here, where the form stood, above it. A place focus is
+        // put, never a Tab stop — see the board's archive effect.
+        archiveRefused ? null : (
           <p className="modal-archive-note" data-archive-note="modal" tabIndex={-1}>
             This project is archived, so its labels cannot be changed.
           </p>
@@ -6193,7 +6220,7 @@ function ProjectLabelsModal({
         </form>
       )}
 
-      {error ? <ErrorNote focusTarget>{error}</ErrorNote> : null}
+      {error ? <ErrorNote archiveNote={archiveRefused}>{error}</ErrorNote> : null}
 
       {labelsQuery.isPending ? <p className="issue-links-empty">Loading labels</p> : null}
       {labelsQuery.isSuccess && labels.length === 0 ? (
@@ -6650,6 +6677,14 @@ function CreateIssueModal({
       : createIssue.isError
         ? (refusalWords(createIssue.error) ?? createIssue.error.message)
         : null;
+  /**
+   * The slot holds this form's `PROJECT_ARCHIVED` refusal, which says what the
+   * archive line would (§5.7): it stands in for the line and is where focus
+   * goes. A refusal of any other kind leaves the line under it. The date line
+   * is never shown once archived, so whenever the create's error is this, the
+   * slot is showing it.
+   */
+  const archiveRefused = isProjectArchived(createIssue.error) && !(dateNotice && !archived);
 
   return (
     <Modal
@@ -6916,18 +6951,20 @@ function CreateIssueModal({
             itself by — the sentence's, so the description is the sentence. */}
         {formNotice ? (
           <ErrorNote
-            // Where focus goes when the archive a refused create brought takes
-            // Create issue away from under it (§5.7).
-            focusTarget
+            // Where focus goes when the archive this refused create brought
+            // takes Create issue away from under it (§5.7) — this refusal only.
+            archiveNote={archiveRefused}
             id={noticeId}
             key={dateNotice && !archived ? dateNotice.seq : "write"}
             live="alert"
           >
             {formNotice}
           </ErrorNote>
-        ) : archived ? (
-          // Above the footer, and only while no refusal of this form's is on
-          // screen — then that one says it (§5.7, one fact, one place).
+        ) : null}
+        {archived && !archiveRefused ? (
+          // Above the footer, and under a refusal of another kind if one is
+          // on screen; not while this form's `PROJECT_ARCHIVED` refusal is —
+          // then that one says it (§5.7, one fact, one place).
           <p className="modal-archive-note" data-archive-note="modal" tabIndex={-1}>
             This project is archived, so issues cannot be created in it.
           </p>

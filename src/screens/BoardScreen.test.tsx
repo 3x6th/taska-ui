@@ -1647,6 +1647,86 @@ describe("an archived project's board", () => {
       expect(screen.getByRole("dialog", { name: "TAS-102 issue" })).toBeInTheDocument();
       expect(summary).toHaveValue("Wire the board to the gateway, typed on");
     });
+
+    // Only a `PROJECT_ARCHIVED` refusal stands in for a dialog's archive line
+    // (art-director's round 2 on TAS-149, decision 4 refused). One of another
+    // kind says nothing about the archive: the line stays under it, and the
+    // line — never that refusal, which the reader may have read already — is
+    // where focus goes.
+    const otherRefusal = () =>
+      Object.assign(new Error("Summary is too long"), { status: 400, code: "VALIDATION_ERROR", requestId: "2a9d-other" });
+
+    it("keeps New issue's line under a refusal of another kind, and puts lost focus on the line", async () => {
+      const queryClient = renderBoard();
+      const dialog = await openNewIssue();
+      fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "A drafted issue" } });
+      failNextCreate(otherRefusal());
+      const create = dialog.getByRole("button", { name: "Create issue" });
+      create.focus();
+      fireEvent.click(create);
+      const sentence = await dialog.findByText("Summary is too long");
+      expect(create).toHaveFocus();
+
+      await archiveArrives(queryClient);
+
+      const line = await dialog.findByText("This project is archived, so issues cannot be created in it.");
+      const refusal = sentence.closest(".error-note")!;
+      expect(refusal).not.toHaveAttribute("data-archive-note");
+      expect(refusal).not.toHaveAttribute("tabindex");
+      expect(line).toHaveAttribute("data-archive-note", "modal");
+      // Under the refusal, not in its place.
+      expect(refusal.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(dialog.queryByRole("button", { name: "Create issue" })).not.toBeInTheDocument();
+      await waitFor(() => expect(line).toHaveFocus());
+      expect(boardLine()).not.toHaveFocus();
+    });
+
+    it("keeps the Labels line beside a refusal of another kind, and puts lost focus on the line", async () => {
+      const queryClient = renderBoard();
+      const dialog = await openLabels();
+      failNextCreate(Object.assign(new Error("A label named release already exists"), { status: 409, code: "CONFLICT" }));
+      fireEvent.change(dialog.getByLabelText("New label"), { target: { value: "release" } });
+      fireEvent.click(dialog.getByRole("button", { name: "Add label" }));
+      const sentence = await dialog.findByText("A label named release already exists");
+      dialog.getByLabelText("New label").focus();
+
+      await archiveArrives(queryClient);
+
+      const line = await dialog.findByText("This project is archived, so its labels cannot be changed.");
+      expect(sentence).toBeVisible();
+      expect(sentence.closest(".error-note")).not.toHaveAttribute("data-archive-note");
+      expect(dialog.queryByLabelText("New label")).not.toBeInTheDocument();
+      await waitFor(() => expect(line).toHaveFocus());
+      expect(boardLine()).not.toHaveFocus();
+    });
+
+    // A Planning value typed and not sent would stand in a read-only box as if
+    // the issue held it (§5.7): the turn puts it back to the stored one, as a
+    // refused write does (§5.5). Free text is the reader's work and stays.
+    it("puts unsent planning drafts back to the stored values when the archive arrives", async () => {
+      const queryClient = renderBoard(ISSUE_PATH);
+      const panel = await openPanel();
+      const points = await panel.findByLabelText("Story points");
+      const estimate = panel.getByLabelText("Original estimate");
+      expect(points).toHaveValue("3");
+      fireEvent.change(estimate, { target: { value: "2h" } });
+      points.focus();
+      fireEvent.change(points, { target: { value: "13" } });
+
+      await archiveArrives(queryClient);
+      await panel.findByText("This project was archived on Oct 20, so this issue is read-only.");
+
+      expect(points).toHaveValue("3");
+      expect(estimate).toHaveValue("8h");
+      for (const box of [points, estimate]) {
+        expect(box).toHaveAttribute("readonly");
+        // Nothing unsaved is left in it, so Esc there closes the panel as anywhere.
+        expect(box).not.toHaveAttribute("data-unsaved-text");
+      }
+      // Leaving the box sends nothing: there is nothing left to send, and no write.
+      fireEvent.blur(points);
+      expect(updateCalls()).toEqual([]);
+    });
   });
 });
 
