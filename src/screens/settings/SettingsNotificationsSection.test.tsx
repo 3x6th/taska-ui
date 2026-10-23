@@ -61,8 +61,7 @@ afterEach(() => {
 
 const UNAVAILABLE_NOTE =
   "The connected bot cannot deliver notifications right now. You can disconnect Telegram and connect again when it is available.";
-const UNKNOWN_NOTE =
-  "Taska does not recognise the state of this Telegram connection. You can disconnect Telegram and connect again.";
+const UNKNOWN_NOTE = "You can disconnect Telegram and connect again.";
 
 describe("personal notification choices", () => {
   it("shows a shaped loading state and a read failure without pretending channels are off", async () => {
@@ -166,8 +165,8 @@ describe("personal notification choices", () => {
   });
 
   it("lets an unavailable saved binding be turned off and disconnected, but cannot enable it again", async () => {
-    // With the integration off the backend reports every binding as
-    // BOT_CHANGED, so that code's sentence must not be shown here.
+    // With the integration off and the bot username unset, the backend reports
+    // every binding as BOT_CHANGED, so that code's sentence must not be shown here.
     row = {
       ...initial(),
       telegramAvailable: false,
@@ -217,7 +216,8 @@ describe("personal notification choices", () => {
     expect(screen.queryByRole("button", { name: "Connect Telegram" })).toBeNull();
   });
 
-  it("gives an unavailable binding without a code the general sentence", async () => {
+  it("falls back to the general sentence for an UNAVAILABLE row that carries no code", async () => {
+    // Defensive: the backend does not produce this combination today (bound, enabled, no error derives CONNECTED).
     row = { ...initial(), telegramStatus: "UNAVAILABLE", telegramName: "Anna" };
     draw();
     await load();
@@ -384,6 +384,29 @@ describe("personal notification choices", () => {
     expect(await screen.findByRole("button", { name: "Connect Telegram" })).toBeVisible();
     expect(email()).toHaveAttribute("aria-checked", "false");
     expect(telegram()).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("announces a cancelled request as cancelled and a real disconnect as a disconnect", async () => {
+    const cancelledText = "Telegram connection cancelled. Your email choice is unchanged.";
+    const disconnectedText = "Telegram disconnected. Your email choice is unchanged.";
+    api.disconnectTelegram.mockImplementation(async () => (row = initial()));
+    row = { ...initial(), telegramStatus: "PENDING", telegramLinkId: "link" };
+    const view = draw();
+    await load();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel connection" }));
+    expect(await screen.findByText(cancelledText)).toBeVisible();
+    expect(screen.queryByText(disconnectedText)).toBeNull();
+    expect(api.disconnectTelegram).toHaveBeenCalledOnce();
+    view.unmount();
+    client.clear();
+
+    row = { ...initial(), telegramStatus: "CONNECTED", telegramEnabled: true, telegramName: "Anna" };
+    draw();
+    await load();
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect Telegram" }));
+    expect(await screen.findByText(disconnectedText)).toBeVisible();
+    expect(screen.queryByText(cancelledText)).toBeNull();
+    expect(api.disconnectTelegram).toHaveBeenCalledTimes(2);
   });
 
   it("reconciles a committed PATCH whose acknowledgement was lost", async () => {
