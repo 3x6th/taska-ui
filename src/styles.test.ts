@@ -96,3 +96,20 @@ describe("the focus ring in styles.css", () => {
     ]);
   });
 });
+
+/**
+ * The project card's footer (DESIGN.md §4.8, TAS-397): it holds the avatar
+ * stack's height itself, so a card with no faces is no shorter than its
+ * neighbour and does not grow when the numbers arrive — a rule of its own, not
+ * the group it shares with the issue card's footer — and «N members» with no
+ * stack before it sits at the left edge.
+ */
+describe("the project card's footer in styles.css", () => {
+  it("holds 24 of its own, and drops the members count's indent when no face precedes it", () => {
+    const sheet = rules(styles);
+    expect(sheet.find(({ selector }) => selector === ".project-card-foot")?.body).toMatch(/min-height:\s*24px/);
+    expect(
+      sheet.find(({ selector }) => selector === ".avatar-stack > .member-count:first-child")?.body,
+    ).toMatch(/margin-left:\s*0/);
+  });
+});

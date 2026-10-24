@@ -1522,6 +1522,46 @@ describe("an archived project's board", () => {
     expect(panel.queryByRole("button", { name: "Comment" })).not.toBeInTheDocument();
   });
 
+  /**
+   * A date box holding segments the browser has not made a date of yet
+   * (`validity.badInput`) shows the stored date, or the empty mask, once the
+   * archive turns the panel read-only (§5.7, TAS-397). jsdom cannot hold a
+   * partial entry, so the browser's `badInput` is stood in for and what is
+   * written to the control is watched: the draft reset cannot reach those
+   * segments, only a write to the control can.
+   */
+  it("puts a half-typed date back to the stored one when the archive turns the panel read-only", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    const box = panel.getByLabelText("Start date") as HTMLInputElement;
+    const stored = box.value;
+    Object.defineProperty(box, "validity", { configurable: true, get: () => ({ badInput: true }) });
+    const value =
+      Object.getOwnPropertyDescriptor(box, "value") ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!;
+    const written: string[] = [];
+    Object.defineProperty(box, "value", {
+      configurable: true,
+      get() {
+        return value.get!.call(this);
+      },
+      set(next: string) {
+        written.push(next);
+        value.set!.call(this, next);
+      },
+    });
+
+    failNextUpdate(archivedRefusal());
+    seedArchivedAt("2026-10-20T10:00:00Z");
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+    await screen.findByText(/^Archived on/);
+
+    // Written once, with the stored date — React writes nothing here, since
+    // its draft did not change.
+    await waitFor(() => expect(written).toEqual([stored]));
+    expect(box).toHaveAttribute("readonly");
+    expect(box).not.toHaveAttribute("data-unsaved-text");
+  });
+
   it("does not read a refusal without the reason as an archive", async () => {
     renderBoard(ISSUE_PATH);
     const panel = await openPanel();
@@ -1537,6 +1577,31 @@ describe("an archived project's board", () => {
     expect(await panel.findByRole("alert")).toHaveTextContent("Transition is not available for the current issue status");
     // Nothing asked the context again, so nothing on screen says archived.
     expect(screen.queryByText(/^Archived on/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * api-contract-guard's N2 on TAS-209: demoted to VIEWER while the board was
+   * open, the reader's next write is refused with 403 — and the board reads the
+   * context again, as it does for an archive, so it stops offering writes the
+   * server has just said this reader may not make.
+   */
+  it("reads the role again after a write refused with PERMISSION_DENIED", async () => {
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+
+    failNextUpdate(
+      Object.assign(new Error("Access denied"), { status: 403, code: "PERMISSION_DENIED", requestId: "req-403" }),
+    );
+    setMembership("VIEWER");
+    fireEvent.click(panel.getByRole("button", { name: "Low" }));
+
+    // Said where it landed, with its request id.
+    expect(await panel.findByRole("alert")).toHaveTextContent("Access denied");
+    expect(panel.getByRole("button", { name: "Copy request id req-403" })).toBeVisible();
+    // And the board took the VIEWER role from the context it read again.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument());
+    expect(panel.queryByRole("button", { name: "Low" })).toBeDisabled();
   });
 
   /**
@@ -4513,6 +4578,18 @@ describe("issue attachments", () => {
   };
 
   /**
+   * The boxes the last action's sentences are drawn in. The same sentences are
+   * also the section's visually hidden `role="status"` (§5.6, TAS-397: the
+   * boxes carry request ids, so they are not a live region), and a text query
+   * over the whole section would find each of them twice.
+   */
+  const notes = () => {
+    const found = document.querySelector<HTMLElement>(".issue-attachments .attachment-notes");
+    if (!found) throw new Error("no attachment notes");
+    return within(found);
+  };
+
+  /**
    * Hands a file to the input the "Attach a file" button drives. The input is
    * `hidden` and has no accessible name on purpose — it is not a tab stop, the
    * button is — so it is reached by class rather than by role, which is the one
@@ -4575,11 +4652,11 @@ describe("issue attachments", () => {
     // the picker; the allowlist does not.
     chooseFile("bundle.zip", "application/x-zip-compressed");
 
-    const panel = await section();
+    await section();
     // The file by name and the way out, not the MIME string the server would
     // have answered with. This arm never reaches a server, so there is no
     // wording to be verbatim with — see `refusalText`.
-    const refusal = await panel.findByText(/bundle\.zip is not a type this issue accepts/);
+    const refusal = await notes().findByText(/bundle\.zip is not a type this issue accepts/);
     expect(refusal).toHaveTextContent(/Attach JPEG, PNG or WebP images, PDF/);
     expect(refusal).not.toHaveTextContent(/application\/x-zip-compressed/);
     // Nothing was uploaded and nothing was confirmed.
@@ -4595,8 +4672,8 @@ describe("issue attachments", () => {
     // MB. The largest … is 2 MB".
     chooseFile("huge.png", "image/png", ATTACHMENT_MAX_SIZE_BYTES + 1);
 
-    const panel = await section();
-    const refusal = await panel.findByText(/huge\.png is just over 2 MB/);
+    await section();
+    const refusal = await notes().findByText(/huge\.png is just over 2 MB/);
     expect(refusal).toHaveTextContent(/largest file this issue accepts/);
     // Never the server's byte arithmetic, which contradicts the hint above it.
     expect(refusal).not.toHaveTextContent(/2097153/);
@@ -4608,8 +4685,8 @@ describe("issue attachments", () => {
     await section();
     chooseFile("huge.png", "image/png", 3 * 1024 * 1024);
 
-    const panel = await section();
-    expect(await panel.findByText("huge.png is 3 MB. The largest file this issue accepts is 2 MB.")).toBeVisible();
+    await section();
+    expect(await notes().findByText("huge.png is 3 MB. The largest file this issue accepts is 2 MB.")).toBeVisible();
   });
 
   it("runs the three legs and shows the new row", async () => {
@@ -4630,8 +4707,8 @@ describe("issue attachments", () => {
     await section();
     chooseFile();
 
-    const panel = await section();
-    const message = await panel.findByText(/could not reach the file store/i);
+    await section();
+    const message = await notes().findByText(/could not reach the file store/i);
     expect(message).toHaveTextContent(/straight to storage rather than through Taska/i);
     expect(confirmCalls()).toBe(0);
   });
@@ -4642,8 +4719,8 @@ describe("issue attachments", () => {
     await section();
     chooseFile();
 
-    const panel = await section();
-    expect(await panel.findByText(/15 minutes from the moment the file is chosen/i)).toBeVisible();
+    await section();
+    expect(await notes().findByText(/15 minutes from the moment the file is chosen/i)).toBeVisible();
   });
 
   it("re-reads the list after a failed confirm and does not claim the file was lost when it was not", async () => {
@@ -4655,7 +4732,7 @@ describe("issue attachments", () => {
     chooseFile();
 
     const panel = await section();
-    expect(await panel.findByText(/was attached after all/i)).toBeVisible();
+    expect(await notes().findByText(/was attached after all/i)).toBeVisible();
     // And the row it is telling the truth about is on screen.
     expect(await panel.findByRole("button", { name: "Download notes.txt" })).toBeVisible();
     // Never repeated: a second confirm is a second row on the server.
@@ -4674,8 +4751,8 @@ describe("issue attachments", () => {
     chooseFile();
 
     const panel = await section();
-    expect(await panel.findByText(/was attached after all/i)).toBeVisible();
-    expect(panel.queryByText(/was not attached/i)).toBeNull();
+    expect(await notes().findByText(/was attached after all/i)).toBeVisible();
+    expect(notes().queryByText(/was not attached/i)).toBeNull();
     expect(sectionReads().attachments).toBe(1);
     // And what the list route found is what the section draws.
     expect(await panel.findByRole("button", { name: "Download notes.txt" })).toBeVisible();
@@ -4688,8 +4765,8 @@ describe("issue attachments", () => {
     await section();
     chooseFile();
 
-    const panel = await section();
-    expect(await panel.findByText(/notes\.txt was not attached/i)).toBeVisible();
+    await section();
+    expect(await notes().findByText(/notes\.txt was not attached/i)).toBeVisible();
     expect(confirmCalls()).toBe(1);
     expect(listedAttachments()).toHaveLength(0);
   });
@@ -4725,7 +4802,7 @@ describe("issue attachments", () => {
     expect(tab.opener).toBeNull();
     // Then pointed at the fresh presigned link, once it came back.
     await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith(expect.stringContaining("X-Amz-Signature=")));
-    expect(panel.queryByText(/did not open a tab/)).toBeNull();
+    expect(notes().queryByText(/did not open a tab/)).toBeNull();
     expect(panel.queryByRole("link", { name: "Open" })).toBeNull();
     // Open never fetches the bytes: it is the store's link, in the store's tab.
     expect(bytesReads()).toEqual([]);
@@ -4747,7 +4824,7 @@ describe("issue attachments", () => {
     // And it is announced, because otherwise a keyboard reader presses Enter,
     // nothing opens, and an unannounced tab stop appears in the row.
     expect(
-      await panel.findByText("Your browser did not open a tab for login-500-trace.txt. Use the Open link beside it."),
+      await notes().findByText("Your browser did not open a tab for login-500-trace.txt. Use the Open link beside it."),
     ).toBeVisible();
     vi.unstubAllGlobals();
   });
@@ -4763,7 +4840,7 @@ describe("issue attachments", () => {
 
     fireEvent.click(panel.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
 
-    expect(await panel.findByText("No link came back for login-500-trace.txt.")).toBeVisible();
+    expect(await notes().findByText("No link came back for login-500-trace.txt.")).toBeVisible();
     expect(tab.close).toHaveBeenCalled();
     expect(tab.location.replace).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
@@ -4779,13 +4856,13 @@ describe("issue attachments", () => {
     seedDownloadUrl("javascript:alert(document.domain)");
 
     fireEvent.click(panel.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
-    expect(await panel.findByText("No link came back for login-500-trace.txt.")).toBeVisible();
+    expect(await notes().findByText("No link came back for login-500-trace.txt.")).toBeVisible();
     expect(tab.close).toHaveBeenCalled();
     expect(tab.location.replace).not.toHaveBeenCalled();
 
     // Download: the same link neither reaches the byte GET's fallback tab nor an anchor.
     fireEvent.click(panel.getByRole("button", { name: "Download login-500-trace.txt" }));
-    await waitFor(() => expect(panel.getAllByText("No link came back for login-500-trace.txt.").length).toBeGreaterThan(0));
+    await waitFor(() => expect(notes().getAllByText("No link came back for login-500-trace.txt.").length).toBeGreaterThan(0));
     expect(tab.location.replace).not.toHaveBeenCalled();
     expect(bytesReads()).toEqual([]);
     expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
@@ -4793,7 +4870,7 @@ describe("issue attachments", () => {
     // And with the browser refusing the tab, no fallback link is offered either.
     vi.stubGlobal("open", vi.fn(() => null));
     fireEvent.click(panel.getByRole("button", { name: "Open login-500-trace.txt in a new tab" }));
-    await panel.findByText("No link came back for login-500-trace.txt.");
+    await notes().findByText("No link came back for login-500-trace.txt.");
     expect(panel.queryByRole("link", { name: "Open" })).toBeNull();
     vi.unstubAllGlobals();
   });
@@ -4823,7 +4900,7 @@ describe("issue attachments", () => {
     expect(createObjectURL.mock.calls[0][0]).toBeInstanceOf(Blob);
     // No tab, and nothing said: the file is in the reader's downloads.
     expect(open).not.toHaveBeenCalled();
-    expect(panel.queryByText(/could not be saved/)).toBeNull();
+    expect(notes().queryByText(/could not be saved/)).toBeNull();
     // The temporary anchor does not stay in the document.
     expect(document.querySelector("a[download]")).toBeNull();
     click.mockRestore();
@@ -4842,7 +4919,7 @@ describe("issue attachments", () => {
     fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
 
     await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith(expect.stringContaining("X-Amz-Signature=")));
-    const note = await panel.findByText(
+    const note = await notes().findByText(
       "login-500-trace.txt could not be saved directly, so it opened in a new tab instead. Save it from there.",
     );
     // Information, not an error: the reader still gets the file.
@@ -4860,7 +4937,7 @@ describe("issue attachments", () => {
     fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
 
     expect(await panel.findByRole("link", { name: "Open" })).toHaveAttribute("href", expect.stringContaining("X-Amz-Signature="));
-    expect(await panel.findByText(/could not be saved directly, and your browser did not open a tab for it/)).not.toHaveClass(
+    expect(await notes().findByText(/could not be saved directly, and your browser did not open a tab for it/)).not.toHaveClass(
       "is-error",
     );
     vi.unstubAllGlobals();
@@ -4876,9 +4953,9 @@ describe("issue attachments", () => {
     const panel = await section();
     fireEvent.click(await panel.findByRole("button", { name: "Download login-500-trace.txt" }));
 
-    expect(await panel.findByText("boom")).toHaveClass("is-error");
+    expect(await notes().findByText("boom")).toHaveClass("is-error");
     expect(open).not.toHaveBeenCalled();
-    expect(panel.queryByText(/could not be saved directly/)).toBeNull();
+    expect(notes().queryByText(/could not be saved directly/)).toBeNull();
     vi.unstubAllGlobals();
   });
 
@@ -4904,7 +4981,7 @@ describe("issue attachments", () => {
     expect(target).not.toHaveClass("is-drop-target");
 
     // The GIF is refused by name, before any request; the other two land.
-    expect(await panel.findByText(/cat\.gif is not a type this issue accepts/)).toBeVisible();
+    expect(await notes().findByText(/cat\.gif is not a type this issue accepts/)).toBeVisible();
     expect(await panel.findByRole("button", { name: "Open first.txt in a new tab" })).toBeVisible();
     expect(await panel.findByRole("button", { name: "Open second.txt in a new tab" })).toBeVisible();
     // One at a time: the second file is not signed until the first is confirmed.
@@ -5028,7 +5105,7 @@ describe("issue attachments", () => {
     // row that stayed gone would be a file the reader believes was deleted,
     // and a row that came back silently would be one they think still is.
     expect(await panel.findByRole("button", { name: "Download login-500-trace.txt" })).toBeVisible();
-    expect(await panel.findByText("You do not have permission to delete this attachment")).toBeVisible();
+    expect(await notes().findByText("You do not have permission to delete this attachment")).toBeVisible();
     expect(deletedAttachments()).toEqual([]);
   });
 
@@ -6587,5 +6664,272 @@ describe("the Workflows trigger and the panel's moves", () => {
     expect(within(group).getByRole("button", { name: "move to in progress" })).not.toHaveAttribute("aria-label");
     // The panel's own Close keeps its name and is the only control that has it.
     expect(panel.getAllByRole("button", { name: "Close" })).toHaveLength(1);
+  });
+});
+
+/**
+ * A write refusal's request id (DESIGN.md §5.6, «Request id отказа — один
+ * рецепт», TAS-397): on the box's detail line under the sentence, the shared
+ * `RequestId`, on every write surface of the board — the panel's labels,
+ * links, attachments and comments, the Labels dialog and New issue. One test
+ * per surface, one refusal shape for all of them.
+ */
+describe("a write refusal's request id", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const refusal = () => Object.assign(new Error("Refused"), { code: "PERMISSION_DENIED", requestId: "req-1" });
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+  const sectionOf = async (heading: RegExp) => {
+    const panel = await openPanel();
+    const found = (await panel.findByRole("heading", { name: heading })).closest("section");
+    if (!found) throw new Error(`no section headed ${heading}`);
+    return within(found);
+  };
+  /** The fake carries no such write; put one on it that refuses, for this test only. */
+  const api = fakeApi as unknown as Record<string, unknown>;
+  const refusing: string[] = [];
+  const refuseWith = (method: string) => {
+    refusing.push(method);
+    api[method] = vi.fn(() => Promise.reject(refusal()));
+  };
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    for (const method of refusing.splice(0)) delete api[method];
+  });
+
+  it("is under the refusal of an issue's label", async () => {
+    seedLabels([{ id: "label-backend", name: "backend", color: "#0052cc" }]);
+    refuseWith("addIssueLabel");
+    renderBoard(ISSUE_PATH);
+    const labels = await sectionOf(/^Labels/);
+
+    fireEvent.change(await labels.findByLabelText("Add label"), { target: { value: "label-backend" } });
+    fireEvent.click(labels.getByRole("button", { name: "Add" }));
+
+    expect(await labels.findByRole("button", { name: "Copy request id req-1" })).toBeVisible();
+  });
+
+  it("is under the refusal of an issue's link", async () => {
+    seedExtraIssues([{ id: "issue-2", issueKey: "TAS-103", summary: "Something to link" }]);
+    refuseWith("createIssueLink");
+    renderBoard(ISSUE_PATH);
+    const links = await sectionOf(/^Links/);
+    const target = await links.findByLabelText("Issue");
+    await waitFor(() => expect((target as HTMLSelectElement).options.length).toBeGreaterThan(1));
+
+    fireEvent.change(target, { target: { value: (target as HTMLSelectElement).options[1].value } });
+    fireEvent.click(links.getByRole("button", { name: "Link" }));
+
+    expect(await links.findByRole("button", { name: "Copy request id req-1" })).toBeVisible();
+  });
+
+  it("is under the refusal of an attachment's delete, outside the section's live region", async () => {
+    seedAttachments([
+      {
+        id: "attachment-seed",
+        issueId: "issue-1",
+        fileName: "login-500-trace.txt",
+        contentType: "text/plain",
+        sizeBytes: 2411,
+        uploadedBy: "user-anna",
+        checksum: null,
+        createdAt: "2026-08-01T09:00:00Z",
+      },
+    ]);
+    failDelete(refusal());
+    renderBoard(ISSUE_PATH);
+    const attachments = await sectionOf(/^Attachments/);
+
+    fireEvent.click(await attachments.findByRole("button", { name: "Delete login-500-trace.txt" }));
+
+    const copy = await attachments.findByRole("button", { name: "Copy request id req-1" });
+    expect(copy).toBeVisible();
+    // The box with the id in it is plain content — no ancestor of the id is a
+    // live region — and the sentence is said by the section's one persistent,
+    // visually hidden status instead.
+    expect(copy.closest(".attachment-notes")).not.toHaveAttribute("aria-live");
+    expect(copy.closest("[aria-live], [role='status'], [role='alert']")).toBeNull();
+    const said = attachments
+      .getAllByRole("status")
+      .find((region) => region.classList.contains("visually-hidden") && region.closest(".attachment-notes") === null);
+    expect(said).toHaveTextContent("Refused");
+  });
+
+  it("is under the refusal of a comment", async () => {
+    refuseWith("addComment");
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+    fireEvent.change(await panel.findByPlaceholderText("Leave a comment"), { target: { value: "First!" } });
+
+    fireEvent.click(panel.getByRole("button", { name: "Comment" }));
+
+    const copy = await panel.findByRole("button", { name: "Copy request id req-1" });
+    // Beside the polite sentence, never inside it.
+    expect(copy.closest("[aria-live]")).toBeNull();
+    expect(panel.getByText("Refused")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("is under the refusal in the Labels dialog", async () => {
+    failNextCreate(refusal());
+    renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: "Manage labels" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Labels" }));
+    fireEvent.change(dialog.getByLabelText("New label"), { target: { value: "release" } });
+
+    fireEvent.click(dialog.getByRole("button", { name: "Add label" }));
+
+    expect(await dialog.findByRole("button", { name: "Copy request id req-1" })).toBeVisible();
+  });
+
+  it("is under the refusal of a new issue, outside its alert", async () => {
+    failNextCreate(refusal());
+    renderBoard();
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "New issue" }));
+    fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "Refused one" } });
+
+    fireEvent.click(dialog.getByRole("button", { name: "Create issue" }));
+
+    const copy = await dialog.findByRole("button", { name: "Copy request id req-1" });
+    expect(dialog.getByRole("alert")).toHaveTextContent("Refused");
+    expect(copy.closest("[role='alert']")).toBeNull();
+  });
+});
+
+/**
+ * The Labels dialog (DESIGN.md §4.1, §4.11; TAS-397). Add label is two kinds of
+ * unavailable in one button — no name, natively `disabled`; a name typed while
+ * the previous create is out, «in flight» — and every submit clears the field
+ * and puts focus back in it. The rename editor is the dialog's inner layer for
+ * `Esc`.
+ */
+describe("the Labels dialog", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  /** From the trigger the way a keyboard opens it: focus on it, then the press. */
+  const openLabels = async () => {
+    const trigger = await screen.findByRole("button", { name: "Manage labels" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    return within(await screen.findByRole("dialog", { name: "Labels" }));
+  };
+
+  it("clears the field and keeps focus in it after a submit, with the empty field's button disabled", async () => {
+    renderBoard();
+    const dialog = await openLabels();
+    const field = dialog.getByLabelText("New label");
+    const add = dialog.getByRole("button", { name: "Add label" });
+    expect(add).toBeDisabled();
+
+    fireEvent.change(field, { target: { value: "release" } });
+    expect(add).toBeEnabled();
+    add.focus();
+    fireEvent.click(add);
+
+    expect(field).toHaveValue("");
+    expect(field).toHaveFocus();
+    expect(add).toBeDisabled();
+    expect(await dialog.findByRole("button", { name: "Edit release" })).toBeInTheDocument();
+  });
+
+  it("refuses a second name while the first create is in flight, and keeps what was typed", async () => {
+    holdLabelCreate(true);
+    renderBoard();
+    const dialog = await openLabels();
+    const field = dialog.getByLabelText("New label");
+    const add = dialog.getByRole("button", { name: "Add label" });
+    fireEvent.change(field, { target: { value: "release" } });
+    fireEvent.click(add);
+    await dialog.findByRole("button", { name: "Edit release" });
+
+    fireEvent.change(field, { target: { value: "hotfix" } });
+    // «In flight»: enabled to the browser, refused by the handler, not dimmed.
+    await waitFor(() => expect(add).toHaveAttribute("aria-disabled", "true"));
+    expect(add).toBeEnabled();
+    fireEvent.click(add);
+    expect(field).toHaveValue("hotfix");
+    // Enter is refused the same way.
+    fireEvent.submit(field.closest("form")!);
+    expect(field).toHaveValue("hotfix");
+    expect(dialog.queryByRole("button", { name: "Edit hotfix" })).not.toBeInTheDocument();
+    // And `Esc` holds while the create is out (§4.11).
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Labels" })).toBeInTheDocument();
+  });
+
+  it("closes the rename editor on Escape, with focus back on its Edit, and the dialog on the next", async () => {
+    seedLabels([{ id: "label-backend", name: "backend", color: "#0052cc" }]);
+    renderBoard();
+    const dialog = await openLabels();
+    const edit = await dialog.findByRole("button", { name: "Edit backend" });
+    edit.focus();
+    fireEvent.click(edit);
+    const rename = dialog.getByLabelText("Rename backend");
+    rename.focus();
+
+    fireEvent.keyDown(rename, { key: "Escape" });
+
+    expect(dialog.queryByLabelText("Rename backend")).not.toBeInTheDocument();
+    await waitFor(() => expect(dialog.getByRole("button", { name: "Edit backend" })).toHaveFocus());
+    expect(screen.getByRole("dialog", { name: "Labels" })).toBeInTheDocument();
+
+    fireEvent.keyDown(dialog.getByRole("button", { name: "Edit backend" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Labels" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Manage labels" })).toHaveFocus();
+  });
+});
+
+/**
+ * New issue and `Esc` (DESIGN.md §4.11, TAS-397): the dialog closes, except
+ * while focus is in a box holding text-work — summary, description, a
+ * Planning field with something typed — or while the create is out.
+ */
+describe("New issue and Esc", () => {
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const openNewIssue = async () => {
+    await waitFor(() => expect(screen.getByRole("button", { name: "New" })).toBeEnabled());
+    const trigger = screen.getByRole("button", { name: "New" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    return within(await screen.findByRole("dialog", { name: "New issue" }));
+  };
+
+  it("closes from an empty summary, with focus back on New", async () => {
+    renderBoard();
+    const dialog = await openNewIssue();
+
+    fireEvent.keyDown(dialog.getByLabelText("Summary"), { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New issue" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "New" })).toHaveFocus();
+  });
+
+  it.each([
+    ["the summary", "Summary", "Half a title"],
+    ["the description", "Description", "Steps to reproduce"],
+    ["a Planning field", "Story points", "3"],
+  ])("stays open while %s holds text, with the text and focus in place", async (_case, label, text) => {
+    renderBoard();
+    const dialog = await openNewIssue();
+    const box = dialog.getByLabelText(label);
+    fireEvent.change(box, { target: { value: text } });
+    box.focus();
+
+    fireEvent.keyDown(box, { key: "Escape" });
+
+    expect(screen.getByRole("dialog", { name: "New issue" })).toBeInTheDocument();
+    expect(box).toHaveFocus();
+    expect(box).toHaveValue(text);
   });
 });

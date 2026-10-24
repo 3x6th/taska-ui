@@ -28,16 +28,14 @@ npm run build
 
 ## API Mode
 
-The default `hybrid` mode sends every call to API Gateway. Until TAS-224 it made up the project's members and the reader's role on the client, because the gateway could not read them. TAS-137 added both reads, so hybrid now passes everything through and behaves exactly like `rest`. TAS-209 makes `rest` the default and deletes `hybrid`. The `VITE_TASKA_ASSUME_PROJECT_ADMIN` flag that came with the old member view is gone, and every reader now gets the role the gateway reports.
-
-To use REST-only mode:
+The default mode is `rest`: every call goes to API Gateway, and every reader gets the role the gateway reports.
 
 ```bash
 VITE_TASKA_API_MODE=rest
 VITE_TASKA_API_BASE_URL=/api/v1
 ```
 
-Use `VITE_TASKA_API_MODE=mock` for the fully in-memory demo. The switch happens in `src/api/client.ts`; the shared UI contract is `src/api/TaskaApi.ts`, mock behavior is in `src/api/mock/MockTaskaApi.ts`, and the gateway adapter is in `src/api/rest/RestTaskaApi.ts`.
+Use `VITE_TASKA_API_MODE=mock` for the fully in-memory demo; the end-to-end suite always runs on it. An empty value means `rest`. Any other value stops `npm run dev`, `npm run test` and `npm run build` with a message, checked in `vite.config.ts`: `hybrid`, a pass-through to the gateway since TAS-224, was removed in TAS-209. The switch happens in `src/api/client.ts`; the shared UI contract is `src/api/TaskaApi.ts`, mock behavior is in `src/api/mock/MockTaskaApi.ts`, and the gateway adapter is in `src/api/rest/RestTaskaApi.ts`.
 
 ## AI harness
 

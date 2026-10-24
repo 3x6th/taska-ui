@@ -135,3 +135,70 @@ test("is not there at all for an account that is not a global admin", async ({ p
   await page.goto("/admin/audit");
   await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
 });
+
+/**
+ * The actor column (DESIGN.md §5.8, TAS-389; e2e asked for in TAS-396): one
+ * line in a row that stays 30, cut by width with an ellipsis. The seed's names
+ * are short (`Mark Lee`, `mark`, `migrator`, `vera`), so one is lengthened in
+ * place for the measurement — what is measured is the cell's CSS, and the
+ * whole name is still the detail's to show. Measured in one `evaluate` after
+ * the fonts load, so a font swap cannot land between two readings.
+ */
+test("keeps every row 30 tall with the actor on one line, cut by width", async ({ page }, testInfo) => {
+  await openAudit(page);
+  await page.evaluate(() => document.fonts.ready);
+
+  const measured = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll<HTMLTableRowElement>(".admin-audit-table tbody tr.admin-row-opens")];
+    const heights = () => [...new Set(rows.map((row) => Math.round(row.getBoundingClientRect().height)))];
+    const seeded = heights();
+    const cell = rows[0].querySelector<HTMLTableCellElement>("td.admin-audit-actor")!;
+    cell.textContent = "Maximilian Alexander Featherstonehaugh-Montgomery";
+    return {
+      seeded,
+      long: heights(),
+      width: cell.getBoundingClientRect().width,
+      cut: cell.scrollWidth > cell.clientWidth,
+      textOverflow: getComputedStyle(cell).textOverflow,
+      whiteSpace: getComputedStyle(cell).whiteSpace,
+    };
+  });
+
+  expect(measured.seeded).toEqual([30]);
+  expect(measured.long).toEqual([30]);
+  expect(measured.cut).toBe(true);
+  expect(measured.textOverflow).toBe("ellipsis");
+  expect(measured.whiteSpace).toBe("nowrap");
+  // 180 where the table overflows its box (phone). Wider, the table has spare
+  // width and auto layout hands every column a share of it — the cell cuts
+  // either way, at about 199 on 1440 (measured 2026-10-24).
+  if (testInfo.project.name === "mobile") expect(measured.width).toBeLessThanOrEqual(180.5);
+});
+
+/**
+ * «Filter by this actor» from the keyboard (§5.8, TAS-396): under the full id
+ * in the opened detail, it writes the actor filter into the address, page 1,
+ * and puts focus on the open half of the new chip — next Tab, its ×.
+ */
+test("filters the log by an entry's actor from the opened detail, keyboard only", async ({ page }) => {
+  await openAudit(page);
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page).toHaveURL(/\/admin\/audit\?page=2$/);
+
+  const toggle = entryRows(page).first().getByRole("button", { name: /^Changes of / });
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  const link = page.getByRole("link", { name: "Filter by this actor" });
+  const actorId = (await link.locator("xpath=preceding-sibling::span[1]").textContent())!;
+  await link.focus();
+  await page.keyboard.press("Enter");
+
+  await expect(page).toHaveURL(new RegExp(`/admin/audit\\?filter=actorUserId%3Aequals%3A${actorId}$`));
+  const chip = page.getByRole("button", { name: `Actor id is ${actorId}`, exact: true });
+  await expect(chip).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: `Remove filter Actor id is ${actorId}` })).toBeFocused();
+  // Every row now is this actor's, whatever name the log kept for them.
+  await expect(entryRows(page).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "Filter by this actor" })).toHaveCount(0);
+});

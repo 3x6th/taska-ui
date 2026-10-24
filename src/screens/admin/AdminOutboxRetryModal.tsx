@@ -148,9 +148,11 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
    * answer, whatever it turns out to be, arrives as a row that changed or a row
    * that did not.
    *
-   * Invalidating rather than disabling Cancel or swallowing `Esc`: a modal that
-   * cannot be dismissed while a request hangs is a modal that can trap someone
-   * for as long as the gateway does, and §4.11 gives `Esc` unconditionally.
+   * Invalidating rather than disabling Cancel: a modal that cannot be dismissed
+   * while a request hangs is a modal that can trap someone for as long as the
+   * gateway does. `Esc` is held while the retry is out (§4.11 since TAS-397, so
+   * it never looks like it cancelled the retry); Cancel, ✕ and the backdrop are
+   * the ways out then.
    *
    * The answer still arrives, late — see `OutboxRetryArrival` for what the
    * section may and may not do with one that nobody is waiting at.
@@ -164,20 +166,16 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
   // Read through a ref for the reason `AdminUserActionModal` gives: the handler
   // closes over the draft, which changes on every keystroke, and rebinding a
   // document listener per character is a cost with no upside.
-  const keyboard = useRef({ submit, dismiss });
+  const keyboard = useRef({ submit });
   useEffect(() => {
-    keyboard.current = { submit, dismiss };
+    keyboard.current = { submit };
   });
 
   useEffect(() => {
-    // §4.11: `Esc` cancels, `Cmd/Ctrl+Enter` confirms. Bound here rather than in
-    // `Modal`, which carries neither — putting them there would change the
-    // board's modals under a story that is not about them (§7 tracks that gap).
+    // §4.11's `Cmd/Ctrl+Enter` confirms, and lives here. `Esc` is `Modal`'s
+    // since TAS-397: it dismisses, except while the reason holds text
+    // (`data-unsaved-text` below) or the retry is out (`busy`).
     const onKeyDown = (keyEvent: KeyboardEvent) => {
-      if (keyEvent.key === "Escape") {
-        keyboard.current.dismiss();
-        return;
-      }
       if (keyEvent.key === "Enter" && (keyEvent.metaKey || keyEvent.ctrlKey)) {
         keyEvent.preventDefault();
         keyboard.current.submit();
@@ -188,7 +186,7 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
   }, []);
 
   return (
-    <Modal onClose={dismiss} title="Retry outbox event">
+    <Modal busy={run.isPending} onClose={dismiss} title="Retry outbox event">
       <form
         className="form-stack"
         onSubmit={(formEvent) => {
@@ -231,6 +229,8 @@ export function AdminOutboxRetryModal({ event, onClose, onDone }: AdminOutboxRet
           <textarea
             aria-describedby={hintId}
             autoFocus
+            // A reason being written is text-work: `Esc` leaves the dialog open (§4.11).
+            data-unsaved-text={reason !== "" ? "true" : undefined}
             maxLength={OUTBOX_RETRY_REASON_MAX_LENGTH}
             onChange={(changeEvent) => setReason(changeEvent.target.value)}
             required

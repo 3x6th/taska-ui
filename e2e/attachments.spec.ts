@@ -132,9 +132,12 @@ test("refuses a file the server's allowlist would refuse, without uploading anyt
 
   // Named, and in a sentence — the refusal this side produces says which file
   // and which types would have worked, rather than repeating the MIME string
-  // the server would have answered with.
+  // the server would have answered with. Looked for in the boxes: the same
+  // sentence is also the section's visually hidden status (TAS-397).
   await expect(
-    attachments.getByText("bundle.zip is not a type this issue accepts. Attach JPEG, PNG or WebP images"),
+    attachments
+      .locator(".attachment-notes")
+      .getByText("bundle.zip is not a type this issue accepts. Attach JPEG, PNG or WebP images"),
   ).toBeVisible();
   await expect(attachments.getByRole("button", { name: "Download bundle.zip" })).toHaveCount(0);
   await expect(attachments.getByText("No attachments yet")).toBeVisible();
@@ -302,7 +305,7 @@ test("uploads dropped files one after another and refuses the type the server wo
   ]);
 
   await expect(attachments).not.toHaveClass(/is-drop-target/);
-  await expect(attachments.getByText(/cat\.gif is not a type this issue accepts/)).toBeVisible();
+  await expect(attachments.locator(".attachment-notes").getByText(/cat\.gif is not a type this issue accepts/)).toBeVisible();
   await expect(attachments.getByRole("button", { name: "Download dropped-one.txt" })).toBeVisible();
   await expect(attachments.getByRole("button", { name: "Download dropped-two.txt" })).toBeVisible();
   await expect(attachments.getByRole("button", { name: "Download cat.gif" })).toHaveCount(0);

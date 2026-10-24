@@ -503,3 +503,46 @@ describe("archiving a project from the dialog", () => {
     expect(within(dialog).queryByRole("button", { name: /Archive/ })).not.toBeInTheDocument();
   });
 });
+
+/**
+ * `Esc` in Edit project (DESIGN.md §4.11, TAS-397): the archive question is
+ * the innermost layer while it is open — `Esc` anywhere in the dialog closes
+ * it, focus on its trigger — and the dialog stays while the description holds
+ * text that differs from what it opened with. Otherwise the dialog closes.
+ */
+describe("Edit project and Esc", () => {
+  beforeEach(() => reset());
+
+  it("closes the archive question from anywhere in the dialog, and the dialog on the next press", () => {
+    const { dialog, onClose } = renderDialog(baseProject());
+    const trigger = within(dialog).getByRole("button", { name: "Archive project" });
+    fireEvent.click(trigger);
+    const name = within(dialog).getByLabelText("Name");
+    name.focus();
+
+    fireEvent.keyDown(name, { key: "Escape" });
+
+    expect(within(dialog).queryByRole("button", { name: "Archive TAS" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(calls.archives).toEqual([]);
+
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays open while the description differs from what it opened with", () => {
+    const { dialog, onClose } = renderDialog(baseProject());
+    const description = within(dialog).getByLabelText("Description");
+    description.focus();
+
+    // As opened: not text-work yet.
+    expect(description).not.toHaveAttribute("data-unsaved-text");
+    fireEvent.change(description, { target: { value: "Gateway, services and the board" } });
+    fireEvent.keyDown(description, { key: "Escape" });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(description).toHaveFocus();
+    expect(description).toHaveAttribute("data-unsaved-text", "true");
+  });
+});

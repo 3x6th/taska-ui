@@ -75,7 +75,7 @@ import { PendingValue, Unknown } from "../components/Unknown";
 import { UserProfileMenu } from "../components/UserProfileMenu";
 import { useMeta } from "../hooks/useMeta";
 import { carriesFiles, closeTab, openBlankTab, saveBlob, sendTabTo } from "../lib/browserFiles";
-import { tabbables } from "../lib/focusTrap";
+import { focusLost, tabbables } from "../lib/focusTrap";
 import { personFor, type NamedBy, type Person } from "../lib/people";
 import { boardKey, boardQueryOptions } from "../lib/boardQuery";
 import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
@@ -668,12 +668,25 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    * the refusal. Heard here, once, for every mutation the board, its panel and
    * its dialogs make, by `details.reason` and nothing else; the writes that are
    * not mutations (the attachment legs) call `rereadContextIfArchived`.
+   *
+   * A write refused with `PERMISSION_DENIED` reads the context again the same
+   * way (TAS-209, api-contract-guard's N2): the role the board gated on is the
+   * one the server has just disagreed with — demoted to VIEWER or removed while
+   * the board was open — so the board takes the role, or the refusal of the
+   * read, from that read rather than from the stale one. The refusal itself is
+   * still said where it landed, with its request id; the re-read only changes
+   * what the board offers next.
    */
   useEffect(() => {
     if (!projectId) return;
     return queryClient.getMutationCache().subscribe((event) => {
       if (event.type !== "updated" || event.action.type !== "error") return;
-      rereadContextIfArchived(queryClient, projectId, event.action.error);
+      const error = event.action.error;
+      if (apiErrorFacts(error).code === "PERMISSION_DENIED") {
+        void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
+        return;
+      }
+      rereadContextIfArchived(queryClient, projectId, error);
     });
   }, [projectId, queryClient]);
 
@@ -715,10 +728,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
       archiveLineRef.current?.focus();
       return;
     }
-    const active = document.activeElement;
-    const lost =
-      !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
-    if (!lost) return;
+    if (!focusLost()) return;
     const dialog = document.querySelector<HTMLElement>(".modal[aria-modal='true']");
     if (dialog) {
       const inside =
@@ -737,22 +747,23 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
   }, [archiveState]);
 
   /**
-   * New issue, Labels and Edit project stay open when the project is archived
-   * under them, and the controls that opened them leave the board with the
-   * archive. Closed then, a dialog has nothing to hand focus back to (`Modal`
-   * tries its opener, which is gone), so it lands on the board's archive line
-   * rather than on `<body>`, where the next Tab would start over from the top.
+   * Where focus goes when a board dialog closes and `Modal` had no opener to
+   * hand it back to (§4.11, TAS-397: the opener, else the screen's rule, else
+   * the board's back button, as the panel's §4.10). New issue, Labels and Edit
+   * project stay open when the project is archived under them, and the
+   * controls that opened them leave the board with the archive; closed then,
+   * focus lands on the board's archive line rather than on `<body>`, where the
+   * next Tab would start over from the top. Otherwise — an opener gone for
+   * another reason, a role re-read that took "New" with it — the back button.
    */
-  const writeDialogOpen = creating || managingLabels || editingProject;
-  const writeDialogWasOpen = useRef(writeDialogOpen);
+  const dialogOpen = creating || managingLabels || editingProject || managingMembers || managingWorkflows;
+  const dialogWasOpen = useRef(dialogOpen);
   useEffect(() => {
-    const closed = writeDialogWasOpen.current && !writeDialogOpen;
-    writeDialogWasOpen.current = writeDialogOpen;
-    if (!closed || !archived) return;
-    const active = document.activeElement;
-    if (active && active !== document.body && active.isConnected) return;
-    archiveLineRef.current?.focus();
-  }, [archived, writeDialogOpen]);
+    const closed = dialogWasOpen.current && !dialogOpen;
+    dialogWasOpen.current = dialogOpen;
+    if (!closed || !focusLost()) return;
+    (archived ? archiveLineRef.current : backButtonRef.current)?.focus();
+  }, [archived, dialogOpen]);
 
   /**
    * The panel deleted an issue, or found it already gone (§4.10). The card
@@ -2171,6 +2182,31 @@ function IssuePanel({
     setPlanningArchived(archivedAt !== null);
     if (archivedAt !== null) setPlanning(serverPlanning);
   }
+  /**
+   * So too a date box holding an entry the browser has not yet made a date of
+   * (§5.7, TAS-397: `validity.badInput`): it shows the stored date or the empty
+   * mask. The draft reset above cannot reach it — the segments never reached
+   * React, so a stored "no date" renders the same `""` before and after and
+   * leaves `12/--/----` standing, read-only. Written to the control after the
+   * turn commits, as `commitDate` writes it; no line, no motion, no
+   * announcement, and the box loses `data-unsaved-text` with its draft.
+   */
+  const startDateBox = useRef<HTMLInputElement>(null);
+  const dueDateBox = useRef<HTMLInputElement>(null);
+  const storedDates = useRef({ startDate: serverPlanning.startDate, dueDate: serverPlanning.dueDate });
+  useEffect(() => {
+    storedDates.current = { startDate: serverPlanning.startDate, dueDate: serverPlanning.dueDate };
+  });
+  useEffect(() => {
+    if (!planningArchived) return;
+    const boxes = [
+      ["startDate", startDateBox.current],
+      ["dueDate", dueDateBox.current],
+    ] as const;
+    for (const [field, box] of boxes) {
+      if (box && isIncompleteDateEntry(box)) box.value = storedDates.current[field];
+    }
+  }, [planningArchived]);
 
   const workflow = issue ? workflowFor(workflows, issue.issueType) : undefined;
   // These buttons are the drag's keyboard equivalent (§5.3), so they answer to
@@ -3109,6 +3145,7 @@ function IssuePanel({
                   data-unsaved-text={unsavedPlanning("startDate")}
                   onKeyDown={planningKeyDown}
                   readOnly={!canEdit}
+                  ref={startDateBox}
                   type="date"
                   value={planning.startDate}
                 />
@@ -3123,6 +3160,7 @@ function IssuePanel({
                   data-unsaved-text={unsavedPlanning("dueDate")}
                   onKeyDown={planningKeyDown}
                   readOnly={!canEdit}
+                  ref={dueDateBox}
                   type="date"
                   value={planning.dueDate}
                 />
@@ -4279,7 +4317,9 @@ function IssueLabelsSection({
         <p className="issue-links-empty">This project has no labels yet.</p>
       ) : null}
 
-      {error ? <ErrorNote>{error}</ErrorNote> : null}
+      {/* The request id on its own line under the sentence, inside the box
+          (§5.6, «Request id отказа — один рецепт», TAS-397). */}
+      {error ? <ErrorNote requestId={failure ? apiErrorFacts(failure).requestId : null}>{error}</ErrorNote> : null}
 
       {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("labels")}</p> : null}
       {labelsQuery.data && labels.length === 0 ? <p className="issue-links-empty">No labels yet</p> : null}
@@ -4514,7 +4554,11 @@ function IssueLinksSection({
         </form>
       ) : null}
 
-      {error ? <ErrorNote>{error}</ErrorNote> : null}
+      {/* The request id under the sentence (§5.6, TAS-397) — only for the
+          server's refusal: a check made here before sending has no id. */}
+      {error ? (
+        <ErrorNote requestId={localError === null && failure ? apiErrorFacts(failure).requestId : null}>{error}</ErrorNote>
+      ) : null}
 
       {unavailable ? <p className="issue-links-empty is-unavailable">{partUnavailableText("links")}</p> : null}
       {/* Only a part the server sent may say this. A part it did not send has
@@ -4622,6 +4666,12 @@ const attachmentStepText: Record<AttachmentUploadStep, string> = {
 interface AttachmentNotice {
   tone: "error" | "info";
   text: string;
+  /**
+   * The gateway's `X-Request-Id` of the refusal, printed under the sentence in
+   * its box (§5.6, «Request id отказа — один рецепт», TAS-397). Never for the
+   * object store's own leg, which no gateway answered, and never in mock mode.
+   */
+  requestId?: string | null;
 }
 
 /** A file waiting its turn behind the upload in flight (TAS-253). */
@@ -4738,7 +4788,11 @@ function IssueAttachmentsSection({
     },
     onError: (error, _attachmentId, context) => {
       attachmentsCache.restore(context?.previous);
-      say({ tone: "error", text: refusalWords(error) ?? "The attachment could not be removed." });
+      say({
+        tone: "error",
+        text: refusalWords(error) ?? "The attachment could not be removed.",
+        requestId: apiErrorFacts(error).requestId,
+      });
     },
     onSettled: settle,
   });
@@ -4778,7 +4832,8 @@ function IssueAttachmentsSection({
     },
     onError: (error, { tab }) => {
       closeTab(tab);
-      say({ tone: "error", text: apiErrorFacts(error).message ?? "The link to this file could not be created." });
+      const { message, requestId } = apiErrorFacts(error);
+      say({ tone: "error", text: message ?? "The link to this file could not be created.", requestId });
     },
   });
 
@@ -4840,7 +4895,8 @@ function IssueAttachmentsSection({
       });
     },
     onError: (error) => {
-      say({ tone: "error", text: apiErrorFacts(error).message ?? "The link to this file could not be created." });
+      const { message, requestId } = apiErrorFacts(error);
+      say({ tone: "error", text: message ?? "The link to this file could not be created.", requestId });
     },
   });
 
@@ -4881,6 +4937,7 @@ function IssueAttachmentsSection({
       addNotice({
         tone: "error",
         text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be prepared."}`,
+        requestId: apiErrorFacts(error).requestId,
       });
       return;
     }
@@ -4893,7 +4950,13 @@ function IssueAttachmentsSection({
       await taskaApi.putAttachmentBytes(ticket.uploadUrl, file, candidate.contentType);
     } catch (error) {
       setPending(null);
-      addNotice({ tone: "error", text: uploadFailureText(error, file.name) });
+      // The object store's refusal has no gateway behind it, so no request id;
+      // anything else that failed here is said with the id it carries.
+      addNotice({
+        tone: "error",
+        text: uploadFailureText(error, file.name),
+        requestId: error instanceof ObjectStoreError ? null : apiErrorFacts(error).requestId,
+      });
       return;
     }
 
@@ -4944,6 +5007,7 @@ function IssueAttachmentsSection({
         addNotice({
           tone: "error",
           text: `${file.name} may or may not have been attached: the confirmation failed and the list could not be re-read. Reopen this issue to check.`,
+          requestId: apiErrorFacts(error).requestId,
         });
         return;
       }
@@ -4958,6 +5022,7 @@ function IssueAttachmentsSection({
       addNotice({
         tone: "error",
         text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be confirmed."}`,
+        requestId: apiErrorFacts(error).requestId,
       });
     }
   };
@@ -5113,17 +5178,28 @@ function IssueAttachmentsSection({
         </div>
       ) : null}
 
-      {/* One live region that stays mounted and changes its content, rather
-          than a region that appears together with what it has to announce — §7
-          records the second shape as depending on screen-reader timing. Polite,
-          not assertive: every sentence follows something the reader just did,
-          and an `alert` would cut across whatever they are reading. Errors first,
-          then information, each in §5.6's box; empty, it takes no space. */}
-      <div aria-live="polite" className="attachment-notes">
+      {/* What the last action said, for a screen reader: one visually hidden
+          `role="status"` that stays mounted and changes its words, rather than
+          a region that appears together with them — §7 records that shape as
+          depending on screen-reader timing. Polite, not assertive: every
+          sentence follows something the reader just did. Only the sentences:
+          the boxes below carry request ids, and no ancestor of an id may be a
+          live region (§5.6, TAS-397), so the boxes are plain content. */}
+      <p className="visually-hidden" role="status">
+        {[...errorNotices, ...infoNotices].map((notice) => notice.text).join(" ")}
+      </p>
+      {/* Errors first, then information, each in §5.6's box, the refusal's
+          request id on the box's detail line; empty, it takes no space. */}
+      <div className="attachment-notes">
         {errorNotices.map((notice, index) => (
-          <p className="attachment-note is-error" key={`error-${index}`}>
+          <div className="attachment-note is-error" key={`error-${index}`}>
             {notice.text}
-          </p>
+            {notice.requestId ? (
+              <p className="error-note-detail">
+                <RequestId value={notice.requestId} />
+              </p>
+            ) : null}
+          </div>
         ))}
         {infoNotices.map((notice, index) => (
           <p className="attachment-note" key={`info-${index}`}>
@@ -5413,6 +5489,7 @@ function CommentsSection({
   const totalCount = commentsQuery.data?.pages[0]?.totalCount ?? comments.length;
   const mutationError = addComment.error ?? updateComment.error ?? deleteComment.error;
   const mutationWords = mutationError ? (refusalWords(mutationError) ?? mutationError.message) : "";
+  const mutationRequestId = mutationError ? apiErrorFacts(mutationError).requestId : null;
   // The composer stays for a draft the archive caught unsent, read-only and
   // without its button; otherwise it goes with the right to comment.
   const keepsDraft = !canComment && archived && draft !== "";
@@ -5471,7 +5548,9 @@ function CommentsSection({
         </form>
       ) : null}
 
-      {commentsQuery.isError ? <ErrorNote>{commentsQuery.error.message}</ErrorNote> : null}
+      {commentsQuery.isError ? (
+        <ErrorNote requestId={apiErrorFacts(commentsQuery.error).requestId}>{commentsQuery.error.message}</ErrorNote>
+      ) : null}
       {/* A write's refusal, announced since TAS-259: a confirmed delete moves
           focus to the heading, so without a word a refusal would just appear.
           One polite region that stays mounted and changes its text — the work
@@ -5479,11 +5558,17 @@ function CommentsSection({
           `ErrorNote`, which mounts together with its text. `.error-note`'s box
           is drawn around it only while it has something to say; empty, the
           wrapper has no class and the sentence no margin, so it takes no
-          space. */}
+          space. The request id is the box's detail line, a sibling of the
+          sentence and outside its region (§5.6, TAS-397). */}
       <div className={mutationError ? "error-note" : undefined}>
         <p aria-live="polite" className="error-note-sentence">
           {mutationWords}
         </p>
+        {mutationRequestId ? (
+          <p className="error-note-detail">
+            <RequestId value={mutationRequestId} />
+          </p>
+        ) : null}
       </div>
 
       {commentsQuery.isPending ? <p className="comments-empty">Loading comments</p> : null}
@@ -6036,13 +6121,57 @@ function ProjectLabelsModal({
     if (!archived) return;
     const target = archiveRefused ? refusalRef.current : lineRef.current;
     if (!target) return;
-    const active = document.activeElement;
-    const lost =
-      !active || active === document.body || !active.isConnected || (active as HTMLButtonElement).disabled === true;
-    if (lost) target.focus();
+    if (focusLost()) target.focus();
   }, [archived, archiveRefused]);
 
+  /**
+   * The rename editor is this dialog's inner layer (§4.11's `Esc` order,
+   * TAS-397): `Esc` — wherever focus is in the dialog — and Cancel close it,
+   * and focus goes back to the row's Edit, the control that opened it. Once
+   * archived the row has no Edit, and focus goes where the archive put it
+   * above: the refusal, else the line. `Esc` listens on `document`, ahead of
+   * `Modal`'s `window` listener, and takes the key with `preventDefault()`.
+   */
+  const newLabelRef = useRef<HTMLInputElement>(null);
+  const editButtons = useRef(new Map<string, HTMLButtonElement>());
+  const renameReturn = useRef<string | null>(null);
+  const closeRename = () => {
+    if (editing) renameReturn.current = editing.id;
+    setEditing(null);
+  };
+  useEffect(() => {
+    const labelId = renameReturn.current;
+    if (editing || labelId === null) return;
+    renameReturn.current = null;
+    (editButtons.current.get(labelId) ?? (archiveRefused ? refusalRef.current : lineRef.current))?.focus();
+  }, [editing, archiveRefused]);
+  const renameEscape = useRef(closeRename);
+  useEffect(() => {
+    renameEscape.current = closeRename;
+  });
+  const renaming = editing !== null;
+  useEffect(() => {
+    if (!renaming) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      event.preventDefault();
+      renameEscape.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [renaming]);
+
   const trimmed = name.trim();
+  /**
+   * Add label is two kinds of unavailable in one button (§4.1): with no name,
+   * natively `disabled`, before the press; with a name typed while the previous
+   * create is still out, «in flight» — `aria-disabled`, not dimmed,
+   * `cursor: progress`, label unchanged — and the submit refuses before it
+   * clears anything, so the typed name stays. Refused rather than queued: the
+   * create's rollback restores its own start snapshot, which would erase a
+   * second optimistic row.
+   */
+  const addInFlight = trimmed !== "" && createLabel.isPending;
   const badge = keyBadgeStyle(projectKey, projectColor);
 
   return (
@@ -6059,6 +6188,8 @@ function ProjectLabelsModal({
           </span>
         ) : undefined
       }
+      // A label write in flight holds `Esc` (§4.11); ✕ and the scrim still close.
+      busy={createLabel.isPending || updateLabel.isPending || deleteLabel.isPending}
       onClose={onClose}
     >
       {archived ? (
@@ -6077,7 +6208,8 @@ function ProjectLabelsModal({
           className="label-create-form"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!trimmed) return;
+            // Enter is refused the same way as the button (see `addInFlight`).
+            if (!trimmed || createLabel.isPending) return;
             createLabel.mutate({ name: trimmed, color });
             // Cleared here rather than in the mutation's `onSuccess`, for the
             // reason the label and link pickers carry above: a reset that lands
@@ -6090,6 +6222,10 @@ function ProjectLabelsModal({
             // a write arriving late enough to land on something newer, and is
             // guarded there rather than moved.
             setName("");
+            // And the field takes focus, as Add does in Members (§4.1, §4.22):
+            // the button just pressed turns `disabled` with the field empty,
+            // which dropped focus to `<body>` (measured 2026-10-24).
+            newLabelRef.current?.focus();
           }}
         >
           <label className="field">
@@ -6099,18 +6235,29 @@ function ProjectLabelsModal({
               maxLength={50}
               onChange={(event) => setName(event.target.value)}
               placeholder="backend"
+              ref={newLabelRef}
               value={name}
             />
           </label>
           <LabelSwatches onPick={setColor} selected={color} />
-          <button className="primary-button" disabled={!trimmed || createLabel.isPending} type="submit">
+          <button
+            aria-disabled={addInFlight || undefined}
+            className="primary-button"
+            disabled={!trimmed}
+            type="submit"
+          >
             Add label
           </button>
         </form>
       )}
 
       {error ? (
-        <ErrorNote archiveNote={archiveRefused} ref={refusalRef}>
+        <ErrorNote
+          archiveNote={archiveRefused}
+          ref={refusalRef}
+          // Under the sentence, inside the box (§5.6, TAS-397).
+          requestId={failure ? apiErrorFacts(failure).requestId : null}
+        >
           {error}
         </ErrorNote>
       ) : null}
@@ -6159,7 +6306,7 @@ function ProjectLabelsModal({
                       <Check size={15} />
                     </button>
                   )}
-                  <button aria-label="Cancel" className="icon-button" onClick={() => setEditing(null)} type="button">
+                  <button aria-label="Cancel" className="icon-button" onClick={closeRename} type="button">
                     <X size={15} />
                   </button>
                 </form>
@@ -6177,6 +6324,13 @@ function ProjectLabelsModal({
                     // answered for yet, and nothing may be addressed on a label
                     // whose id never arrived.
                     disabled={pending || !label.id}
+                    ref={(node) => {
+                      if (!node || !label.id) return;
+                      editButtons.current.set(label.id, node);
+                      return () => {
+                        editButtons.current.delete(label.id);
+                      };
+                    }}
                     onClick={() =>
                       setEditing({
                         id: label.id,
@@ -6579,8 +6733,12 @@ function CreateIssueModal({
    */
   const archiveRefused = isProjectArchived(createIssue.error) && !(dateNotice && !archived);
 
+  /** Text-work holds `Esc` (§4.11): a box with something typed in it, archived to `readOnly` or not. */
+  const unsavedText = (value: string) => (value !== "" ? "true" : undefined);
+
   return (
     <Modal
+      busy={createIssue.isPending}
       title="New issue"
       // Same as `ProjectLabelsModal`: an unstyled pill would be an empty chip.
       eyebrow={
@@ -6646,6 +6804,7 @@ function CreateIssueModal({
           <span>Summary</span>
           <input
             autoFocus
+            data-unsaved-text={unsavedText(summary)}
             onChange={(event) => setSummary(event.target.value)}
             readOnly={archived}
             value={summary}
@@ -6654,6 +6813,7 @@ function CreateIssueModal({
         <label className="field">
           <span>Description</span>
           <textarea
+            data-unsaved-text={unsavedText(description)}
             onChange={(event) => setDescription(event.target.value)}
             readOnly={archived}
             rows={4}
@@ -6723,6 +6883,7 @@ function CreateIssueModal({
               <label className="field">
                 <span>Story points</span>
                 <input
+                  data-unsaved-text={unsavedText(planning.storyPoints)}
                   inputMode="decimal"
                   onChange={(event) => draftOf("storyPoints")(event.target.value)}
                   placeholder={PLANNING_EMPTY_PLACEHOLDER}
@@ -6738,6 +6899,7 @@ function CreateIssueModal({
                 <label htmlFor={`${planningId}-original-estimate`}>Original estimate</label>
                 <input
                   aria-describedby={`${planningId}-original-estimate-hint`}
+                  data-unsaved-text={unsavedText(planning.originalEstimateMinutes)}
                   id={`${planningId}-original-estimate`}
                   onChange={(event) => draftOf("originalEstimateMinutes")(event.target.value)}
                   placeholder={PLANNING_EMPTY_PLACEHOLDER}
@@ -6753,6 +6915,7 @@ function CreateIssueModal({
                 <label htmlFor={`${planningId}-remaining-estimate`}>Remaining estimate</label>
                 <input
                   aria-describedby={`${planningId}-remaining-estimate-hint`}
+                  data-unsaved-text={unsavedText(planning.remainingEstimateMinutes)}
                   id={`${planningId}-remaining-estimate`}
                   onChange={(event) => draftOf("remainingEstimateMinutes")(event.target.value)}
                   placeholder={PLANNING_EMPTY_PLACEHOLDER}
@@ -6794,6 +6957,7 @@ function CreateIssueModal({
                   aria-describedby={markedDate === "startDate" ? noticeId : undefined}
                   aria-invalid={markedDate === "startDate" ? true : undefined}
                   data-empty={planning.startDate === ""}
+                  data-unsaved-text={unsavedText(planning.startDate)}
                   // On blur as well as on submit, so the reader hears about it
                   // at the moment the panel would have told them — when they
                   // leave the box — rather than only once they have pressed a
@@ -6821,6 +6985,7 @@ function CreateIssueModal({
                   aria-describedby={markedDate === "dueDate" ? noticeId : undefined}
                   aria-invalid={markedDate === "dueDate" ? true : undefined}
                   data-empty={planning.dueDate === ""}
+                  data-unsaved-text={unsavedText(planning.dueDate)}
                   onBlur={checkDates}
                   onChange={(event) => {
                     draftOf("dueDate")(event.target.value);
@@ -6850,6 +7015,9 @@ function CreateIssueModal({
             id={noticeId}
             key={dateNotice && !archived ? dateNotice.seq : "write"}
             live="alert"
+            // The create's refusal only: the date line is this form's own check
+            // and has no id (§5.6, TAS-397). Outside the alert, under it.
+            requestId={dateNotice && !archived ? null : apiErrorFacts(createIssue.error).requestId}
           >
             {formNotice}
           </ErrorNote>

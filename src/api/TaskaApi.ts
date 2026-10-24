@@ -807,8 +807,7 @@ export interface TaskaApi {
    * nothing else. Answers with the whole project as the server now holds it.
    *
    * Backend PR #155 (TAS-145), merged and deployed: without a token the route
-   * answers 401 on 2026-10-23, where it answered 405 before. `HybridTaskaApi`
-   * delegates this straight to the gateway, like everything else.
+   * answers 401 on 2026-10-23, where it answered 405 before.
    *
    * What the Java does that the yml does not say, read out of
    * `ProjectController` and `ProjectServiceImpl` as merged, each of which
@@ -847,8 +846,7 @@ export interface TaskaApi {
    * "ADMIN"`.
    *
    * Backend PR #159 (TAS-146), merged and deployed: without a token the route
-   * answers 401 on 2026-10-23, where it answered 405 before. `HybridTaskaApi`
-   * passes it straight through.
+   * answers 401 on 2026-10-23, where it answered 405 before.
    *
    * What the merged Java does, which every implementation reproduces:
    *
@@ -878,8 +876,7 @@ export interface TaskaApi {
    * board's only frame read since TAS-251; see `ProjectContext` for the shape.
    *
    * **Merged at develop `fa90b51` and deployed on stage 2026-10-12** (probed
-   * without a token; the shape is not yet measured with one). `HybridTaskaApi`
-   * delegates straight to the gateway.
+   * without a token; the shape is not yet measured with one).
    *
    * What the Java does that the yml does not say, and every implementation
    * reproduces:
@@ -943,9 +940,10 @@ export interface TaskaApi {
    * server stays authoritative either way.
    *
    * A failed project read rejects this call, in every implementation that
-   * reads one. Since TAS-224 that includes the deployed stand, where `hybrid`
-   * used to answer without asking — so the board's "your role could not be
-   * loaded" state (TAS-163) is reachable there.
+   * reads one. On the deployed stand that has been so since TAS-224 — until
+   * then the `hybrid` mode (removed in TAS-209) answered without asking — so
+   * the board's "your role could not be loaded" state (TAS-163) is reachable
+   * there.
    */
   getMembership(projectId: string): Promise<ProjectMembership>;
   /**
@@ -956,8 +954,8 @@ export interface TaskaApi {
    * Backend TAS-137 (PR #152), merged into `develop` `1cfe4d79f074` and in
    * `docs/contract/openapi.yml`. Deployed: probed without a token on 2026-09-16
    * the route answers 401, where it answered 405 on 2026-09-12. The `rest` leg
-   * was written against the PR before it merged, and since TAS-224 `hybrid`
-   * delegates to it, so this is the read the stand makes.
+   * was written against the PR before it merged, and it is the read the stand
+   * makes.
    *
    * **An unreadable avatar object costs that member's avatar, not the read.**
    * auth-service presigns each avatar owner's object and, since TAS-225, falls
@@ -981,8 +979,7 @@ export interface TaskaApi {
   /**
    * The three member writes (TAS-158): add somebody by user id, change a
    * member's role, remove a member. In `docs/contract/openapi.yml` as
-   * `addProjectMember`, `changeProjectMemberRole` and `removeProjectMember`;
-   * `HybridTaskaApi` passes all three straight to the gateway.
+   * `addProjectMember`, `changeProjectMemberRole` and `removeProjectMember`.
    *
    * Deployed: probed without a token on 2026-09-16 at 21:37 UTC, `POST …/members`,
    * `PATCH …/members/{userId}` and `DELETE …/members/{userId}` each answer 401
@@ -1283,7 +1280,7 @@ export interface TaskaApi {
    * The labels on one issue. Nothing in the UI calls it since TAS-246: the
    * panel's detail read carries the same set (`IssueDetails.labels`) and a
    * write is settled by re-reading that. Kept because it is a route of the
-   * contract, and the three implementations stay interchangeable on it.
+   * contract, and the two implementations stay interchangeable on it.
    */
   listIssueLabels(projectId: string, issueId: string): Promise<Label[]>;
   /**
@@ -1772,8 +1769,7 @@ export interface TaskaApi {
    * `398285cde074`. **Merged and deployed 2026-10-19**: probed that day with a
    * token, `200` with `{entries, pagination}`, newest first, an `id` on every
    * entry. The Audit section's one read (DESIGN.md §5.8). `page` is 1-based on
-   * both sides of this interface; the rest leg converts it. `HybridTaskaApi`
-   * delegates straight to the gateway.
+   * both sides of this interface; the rest leg converts it.
    *
    * A gateway without the route answers the static-resource 404, which
    * `isUndeployedRoute` in src/api/errors.ts reads and the section states as

@@ -15,9 +15,16 @@ interface ModalProps {
    * the edge the modal clips at.
    */
   focusableBody?: boolean;
+  /**
+   * A write begun in this dialog is in flight: `Esc` does nothing until it
+   * answers (DESIGN.md §4.11, as §4.28), so it never looks like it cancelled a
+   * write that is still going. ✕ and the scrim still close; the write is not
+   * cancelled by them either.
+   */
+  busy?: boolean;
 }
 
-export function Modal({ title, eyebrow, onClose, children, footer, focusableBody = false }: ModalProps) {
+export function Modal({ title, eyebrow, onClose, children, footer, focusableBody = false, busy = false }: ModalProps) {
   const dialogRef = useRef<HTMLElement>(null);
   /**
    * The control the dialog was opened from, so closing hands focus back to it
@@ -56,6 +63,45 @@ export function Modal({ title, eyebrow, onClose, children, footer, focusableBody
       opener.focus();
     };
   }, [opener]);
+
+  /**
+   * `Esc` (DESIGN.md §4.11, TAS-397): one listener for every dialog of the
+   * product, which closes exactly one thing — the innermost — in §4.10's
+   * order. The inner layers come first by where they listen, not by when they
+   * registered: a results list, a question strip or an inner editor handles
+   * `Esc` in React or on `document`, calls `preventDefault()` and leaves the
+   * dialog open; this listens on `window`, where the event arrives last, and
+   * skips what was prevented. Then, in order: nothing during IME composition;
+   * nothing while focus is in a field holding text-work (§5.5) — a field
+   * marks itself `data-unsaved-text="true"`, as in the issue panel, and keeps
+   * the mark when an archive makes it `readOnly`; nothing while a write begun
+   * here is in flight (`busy`); otherwise the dialog closes, as ✕ does, a
+   * read-only one included. Where focus goes then is the cleanup above's and
+   * the screen's.
+   *
+   * Read through refs, so the listener is bound once rather than on every
+   * render of a form being typed into.
+   */
+  const onCloseRef = useRef(onClose);
+  const busyRef = useRef(busy);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+    busyRef.current = busy;
+  });
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.dataset.unsavedText === "true" && dialog.contains(active)) return;
+      if (busyRef.current) return;
+      event.preventDefault();
+      onCloseRef.current();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, []);
 
   return (
     <div className="modal-layer" role="presentation">

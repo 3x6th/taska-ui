@@ -878,3 +878,58 @@ describe("a project archived under its open Edit dialog", () => {
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 });
+
+/**
+ * New project (DESIGN.md §4.11, §5.6; TAS-397): a refused create states its
+ * request id under the sentence, and `Esc` is `Modal`'s — it closes, except
+ * while the description holds text-work.
+ */
+describe("New project", () => {
+  const api = fakeApi as unknown as Record<string, unknown>;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  const openNewProject = async () => {
+    fireEvent.click(await screen.findByRole("button", { name: "New project" }));
+    return within(await screen.findByRole("dialog", { name: "New project" }));
+  };
+
+  it("says a refused create with its request id under the sentence", async () => {
+    api.createProject = vi.fn(() =>
+      Promise.reject(Object.assign(new Error("Refused"), { code: "PERMISSION_DENIED", requestId: "req-1" })),
+    );
+    try {
+      renderProjects();
+      const dialog = await openNewProject();
+      fireEvent.change(dialog.getByLabelText("Key"), { target: { value: "REF" } });
+      fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Refused" } });
+
+      fireEvent.click(dialog.getByRole("button", { name: "Create project" }));
+
+      expect(await dialog.findByText("Refused")).toBeVisible();
+      expect(dialog.getByRole("button", { name: "Copy request id req-1" })).toBeVisible();
+    } finally {
+      delete api.createProject;
+    }
+  });
+
+  it("closes on Escape, and stays open while the description holds text", async () => {
+    renderProjects();
+    let dialog = await openNewProject();
+    fireEvent.keyDown(dialog.getByLabelText("Key"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New project" })).not.toBeInTheDocument());
+
+    dialog = await openNewProject();
+    const description = dialog.getByLabelText("Description");
+    fireEvent.change(description, { target: { value: "What it is for" } });
+    description.focus();
+    fireEvent.keyDown(description, { key: "Escape" });
+
+    expect(screen.getByRole("dialog", { name: "New project" })).toBeInTheDocument();
+    expect(description).toHaveFocus();
+    expect(description).toHaveValue("What it is for");
+  });
+});

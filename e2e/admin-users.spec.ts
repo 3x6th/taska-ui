@@ -231,3 +231,58 @@ test("resends from an INVITED row only after asking, and the row's two buttons k
   await expect(statusLine(page)).toHaveText(/^A new invitation link for Leo Fischer is queued; it works until/);
   await expect(resend).toBeFocused();
 });
+
+/**
+ * The person column on a narrow screen (DESIGN.md §5.8, TAS-396): at ≤720 it
+ * is frozen on the Data key's recipe, at most 150 wide, and the scroll box's
+ * padding keeps an action scrolled into view clear of it — before this, focus
+ * on Unblock at 375 scrolled the whole column out and only the tint marked the
+ * row. Above 720 the column stays in place. Measured in one `evaluate`.
+ */
+test("keeps the person column in view while a row's action has focus, frozen only on a narrow screen", async ({
+  page,
+}) => {
+  await openUsers(page);
+  await page.evaluate(() => document.fonts.ready);
+  const unblock = page.getByRole("button", { name: "Unblock Nina Kowal" });
+  await unblock.focus();
+  await expect(unblock).toBeFocused();
+
+  const measured = await page.evaluate(() => {
+    const button = document.activeElement as HTMLElement;
+    const person = button.closest("tr")!.querySelector<HTMLTableCellElement>("td.admin-cell-frozen")!;
+    const head = document.querySelector<HTMLTableCellElement>(".admin-users-table thead th.admin-cell-frozen")!;
+    const box = document.querySelector<HTMLElement>(".admin-users-plane .admin-table-scroll")!;
+    const scrollBox = box.getBoundingClientRect();
+    const cell = person.getBoundingClientRect();
+    return {
+      overflows: box.scrollWidth > box.clientWidth,
+      position: getComputedStyle(person).position,
+      headPosition: getComputedStyle(head).position,
+      edge: getComputedStyle(person).borderRightWidth,
+      cellLeft: cell.left - scrollBox.left,
+      headLeft: head.getBoundingClientRect().left - scrollBox.left,
+      cellWidth: cell.width,
+      buttonLeft: button.getBoundingClientRect().left,
+      cellRight: cell.right,
+      title: person.title,
+    };
+  });
+
+  expect(measured.title).toBe("Nina Kowal · nina@example.com");
+  // The head cell keeps its sticky top either way.
+  expect(measured.headPosition).toBe("sticky");
+  if (page.viewportSize()!.width <= 720) {
+    expect(measured.overflows).toBe(true);
+    expect(measured.position).toBe("sticky");
+    expect(measured.edge).toBe("1px");
+    // At the box's left edge (inside its 1px border), head and row alike.
+    expect(measured.cellLeft).toBeLessThanOrEqual(1.5);
+    expect(measured.headLeft).toBeLessThanOrEqual(1.5);
+    expect(measured.cellWidth).toBeLessThanOrEqual(150.5);
+    expect(measured.buttonLeft).toBeGreaterThanOrEqual(measured.cellRight);
+  } else {
+    expect(measured.position).toBe("static");
+    expect(measured.edge).toBe("0px");
+  }
+});

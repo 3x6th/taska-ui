@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 // A dedicated port so the suite can never attach to a developer's own dev
-// server, which usually runs in hybrid mode against the live gateway. The
+// server, which usually runs in rest mode against the live gateway. The
 // e2e server is always mock-backed and always freshly started.
 //
 // `TASKA_E2E_PORT` moves it, for a second worktree running the gate while

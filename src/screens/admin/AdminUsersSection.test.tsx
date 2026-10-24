@@ -532,6 +532,23 @@ describe("the admin Users section", () => {
     expect(trigger).toHaveFocus();
   });
 
+  // `Esc` is `Modal`'s since TAS-397 (§4.11): a reason being written is
+  // text-work, and holds the dialog with the text and the focus in place.
+  it("stays open on Escape while the reason holds text", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Block Anna Ivanova" }));
+    const dialog = await screen.findByRole("dialog");
+    const reason = within(dialog).getByLabelText("Reason");
+    fireEvent.change(reason, { target: { value: "Left the company" } });
+    reason.focus();
+
+    fireEvent.keyDown(reason, { key: "Escape" });
+
+    expect(dialog).toBeInTheDocument();
+    expect(reason).toHaveFocus();
+    expect(reason).toHaveValue("Left the company");
+  });
+
   it("says it is loading before it says anything else", async () => {
     holdRows();
     renderSection();
