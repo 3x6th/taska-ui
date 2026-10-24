@@ -6973,13 +6973,15 @@ export class MockTaskaApi implements TaskaApi {
     return wait(this.store.accessTokens.list(this.store.currentUser().id));
   }
 
+  // The wait first, so a refusal takes as long to arrive as a success does.
   async createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken> {
-    return wait(this.store.accessTokens.create(this.store.currentUser().id, input));
+    await wait(null);
+    return this.store.accessTokens.create(this.store.currentUser().id, input);
   }
 
   async revokeAccessToken(tokenId: string): Promise<void> {
-    this.store.accessTokens.revoke(this.store.currentUser().id, tokenId);
     await wait(null);
+    this.store.accessTokens.revoke(this.store.currentUser().id, tokenId);
   }
 
   hasSession(): boolean {

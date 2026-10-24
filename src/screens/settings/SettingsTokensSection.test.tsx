@@ -59,6 +59,14 @@ const draw = () =>
   );
 const rows = () => screen.queryAllByRole("listitem");
 const rowOf = (name: string) => screen.getByText(name).closest("li") as HTMLElement;
+/** Every query's and mutation's state, as one string to search for the secret. */
+const cached = () =>
+  JSON.stringify([
+    client.getQueryCache().getAll().map((query) => query.state),
+    client.getMutationCache().getAll().map((mutation) => mutation.state),
+  ]);
+/** From now on every read of the list hangs: what is drawn can only be what the section itself put there. */
+const hangReads = () => api.listAccessTokens.mockImplementation(() => new Promise<AccessToken[]>(() => {}));
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -284,11 +292,6 @@ describe("creating a token", () => {
     expect(shown.querySelector(".mcp-snippet-code")).toHaveTextContent(`Bearer ${SECRET}`);
 
     // Even while it is on screen, nothing but the dialog holds it.
-    const cached = () =>
-      JSON.stringify([
-        client.getQueryCache().getAll().map((query) => query.state),
-        client.getMutationCache().getAll().map((mutation) => mutation.state),
-      ]);
     expect(cached()).not.toContain(SECRET);
 
     fireEvent.click(within(shown).getByRole("button", { name: "Copy token" }));
@@ -325,6 +328,16 @@ describe("creating a token", () => {
     expect(document.documentElement.outerHTML).not.toContain(SECRET);
   });
 
+  it("names the value's field Token when the token's name came back blank", async () => {
+    api.createAccessToken.mockResolvedValueOnce({ token: { ...seeded()[0], id: "token-new", name: "" }, secret: SECRET });
+    draw();
+    const dialog = await openDialog();
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Cursor on laptop" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
+    const shown = await screen.findByRole("dialog", { name: "Token created" });
+    expect(within(shown).getByRole("textbox", { name: "Token" })).toHaveValue(SECRET);
+  });
+
   it.each([
     ["429", refusal("Too many requests", { status: 429, code: "RESOURCE_EXHAUSTED", requestId: "req-1" }), "Too many tokens were created just now. Try again in a minute."],
     [
@@ -344,6 +357,8 @@ describe("creating a token", () => {
     expect(dialog.getByRole("button", { name: /req-1/ })).toBeVisible();
     expect(dialog.getByLabelText("Name")).toHaveValue("Cursor on laptop");
     expect(screen.getByRole("dialog", { name: "New access token" })).toBeInTheDocument();
+    // Answered, so Cancel is a way out again.
+    expect(dialog.getByRole("button", { name: "Cancel" })).not.toHaveAttribute("aria-disabled");
   });
 
   it("refuses a second press while the first is out", async () => {
@@ -362,6 +377,79 @@ describe("creating a token", () => {
     await act(async () => answer({ token: { ...seeded()[0], id: "token-new" }, secret: SECRET }));
     expect(await screen.findByRole("dialog", { name: "Token created" })).toBeInTheDocument();
   });
+
+  it("holds Cancel while the create is out, as Esc is held (§4.1, §4.11)", async () => {
+    let answer: (value: IssuedAccessToken) => void = () => {};
+    api.createAccessToken.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    draw();
+    const dialog = await openDialog();
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Cursor on laptop" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
+
+    const cancel = dialog.getByRole("button", { name: "Cancel" });
+    expect(cancel).toHaveAttribute("aria-disabled", "true");
+    expect(cancel).not.toBeDisabled();
+    fireEvent.click(cancel);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "New access token" })).toBeInTheDocument();
+
+    await act(async () => answer({ token: { ...seeded()[0], id: "token-new" }, secret: SECRET }));
+    expect(await screen.findByRole("dialog", { name: "Token created" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["✕", "Close"],
+    ["the scrim", "Close modal"],
+  ])(
+    "says a token created after %s closed the dialog mid-flight, lists it, and shows its value nowhere",
+    async (_way, control) => {
+      const logs = (["log", "info", "warn", "error", "debug"] as const).map((method) =>
+        vi.spyOn(console, method).mockImplementation(() => {}),
+      );
+      let answer: (value: IssuedAccessToken) => void = () => {};
+      api.createAccessToken.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+      draw();
+      const create = await screen.findByRole("button", { name: "Create token" });
+      const dialog = await openDialog();
+      fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Cursor on laptop" } });
+      fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
+
+      // ✕ and the scrim close while the create is out, by Modal's design.
+      fireEvent.click(screen.getByRole("button", { name: control }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await waitFor(() => expect(create).toHaveFocus());
+
+      const token: AccessToken = {
+        id: "token-new",
+        name: "Cursor on laptop",
+        tokenPrefix: SECRET.slice(0, 12),
+        scopes: ["read"],
+        createdAt: new Date().toISOString(),
+        expiresAt: iso(30 * DAY),
+        lastUsedAt: null,
+      };
+      tokens = [...tokens, token];
+      const reads = api.listAccessTokens.mock.calls.length;
+      await act(async () => answer({ token, secret: SECRET }));
+
+      const sentence =
+        "The token “Cursor on laptop” was created, but the dialog closed before its value was shown. Revoke it and create another.";
+      expect((await screen.findByText(sentence)).closest('[role="status"]')).not.toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      // The list was read again, and the row is there, by its prefix only.
+      await waitFor(() => expect(api.listAccessTokens.mock.calls.length).toBeGreaterThan(reads));
+      expect(await screen.findByText("Cursor on laptop")).toBeVisible();
+      expect(rows()).toHaveLength(3);
+
+      expect(document.documentElement.outerHTML).not.toContain(SECRET);
+      expect(cached()).not.toContain(SECRET);
+      expect(JSON.stringify({ ...window.localStorage })).not.toContain(SECRET);
+      expect(JSON.stringify({ ...window.sessionStorage })).not.toContain(SECRET);
+      expect(window.location.href).not.toContain(SECRET);
+      for (const spy of logs) expect(JSON.stringify(spy.mock.calls)).not.toContain(SECRET);
+      for (const spy of logs) spy.mockRestore();
+    },
+  );
 });
 
 describe("revoking a token", () => {
@@ -426,6 +514,8 @@ describe("revoking a token", () => {
     );
     draw();
     await screen.findByText("Claude Code on laptop");
+    // The re-read never answers, so only the rollback can bring the row back.
+    hangReads();
     fireEvent.click(screen.getByRole("button", { name: "Revoke Claude Code on laptop" }));
     fireEvent.click(screen.getByRole("button", { name: "Revoke token" }));
 
@@ -439,5 +529,28 @@ describe("revoking a token", () => {
     // Said once in the section's status region, not by the note itself.
     expect(screen.getAllByText("The token “Claude Code on laptop” was not revoked.")).toHaveLength(2);
     expect(rows()).toHaveLength(2);
+  });
+
+  it("keeps the row gone and says so when the server no longer has the token", async () => {
+    api.revokeAccessToken.mockRejectedValueOnce(
+      refusal("Access token not found", { status: 404, code: "NOT_FOUND", requestId: "req-404" }),
+    );
+    draw();
+    await screen.findByText("Claude Code on laptop");
+    // The re-read never answers, so what is drawn is the section's own doing.
+    hangReads();
+    const reads = api.listAccessTokens.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Revoke Claude Code on laptop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Revoke token" }));
+
+    const said = await screen.findByText("The token “Claude Code on laptop” is already gone.");
+    expect(said.closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryByText("Claude Code on laptop")).toBeNull();
+    expect(screen.queryByText(/was not revoked/)).toBeNull();
+    expect(screen.queryByText("Access token not found")).toBeNull();
+    expect(rows()).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Revoke Weekly report script" })).toHaveFocus();
+    // And the list is asked again.
+    await waitFor(() => expect(api.listAccessTokens.mock.calls.length).toBeGreaterThan(reads));
   });
 });

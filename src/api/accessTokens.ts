@@ -1,4 +1,5 @@
-import { apiErrorFacts } from "./errors";
+import { apiErrorFacts, isUndeployedRoute } from "./errors";
+import { UNDEPLOYED_ROUTE_MESSAGE } from "./TaskaApi";
 
 /**
  * Personal access tokens (TAS-412, for backend TAS-402): the values the create
@@ -50,4 +51,17 @@ export function isInsufficientScope(error: unknown): boolean {
 export function isRateLimited(error: unknown): boolean {
   const { status, code } = apiErrorFacts(error);
   return status === 429 || code === "RESOURCE_EXHAUSTED";
+}
+
+/**
+ * Whether a revoke was refused because this account has no token by that id —
+ * a list read before the token went, say. HTTP 404 or the `NOT_FOUND` code (the
+ * mock carries only the code), and never the static-resource 404 of a gateway
+ * without the routes, which says nothing about any token. A token already
+ * revoked is not this: revoking it again succeeds (TAS-401). The code is an
+ * assumption (docs/ai/API-DIVERGENCE.md, "TAS-412").
+ */
+export function isAccessTokenGone(error: unknown): boolean {
+  const { status, code } = apiErrorFacts(error);
+  return (status === 404 || code === "NOT_FOUND") && !isUndeployedRoute(error, UNDEPLOYED_ROUTE_MESSAGE);
 }

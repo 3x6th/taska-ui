@@ -4186,3 +4186,16 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
   writes the row on every read while the UI polls it every 3 s; the link answer carries no
   preferences, so Connect costs two requests; with the integration off and the bot username
   empty, every bound user is reported `BOT_CHANGED` (one-line `isEnabled()` guard).
+
+### Left by TAS-412 (Settings → Access tokens and the channel mark, ahead of the gateway, 2026-10-24)
+
+- **`toAccessToken` draws a non-string `lastUsedAt` as "Never used"**, a claim the server did
+  not make. Revisit when TAS-402 puts the token on the contract (release-reviewer).
+- **The Claude Code snippet puts the token on the command line**, so it lands in shell
+  history. An env-var form (`Bearer $TASKA_TOKEN`) only moves the secret into the `export`
+  line; decide with TAS-409's README rather than here (release-reviewer).
+- **On the stand the undeployed token list re-reads on every window focus** — one harmless
+  static-resource 404 per focus, as the other undeployed reads do (release-reviewer).
+- **TAS-414 is not started:** it waits for ADR TAS-400 to say who serves the OAuth consent
+  screen. GitHub Pages cannot send `frame-ancestors` / `X-Frame-Options`, so "consent cannot
+  be framed" is unmeetable from this repository as hosted (comment on TAS-414, 2026-10-24).

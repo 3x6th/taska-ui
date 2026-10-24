@@ -5,6 +5,7 @@ import {
   ACCESS_TOKEN_EXPIRY_DAYS,
   ACCESS_TOKEN_NAME_MAX_LENGTH,
   DEFAULT_ACCESS_TOKEN_EXPIRY_DAYS,
+  isAccessTokenGone,
   type AccessTokenExpiryDays,
   type AccessTokenScopes,
 } from "../../api/accessTokens";
@@ -61,6 +62,10 @@ const ACCESS_OPTIONS: readonly { value: Access; label: string; description: stri
  * state; the list is re-read afterwards and carries no value. Closing the
  * dialog, by Done, ✕, `Esc` or the scrim, unmounts that state with it: no
  * cache, no browser storage, no address, no log, no node left in the page.
+ * Closed by ✕ or the scrim while the create is still out (Cancel and `Esc`
+ * wait for it, §4.1 and §4.11), the answer finds no dialog: the value is
+ * dropped unseen, and the section's status says the token exists and how to
+ * be rid of it.
  *
  * Ships ahead of the gateway, against the mock (AGENTS.md): no gateway serves
  * these routes yet, and there every one answers the static-resource 404, which
@@ -73,6 +78,9 @@ export function SettingsTokensSection() {
   });
   const user = meQuery.data;
   const [creating, setCreating] = useState(false);
+  /** The last sentence for the section's one persistent status region (§5.6): a revoke's, or a create nobody saw. */
+  const [said, setSaid] = useState<{ text: string; seq: number } | null>(null);
+  const say = (text: string) => setSaid((current) => ({ text, seq: (current?.seq ?? 0) + 1 }));
 
   return (
     <>
@@ -84,12 +92,19 @@ export function SettingsTokensSection() {
           </p>
           {user ? (
             // Keyed by account: one account's tokens are never drawn under another's.
-            <AccessTokens key={user.id} onCreate={() => setCreating(true)} userId={user.id} />
+            <AccessTokens key={user.id} onCreate={() => setCreating(true)} say={say} userId={user.id} />
           ) : meQuery.isError ? (
             <ReadFailure error={meQuery.error} onRetry={() => void meQuery.refetch()} retrying={meQuery.isFetching} />
           ) : (
             <TokensLoading />
           )}
+          {/* Mounted for as long as the section is, so a screen reader is
+              already watching it when a revoke or a create answers; keyed by
+              its sentence's number, so the same sentence twice is said twice
+              (§5.6). */}
+          <div className="visually-hidden" role="status">
+            {said ? <span key={said.seq}>{said.text}</span> : null}
+          </div>
           <hr className="settings-divider" />
           <McpConnect headingLevel={2} token={null} />
         </div>
@@ -97,7 +112,17 @@ export function SettingsTokensSection() {
       {/* Beside the plane, not inside it, as the admin sections mount theirs:
           inside the plane's scroller a wheel over the scrim scrolled the page
           behind the dialog. */}
-      {creating && user ? <CreateTokenModal onClose={() => setCreating(false)} userId={user.id} /> : null}
+      {creating && user ? (
+        <CreateTokenModal
+          onClose={() => setCreating(false)}
+          onCreatedUnseen={(token) =>
+            say(
+              `The token “${tokenLabel(token)}” was created, but the dialog closed before its value was shown. Revoke it and create another.`,
+            )
+          }
+          userId={user.id}
+        />
+      ) : null}
     </>
   );
 }
@@ -140,7 +165,7 @@ function ReadFailure({ error, retrying, onRetry }: { error: unknown; retrying: b
 }
 
 /** The list and its revoke, for one account; creating is the dialog's, opened from here. */
-function AccessTokens({ userId, onCreate }: { userId: string; onCreate: () => void }) {
+function AccessTokens({ userId, onCreate, say }: { userId: string; onCreate: () => void; say: (text: string) => void }) {
   const queryClient = useQueryClient();
   const read = accessTokensOptions(userId);
   const query = useQuery(read);
@@ -151,9 +176,6 @@ function AccessTokens({ userId, onCreate }: { userId: string; onCreate: () => vo
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   /** A revoke the server refused, by token: the note under the row that came back. */
   const [refusals, setRefusals] = useState<Readonly<Record<string, unknown>>>({});
-  /** The last revoke's sentence, for the section's one persistent status region (§5.6). */
-  const [said, setSaid] = useState<{ text: string; seq: number } | null>(null);
-  const say = (text: string) => setSaid((current) => ({ text, seq: (current?.seq ?? 0) + 1 }));
 
   /**
    * Where focus goes after the next render: back to a row's Revoke once its
@@ -185,6 +207,13 @@ function AccessTokens({ userId, onCreate }: { userId: string; onCreate: () => vo
     // And comes back on a refusal, with a note under it. Only this row: another
     // revoke still out keeps its own row gone.
     onError: (error, token) => {
+      if (isAccessTokenGone(error)) {
+        // Not a refusal to revoke: this account has no such token (a list read
+        // before it went), so the row stays gone and the re-read below is the
+        // server's word on what is left.
+        say(`The token “${tokenLabel(token)}” is already gone.`);
+        return;
+      }
       queryClient.setQueryData<AccessToken[]>(read.queryKey, (current) =>
         current && !current.some((item) => item.id === token.id) ? [...current, token] : current,
       );
@@ -270,14 +299,6 @@ function AccessTokens({ userId, onCreate }: { userId: string; onCreate: () => vo
           ))}
         </ul>
       ) : null}
-
-      {/* Mounted for as long as the section is, so a screen reader is already
-          watching it when a revoke answers; keyed by its sentence's number, so
-          the same sentence twice is said twice (§5.6). */}
-      <div className="visually-hidden" role="status">
-        {said ? <span key={said.seq}>{said.text}</span> : null}
-      </div>
-
     </>
   );
 }
@@ -377,9 +398,19 @@ function TokenRow({
  * The creating dialog (§4.11), and after a success the same dialog showing the
  * token's value once. Its title changes and takes focus; the value, the copy
  * control and the snippets carrying it live only in this component's state,
- * which goes when the dialog closes — there is no way back to it.
+ * which goes when the dialog closes — there is no way back to it. A create
+ * that answers after the dialog closed is handed to `onCreatedUnseen` without
+ * its value, which goes nowhere.
  */
-function CreateTokenModal({ userId, onClose }: { userId: string; onClose: () => void }) {
+function CreateTokenModal({
+  userId,
+  onClose,
+  onCreatedUnseen,
+}: {
+  userId: string;
+  onClose: () => void;
+  onCreatedUnseen: (token: AccessToken) => void;
+}) {
   const queryClient = useQueryClient();
   const formId = useId();
   const [name, setName] = useState("");
@@ -390,8 +421,17 @@ function CreateTokenModal({ userId, onClose }: { userId: string; onClose: () => 
   const [refusal, setRefusal] = useState<unknown>(null);
   const [issued, setIssued] = useState<IssuedAccessToken | null>(null);
   const sendingRef = useRef(false);
+  /** Whether the dialog is still on screen when the create answers: ✕ and the scrim close it mid-flight (§4.11). */
+  const open = useRef(true);
   const nameRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+    };
+  }, []);
 
   // The form became the token's one showing: the new title takes the focus
   // the submit button had, and is what a screen reader says first.
@@ -416,7 +456,11 @@ function CreateTokenModal({ userId, onClose }: { userId: string; onClose: () => 
     try {
       const scopes = ACCESS_OPTIONS.find((option) => option.value === access)!.scopes;
       // Deliberately not a `useMutation`: see `SettingsTokensSection`.
-      setIssued(await taskaApi.createAccessToken({ name: trimmed, scopes, expiresInDays: days }));
+      const answer = await taskaApi.createAccessToken({ name: trimmed, scopes, expiresInDays: days });
+      // Closed while it was out: nobody saw the value and nobody will, so it
+      // goes no further than this line, and the section says the token exists.
+      if (open.current) setIssued(answer);
+      else onCreatedUnseen(answer.token);
     } catch (error) {
       setRefusal(error);
     } finally {
@@ -534,7 +578,16 @@ function CreateTokenModal({ userId, onClose }: { userId: string; onClose: () => 
         ) : null}
 
         <div className="modal-actions">
-          <button className="secondary-button" onClick={onClose} type="button">
+          {/* §4.1's in-flight recipe, as Esc waits too (§4.11): a Cancel during
+              the create would look like it cancelled a create still going. */}
+          <button
+            aria-disabled={sending || undefined}
+            className="secondary-button token-create-cancel"
+            onClick={() => {
+              if (!sendingRef.current) onClose();
+            }}
+            type="button"
+          >
             Cancel
           </button>
           {/* §4.1's two `aria-disabled`: in flight (no dimming, the progress
@@ -595,7 +648,7 @@ function TokenSecret({ issued }: { issued: IssuedAccessToken }) {
     <div className="token-secret">
       <p className="token-secret-warning">Copy this token now. Taska shows it only once.</p>
       <div className="token-secret-field">
-        <label htmlFor={fieldId}>{token.name}</label>
+        <label htmlFor={fieldId}>{token.name.trim() ? token.name : "Token"}</label>
         <div className="token-secret-row">
           <input
             autoComplete="off"

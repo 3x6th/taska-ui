@@ -1742,11 +1742,31 @@ Everything below is the entry as it stood, in the past tense.
     `GET /projects` (`listMyProjects`, the caller's own collection,
     unpaginated), the nearest precedent. Order unspecified; the UI lists
     newest first by `createdAt`.
-  - `DELETE` answers **204**.
+  - `DELETE` answers **204**, and a repeated `DELETE` of a revoked token
+    answers **204** again (backend
+    [TAS-401](https://jira.ozero.dev/browse/TAS-401): «Повторный отзыв
+    отозванного токена идемпотентен», a repeated revoke of a revoked token is
+    idempotent).
   - Refusals are the gateway's flat `{code, message}`: **403**
     `code: "insufficient_scope"` for a request made with a token (managing
     tokens is JWT-session only), **429** for creating too often (read as
-    status 429 or `RESOURCE_EXHAUSTED`, the invitation resend's pair).
+    status 429 or `RESOURCE_EXHAUSTED`, the invitation resend's pair), and
+    **404** `NOT_FOUND` on `DELETE` for an id the caller was never issued.
+    The section reads that 404 — never the static-resource one — as a token
+    already gone: the row stays out, the status says "The token “X” is already
+    gone.", and the list is re-read (`isAccessTokenGone`).
+  - The settings lead's promise, "A token never has more access than you do
+    and cannot open the admin console.", rests on three backend stories and
+    on nothing in the contract:
+    [TAS-399](https://jira.ozero.dev/browse/TAS-399) — an agent gets the
+    user's rights in their projects, cut by the token's scopes, and never
+    administrative access;
+    [TAS-401](https://jira.ozero.dev/browse/TAS-401) — `GLOBAL_ADMIN` in a
+    personal-access-token context grants no admin rights, and a `BLOCKED` or
+    `LOCKED` user fails with any token;
+    [TAS-402](https://jira.ozero.dev/browse/TAS-402) — `/admin` and
+    `/readonly` answer 403 to a personal access token even for `GLOBAL_ADMIN`,
+    and a token cannot manage tokens.
   - The expiry list, the 100-character name and the two grants are provisional
     until ADR [TAS-400](https://jira.ozero.dev/browse/TAS-400).
   - Channel: `via?: {channel: "API_TOKEN" | "MCP", tokenName: string | null} |
@@ -1755,8 +1775,11 @@ Everything below is the entry as it stood, in the past tense.
     token's name beside the channel (2026-10-24).
 - **What the UI does.** `mock`: everything, behaviourally — two seeded tokens
   for Anna, a fresh random secret on create that the store does not keep, a
-  revoke that takes the token out, `INVALID_ARGUMENT` for a name, scope or
-  lifetime off the list, `NOT_FOUND` for an unknown id. Mock-only, and labelled
+  revoke that takes the token out and answers a repeat of it as the first
+  (TAS-401), `INVALID_ARGUMENT` for a name, scope or lifetime off the list,
+  `NOT_FOUND` for an id never issued to the account — codes this build
+  assumes, not anything a backend story states. Every answer,
+  refusals included, comes after the mock's one delay. Mock-only, and labelled
   so in `MockAccessTokens`: the 429 after five creates in a minute, expired
   tokens staying listed until revoked, and the seeded `via` marks on TAS-107
   and TAS-101 (the `insufficient_scope` 403 is unreachable there — the mock

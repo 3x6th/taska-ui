@@ -793,7 +793,8 @@ export interface TaskaApi {
    *
    * `listAccessTokens` never carries a secret. `createAccessToken` answers with
    * the token's value once; the caller shows it and lets it go — no cache, no
-   * storage, no log. `revokeAccessToken` takes the token out at once.
+   * storage, no log. `revokeAccessToken` takes the token out at once, and
+   * revoking it again succeeds as the first time did (TAS-401).
    */
   listAccessTokens(): Promise<AccessToken[]>;
   createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken>;

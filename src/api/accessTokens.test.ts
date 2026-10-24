@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { INSUFFICIENT_SCOPE_CODE, isInsufficientScope, isRateLimited } from "./accessTokens";
+import { INSUFFICIENT_SCOPE_CODE, isAccessTokenGone, isInsufficientScope, isRateLimited } from "./accessTokens";
 import { isUndeployedRoute } from "./errors";
 import { MockAccessTokens } from "./mock/MockAccessTokens";
 import { MockTaskaApi } from "./mock/MockTaskaApi";
@@ -22,6 +22,26 @@ const wireToken = {
 };
 
 afterEach(() => vi.unstubAllGlobals());
+
+/** The code a call refused with, or `null` for one that did not refuse. */
+const refusalCode = (call: () => unknown): string | null => {
+  try {
+    call();
+    return null;
+  } catch (error) {
+    return (error as { code?: string }).code ?? "no code";
+  }
+};
+
+/**
+ * Everything an object holds, as one string to search — `Map`s and `Set`s by
+ * their contents. A plain `JSON.stringify` writes both as `{}`, and an
+ * assertion that a secret is not in `{}` is true of any store.
+ */
+const dump = (value: unknown) =>
+  JSON.stringify(value, (_key, item: unknown) =>
+    item instanceof Map ? [...item.entries()] : item instanceof Set ? [...item] : item,
+  );
 
 describe("the REST transport for access tokens", () => {
   it("calls the three TAS-402 paths with the proposed bodies", async () => {
@@ -119,6 +139,21 @@ describe("the REST transport for access tokens", () => {
     expect(isInsufficientScope(limited)).toBe(false);
   });
 
+  it("reads a revoke's 404 NOT_FOUND as a token already gone, but not the static-resource 404 of a gateway without the routes", async () => {
+    const answer = (body: object) =>
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 404, headers: { "X-Request-Id": "request-404" } }));
+
+    vi.stubGlobal("fetch", answer({ code: "NOT_FOUND", message: "Access token not found" }));
+    const gone = await new RestTaskaApi().revokeAccessToken("token-1").catch((error: unknown) => error);
+    expect(gone).toMatchObject({ status: 404, requestId: "request-404" });
+    expect(isAccessTokenGone(gone)).toBe(true);
+
+    vi.stubGlobal("fetch", answer({ code: "NOT_FOUND", message: "No static resource api/v1/users/me/access-tokens/token-1." }));
+    const undeployed = await new RestTaskaApi().revokeAccessToken("token-1").catch((error: unknown) => error);
+    expect(isUndeployedRoute(undeployed, UNDEPLOYED_ROUTE_MESSAGE)).toBe(true);
+    expect(isAccessTokenGone(undeployed)).toBe(false);
+  });
+
   it("meets a gateway without the routes with the static-resource 404 the section reads as not deployed", async () => {
     vi.stubGlobal(
       "fetch",
@@ -201,12 +236,18 @@ describe("the mock's access tokens", () => {
     expect(Date.parse(first.token.expiresAt) - Date.parse(first.token.createdAt)).toBe(7 * 24 * 60 * 60 * 1000);
     expect(second.token.scopes).toEqual(["read", "write"]);
 
-    // Nothing the store holds can show either value again.
-    const held = JSON.stringify(store);
+    // Nothing the store holds can show either value again: not what it lists…
+    const listed = JSON.stringify(store.list("anna"));
+    expect(listed).not.toContain(first.secret);
+    expect(listed).not.toContain(second.secret);
+    expect(store.list("anna").map((token) => token.name)).toEqual(["Script", "Cursor on laptop"]);
+    // …and not what it keeps, read through its Maps. The dump does reach the
+    // tokens — it holds their ids and prefixes — so its silence is a finding.
+    const held = dump(store);
+    expect(held).toContain(first.token.id);
+    expect(held).toContain(second.token.tokenPrefix);
     expect(held).not.toContain(first.secret);
     expect(held).not.toContain(second.secret);
-    expect(JSON.stringify(store.list("anna"))).not.toContain(first.secret);
-    expect(store.list("anna").map((token) => token.name)).toEqual(["Script", "Cursor on laptop"]);
   });
 
   it("refuses a blank or long name, a scope it does not offer and a lifetime off the list", () => {
@@ -238,12 +279,21 @@ describe("the mock's access tokens", () => {
     expect(isRateLimited(caught)).toBe(true);
   });
 
-  it("takes a revoked token out at once, and refuses one it does not hold", () => {
+  it("takes a revoked token out at once, answers a repeated revoke as the first (TAS-401), and refuses an id never issued", () => {
     const store = new MockAccessTokens("anna");
-    const [first] = store.list("anna");
+    const [first, second] = store.list("anna");
     store.revoke("anna", first.id);
-    expect(store.list("anna").map((token) => token.id)).not.toContain(first.id);
-    expect(() => store.revoke("anna", first.id)).toThrow("Access token not found");
+    expect(store.list("anna").map((token) => token.id)).toEqual([second.id]);
+
+    // Idempotent: the same success again, and nothing else changes.
+    expect(refusalCode(() => store.revoke("anna", first.id))).toBeNull();
+    expect(store.list("anna").map((token) => token.id)).toEqual([second.id]);
+
+    // NOT_FOUND only for an id this account was never issued — another
+    // account's revoked token included.
+    expect(refusalCode(() => store.revoke("anna", "never-issued"))).toBe("NOT_FOUND");
+    expect(refusalCode(() => store.revoke("boris", first.id))).toBe("NOT_FOUND");
+    expect(isAccessTokenGone(Object.assign(new Error("Access token not found"), { code: "NOT_FOUND" }))).toBe(true);
   });
 
   it("serves the signed-in account's tokens through MockTaskaApi", async () => {
@@ -260,6 +310,33 @@ describe("the mock's access tokens", () => {
     expect(after.map((token) => token.id)).toContain(issued.token.id);
     expect(JSON.stringify(after)).not.toContain(issued.secret);
     expect((await api.listAccessTokens()).map((token) => token.id)).not.toContain(issued.token.id);
+    await expect(api.revokeAccessToken(issued.token.id)).resolves.toBeUndefined();
+    window.localStorage.clear();
+  });
+
+  it("answers a refusal after the same wait as a success, never at once", async () => {
+    window.localStorage.clear();
+    const api = new MockTaskaApi();
+    await api.login({ email: "anna@example.com", password: "anything" });
+
+    const outcomes: string[] = [];
+    const revoke = api.revokeAccessToken("never-issued").then(
+      () => "revoked",
+      (error: { code?: string }) => error.code ?? "no code",
+    );
+    const create = api.createAccessToken({ name: "  ", scopes: ["read"], expiresInDays: 30 }).then(
+      () => "created",
+      (error: { code?: string }) => error.code ?? "no code",
+    );
+    void revoke.then((outcome) => outcomes.push(outcome));
+    void create.then((outcome) => outcomes.push(outcome));
+
+    // A macrotask later every microtask has run: a refusal thrown before the
+    // wait would be here already.
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(outcomes).toEqual([]);
+    expect(await revoke).toBe("NOT_FOUND");
+    expect(await create).toBe("INVALID_ARGUMENT");
     window.localStorage.clear();
   });
 });

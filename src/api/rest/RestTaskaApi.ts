@@ -996,13 +996,16 @@ export class RestTaskaApi implements TaskaApi {
    *   POST   /users/me/access-tokens  {name, scopes, expiresInDays}
    *          → 201 {token: AccessTokenDto, secret}
    *   GET    /users/me/access-tokens  → 200 {items: AccessTokenDto[]}
-   *   DELETE /users/me/access-tokens/{tokenId} → 204
+   *   DELETE /users/me/access-tokens/{tokenId} → 204, and 204 again for a
+   *          token already revoked (TAS-401: a repeated revoke is idempotent)
    *
    * `AccessTokenDto` is {id, name, tokenPrefix, scopes, createdAt, expiresAt,
    * lastUsedAt|null}; refusals are the gateway's flat {code, message}, 403
-   * `insufficient_scope` for a request made with a token and 429 for creating
-   * too often. The list takes `GET /projects`' shape (`listMyProjects`: the
-   * caller's own collection, unpaginated, `{items}`) — the nearest precedent.
+   * `insufficient_scope` for a request made with a token, 429 for creating
+   * too often, and 404 `NOT_FOUND` for an id the caller was never issued —
+   * which the section reads as "already gone" (`isAccessTokenGone`). The list
+   * takes `GET /projects`' shape (`listMyProjects`: the caller's own
+   * collection, unpaginated, `{items}`) — the nearest precedent.
    * Recorded with what removes it in docs/ai/API-DIVERGENCE.md, "TAS-412".
    */
   async listAccessTokens(): Promise<AccessToken[]> {

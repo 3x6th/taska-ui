@@ -2598,8 +2598,10 @@ h1 {
 }
 
 /* §4.1's two kinds of `aria-disabled` on one button: in flight is the
-   progress cursor alone, steadily unavailable (no name yet) is dimmed. */
-.token-create-submit[aria-disabled="true"] {
+   progress cursor alone, steadily unavailable (no name yet) is dimmed. Cancel
+   has only the first kind, while the create is out. */
+.token-create-submit[aria-disabled="true"],
+.token-create-cancel[aria-disabled="true"] {
   cursor: progress;
 }
 

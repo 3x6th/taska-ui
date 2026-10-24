@@ -34,16 +34,26 @@ function randomSecret(): string {
  * stores the token without it and hands it back once — so nothing here could
  * show it again, which is the whole promise of the dialog that displays it.
  *
+ * **A repeated revoke succeeds** (backend TAS-401: «Повторный отзыв
+ * отозванного токена идемпотентен», a repeated revoke of a revoked token is
+ * idempotent), read here as the 204 again: each account keeps the ids it has
+ * revoked, and revoking one of them again changes nothing and refuses nothing.
+ *
  * Mock-only facts, none of them claims about the gateway: the two seeded
  * tokens, the expired tokens staying listed until revoked, the newest-first
- * order, and the 429 after `CREATES_PER_MINUTE` creates. The refusal codes
- * are the gateway's flat `{code, message}` codes this build already knows
- * (`INVALID_ARGUMENT`, `NOT_FOUND`, `RESOURCE_EXHAUSTED`); the session here is
- * always a signed-in one, so the `insufficient_scope` 403 is not reachable.
+ * order, and the 429 after `CREATES_PER_MINUTE` creates. **The refusal codes
+ * are assumptions**, borrowed from the gateway's flat `{code, message}` codes
+ * this build already knows, and no backend story states any of them yet:
+ * `INVALID_ARGUMENT` for a name, scope or lifetime off the list, `NOT_FOUND`
+ * for an id never issued to this account, `RESOURCE_EXHAUSTED` for the 429.
+ * The session here is always a signed-in one, so the `insufficient_scope` 403
+ * is not reachable.
  */
 export class MockAccessTokens {
   private readonly tokens = new Map<string, AccessToken[]>();
   private readonly createdAt = new Map<string, number[]>();
+  /** By account, the ids it has revoked: what makes a second revoke the first one's answer. */
+  private readonly revoked = new Map<string, Set<string>>();
 
   constructor(seedUserId?: string) {
     if (!seedUserId) return;
@@ -112,12 +122,18 @@ export class MockAccessTokens {
     return { token: structuredClone(token), secret };
   }
 
+  /** Takes the token out at once; a token this account already revoked is the same success (TAS-401). */
   revoke(userId: string, tokenId: string): void {
     const current = this.tokens.get(userId) ?? [];
-    if (!current.some((token) => token.id === tokenId)) throw failure("NOT_FOUND", "Access token not found");
-    this.tokens.set(
-      userId,
-      current.filter((token) => token.id !== tokenId),
-    );
+    if (current.some((token) => token.id === tokenId)) {
+      this.tokens.set(
+        userId,
+        current.filter((token) => token.id !== tokenId),
+      );
+      this.revoked.set(userId, new Set(this.revoked.get(userId)).add(tokenId));
+      return;
+    }
+    if (this.revoked.get(userId)?.has(tokenId)) return;
+    throw failure("NOT_FOUND", "Access token not found");
   }
 }
