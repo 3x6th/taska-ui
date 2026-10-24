@@ -549,6 +549,27 @@ describe("the admin Users section", () => {
     expect(reason).toHaveValue("Left the company");
   });
 
+  // …and wherever focus is in the dialog (art-director, TAS-209): Cancel
+  // holds the reason too, and pressing it is how the reader discards it.
+  it("stays open on Escape from Cancel while the reason holds text", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: "Block Anna Ivanova" }));
+    const dialog = await screen.findByRole("dialog");
+    const reason = within(dialog).getByLabelText("Reason");
+    fireEvent.change(reason, { target: { value: "Left the company" } });
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    cancel.focus();
+
+    fireEvent.keyDown(cancel, { key: "Escape" });
+
+    expect(dialog).toBeInTheDocument();
+    expect(cancel).toHaveFocus();
+    expect(reason).toHaveValue("Left the company");
+
+    fireEvent.click(cancel);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
   it("says it is loading before it says anything else", async () => {
     holdRows();
     renderSection();

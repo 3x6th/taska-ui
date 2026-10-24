@@ -4772,6 +4772,87 @@ describe("issue attachments", () => {
   });
 
   /**
+   * api-contract-guard's note on N2, TAS-209: a mutation's PERMISSION_DENIED
+   * reaches the board's listener and reads the context again; the upload's
+   * gateway legs are not mutations and used to read it again only for an
+   * archive. Demoted to VIEWER mid-session, the refusal of the first leg now
+   * takes "Attach a file" away, as any other write's refusal takes its control.
+   */
+  it("reads the role again after the first leg is refused with PERMISSION_DENIED", async () => {
+    failUpload(
+      "sign",
+      Object.assign(new Error("Access denied"), { status: 403, code: "PERMISSION_DENIED", requestId: "req-403" }),
+    );
+    renderBoard(ISSUE_PATH);
+    const panel = await section();
+    expect(await panel.findByRole("button", { name: /attach a file/i })).toBeVisible();
+    setMembership("VIEWER");
+    chooseFile();
+
+    expect(await notes().findByText(/notes\.txt was not attached/i)).toBeVisible();
+    expect(within(notes().getByText(/notes\.txt was not attached/i)).getByRole("button", { name: "Copy request id req-403" })).toBeVisible();
+    // And the section took the VIEWER role from the context it read again.
+    await waitFor(() => expect(panel.queryByRole("button", { name: /attach a file/i })).not.toBeInTheDocument());
+  });
+
+  /**
+   * The hidden status is one `<span>` per sentence, keyed by the notice's own
+   * sequence number (art-director, TAS-209). Errors are listed ahead of
+   * information, so an error that arrives after a sentence of information
+   * moves it down the list: keyed by position, React would rewrite the node
+   * already read out and add its text again at the end, and a screen reader
+   * would hear the sentence twice. Counted as the sentence's appearances in the
+   * region's mutations.
+   */
+  it("announces each sentence once when an error arrives after information", async () => {
+    // File one: the confirm fails and lands anyway (information). File two: its
+    // upload to the store is refused (an error, arriving second but listed first).
+    failUpload("confirm", Object.assign(new Error("Service unavailable"), { status: 503, code: "UNAVAILABLE" }), true);
+    const api = fakeApi as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    // The second refusal comes a beat later, so the first sentence has been
+    // rendered before it: answers that land in one tick are drawn in one
+    // render, from nothing, and no key could be told from another.
+    const put = vi
+      .spyOn(api, "putAttachmentBytes")
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        throw new ObjectStoreError("The file store answered 403.", "STORAGE_REJECTED", 403);
+      });
+    try {
+      renderBoard(ISSUE_PATH);
+      await section();
+      const status = document.querySelector<HTMLElement>(".issue-attachments p[role='status']");
+      if (!status) throw new Error("no hidden status");
+      const sentence = "a.txt was attached after all";
+      // The text of each node is read as it is added: a node that is rewritten
+      // afterwards says, by then, something else than it was announced as.
+      const added: string[] = [];
+      const note = (records: MutationRecord[]) => {
+        for (const record of records) for (const node of Array.from(record.addedNodes)) added.push(node.textContent ?? "");
+      };
+      const observer = new MutationObserver(note);
+      observer.observe(status, { childList: true, characterData: true, subtree: true });
+
+      const fileInput = document.querySelector<HTMLInputElement>(".attachment-input")!;
+      fireEvent.change(fileInput, {
+        target: { files: [new File(["one"], "a.txt", { type: "text/plain" }), new File(["two"], "b.txt", { type: "text/plain" })] },
+      });
+      await notes().findByText(/b\.txt was not uploaded/i);
+      await notes().findByText(/a\.txt was attached after all/);
+      await waitFor(() => expect(status).toHaveTextContent(/b\.txt was not uploaded.*a\.txt was attached after all/));
+      note(observer.takeRecords());
+      observer.disconnect();
+
+      expect(added.filter((text) => text.includes(sentence))).toHaveLength(1);
+      // One node per sentence, error first.
+      expect(Array.from(status.children).map((child) => child.textContent?.slice(0, 5))).toEqual(["b.txt", "a.txt"]);
+    } finally {
+      put.mockRestore();
+    }
+  });
+
+  /**
    * A stand-in for the tab `window.open("", "_blank")` hands back: blank until
    * the panel points it at the link. `opener` starts as this page, the way a
    * real one does, so the test can see the panel cut it.
@@ -6801,6 +6882,91 @@ describe("a write refusal's request id", () => {
 });
 
 /**
+ * A comment the right to write left unsent (DESIGN.md §5.7, art-director's B2
+ * on TAS-209). The composer holds the words of a reader who typed and pressed
+ * Comment, whichever way the right went — an archive, or a refusal that read
+ * the context again and found a VIEWER. It stays read-only, without its button,
+ * with the refusal under it, and focus goes to it instead of to `<body>`.
+ */
+describe("a comment the right to write left unsent", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const api = fakeApi as unknown as Record<string, unknown>;
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    delete api.addComment;
+  });
+
+  it("stays read-only with its draft, and takes focus, when a refusal reads the role again and finds a VIEWER", async () => {
+    setMembership("MEMBER");
+    api.addComment = vi.fn(() =>
+      Promise.reject(
+        Object.assign(new Error("Refused"), { status: 403, code: "PERMISSION_DENIED", requestId: "req-1" }),
+      ),
+    );
+    renderBoard(ISSUE_PATH);
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+    const composer = await panel.findByPlaceholderText("Leave a comment");
+    fireEvent.change(composer, { target: { value: "First!" } });
+    const send = panel.getByRole("button", { name: "Comment" });
+    send.focus();
+    // The demotion the server knows about and the board has not read yet.
+    setMembership("VIEWER");
+
+    fireEvent.click(send);
+
+    // The refusal is said where it landed, with its request id; then the
+    // context read again takes the right to comment away.
+    expect(await panel.findByRole("button", { name: "Copy request id req-1" })).toBeVisible();
+    await waitFor(() => expect(panel.queryByRole("button", { name: "Comment" })).not.toBeInTheDocument());
+    expect(panel.getByText("Refused")).toBeVisible();
+    // The same box, read-only, still holding the words and marked as text-work.
+    expect(panel.getByPlaceholderText("Leave a comment")).toBe(composer);
+    expect(composer).toHaveAttribute("readonly");
+    expect(composer).toHaveValue("First!");
+    expect(composer).toHaveAttribute("data-unsaved-text", "true");
+    // Focus went with the button that had it, to the box rather than `<body>`.
+    expect(composer).toHaveFocus();
+    // And Esc in it does not close the panel (§4.10).
+    fireEvent.keyDown(composer, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "TAS-102 issue" })).toBeInTheDocument();
+  });
+
+  it("keeps the draft read-only without moving a focus that was somewhere real", async () => {
+    setMembership("MEMBER");
+    const queryClient = renderBoard(ISSUE_PATH);
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+    const composer = await panel.findByPlaceholderText("Leave a comment");
+    fireEvent.change(composer, { target: { value: "First!" } });
+    const close = panel.getByRole("button", { name: "Close" });
+    close.focus();
+
+    setMembership("VIEWER");
+    await queryClient.invalidateQueries({ queryKey: membershipKey });
+
+    await waitFor(() => expect(panel.queryByRole("button", { name: "Comment" })).not.toBeInTheDocument());
+    expect(composer).toHaveAttribute("readonly");
+    expect(composer).toHaveValue("First!");
+    expect(close).toHaveFocus();
+  });
+
+  it("takes an empty composer away with the right to comment, as it always did", async () => {
+    setMembership("MEMBER");
+    const queryClient = renderBoard(ISSUE_PATH);
+    const panel = within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+    await panel.findByPlaceholderText("Leave a comment");
+
+    setMembership("VIEWER");
+    await queryClient.invalidateQueries({ queryKey: membershipKey });
+
+    await waitFor(() => expect(panel.queryByPlaceholderText("Leave a comment")).not.toBeInTheDocument());
+  });
+});
+
+/**
  * The Labels dialog (DESIGN.md §4.1, §4.11; TAS-397). Add label is two kinds of
  * unavailable in one button — no name, natively `disabled`; a name typed while
  * the previous create is out, «in flight» — and every submit clears the field
@@ -6931,5 +7097,61 @@ describe("New issue and Esc", () => {
     expect(screen.getByRole("dialog", { name: "New issue" })).toBeInTheDocument();
     expect(box).toHaveFocus();
     expect(box).toHaveValue(text);
+  });
+
+  /**
+   * The text holds the key wherever focus is in the dialog (art-director,
+   * TAS-209): one Esc from a priority button used to throw a typed summary
+   * away. Cancel, ✕ and the scrim are the ways to discard.
+   */
+  it("stays open from a choice while the summary holds text, and Cancel still discards it", async () => {
+    renderBoard();
+    const dialog = await openNewIssue();
+    fireEvent.change(dialog.getByLabelText("Summary"), { target: { value: "Half a title" } });
+    const high = dialog.getByRole("button", { name: "High" });
+    high.focus();
+
+    fireEvent.keyDown(high, { key: "Escape" });
+
+    expect(screen.getByRole("dialog", { name: "New issue" })).toBeInTheDocument();
+    expect(high).toHaveFocus();
+    expect(dialog.getByLabelText("Summary")).toHaveValue("Half a title");
+
+    fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New issue" })).not.toBeInTheDocument());
+  });
+
+  /**
+   * A date box with segments the browser has not made a date of yet
+   * (`validity.badInput`) is text-work too, though its draft is `""` and React's
+   * `onChange` never fires for it: the box reads it on its own `keyup`. jsdom
+   * cannot hold a partial entry, so the browser's `badInput` is stood in for.
+   */
+  it("stays open from a choice while a date is half typed, and closes once that is cleared", async () => {
+    renderBoard();
+    const dialog = await openNewIssue();
+    const box = dialog.getByLabelText("Due date") as HTMLInputElement;
+    let badInput = true;
+    Object.defineProperty(box, "validity", { configurable: true, get: () => ({ badInput }) });
+    box.focus();
+    fireEvent.keyUp(box, { key: "1" });
+    expect(box).toHaveAttribute("data-unsaved-text", "true");
+    const high = dialog.getByRole("button", { name: "High" });
+    high.focus();
+
+    fireEvent.keyDown(high, { key: "Escape" });
+
+    expect(screen.getByRole("dialog", { name: "New issue" })).toBeInTheDocument();
+    expect(high).toHaveFocus();
+
+    // Emptied again, with Backspace: no `input` event fires, `keyup` does.
+    badInput = false;
+    box.focus();
+    fireEvent.keyUp(box, { key: "Backspace" });
+    expect(box).not.toHaveAttribute("data-unsaved-text");
+    high.focus();
+    fireEvent.keyDown(high, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New issue" })).not.toBeInTheDocument());
   });
 });

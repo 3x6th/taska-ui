@@ -292,6 +292,7 @@ describe("Modal, Esc", () => {
           Key
           <input />
         </label>
+        <button type="button">Swatch</button>
         {/* An inner layer, the way Members' results list takes the key. */}
         <ul
           aria-label="Results"
@@ -331,7 +332,7 @@ describe("Modal, Esc", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("stays open while focus is in a field holding text-work, and closes from it once the text is gone", () => {
+  it("stays open while the dialog holds text-work, wherever focus is in it, and closes once the text is gone", () => {
     const onClose = vi.fn();
     render(<Escapable onClose={onClose} />);
     const description = screen.getByLabelText("Description");
@@ -343,9 +344,29 @@ describe("Modal, Esc", () => {
     expect(description).toHaveFocus();
     expect(description).toHaveValue("Half a thought");
 
-    // Elsewhere in the dialog, the text does not hold it.
-    screen.getByLabelText("Key").focus();
-    fireEvent.keyDown(screen.getByLabelText("Key"), { key: "Escape" });
+    // Elsewhere in the dialog the text holds it just the same: one Esc from a
+    // short field or a button must not throw the words away (TAS-209).
+    for (const elsewhere of [screen.getByLabelText("Key"), screen.getByRole("button", { name: "Swatch" })]) {
+      elsewhere.focus();
+      fireEvent.keyDown(elsewhere, { key: "Escape" });
+      expect(onClose).not.toHaveBeenCalled();
+      expect(elsewhere).toHaveFocus();
+    }
+    expect(description).toHaveValue("Half a thought");
+
+    // Once the text is gone nothing holds it.
+    fireEvent.change(description, { target: { value: "" } });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Swatch" }), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("still discards the text through Close, which asks for nothing", () => {
+    const onClose = vi.fn();
+    render(<Escapable onClose={onClose} />);
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Half a thought" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

@@ -3257,6 +3257,9 @@ h1 {
   font: inherit;
   letter-spacing: inherit;
   overflow-wrap: anywhere;
+  /* A <button> centres its text by default, and the id wraps at 375: left, so
+     the lines read from the same edge as the sentence above it. */
+  text-align: left;
 }
 
 /* The same overlay as the key above, for the same reason: this button renders

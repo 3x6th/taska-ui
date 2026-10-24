@@ -79,7 +79,7 @@ import { focusLost, tabbables } from "../lib/focusTrap";
 import { personFor, type NamedBy, type Person } from "../lib/people";
 import { boardKey, boardQueryOptions } from "../lib/boardQuery";
 import { allowedIssueTypes, projectContextKey, workflowFor } from "../lib/projectContext";
-import { archivedOnDay, PROJECT_ARCHIVED_SENTENCE, refusalWords, rereadContextIfArchived } from "../lib/projectArchive";
+import { archivedOnDay, PROJECT_ARCHIVED_SENTENCE, refusalWords, rereadContextAfterRefusal } from "../lib/projectArchive";
 import { useUnanswered } from "../hooks/useUnanswered";
 import type {
   Board,
@@ -667,7 +667,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
    * board turns read-only from the `archivedAt` that read brings — never from
    * the refusal. Heard here, once, for every mutation the board, its panel and
    * its dialogs make, by `details.reason` and nothing else; the writes that are
-   * not mutations (the attachment legs) call `rereadContextIfArchived`.
+   * not mutations (the attachment legs) call `rereadContextAfterRefusal` too.
    *
    * A write refused with `PERMISSION_DENIED` reads the context again the same
    * way (TAS-209, api-contract-guard's N2): the role the board gated on is the
@@ -681,12 +681,7 @@ export function BoardScreen({ theme, toggleTheme, onLogout, logoutPending }: Scr
     if (!projectId) return;
     return queryClient.getMutationCache().subscribe((event) => {
       if (event.type !== "updated" || event.action.type !== "error") return;
-      const error = event.action.error;
-      if (apiErrorFacts(error).code === "PERMISSION_DENIED") {
-        void queryClient.invalidateQueries({ queryKey: projectContextKey(projectId) });
-        return;
-      }
-      rereadContextIfArchived(queryClient, projectId, error);
+      rereadContextAfterRefusal(queryClient, projectId, event.action.error);
     });
   }, [projectId, queryClient]);
 
@@ -4745,9 +4740,19 @@ function IssueAttachmentsSection({
    * files says one per file that did not go cleanly, and they stay together
    * until the reader does something new.
    */
-  const [notices, setNotices] = useState<AttachmentNotice[]>([]);
-  const say = (notice: AttachmentNotice) => setNotices([notice]);
-  const addNotice = (notice: AttachmentNotice) => setNotices((current) => [...current, notice]);
+  const [notices, setNotices] = useState<(AttachmentNotice & { seq: number })[]>([]);
+  /**
+   * A sequence number of the notice's own, which keys it in the hidden status
+   * below: errors are listed ahead of information, so an index would shift
+   * under a notice that is already there, React would rewrite its node, and a
+   * sentence already announced would be announced again.
+   */
+  const nextNoticeSeq = useRef(0);
+  const say = (notice: AttachmentNotice) => setNotices([{ ...notice, seq: nextNoticeSeq.current++ }]);
+  const addNotice = (notice: AttachmentNotice) => {
+    const numbered = { ...notice, seq: nextNoticeSeq.current++ };
+    setNotices((current) => [...current, numbered]);
+  };
   /**
    * A resolved link the browser would not open a tab for. Only ever set when
    * `window.open` genuinely came back `null` (see `openBlankTab`), so the
@@ -4933,7 +4938,7 @@ function IssueAttachmentsSection({
     } catch (error) {
       setPending(null);
       // Not a mutation, so the board's listener does not hear it (§5.7).
-      rereadContextIfArchived(queryClient, projectId, error);
+      rereadContextAfterRefusal(queryClient, projectId, error);
       addNotice({
         tone: "error",
         text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be prepared."}`,
@@ -5018,7 +5023,7 @@ function IssueAttachmentsSection({
         });
         return;
       }
-      rereadContextIfArchived(queryClient, projectId, error);
+      rereadContextAfterRefusal(queryClient, projectId, error);
       addNotice({
         tone: "error",
         text: `${file.name} was not attached. ${refusalWords(error) ?? "The upload could not be confirmed."}`,
@@ -5184,9 +5189,21 @@ function IssueAttachmentsSection({
           depending on screen-reader timing. Polite, not assertive: every
           sentence follows something the reader just did. Only the sentences:
           the boxes below carry request ids, and no ancestor of an id may be a
-          live region (§5.6, TAS-397), so the boxes are plain content. */}
+          live region (§5.6, TAS-397), so the boxes are plain content.
+
+          One `<span>` per sentence, keyed by the notice's own sequence number:
+          a sentence that arrives is a node added, which is what is announced,
+          and one already there is not touched by the arrival of another — a
+          single joined string would be rewritten whole, and a queue of files
+          would read the earlier refusals out again with each later one.
+          Taking the sentences away (a new action) adds nothing, so it is
+          silent. */}
       <p className="visually-hidden" role="status">
-        {[...errorNotices, ...infoNotices].map((notice) => notice.text).join(" ")}
+        {[...errorNotices, ...infoNotices].map((notice) => (
+          <span key={notice.seq}>
+            {notice.text}{" "}
+          </span>
+        ))}
       </p>
       {/* Errors first, then information, each in §5.6's box, the refusal's
           request id on the box's detail line; empty, it takes no space. */}
@@ -5431,9 +5448,9 @@ function CommentsSection({
   issueId: string;
   canComment: boolean;
   /**
-   * The project is archived (§5.7). Writing is off through `canComment`; this
-   * only keeps a comment the reader had typed and not sent on screen, read-only,
-   * when the archive lands under them — their words are work (§5.5).
+   * The project is archived (§5.7). Writing is off through `canComment`, and
+   * the draft stays whichever way it went; this only tells the focus rule
+   * below that the board's archive turn is placing focus itself.
    */
   archived: boolean;
   currentUserId?: string;
@@ -5490,9 +5507,31 @@ function CommentsSection({
   const mutationError = addComment.error ?? updateComment.error ?? deleteComment.error;
   const mutationWords = mutationError ? (refusalWords(mutationError) ?? mutationError.message) : "";
   const mutationRequestId = mutationError ? apiErrorFacts(mutationError).requestId : null;
-  // The composer stays for a draft the archive caught unsent, read-only and
-  // without its button; otherwise it goes with the right to comment.
-  const keepsDraft = !canComment && archived && draft !== "";
+  // The composer stays for a draft the right to comment left unsent — an archive,
+  // or a refusal that read the role again and found a VIEWER (§5.7) — read-only
+  // and without its button; otherwise it goes with the right to comment. The
+  // reader's words are work (§5.5), whichever way the right went.
+  const keepsDraft = !canComment && draft !== "";
+
+  /**
+   * The Comment button goes with the right to comment, and if it had focus —
+   * the reader pressed it, and the refusal that took the right away answered —
+   * focus goes with it, to `<body>`. A role turn (a refusal that read the
+   * context again and found a VIEWER or nobody) puts it on the read-only box
+   * that keeps the draft instead (§5.7), the control that is still the
+   * reader's place. An archive turn does not: the board places focus itself,
+   * on the panel's archive line, the nearest open layer (§5.7), and this must
+   * not take it first — child effects run before the board's. A reader whose
+   * focus is somewhere real keeps it either way. Acted on at the turn only,
+   * never on a panel that opens without the right.
+   */
+  const draftRef = useRef<HTMLTextAreaElement>(null);
+  const couldComment = useRef(canComment);
+  useEffect(() => {
+    const turned = couldComment.current && !canComment;
+    couldComment.current = canComment;
+    if (turned && !archived && focusLost()) draftRef.current?.focus();
+  }, [archived, canComment]);
 
   /**
    * Delete asks first (TAS-259), in §4.22's strip under the row, as the work
@@ -5535,6 +5574,7 @@ function CommentsSection({
             onChange={(event) => setDraft(event.target.value)}
             placeholder="Leave a comment"
             readOnly={!canComment}
+            ref={draftRef}
             rows={3}
             value={draft}
           />
@@ -6533,6 +6573,24 @@ function CreateIssueModal({
   };
   const draftOf = (field: keyof PlanningDrafts) => (value: string) =>
     setPlanning((current) => ({ ...current, [field]: value }));
+  /**
+   * Which date boxes hold an entry the browser has not made a date of yet
+   * (`validity.badInput`). A half-typed box is text-work like any other — the
+   * reader has typed into it and `Esc` must not throw it away (§4.11) — but
+   * its draft is `""`, exactly as an empty box's is, so nothing in `planning`
+   * can say so, and React's `onChange` does not fire for it. Read from the
+   * control on `keyup` and `input`, the two events `relaxDates` already reads
+   * the same fault on, and returned as is when nothing changed so a keystroke
+   * inside a box that is still half typed renders nothing.
+   */
+  const [halfTyped, setHalfTyped] = useState({ startDate: false, dueDate: false });
+  const readHalfTyped = () => {
+    const next = {
+      startDate: startDateRef.current ? isIncompleteDateEntry(startDateRef.current) : false,
+      dueDate: dueDateRef.current ? isIncompleteDateEntry(dueDateRef.current) : false,
+    };
+    setHalfTyped((current) => (current.startDate === next.startDate && current.dueDate === next.dueDate ? current : next));
+  };
 
   const createIssue = useMutation({
     mutationFn: (type: IssueTypeCode) =>
@@ -6957,7 +7015,7 @@ function CreateIssueModal({
                   aria-describedby={markedDate === "startDate" ? noticeId : undefined}
                   aria-invalid={markedDate === "startDate" ? true : undefined}
                   data-empty={planning.startDate === ""}
-                  data-unsaved-text={unsavedText(planning.startDate)}
+                  data-unsaved-text={unsavedText(planning.startDate) ?? (halfTyped.startDate ? "true" : undefined)}
                   // On blur as well as on submit, so the reader hears about it
                   // at the moment the panel would have told them — when they
                   // leave the box — rather than only once they have pressed a
@@ -6968,11 +7026,15 @@ function CreateIssueModal({
                   onChange={(event) => {
                     draftOf("startDate")(event.target.value);
                     relaxDates();
+                    readHalfTyped();
                   }}
                   // Both, and `relaxDates` says why: `keyup` is the only one of
                   // the two that fires while the entry is unreadable, and
                   // `input` is the only one the calendar popup fires at all.
-                  onKeyUp={relaxDates}
+                  onKeyUp={() => {
+                    relaxDates();
+                    readHalfTyped();
+                  }}
                   readOnly={archived}
                   ref={startDateRef}
                   type="date"
@@ -6985,13 +7047,17 @@ function CreateIssueModal({
                   aria-describedby={markedDate === "dueDate" ? noticeId : undefined}
                   aria-invalid={markedDate === "dueDate" ? true : undefined}
                   data-empty={planning.dueDate === ""}
-                  data-unsaved-text={unsavedText(planning.dueDate)}
+                  data-unsaved-text={unsavedText(planning.dueDate) ?? (halfTyped.dueDate ? "true" : undefined)}
                   onBlur={checkDates}
                   onChange={(event) => {
                     draftOf("dueDate")(event.target.value);
                     relaxDates();
+                    readHalfTyped();
                   }}
-                  onKeyUp={relaxDates}
+                  onKeyUp={() => {
+                    relaxDates();
+                    readHalfTyped();
+                  }}
                   readOnly={archived}
                   ref={dueDateRef}
                   type="date"

@@ -932,4 +932,23 @@ describe("New project", () => {
     expect(description).toHaveFocus();
     expect(description).toHaveValue("What it is for");
   });
+
+  // The text holds the key wherever focus is in the dialog (art-director,
+  // TAS-209), a colour swatch included; Cancel still discards it.
+  it("stays open from a colour swatch while the description holds text, and Cancel discards it", async () => {
+    renderProjects();
+    const dialog = await openNewProject();
+    fireEvent.change(dialog.getByLabelText("Description"), { target: { value: "What it is for" } });
+    const swatch = within(dialog.getByRole("group", { name: "Project colour" })).getAllByRole("button")[1];
+    swatch.focus();
+
+    fireEvent.keyDown(swatch, { key: "Escape" });
+
+    expect(screen.getByRole("dialog", { name: "New project" })).toBeInTheDocument();
+    expect(swatch).toHaveFocus();
+    expect(dialog.getByLabelText("Description")).toHaveValue("What it is for");
+
+    fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New project" })).not.toBeInTheDocument());
+  });
 });

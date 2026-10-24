@@ -113,3 +113,15 @@ describe("the project card's footer in styles.css", () => {
     ).toMatch(/margin-left:\s*0/);
   });
 });
+
+/**
+ * The request id (DESIGN.md §5.6, TAS-397) is a `<button>`, and a button
+ * centres its text: the id wrapped at 375 under a sentence set from the left
+ * edge came out centred (art-director, TAS-209). jsdom has no layout, so the
+ * declaration is what can be held here; the wrap itself is a browser check.
+ */
+describe("the request id in styles.css", () => {
+  it("sets its text from the left edge, which a button does not by default", () => {
+    expect(rules(styles).find(({ selector }) => selector === ".request-id")?.body).toMatch(/text-align:\s*left/);
+  });
+});
