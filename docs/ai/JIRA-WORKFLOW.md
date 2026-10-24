@@ -227,8 +227,8 @@ without Jira access can audit. If this section drifts from Jira, Jira wins.
 - The projects filter narrows the card list by project name and by project key.
 - A query below the runtime's three-character minimum, and an empty query,
   never reach the wire — the parameter is omitted, never sent empty.
-- `mock`, `rest` and `hybrid` remain behaviourally interchangeable, including
-  on the rejection of a short query.
+- `mock` and `rest` remain behaviourally interchangeable, including on the
+  rejection of a short query.
 - A server hit is never rendered inside a status column: the search DTO carries
   no `status`, so a column placement would be a claim the gateway never made.
 - `npm run check` and `npm run build` pass, with browser evidence across the
@@ -282,9 +282,8 @@ separately:
   TAS-107 rather than "user not found".
 - No filter and no sortable header, because the gateway states neither for this
   table (measured 2026-08-25).
-- `mock`, `rest` and `hybrid` stay behaviourally interchangeable; the mock
-  reproduces every one of the server's refusals, and hybrid delegates the
-  writes with no compensation.
+- `mock` and `rest` stay behaviourally interchangeable; the mock reproduces
+  every one of the server's refusals.
 - `npm run check` and `npm run build` pass, with browser evidence across the
   three viewports in both themes.
 
@@ -489,12 +488,12 @@ mode with `VITE_TASKA_ASSUME_PROJECT_ADMIN` off, **a second person can reach a
 project in the role they were given**, and no screen lies.
 
 The first draft stopped at "rest mode with the flag off". The critique broke it:
-`HybridTaskaApi` synthesises exactly the two methods that describe *somebody
+`HybridTaskaApi` synthesised exactly the two methods that describe *somebody
 else's* membership, so removing the synthesis without a way to create a second
-membership removes the compensation and leaves nothing to check under it —
-`VIEWER` stays unreachable, and `DESIGN.md`'s own warning about that survives the
-deletion. A definition whose acceptance criterion sits in a story ranked below it
-is not a definition.
+membership would remove the compensation and leave nothing to check under it —
+`VIEWER` would stay unreachable, and `DESIGN.md`'s own warning about that would
+survive the deletion. A definition whose acceptance criterion sits in a story
+ranked below it is not a definition.
 
 **Core, and why each is in it.**
 
@@ -674,8 +673,8 @@ matters more than the numbers: the real `HybridTaskaApi` over the real
   heading made a focus target drew `outline: auto` from the reader's system
   accent — orange, in an indigo product.
 - **A sentence that was false and could not be made true.** Hybrid's member read
-  returns one element and *succeeds*, so §5.6's boundary — only a successful
-  read may claim there is nobody — cannot tell a synthesis from an answer. The
+  returned one element and *succeeded*, so §5.6's boundary — only a successful
+  read may claim there is nobody — could not tell a synthesis from an answer. The
   rule that came out of it is in `API-DIVERGENCE.md` and outlives watchers: **a
   synthesised read is safe to draw from and unsafe to conclude from.** Anything
   built on that list may offer and may not assert.

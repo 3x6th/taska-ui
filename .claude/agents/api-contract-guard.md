@@ -1,6 +1,6 @@
 ---
 name: api-contract-guard
-description: Read-only guard for the Taska REST contract — enums, endpoint shapes, error handling, role gating, mock/rest/hybrid parity, and the request shape of every screen. Proposes the backend change that removes a compensation, checked against the backend repository. Use before shipping anything that touches src/api or src/domain.
+description: Read-only guard for the Taska REST contract — enums, endpoint shapes, error handling, role gating, mock/rest parity, and the request shape of every screen. Proposes the backend change that removes a compensation, checked against the backend repository. Use before shipping anything that touches src/api or src/domain.
 model: opus
 tools: Read, Grep, Glob, Bash, WebFetch
 ---
@@ -35,12 +35,12 @@ needs, the UI ships against the mock and the gap is recorded in
 removable, and **priced** — every compensation you find comes with the backend
 change that removes it, not only with a record that it exists.
 
-The direction since 2026-09-11 is off hybrid: `HybridTaskaApi` is to be
-deleted, and every screen is to get its data in one read. Its member and role
+Since TAS-209 there is no `HybridTaskaApi`; the direction (set 2026-09-11)
+stays: every screen gets its data in one read. The class's member and role
 synthesis came out in TAS-224, together with `VITE_TASKA_ASSUME_PROJECT_ADMIN`,
-so the class passes every call through until TAS-209 deletes it. Anything that adds a new synthesis, a new per-row
-request, a new client-side count, or a new hard-coded enum member is a blocker
-under that direction, even when it is locally tidy.
+and TAS-209 deleted the class. Anything that adds a new synthesis, a new
+per-row request, a new client-side count, or a new hard-coded enum member is a
+blocker under that direction, even when it is locally tidy.
 
 Evaluate:
 - **Enum fidelity.** `IssueType`, `IssuePriority`, `IssueStatus`, `ProjectRole`,
@@ -57,9 +57,9 @@ Evaluate:
   client-side join the server could do, or a read-modify-write on update are
   findings, each with the aggregate read or partial-update route that removes
   it. Say which epic child (TAS-211…218) covers it, or that none does.
-- **Interface parity.** `MockTaskaApi`, `RestTaskaApi`, and `HybridTaskaApi`
-  all implement `TaskaApi`. A screen must behave the same against any of them
-  except where a divergence is recorded. Compilation agreement is not parity —
+- **Interface parity.** `MockTaskaApi` and `RestTaskaApi` both implement
+  `TaskaApi`. A screen must behave the same against either of them except where
+  a divergence is recorded. Compilation agreement is not parity —
   check pagination shape, null handling, ordering, and error type.
 - **Error handling.** Gateway errors carry `{code, message, requestId}`. The
   `requestId` must survive to somewhere a user or developer can read it; an

@@ -28,14 +28,16 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
 
 ## Frontend, needs a story when its turn comes
 
-- **Three `TaskaApi` reads no screen calls after TAS-251** — `getMembership`,
-  `listProjectLabels` and `getProject` (the board's confirming
-  read on a context 403/404 was removed as a compensation, 2026-10-12). Kept in
-  mock, rest and hybrid so the switch to `/context` (backend #169, merged and
-  deployed 2026-10-12) stays reversible; delete once the context has run there for a while (`release-reviewer`,
-  2026-10-10). Was four: [TAS-263](https://jira.ozero.dev/browse/TAS-263)
-  (`aac71ed`) deleted `getWorkflow` from `TaskaApi`, mock, rest and hybrid, and
-  `src/` has no caller left.
+- **Seven `TaskaApi` reads have no screen caller since TAS-202:** `getMembership`,
+  `getProject`, `listProjectLabels`, `listIssues`, `listIssueLinks`,
+  `listIssueLabels`, `listIssueWatchers` — delete together (64 test call sites,
+  51 of them fixture lookups in `MockTaskaApi.test.ts`). The first three were
+  kept after TAS-251 so that the switch to `/context` (backend #169, deployed
+  2026-10-12) stayed reversible (`release-reviewer`, 2026-10-10; the board's
+  confirming read on a context 403/404 was removed as a compensation). A
+  fourth, `getWorkflow`, went earlier:
+  [TAS-263](https://jira.ozero.dev/browse/TAS-263) (`aac71ed`) deleted it from
+  `TaskaApi`, the mock and rest.
 - **`AdminSectionPlaceholder` and its generic route are unused** since TAS-251
   replaced the Audit stand-in. Delete, or keep for the next section — a call
   for whoever adds one.
@@ -647,7 +649,9 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   `MockApiError` (no `status`), rest throws `ApiError`. First screen that
   branches on `error.status` behaves differently per mode.
 - **`getMembership` disagreement:** mock returns `projectExists: false`
-  shapes, hybrid hardcodes healthy, rest propagates 404 — pick one contract.
+  shapes, rest propagates 404 (hybrid, which hardcoded healthy, was deleted in
+  TAS-209) — pick one contract, or delete the read with the others that no
+  screen calls (top of this file).
 - ~~**Mock seed lacks a project where the viewer is a *member* with a read-only
   role.**~~ **Closed by [TAS-226](https://jira.ozero.dev/browse/TAS-226) and
   [TAS-251](https://jira.ozero.dev/browse/TAS-251)** (re-checked 2026-10-17 on
@@ -741,13 +745,16 @@ Sources: the three first-run review verdicts (2026-08-03) unless noted.
   (37684446678): one flaky test of 535, `notifications.spec.ts:66` — see
   *Left by TAS-247*. If flakes per run climb above the old 2–3, the cap is
   `workers: 3` under CI, not fewer shards.
-- **The mock seed has no test of its own** (found by `release-reviewer`,
+- ~~**The mock seed has no test of its own** (found by `release-reviewer`,
   2026-08-05). The only assertion that Mark is `GLOBAL_ADMIN` and Anna is
   `USER` lives in `HybridTaskaApi.test.ts` — a file about a different class, so
   a future seed change fails somewhere that does not explain itself. Related:
   two assertions there compare `toEqual` against a value the mock returns *by
   reference*, so both sides are the same object and only the neighbouring
-  `toMatchObject` lines actually pin anything.
+  `toMatchObject` lines actually pin anything.~~ **Closed by
+  [TAS-209](https://jira.ozero.dev/browse/TAS-209), 2026-10-24.** The class and
+  its test file are deleted, and the seed's roles are pinned in the mock's own
+  test, `MockTaskaApi.test.ts:385-396` (`api-contract-guard`, pre-build sweep).
 - **Duplicate accessible name on the login screen** — the segmented mode toggle
   and the submit button are both named "Sign in", so a role locator matches two
   elements. `e2e/smoke.spec.ts` works around it with a CSS locator; the fix
@@ -1069,7 +1076,7 @@ time.
   **Two call sites now produce the query key `["issues", projectId, "ALL"]`
   with `queryFn` bodies that differ cosmetically.** The board passes
   `labelId: undefined` explicitly; `IssueLinksSection` omits the key entirely.
-  Identical across mock, rest and hybrid today, and deliberately the same cache
+  Identical across mock and rest, and deliberately the same cache
   entry so an unfiltered board costs the panel nothing. The hazard is later:
   add a parameter to the board's `listIssues` call without adding it here and
   the two observers disagree, silently, about what one cache entry holds. A
@@ -1121,9 +1128,9 @@ time.
   divergence entry becomes "computed, permanently".
 - ~~**"1 members"** on a freshly created project card — plural not handled.~~
   **Overtaken by [TAS-202](https://jira.ozero.dev/browse/TAS-202), 2026-09-09.**
-  It is not a plural bug on new projects: `hybrid` synthesises the member list
-  from the reader alone, so **every** card prints `1 members` whatever the truth,
-  and eighteen of that screen's twenty-seven requests exist to produce it. The
+  It was not a plural bug on new projects: `hybrid` synthesised the member list
+  from the reader alone, so **every** card printed `1 members` whatever the truth,
+  and eighteen of that screen's twenty-seven requests existed to produce it. The
   story removes the count until [TAS-137](https://jira.ozero.dev/browse/TAS-137)
   lands rather than making it cheaper or fixing its grammar.
   **TAS-137 landed, and since TAS-224 the count is real.** So `1 members` now
@@ -2179,7 +2186,8 @@ is what recurs.
   the one item that breaks the deployed board today.
 - [TAS-137](https://jira.ozero.dev/browse/TAS-137) — membership/member reads.
   **Done:** merged as backend PR #152 and deployed 2026-09-16. The synthesis and
-  the admin flag came out in TAS-224; `HybridTaskaApi` itself goes in TAS-209.
+  the admin flag came out in TAS-224; `HybridTaskaApi` itself was deleted in
+  TAS-209.
 - [TAS-141](https://jira.ozero.dev/browse/TAS-141) — contract gaps: read-all,
   nullable assignee, comment ordering, CORS-exposed `X-Request-Id`,
   404-on-empty-projects bug. **Closed in Jira 2026-09-04 with three clauses
@@ -2280,15 +2288,16 @@ is what recurs.
   `src/` reads `isMember` or `projectExists` at all. So deleting
   `membershipQuery` and taking `projectQuery.data?.currentUserRole` removes a
   read and sharpens the TAS-163 banner to what it now means.
-  **It must not be done yet.** On the stand the gateway sends no
-  `currentUserRole`, while `HybridTaskaApi.getMembership` short-circuits to
-  ADMIN through `VITE_TASKA_ASSUME_PROJECT_ADMIN`; making the swap today would
-  floor every user on the stand to VIEWER and take write access off the board.
-  It becomes correct the day PR #152 deploys, and it belongs to
+  **It must not be done yet.** On the stand the gateway sent no
+  `currentUserRole`, while `HybridTaskaApi.getMembership` short-circuited to
+  ADMIN through `VITE_TASKA_ASSUME_PROJECT_ADMIN`; making the swap then would
+  have floored every user on the stand to VIEWER and taken write access off the
+  board. It becomes correct the day PR #152 deploys, and it belongs to
   [TAS-202](https://jira.ozero.dev/browse/TAS-202) when it does.
   **That day was 2026-09-16.** PR #152 is deployed, and TAS-224 removed the
-  flag and made hybrid delegate, so the precondition holds. Hybrid now asks for
-  the project twice per paint too. The swap is still TAS-202's.
+  flag and made hybrid delegate, so the precondition holds. Hybrid then asked for
+  the project twice per paint too (the class was deleted in TAS-209). The swap
+  is still TAS-202's.
 - ~~**Two backend asks out of PR #152, raised on TAS-137 while the PR is open**
   (2026-09-12, found by `api-contract-guard`, both verified in the PR's Java).~~
   **Both fixed before the merge** — true at `1ad6ffa`, fixed in `7fa04ba`, and
@@ -2315,9 +2324,10 @@ is what recurs.
 - **Two record nits from TAS-219's release review**, both one clause and neither
   worth a commit of its own. `RestTaskaApi.getMembership` hardcodes `isMember`
   and `projectExists` exactly as the hybrid synthesis did (there is no synthesis
-  since TAS-224), but the divergence bullets attribute that hardcoding to hybrid alone — it is grounded there in
-  the 403-on-a-non-member behaviour and read by nothing, so it is a wording fix
-  for the next time that section is open. And `MockTaskaStore.createProject`
+  since TAS-224). It is grounded in the 403-on-a-non-member behaviour and read
+  by nothing, but the divergence record attributed the hardcoding to hybrid
+  alone (and TAS-209 cut those bullets to a paragraph that still does), so it is
+  a wording fix for the next time that entry is open. And `MockTaskaStore.createProject`
   returns the stored row without passing it through `withCurrentUserRole`, so a
   freshly created project is the one row in the mock's `listProjects` that
   states no role. The create *response* without a role is in parity: the
@@ -2337,13 +2347,14 @@ is what recurs.
   mode. And the checked-state ring on a swatch is `var(--fg)`, which on
   `#0052cc` reads as a dark disc rather than a ring — a TAS-169 recipe that this
   story made more visible without changing.
-- **Three comments still say the undeployed-route predicate cannot see a 405.**
-  TAS-148 widened it, and the `listMembers` comments in `TaskaApi.ts`,
-  `RestTaskaApi.ts` and `HybridTaskaApi.ts` describe backend PR #152's own 405
-  as unrecognisable. They are imprecise rather than wrong — the predicate would
-  match that signature, it is simply never called there — and they belong to a
-  different story's feature, which is why TAS-148 left them alone. Worth a pass
-  the next time that file is open for its own reasons.
+- **Two comments still say the undeployed-route predicate cannot see a 405.**
+  TAS-148 widened it, and the `listMembers` comments in `TaskaApi.ts` and
+  `RestTaskaApi.ts` (a third, in `HybridTaskaApi.ts`, went with the class in
+  TAS-209) describe backend PR #152's own 405 as unrecognisable. They are
+  imprecise rather than wrong — the predicate would match that signature, it is
+  simply never called there — and they belong to a different story's feature,
+  which is why TAS-148 left them alone. Worth a pass the next time that file is
+  open for its own reasons.
 - **Seven from TAS-148's second wave**, all recorded rather than taken, and none
   of them changes behaviour. `MockTaskaStore.updateProject`'s comment justifies
   checking existence before permission by §4.18's "must not tell apart", when
@@ -2393,13 +2404,14 @@ is what recurs.
   fallback is covered end to end.
 - **TAS-220's cache write has three edges `frontend-builder` named rather than
   closed** (2026-09-14).
-  - **The face flip-flops wherever member rows carry no avatar.** In hybrid once
-    PR #150 deploys, the write puts the reader's face on hybrid's synthesised
-    member row, and the next members refetch takes it off again. The menu keeps
-    the photo while the board shows initials until hybrid's `listMembers`
-    delegates. The same happens in rest against PR #152's head until its
-    missing avatar id is fixed (TAS-137). **Since TAS-224 hybrid delegates, and
-    the flip-flop is unchanged**, because PR #152 merged without the avatar id.
+  - **The face flip-flops wherever member rows carry no avatar.** In hybrid, once
+    PR #150 deployed, the write put the reader's face on hybrid's synthesised
+    member row, and the next members refetch took it off again. The menu kept
+    the photo while the board showed initials until hybrid's `listMembers`
+    delegated. The same happens in rest against PR #152's head until its
+    missing avatar id is fixed (TAS-137). **Since TAS-224 hybrid delegated, and
+    the flip-flop was unchanged** (TAS-209 then deleted the class), because
+    PR #152 merged without the avatar id.
     It lasts until auth-service selects `a.id AS avatar_id`
     ([TAS-225](https://jira.ozero.dev/browse/TAS-225)).
   - **Shape coupling:** the menu types the project-summary cache by shape alone.
@@ -2468,7 +2480,8 @@ is what recurs.
   - `.compact-button:hover` (`styles.css:4573`) sticks after a tap on touch,
     which is a product-wide `@media (hover: hover)` question.
   - Beside those: the undeployed-route state *can* be driven in Playwright
-    against the hybrid dev server, with every `/api` request answered inside the
+    against the dev server in `rest` mode (this was written against `hybrid`,
+    deleted in TAS-209), with every `/api` request answered inside the
     page and every external request aborted. The e2e suite is mock-only by
     design, so that would be a new kind of spec rather than one more case.
     Since TAS-263 that state is only the write refusal ("Profile photos are not
@@ -3494,8 +3507,9 @@ Frontend, recorded rather than taken:
   `ProjectMemberServiceImpl.java:142-146`). Only `getProjectContext` refuses the
   way the server does. This is documented in `API-DIVERGENCE.md`'s mock-parity
   bullets. Under "the mock follows the server" these reads should refuse the
-  way the context does, and no screen calls three of them (see the top of this
-  file). From the #186 skeptic.
+  way the context does, and no screen calls four of them (`getMembership`,
+  `getProject`, `listProjectLabels`, `listIssues`; see the top of this file).
+  From the #186 skeptic.
 - **A degraded `/users/me` 200 carries its request id only in `X-Request-Id`,
   and the client reads that header only on errors** (#193). #193 merged as
   `b88150f` and deployed 2026-10-19; a healthy read carries `avatar` and
@@ -4040,8 +4054,6 @@ Frontend notes:
   `ProjectLabelsModal`); a shared helper could replace them.
 - **Label chip order on a card is not stated** — **graduated to [TAS-392](https://jira.ozero.dev/browse/TAS-392)** (2026-10-24): `findLabelIdsByIssueIds`
   (`IssueRepositoryImpl.java:338`) has no ORDER BY.
-- **`listIssues` has no screen caller any more** (board, projects and the link picker moved off
-  it). Keep or delete with TAS-209.
 
 ### Left by TAS-149 (archive and the read-only archived board, frontend for backend #155/#159, 2026-10-23)
 

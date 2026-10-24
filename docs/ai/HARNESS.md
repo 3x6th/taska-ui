@@ -13,7 +13,7 @@ Read `AGENTS.md` for the rules. This file is the account of whether they held.
 | Orchestrator | Repository, git, Jira, releases | Scope, sequencing, evidence |
 | `frontend-builder` | Production frontend | The only agent that may edit `src/` |
 | `art-director` | Nothing | Design-system conformance, UX craft, states, keyboard |
-| `api-contract-guard` | Nothing | Contract fidelity, enums, roles, mock/rest/hybrid parity |
+| `api-contract-guard` | Nothing | Contract fidelity, enums, roles, mock and rest parity |
 | `release-reviewer` | Nothing | The independent verdict before a merge |
 
 **Three read-only roles against one writer.** A reviewer that cannot edit
