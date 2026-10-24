@@ -1847,8 +1847,22 @@ Everything below is the entry as it stood, in the past tense.
 - **Compensation:** none. The board reads `archivedAt` from `/context` and offers no write
   on an archived project — the contract states the server enforces it, so this is the
   project's property, not a workaround (DESIGN.md §5.7).
-- **Not seen live:** nothing has been archived on the stand; an archive is a mutation and
-  needs the owner's word.
+- **Seen live on 2026-10-24** (TAS-397's smoke, on the owner's word, throwaway project `MVPRUN`
+  `e6cdadb9-…` with `smash_buster` re-added as MEMBER first — request `bee81654-902d-4f9d-8012-b53e2df1c852` → 201):
+  * archived from the Edit project dialog by `admin`; the board turned read-only in the same frame
+    with the archive line and no New;
+  * a repeated `DELETE` answered 200 with the same `archivedAt` (`2026-10-24T19:20:10.985852Z`) and
+    `currentUserRole: "ADMIN"` (`80480034-d358-47aa-aa82-735fa0f549b3`) — idempotent, as read;
+  * `GET /projects/{id}` 200 with `archivedAt` (`683e23c8-ae32-452c-ae21-ebb1f39f2c17`); the issue
+    read 200 (`016ec34d-0bcc-4017-889d-4ea1d07182ed`);
+  * creating an issue and adding a comment answered **400** `{"code":"FAILED_PRECONDITION",
+    "message":"Project is archived","details":{"reason":"PROJECT_ARCHIVED"}}`
+    (`58513f7e-6397-4c84-af15-55b65c075180`, `56c4c74e-8385-484d-b84d-9e8b6c505a2c`);
+  * `GET /projects` (`9362faab-…`) and `GET /project-stats` (`dea7c1f3-…`) answered 200 without it;
+  * the member got «Project archived» / «Project MVP run 2026-10-24 was archived», a row that
+    opens the board (it carries `projectId`); the archiver got none. The neighbouring
+    `MEMBER_ADDED`, role-change and removal notifications carry no `projectId` and read «Nothing to
+    open» — asked as [TAS-415](https://jira.ozero.dev/browse/TAS-415).
 
 ### Closed by TAS-202 (2026-10-24): `RestTaskaApi.getBoard` mapped the board shape from before backend #205
 
