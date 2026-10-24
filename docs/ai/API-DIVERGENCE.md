@@ -536,21 +536,31 @@ Same rule as above: "Closed by" is settled, the rest is live.
   (`vite.config.ts`). The GitHub repository variable `VITE_TASKA_API_MODE` was
   set to `rest` the same day. **The MVP's two-account stand run passed on 2026-10-24**
   (the owner as B = `smash_buster`, the orchestrator as A = `admin`, throwaway project
-  `MVPRUN` `e6cdadb9-…`, issue `MVPRUN-1`): A created the project (`ffe065ab-72cb-4e25-b733-3fe22cff9bdb`)
-  and the issue (`21d3f50b-2457-4870-ac7f-29da266edb05`); the invitation was answered «This email
-  already belongs to a Taska account» — B had been invited and activated earlier by the owner,
-  who reports that path worked; A added B as MEMBER through the Members dialog (members read
-  `24f82916-b43e-4037-930a-1ed9a816bd7d`); B moved `MVPRUN-1` on the board, and the issue's history
-  names B's transition (`337a19e8-b61a-4506-988f-5cb8e60084dc`); A demoted B to VIEWER with B's board
-  open (`1aeb2f03-3505-4c8f-9c79-b07cf9dd0e47`); B's next move was refused with a request id
-  (`e0ae72f5-c27b-47f2-9bab-1dc458267d12`), the board re-read the role and dropped New and «+», and a
-  reload opened it read-only; A removed B (`fd3bc3f5-a6e6-4a74-b3e2-f125c821bcd8`); as an outsider B
-  got «Page not found» without being signed out, and every project-scoped read answered **403** —
-  context `1f35e640-…`, board `b4411ef1-…`, project `9d95ea1b-…`, `workflow?issueType=TASK`
-  `a04e0c60-…`, workflows `826a202f-…`, members `74faa0a3-…`, issue by id `031a834a-…`, by key
-  `50881285-…`, scoped search `0ce55cf8-…` — while unscoped search (`37f94928-…`), `/project-stats`
-  (`28c914d8-…`) and `/projects` (`db6e4288-…`) answered 200 without `MVPRUN`. The ids are
-  truncated as the owner's console printed them. The 401 bullet below is answered by it.
+  `MVPRUN` `e6cdadb9-…`, issue `MVPRUN-1`). **Invitation and activation were not re-run:** the
+  invite to B's address answered «This email already belongs to a Taska account»; that leg is
+  covered by the owner's earlier activation of the same account, which the owner reports worked.
+  What was measured, with request ids (write steps confirmed by a read where noted):
+  * A created the project — create request `ffe065ab-72cb-4e25-b733-3fe22cff9bdb` → 201 — and the
+    issue — create request `21d3f50b-2457-4870-ac7f-29da266edb05` → 201.
+  * A added B as MEMBER through the Members dialog; confirmed by a members read
+    `24f82916-b43e-4037-930a-1ed9a816bd7d` (B listed as MEMBER).
+  * B moved `MVPRUN-1` on the board; the issue's history, read by A in request
+    `337a19e8-b61a-4506-988f-5cb8e60084dc`, records a TRANSITIONED event whose actor is B's user id
+    (`ee034438-…`).
+  * A changed B to VIEWER with B's board open; confirmed by a members read
+    `1aeb2f03-3505-4c8f-9c79-b07cf9dd0e47`.
+  * B's next move was refused; the refusal's own request id is
+    `e0ae72f5-c27b-47f2-9bab-1dc458267d12`. The owner confirmed the board then re-read the role and
+    dropped its write controls (New, «+», …), and a reload opened it read-only.
+  * A removed B; confirmed by a members read `fd3bc3f5-a6e6-4a74-b3e2-f125c821bcd8`.
+  * As a removed member — a signed-in non-member — B got «Page not found» without being signed
+    out, and all nine project-scoped reads the probe made answered **403**: context `1f35e640-…`,
+    board `b4411ef1-…`, project `9d95ea1b-…`, `workflow?issueType=TASK` `a04e0c60-…`, workflows
+    `826a202f-…`, members `74faa0a3-…`, issue by id `031a834a-…`, by key `50881285-…`, scoped
+    search `0ce55cf8-…`. Unscoped search (`37f94928-…`), `/project-stats` (`28c914d8-…`) and
+    `/projects` (`db6e4288-…`) answered 200 without `MVPRUN`. The probe ids are truncated as the
+    owner's console printed them; labels, comments, watchers and links were not probed.
+  The 401 bullet below is answered by it.
 - **What the deploy settled, read at `1cfe4d7` by `api-contract-guard`** (read
   in the Java, not probed with a token):
   - **The 401 risk below is answered.** On this route a 401 comes only from the
@@ -615,21 +625,21 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `GET /projects/{id}/members` have no contract at all. If either ever answers
   401 for "not yours" rather than "not authenticated", a member browsing
   somebody else's project is signed out instead of shown the Not-found screen.
-  Re-check before `rest` becomes the default mode. Neither was probed for this
+  Re-checked once `rest` became the default (below). Neither was probed for this
   question on 2026-08-18: a `GET` to `…/members` answered **405**, since the
   contract gives that path a `POST` only, and `…/membership` was never
   requested. So the live half of this risk is `…/membership` plus whatever
   TAS-137 adds — a path that answers 405 unconditionally can never answer a 401
   for "not yours".
 
-  **Still open, and `rest` is the default now** (TAS-209, 2026-10-24). TAS-137
+  **Was open until the MVP stand run** (TAS-209, 2026-10-24). TAS-137
   added the member read and `…/membership` is not coming (first bullet), so
   what is left is the one question: what `GET …/members` and
   `GET /projects/{id}` answer a signed-in non-member. The Java at `1cfe4d7`
   says 403 ("What the deploy settled" above, read in code, not probed). **Answered by the MVP stand run,
   2026-10-24:** a signed-in non-member gets **403**, never 401, from `GET …/members`
-  (`74faa0a3-…`), `GET /projects/{id}` (`9d95ea1b-…`) and every other project-scoped read, and the
-  app shows «Page not found» without signing them out.
+  (`74faa0a3-…`), `GET /projects/{id}` (`9d95ea1b-…`) and the seven other project-scoped reads the
+  probe made (listed above), and the app shows «Page not found» without signing them out.
 
 - **Refuted, and the read has a shape now** ([TAS-219](https://jira.ozero.dev/browse/TAS-219),
   2026-09-12). The prediction above — that a shipped member read would send a
@@ -2400,8 +2410,8 @@ The entry as it stood:
   non-admin token walked the path on 2026-08-18: 403 for someone else's project,
   and the Not-found screen drawn from a real refusal for the first time.
 - **A 401 answered for "not yours" would sign the reader out** rather than show
-  the Not-found screen. That risk is live and does not belong to this closed
-  entry; it moved to `No membership or member-read endpoints`, which already
+  the Not-found screen. That risk was answered by the MVP stand run on 2026-10-24 (403, never 401; the
+  TAS-224/209 entry) and does not belong to this closed entry; it moved to `No membership or member-read endpoints`, which already
   owns the two uncontracted endpoints it turns on.
 - **What is still owed here:** only the contract naming the codes —
   [TAS-141](https://jira.ozero.dev/browse/TAS-141). The reachability half is
