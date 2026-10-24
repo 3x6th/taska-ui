@@ -534,10 +534,23 @@ Same rule as above: "Closed by" is settled, the rest is live.
   `rest` is the default `VITE_TASKA_API_MODE`, `mock` is the in-memory demo and
   e2e mode, and any other value stops the dev server, the tests and the build
   (`vite.config.ts`). The GitHub repository variable `VITE_TASKA_API_MODE` was
-  set to `rest` the same day. The request ids of the MVP's two-account stand run
-  will be recorded here: **pending**, the owner's run, nothing has been
-  measured yet. The one live sub-fact this closed entry still carries is the 401
-  bullet below, which that run's outsider probe answers.
+  set to `rest` the same day. **The MVP's two-account stand run passed on 2026-10-24**
+  (the owner as B = `smash_buster`, the orchestrator as A = `admin`, throwaway project
+  `MVPRUN` `e6cdadb9-…`, issue `MVPRUN-1`): A created the project (`ffe065ab-72cb-4e25-b733-3fe22cff9bdb`)
+  and the issue (`21d3f50b-2457-4870-ac7f-29da266edb05`); the invitation was answered «This email
+  already belongs to a Taska account» — B had been invited and activated earlier by the owner,
+  who reports that path worked; A added B as MEMBER through the Members dialog (members read
+  `24f82916-b43e-4037-930a-1ed9a816bd7d`); B moved `MVPRUN-1` on the board, and the issue's history
+  names B's transition (`337a19e8-b61a-4506-988f-5cb8e60084dc`); A demoted B to VIEWER with B's board
+  open (`1aeb2f03-3505-4c8f-9c79-b07cf9dd0e47`); B's next move was refused with a request id
+  (`e0ae72f5-c27b-47f2-9bab-1dc458267d12`), the board re-read the role and dropped New and «+», and a
+  reload opened it read-only; A removed B (`fd3bc3f5-a6e6-4a74-b3e2-f125c821bcd8`); as an outsider B
+  got «Page not found» without being signed out, and every project-scoped read answered **403** —
+  context `1f35e640-…`, board `b4411ef1-…`, project `9d95ea1b-…`, `workflow?issueType=TASK`
+  `a04e0c60-…`, workflows `826a202f-…`, members `74faa0a3-…`, issue by id `031a834a-…`, by key
+  `50881285-…`, scoped search `0ce55cf8-…` — while unscoped search (`37f94928-…`), `/project-stats`
+  (`28c914d8-…`) and `/projects` (`db6e4288-…`) answered 200 without `MVPRUN`. The ids are
+  truncated as the owner's console printed them. The 401 bullet below is answered by it.
 - **What the deploy settled, read at `1cfe4d7` by `api-contract-guard`** (read
   in the Java, not probed with a token):
   - **The 401 risk below is answered.** On this route a 401 comes only from the
@@ -613,9 +626,10 @@ Same rule as above: "Closed by" is settled, the rest is live.
   added the member read and `…/membership` is not coming (first bullet), so
   what is left is the one question: what `GET …/members` and
   `GET /projects/{id}` answer a signed-in non-member. The Java at `1cfe4d7`
-  says 403 ("What the deploy settled" above, read in code, not probed). The outsider probe of the
-  MVP stand run, a second account that is not in the project, is what measures
-  it: **pending**, the owner's run, no request id yet.
+  says 403 ("What the deploy settled" above, read in code, not probed). **Answered by the MVP stand run,
+  2026-10-24:** a signed-in non-member gets **403**, never 401, from `GET …/members`
+  (`74faa0a3-…`), `GET /projects/{id}` (`9d95ea1b-…`) and every other project-scoped read, and the
+  app shows «Page not found» without signing them out.
 
 - **Refuted, and the read has a shape now** ([TAS-219](https://jira.ozero.dev/browse/TAS-219),
   2026-09-12). The prediction above — that a shipped member read would send a
@@ -2411,7 +2425,12 @@ The entry as it stood:
   taken before the shapes were observed, and the observation does not disturb
   it.
 
-### The workflow read is not membership-checked, unlike every endpoint beside it
+### Closed by the MVP stand run (2026-10-24): the workflow read was not membership-checked, unlike every endpoint beside it
+
+A signed-in non-member's `GET /projects/{id}/workflow?issueType=TASK` answered **403** on the stand
+(`a04e0c60-…`, TAS-209's two-account run), the condition this entry set for closing. The entry is
+kept below as it stood.
+
 
 - **Status, 2026-10-19: no client surface left, and the fix is deployed;
   half of it is probed.** The board has read workflows from

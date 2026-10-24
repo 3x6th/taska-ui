@@ -4044,8 +4044,9 @@ Frontend notes:
   on focus with no §7 ring — and B2 now makes this box a focus target. Apply §4.3's read-only
   recipe: narrow the focus rule to `:not(:read-only)`, add `background: transparent;
   border-color: var(--border); resize: none; cursor: default` for `:read-only`.
-- **The MVP two-account stand run and the archive smoke are pending** (TAS-209, TAS-397) —
-  checklist in the TAS-209 comment; request ids go to API-DIVERGENCE.
+- ~~**The MVP two-account stand run**~~ — **passed 2026-10-24** (TAS-209 Done; request ids in
+  API-DIVERGENCE). **The archive smoke is still pending** (TAS-397) — the throwaway project
+  `MVPRUN` is the candidate; it needs the owner's word, archiving cannot be undone.
 
 ### Left by TAS-202 (projects from /project-stats, board from /board, 2026-10-24)
 
