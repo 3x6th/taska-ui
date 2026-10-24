@@ -1,4 +1,5 @@
 import type {
+  ActionVia,
   DictionaryEntry,
   GlobalRole,
   IssueComment,
@@ -290,6 +291,25 @@ export const commentWasEdited = ({ createdAt, updatedAt }: Pick<IssueComment, "c
   if (!updatedAt) return false;
   // `NaN` on either side makes this `false`, which is the "cannot prove it" answer.
   return Date.parse(updatedAt) > Date.parse(createdAt);
+};
+
+/**
+ * The channel mark after an actor's name in Activity and a comment's head
+ * (TAS-412, for TAS-411): "via MCP (Cursor on laptop)", "via API token
+ * (Release script)", or without a name just "via MCP" / "via API token".
+ *
+ * `null` — draw nothing — for no mark at all, which is a change made in the
+ * UI and looks exactly as it did before the mark existed, and for a channel
+ * this build has no word for: a mark it cannot read says nothing true. A
+ * blank name is no name. The mark is mock only until TAS-411 puts it on the
+ * wire (`ActionVia`).
+ */
+export const actionViaText = (via: ActionVia | null | undefined): string | null => {
+  if (!via || typeof via !== "object") return null;
+  const channel = via.channel === "MCP" ? "MCP" : via.channel === "API_TOKEN" ? "API token" : null;
+  if (!channel) return null;
+  const name = typeof via.tokenName === "string" ? via.tokenName.trim() : "";
+  return name ? `via ${channel} (${name})` : `via ${channel}`;
 };
 
 /**

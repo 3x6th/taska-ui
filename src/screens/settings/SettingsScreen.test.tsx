@@ -43,6 +43,7 @@ const { fakeApi, state } = vi.hoisted(() => {
       };
     },
     listNotifications: async () => ({ items: [], pageSize: 20, offset: 0, unreadCount: 0 }),
+    listAccessTokens: async () => [],
   };
   return { fakeApi: api as unknown as TaskaApi, state };
 });
@@ -89,9 +90,27 @@ describe("the Settings area", () => {
     expect(within(rail).getByRole("link", { name: "My profile" })).toHaveAttribute("aria-current", "page");
     expect(within(rail).getByRole("link", { name: "Appearance" })).not.toHaveAttribute("aria-current");
     expect(within(rail).getByRole("link", { name: "Back to projects" })).toHaveAttribute("href", "/projects");
+    // Access tokens (TAS-412) second, beside the profile it belongs with.
+    expect(within(rail).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "My profile",
+      "Access tokens",
+      "Appearance",
+      "Back to projects",
+    ]);
     // The app shell's own bar, with the theme toggle, as on /admin.
     expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeVisible();
     expect(await screen.findByText("tom@example.com")).toBeVisible();
+  });
+
+  it("opens Access tokens at /settings/tokens for any role, with no gate", async () => {
+    renderAt("/settings/tokens");
+
+    expect(await screen.findByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).toBeVisible();
+    const rail = screen.getByRole("navigation", { name: "Settings" });
+    expect(within(rail).getByRole("link", { name: "Access tokens" })).toHaveAttribute("aria-current", "page");
+    // Tom is a plain USER here; the section is his own, as My profile is.
+    expect(await screen.findByText("No tokens yet.")).toBeVisible();
+    expect(screen.getByRole("heading", { level: 2, name: "Connect an AI agent" })).toBeVisible();
   });
 
   it("answers an address inside /settings that is no section with the not-found screen", async () => {
@@ -116,6 +135,31 @@ describe("the Settings area", () => {
     fireEvent.click(screen.getByRole("link", { name: "Appearance" }));
 
     await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Appearance/ })).toHaveFocus());
+  });
+
+  it("brings the current link into the rail's strip on arrival and on each move, at once and without taking focus (§5.8)", async () => {
+    // jsdom lays nothing out, so where the strip ends up is measured in the
+    // browser; here, which element is asked to scroll, how, and that focus
+    // still lands on the heading.
+    const scrolls = vi.spyOn(Element.prototype, "scrollIntoView");
+    try {
+      renderAt("/settings/appearance");
+      const rail = await screen.findByRole("navigation", { name: "Settings" });
+      const appearance = within(rail).getByRole("link", { name: "Appearance" });
+      await waitFor(() => expect(scrolls.mock.contexts).toContain(appearance));
+      expect(screen.getByRole("heading", { level: 1 })).not.toHaveFocus();
+
+      scrolls.mockClear();
+      fireEvent.click(within(rail).getByRole("link", { name: "Access tokens" }));
+
+      const tokens = within(rail).getByRole("link", { name: "Access tokens" });
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: /Settings.*Access tokens/ })).toHaveFocus());
+      const railCalls = scrolls.mock.calls.filter((_, index) => rail.contains(scrolls.mock.contexts[index] as Node));
+      expect(railCalls).toEqual([[{ inline: "nearest", block: "nearest" }]]);
+      expect(scrolls.mock.contexts).toContain(tokens);
+    } finally {
+      scrolls.mockRestore();
+    }
   });
 });
 

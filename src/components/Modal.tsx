@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { tabbables, trapTab } from "../lib/focusTrap";
 
 interface ModalProps {
@@ -22,9 +22,25 @@ interface ModalProps {
    * cancelled by them either.
    */
   busy?: boolean;
+  /**
+   * The title, for a dialog whose content changes under it and that hands
+   * focus to the new title — Settings → Access tokens, when the form becomes
+   * the token's one showing (TAS-412). With it the title is a place script puts
+   * focus (`tabIndex=-1`), never a Tab stop.
+   */
+  titleRef?: Ref<HTMLHeadingElement>;
 }
 
-export function Modal({ title, eyebrow, onClose, children, footer, focusableBody = false, busy = false }: ModalProps) {
+export function Modal({
+  title,
+  eyebrow,
+  onClose,
+  children,
+  footer,
+  focusableBody = false,
+  busy = false,
+  titleRef,
+}: ModalProps) {
   const dialogRef = useRef<HTMLElement>(null);
   /**
    * The control the dialog was opened from, so closing hands focus back to it
@@ -116,7 +132,9 @@ export function Modal({ title, eyebrow, onClose, children, footer, focusableBody
         <header className="modal-header">
           <div className="modal-title-row">
             {eyebrow}
-            <h2>{title}</h2>
+            <h2 ref={titleRef} tabIndex={titleRef ? -1 : undefined}>
+              {title}
+            </h2>
           </div>
           {/* `aria-label` as well as `title`, and the label is what §7 asks for:
               an icon-only button carries one. `title` is the weakest source in

@@ -7155,3 +7155,112 @@ describe("New issue and Esc", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "New issue" })).not.toBeInTheDocument());
   });
 });
+
+describe("the channel mark on history and comments (TAS-412)", () => {
+  const ISSUE_PATH = `/projects/${PROJECT_ID}/issues/issue-1`;
+  const comment = (overrides: Partial<IssueComment>): IssueComment => ({
+    id: "comment-1",
+    issueId: "issue-1",
+    projectId: PROJECT_ID,
+    authorUserId: "user-anna",
+    author: null,
+    body: "Retry guard is in review.",
+    createdAt: "2026-08-01T09:30:00Z",
+    updatedAt: "2026-08-01T09:30:00Z",
+    version: 1,
+    ...overrides,
+  });
+  const event = (overrides: Partial<IssueHistoryEvent>): IssueHistoryEvent => ({
+    id: "history-1",
+    issueId: "issue-1",
+    eventType: "CREATED",
+    actorUserId: "user-anna",
+    occurredAt: "2026-08-01T09:00:00Z",
+    payload: {},
+    ...overrides,
+  });
+  const openPanel = async () => within(await screen.findByRole("dialog", { name: "TAS-102 issue" }));
+
+  beforeEach(() => {
+    reset();
+    window.localStorage.clear();
+  });
+
+  /** Each event's sentence and its meta line, in the feed's order. */
+  const feed = () =>
+    [...document.querySelectorAll(".activity-item")].map((item) => ({
+      sentence: item.querySelector("p")?.textContent,
+      meta: item.querySelector("p")?.nextElementSibling ?? null,
+    }));
+
+  it("says which channel a change came through on its meta line and a comment's after the author, with the token's name when there is one", async () => {
+    seedHistory([
+      event({ id: "history-1", via: { channel: "MCP", tokenName: "Cursor on laptop" } }),
+      event({
+        id: "history-2",
+        eventType: "TRANSITIONED",
+        occurredAt: "2026-08-01T10:00:00Z",
+        payload: { from: "TODO", to: "IN_PROGRESS" },
+        via: { channel: "API_TOKEN", tokenName: null },
+      }),
+    ]);
+    seedComments([comment({ via: { channel: "API_TOKEN", tokenName: "Release script" } })]);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    const row = (await panel.findByText("Retry guard is in review.")).closest(".comment-item") as HTMLElement;
+    const head = row.querySelector(".comment-head") as HTMLElement;
+    // Right after the name, before the time; never the `edited` badge's <em>.
+    expect(head.querySelector("strong + .via-mark")).toHaveTextContent("via API token (Release script)");
+    expect(head.querySelector("em")).toBeNull();
+
+    // The feed names an actor it has no member row for "Someone" — what this
+    // fixture gives it; the mark's place is the point. The sentence stays
+    // whole, and the mark follows the time on the meta line (§4.26).
+    const events = feed();
+    expect(events.map((item) => item.sentence)).toEqual([
+      "Someone moved To Do to In Progress",
+      "Someone created this issue",
+    ]);
+    expect(document.querySelector(".activity-item p .via-mark")).toBeNull();
+    for (const [index, mark] of ["via API token", "via MCP (Cursor on laptop)"].entries()) {
+      const meta = events[index].meta as HTMLElement;
+      expect(meta).toHaveClass("activity-meta");
+      // The time, a dot only the eye gets, then the mark — and a plain space
+      // between the two for a screen reader, which skips the dot.
+      expect(meta.children[0].tagName).toBe("TIME");
+      expect(meta.children[1]).toHaveAttribute("aria-hidden", "true");
+      expect(meta.children[1]).toHaveTextContent("·");
+      expect(meta.children[2]).toHaveClass("via-mark");
+      expect(meta.children[2]).toHaveTextContent(mark);
+      const spoken = [...meta.childNodes]
+        .filter((node) => !(node instanceof Element && node.getAttribute("aria-hidden") === "true"))
+        .map((node) => node.textContent)
+        .join("");
+      expect(spoken).toBe(`${meta.children[0].textContent} ${mark}`);
+    }
+  });
+
+  it("draws a change with no channel, or one this build cannot read, exactly as before", async () => {
+    seedHistory([
+      event({ id: "history-1" }),
+      event({ id: "history-2", occurredAt: "2026-08-01T10:00:00Z", via: null }),
+      event({
+        id: "history-3",
+        occurredAt: "2026-08-01T11:00:00Z",
+        via: { channel: "SMOKE_SIGNAL", tokenName: "x" } as unknown as IssueHistoryEvent["via"],
+      }),
+    ]);
+    seedComments([comment({})]);
+    renderBoard(ISSUE_PATH);
+    const panel = await openPanel();
+
+    await panel.findByText("Retry guard is in review.");
+    expect(document.querySelectorAll(".via-mark")).toHaveLength(0);
+    expect(document.querySelectorAll(".activity-meta")).toHaveLength(0);
+    // The sentence, then the bare <time> as the event's meta line: as before.
+    const events = feed();
+    expect(events.map((item) => item.sentence)).toEqual(Array(3).fill("Someone created this issue"));
+    for (const item of events) expect(item.meta?.tagName).toBe("TIME");
+  });
+});

@@ -40,7 +40,22 @@ export function SectionArea({
 }) {
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const railRef = useRef<HTMLElement>(null);
   const lastSectionId = useRef<string | null>(null);
+
+  useEffect(() => {
+    // Below 900 the rail is a strip that scrolls sideways, and the section
+    // shown could sit past its edge — at 320 the current Settings section was
+    // cut by 19 (§5.8). So the current link is brought into the strip, on
+    // arrival and on every move between sections. `nearest` on both axes: on
+    // an axis where the link is already in view nothing moves, and the strip
+    // sits at the top of an area that does not scroll the page, so only the
+    // strip does. No `behavior`, so it jumps rather than glides, with or
+    // without reduced motion; and no focus moves — the heading below takes it.
+    railRef.current
+      ?.querySelector<HTMLElement>('[aria-current="page"]')
+      ?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [current.id]);
 
   useEffect(() => {
     // Moving between sections replaces the whole body while the keyboard stays
@@ -59,7 +74,7 @@ export function SectionArea({
 
   return (
     <div className={className ? `area ${className}` : "area"}>
-      <nav aria-label={name} className="area-rail">
+      <nav aria-label={name} className="area-rail" ref={railRef}>
         <ul>
           {sections.map((item) => {
             const Icon = item.icon;

@@ -1716,6 +1716,128 @@ Everything below is the entry as it stood, in the past tense.
   is **done** — narrow that story to whatever else it still carries. The UI half
   is ours and is what the backlog line names.
 
+### TAS-412: personal access tokens and the channel mark ship ahead of the gateway, on shapes nobody has specified
+
+- **Endpoints:** `GET /api/v1/users/me/access-tokens`,
+  `POST /api/v1/users/me/access-tokens`,
+  `DELETE /api/v1/users/me/access-tokens/{tokenId}` — the paths are backend
+  [TAS-402](https://jira.ozero.dev/browse/TAS-402)'s. Plus a channel field on
+  `IssueHistoryResponseDto` and `CommentResponseDto` for
+  [TAS-411](https://jira.ozero.dev/browse/TAS-411).
+- **Observed:** nothing. Backend develop `92a00dbc` has no personal access
+  tokens, no token routes and no channel field; `docs/contract/openapi.yml`
+  has none of them either. Measured 2026-10-24 without a token (release-reviewer):
+  `GET /api/v1/users/me/access-tokens` answers 404 "No static resource
+  api/v1/users/me/access-tokens …", request id
+  `102d66a8-d783-4402-a10a-77e736e7399f`. `POST` and `DELETE` are inferred, not
+  measured: Spring's resource handler looks the path up before the method, and
+  `errors.ts` records a `POST` measured that way.
+- **What the UI assumes — the frontend's proposal on TAS-402, not the
+  contract.** Written once, as a comment over the three methods in
+  `RestTaskaApi` (the only place that says so in code):
+  - `POST` takes `{name, scopes, expiresInDays}`: `name` trimmed, 1–100
+    characters; `scopes` exactly `["read"]` or `["read","write"]`;
+    `expiresInDays` one of 7, 30, 90, 365, the form defaulting to 30.
+    It answers **201** `{token, secret}`, the secret (`tsk_pat_…`) once.
+  - A token is `{id, name, tokenPrefix, scopes, createdAt, expiresAt,
+    lastUsedAt|null}`; `tokenPrefix` is the first characters shown, e.g.
+    `tsk_pat_3fA9`. The list never carries a secret.
+  - `GET` answers **200** `{items: [token]}` — the shape of
+    `GET /projects` (`listMyProjects`, the caller's own collection,
+    unpaginated), the nearest precedent. Order unspecified; the UI lists
+    newest first by `createdAt`.
+  - **The list carries no revoked token** — assumed, and the assumption that
+    matters most: TAS-401's table keeps revoked rows (`revoked_at`,
+    `revoked_reason`) the way `refresh_tokens` does
+    (`RefreshTokenRepository.findValidToken … revoked_at IS NULL`). A list that
+    returned them unfiltered and without a `revokedAt` would be drawn as live
+    tokens with a Revoke button — the user told a dead token still works. Asked
+    on TAS-402 (2026-10-25): filter them, or carry `revokedAt`.
+  - `DELETE` answers **204**, and a repeated `DELETE` of a revoked token
+    answers **204** again (backend
+    [TAS-401](https://jira.ozero.dev/browse/TAS-401): «Повторный отзыв
+    отозванного токена идемпотентен», a repeated revoke of a revoked token is
+    idempotent).
+  - Refusals are the gateway's flat `{code, message}`: **403**
+    `code: "insufficient_scope"` for a request made with a token (managing
+    tokens is JWT-session only — TAS-402 wording; it does not say which code a
+    token managing tokens gets, and `GatewayErrorHandler` writes `code` as a
+    status name, so `insufficient_scope` would need a branch of its own; asked
+    on TAS-402 for `PERMISSION_DENIED` with a `details.reason`), **429** for
+    creating too often (read as status 429 or `RESOURCE_EXHAUSTED`, the
+    invitation resend's pair; the wait shown is `details.retryAfterSeconds` when
+    the server sends one, which the gateway already turns into `Retry-After` —
+    unreadable through CORS, so the detail is the only source), and
+    **404** `NOT_FOUND` on `DELETE` for an id the caller was never issued.
+    The section reads that 404 — never the static-resource one — as a token
+    already gone: the row stays out, the status says "The token “X” is already
+    gone.", and the list is re-read (`isAccessTokenGone`).
+  - The settings lead's promise, "A token never has more access than you do
+    and cannot open the admin console.", rests on three backend stories and
+    on nothing in the contract:
+    [TAS-399](https://jira.ozero.dev/browse/TAS-399) — an agent gets the
+    user's rights in their projects, cut by the token's scopes, and never
+    administrative access;
+    [TAS-401](https://jira.ozero.dev/browse/TAS-401) — `GLOBAL_ADMIN` in a
+    personal-access-token context grants no admin rights, and a `BLOCKED` or
+    `LOCKED` user fails with any token;
+    [TAS-402](https://jira.ozero.dev/browse/TAS-402) — `/admin` and
+    `/readonly` answer 403 to a personal access token even for `GLOBAL_ADMIN`,
+    and a token cannot manage tokens.
+  - The expiry list, the 100-character name and the two grants are provisional
+    until ADR [TAS-400](https://jira.ozero.dev/browse/TAS-400). The ADR does not
+    settle the menu by itself: TAS-401 puts the maximum lifetime and the cap on
+    active tokens in auth-service config, so a fixed 7/30/90/365 can drift per
+    environment (a "1 year" button against a 90-day maximum is always refused).
+    Asked on TAS-402: integer days up to the maximum, and the policy
+    (`maxLifetimeDays`, `maxActiveTokens`) in the list answer.
+  - **The cap on active tokens has no stated refusal** (TAS-401 names the cap,
+    no story names its answer). Shown in the server's words — unless it comes as
+    `RESOURCE_EXHAUSTED`, which the UI reads as the rate limit and answers "try
+    again", a wait that will not lift a cap. Asked on TAS-401/402 for a refusal
+    of its own (`FAILED_PRECONDITION` with `details.reason`, the
+    `ProjectArchived` precedent). The mock has no cap.
+  - Channel: `via?: {channel: "API_TOKEN" | "MCP", tokenName: string | null} |
+    null` on a history event and a comment (`ActionVia`, `src/domain/types.ts`).
+    Absent or `null` is a change made in the UI. TAS-411 has been asked for the
+    token's name beside the channel (2026-10-24).
+- **What the UI does.** `mock`: everything, behaviourally — two seeded tokens
+  for Anna, a fresh random secret on create that the store does not keep, a
+  revoke that takes the token out and answers a repeat of it as the first
+  (TAS-401), `INVALID_ARGUMENT` for a name, scope or lifetime off the list,
+  `NOT_FOUND` for an id never issued to the account — codes this build
+  assumes, not anything a backend story states. Every answer,
+  refusals included, comes after the mock's one delay. Mock-only, and labelled
+  so in `MockAccessTokens`: the 429 after five creates in a minute — carrying
+  `details.retryAfterSeconds` (a string, the seconds until the window frees,
+  1–60), the invitation resend's shape, assumed for TAS-402 — expired
+  tokens staying listed until revoked, and the seeded `via` marks on TAS-107
+  and TAS-101 (the `insufficient_scope` 403 is unreachable there — the mock
+  session is always a signed-in one). `rest`: calls the routes above; on the
+  stand the list read gets the static-resource 404 and Settings → Access tokens
+  says "Access tokens are not on this gateway yet, so they cannot be shown
+  here." with no Create token. `RestTaskaApi` sets `via: null` on every history
+  event and comment, whatever a key of that name might carry, so the stand
+  draws Activity and comments exactly as before.
+- **Compensation: none.** Nothing is synthesised for the stand; the section
+  says the routes are not there, and the channel mark is absent.
+- **Removal:** when TAS-402 deploys the routes and the contract states their
+  shapes — then `RestTaskaApi`'s provisional comment goes, the mapping follows
+  the contract wherever it differs from the above, and the "not on this gateway
+  yet" branch is deleted by hand (it goes quiet on its own; see
+  `UNDEPLOYED_ROUTE_MESSAGE`). When TAS-411 states the channel field, map it in
+  `getIssue` and `toComment` in place of `via: null`. The expiry list and the
+  name's ceiling follow ADR TAS-400.
+  **Before that branch is deleted, probe the promise the lead makes** — the
+  section switches itself on the moment `GET` answers 200, and the UI is then
+  the party stating the enforcement (api-contract-guard, TAS-412): a
+  `GLOBAL_ADMIN`'s token on one `/api/v1/admin/…` read answers 403; a
+  read-scope token on one write answers 403 with the agreed refusal; a token on
+  `GET /users/me/access-tokens` is refused. Record the request ids, as the
+  TAS-397 smoke did. If any of the three fails, the lead's second clause comes
+  out until it holds.
+
+
 ### TAS-387: what the notification-channel Java says that the contract does not
 
 - **Endpoints:** `GET`/`PATCH /api/v1/users/me/notification-preferences`,

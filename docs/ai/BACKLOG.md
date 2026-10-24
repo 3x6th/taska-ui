@@ -4186,3 +4186,39 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
   writes the row on every read while the UI polls it every 3 s; the link answer carries no
   preferences, so Connect costs two requests; with the integration off and the bot username
   empty, every bound user is reported `BOT_CHANGED` (one-line `isEnabled()` guard).
+
+### Left by TAS-412 (Settings → Access tokens and the channel mark, ahead of the gateway, 2026-10-24)
+
+- **`toAccessToken` draws a non-string `lastUsedAt` as "Never used"**, a claim the server did
+  not make. Revisit when TAS-402 puts the token on the contract (release-reviewer).
+- **The Claude Code snippet puts the token on the command line**, so it lands in shell
+  history. An env-var form (`Bearer $TASKA_TOKEN`) only moves the secret into the `export`
+  line; decide with TAS-409's README rather than here (release-reviewer).
+- **On the stand the undeployed token list re-reads on every window focus** — one harmless
+  static-resource 404 per focus, as the other undeployed reads do (release-reviewer).
+- **TAS-414 is not started:** it waits for ADR TAS-400 to say who serves the OAuth consent
+  screen. GitHub Pages cannot send `frame-ancestors` / `X-Frame-Options`, so "consent cannot
+  be framed" is unmeetable from this repository as hosted (comment on TAS-414, 2026-10-24).
+- **`isAccessTokenGone` reads every revoke 404 but the static-resource one as "already
+  gone".** Re-check it against TAS-402's real refusal codes when the routes deploy
+  (release-reviewer, round 2).
+- **At 390 the Claude Code snippet breaks inside `--header`** ("--" / "header"): `pre-wrap` breaks
+  after a hyphen. Copy is exact, so only the reading suffers (art-director).
+- **The Revoke label sits 6.6px below the token name's centre**: a 32 box top-aligned to an 18.8
+  line (art-director).
+- **Contract tails from api-contract-guard (TAS-412):** `isInsufficientScope` reads only `code` —
+  read `details.reason` if TAS-402 takes the `PERMISSION_DENIED` proposal; `actionViaText` draws
+  nothing for an unknown channel (a UI change, while unknown scopes print as they came) — decide when
+  TAS-411 is mapped; `toAccessToken` turns a missing `id` into `""` (a revoke would hit the bare
+  collection path, rows would share a key); the mock allows duplicate names and has no cap — follow
+  TAS-400/401; the "already gone" status drops the 404's request id; `ScreenRequests.test.tsx` does
+  not pin Settings → Access tokens' request count; the vendored `openapi.yml` is at `562d84de`, develop
+  at `92a00dbc` — refresh.
+- **Three notes from release-reviewer's last pass on `2cad7f2`** (non-blocking, left for speed):
+  the `if (revoking) return;` guard that keeps the unseen line through a refused revoke has no test
+  that can fail (`mockRejectedValueOnce` rejects before the optimistic removal renders — use a
+  deferred revoke); a manual Ctrl/⌘+C after a refused clipboard does not release the Esc hold (mark
+  the value taken on a `copy` event from the field or the snippet `<pre>`); `SectionArea`'s
+  `scrollIntoView({block:"nearest"})` could scroll the page vertically when the current link is out
+  of view on a short window — scroll only the strip via `scrollLeft` if §5.8 allows. Also:
+  `e2e/access-tokens.spec.ts` focuses the field before its final Esc.

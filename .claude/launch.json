@@ -15,7 +15,7 @@
       "runtimeExecutable": "sh",
       "runtimeArgs": [
         "-c",
-        "VITE_TASKA_API_MODE=mock VITE_TASKA_API_PROXY_TARGET= npm run dev -- --port 5191 --strictPort"
+        "VITE_TASKA_API_MODE=mock VITE_TASKA_API_PROXY_TARGET= VITE_TASKA_MCP_URL=http://localhost:8087/mcp npm run dev -- --port 5191 --strictPort"
       ],
       "port": 5191
     },

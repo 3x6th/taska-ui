@@ -1,4 +1,6 @@
+import type { AccessTokenExpiryDays, AccessTokenScopes } from "./accessTokens";
 import type {
+  AccessToken,
   AdminCatalog,
   AdminRow,
   AdminRowQuery,
@@ -25,6 +27,7 @@ import type {
   IssueWatchers,
   IssueWorklog,
   IssueDetailsWithHistory,
+  IssuedAccessToken,
   InvitationResult,
   Label,
   Notification,
@@ -709,6 +712,18 @@ export interface ListCommentsParams {
   pageSize?: number;
 }
 
+/**
+ * `POST /users/me/access-tokens` (TAS-412, for backend TAS-402): a name, the
+ * grants and a lifetime from `ACCESS_TOKEN_EXPIRY_DAYS`. The frontend's
+ * proposal, not the contract — see `RestTaskaApi`.
+ */
+export interface CreateAccessTokenInput {
+  /** Trimmed, 1 to `ACCESS_TOKEN_NAME_MAX_LENGTH` characters. */
+  name: string;
+  scopes: AccessTokenScopes;
+  expiresInDays: AccessTokenExpiryDays;
+}
+
 export interface ListNotificationsParams {
   unreadOnly?: boolean;
   pageSize?: number;
@@ -767,6 +782,23 @@ export interface TaskaApi {
   createTelegramLink(): Promise<TelegramLink>;
   confirmTelegramLink(linkId: string): Promise<NotificationPreferences>;
   disconnectTelegram(): Promise<NotificationPreferences>;
+
+  /**
+   * The reader's own personal access tokens (TAS-412; routes from backend
+   * TAS-402, **not deployed and not in the contract** — the shapes are the
+   * frontend's proposal, noted once in `RestTaskaApi`). Managing tokens is a
+   * signed-in session's business only: a request made with a token gets 403
+   * `insufficient_scope`. On a gateway without the routes every one of them
+   * answers the static-resource 404 (`isUndeployedRoute`).
+   *
+   * `listAccessTokens` never carries a secret. `createAccessToken` answers with
+   * the token's value once; the caller shows it and lets it go — no cache, no
+   * storage, no log. `revokeAccessToken` takes the token out at once, and
+   * revoking it again succeeds as the first time did (TAS-401).
+   */
+  listAccessTokens(): Promise<AccessToken[]>;
+  createAccessToken(input: CreateAccessTokenInput): Promise<IssuedAccessToken>;
+  revokeAccessToken(tokenId: string): Promise<void>;
 
   /**
    * Synchronous by design: the route guard reads it during render, so it cannot

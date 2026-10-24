@@ -728,6 +728,11 @@ padding:6vh 16px`. Окно: `position:relative` (`top/right/bottom:auto`), widt
 - иначе модалка закрывается, как ✕, — и модалка только для чтения после архива тоже.
 Механизм — §4.10: внутренние слои зовут `preventDefault()` и модалку сами не закрывают; `Modal` слушает `keydown` на `window`, пропускает `defaultPrevented` и не закрывается, пока внутри диалога есть `[data-unsaved-text="true"]` — порядок задаёт место слушателя (у Members и Workflows слушатели на `document` регистрируются после `Modal`). Собственные `Esc`-ветки подтверждений Users и Events, приглашения, Members и Workflows уходят в этот слушатель; `Cmd/Ctrl+Enter` остаётся там, где он есть. Фокус после закрытия — открывший контрол, если он в документе (TAS-299); иначе правило экрана: строка архива доски (§5.7), карточка на месте ушедшей или «New project» на `/projects` (ниже), админка — §5.8; иначе кнопка «назад» доски, как у панели (§4.10).
 `Cmd/Ctrl+Enter` — подтвердить. Клик по скриму закрывает, клик внутри — нет.
+**Содержимое меняется под открытой модалкой** (TAS-412, «New access token» → «Token created», §5.9):
+`Modal` передаёт фокус своему `h2` через `titleRef` (`tabIndex=-1`, Tab на нём не останавливается);
+кольцо — обычное §7 (2px, offset 2), а не исключение 4, которое для `h1` экрана. Только при смене
+содержимого, никогда при открытии. Показанное один раз значение токена держит `Esc` той же меткой
+`data-unsaved-text="true"`, пока его не скопировали.
 Окно задачи по центру (§4.10) — не Modal: у него нет хедера и футера модалки и оно не привязано
 к 11vh сверху. Общее с модалкой — radius 15, `--shadow-modal`, `tk-pop` и скрим.
 
@@ -934,6 +939,12 @@ height 32, width 220, radius 9, `border:1px var(--border-strong)`, фон `--sur
   значение остаётся законным ответом, который клиент обязан пережить. См.
   `docs/ai/API-DIVERGENCE.md`. Тело 12.5px `--fg`, `white-space:pre-wrap`,
   `overflow-wrap:anywhere`.
+- **Канал** (TAS-412, для TAS-411): комментарий, написанный через MCP или API-токен, помечен в
+  шапке после имени автора — мета 11 `--fg-3` «via MCP ({token})» / «via API token ({token})», без
+  имени токена — «via MCP» / «via API token»; `span.via-mark`, перенос где угодно; 3.14:1 светлая /
+  3.05:1 тёмная на `--surface`. Пометки нет или канал незнакомый — шапка как была. Шапка и есть
+  строка меты, поэтому пометка здесь, а не после времени, как в ленте (§4.26). Пока только mock:
+  REST ставит `via: null`, пока TAS-411 не опишет поле.
 - **Действия** («Edit», «Delete») — `.link-button` 11.5px `--fg-3`, только автору.
 - **Delete спрашивает** полосой §4.22 (TAS-259) — под строкой «Edit · Delete», в колонке
   текста комментария (левый край — край текста, без отступа аватара; 8 сверху, 2 снизу);
@@ -1643,6 +1654,17 @@ navigates the tab.
 оставаясь видимым и в фокусе. Удержать его под курсором можно только
 выдуманным пустым местом — хуже для экрана, открытого весь день, а событие
 из-за запоминания разовое. Решение `art-director` на TAS-257.
+
+**Канал** (TAS-412, для TAS-411). Событие, сделанное через MCP или API-токен,
+помечено не в предложении, а в строке меты после времени: `{time}` + обычный
+пробел + `<span aria-hidden="true"> · </span>` + `span.via-mark` (пробел перед
+скрытой точкой — то, что слышит читалка; без него «12:14via MCP» звучит одним
+словом) «via MCP ({token})» /
+«via API token ({token})» (без имени — «via MCP» / «via API token»), рецепт
+времени — 11 `--fg-3`, `margin-top:1`, перенос где угодно. Предложение события
+остаётся целым: пометка после имени актора меняла кегль посреди фразы, а на 390
+рвала её на «…moved To Do / to In Progress». Без пометки — строка как была.
+Решение `art-director` на TAS-412; пока только mock (§4.15).
 
 ### 4.27 Экран входа и приглашения (TAS-208)
 
@@ -2406,9 +2428,12 @@ backend#143, влита 2026-09-03). У разделов-заглушек мар
 управления. На ширине < 900
 рельс схлопывается в горизонтальную полосу над контентом.
 С TAS-380 рельс и шапка области — общий рецепт (`.area-*`, один компонент) для `/admin` и
-`/settings` (§5.9); ссылки рельса `white-space:nowrap`. Замер на 390 (art-director 2026-10-21):
-полоса Settings из двух разделов входит ровно (scrollWidth = clientWidth = 390), полоса
-админки из четырёх разделов с `nowrap` прокручивается на 67px (scrollWidth 457), а «Back to
+`/settings` (§5.9); ссылки рельса `white-space:nowrap`. Замер на 390 (art-director 2026-10-21,
+обновлён в TAS-412 2026-10-25): полоса Settings из трёх разделов прокручивается на 98px
+(scrollWidth 488; видны все три раздела, за краем только «Back to projects»; на 320 — на 168), полоса
+админки из четырёх разделов с `nowrap` прокручивается на 67px (scrollWidth 457). При входе в область
+и при смене раздела текущая ссылка сама прокручивается в видимую часть полосы, без плавности (`scrollIntoView({inline:"nearest",
+block:"nearest"})`, TAS-412) — без этого на 320 текущий раздел Settings обрезан на 19. «Back to
 projects» больше не переносится (29.4 вместо 46.8 в высоту). Что полоса прокручивается, она ничем
 не показывает — записано в BACKLOG; область desktop-first, и логотип тоже ведёт наружу.
 
@@ -3128,16 +3153,18 @@ history: прямая ссылка и перезагрузка обязаны д
 ### 5.9 Settings (TAS-380)
 `/settings` — область читателя о себе, по образцу `/admin` (§5.8): тот же app shell с общим
 топбаром (`right` — переключатель темы), тот же рецепт рельса и шапки области (`.area-*`).
-Маршруты: `/settings` → `/settings/profile`; разделы `/settings/profile` («My profile») и
-`/settings/appearance` («Appearance»); незнакомый хвост — `*` (§4.18). Layout-маршрут за гвардом
+Маршруты: `/settings` → `/settings/profile`; разделы `/settings/profile` («My profile»),
+`/settings/tokens` («Access tokens», TAS-412) и `/settings/appearance` («Appearance»); незнакомый хвост — `*` (§4.18). Layout-маршрут за гвардом
 сессии (§5.1), ролевого гейта нет: это свой профиль и свой вид, `VIEWER` владеет ими так же, как
 `ADMIN`; пустой плоскости `--bg` на время чтения профиля тоже нет.
 
 **Рельс.** Рецепт §5.8: 168, `--surface`, правая граница `1px --border`, padding `13 9`; пункт —
 иконка 15 + 12/600, padding `6 9`, radius 8, `--fg-2`, hover и активный — `--surface-2` + `--fg`,
 `aria-current="page"` от `NavLink`; `nav aria-label="Settings"`. Пункты: «My profile» (`UserRound`),
-«Appearance» (`Palette`). Внизу за разделителем — «Back to projects» (`ArrowLeft`, `--fg-3`) в
-`/projects`. Ниже 900 рельс — горизонтальная полоса (на 390 входит ровно, §5.8).
+«Access tokens» (`KeyRound`), «Appearance» (`Palette`). Внизу за разделителем — «Back to projects»
+(`ArrowLeft`, `--fg-3`) в `/projects`. Ниже 900 рельс — горизонтальная полоса; с тремя разделами она
+прокручивается (на 390 — на 98, на 320 — на 168), текущий раздел прокручивается в видимую часть
+(§5.8), документ шире экрана не становится.
 
 **Шапка.** Рецепт §5.8: внутри одного `h1` крошка «Settings ›» 11.5/550 `--fg-2` и имя раздела
 22/700 `--fg`; padding `22 22 13` (ниже 900 — `16 14 11`); `tabIndex=-1`, фокус на `h1` при смене
@@ -3284,6 +3311,80 @@ disconnect Telegram and connect again.» и одно действие, «Disconn
   отказ записи на таком гейтвее остаётся в `writeFailureText`. Ролевого гейта
   здесь нет и быть не может: это своё лицо, и `VIEWER` владеет им так же, как
   `ADMIN`.
+
+**Access tokens (TAS-412).** Свои персональные токены читателя для AI-агента или скрипта (эпик
+TAS-399, MCP-сервер, фаза 1); ролевого гейта нет — `VIEWER` выпускает их так же, как `ADMIN`, а
+права токена всё равно не шире прав человека. Пока на моке: ручек на гейтвее нет, форма запросов —
+предложение фронта (`docs/ai/API-DIVERGENCE.md`, «TAS-412»). Сверху `.settings-lead` «Tokens let an AI
+agent or a script work in Taska as you. A token never has more access than you do and cannot open the
+admin console.» (обещание — из TAS-399/401/402, не из контракта), через 14 — primary «Create token».
+
+Список — `ul` «Your access tokens», строки по рецепту Settings: сетка `minmax(0,1fr) auto`,
+`column-gap:22`, padding `14 0`, волосяная `1px --border` только между строками; новые сверху по
+`createdAt` (порядок сервера не задан). Слева имя 13/600 `--fg`; под ним мета 11.5 `--fg-2`: префикс
+моно 11/500 с «…» (читалке — «Starts with …») · «Read» / «Read and write» (незнакомый scope — как
+пришёл); строкой ниже «Created {d} · Expires {d}» (в прошлом — «Expired {d}», дата остаётся) · «Last
+used {d}» или «Never used». Вся мета страницы `--fg-2`: `--fg-3` на `--bg` даёт 2.91:1 в светлой.
+Справа ghost-destructive «Revoke» (рецепт Disconnect Telegram, 32; ниже 820 — 44); пока открыт его
+вопрос — `--surface-2` + `--fg`.
+
+Состояния. Пусто — «No tokens yet.» 12.5 `--fg-2`. Загрузка — две полосы `.value-skeleton` (140×13,
+220×11) и скрытый `role="status"`, без кнопки и без спиннера. Отказ чтения — `ApiNotice` «Your access
+tokens could not be loaded.» (не живая область) и secondary «Try again». Ручек нет на гейтвее — одна
+строка «Access tokens are not on this gateway yet, so they cannot be shown here.», без «Create token».
+
+Revoke спрашивает полосой §4.22 под строкой, от левого края текста: «The token “{name}” will stop
+working at once for every agent and script that uses it.», Cancel (фокус первым) и «Revoke token»;
+`Esc` и Cancel возвращают фокус на Revoke. Ответ оптимистичен: строка уходит сразу, фокус — на Revoke
+строки, вставшей на её место, иначе предыдущей, иначе на «Create token». Отказ — строка возвращается,
+под ней `ErrorNote` «The token “{name}” was not revoked.» со словами сервера и request id. Токена уже
+нет (404 не о маршруте; повторный отзыв по TAS-401 идемпотентен) — строка не возвращается, статус
+«The token “{name}” is already gone.», список перечитывается. Итог любого отзыва говорит постоянная
+скрытая `role="status"` раздела.
+
+Создание — модалка §4.11 «New access token». Name — поле с автофокусом, до 100 знаков, края
+обрезаются; это значение, а не текст-работа, поэтому `Esc` закрывает. Access — радио-пара с
+описаниями, по умолчанию Read (наименьшие права). Expires — `.segmented.fit` с `aria-pressed` (7 days ·
+30 days · 90 days · 1 year, по умолчанию 30) и строка «Expires on {date}.» 11.5 `--fg-2`, а не `--fg-3`
+подписи: это единственное место, где видна сама дата. Без имени «Create token» `aria-disabled` с
+притемнением, нажатие говорит «Name the token before creating it.» В полёте — рецепт §4.1 для всех
+контролов, Cancel тоже; `Esc` держится (§4.11), ✕ и скрим закрывают. Отказ — `ErrorNote` (alert) с
+request id: 429 — «Too many tokens were created just now. Try again in {N} seconds.» (ожидание —
+`details.retryAfterSeconds` сервера, слова единиц — как у повторной отправки приглашения, §5.8; без
+него — «…Try again later.»); 403
+`insufficient_scope` — «Tokens can be created only from a signed-in session, not with another
+token.»; иначе слова сервера. Список перечитывается после каждой попытки.
+
+Ответ пришёл, когда модалку уже закрыли ✕ или скримом: значение отбрасывается и нигде не рисуется, а
+под новой строкой списка, во всю её ширину через 10, — `p.token-unseen` 11.5/400 `--fg` «Its value was
+never shown. Revoke this token and create another.» `--fg`, а не мета: это факт о данных читателя
+(прецедент «Your photo could not be loaded.»); не `ErrorNote` — ничего не отказано и request id нет; не
+`--danger`. Строка живёт в памяти до перезагрузки и уходит вместе с токеном. Скрытый статус раздела
+говорит то же: «The token “{name}” was created, but the dialog closed before its value was shown.
+Revoke it and create another.»
+
+Показ значения. После успеха та же модалка становится «Token created», фокус — на её `h2` (§4.11).
+«Copy this token now. Taska shows it only once.» 12.5/600 `--fg`; поле только для чтения моно 12
+(рецепт поля §4.23; подпись — имя токена, без имени — «Unnamed token», как в списке) и secondary compact
+«Copy token»; ответ копирования — постоянная `role="status"`, при отказе буфера поле выделяется. Ниже —
+«Connect an AI agent» с этим значением и primary «Done». Пока ни «Copy token», ни Copy сниппета не
+удались, поле несёт `data-unsaved-text="true"` и `Esc` модалку не закрывает (§4.11): единственный
+показ невосстановимого значения — та же текст-работа. Done, ✕ и скрим закрывают всегда, второго
+вопроса нет. Значение живёт только в состоянии модалки — не `useMutation`, ни кэша запросов, ни
+хранилища, ни адреса, ни лога; закрытие его роняет. Модалка монтируется рядом с `.settings-plane`, а
+не внутри: иначе колесо над скримом прокручивало бы страницу за ним.
+
+Connect an AI agent. Разделитель (22 сверху и снизу), `h2` 14/650 (в модалке `h3` 13/600),
+`.settings-lead` — на странице «…with one of these tokens.», в модалке «…with this token.» Выбор
+`.segmented.fit` Claude Code | Cursor с `aria-pressed` и строка «Run this in a terminal.» / «Add this to
+~/.cursor/mcp.json.» Код — моно 12 (`code` наследует `--font-mono` через `font: inherit`: стиль
+браузера для `code` иначе даёт Courier), `pre-wrap` и `overflow-wrap:break-word`, без прокрутки; бокс
+`1px --border`, radius 9, фон `--surface` на странице и `--surface-2` в модалке; Copy — compact справа,
+уже 560 — под кодом, слева. Сниппеты пишут в конфигурацию пользователя (`claude mcp add --scope user`,
+`~/.cursor/mcp.json`), а не проекта; без свежего значения в них стоит `YOUR_TOKEN`. Под кодом — «Keep
+tokens out of project files that are shared or committed.» Адрес сервера — сборочная
+`VITE_TASKA_MCP_URL`; пустая (на стенде, пока нет TAS-403) — одна строка «The MCP server is not
+available yet.» без выбора и сниппетов.
 
 **Appearance.** Без кнопки Save, без тоста и без «Saved»: выбор применяется сразу и пишется в
 `localStorage`. Под шапкой — вводная 12.5/400 `--fg-2` «These choices are saved in this browser.»;
@@ -3641,6 +3742,9 @@ e2e). Другое значение останавливает dev-сервер,
 - **Открыто в TAS-380** (замер art-director 2026-10-21, 390): сегменты Settings → Appearance — 30
   в высоту, ссылки полосы рельса — 29.4, кнопки фото — 29. Пол §1 проходят, 44 тач-макета — нет;
   лечится тем же псевдоэлементом, что правило пары.
+- **Открыто в TAS-412** (решение art-director 2026-10-25, 390): сегменты выбора агента (Claude Code |
+  Cursor) и Expires — 30 в высоту, как Appearance; остальные контролы раздела Access tokens ниже 820 —
+  44. Лечится тем же псевдоэлементом по правилу пары, а не 44 здесь одном.
 - Поповер уведомлений: `aria-expanded` на триггере, счётчик непрочитанных в `aria-label`.
 - Иконки-кнопки без текста — обязателен `aria-label`.
 - Drag & drop дублируется кнопками переходов (клавиатурный путь).

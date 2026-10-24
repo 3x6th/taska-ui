@@ -1046,12 +1046,37 @@ export type IssueEventType =
   | "WORKLOG_UPDATED"
   | "WORKLOG_DELETED";
 
+/**
+ * How a change reached Taska when it did not come from the UI (TAS-411, epic
+ * TAS-399): through the MCP server, or straight to the gateway with a personal
+ * access token. Neither is on the wire yet — see `ActionVia`.
+ */
+export type ActionChannel = "API_TOKEN" | "MCP";
+
+/**
+ * The channel mark on a history event or a comment (TAS-412, for TAS-411).
+ * **Not in the contract and not served**: backend develop `92a00dbc` sends no
+ * such field, `RestTaskaApi` therefore states none (`via: null`), and only the
+ * mock seeds it, so the mark can be seen and tested before the backend says
+ * what it is called and what it holds (docs/ai/API-DIVERGENCE.md, "TAS-412").
+ *
+ * Absent or `null` is a change made in the UI, and it renders exactly as it
+ * did before this field existed. `tokenName` is the token's name when the
+ * server names it, `null` when it does not.
+ */
+export interface ActionVia {
+  channel: ActionChannel;
+  tokenName: string | null;
+}
+
 export interface IssueHistoryEvent {
   id: string;
   issueId: string;
   eventType: IssueEventType;
   actorUserId: string;
   occurredAt: string;
+  /** The channel mark (`ActionVia`): mock only until TAS-411. */
+  via?: ActionVia | null;
   payload: {
     from?: IssueStatusKey;
     to?: IssueStatusKey | IssuePriorityCode | null;
@@ -1414,6 +1439,8 @@ export interface IssueComment {
   createdAt: string;
   updatedAt: string | null;
   version: number;
+  /** The channel mark (`ActionVia`): mock only until TAS-411. */
+  via?: ActionVia | null;
 }
 
 export interface Notification {
@@ -1787,4 +1814,38 @@ export interface TelegramLink {
   linkId: string;
   url: string;
   expiresAt: string;
+}
+
+/**
+ * One of the reader's personal access tokens (TAS-412, for backend TAS-402) —
+ * what the list shows and the create answer describes. **Never the secret**:
+ * the token's value is shown once, in `IssuedAccessToken`, and nothing that
+ * holds this type holds it. `tokenPrefix` is the token's first characters
+ * (`tsk_pat_3fA9`), which is all the reader is shown of it afterwards.
+ *
+ * `scopes` is an open list, like every other value set the server names
+ * (TAS-173): `["read"]` and `["read", "write"]` are the two this build asks
+ * for and names; anything else is printed as it came. The shape is the
+ * frontend's proposal on TAS-402, not the contract (see `RestTaskaApi`).
+ */
+export interface AccessToken {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  scopes: string[];
+  createdAt: string;
+  expiresAt: string;
+  /** `null`: the token has never been used. */
+  lastUsedAt: string | null;
+}
+
+/**
+ * What creating a token answers with: the token, and its value — **once**.
+ * The secret lives only in the creating dialog's own state and leaves with
+ * it: never a query or mutation cache, browser storage, the address or a log
+ * (TAS-412's acceptance).
+ */
+export interface IssuedAccessToken {
+  token: AccessToken;
+  secret: string;
 }

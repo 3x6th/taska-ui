@@ -107,6 +107,7 @@ import type {
   WorkflowTransition,
 } from "../domain/types";
 import {
+  actionViaText,
   commentWasEdited,
   formatDateTime,
   formatDay,
@@ -5697,6 +5698,8 @@ function CommentItem({
   };
   const when = formatDateTime(comment.createdAt);
   const asking = canManage && confirming && !editing;
+  // "via MCP (Cursor on laptop)" — nothing for a comment written in the UI (TAS-412).
+  const via = actionViaText(comment.via);
 
   return (
     <article className="comment-item">
@@ -5718,6 +5721,7 @@ function CommentItem({
       >
         <p className="comment-head">
           <strong>{author?.displayName ?? "Unknown"}</strong>
+          {via ? <span className="via-mark">{via}</span> : null}
           <time>{when}</time>
           {/* Not `comment.updatedAt &&`: the server stamps that field on insert
               too, so the presence of a value says only that the row exists
@@ -5956,6 +5960,12 @@ function ActivityItem({
   names: HistoryNames;
   isLast: boolean;
 }) {
+  // The channel mark (TAS-412) is meta, so it rides on the time's line —
+  // "Aug 1, 12:00 · via MCP (Cursor on laptop)" — and the sentence stays whole
+  // (§4.26). The plain space before the hidden dot is what a screen reader
+  // keeps between the two. An event without one draws exactly as before.
+  const via = actionViaText(event.via);
+  const time = <time>{formatDateTime(event.occurredAt)}</time>;
   return (
     <div className="activity-item">
       {!isLast ? <span className="activity-line" /> : null}
@@ -5964,7 +5974,14 @@ function ActivityItem({
         <p>
           <strong>{user?.displayName ?? "Someone"}</strong> {historyText(event, userById, names)}
         </p>
-        <time>{formatDateTime(event.occurredAt)}</time>
+        {via ? (
+          <div className="activity-meta">
+            {time} <span aria-hidden="true"> · </span>
+            <span className="via-mark">{via}</span>
+          </div>
+        ) : (
+          time
+        )}
       </div>
     </div>
   );
