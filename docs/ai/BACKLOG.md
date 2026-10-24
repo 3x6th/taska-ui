@@ -4214,3 +4214,11 @@ roles reviewed it from scratch on 2026-10-23 and `frontend-builder` made the fix
   TAS-400/401; the "already gone" status drops the 404's request id; `ScreenRequests.test.tsx` does
   not pin Settings → Access tokens' request count; the vendored `openapi.yml` is at `562d84de`, develop
   at `92a00dbc` — refresh.
+- **Three notes from release-reviewer's last pass on `2cad7f2`** (non-blocking, left for speed):
+  the `if (revoking) return;` guard that keeps the unseen line through a refused revoke has no test
+  that can fail (`mockRejectedValueOnce` rejects before the optimistic removal renders — use a
+  deferred revoke); a manual Ctrl/⌘+C after a refused clipboard does not release the Esc hold (mark
+  the value taken on a `copy` event from the field or the snippet `<pre>`); `SectionArea`'s
+  `scrollIntoView({block:"nearest"})` could scroll the page vertically when the current link is out
+  of view on a short window — scroll only the strip via `scrollLeft` if §5.8 allows. Also:
+  `e2e/access-tokens.spec.ts` focuses the field before its final Esc.
